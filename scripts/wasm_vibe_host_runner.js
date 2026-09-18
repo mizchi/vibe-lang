@@ -1010,11 +1010,16 @@ function parseVibeCovBranchSection(wasmBytes) {
   return null;
 }
 
-// #2199: parse `vibe.dbgfiles` (basenames, one per line) and `vibe.linemap`
-// (compact LEB deltas: func_delta, offset_delta, file_id, line per unique
-// (func, offset)). Used to annotate an uncaught trap with an editable
-// path:line. Missing/empty/stripped sections => no annotation, never a
-// fabricated location.
+// #2199: parse `vibe.dbgfiles` (source paths, one per line) and
+// `vibe.linemap` (the 4-byte marker `VLM1`, then compact LEB deltas:
+// func_delta, offset_delta, file_id, line per unique (func, offset)). Used to
+// annotate an uncaught trap with an editable path:line. Missing/empty/
+// stripped sections => no annotation, never a fabricated location.
+//
+// The marker is required: #644's table under the same section name was
+// 16-byte little-endian records, which decode as LEB quadruples without
+// erroring, so an older module would annotate with fabricated values. An
+// unmarked table reads as empty.
 function findWasmCustomSection(wasmBytes, wantName) {
   const buf = Buffer.from(wasmBytes);
   if (buf.length < 8 || buf[0] !== 0x00 || buf[1] !== 0x61 || buf[2] !== 0x73 || buf[3] !== 0x6d) {
@@ -1053,12 +1058,17 @@ function parseVibeDbgfiles(wasmBytes) {
   return payload.toString("utf8").split("\n").filter((l) => l.length > 0);
 }
 
+const LINEMAP_MAGIC = "VLM1";
+
 function parseCompactLinemapPayload(payload) {
   const rows = [];
-  if (!payload || payload.length === 0) {
+  if (!payload || payload.length < LINEMAP_MAGIC.length) {
     return rows;
   }
-  let pos = 0;
+  if (payload.slice(0, LINEMAP_MAGIC.length).toString("latin1") !== LINEMAP_MAGIC) {
+    return rows;
+  }
+  let pos = LINEMAP_MAGIC.length;
   const end = payload.length;
   const uleb = () => {
     let result = 0;

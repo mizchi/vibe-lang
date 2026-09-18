@@ -303,11 +303,16 @@ oob_bytes_set_rc=$?
 oob_str_out="$(oob_run_one "$oobdir/str_byte_at.wasm")"
 oob_str_rc=$?
 set -e
-oob_check "Array::get" "Array::get: index 10 out of bounds for length 3" "arr_get.vibe:4" "$oob_arr_get_out" "$oob_arr_get_rc"
-oob_check "Array::set" "Array::set: index 10 out of bounds for length 3" "arr_set.vibe:4" "$oob_arr_set_out" "$oob_arr_set_rc"
-oob_check "Bytes::get" "Bytes::get: index 9 out of bounds for length 3" "bytes_get.vibe:4" "$oob_bytes_get_out" "$oob_bytes_get_rc"
-oob_check "Bytes::set" "Bytes::set: index 9 out of bounds for length 3" "bytes_set.vibe:4" "$oob_bytes_set_out" "$oob_bytes_set_rc"
-oob_check "String::byte_at" "String::byte_at: index 5 out of bounds for length 3" "str_byte_at.vibe:4" "$oob_str_out" "$oob_str_rc"
+# The expected location carries the DIRECTORY the source was compiled from,
+# not just its file name: `vibe.dbgfiles` holds the path the compiler opened
+# so the location is openable from the project root and still names one file
+# when a program pulls in two packages that each have an `index.vibe`
+# (#2199, PR #2867).
+oob_check "Array::get" "Array::get: index 10 out of bounds for length 3" "$oobdir/arr_get.vibe:4" "$oob_arr_get_out" "$oob_arr_get_rc"
+oob_check "Array::set" "Array::set: index 10 out of bounds for length 3" "$oobdir/arr_set.vibe:4" "$oob_arr_set_out" "$oob_arr_set_rc"
+oob_check "Bytes::get" "Bytes::get: index 9 out of bounds for length 3" "$oobdir/bytes_get.vibe:4" "$oob_bytes_get_out" "$oob_bytes_get_rc"
+oob_check "Bytes::set" "Bytes::set: index 9 out of bounds for length 3" "$oobdir/bytes_set.vibe:4" "$oob_bytes_set_out" "$oob_bytes_set_rc"
+oob_check "String::byte_at" "String::byte_at: index 5 out of bounds for length 3" "$oobdir/str_byte_at.vibe:4" "$oob_str_out" "$oob_str_rc"
 # Stripped mapping: OOB line and wasm frame remain; no fabricated path:line.
 node scripts/wasm_custom_section.js strip "$oobdir/arr_get.wasm" "$oobdir/arr_get.stripped.wasm" vibe.linemap vibe.dbgfiles
 set +e

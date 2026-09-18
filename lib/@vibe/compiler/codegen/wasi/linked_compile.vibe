@@ -282,6 +282,7 @@ import @vibe/compiler/codegen/common_base {
   is_ptuple,
   is_pwild,
   is_slet,
+  linemap_disabled,
   lookup_ctor,
   lower_optional_performs,
   lower_optional_performs_with_source_names,
@@ -7008,6 +7009,14 @@ export fn lc_dbg_file_of_fn_for(names: Array[String], name_files: Array[Int], ow
   lc_dbg_file_of_fn(lc_dbg_build_file_index(names, name_files), lc_dbg_build_file_index(owner_keys, owner_files), name)
 }
 
+/// `lc_dbg_file_placed` over the two snapshots, for tests -- the same
+/// arrangement as `lc_dbg_file_of_fn_for`, one rung lower, so a test can pin
+/// the DIFFERENCE between the two answers (a placement of 0 and no placement
+/// at all) rather than the 0 both spell.
+export fn lc_dbg_file_placed_for(names: Array[String], name_files: Array[Int], owner_keys: Array[String], owner_files: Array[Int], name: String) -> Int {
+  lc_dbg_file_placed(lc_dbg_build_file_index(names, name_files), lc_dbg_build_file_index(owner_keys, owner_files), name)
+}
+
 /// Interior-line breakpoints: the source file a compiled function came from,
 /// looked up BY NAME (#2388).
 ///
@@ -7041,16 +7050,47 @@ export fn lc_dbg_file_of_fn_for(names: Array[String], name_files: Array[Int], ow
 ///
 /// What records no owner is a program-level definition that belongs to no
 /// single file: a comparator derived for a type is emitted once and called
-/// from wherever that type is compared. Those get file 0, a placement rather
-/// than a claim -- a breakpoint set in a file is matched by basename against
-/// `vibe.dbgfiles`, so the effect is that a synthesized body reports the first
-/// file's name, not that a user's breakpoint moves.
+/// from wherever that type is compared. `lc_dbg_file_placed` answers -1 for
+/// those, and for every other name it cannot place; this wrapper is the BREAK
+/// lane's reading of that, where 0 is a placement rather than a claim -- a
+/// breakpoint set in a file is matched by basename against `vibe.dbgfiles`, so
+/// the effect is that a synthesized body reports the first file's name, not
+/// that a user's breakpoint moves.
+///
+/// The production `vibe.linemap` (#2199) cannot read it that way: a row is not
+/// matched against anything, it is PRINTED at a trap, so file 0 there is a
+/// fabricated `path:line` for a body that may be in any file (Codex P2 on PR
+/// #2867). That lane takes `lc_dbg_file_placed` directly and emits no rows for
+/// a function it refuses to place.
 fn lc_dbg_file_of_fn(dbg_name_file: MutMap[String, Int], dbg_owner_file: MutMap[String, Int], name: String) -> Int {
+  lc_dbg_file_break(lc_dbg_file_placed(dbg_name_file, dbg_owner_file, name))
+}
+
+/// The break lane's reading of a placement, as its own function so the codegen
+/// loop -- which already holds the placement and must not look it up twice --
+/// and `lc_dbg_file_of_fn_for` (what the tests call) go through the SAME rule.
+/// A test against a restatement of it would pass under a policy the compiler
+/// does not have.
+fn lc_dbg_file_break(placed: Int) -> Int {
+  if placed < 0 {
+    0
+  } else {
+    placed
+  }
+}
+
+/// The source file `name` is KNOWN to have come from, or -1 when this cannot
+/// say: the name is in neither index, or it is in one of them twice (two
+/// modules with a same-labelled test lower to one `__test_<label>` name, and
+/// one `:t:<label>` owner key). Absent and ambiguous answer alike on purpose
+/// -- neither places the body, and a caller that treats "no placement" as a
+/// file is wrong the same way for both.
+fn lc_dbg_file_placed(dbg_name_file: MutMap[String, Int], dbg_owner_file: MutMap[String, Int], name: String) -> Int {
   match MutMap::get(dbg_name_file, name) {
     Some(fid) => if fid < 0 {
       // Ambiguous: two pre-prelude statements carry this name, so it places
-      // nothing. Falls through to 0 like an unknown name rather than picking.
-      0
+      // nothing. Answers like an unknown name rather than picking.
+      0 - 1
     } else {
       fid
     },
@@ -7061,13 +7101,13 @@ fn lc_dbg_file_of_fn(dbg_name_file: MutMap[String, Int], dbg_owner_file: MutMap[
         // test), so the hoisted body belongs to one of two files and this
         // places neither.
         Some(fid) => if fid < 0 {
-          0
+          0 - 1
         } else {
           fid
         },
-        None => 0
+        None => 0 - 1
       },
-      None => 0
+      None => 0 - 1
     }
   }
 }
@@ -8124,6 +8164,21 @@ fn lc_pf_check_written(out: Bytes, content_start: Int, announced: Int, failed: A
   }
 }
 
+/// #2199: the `vibe.linemap` format marker, written right after the section
+/// name and before the first record. See the emission site for why the name
+/// alone is not enough to identify the encoding.
+fn lc_linemap_put_magic(dst: Bytes) -> Unit {
+  bytebuf_push(dst, 'V')
+  bytebuf_push(dst, 'L')
+  bytebuf_push(dst, 'M')
+  bytebuf_push(dst, '1')
+}
+
+/// Is `VLM1` at `pos` in `src`, with `end` the section's end?
+fn lc_linemap_has_magic(src: Bytes, pos: Int, end: Int) -> Bool {
+  pos + 4 <= end && Bytes::get(src, pos) == 'V' && Bytes::get(src, pos + 1) == 'L' && Bytes::get(src, pos + 2) == 'M' && Bytes::get(src, pos + 3) == '1'
+}
+
 /// #2199: remap `vibe.linemap` through the prune's old->new function map, and
 /// shift each record's code offset by the call-immediate LEB size change in
 /// that body so wasmtime's func_offset still hits the right entry.
@@ -8255,15 +8310,30 @@ fn lc_linemap_remap_stream(mod_bytes: Bytes, rec_start: Int, send: Int, cell: Ar
   size
 }
 
+/// #2199: the section carries a 4-byte format marker between its name and its
+/// first record. The prune rewrites the records, so it steps over the marker
+/// on the way in and writes a fresh one on the way out.
+///
+/// A section without the marker is one this compile did not emit, so its
+/// records are in an encoding this remap does not know. It is rewritten to
+/// the marker and NO records: a table whose function indices the prune just
+/// invalidated is worse than none, and a reader that finds no rows reports no
+/// location rather than a wrong one.
 fn lc_pf_emit_linemap(mod_bytes: Bytes, sstart: Int, send: Int, cell: Array[Int], newidx: Array[Int], num_imported: Int, body_start: Array[Int], site: Array[Int], site_from: Array[Int], dst: Bytes, write: Bool) -> Int {
   let nlen = lc_pf_leb(mod_bytes, sstart, cell)
   let nstart = Array::get(cell, 0)
-  let rec_start = nstart + nlen
+  let magic_start = nstart + nlen
+  let rec_start = if lc_linemap_has_magic(mod_bytes, magic_start, send) {
+    magic_start + 4
+  } else {
+    send
+  }
   let rec_size = lc_linemap_remap_stream(mod_bytes, rec_start, send, cell, newidx, num_imported, body_start, site, site_from, dst, false)
-  let size = lc_pf_leb_len(nlen) + nlen + rec_size
+  let size = lc_pf_leb_len(nlen) + nlen + 4 + rec_size
   if write {
     leb128_encode_u32(dst, nlen)
     Bytes::blit(dst, mod_bytes, nstart, nstart + nlen)
+    lc_linemap_put_magic(dst)
     let _ = lc_linemap_remap_stream(mod_bytes, rec_start, send, cell, newidx, num_imported, body_start, site, site_from, dst, true)
   } else {
     ()
@@ -8563,18 +8633,31 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
   // program's. See lc_dbg_file_of_fn -- after the prelude they are not.
   let pre_prelude_let_files = lc_fresh_int_array()
   let pre_prelude_let_stmts = lc_fresh_int_array()
+  // #2199: the two lanes that READ this snapshot, decided by the parameters
+  // alone so the scan below can be gated on them and the import reservations
+  // further down can reuse the same answer. `dbg_line_on` is the live
+  // `--break` probe; `linemap_on` is the static `vibe.linemap` table, which a
+  // production RC compile carries too.
+  let dbg_line_on = debug_break && Array::length(prov.files) > 0
+  let linemap_on = dbg_line_on || (Array::length(prov.files) > 0 && Array::length(prov.file_nls) > 0)
   // The same, keyed by OWNER: what a lambda hoisted out of each statement
   // would name itself after (`hoisted_lambda_owner_of_stmt`, the hoist's own
-  // arms rather than a mirror of them here). Built for the BREAK LANE only --
-  // one `hoisted_lambda_owner_of_stmt` per top-level statement, ~9.9k of them
-  // on the compiler's own closure -- so an ordinary compile pays nothing.
+  // arms rather than a mirror of them here).
   //
-  // The condition is `debug_break` itself. It used to be "prov carries any
-  // stmt_file_id", which was a PROXY for the break lane and correct only while
-  // the break lane was the only caller that filled provenance. #2575 item 2
-  // gives the ordinary lane a real `stmt_file_id` (a per-module prelude needs
-  // it), and under the old guard that would have silently switched this scan on
-  // for every compile while `dbg_line_on` kept the arrays unread.
+  // The condition is `linemap_on`, the predicate for "someone reads this",
+  // not a proxy for it. It used to be "prov carries any stmt_file_id", which
+  // was a PROXY for the break lane and correct only while the break lane was
+  // the only caller that filled provenance (#2575 item 2 gives the ordinary
+  // lane a real `stmt_file_id`); then `debug_break`, which was the same
+  // mistake one lane later -- the production linemap reads the owner index
+  // through `lc_dbg_file_of_fn` as well, and without these arrays a hoisted
+  // lambda from any file but the first resolved to file 0 and reported a
+  // fabricated path:line (Codex P2 on PR #2867). A compile with no newline
+  // tables (every in-process lane, `linked_compile_prov_inert_test`) still
+  // pays nothing; the FS lanes pay one `hoisted_lambda_owner_of_stmt` per
+  // top-level statement, ~9.9k of them on the compiler's own closure, and
+  // most of those return the declaration's own name with no allocation
+  // (`dlh_owner_key_of` kind 0).
   let pre_prelude_owner_keys = lc_fresh_string_array()
   let pre_prelude_owner_files = lc_fresh_int_array()
   let dbg_prov_len = Array::length(prov.stmt_file_id)
@@ -8589,7 +8672,7 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
     } else {
       0
     }
-    if debug_break {
+    if linemap_on {
       // EVERY statement, including the ones with no name to be known by. A
       // binderless `let _ = ..` holding an effectful local lambda gets an
       // anonymous owner from its POSITION (`:s:<idx>`), which is why the index
@@ -10153,22 +10236,24 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
   // against ITS OWN source file (prov.file_nls[file_id]) so multi-file entries
   // work. Gated on `debug_break && prov has files`, so default builds reserve
   // nothing and stay byte-identical.
-  let dbg_line_on = debug_break && Array::length(prov.files) > 0
   // #2199: production trap provenance. A compact `vibe.linemap` is emitted
   // whenever we have file names AND newline tables, independent of debug-break
   // probes. Empty `file_nls` (the inert map `linked_compile_prov_inert_test`
   // carries) keeps the section off, so that compile stays byte-identical.
-  let linemap_on = dbg_line_on || (Array::length(prov.files) > 0 && Array::length(prov.file_nls) > 0)
+  // `dbg_line_on` / `linemap_on` are computed with the pre-prelude snapshot
+  // above, which is gated on them.
+  //
   // Pre-prelude name -> file, the identity that survives the prelude, and
   // pre-prelude owner key -> file for the definitions the prelude synthesizes.
-  // Built when linemap or break is on; every other build leaves both empty
-  // and reads neither.
+  // BOTH are built on the same condition: the owner index is what places a
+  // hoisted lambda, and a production linemap that had the name index without
+  // it filed every hoisted body under file 0.
   let dbg_name_file: MutMap[String, Int] = if linemap_on {
     lc_dbg_build_file_index(pre_prelude_let_names, pre_prelude_let_files)
   } else {
     MutMap::new_string()
   }
-  let dbg_owner_file: MutMap[String, Int] = if dbg_line_on {
+  let dbg_owner_file: MutMap[String, Int] = if linemap_on {
     lc_dbg_build_file_index(pre_prelude_owner_keys, pre_prelude_owner_files)
   } else {
     MutMap::new_string()
@@ -10202,8 +10287,13 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
     funcs: lc_fresh_int_array(),
     offsets: lc_fresh_int_array(),
     file_ids: lc_fresh_int_array(),
-    lines: lc_fresh_int_array()
+    lines: lc_fresh_int_array(),
+    site: [0]
   }
+  // #2199: the state handed to a function whose file this compile cannot
+  // place. `record` is a no-op on it, so such a body contributes no rows --
+  // one instance for the whole module, because nothing is ever written to it.
+  let linemap_off = linemap_disabled()
   let print_int_idx = num_imported_funcs
   let print_str_idx = print_int_idx + 1
   let str_len_idx = print_str_idx + 1
@@ -11759,10 +11849,27 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
       } else {
         ()
       }
+      // #2199: which source file THIS function is known to have come from,
+      // decided before the replay/compile fork so both answer alike. -1 is the
+      // lookup refusing to place it (a name in neither pre-prelude index, or in
+      // one of them twice); see `lc_dbg_file_placed`. A refused function
+      // contributes no `vibe.linemap` rows on either path -- a row is printed
+      // at a trap, so a placeholder file id there is a fabricated `path:line`
+      // (Codex P2 on PR #2867).
+      let dbg_fid_placed = if linemap_on {
+        lc_dbg_file_placed(dbg_name_file, dbg_owner_file, Array::get(fn_names_list, bi))
+      } else {
+        0 - 1
+      }
+      let fn_linemap = if dbg_fid_placed >= 0 {
+        linemap_state
+      } else {
+        linemap_off
+      }
       if __cache_hit >= 0 {
         let __r_slot_lo = Array::length(table_slots_used)
         let __r_blind_lo = Array::length(blind_owners)
-        codegen_body_cache_replay(body_cache_use, __cache_hit, bodies, meta_i32, meta_i64, meta_v128, lt_w, table_slots_used, blind_owners, blind_offsets, blind_kinds, blind_syms, linemap_state, bi)
+        codegen_body_cache_replay(body_cache_use, __cache_hit, bodies, meta_i32, meta_i64, meta_v128, lt_w, table_slots_used, blind_owners, blind_offsets, blind_kinds, blind_syms, fn_linemap, bi)
         // #2669 slice 3: the SAME pairing the compiled path asserts below.
         // A replayed function re-pushes both logs from the cache instead of
         // running the emission, so this says the cache carried a complete
@@ -12088,12 +12195,17 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
         }
         // Interior-line breakpoints / production linemap: this function's
         // source file id + that file's newline index. Off => 0/empty.
-        let dbg_fid = if linemap_on {
-          lc_dbg_file_of_fn(dbg_name_file, dbg_owner_file, fn_name_dbg)
-        } else {
-          0
-        }
-        let dbg_nls = if linemap_on && dbg_fid >= 0 && dbg_fid < Array::length(prov.file_nls) {
+        //
+        // The two lanes read `dbg_fid_placed`'s refusal (computed above, before
+        // the replay fork) differently. `--break` keeps placing an unplaceable
+        // body at file 0: the id it passes to `vibe::dbg_line` is MATCHED
+        // against a breakpoint's file, so the worst case is a breakpoint that
+        // does not hit, and the probe bytes stay what they were. The static
+        // table is PRINTED at a trap, so the same 0 would be a fabricated
+        // `path:line`; there `fn_linemap` is the disabled state and the
+        // function contributes no rows.
+        let dbg_fid = lc_dbg_file_break(dbg_fid_placed)
+        let dbg_nls = if linemap_on && dbg_fid < Array::length(prov.file_nls) {
           Array::get(prov.file_nls, dbg_fid)
         } else {
           lc_fresh_int_array()
@@ -12226,7 +12338,7 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
           pending_letrec_self_name: lc_fresh_string_array(),
           table_slots_used: table_slots_used,
           lambda_plan_next: lambda_plan_cell,
-          linemap: linemap_state,
+          linemap: fn_linemap,
           // #2669 slice 2: this body is user function `bi`. The cell is fresh
           // per body (it names the owner); the payload arrays are the
           // module-wide ones.
@@ -13226,9 +13338,11 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
     ()
   }
   // Interior-line breakpoints / production trap provenance: emit a
-  // `vibe.dbgfiles` custom section listing the source-file basenames in
-  // file-id order, one per line (terminated by newline 10). The runner
-  // indexes this table to recover the basename for a linemap file id.
+  // `vibe.dbgfiles` custom section listing the source PATHS in file-id order,
+  // one per line (terminated by newline 10). The runner indexes this table to
+  // recover the file for a linemap file id: a trap prints the path (#2199,
+  // editable, and unambiguous between two packages' `index.vibe`), while a
+  // `--break <file>:<line>` spec is matched against its basename.
   // Present whenever linemap is on AND at least one record will be emitted.
   // An empty named section is waste (#2199).
   if linemap_on && Array::length(linemap_state.offsets) > 0 {
@@ -14278,14 +14392,23 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
     ci = ci + 1
   }
   bytebuf_push_section(out, 10, code_content)
-  // #644 / #2199: `vibe.linemap` custom section -- four unsigned LEB deltas
-  // per unique (func, offset): func_delta, offset_delta, file_id, line.
+  // #644 / #2199: `vibe.linemap` custom section -- a 4-byte format marker,
+  // then four unsigned LEB deltas per unique (func, offset): func_delta,
+  // offset_delta, file_id, line.
   // Duplicate offsets are collapsed. The offset is shifted by that
   // function's locals-header length (linemap_hdrlen_by_bi) so it lands
   // exactly where wasmtime's FrameInfo::func_offset() measures from. Emitted
   // when linemap_state is enabled AND at least one record exists (production
   // trap provenance, and debug-break). Empty tables are not announced: a
   // named section of zero records is pure waste (#2199).
+  //
+  // The marker is what makes the name mean one format. #644's table under
+  // this same name was 16-byte little-endian records, and those bytes decode
+  // as LEB quadruples without complaint -- a module built by any compiler
+  // older than #2199 (the committed seed, which is what `vibe test` runs by
+  // default) would have reported fabricated functions, offsets, files and
+  // lines to the new readers. A reader that does not find `VLM1` has a table
+  // it cannot read, and reports no location at all (Codex P2 on PR #2867).
   if linemap_state.enabled && Array::length(linemap_state.offsets) > 0 {
     let lm_content = bytebuf_new()
     let lm_name = "vibe.linemap"
@@ -14295,6 +14418,7 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
       bytebuf_push(lm_content, String::char_code_at(lm_name, lmni))
       lmni = lmni + 1
     }
+    lc_linemap_put_magic(lm_content)
     let hdr_n = Array::length(linemap_hdrlen_by_bi)
     let mut prev_f = 0
     let mut prev_o = 0

@@ -61,11 +61,16 @@ function dumpLinemap(wasmPath) {
       payload = sec.payload;
     }
   });
-  if (!payload) {
+  // #2199: the 4-byte `VLM1` marker identifies the compact encoding. #644's
+  // table under the same name was 16-byte little-endian records, which decode
+  // as LEB quadruples without erroring, so an unmarked table dumps nothing
+  // rather than fabricated rows.
+  const MAGIC = "VLM1";
+  if (!payload || payload.length < MAGIC.length || payload.slice(0, MAGIC.length).toString("latin1") !== MAGIC) {
     return;
   }
   const rows = [];
-  let pos = 0;
+  let pos = MAGIC.length;
   const end = payload.length;
   const uleb = () => {
     let result = 0;

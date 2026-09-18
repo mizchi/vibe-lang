@@ -1,5 +1,5 @@
 import ./linked_compile.vibe {
-  lc_dbg_file_of_fn_for, wasi_memory_min_pages_for_heap
+  lc_dbg_file_of_fn_for, lc_dbg_file_placed_for, wasi_memory_min_pages_for_heap
 }
 
 import @vibe/compiler/core {
@@ -85,6 +85,28 @@ test "break lane: an owner key only one module mints places that module's file" 
   let name = hoisted_named(owner_b, "f")
   inspect(owner_key_read_back(name), content = ":t:b")
   inspect(lc_dbg_file_of_fn_for([], [], [owner_a, owner_b], [1, 2], name), content = "2")
+}
+
+test "production lane: no placement is -1, distinct from a placement of 0" {
+  // #2199 (Codex P2 on PR #2867): the break lane reads "no placement" as file
+  // 0, because it MATCHES that id against a breakpoint's file. A
+  // `vibe.linemap` row is PRINTED at a trap instead, so the same 0 is a
+  // fabricated `path:line`. The two answers have to be tellable apart, which
+  // is what this rung is: -1 where `lc_dbg_file_of_fn_for` says 0, and the
+  // same number as the break lane wherever a file IS placed.
+  let owner = hoisted_lambda_owner_of_stmt(STest("t", EUnit), 3)
+  let ambiguous_owner = hoisted_named(owner, "f")
+  // Ambiguous owner, ambiguous name, unknown name: all refuse.
+  inspect(lc_dbg_file_placed_for([], [], [owner, owner], [1, 2], ambiguous_owner), content = "-1")
+  inspect(lc_dbg_file_placed_for(["__test_t", "__test_t"], [1, 2], [], [], "__test_t"), content = "-1")
+  inspect(lc_dbg_file_placed_for(["__test_a"], [1], [], [], "__test_z"), content = "-1")
+  // A name really placed in file 0 is NOT a refusal -- without this case the
+  // -1s above could come from a function that refuses everything.
+  inspect(lc_dbg_file_placed_for(["__test_a"], [0], [], [], "__test_a"), content = "0")
+  inspect(lc_dbg_file_of_fn_for(["__test_a"], [0], [], [], "__test_a"), content = "0")
+  // ... and the break lane spells both of those 0, which is the collision
+  // this rung exists to break.
+  inspect(lc_dbg_file_of_fn_for(["__test_a"], [1], [], [], "__test_z"), content = "0")
 }
 
 test "break lane: a pre-prelude name two modules share places no file" {

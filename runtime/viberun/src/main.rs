@@ -221,11 +221,12 @@ struct HostState {
     // dbgargs values with their names so a breakpoint prints `args: [name=value]`.
     // Empty => no section => fall back to positional values.
     dbgnames: Arc<std::collections::HashMap<String, Vec<String>>>,
-    // interior-line breakpoints (span-arc step5, multi-file): source-file
-    // basenames indexed by file id, parsed from the `vibe.dbgfiles` custom section
-    // (break builds with dbg_line only). `vibe::dbg_line(file_id, line)` passes the
-    // file id; we index this to recover the basename and match a `--break
-    // <file>:<line>` spec's file against it. Empty => bare-line specs still match.
+    // interior-line breakpoints (span-arc step5, multi-file) and #2199 trap
+    // provenance: the SOURCE PATHS indexed by file id, parsed from the
+    // `vibe.dbgfiles` custom section. `vibe::dbg_line(file_id, line)` passes the
+    // file id; we index this to recover the file, take its basename, and match a
+    // `--break <file>:<line>` spec's file against that. A trap annotation prints
+    // the whole path. Empty => bare-line specs still match.
     dbgfiles: Arc<Vec<String>>,
     // #644: static (wasm func index -> sorted (code offset, file id, line))
     // table parsed from the module's `vibe.linemap` custom section (break
@@ -615,7 +616,7 @@ fn dump_imports(input: &str) -> Result<()> {
 
 // #644: dump the `vibe.linemap` custom section (if any) as
 // `<func_index>\t<code_offset>\t<file>\t<line>` lines, sorted by
-// (func_index, offset). `<file>` is the basename from `vibe.dbgfiles` when
+// (func_index, offset). `<file>` is the source path from `vibe.dbgfiles` when
 // present, else the raw file id. Missing/empty/stripped section => no output
 // (exit 0), including a `vibe build` artifact whose mapping was dropped with
 // the name section and a compile that recorded zero sites.
@@ -4173,12 +4174,15 @@ fn vibe_dbg_line(mut caller: Caller<'_, HostState>, file_id: i32, line: i32) -> 
         return Ok(());
     }
     let cur: u32 = if line < 0 { return Ok(()) } else { line as u32 };
-    // Resolve this statement's source file basename from the dbgfiles table; a
-    // `--break <file>:<line>` spec matches only when its file equals that basename
-    // (bare-line specs match any file).
+    // Resolve this statement's source file from the dbgfiles table, then take
+    // its BASENAME: the table carries the path the compiler opened (#2199, so a
+    // trap prints something editable), while `parse_line_break_spec` reduces a
+    // `--break <file>:<line>` spec to a basename. Both sides of the comparison
+    // are basenames, so a spec matches exactly the files it matched before the
+    // table held paths (bare-line specs match any file).
     let dbgfiles = Arc::clone(&caller.data().dbgfiles);
     let cur_file: Option<&str> = if file_id >= 0 {
-        dbgfiles.get(file_id as usize).map(|s| s.as_str())
+        dbgfiles.get(file_id as usize).map(|s| path_basename(s.as_str()))
     } else {
         None
     };
@@ -4826,6 +4830,21 @@ fn read_u32_le(bytes: &[u8], off: usize) -> Option<u32> {
     Some(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
 }
 
+/// The last path component, which is what a `vibe.dbgfiles` entry and a
+/// `--break <file>:<line>` spec are compared as. The table itself carries the
+/// compiler's own path so a trap can print a location the reader can open;
+/// breakpoint matching predates that and stays basename-based.
+///
+/// `Path::file_name`, the same call `parse_line_break_spec` reduces the spec
+/// with -- one rule, so the two sides cannot disagree about what a component
+/// is.
+fn path_basename(p: &str) -> &str {
+    std::path::Path::new(p)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(p)
+}
+
 // span-arc step5: parse a single VIBE_BREAK entry as a LINE breakpoint spec.
 // Accepts `<file>:<line>` (e.g. `prog.vibe:5`) -> (Some("prog.vibe"), 5), or a
 // bare all-digit `<line>` (e.g. `5`) -> (None, 5). Returns None when the spec is
@@ -4879,8 +4898,9 @@ fn parse_funcmap(text: &str) -> std::collections::HashMap<String, u32> {
 // remaining fields the parameter names (in declaration order). Empty/garbled
 // records are skipped. Robust to trailing newline and missing-param functions.
 // Interior-line breakpoints (span-arc step5): parse the `vibe.dbgfiles` section
-// (source-file basenames, one per line in file-id order) into a Vec indexed by
-// file id. `vibe::dbg_line(file_id, line)` uses the id to look up the basename.
+// (source paths, one per line in file-id order) into a Vec indexed by file id.
+// `vibe::dbg_line(file_id, line)` uses the id to look up the file; breakpoint
+// matching then compares basenames (`path_basename`), a trap prints the path.
 fn parse_dbgfiles(section: &[u8]) -> Vec<String> {
     String::from_utf8_lossy(section)
         .split('\n')
@@ -4891,17 +4911,30 @@ fn parse_dbgfiles(section: &[u8]) -> Vec<String> {
 
 // #644 / #2199: parse the `vibe.linemap` custom section into a (wasm func
 // index -> sorted (code offset, file id, line) list) map. Compact encoding:
-// a run of four unsigned LEBs per unique (func, offset) —
+// the 4-byte marker `VLM1`, then a run of four unsigned LEBs per unique
+// (func, offset) —
 // (func_delta, offset_delta, file_id, line). func_delta is relative to the
 // previous func (absolute for the first record); when it is zero, offset
 // is relative to the previous offset, otherwise absolute. A trailing
 // partial record is ignored rather than panicking. Entries are grouped by
 // func_index and sorted by offset so `resolve_linemap` can binary-search.
 // Absent / stripped section => empty map => no fabricated location.
+//
+// The marker is REQUIRED. #644's table under this same name held 16-byte
+// little-endian records, and those bytes decode as LEB quadruples without
+// erroring — a module from any compiler older than #2199 (the committed
+// seed among them) would otherwise annotate traps with fabricated
+// functions, offsets, files and lines. An unmarked table is one this
+// reader cannot read, and reads as empty.
+const LINEMAP_MAGIC: &[u8; 4] = b"VLM1";
+
 fn parse_linemap(section: &[u8]) -> std::collections::HashMap<u32, Vec<(u32, u32, u32)>> {
     let mut by_func: std::collections::HashMap<u32, Vec<(u32, u32, u32)>> =
         std::collections::HashMap::new();
-    let mut pos = 0usize;
+    if section.len() < LINEMAP_MAGIC.len() || &section[..LINEMAP_MAGIC.len()] != LINEMAP_MAGIC {
+        return by_func;
+    }
+    let mut pos = LINEMAP_MAGIC.len();
     let mut func: u32 = 0;
     let mut offset: u32 = 0;
     let mut have = false;

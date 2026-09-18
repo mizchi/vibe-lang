@@ -403,7 +403,9 @@ Interior-line breakpoints work across **multiple files**: `--break helper.vibe:3
 pauses inside an imported module while `--break main.vibex:3` pauses in the entry
 file, even though both are "line 3" — the compiler records each statement's source
 file (a `vibe.dbgfiles` table) so the runner matches the breakpoint's `<file>`
-against the right one. A statement whose value is a bare literal (e.g. `let a = 1`)
+against the right one. The table holds each file's PATH; a spec and an entry
+are compared by their last component, so `--break helper.vibe:3` and
+`--break pkg/helper.vibe:3` are the same breakpoint. A statement whose value is a bare literal (e.g. `let a = 1`)
 is breakable too (#644): the `let`/`let mut` keyword's own offset anchors the probe
 when the value itself carries none.
 
@@ -440,8 +442,14 @@ A compiled module carries a `vibe.linemap` custom section (`vibe run` /
 `vibe test`; `vibe build` strips it with the name section, ADR-0077):
 a compact table mapping each user function's wasm code offset to a source
 `(file, line)`, recorded at statement boundaries and call sites (#644,
-#2199). Duplicate offsets are stored once; the on-disk form is LEB
-deltas, not a source string per access. Unlike `dbg_line`, this table needs no
+#2199). Duplicate offsets are stored once; the on-disk form is the 4-byte
+marker `VLM1` followed by LEB deltas, not a source string per access. The
+marker is what identifies the encoding — a reader that does not find it
+reports no location rather than decoding #644's older 16-byte records as
+if they were deltas. The `(file, line)` names the path the compiler
+opened (`vibe.dbgfiles`), so it is openable from the directory you
+compiled in; a `--break <file>:<line>` spec is still matched against the
+last path component. Unlike `dbg_line`, this table needs no
 cooperation from the running program — it can be read straight out of the
 compiled `.wasm`, e.g. with `viberun --dump-linemap <file.wasm>` (one
 `func_index<TAB>offset<TAB>file<TAB>line` row per probe), and the runner
@@ -478,7 +486,11 @@ from the static table (its LIVE `--break`/`dbg_line` pause still works
 normally; only the *static*, no-execution-needed lookup has this gap).
 The runner resolves each frame independently, so an OOB inside a lambda
 prints the wasm frame for that body and does not borrow the enclosing
-function's line. Genuine **instruction-offset breakpoints** (pausing
+function's line. A top-level function whose source file the compile cannot
+name — a comparator or dispatcher the prelude synthesized for the whole
+program, or a `test "..."` label two modules both use — records no rows
+either, for the same reason: a row is printed at a trap, so a placeholder
+file there would be a fabricated location. Genuine **instruction-offset breakpoints** (pausing
 mid-statement, at an arbitrary sub-expression) remain future work: it
 needs every `Expr` node to carry its own source span, not just statements,
 which the linemap alone doesn't provide

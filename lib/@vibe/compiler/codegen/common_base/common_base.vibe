@@ -1057,7 +1057,15 @@ export fn codegen_body_cache_replay(cache: CodegenBodyCache, at: Int, bodies: Ar
     }
     bi = bi + 1
   }
-  let ln = Array::length(cache.lm_owner)
+  // #2199: a disabled state is the compile declining to place this function's
+  // file (see `lc_dbg_file_placed`), so a replay into it drops the cached rows
+  // for the same reason a fresh compile of it records none -- the two paths
+  // have to agree, or `verify` compares a populated table against an empty one.
+  let ln = if lm.enabled {
+    Array::length(cache.lm_owner)
+  } else {
+    0
+  }
   let mut lmi = 0
   while lmi < ln {
     if Array::get(cache.lm_owner, lmi) == owner {
@@ -2438,7 +2446,17 @@ export struct LineMapState {
   funcs: Array[Int];
   offsets: Array[Int];
   file_ids: Array[Int];
-  lines: Array[Int]
+  lines: Array[Int];
+  /// #2199: the source line of the construct currently being compiled, as a
+  /// 1-slot cell (0 = none). A statement sets it; `compile_expr`'s call arm
+  /// saves it, sets its own, and RESTORES it once `compile_call` returns --
+  /// which re-asserts the enclosing line at the offset the enclosing call's
+  /// own instruction is about to land past. Without that, a call in an
+  /// argument (`Array::get(xs, compute_index())`) leaves the last row before
+  /// the outer call, and the outer call's trap is reported at the argument's
+  /// line (Codex P2 on PR #2867). The file id is not stored: every row in one
+  /// body uses that function's own `ctx.dbg_line_file_id`.
+  site: Array[Int]
 }
 
 /// A disabled LineMapState (no newline tables, and every lambda-derived
@@ -2450,7 +2468,8 @@ export fn linemap_disabled() -> LineMapState {
     funcs: array_empty(),
     offsets: array_empty(),
     file_ids: array_empty(),
-    lines: array_empty()
+    lines: array_empty(),
+    site: [0]
   }
 }
 

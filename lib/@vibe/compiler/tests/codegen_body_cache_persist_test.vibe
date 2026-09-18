@@ -6,6 +6,8 @@
 
 import @vibe/compiler/codegen/common_base {
   CodegenBodyCache,
+  LambdaTable,
+  LineMapState,
   bcc_int_lists_equal,
   bcc_layout_fp_ints,
   bcc_layout_fp_strings,
@@ -20,8 +22,10 @@ import @vibe/compiler/codegen/common_base {
   codegen_body_cache_from_bytes,
   codegen_body_cache_name_index,
   codegen_body_cache_new,
+  codegen_body_cache_replay,
   codegen_body_cache_slot_index,
   codegen_body_cache_to_bytes,
+  linemap_disabled,
   unique_name_flags
 }
 
@@ -272,6 +276,46 @@ test "codegen body cache codec fails safe on damage" {
     Some(_) => assert(false),
     None => assert(true)
   }
+}
+
+/// A replay's sinks, so the two cases below differ only in the LineMapState.
+fn replay_into(lm: LineMapState) -> Int {
+  let c = sample_cache()
+  let lt = LambdaTable::{
+    bodies: [],
+    param_counts: [],
+    captures: [],
+    meta_i32: [],
+    meta_i64: []
+  }
+  let bodies: Array[Bytes] = []
+  codegen_body_cache_replay(c, 0, bodies, [], [], [], lt, [], [], [], [], [], lm, 7)
+  Array::length(lm.offsets)
+}
+
+test "#2199: a replay into a disabled linemap contributes no rows" {
+  // The compile hands `codegen_body_cache_replay` a DISABLED state for a
+  // function whose source file it declines to place (`lc_dbg_file_placed`
+  // answering -1: a prelude-synthesized definition, or a `test` label two
+  // modules share). A fresh compile of that function records nothing, so a
+  // replay of it must not re-push the rows a compile under a different module
+  // set once cached -- `verify` would compare a populated table against an
+  // empty one, and `on` would print a file the body may not be in.
+  inspect(replay_into(linemap_disabled()), content = "0")
+  // The control: the same entry through an ENABLED state does replay its row,
+  // so the 0 above is the guard and not a cache that carries nothing.
+  let on = LineMapState::{
+    enabled: true,
+    cur_fn: [0],
+    funcs: [],
+    offsets: [],
+    file_ids: [],
+    lines: [],
+    site: [0]
+  }
+  inspect(replay_into(on), content = "1")
+  inspect(Array::get(on.funcs, 0), content = "7")
+  inspect(Array::get(on.lines, 0), content = "4")
 }
 
 test "filter_src_below keeps only guarded source-region entries below the limit" {

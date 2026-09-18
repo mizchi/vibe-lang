@@ -75,9 +75,12 @@ fi
 # Lines 2/3/4 (a/b/c) must each resolve to file "p.vibex" with the matching
 # line number, in increasing code-offset order (offsets strictly increase --
 # later statements compile to later bytes in the same function body).
-if printf '%s\n' "$linemap_out" | awk -F'\t' '{print $3, $4}' | grep -qx "p.vibex 2" \
-  && printf '%s\n' "$linemap_out" | awk -F'\t' '{print $3, $4}' | grep -qx "p.vibex 3" \
-  && printf '%s\n' "$linemap_out" | awk -F'\t' '{print $3, $4}' | grep -qx "p.vibex 4"; then
+# #2199: the table holds the PATH the compiler opened (here an absolute one
+# under $WORK), so the file column is compared by its last component.
+lm_basenames() { printf '%s\n' "$1" | awk -F'\t' '{n = split($3, seg, "/"); print seg[n], $4}'; }
+if lm_basenames "$linemap_out" | grep -qx "p.vibex 2" \
+  && lm_basenames "$linemap_out" | grep -qx "p.vibex 3" \
+  && lm_basenames "$linemap_out" | grep -qx "p.vibex 4"; then
   ok "linemap resolves lines 2, 3, and 4 to p.vibex"
 else
   bad "linemap missing an expected p.vibex line entry: $linemap_out"
@@ -117,13 +120,17 @@ fi
 # line). `t.vibex`'s division is on line 4, while `main` declares on line 1.
 T="$WORK/t.vibex"
 printf 'fn main allows Stdout {\n  let a = 1\n  let b = a + 2\n  let z = 10 / (b - 3)\n  Stdout::write_stream("\\{z}\\n")\n}\n' > "$T"
+# The location is the PATH the compiler opened, not a bare basename: a
+# basename is not openable from the project root, and two packages both
+# holding an `index.vibe` would print the same one (#2199, PR #2867).
+frame_re='frame: main \(.*t\.vibex:4\)'
 trap_out="$(VIBE_BREAK_AUTO=1 "$VIBE" run --break "$T:99" "$T" 2>&1 || true)"
-if printf '%s' "$trap_out" | grep -qF "frame: main (t.vibex:4)"; then
+if printf '%s' "$trap_out" | grep -qE "$frame_re"; then
   ok "uncaught trap annotates the CALLER frame with its actual line (t.vibex:4), not just main's declaration line"
 else
-  bad "expected 'frame: main (t.vibex:4)' in trap output; got: $trap_out"
+  bad "expected 'frame: main (<path>/t.vibex:4)' in trap output; got: $trap_out"
 fi
-if ! printf '%s' "$trap_out" | grep -qF "frame: main (t.vibex:4) (t.vibex:4)"; then
+if ! printf '%s' "$trap_out" | grep -qE 'frame: main \(.*t\.vibex:4\) \(.*t\.vibex:4\)'; then
   ok "the new frame annotation is not double-annotated by the launcher's funcmap-based stderr filter"
 else
   bad "frame annotation was double-annotated: $trap_out"
@@ -132,10 +139,53 @@ fi
 # #2199: a plain (non-break) run's trap reports the trapping statement's
 # path:line via the production linemap.
 plain_trap_out="$(env -u VIBE_RUNNER_BACKTRACE -u RUST_BACKTRACE "$VIBE" run "$T" 2>&1 || true)"
-if printf '%s' "$plain_trap_out" | grep -qF "frame: main (t.vibex:4)"; then
+if printf '%s' "$plain_trap_out" | grep -qE "$frame_re"; then
   ok "a plain (non-break) trap annotates the access with t.vibex:4"
 else
-  bad "plain run missing 'frame: main (t.vibex:4)': $plain_trap_out"
+  bad "plain run missing 'frame: main (<path>/t.vibex:4)': $plain_trap_out"
+fi
+# The directory is part of it: `$T` is under $WORK, so the annotation must
+# carry a path and not just `t.vibex:4`. This is what fails if `vibe.dbgfiles`
+# goes back to basenames.
+if printf '%s' "$plain_trap_out" | grep -qE 'frame: main \(.*/t\.vibex:4\)'; then
+  ok "the trap location carries the source PATH, not just the file name"
+else
+  bad "expected a directory in the trap location; got: $plain_trap_out"
+fi
+
+# #2199: the compact table is identified by its `VLM1` marker, not by the
+# section name alone -- #644's 16-byte records under the same name decode as
+# LEB quadruples without erroring. A module whose marker is corrupted must
+# report NO location rather than a fabricated one.
+LEGACY="$WORK/legacy.wasm"
+OUT_T="$WORK/t.wasm"
+env VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw VIBE_WASM_NAMES=1 \
+  "$VIBERUN" "$CLI_WASM" "$T" "$OUT_T" main >/dev/null 2>&1
+if [ -s "$OUT_T" ] && [ -n "$("$VIBERUN" --dump-linemap "$OUT_T" 2>/dev/null || true)" ]; then
+  ok "the sample compiles with a readable linemap (control for the marker case)"
+else
+  bad "expected a linemap in $OUT_T before corrupting its marker"
+fi
+node -e '
+const fs = require("node:fs");
+const src = fs.readFileSync(process.argv[1]);
+const at = src.indexOf(Buffer.from("vibe.linemapVLM1", "latin1"));
+if (at < 0) { console.error("no marked vibe.linemap section to corrupt"); process.exit(1); }
+const out = Buffer.from(src);
+out.write("VLM0", at + "vibe.linemap".length, "latin1");
+fs.writeFileSync(process.argv[2], out);
+' "$OUT_T" "$LEGACY"
+legacy_dump="$("$VIBERUN" --dump-linemap "$LEGACY" 2>/dev/null || true)"
+if [ -z "$legacy_dump" ]; then
+  ok "an unmarked vibe.linemap dumps nothing instead of fabricated rows"
+else
+  bad "unmarked vibe.linemap was decoded anyway: $legacy_dump"
+fi
+legacy_trap="$(env -u VIBE_RUNNER_BACKTRACE -u RUST_BACKTRACE "$VIBERUN" "$LEGACY" 2>&1 || true)"
+if ! printf '%s' "$legacy_trap" | grep -qE 't\.vibex:[0-9]+'; then
+  ok "an unmarked vibe.linemap annotates no location at a trap"
+else
+  bad "unmarked vibe.linemap produced a location: $legacy_trap"
 fi
 
 echo "----"
