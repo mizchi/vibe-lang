@@ -967,7 +967,8 @@ let b2 = Box[Int]::{ v: 2 }               // explicit type args PIN the instanti
 // #1392: `"\{v}"` は解決できた型の `T::to_string` を呼ぶ。prelude の
 // `to_string(v)` も同じ (body が `__to_string(x)` そのものの 1 引数 pass-through
 // は call site で inline され、補間と同じ書き換えを受ける) — ただし
-// `f[T: Show](x) { to_string(x) }` の内側は型が変数なので従来どおり
+// A generic body needs a method-bearing renderer witness or an explicit
+// `(T) -> String` callback. The builtin marker Show supplies no witness (#2840).
 
 trait Eq
 trait Ord: Eq                              // supertrait
@@ -990,6 +991,22 @@ impl [T: Eq] Eq for Array[T]              // 宣言はできるが bound には�
 // `vibe check` が「cannot be dispatched here」で拒否する (#1858) —
 // T 型の引数 (または Array[T] 引数) を witness carrier にすること。
 ```
+
+Generic interpolation requires a renderer when the operand still has a type
+parameter, including inside a container or tuple. For example, write `render(value)` using a `(T) -> String` callback
+inside `fn format[T]`; adding the builtin marker `Show` alone does not provide
+a callable renderer. A top-level bound on a trait declaring
+`to_string(Self) -> String` can dispatch through its witness. Direct top-level
+rendering shims still expand at their call sites; pass a concrete lambda when a renderer
+is needed as a function value.
+
+`StringSet` key helpers take that callback explicitly:
+`StringSet::add_by(set, key, value)`, `remove_by(set, key, value)`,
+`contains_by(set, key, value)`, and the bare `from_array_by(values, key)`.
+Use the same key function for insertion, lookup, and removal. The imported
+`@vibe/core` snapshot helper is `inspect(value, expected, render)`;
+the usual unimported `inspect(value, expected)` syntax remains unchanged.
+
 
 ### Marker-trait impls do not satisfy bounds for containers (#1503)
 
@@ -2448,7 +2465,7 @@ fn simd_add(a: Int, b: Int) -> Int = wasm
   grouped in that order (a located error enforces the grouping); declared
   locals index past the params + closure-env slot. v128 locals are what let
   a kernel keep vector state across instructions (e.g. the BLAKE3 compress
-  in `lib/@vibe/blake3/simd.vibe`).
+  in `lib/@vibe/blake3/simd/simd.vibe`).
 - **Integer immediates** accept BOTH spellings the text format defines
   (`iN ::= n:uN | i:sN`), so `(i32.const 2654435761)` and
   `(i32.const -1640531535)` are the same instruction. Out of range for the
@@ -2954,7 +2971,7 @@ deps = {
   @scope/dep : x.y.z
 }
 
-generated_hash =      // 任意。publish 時に自動挿入 (#pkg:sha1:<40hex>)
+generated_hash =      // 任意。publish 時に自動挿入 (#pkg:b3:<64hex>; 既存の #pkg:sha1:<40hex> は検証のみ)
 ```
 
 `name`/`version`/`description` は規約上必須だが、コンパイラはハード

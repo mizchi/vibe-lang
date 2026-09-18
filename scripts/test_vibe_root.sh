@@ -147,6 +147,18 @@ got="$(cd "$app/sub" && vibe test cwd_test.vibe 2>&1)" || fail "vibe test from a
 [ ! -e "$app/sub/.vibe" ] || fail "vibe test from a subdirectory created $app/sub/.vibe"
 pass "vibe test from sub/: artifact under .vibe/build/test/sub/, test reads from sub/"
 
+# --- 4b. flag shapes the ADR-0111 rewrite and the launcher must not mangle ---
+# A valueless run flag before the source: the source is still rewritten to
+# the root-relative path (it used to be classed as the flag's value and left
+# relative to sub/, so the compiler reported an existing file as missing).
+got="$(cd "$app/sub" && vibe run --alloc-site deep.vibex 2>&1)" || fail "vibe run --alloc-site from a subdirectory failed: $got"
+case "$got" in *"42 from-sub"*) ;; *) fail "vibe run --alloc-site from sub/: expected the program output '42 from-sub' in: $got" ;; esac
+# A trailing `--jobs` with no value is a malformed invocation: refused, never
+# silently run at the default job count.
+got="$(cd "$app/sub" && vibe test cwd_test.vibe --jobs 2>&1)" && fail "vibe test <file> --jobs (no value) must be refused, got exit 0: $got"
+case "$got" in *"missing value after --jobs"*) ;; *) fail "vibe test <file> --jobs: expected 'missing value after --jobs' in: $got" ;; esac
+pass "vibe run --alloc-site <src> rewrites the source; a trailing --jobs is refused"
+
 # --- 5. vibe clean ----------------------------------------------------------
 mkdir -p "$app/.vibe/store/@x/y"
 got="$(cd "$app/sub" && vibe clean)"

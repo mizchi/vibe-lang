@@ -4,20 +4,19 @@ import ../compiler {
   check_unstable_surface_warnings_from_closure, check_unstable_surface_warnings_from_path,
   unstable_closure_reset,
   check_linked_file, compile_release_file_mode, compile_release_file_mode_profiled,
+  command_component_compile_mode, command_component_entry,
   compile_release_file_mode_uncached, compile_release_file_mode_uncached_profiled,
   write_linked_debug_build, write_linked_debug_build_checked, strip_executable_wasm_env,
   configure_cfg_flags,
   serve_handler_param_names, serve_handler_takes_body_stream, validate_serve_handler,
   wit_from_program,
-  lex, parse_program
+  lex, parse_program,
+  selfhost_cli_user_dispatch_args, user_dispatch_is_verb
 }
 
 import ../compiler/entry/source_compile/wasi_only {
-  comp_emit_component_wasm_stream_handler, comp_emit_component_wasm_string_handler
-}
-
-import ./user_dispatch.vibe {
-  selfhost_cli_user_dispatch_args, user_dispatch_is_verb
+  comp_emit_component_wasm_command, comp_emit_component_wasm_stream_handler,
+  comp_emit_component_wasm_string_handler
 }
 
 //# Effects
@@ -206,6 +205,14 @@ fn default_serve_output_path(input_path: String) -> String {
 
 fn default_build_output_path(input_path: String) -> String {
   String::concat(strip_vibe_suffix(input_path), ".wasm")
+}
+
+/// `vibe build --component foo.vibe` -> `foo.component.wasm`, beside the
+/// `.wasm` an ordinary `vibe build` would write. Not `dist/` (where `serve`
+/// puts its artifact): a command component is an ordinary build output, and
+/// the manifest that names it is written by whoever assembles the toolchain.
+fn default_component_output_path(input_path: String) -> String {
+  String::concat(strip_vibe_suffix(input_path), ".component.wasm")
 }
 
 fn read_next_arg(args: Array[String], index: Int, flag: String) -> String with Exception {
@@ -692,13 +699,20 @@ export fn selfhost_cli_compile_args(args: Array[String]) -> Int with Exception +
 
 //# build
 
-export fn parse_build_args(args: Array[String]) -> (String, String, String, String) with Exception {
+/// `(input, output, entry, mode, component)`.
+///
+/// `component` is its own field rather than a fourth `mode`: the component
+/// wrap runs AFTER a normal release compile of the same file, so it composes
+/// with `mode` instead of replacing it, and a future `--component --debug`
+/// needs no new spelling.
+export fn parse_build_args(args: Array[String]) -> (String, String, String, String, Bool) with Exception {
   if Array::length(args) == 0 || Array::get(args, 0) != "build" {
     throw("build: expected command")
   } else {
     let mut input_path = ""
     let mut output_path = ""
     let mut mode = "mvp"
+    let mut component = false
     let mut i = 1
     while i < Array::length(args) {
       let arg = Array::get(args, i)
@@ -708,6 +722,10 @@ export fn parse_build_args(args: Array[String]) -> (String, String, String, Stri
       }
       else if arg == "--debug" {
         mode = "debug"
+        ()
+      }
+      else if arg == "--component" {
+        component = true
         ()
       }
       else if arg == "-o" || arg == "--out" {
@@ -735,26 +753,92 @@ export fn parse_build_args(args: Array[String]) -> (String, String, String, Stri
     }
     if input_path == "" {
       throw("build: missing <file.vibe>")
+    } else if component && mode == "debug" {
+      throw("build: --component and --debug cannot be combined; a component wraps one release core module, and a debug build emits the entry plus its linked library files")
+    } else if component && is_vibex_path(input_path) {
+      // A `.vibex` is an executable root with NO export surface (ADR-0075,
+      // #2229: the loader rejects every export in one), so it can never carry
+      // the `export fn vibe_command` a command component is made of. Refused
+      // here rather than deep in compilation, where the message would be about
+      // exports and never mention `--component`.
+      throw("build: --component needs a .vibe module: a .vibex is an executable root with no export surface, and a command component is built from `export fn vibe_command(args: String) -> String`")
     } else {
-      let resolved_output = if output_path == "" {
-        default_build_output_path(input_path)
+      // `mvp` cannot serve a component: it roots the DCE at `entry_name` and
+      // then hands the SAME name to a codegen that requires a 0-parameter WASI
+      // entry, which `vibe_command(args)` is not. `dce-root` splits those two
+      // roles -- the name is the DCE root, the codegen entry is the library
+      // sentinel -- so a command prunes from `vibe_command` and still emits a
+      // library the wrap can lift. This OVERRIDES `--release` rather than
+      // refusing it: `--release` means "optimized", and this lane is it.
+      //
+      // Must stay the same lane the launcher's `VIBE_BUILD_COMPONENT` adapter
+      // takes. When this was `no-dce` and the adapter was not, the same
+      // `build --component` produced 40 MB through one front door and 2.6 MB
+      // through the other.
+      let mode = if component {
+        command_component_compile_mode()
       } else {
-        output_path
+        mode
       }
-      let entry_name = if is_vibex_path(input_path) {
+      let resolved_output = if output_path != "" {
+        output_path
+      } else if component {
+        default_component_output_path(input_path)
+      } else {
+        default_build_output_path(input_path)
+      }
+      // Under `dce-root` this name is the DCE ROOT, not the codegen entry --
+      // the core is still emitted as a library, so the lifted export survives
+      // ADR-0077 stripping. (`component` implies a `.vibe` by the refusal
+      // above, so the order of these arms carries no meaning.)
+      let entry_name = if component {
+        command_component_entry()
+      } else if is_vibex_path(input_path) {
         "main"
       } else {
         "_start"
       }
-      (input_path, resolved_output, entry_name, mode)
+      (input_path, resolved_output, entry_name, mode, component)
     }
   }
 }
 
+/// The export name a command component lifts.
+/// `runtime/viberun/src/commands.rs` looks it up by name, and
+/// `lib/@vibe/command` is the guest-side helper for the frame that travels
+/// through it. The vibe function BEHIND it is `command_component_entry()`,
+/// which lives in `cli_support.vibe` so both front doors share one spelling.
+fn command_component_export() -> String {
+  "run"
+}
+
+/// The wrap's own message names what it found in the core; this adds the edit,
+/// which is what the reader is missing when the core turns out not to have the
+/// entry at all.
+fn command_component_edit(input_path: String, entry: String, message: String) -> String {
+  "build --component \{input_path}: \{message}; a command module exports exactly `export fn \{entry}(args: String) -> String` and returns the `vibe-command-result-v1` frame (`command_ok` / `command_result` in @vibe/command)"
+}
+
+/// Wrap an already-compiled core into a command component.
+///
+/// The wrap itself is `comp_emit_component_wasm_command`, shared with the
+/// launcher's `VIBE_BUILD_COMPONENT` lane so the two cannot pick different
+/// faces for the same module. What this adds is the actionable message.
+fn emit_command_component(core: Bytes, input_path: String) -> Bytes with Exception {
+  let entry = command_component_entry()
+  handle {
+    comp_emit_component_wasm_command(core, entry, command_component_export())
+  } with { Exception::Throw(message) => throw(command_component_edit(input_path, entry, message)) }
+}
+
 export fn selfhost_cli_build_args(args: Array[String]) -> Int with Exception + Fs + Env {
-  let (input_path, output_path, entry_name, mode) = parse_build_args(args)
+  let (input_path, output_path, entry_name, mode, component) = parse_build_args(args)
   if !input_file_exists(input_path) {
     1
+  } else if component {
+    let core = compile_release_file_mode_for_cli(input_path, entry_name, mode)
+    Fs::write_bytes(output_path, emit_command_component(core, input_path))
+    0
   } else if mode == "debug" {
     // #2305 (Codex review): `write_linked_debug_build` writes the entry wasm
     // AND its linked library files, so checking the closure after it returns
@@ -1112,7 +1196,7 @@ fn low_level_cli_main() -> Int with Exception + Fs + Env + Profiler {
 /// real CLI command routing with injected args. cli_main (entry.vibe)
 /// wraps this with the Profiler/Error handlers; the regression tests in
 /// dispatch_test.vibe drive it through that same wrapper.
-export fn selfhost_cli_dispatch_args(args: Array[String]) -> Int with Exception + Fs + Env + Profiler + Stdin + Stdout {
+export fn selfhost_cli_dispatch_args(args: Array[String]) -> Int with Exception + Fs + Env + Profiler + Stdin + Stdout + Stderr {
   // #2513: the `#cfg` flag set for every module this invocation parses and
   // every cache key it touches. Same call as cli_adapter.vibe's cli_main;
   // this dispatcher never passes through that entry.
@@ -1132,10 +1216,10 @@ export fn selfhost_cli_dispatch_args(args: Array[String]) -> Int with Exception 
   }
 }
 
-export fn selfhost_cli_main() -> Int with Exception + Fs + Env + Profiler + Stdin + Stdout {
+export fn selfhost_cli_main() -> Int with Exception + Fs + Env + Profiler + Stdin + Stdout + Stderr {
   selfhost_cli_dispatch_args(collect_cli_args())
 }
 
-export fn cli_main() -> Int with Exception + Fs + Env + Profiler + Stdin + Stdout {
+export fn cli_main() -> Int with Exception + Fs + Env + Profiler + Stdin + Stdout + Stderr {
   selfhost_cli_main()
 }

@@ -4,6 +4,12 @@ import ./dispatch.vibe {
   collect_cli_args, selfhost_cli_dispatch_args
 }
 
+// `format_check_report` moved next to the verb dispatcher (#2858) so this
+// door and cli_adapter.vibe's verb branch frame a diagnostic identically.
+import ../compiler {
+  format_check_report
+}
+
 //# Effects
 
 effect Profiler {
@@ -11,53 +17,6 @@ effect Profiler {
 }
 
 //# Functions
-
-fn starts_with(value: String, prefix: String) -> Bool {
-  let prefix_len = String::length(prefix)
-  String::length(value) >= prefix_len && value[0: prefix_len] == prefix
-}
-
-fn is_check_report_continuation(line: String) -> Bool {
-  if starts_with(line, "hint: ") {
-    true
-  } else if String::length(line) == 0 {
-    false
-  } else {
-    let c = String::char_code_at(line, 0)
-    c == ' ' || c == '\t'
-  }
-}
-
-/// Frame a thrown diagnostic the same way `runtime/vibe`'s
-/// `emit_check_diagnostics` does: `error: ` marks a diagnostic start, and
-/// `hint:` / leading-whitespace lines stay attached as indented
-/// continuations so `grep -c '^error: '` is an exact count (#1567 / #1888).
-export fn format_check_report(payload: String) -> String {
-  let lines = String::split(payload, "\n")
-  let n = Array::length(lines)
-  if n == 0 {
-    "error: "
-  } else {
-    let mut framed = Array::slice([""], 0, 0)
-    let mut i = 0
-    while i < n {
-      let line = Array::get(lines, i)
-      if i == n - 1 && line == "" {
-        ()
-      } else if is_check_report_continuation(line) {
-        Array::push(framed, String::concat("  ", line))
-      } else {
-        Array::push(framed, String::concat("error: ", line))
-      }
-      i = i + 1
-    }
-    if Array::length(framed) == 0 {
-      "error: "
-    } else {
-      String::join(framed, "\n")
-    }
-  }
-}
 
 /// Run the CLI for an explicit argv array, discharging the compile pipeline's
 /// Profiler and Error effects into a process exit code.
@@ -73,9 +32,12 @@ export fn format_check_report(payload: String) -> String {
 /// cli_main and the dispatch_test.vibe regression tests both go through this
 /// single wrapper, so the tests observe the real handler order — flipping it
 /// here fails them.
-/// #2107: `Stdout` is in the row because the Exception arm below prints the
-/// diagnostic. It was reachable without it while `println` claimed to be pure.
-export fn run_cli_main_with_args(args: Array[String]) -> Int with Fs + Env + Stdin + Stdout {
+/// #2107: `Stdout` is in the row because the dispatcher prints; `Stderr`
+/// because the Exception arm below reports there (#2858) -- a verb's
+/// machine-readable stdout (symbols rows, grep matches) must not carry the
+/// failure that ended it, and `runtime/vibe` printed the adapter's `.diag`
+/// sidecar to stderr before the verbs moved.
+export fn run_cli_main_with_args(args: Array[String]) -> Int with Fs + Env + Stdin + Stdout + Stderr {
   handle {
     handle {
       selfhost_cli_dispatch_args(args)
@@ -85,11 +47,11 @@ export fn run_cli_main_with_args(args: Array[String]) -> Int with Fs + Env + Std
   // `runtime/vibe` emit_check_diagnostics does (`error: ` on each start,
   // `hint:` indented) so `grep -c '^error: '` stays an exact count.
   Exception::Throw(e) => {
-    println(format_check_report(e))
+    Stderr::write_stream(String::concat(format_check_report(e), "\n"))
     1
   } }
 }
 
-export fn cli_main() -> Int with Fs + Env + Stdin + Stdout {
+export fn cli_main() -> Int with Fs + Env + Stdin + Stdout + Stderr {
   run_cli_main_with_args(collect_cli_args())
 }

@@ -1388,19 +1388,82 @@ export fn check_file_fs_mode(entry_path: String) -> Int with Exception + Fs {
 /// `unique_typed_lowering_offsets_in_stmts` (codegen/common_analysis) still drops any
 /// offset that names more than one call node, so a partial answer degrades to
 /// the pre-#2158 syntactic classifier rather than to a wrong one.
-export fn compile_file_fs_mode(entry_path: String, entry_name: String, mode: String) -> Bytes with Exception + Fs {
-  let source_groups = collect_source_groups_fs(entry_path)
-  let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
-  let _ = next_db
-  let (merged_stmts, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys) = merged_stmts_and_offsets(source_groups)
+/// The codegen half of a compile mode, in ONE place.
+///
+/// This dispatch was copied at four call sites and the artifact-kind dispatch
+/// at four more. Adding `dce-root` to `compile_file_fs_mode` alone left the
+/// CACHED lane throwing `unsupported compile mode: dce-root`, so the `.vibex`
+/// CLI's `build --component` failed under `VIBE_UNSTABLE=1` with the artifact
+/// cache on while the launcher adapter succeeded (Codex review of #2863).
+///
+/// Worse, two of the four codegen copies had NO `no-dce` arm and no throw:
+/// they fell through for any non-`mvp` mode, so once the throw above was
+/// lifted they would have compiled `dce-root` as `no-dce` and emitted an
+/// UNPRUNED artifact with no error at all. A mode is a three-way fact and now
+/// has one spelling.
+fn compile_merged_for_mode(mode: String, merged_stmts: Array[Stmt], entry_name: String, float_offsets: Array[Int], int_offsets: Array[Int], bool_offsets: Array[Int], eq_offsets: Array[Int], eq_keys: Array[String]) -> Bytes with Exception {
   if mode == "mvp" {
     let pruned_stmts = dce_stmts(merged_stmts, [entry_name])
     compile_wasi_module_impl_with_typed_offsets(pruned_stmts, entry_name, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
   } else if mode == "no-dce" {
     compile_wasi_module_no_dce_impl_with_typed_offsets(merged_stmts, entry_name, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
+  } else if mode == "dce-root" {
+    // Prune from a NAMED root, then emit as a library. `mvp` roots the DCE at
+    // `entry_name` and hands the SAME name to a codegen that requires a
+    // 0-parameter WASI entry; `no-dce` keeps every statement. A command
+    // component is exactly the shape neither serves -- its surface is
+    // `vibe_command`, which takes a parameter. Measured on this tree, a
+    // command calling `check_linked_file` was a 40.4 MB component under
+    // `no-dce` and is 2.6 MB rooted here.
+    //
+    // `entry_name` is the DCE ROOT; the codegen entry is the library sentinel.
+    let pruned_stmts = dce_stmts(merged_stmts, [entry_name])
+    compile_wasi_module_no_dce_impl_with_typed_offsets(pruned_stmts, "__no_entry__", float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
   } else {
     throw(String::concat("unsupported compile mode: ", mode))
   }
+}
+
+/// The in-memory artifact cache's namespace for a mode.
+///
+/// This MUST differ per mode: `db_load_artifact` keys on
+/// (entry_path, kind, entry_name, source_groups_fingerprint) and that
+/// fingerprint does NOT carry the mode, so a shared kind would hand a
+/// `no-dce` artifact back for a `dce-root` request.
+fn artifact_kind_for_mode(mode: String) -> String with Exception {
+  if mode == "mvp" {
+    "wasi-mvp"
+  } else if mode == "no-dce" {
+    "wasi"
+  } else if mode == "dce-root" {
+    "wasi-dce-root"
+  } else {
+    throw(String::concat("unsupported compile mode: ", mode))
+  }
+}
+
+/// The persistent artifact cache's namespace for a mode. Its fingerprint
+/// (`build_file_compile_wasi_artifact_fingerprint_*`) does carry the mode, so
+/// this is defence in depth rather than the only separator -- but a kind per
+/// mode keeps the two caches reading the same way.
+fn persistent_artifact_kind_for_mode(mode: String) -> String with Exception {
+  if mode == "mvp" {
+    "file-compile-wasi-mvp"
+  } else if mode == "no-dce" {
+    "file-compile-wasi"
+  } else if mode == "dce-root" {
+    "file-compile-wasi-dce-root"
+  } else {
+    throw(String::concat("unsupported compile mode: ", mode))
+  }
+}
+
+export fn compile_file_fs_mode(entry_path: String, entry_name: String, mode: String) -> Bytes with Exception + Fs {
+  let source_groups = collect_source_groups_fs(entry_path)
+  let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
+  let _ = next_db
+  let (merged_stmts, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys) = merged_stmts_and_offsets(source_groups)
+  compile_merged_for_mode(mode, merged_stmts, entry_name, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
 }
 
 /// Import-resolving wasm-gc compilation. Module discovery, projected import
@@ -2401,14 +2464,7 @@ export fn compile_file_fs_mode_testmeta(entry_path: String, entry_name: String, 
   } else {
     false
   }
-  let bytes = if mode == "mvp" {
-    let pruned_stmts = dce_stmts(merged_stmts, [entry_name])
-    compile_wasi_module_impl_with_typed_offsets(pruned_stmts, entry_name, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
-  } else if mode == "no-dce" {
-    compile_wasi_module_no_dce_impl_with_typed_offsets(merged_stmts, entry_name, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
-  } else {
-    throw(String::concat("unsupported compile mode: ", mode))
-  }
+  let bytes = compile_merged_for_mode(mode, merged_stmts, entry_name, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
   if meta_out != "" {
     Fs::write_file(meta_out, if cacheable {
       "1"
@@ -2509,14 +2565,7 @@ export fn compile_file_fs_mode_profiled(entry_path: String, entry_name: String, 
   let (merged_stmts, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys) = merged_stmts_and_offsets(source_groups)
   let parse_us = elapsed_us_since(parse_start)
   let compile_start = profiler_now_us()
-  let bytes = if mode == "mvp" {
-    let pruned_stmts = dce_stmts(merged_stmts, [entry_name])
-    compile_wasi_module_impl_with_typed_offsets(pruned_stmts, entry_name, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
-  } else if mode == "no-dce" {
-    compile_wasi_module_no_dce_impl_with_typed_offsets(merged_stmts, entry_name, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
-  } else {
-    throw(String::concat("unsupported compile mode: ", mode))
-  }
+  let bytes = compile_merged_for_mode(mode, merged_stmts, entry_name, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
   let compile_us = elapsed_us_since(compile_start)
   (bytes, load_us, type_us, bundle_us, parse_us, compile_us, elapsed_us_since(total_start))
 }
@@ -2542,13 +2591,7 @@ fn compile_file_fs_mode_cached_slow_profiled(db: TypeDb, entry_path: String, ent
       let merge_fingerprint = source_groups_fingerprint
       let bundle_us = elapsed_us_since(bundle_start)
       let artifact_fingerprint = merge_fingerprint
-      let artifact_kind = if mode == "mvp" {
-        "wasi-mvp"
-      } else if mode == "no-dce" {
-        "wasi"
-      } else {
-        throw(String::concat("unsupported compile mode: ", mode))
-      }
+      let artifact_kind = artifact_kind_for_mode(mode)
       match db_load_artifact(next_db, entry_path, artifact_kind, entry_name, artifact_fingerprint) {
         Some(bytes) => (bytes, next_db, load_us, type_us, bundle_us, 0, 0),
         None => {
@@ -2556,12 +2599,7 @@ fn compile_file_fs_mode_cached_slow_profiled(db: TypeDb, entry_path: String, ent
           let (merged_stmts, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys) = merged_stmts_and_offsets(source_groups)
           let parse_us = elapsed_us_since(parse_start)
           let compile_start = profiler_now_us()
-          let bytes = if mode == "mvp" {
-            let pruned_stmts = dce_stmts(merged_stmts, [entry_name])
-            compile_wasi_module_impl_with_typed_offsets(pruned_stmts, entry_name, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
-          } else {
-            compile_wasi_module_no_dce_impl_with_typed_offsets(merged_stmts, entry_name, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
-          }
+          let bytes = compile_merged_for_mode(mode, merged_stmts, entry_name, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
           store_persistent_artifact(persistent_artifact_kind, entry_name, persistent_artifact_fingerprint, bytes)
           let compile_us = elapsed_us_since(compile_start)
           (bytes, db_store_artifact(next_db, entry_path, artifact_kind, entry_name, artifact_fingerprint, bytes), load_us, type_us, bundle_us, parse_us, compile_us)
@@ -2584,23 +2622,12 @@ fn compile_file_fs_mode_cached_slow_observed(db: TypeDb, entry_path: String, ent
     None => {
       let next_db = prepare_file_fs_from_source_groups_persistent_cached(db, entry_path, source_groups)
       let artifact_fingerprint = source_groups_fingerprint
-      let artifact_kind = if mode == "mvp" {
-        "wasi-mvp"
-      } else if mode == "no-dce" {
-        "wasi"
-      } else {
-        throw(String::concat("unsupported compile mode: ", mode))
-      }
+      let artifact_kind = artifact_kind_for_mode(mode)
       match db_load_artifact(next_db, entry_path, artifact_kind, entry_name, artifact_fingerprint) {
         Some(bytes) => (bytes, next_db, source_groups_fingerprint, persistent_artifact_fingerprint, "miss"),
         None => {
           let (merged_stmts, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys) = merged_stmts_and_offsets(source_groups)
-          let bytes = if mode == "mvp" {
-            let pruned_stmts = dce_stmts(merged_stmts, [entry_name])
-            compile_wasi_module_impl_with_typed_offsets(pruned_stmts, entry_name, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
-          } else {
-            compile_wasi_module_no_dce_impl_with_typed_offsets(merged_stmts, entry_name, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
-          }
+          let bytes = compile_merged_for_mode(mode, merged_stmts, entry_name, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
           store_persistent_artifact(persistent_artifact_kind, entry_name, persistent_artifact_fingerprint, bytes)
           (bytes, db_store_artifact(next_db, entry_path, artifact_kind, entry_name, artifact_fingerprint, bytes), source_groups_fingerprint, persistent_artifact_fingerprint, "miss")
         }
@@ -2610,13 +2637,7 @@ fn compile_file_fs_mode_cached_slow_observed(db: TypeDb, entry_path: String, ent
 }
 
 fn compile_file_fs_mode_cached_observed(db: TypeDb, entry_path: String, entry_name: String, mode: String) -> (Bytes, TypeDb, String, String, String) with Exception + Fs {
-  let persistent_artifact_kind = if mode == "mvp" {
-    "file-compile-wasi-mvp"
-  } else if mode == "no-dce" {
-    "file-compile-wasi"
-  } else {
-    throw(String::concat("unsupported compile mode: ", mode))
-  }
+  let persistent_artifact_kind = persistent_artifact_kind_for_mode(mode)
   match load_persistent_source_group_fingerprint_if_valid(entry_path) {
     Some(source_groups_fingerprint) => {
       let persistent_artifact_fingerprint = build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint_for_entry_path(source_groups_fingerprint, entry_path, entry_name, mode)
@@ -2771,13 +2792,7 @@ export fn compile_file_fs(entry_path: String, entry_name: String) -> Bytes with 
 
 export fn compile_file_fs_mode_cached_profiled(db: TypeDb, entry_path: String, entry_name: String, mode: String) -> (Bytes, TypeDb, Int, Int, Int, Int, Int, Int) with Exception + Fs + Profiler {
   let total_start = profiler_now_us()
-  let persistent_artifact_kind = if mode == "mvp" {
-    "file-compile-wasi-mvp"
-  } else if mode == "no-dce" {
-    "file-compile-wasi"
-  } else {
-    throw(String::concat("unsupported compile mode: ", mode))
-  }
+  let persistent_artifact_kind = persistent_artifact_kind_for_mode(mode)
   let load_start = profiler_now_us()
   match load_persistent_source_group_fingerprint_if_valid(entry_path) {
     Some(source_groups_fingerprint) =>

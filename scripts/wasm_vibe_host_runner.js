@@ -3642,6 +3642,15 @@ async function main() {
     if (invoke.startsWith("__test_") || invoke.startsWith("__bench_")) {
       return;
     }
+    // #2858: `scripts/viberun_node.sh` stands in for the Rust `viberun`, which
+    // turns the invoked entry's Int into the PROCESS exit status and prints
+    // nothing. `runtime/vibe` now reads that status for every verb, so the
+    // printed value would be a stray `0` line appended to `vibe check` (whose
+    // empty output means clean) and to every other verb's machine-readable
+    // stdout. The exit code is set below regardless of this switch.
+    if (process.env.VIBE_RUNNER_QUIET_RESULT === "1") {
+      return;
+    }
     if (typeof result === "bigint") {
       // Check if the result is a tagged object (could be Bytes from selfbuild)
       if (
@@ -4000,17 +4009,23 @@ main().catch((err) => {
   // read_arg_or_env's precedence: positional arg (passthroughArgsGlobal[1])
   // first.
   if (err instanceof RangeError && /call stack/i.test(err.message || "")) {
+    // #2858: under the verb protocol the positional args are the verb's own
+    // words, so the launcher names the crash sidecar explicitly
+    // (VIBE_CRASH_DIAG_OUT); the positional / VIBE_OUTPUT `.diag` convention
+    // stays for the adapter protocol.
+    const crashDiag = process.env.VIBE_CRASH_DIAG_OUT || "";
     const outputPath =
       (passthroughArgsGlobal && passthroughArgsGlobal[1]) ||
       process.env.VIBE_OUTPUT;
-    if (outputPath) {
+    const sidecar = crashDiag || (outputPath ? `${outputPath}.diag` : "");
+    if (sidecar) {
       try {
         // #2134: this said only "expression too deeply nested", which sends
         // the reader to look at their expressions. The overflow is just as
         // often the TOP-LEVEL DECLARATION COUNT -- the checker recurses per
         // statement, and `x + 0` bodies overflow at ~4000 declarations on
         // node's default stack. Name both levers, and the knob.
-        fs.writeFileSync(`${outputPath}.diag`, "stack overflow while type-checking: either one expression nests too deeply, or the file has too many top-level declarations (the checker recurses once per statement). Split the file, or raise the host stack with VIBE_NODE_STACK_SIZE=<KB>.\n");
+        fs.writeFileSync(sidecar, "stack overflow while type-checking: either one expression nests too deeply, or the file has too many top-level declarations (the checker recurses once per statement). Split the file, or raise the host stack with VIBE_NODE_STACK_SIZE=<KB>.\n");
       } catch (_) {}
     }
     console.error("[vibe] stack overflow while type-checking: one expression nests too deeply, or the file has too many top-level declarations. Split the file, or raise the host stack with VIBE_NODE_STACK_SIZE=<KB>.");

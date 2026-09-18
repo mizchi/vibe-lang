@@ -213,7 +213,7 @@ stdin line-oriented whenever stdin is not a tty.
 A dependency is a package pinned in the root `index.vpkg` and installed under
 `.vibe/store/` (#2676, [install.md](../getting-started/install.md#dependencies)). `vibe add`
 fetches one from its git source, installs it, and writes the `deps` entry and
-the `require @scope/name x.y.z = #pkg:sha1:<hex> from <source>@<commit>` pin;
+the `require @scope/name x.y.z = #pkg:b3:<hex> from <source>@<commit>` pin;
 `vibe fetch` restores the store from those pins on a fresh clone, from the
 cache under `$VIBE_HOME/cache/pkg/` or from the pinned source, hash-verified
 either way.

@@ -11,9 +11,11 @@
 #       of the same name (when one exists in the cache index), computes the
 #       package hash, and stores the package files in the fetch cache:
 #
-#           $VIBE_HOME/cache/pkg/sha1/<40hex>/   (passive CAS — never a
-#                                                 resolution root)
-#           $VIBE_HOME/cache/versions.tsv        (name@version -> #pkg:sha1:…)
+#           $VIBE_HOME/cache/pkg/<algo>/<hex>/   (passive CAS — never a
+#                                                 resolution root; algo is
+#                                                 b3 on new writes, sha1 for
+#                                                 historical entries)
+#           $VIBE_HOME/cache/versions.tsv        (name@version -> package id)
 #
 #       version->hash is an IMMUTABLE mapping: republishing a known
 #       name@version with a different hash is rejected (same hash is an
@@ -28,7 +30,7 @@
 #       the pinned lane — and re-verifies the materialized copy's hash
 #       against the recorded one.
 #
-#   vibe_pkg.sh add <source-spec> [#pkg:sha1:<40hex>] [--store]
+#   vibe_pkg.sh add <source-spec> [#pkg:b3:<64hex>|#pkg:sha1:<40hex>] [--store]
 #       Registry-less resolution (#755 Phase 0): fetch a package DIRECTLY
 #       from a git host, verify it by content hash, and install it. Specs:
 #
@@ -46,7 +48,7 @@
 #       so third parties can re-fetch and re-hash (source-only provenance).
 #
 #   vibe_pkg.sh fetch-pins <index.vpkg> [--store]
-#       #2676: materialize every `require @scope/name x.y.z = #pkg:sha1:<hex>
+#       #2676: materialize every `require @scope/name x.y.z = #pkg:b3:<hex>
 #       from <source-spec>` pin of a manifest into the workspace store
 #       (`--store`, what `vibe fetch` passes) or $VIBE_HOME/lib. Each pin is
 #       satisfied from the CAS when the hash is cached, else fetched from the
@@ -109,6 +111,30 @@ LOG_HEAD="$LOG_DIR/head"
 say() { echo "[vibe-pkg] $*"; }
 die() { echo "[vibe-pkg] error: $*" >&2; exit 1; }
 
+# Parse a package identity (`pkg:sha1:<40hex>` / `pkg:b3:<64hex>`, optional
+# leading `#`). Sets PKG_ID_ALGO and PKG_ID_HEX.
+parse_pkg_id() {
+  local id="${1#\#}"
+  PKG_ID_ALGO=""
+  PKG_ID_HEX=""
+  if [[ "$id" =~ ^pkg:sha1:([0-9a-f]{40})$ ]]; then
+    PKG_ID_ALGO="sha1"
+    PKG_ID_HEX="${BASH_REMATCH[1]}"
+    return 0
+  fi
+  if [[ "$id" =~ ^pkg:b3:([0-9a-f]{64})$ ]]; then
+    PKG_ID_ALGO="b3"
+    PKG_ID_HEX="${BASH_REMATCH[1]}"
+    return 0
+  fi
+  return 1
+}
+
+cas_dir_of() {
+  parse_pkg_id "$1" || die "not a package identity: $1"
+  echo "$CACHE_DIR/pkg/$PKG_ID_ALGO/$PKG_ID_HEX"
+}
+
 invoke_cli() {
   # invoke_cli VAR=val ... -- <input> <output>
   # Repo mode (default): node host runner + compiler wasm, preopening the
@@ -128,11 +154,12 @@ invoke_cli() {
 }
 
 compute_pkg_hashes() {
-  # sets PKG_HASH_OUT (pkg:sha1:<40hex>) and CT_HASH_OUT (ct:sha1:<40hex>)
-  # for the contract at $1 in ONE compiler invocation.
+  # sets PKG_HASH_OUT / CT_HASH_OUT. New writes are pkg:b3:<64hex>.
+  # VIBE_HASH_ALGO=sha1 recomputes a historical identity for verify.
   local index_path="$1" out pline cline
+  local hash_algo="${VIBE_HASH_ALGO:-b3}"
   out="$(mktemp)"
-  invoke_cli VIBE_HASH=1 -- "$index_path" "$out"
+  invoke_cli VIBE_HASH=1 VIBE_HASH_ALGO="$hash_algo" -- "$index_path" "$out"
   pline="$(grep '^package ' "$out" 2>/dev/null | head -1 || true)"
   cline="$(grep '^contract ' "$out" 2>/dev/null | head -1 || true)"
   if [ -z "$pline" ]; then
@@ -141,18 +168,49 @@ compute_pkg_hashes() {
     die "hash computation failed for $index_path (CLI: $CLI)"
   fi
   rm -f "$out" "$out.diag"
-  # package line is "package #pkg:sha1:<40hex>" — strip the label AND the
-  # leading '#' so callers hold the bare "pkg:sha1:<40hex>" form (require
-  # pin spelling re-adds the '#').
+  # package line is "package #pkg:b3:<64hex>" (or sha1 under VIBE_HASH_ALGO).
   pline="${pline#package }"
   PKG_HASH_OUT="${pline#\#}"
   CT_HASH_OUT="${cline#contract }"
 }
 
 pkg_hash_of() {
-  # prints the package hash (pkg:sha1:<40hex>) of the contract at $1
+  # prints the current-write package hash of the contract at $1
   compute_pkg_hashes "$1"
   echo "$PKG_HASH_OUT"
+}
+
+hash_matches_index() {
+  # $1=recorded identity $2=index.vpkg — verify under the recorded algorithm
+  local recorded="$1" index="$2" got
+  parse_pkg_id "$recorded" || return 1
+  got="$(VIBE_HASH_ALGO="$PKG_ID_ALGO" pkg_hash_of "$index")"
+  [ "$got" = "$recorded" ]
+}
+
+# lookup_installed_version <name> <index.vpkg>
+# A versions.tsv row for <name> whose recorded identity verifies against the
+# installed contract. Historical pkg:sha1: rows do not equal a default b3
+# write of the same payload, so exact-string reverse lookup misses them.
+# Sets INSTALLED_VERSION / INSTALLED_HASH.
+lookup_installed_version() {
+  local name="$1" index="$2" k h
+  INSTALLED_VERSION=""
+  INSTALLED_HASH=""
+  [ -f "$VERSIONS_TSV" ] || return 1
+  while IFS="$(printf '\t')" read -r k h; do
+    case "$k" in
+      "$name@"*) ;;
+      *) continue ;;
+    esac
+    [ -n "$h" ] || continue
+    if hash_matches_index "$h" "$index"; then
+      INSTALLED_VERSION="${k##*@}"
+      INSTALLED_HASH="$h"
+      return 0
+    fi
+  done < "$VERSIONS_TSV"
+  return 1
 }
 
 # --- transparency log (#805): merkle tree over append-only TSV records ------
@@ -444,10 +502,9 @@ copy_package_files() {
 }
 
 materialize_from_cas() {
-  # $1=name $2=version $3=hash(pkg:sha1:…) $4=target ("--store" or "")
-  local name="$1" version="$2" hash="$3" target="$4" hex cas dest got
-  hex="${hash#pkg:sha1:}"
-  cas="$CACHE_DIR/pkg/sha1/$hex"
+  # $1=name $2=version $3=hash(pkg:b3:… or pkg:sha1:…) $4=target ("--store" or "")
+  local name="$1" version="$2" hash="$3" target="$4" cas dest
+  cas="$(cas_dir_of "$hash")"
   [ -f "$cas/index.vpkg" ] || die "cache is missing $name@$version ($hash) at $cas"
   if [ "$target" = "--store" ]; then
     dest=".vibe/store/$name"
@@ -458,22 +515,22 @@ materialize_from_cas() {
   copy_package_files "$cas" "$dest"
   # verify the MATERIALIZED copy against the recorded hash (tamper/bit-rot
   # and known-version immutability in one check)
-  got="$(pkg_hash_of "$dest/index.vpkg")"
-  if [ "$got" != "$hash" ]; then
+  if ! hash_matches_index "$hash" "$dest/index.vpkg"; then
     rm -rf "$dest"
-    die "materialized copy of $name@$version hashes to #$got, recorded #$hash — rejected (version->hash is immutable)"
+    die "materialized copy of $name@$version does not match recorded #$hash — rejected (version->hash is immutable)"
   fi
   say "installed $name@$version -> $dest (#$hash)"
   say "pin line: require $name $version = #$hash"
 }
 
-# add_from_spec <source-spec> <expected pkg:sha1:… or ""> <"--store" or "">:
+# add_from_spec <source-spec> <expected pkg:b3:… / pkg:sha1:… or ""> <"--store" or "">:
 # fetch a package straight from git, hash it locally, record it, and
 # materialize it. The last stdout line is machine-readable for the launcher's
 # `vibe add`, which writes the pin into the project's index.vpkg:
-#   added<TAB>name<TAB>version<TAB>pkg:sha1:<hex><TAB>spec<TAB>commit<TAB>pinned-spec
-# where pinned-spec is the spec with its ref replaced by the resolved commit
-# (the `from` clause of the require line, #2676).
+#   added<TAB>name<TAB>version<TAB>pkg:b3:<hex><TAB>spec<TAB>commit<TAB>pinned-spec
+# (a SHA-1 expected pin that matches is recorded as pkg:sha1:<hex> and stored
+# under cache/pkg/sha1/). pinned-spec is the spec with its ref replaced by
+# the resolved commit (the `from` clause of the require line, #2676).
 add_from_spec() {
   local spec="$1" expected="$2" target="$3"
   local subdir="" rest ref path owner rr repo url work commit src name version hash key recorded hex cas cas_hash prov_line pinned_spec
@@ -526,16 +583,27 @@ add_from_spec() {
 
   # hash is computed LOCALLY over the fetched sources — the transport is
   # untrusted. An expected pin rejects BEFORE any cache/install side effect.
+  # New writes are BLAKE3; a SHA-1 expected pin still verifies under SHA-1
+  # of the same payload (hash_matches_index), so a historical pin can be
+  # restored when its CAS entry is absent (#2829).
   hash="$(pkg_hash_of "$src/index.vpkg")"
   if [ -n "$expected" ] && [ "$hash" != "$expected" ]; then
-    rm -rf "$work"
-    die "hash mismatch for $name@$version from $spec: fetched #$hash, expected #$expected — rejected"
+    if hash_matches_index "$expected" "$src/index.vpkg"; then
+      hash="$expected"
+    else
+      rm -rf "$work"
+      die "hash mismatch for $name@$version from $spec: fetched #$hash, expected #$expected — rejected"
+    fi
   fi
   key="$name@$version"
   recorded="$(lookup_version "$key")"
   if [ -n "$recorded" ] && [ "$recorded" != "$hash" ]; then
-    rm -rf "$work"
-    die "known version $key is #$recorded but $spec serves #$hash — rejected (version->hash is immutable, ADR-0065)"
+    if hash_matches_index "$recorded" "$src/index.vpkg"; then
+      hash="$recorded"
+    else
+      rm -rf "$work"
+      die "known version $key is #$recorded but $spec serves #$hash — rejected (version->hash is immutable, ADR-0065)"
+    fi
   fi
   # transparency log cross-check (#805): when the registry log knows this
   # name@version, the fetched hash must agree (dies on a split view). Yank is
@@ -546,13 +614,13 @@ add_from_spec() {
     say "WARNING: $key is yanked in the registry log"
   fi
 
-  hex="${hash#pkg:sha1:}"
-  cas="$CACHE_DIR/pkg/sha1/$hex"
+  cas="$(cas_dir_of "$hash")"
   rm -rf "$cas"
   copy_package_files "$src" "$cas"
   rm -rf "$work"
-  cas_hash="$(pkg_hash_of "$cas/index.vpkg")"
-  [ "$cas_hash" = "$hash" ] || die "CAS self-check failed: $cas hashes to #$cas_hash, expected #$hash"
+  if ! hash_matches_index "$hash" "$cas/index.vpkg"; then
+    die "CAS self-check failed: $cas does not match #$hash"
+  fi
   mkdir -p "$CACHE_DIR"
   if [ -z "$recorded" ]; then
     printf '%s\t%s\n' "$key" "$hash" >> "$VERSIONS_TSV"
@@ -624,17 +692,15 @@ fetch_pins_of() {
     [ -n "$hash" ] || die "require line for $name@$ver in $manifest has no pin; run \`vibe add\` (or \`vibe fmt\` with the package in the store) to pin it"
     dest="$dest_root/$name"
     if [ -f "$dest/index.vpkg" ]; then
-      got="$(pkg_hash_of "$dest/index.vpkg")"
-      if [ "$got" = "$hash" ]; then
+      if hash_matches_index "$hash" "$dest/index.vpkg"; then
         UPTODATE_COUNT=$((UPTODATE_COUNT + 1))
         pkg_index="$dest/index.vpkg"
         require_pins_of "$pkg_index" >> "$queue"
         continue
       fi
-      say "$name at $dest hashes to #$got, pin is #$hash: replacing it"
+      say "$name at $dest does not match pin #$hash: replacing it"
     fi
-    hex="${hash#pkg:sha1:}"
-    cas="$CACHE_DIR/pkg/sha1/$hex"
+    cas="$(cas_dir_of "$hash")"
     if [ -f "$cas/index.vpkg" ]; then
       materialize_from_cas "$name" "$ver" "$hash" "$target"
     elif [ -n "$src" ]; then
@@ -665,8 +731,7 @@ publish)
   prev_version="$(latest_version_of "$name")"
   if [ -n "$prev_version" ] && [ "$prev_version" != "$version" ]; then
     prev_hash="$(lookup_version "$name@$prev_version")"
-    prev_hex="${prev_hash#pkg:sha1:}"
-    prev_index="$CACHE_DIR/pkg/sha1/$prev_hex/index.vpkg"
+    prev_index="$(cas_dir_of "$prev_hash")/index.vpkg"
     [ -f "$prev_index" ] || die "cache is missing the previous release $name@$prev_version ($prev_hash)"
     pub_out="$(mktemp)"
     invoke_cli VIBE_PUBLISH_CHECK=1 VIBE_PUBLISH_PREV="$prev_index" \
@@ -685,7 +750,8 @@ publish)
   key="$name@$version"
   recorded="$(lookup_version "$key")"
   if [ -n "$recorded" ]; then
-    if [ "$recorded" = "$hash" ]; then
+    if [ "$recorded" = "$hash" ] || hash_matches_index "$recorded" "$pkg_dir/index.vpkg"; then
+      hash="$recorded"
       # Idempotent — but REPAIR a missing transparency record first: if a
       # prior publish crashed between the versions.tsv append and log_append
       # (unwritable log dir, interruption, full disk), the version would stay
@@ -705,13 +771,14 @@ publish)
   log_verify_self
   log_verify_consistency
 
-  hex="${hash#pkg:sha1:}"
-  cas="$CACHE_DIR/pkg/sha1/$hex"
+  cas="$(cas_dir_of "$hash")"
   rm -rf "$cas"
   copy_package_files "$pkg_dir" "$cas"
   # the CAS copy must hash to its own address
   cas_hash="$(pkg_hash_of "$cas/index.vpkg")"
-  [ "$cas_hash" = "$hash" ] || die "CAS self-check failed: $cas hashes to #$cas_hash, expected #$hash"
+  if ! hash_matches_index "$hash" "$cas/index.vpkg"; then
+    die "CAS self-check failed: $cas does not match #$hash"
+  fi
   mkdir -p "$CACHE_DIR"
   printf '%s\t%s\n' "$key" "$hash" >> "$VERSIONS_TSV"
   # registry-side transparency record (#805): local publishes carry no
@@ -763,15 +830,15 @@ add)
   for a in "$@"; do
     case "$a" in
       --store) target="--store" ;;
-      \#pkg:sha1:*) expected="${a#\#}" ;;
-      pkg:sha1:*) expected="$a" ;;
+      \#pkg:sha1:*|\#pkg:b3:*) expected="${a#\#}" ;;
+      pkg:sha1:*|pkg:b3:*) expected="$a" ;;
       *)
         [ -z "$spec" ] || die "unexpected argument: $a"
         spec="$a"
         ;;
     esac
   done
-  [ -n "$spec" ] || die "usage: vibe_pkg.sh add github:owner/repo[/sub/dir]@<ref> [#pkg:sha1:<40hex>] [--store]"
+  [ -n "$spec" ] || die "usage: vibe_pkg.sh add github:owner/repo[/sub/dir]@<ref> [#pkg:b3:<64hex>|#pkg:sha1:<40hex>] [--store]"
   add_from_spec "$spec" "$expected" "$target"
   ;;
 fetch-pins)
@@ -840,11 +907,16 @@ update)
   fi
   [ -f "$inst_dir/index.vpkg" ] || die "not installed: $name ($inst_dir) — 'vibe_pkg.sh install' it first"
   [ -f "$VERSIONS_TSV" ] || die "no published versions known (empty cache index)"
-  # current version = reverse lookup of the installed copy's hash
+  # current version = reverse lookup of the installed copy. Try the default
+  # b3 write first; a historical pkg:sha1: row still verifies under SHA-1.
   compute_pkg_hashes "$inst_dir/index.vpkg"
   cur_hash="$PKG_HASH_OUT"
   cur_ct="$CT_HASH_OUT"
   cur_version="$(awk -F'\t' -v n="$name" -v h="$cur_hash" 'index($1, n "@") == 1 && $2 == h { v = substr($1, length(n) + 2) } END { print v }' "$VERSIONS_TSV")"
+  if [ -z "$cur_version" ] && lookup_installed_version "$name" "$inst_dir/index.vpkg"; then
+    cur_version="$INSTALLED_VERSION"
+    cur_hash="$INSTALLED_HASH"
+  fi
   # newest non-yanked LOGGED publish (publish order, like latest_version_of).
   # versions.tsv also holds TOFU mappings created by `add github:...` that
   # have no publish record; selecting one of those would let update install
@@ -867,8 +939,7 @@ update)
   fi
   # verify the candidate against the transparency log BEFORE showing/switching
   log_client_verify "$name@$best" "$best_hash"
-  best_hex="${best_hash#pkg:sha1:}"
-  best_index="$CACHE_DIR/pkg/sha1/$best_hex/index.vpkg"
+  best_index="$(cas_dir_of "$best_hash")/index.vpkg"
   [ -f "$best_index" ] || die "cache is missing $name@$best ($best_hash)"
   compute_pkg_hashes "$best_index"
   best_ct="$CT_HASH_OUT"
@@ -880,13 +951,13 @@ update)
     # CONTRACT SURFACE DIFF, textual approximation: the contract file itself.
     # The canonical set-diff over contract_surface_lines (incl. effect-row
     # capability classification) needs a compiler adapter mode that is not
-    # exposed yet — see docs/internal/design/registry-design.md "実装済みの範囲と既知の gap".
+    # exposed yet — see docs/internal/design/registry-design.md "Implemented scope and known gaps".
     say "contract diff ($inst_dir/index.vpkg -> $name@$best):"
     diff -u "$inst_dir/index.vpkg" "$best_index" | sed 's/^/[vibe-pkg]   /' || true
   fi
   materialize_from_cas "$name" "$best" "$best_hash" "$target"
   ;;
 *)
-  die "usage: vibe_pkg.sh publish <pkg_dir> | install @scope/name@x.y.z [--store] [--allow-yanked] | add <source-spec> [#pkg:sha1:<40hex>] [--store] | fetch-pins <index.vpkg> [--store] | yank @scope/name@x.y.z | update @scope/name [--store]"
+  die "usage: vibe_pkg.sh publish <pkg_dir> | install @scope/name@x.y.z [--store] [--allow-yanked] | add <source-spec> [#pkg:b3:<64hex>|#pkg:sha1:<40hex>] [--store] | fetch-pins <index.vpkg> [--store] | yank @scope/name@x.y.z | update @scope/name [--store]"
   ;;
 esac

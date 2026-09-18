@@ -4,6 +4,7 @@
 // these used to be two separate leaf imports (preprocess.vibe,
 // merge_sources.vibe), now merged into one.
 import @vibe/compiler/entry/source_compile/wasi_only {
+  comp_emit_component_wasm_command,
   comp_emit_component_wasm_stream_handler,
   comp_emit_component_wasm_string_handler,
   compile_generated_source_wasi_only,
@@ -22,6 +23,14 @@ import @vibe/compiler/entry/source_compile/wasi_only {
 
 import @vibe/compiler/entry/source_compile/gc_only {
   compile_generated_source_gc_only, compile_source_gc_only
+}
+
+// The user-facing verb dispatcher `runtime/vibe` drives (`vibe test ...`,
+// `vibe check ...`). Same file, same wasm: the launcher hands this artifact
+// its argv either as a verb or as the positional `<src> <out> <entry>`
+// adapter protocol, and `cli_main` tells them apart by the first argument.
+import ./user_dispatch.vibe {
+  run_user_dispatch_args, user_dispatch_is_verb
 }
 
 import @vibe/compiler/runtime {
@@ -64,6 +73,7 @@ import @vibe/compiler/runtime/checked_module_cache {
 import @vibe/compiler/loader {
   collect_source_groups_fs,
   contract_package_hashes_fs,
+  contract_package_hashes_fs_algo,
   fill_require_pins_fs_mode,
   fill_require_pins_lenient,
   find_deps_missing,
@@ -124,6 +134,8 @@ import ./cli_support.vibe {
   check_redundant_import_warnings_from_source_groups,
   check_unstable_surface_warnings_from_closure,
   check_unstable_surface_warnings_from_path,
+  command_component_compile_mode,
+  command_component_entry,
   configure_cfg_flags,
   executable_exports_stripped,
   strip_executable_wasm_env,
@@ -1154,6 +1166,61 @@ fn adapter_serve_component(input_path: String, output_path: String) -> Int with 
   } with { Exception::Throw(msg) => emit_compile_diag(output_path, msg) }
 }
 
+/// `vibe build --component` as the LAUNCHER drives it.
+///
+/// `runtime/vibe` talks to this adapter through positional arguments plus a
+/// `VIBE_*` selector, never a verb, so the `build --component` arm in
+/// lib/@vibe/cli/dispatch.vibe is unreachable from the public launcher. Left
+/// at that, `vibe build --component f.vibe` reported success and wrote an
+/// ordinary CORE module -- the flag silently discarded, which is the
+/// silently-wrong failure this project ranks worst (Codex review of #2861).
+///
+/// Shaped after `adapter_serve_component`, which componentizes for the same
+/// reason and carries the same ADR-0068 gates: a verb that PRODUCES an
+/// artifact must not accept what `vibe check` refuses, and the closure gate
+/// has to be re-asked after the loader has walked it.
+fn adapter_command_component(input_path: String, output_path: String) -> Int with Fs + Env {
+  handle {
+    let opt_in = Env::get("VIBE_UNSTABLE") == "1"
+    let entry_unstable = if opt_in {
+      adapter_no_warnings()
+    } else {
+      check_unstable_surface_warnings_from_path(input_path)
+    }
+    if Array::length(entry_unstable) > 0 {
+      return emit_compile_diag(output_path, String::join(entry_unstable, "\n"))
+    } else {
+      ()
+    }
+    unstable_closure_reset()
+    // The surface is the lifted export, so the codegen entry is the library
+    // sentinel -- but the DCE root is `vibe_command`, which is a real root.
+    // `no-dce` (what this used before) kept the whole closure: a command
+    // calling `check_linked_file` came to 40.4 MB, 7.8 times this adapter.
+    // `dce-root` prunes from the command and still emits a library (2.6 MB).
+    let core = compile_file_fs_mode(input_path, command_component_entry(), command_component_compile_mode())
+    let closure_unstable = if opt_in {
+      adapter_no_warnings()
+    } else {
+      check_unstable_surface_warnings_from_closure()
+    }
+    if Array::length(closure_unstable) > 0 {
+      return emit_compile_diag(output_path, String::join(closure_unstable, "\n"))
+    } else {
+      ()
+    }
+    Fs::write_bytes(output_path, comp_emit_component_wasm_command(core, "vibe_command", "run"))
+    0
+  } with { Exception::Throw(msg) => emit_compile_diag(output_path, adapter_command_component_edit(input_path, msg)) }
+}
+
+/// The wrap's message names what it found in the core; this adds the edit.
+/// Kept identical in substance to the user CLI's `command_component_edit` so
+/// the two lanes answer a missing entry the same way.
+fn adapter_command_component_edit(input_path: String, message: String) -> String {
+  "build --component \{input_path}: \{message}; a command module exports exactly `export fn vibe_command(args: String) -> String` and returns the `vibe-command-result-v1` frame (`command_ok` / `command_result` in @vibe/command)"
+}
+
 fn configure_typing_dependency_env_reuse_policy() -> Unit with Exception + Env {
   let disable = Env::get("VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE")
   let invalidation_trace_out = Env::get("VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT")
@@ -1465,13 +1532,18 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
   let output_path = own_host_string(read_arg_or_env(1, "VIBE_OUTPUT"))
   let entry_name = own_host_string(read_arg_or_env(2, "VIBE_ENTRY"))
   let mark_memory = Env::get("VIBE_PROFILE_MEMORY_MARKS") == "1"
-  // #730 (D-2): `vibe hash` — print a contract package's content-addressing
-  // hashes. Input is the package's index.vibei; the output file receives
-  // "package #pkg:sha1:<hex>" and "contract ct:sha1:<hex>" lines. The
-  // package line is copy-pasteable as a require pin.
+  // #730 (D-2) / #2829: `vibe hash` — print a contract package's
+  // content-addressing hashes. New writes are `pkg:b3:<64hex>` /
+  // `ct:b3:<64hex>`. VIBE_HASH_ALGO=sha1 is the legacy-read verifier for
+  // historical pins; it is not the default write path.
   if Env::get("VIBE_HASH") == "1" {
     return handle {
-      let (pkg_hash, ct_hash) = contract_package_hashes_fs(input_path)
+      let algo = Env::get("VIBE_HASH_ALGO")
+      let (pkg_hash, ct_hash) = if algo == "sha1" {
+        contract_package_hashes_fs_algo(input_path, "sha1")
+      } else {
+        contract_package_hashes_fs(input_path)
+      }
       Fs::write_file(output_path, "package #\{pkg_hash}\ncontract \{ct_hash}\n")
       0
     } with { Exception::Throw(msg) => emit_compile_diag(output_path, msg) }
@@ -2473,6 +2545,13 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
   if Env::get("VIBE_SERVE_COMPONENT") == "1" {
     return adapter_serve_component(input_path, output_path)
   }
+  // `vibe build --component` (docs/internal/design/component-lazy-dispatch.md).
+  // Immediately after the serve wrap: both produce a component from a library
+  // build, and keeping them adjacent keeps the launcher's derived clear list
+  // for the two identical but for each other.
+  if Env::get("VIBE_BUILD_COMPONENT") == "1" {
+    return adapter_command_component(input_path, output_path)
+  }
   let source = Fs::read_file(input_path)
   // ADR-0068 gate for the SINGLE-SOURCE lane. `VIBE_TEST_BACKEND=gc` and
   // `VIBE_BENCH_BACKEND=gc` reach compilation through here -- `runtime/vibe`
@@ -2574,8 +2653,13 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
 /// Unit-returning entry from the plain declared return type -- sugar
 /// agnostic -- so this gets the same no-print / real-exit-code `_start`
 /// without needing the sugar or a seed bump.
-export fn main() -> Unit allows Exception + Fs + Env + Stdin + Stdout + Process {
-  let code = if Env::get("VIBE_HOST_ACTION_OUT") == "" {
+export fn main() -> Unit allows Exception + Fs + Env + Stdin + Stdout + Stderr + Process + Profiler {
+  // `runtime/vibe` sets VIBE_HOST_ACTION_OUT on EVERY verb it forwards (the
+  // verb may plan a host action), so the verb test has to come before the
+  // legacy `profile` planner, which reads the same variable.
+  let code = if user_dispatch_is_verb(host_argv_first()) {
+    cli_main()
+  } else if Env::get("VIBE_HOST_ACTION_OUT") == "" {
     cli_main()
   } else {
     profile_plan_main()
@@ -2587,9 +2671,68 @@ export fn main() -> Unit allows Exception + Fs + Env + Stdin + Stdout + Process 
   }
 }
 
+/// argv[0] as the host handed it, "" when there is none.
+fn host_argv_first() -> String with Env {
+  if Env::args_len() == 0 {
+    ""
+  } else {
+    own_host_string(Env::args_get(0))
+  }
+}
+
+/// The whole argv as an owned array, for the verb dispatcher.
+fn host_argv() -> Array[String] with Env {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Env::args_len() {
+    Array::push(out, own_host_string(Env::args_get(i)))
+    i = i + 1
+  }
+  out
+}
+
 /// The full env-mode CLI: every lane table entry.
-export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
-  cli_main_with_lanes(fs_lane_compile_full, ss_lane_compile_full)
+///
+/// A first argument that names a user verb (`test`, `check`, `grep`, ...)
+/// goes to the verb dispatcher `runtime/vibe` talks to (#2858); anything
+/// else is the positional `<src> <out> <entry>` adapter protocol selected by
+/// `VIBE_*` variables. A verb cannot collide with a source path: a verb has no
+/// `/` and no `.vibe` suffix, and the positional protocol always names a
+/// file. The verb branch discharges its own exception to stderr + exit 1,
+/// where the launcher used to print the adapter's `.diag` sidecar.
+///
+/// The verb branch EXITS with its code rather than returning it: the seed
+/// names `cli_main` as this artifact's entry, so the synthesized `_start`
+/// calls it and PRINTS the returned Int (the positional protocol's callers
+/// read `.diag` sidecars and send stdout to /dev/null, so it never showed).
+/// `runtime/vibe` reads the process status and passes stdout through, so
+/// returning would append a stray `0` (or `1`, with exit status 0) to every
+/// verb's output -- `vibe check`'s empty-means-clean output included.
+export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout + Stderr + Process + Profiler {
+  if user_dispatch_is_verb(host_argv_first()) {
+    // #2513: the `#cfg` flag set for every module this invocation parses;
+    // cli_main_with_lanes does the same for the positional protocol.
+    configure_cfg_flags()
+    // The checked effect-row mode is the CLI default and a process-wide cell
+    // that defaults to UNCHECKED until an invocation sets it; the positional
+    // protocol sets it in cli_main_with_lanes, so the verb route sets it here
+    // before any lane runs (Codex review of #2858). `VIBE_CHECK_ERROR_ROW=0`
+    // is the documented opt-out, the same spelling as there.
+    set_error_row_checked(Env::get("VIBE_CHECK_ERROR_ROW") != "0")
+    // The checked-module cache mode is the same kind of per-invocation cell
+    // (cli_main_with_lanes sets it for the positional protocol).
+    let checked_module_mode = Env::get("VIBE_CHECKED_MODULE_CACHE")
+    set_checked_module_cache_mode(if checked_module_mode == "" {
+      "off"
+    } else {
+      checked_module_mode
+    })
+    let code = run_user_dispatch_args(host_argv())
+    vibe_process_exit_raw(code)
+    code
+  } else {
+    cli_main_with_lanes(fs_lane_compile_full, ss_lane_compile_full)
+  }
 }
 
 /// #2497: the compile-only artifact's entry. Same CLI, production lane tables

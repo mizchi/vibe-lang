@@ -176,11 +176,12 @@ case_block = re.search(r'^case "\$cmd" in$(.*?)^esac$', launcher, re.S | re.M)
 if case_block:
     for arm in re.findall(r'^  ([A-Za-z][A-Za-z0-9|-]*)\)', case_block.group(1), re.M):
         verbs |= {v.lstrip("-") for v in arm.split("|") if v and v.lstrip("-")[:1].isalpha()}
-# Argv verbs moved to lib/@vibe/cli: the match in user_dispatch.vibe is the
-# dispatcher the launcher invokes, so a documented command must appear there
-# or in the remaining host-only case arms.
+# Argv verbs moved into the compiler wasm (#2858): the match in
+# lib/@vibe/compiler/user_dispatch.vibe is the dispatcher the launcher invokes,
+# so a documented command must appear there or in the remaining host-only
+# case arms.
 try:
-    ud = open("lib/@vibe/cli/user_dispatch.vibe", encoding="utf-8").read()
+    ud = open("lib/@vibe/compiler/user_dispatch.vibe", encoding="utf-8").read()
     verbs |= set(re.findall(r'^    "([a-z][a-z0-9-]*)" =>', ud, re.M))
 except OSError:
     pass

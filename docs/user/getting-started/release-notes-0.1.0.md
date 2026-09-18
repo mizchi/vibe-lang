@@ -78,7 +78,7 @@ read, and every feature below is one the compiler itself depends on.
   the legacy `index.vibei` is gone.
 - `vibe new` / `add <source-spec>` / `fetch` / `pkg publish|install|yank`:
   a dependency is pinned by content hash in the root `index.vpkg`
-  (`require @scope/name x.y.z = #pkg:sha1:<hex> from <source>@<commit>`) and
+  (`require @scope/name x.y.z = #pkg:b3:<hex> from <source>@<commit>`) and
   installed under `.vibe/store/`; a semver constraint in the ref resolves to a
   tag at add time (#2676). The registry slice is file-based with an
   RFC6962-shaped transparency log.

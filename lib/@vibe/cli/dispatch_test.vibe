@@ -30,7 +30,25 @@ import ./user_dispatch.vibe {
 }
 
 import ./entry.vibe {
-  format_check_report, run_cli_main_with_args
+  run_cli_main_with_args
+}
+
+import ../compiler {
+  command_component_compile_mode,
+  command_component_entry,
+  display_under_root,
+  expand_user_test_inputs,
+  format_check_report,
+  parse_user_check_args,
+  parse_user_compile_args,
+  parse_user_fmt_args,
+  parse_user_type_at_args,
+  rewrite_user_argv,
+  root_rel_from_invoke,
+  selfhost_cli_run_plan_args,
+  selfhost_cli_test_plan_args,
+  selfhost_cli_user_dispatch_args,
+  user_dispatch_is_verb
 }
 
 test "profile command plans a versioned host action without losing spaces" {
@@ -72,7 +90,7 @@ test "profile command rejects an --out that aliases the source" {
     ])
     "OK"
   } with { Exception::Throw(e) => e }
-  assert(result == "profile: --out must not alias the source")
+  assert(result == "profile: --out must not resolve to the source file")
 }
 
 test "user run plan keeps arguments after --" {
@@ -462,7 +480,7 @@ test "selfhost cli compile rejects missing input before compile" {
 }
 
 test "selfhost cli parses build command args" {
-  let (input_path, output_path, entry_name, mode) = parse_build_args([
+  let (input_path, output_path, entry_name, mode, component) = parse_build_args([
     "build",
     "--debug",
     "main.vibe",
@@ -473,10 +491,11 @@ test "selfhost cli parses build command args" {
   assert(output_path == "out.wasm")
   assert(entry_name == "_start")
   assert(mode == "debug")
+  assert(!component)
 }
 
 test "selfhost cli build selects main and strips vibex suffix" {
-  let (input_path, output_path, entry_name, mode) = parse_build_args([
+  let (input_path, output_path, entry_name, mode, component) = parse_build_args([
     "build",
     "app.vibex"
   ])
@@ -617,7 +636,7 @@ test "selfhost cli build accepts vibex with require pin head" {
 }
 
 test "selfhost cli build consumes profile flag" {
-  let (input_path, output_path, entry_name, mode) = parse_build_args([
+  let (input_path, output_path, entry_name, mode, component) = parse_build_args([
     "build",
     "--profile",
     "/tmp/build.pprof",
@@ -627,6 +646,85 @@ test "selfhost cli build consumes profile flag" {
   assert(output_path == "main.wasm")
   assert(entry_name == "_start")
   assert(mode == "mvp")
+  assert(!component)
+}
+
+test "selfhost cli build --component defaults to a .component.wasm beside the source" {
+  let (input_path, output_path, entry_name, mode, component) = parse_build_args([
+    "build",
+    "--component",
+    "cmd/check.vibe"
+  ])
+  assert(input_path == "cmd/check.vibe")
+  assert(output_path == "cmd/check.component.wasm")
+  // Under `dce-root` this name is the DCE ROOT, not the codegen entry: the
+  // core is still emitted as a library so the lifted export survives ADR-0077
+  // stripping, but what the root cannot reach is pruned.
+  assert(entry_name == "vibe_command")
+  assert(mode == "dce-root")
+  assert(component)
+}
+
+test "selfhost cli build --component takes the SAME lane as the launcher adapter" {
+  // The two front doors of `vibe build --component` must not be able to
+  // disagree. They had independent literals for one commit, and the same flag
+  // produced a 40 MB artifact through the `.vibex` CLI and 2.6 MB through the
+  // launcher's `VIBE_BUILD_COMPONENT` adapter. Both now read the pair from
+  // `cli_support.vibe`, and this asserts the door actually uses it rather than
+  // a literal that happens to match today.
+  let (_, _, entry_name, mode, _) = parse_build_args([
+    "build",
+    "--component",
+    "cmd/check.vibe"
+  ])
+  assert(entry_name == command_component_entry())
+  assert(mode == command_component_compile_mode())
+}
+
+test "selfhost cli build --component overrides --release with the command lane" {
+  let (_, _, entry_name, mode, component) = parse_build_args([
+    "build",
+    "--release",
+    "--component",
+    "cmd/check.vibe"
+  ])
+  assert(entry_name == command_component_entry())
+  assert(mode == command_component_compile_mode())
+  assert(component)
+}
+
+test "selfhost cli build --component honours an explicit -o" {
+  let (input_path, output_path, entry_name, mode, component) = parse_build_args([
+    "build",
+    "--component",
+    "cmd/check.vibe",
+    "-o",
+    "dist/check.component.wasm"
+  ])
+  assert(input_path == "cmd/check.vibe")
+  assert(output_path == "dist/check.component.wasm")
+  assert(entry_name == command_component_entry())
+  assert(component)
+}
+
+test "selfhost cli build --component refuses a vibex" {
+  // A .vibex is an executable root with no export surface (ADR-0075 / #2229),
+  // so it can never carry the `export fn vibe_command` a command component is
+  // made of. The refusal names the module kind to write instead.
+  let result = handle {
+    let _ = parse_build_args(["build", "--component", "cmd/check.vibex"])
+    "OK"
+  } with { Exception::Throw(e) => e }
+  assert(String::index_of(result, "--component needs a .vibe module") >= 0)
+  assert(String::index_of(result, "export fn vibe_command(args: String) -> String") >= 0)
+}
+
+test "selfhost cli build refuses --component with --debug" {
+  let result = handle {
+    let _ = parse_build_args(["build", "--component", "--debug", "main.vibe"])
+    "OK"
+  } with { Exception::Throw(e) => e }
+  assert(String::index_of(result, "--component and --debug cannot be combined") >= 0)
 }
 
 test "selfhost cli build rejects missing profile path" {
@@ -949,6 +1047,25 @@ test "rewrite_user_argv prefixes relative paths with the invoke dir" {
   assert(Array::get(gp, 2) == "sub/deep.vibex")
 }
 
+test "rewrite_user_argv rewrites the source after a valueless run flag" {
+  let root = "/tmp/vibe_user_dispatch_rewrite_bare_root"
+  let sub = "/tmp/vibe_user_dispatch_rewrite_bare_root/sub"
+  Fs::mkdir_p(sub)
+  Fs::write_bytes(String::concat(sub, "/deep.vibex"), string_to_bytes("fn main allows Console {\n  println(\"42\")\n}\n"))
+  // `--alloc-site` and `--mem-sample` take a value only in their `=`
+  // spelling; the bare flag must not swallow the source that follows it.
+  let alloc = rewrite_user_argv(["run", "--alloc-site", "deep.vibex"], sub, root)
+  assert(Array::get(alloc, 1) == "--alloc-site")
+  assert(Array::get(alloc, 2) == "sub/deep.vibex")
+  let sample = rewrite_user_argv(["run", "--mem-sample", "deep.vibex"], sub, root)
+  assert(Array::get(sample, 2) == "sub/deep.vibex")
+  let alloc_n = rewrite_user_argv(["run", "--alloc-site=5", "deep.vibex"], sub, root)
+  assert(Array::get(alloc_n, 1) == "--alloc-site=5")
+  assert(Array::get(alloc_n, 2) == "sub/deep.vibex")
+  let mem = rewrite_user_argv(["run", "--mem", "--trace", "deep.vibex"], sub, root)
+  assert(Array::get(mem, 3) == "sub/deep.vibex")
+}
+
 test "expand_user_test_inputs collects *_test.vibe under a directory" {
   let dir = "/tmp/vibe_user_dispatch_test_dir"
   let nested = "/tmp/vibe_user_dispatch_test_dir/nested"
@@ -1005,7 +1122,7 @@ test "user test plan expands a directory to *_test.vibe files" {
 }
 
 test "user compile parse defaults to the build-dir artifact" {
-  let (input_path, output_path, entry_name, wit, minify) = parse_user_compile_args([
+  let (input_path, output_path, entry_name, wit, minify, component) = parse_user_compile_args([
     "compile",
     "app.vibe"
   ])
@@ -1014,10 +1131,11 @@ test "user compile parse defaults to the build-dir artifact" {
   assert(entry_name == "main")
   assert(!wit)
   assert(!minify)
+  assert(!component)
 }
 
 test "user compile parse honors -o and --wit" {
-  let (input_path, output_path, entry_name, wit, minify) = parse_user_compile_args([
+  let (input_path, output_path, entry_name, wit, minify, component) = parse_user_compile_args([
     "compile",
     "--wit",
     "srv.vibe",
@@ -1029,6 +1147,94 @@ test "user compile parse honors -o and --wit" {
   assert(entry_name == "main")
   assert(wit)
   assert(!minify)
+  assert(!component)
+}
+
+/// `--component` reaches the door the LAUNCHER uses.
+///
+/// It landed on `parse_build_args` (#2861/#2863), and moving argv parsing into
+/// `user_dispatch.vibe` left that function reachable only from this file --
+/// so its `--component` tests kept passing while `vibe build --component`
+/// answered `unsupported option: --component`. A test that can only be reached
+/// by calling the function directly certifies nothing about the CLI, which is
+/// why the pair below asks `user_dispatch_is_verb` WHICH door is live and then
+/// tests that one.
+test "build/compile go to the user-dispatch door, so that is where --component has to be" {
+  assert(user_dispatch_is_verb("build"))
+  assert(user_dispatch_is_verb("compile"))
+}
+
+test "user compile parse accepts --component on the shared lane" {
+  let (input_path, output_path, entry_name, wit, minify, component) = parse_user_compile_args([
+    "build",
+    "--component",
+    "cmd.vibe"
+  ])
+  assert(input_path == "cmd.vibe")
+  assert(output_path == ".vibe/build/out/cmd.component.wasm")
+  // Not the literal "vibe_command": the point is that BOTH doors read the one
+  // spelling in cli_support.vibe, so a change there moves both or neither.
+  assert(entry_name == command_component_entry())
+  assert(!wit)
+  assert(!minify)
+  assert(component)
+}
+
+test "user compile parse refuses --component with --wit" {
+  let result = handle {
+    let _ = parse_user_compile_args([
+      "build",
+      "--component",
+      "--wit",
+      "cmd.vibe"
+    ])
+    "OK"
+  } with { Exception::Throw(e) => e }
+  assert(result == "--component and --wit produce different artifacts from the same file; run them separately")
+}
+
+test "user compile parse refuses --component with --entry" {
+  let result = handle {
+    let _ = parse_user_compile_args([
+      "build",
+      "--component",
+      "--entry",
+      "foo",
+      "cmd.vibe"
+    ])
+    "OK"
+  } with { Exception::Throw(e) => e }
+  assert(result == "--component has no command entry; its surface is the lifted `run` export, so --entry is not allowed")
+}
+
+test "user compile parse refuses --component with --minify" {
+  let result = handle {
+    let _ = parse_user_compile_args([
+      "build",
+      "--component",
+      "--minify",
+      "cmd.vibe"
+    ])
+    "OK"
+  } with { Exception::Throw(e) => e }
+  assert(result == "--component and --minify cannot be combined: the minifier takes a core module, not a component")
+}
+
+test "user compile parse refuses --component on a vibex" {
+  let result = handle {
+    let _ = parse_user_compile_args(["build", "--component", "app.vibex"])
+    "OK"
+  } with { Exception::Throw(e) => e }
+  assert(String::starts_with(result, "--component needs a .vibe module:"))
+}
+
+/// The mode is the OTHER half of the shared lane. #2863 measured the same flag
+/// producing 40 MB through one door and 2.6 MB through the other, because each
+/// door spelled the compile mode for itself; this pins that the name still
+/// resolves rather than that it equals some literal.
+test "the command-component compile mode is the one cli_support.vibe names" {
+  assert(command_component_compile_mode() == "dce-root")
+  assert(command_component_entry() == "vibe_command")
 }
 
 test "user compile parse rejects --entry on vibex" {
@@ -1037,6 +1243,57 @@ test "user compile parse rejects --entry on vibex" {
     "OK"
   } with { Exception::Throw(e) => e }
   assert(result == ".vibex entry is always main; --entry is not allowed")
+}
+
+/// `--debug` is the linked debug lane; it used to be accepted and then
+/// ignored, so `vibe build --debug` wrote a release artifact (Codex review of
+/// #2858). The lane has no component / wit / minify shape, so the combination
+/// is refused instead of picking one silently.
+test "user build refuses --debug combined with another artifact kind" {
+  let src = "/tmp/vibe_user_dispatch_debug_combo.vibe"
+  Fs::write_bytes(src, string_to_bytes("export fn main() -> Int { 42 }\n"))
+  let result = handle {
+    let _ = selfhost_cli_user_dispatch_args([
+      "build",
+      "--debug",
+      "--component",
+      src
+    ])
+    "OK"
+  } with { Exception::Throw(e) => e }
+  assert(String::contains(result, "--debug selects the linked debug lane"))
+}
+
+/// The frozen `vibe diagnostics` contract (#1567): raw lines, exit 0 even
+/// when the file is ill-typed. Editors that still call it rely on both.
+test "user diagnostics reports an ill-typed file and still exits 0" {
+  let src = "/tmp/vibe_user_dispatch_diagnostics_bad.vibe"
+  Fs::write_bytes(src, string_to_bytes("let a: Int = \"not an int\"\n"))
+  let status = selfhost_cli_user_dispatch_args(["diagnostics", src])
+  assert(status == 0)
+  let status_json = selfhost_cli_user_dispatch_args([
+    "diagnostics",
+    "--json",
+    src
+  ])
+  assert(status_json == 0)
+}
+
+/// Two JSON arrays concatenated are not JSON; the launcher refused this before
+/// the verbs moved, and the dispatcher refuses it before sweeping anything.
+test "user grep refuses --json over more than one path" {
+  let result = handle {
+    let _ = selfhost_cli_user_dispatch_args([
+      "grep",
+      "--json",
+      "--pattern",
+      "f($(x:exp))",
+      "lib",
+      "fixtures"
+    ])
+    "OK"
+  } with { Exception::Throw(e) => e }
+  assert(result == "vibe grep --json: one path at a time (JSON output is a single array)")
 }
 
 test "user check parse accepts --single-file and --json" {
@@ -1157,4 +1414,196 @@ test "user dispatch run plans a versioned host action" {
   let plan = Fs::read_file(plan_path)
   assert(String::starts_with(plan, "vibe-host-action-v1\nrun-guest\n"))
   assert(String::contains(plan, src_path))
+}
+
+/// `vibe check --profile-tsv P --profile-callstack Q` writes both sidecars,
+/// timed with `Profiler::now_us`: a `total` row and a `check` row carrying a
+/// positive microsecond count (the shape scripts/test_cli_core.sh reads). The
+/// check itself still answers the file.
+test "user check writes the requested profiling sidecars" {
+  let src = "/tmp/vibe_user_dispatch_check_profile.vibe"
+  let tsv = "/tmp/vibe_user_dispatch_check_profile.tsv"
+  let callstack = "/tmp/vibe_user_dispatch_check_callstack.tsv"
+  Fs::write_bytes(src, string_to_bytes("let answer = () -> Int { 40 + 2 }\n"))
+  let status = selfhost_cli_user_dispatch_args([
+    "check",
+    "--profile-tsv",
+    tsv,
+    "--profile-callstack",
+    callstack,
+    src
+  ])
+  assert(status == 0)
+  let profile = Fs::read_file(tsv)
+  assert(String::starts_with(profile, "stage\telapsed_ms\telapsed_us\n"))
+  assert(String::contains(profile, "\ncheck\t"))
+  assert(String::contains(profile, "\ntotal\t"))
+  assert(!String::contains(profile, "\ntotal\t0\t0\n"))
+  let stacks = Fs::read_file(callstack)
+  assert(String::starts_with(stacks, "stage\telapsed_ms\telapsed_us\n"))
+  assert(String::contains(stacks, "\ncheck\t"))
+  assert(!String::contains(stacks, "\ncheck\t0\t0\n"))
+}
+
+/// A test file that does not compile is one FAILED record, not the end of the
+/// suite: the plan still lists the file that compiled, and the failed one with
+/// an EMPTY wasm path, which the launcher reports as `FAIL (compile)`.
+test "user test plan isolates a compile failure to its file" {
+  let bad = "/tmp/vibe_user_dispatch_isolation_bad_test.vibe"
+  let good = "/tmp/vibe_user_dispatch_isolation_good_test.vibe"
+  let plan_path = "/tmp/vibe_user_dispatch_isolation_plan.txt"
+  Fs::write_bytes(bad, string_to_bytes("test \"bad\" {\n  let a: Int = \"x\"\n  assert(a == 1)\n}\n"))
+  Fs::write_bytes(good, string_to_bytes("test \"good\" {\n  assert(1 == 1)\n}\n"))
+  let status = selfhost_cli_test_plan_args(["test", bad, good], plan_path)
+  assert(status == 0)
+  let plan = Fs::read_file(plan_path)
+  assert(String::contains(plan, String::concat(bad, "\t\n")))
+  assert(String::contains(plan, String::concat(good, "\t")))
+  assert(!String::contains(plan, String::concat(good, "\t\n")))
+}
+
+/// A sweep refuses a root that does not exist BEFORE printing any row: rows
+/// for the roots that exist would read as a complete answer to a different
+/// question (scripts/test_vibe_symbols.sh, #2381).
+test "user symbols refuses a missing root in a sweep" {
+  let present = "/tmp/vibe_user_dispatch_symbols_present.vibe"
+  Fs::write_bytes(present, string_to_bytes("export let alpha = 1\n"))
+  let result = handle {
+    let _ = selfhost_cli_user_dispatch_args([
+      "symbols",
+      present,
+      "/nonexistent/path.vibe"
+    ])
+    "OK"
+  } with { Exception::Throw(e) => e }
+  assert(result == "not found: /nonexistent/path.vibe")
+}
+
+/// The equals spelling of the bench options is accepted alongside the split
+/// one; a parse that reaches the file check has accepted every flag.
+test "user bench accepts the equals spelling of its options" {
+  let result = handle {
+    let _ = selfhost_cli_user_dispatch_args([
+      "bench",
+      "--iters=100",
+      "--warmup=10",
+      "--interval-us=500",
+      "/nonexistent/bench.vibe"
+    ])
+    "OK"
+  } with { Exception::Throw(e) => e }
+  assert(result == "not found: /nonexistent/bench.vibe")
+}
+
+/// A mistyped `--writ` used to be taken for the target and then replaced by
+/// the real one: hashes printed, exit 0, nothing written.
+test "user hash refuses an unknown flag and a second target" {
+  let flag = handle {
+    let _ = selfhost_cli_user_dispatch_args(["hash", "--writ", "index.vpkg"])
+    "OK"
+  } with { Exception::Throw(e) => e }
+  assert(flag == "hash: unknown flag: --writ")
+  let extra = handle {
+    let _ = selfhost_cli_user_dispatch_args(["hash", "a.vpkg", "b.vpkg"])
+    "OK"
+  } with { Exception::Throw(e) => e }
+  assert(String::starts_with(extra, "hash: takes ONE target"))
+}
+
+/// The host-action file is line-oriented: a guest argument holding a newline
+/// would reach the program as two arguments, so it is refused.
+test "user run plan refuses a guest argument with a newline" {
+  let plan_path = "/tmp/vibe_user_dispatch_run_newline.txt"
+  let src_path = "/tmp/vibe_user_dispatch_run_newline.vibex"
+  Fs::write_bytes(src_path, string_to_bytes("fn main allows Console {\n  println(\"42\")\n}\n"))
+  let result = handle {
+    let _ = selfhost_cli_run_plan_args(["run", src_path, "--", "two\nlines"], plan_path)
+    "OK"
+  } with { Exception::Throw(e) => e }
+  assert(result == "run: newlines are not supported in guest arguments")
+}
+
+/// An absolute test source is compiled under `test/_abs/...`, so it cannot
+/// share an artifact path with a project-relative source of the same name.
+test "user test plan keeps absolute sources in their own namespace" {
+  let src = "/tmp/vibe_user_dispatch_abs_ns_test.vibe"
+  let plan_path = "/tmp/vibe_user_dispatch_abs_ns_plan.txt"
+  Fs::write_bytes(src, string_to_bytes("test \"ns\" {\n  assert(1 == 1)\n}\n"))
+  let status = selfhost_cli_test_plan_args(["test", src], plan_path)
+  assert(status == 0)
+  let plan = Fs::read_file(plan_path)
+  assert(String::contains(plan, "/test/_abs/tmp/vibe_user_dispatch_abs_ns_test.wasm"))
+}
+
+/// The equals spelling of the grep options is accepted alongside the split
+/// one: a parse that reaches the JSON multi-path refusal has read `--pattern=`.
+test "user grep accepts the equals spelling of --pattern" {
+  let result = handle {
+    let _ = selfhost_cli_user_dispatch_args([
+      "grep",
+      "--pattern=$(x:id)",
+      "--where=$x : Int",
+      "--json",
+      "lib",
+      "fixtures"
+    ])
+    "OK"
+  } with { Exception::Throw(e) => e }
+  assert(result == "vibe grep --json: one path at a time (JSON output is a single array)")
+}
+
+/// `vibe check a.vibe b.vibe` checks every positional file in turn; one
+/// failing file fails the command, and a missing one is refused before any
+/// is checked.
+test "user check takes several files" {
+  let good = "/tmp/vibe_user_dispatch_check_multi_good.vibe"
+  let bad = "/tmp/vibe_user_dispatch_check_multi_bad.vibe"
+  Fs::write_bytes(good, string_to_bytes("let answer = () -> Int { 40 + 2 }\n"))
+  Fs::write_bytes(bad, string_to_bytes("let a: Int = \"not an int\"\n"))
+  assert(selfhost_cli_user_dispatch_args(["check", good, good]) == 0)
+  assert(selfhost_cli_user_dispatch_args(["check", good, bad]) == 1)
+  let missing = handle {
+    let _ = selfhost_cli_user_dispatch_args([
+      "check",
+      good,
+      "/nonexistent/x.vibe"
+    ])
+    "OK"
+  } with { Exception::Throw(e) => e }
+  assert(missing == "not found: /nonexistent/x.vibe")
+}
+
+/// `--fn=NAME` is accepted alongside `--fn NAME`; a parse that reaches the
+/// file check has read the flag.
+test "user rc-plan accepts the equals spelling of --fn" {
+  let result = handle {
+    let _ = selfhost_cli_user_dispatch_args([
+      "rc-plan",
+      "--fn=make",
+      "/nonexistent/rc.vibe"
+    ])
+    "OK"
+  } with { Exception::Throw(e) => e }
+  assert(result == "not found: /nonexistent/rc.vibe")
+}
+
+/// The scan roots are validated before the recursive walkers read them: a
+/// missing or non-directory root is a diagnostic, not a runner trap.
+test "user check scans refuse a missing or non-directory root" {
+  let file = "/tmp/vibe_user_dispatch_scan_root.vibe"
+  Fs::write_bytes(file, string_to_bytes("let a = 1\n"))
+  let missing = handle {
+    let _ = selfhost_cli_user_dispatch_args([
+      "check",
+      "--missing-vpkg",
+      "/nonexistent/tree"
+    ])
+    "OK"
+  } with { Exception::Throw(e) => e }
+  assert(missing == "not found: /nonexistent/tree")
+  let not_dir = handle {
+    let _ = selfhost_cli_user_dispatch_args(["check", "--deps-missing", file])
+    "OK"
+  } with { Exception::Throw(e) => e }
+  assert(String::starts_with(not_dir, "check: /tmp/vibe_user_dispatch_scan_root.vibe is not a directory"))
 }

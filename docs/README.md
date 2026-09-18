@@ -92,6 +92,7 @@ the repo; not the user manual.
 | [internal/design/adr.md](internal/design/adr.md) | Living ADR log |
 | [internal/design/capability-authorization-surface.md](internal/design/capability-authorization-surface.md) | ADR-0088, proposed |
 | [internal/design/capability-host-contract.md](internal/design/capability-host-contract.md) | ADR-0088's host half (#2825 step 1), proposed: what a host does with a capability import it withholds |
+| [internal/design/component-lazy-dispatch.md](internal/design/component-lazy-dispatch.md) | The `vibe build --component` / `viberun --commands` contract: manifest, result frame, which wrap a command gets |
 | [internal/design/compiler-parallelism.md](internal/design/compiler-parallelism.md) | ADR-0068 companion, proposed |
 | [internal/design/concurrency.md](internal/design/concurrency.md) | ADR-0068, proposed. The user concurrency guide is the book's [17_concurrency](../book/en/17_concurrency.vibe.md) |
 | [internal/design/effect-evidence-passing.md](internal/design/effect-evidence-passing.md) | ADR-0076, proposed |

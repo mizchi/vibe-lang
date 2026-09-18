@@ -110,8 +110,9 @@ Status: accepted and moved from `TODO.md`.
   import graph cycles are diagnosed in `stage: "import"` with `import cycle:`
   messages.
 - Dependencies are pinned in the root `index.vpkg` header, one
-  `require @scope/name x.y.z = #pkg:sha1:<hex> from <source>@<commit>` line
-  per package: `vibe add <source-spec>` writes it and installs the package
+  `require @scope/name x.y.z = #pkg:b3:<hex> from <source>@<commit>`
+  line per package (a legacy `#pkg:sha1:<hex>` still verifies): `vibe add
+  <source-spec>` writes it and installs the package
   under `.vibe/store/`, `vibe fetch` restores the store from the pins, and the
   loader verifies the store copy against the pin on every build (#2676). There
   is no separate lock file. Import diagnostics are compile-fatal.

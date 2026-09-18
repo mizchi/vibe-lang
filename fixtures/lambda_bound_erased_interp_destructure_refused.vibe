@@ -1,0 +1,33 @@
+//# #2745: a DESTRUCTURING pattern's payloads are paired against the scrutinee.
+//
+// Codex, P1 round 5 on #2761. Only a whole-value `PBind` carried the scrutinee's
+// formal; every other pattern bound each payload binder to "", so the refusal
+// declined on a value that IS erased. Measured:
+// `"\{match (a, 1) { (b, _) => b }}"` with `a: T` printed `252`, the tagged
+// pointer -- the same number the unwrapped spelling printed before this PR.
+//
+// A payload's type is not knowable in general: this pass has no types, and a
+// scrutinee that is a name or a call says nothing about its pieces. It IS
+// knowable when the scrutinee is WRITTEN AT THE SITE in the shape the pattern
+// takes apart, so a tuple literal against `PTuple`, a constructor call against
+// `PCtor`, and a record literal against `PStruct` pair positionally. Anything
+// else still blanks, which shadows.
+//
+// The reverse error lives on the green side, where the refusal fixtures cannot
+// reach it: a destructuring match at a CONCRETE scrutinee must keep rendering.
+// `fixtures/lambda_bound_toplevel_witness_test.vibe` holds those rows.
+
+struct Qt {
+  w: Int
+}
+
+fn outer[T](x: T) -> String {
+  let inner = [T](a: T) -> String {
+    "\{match (a, 1) { (b, _) => b }}"
+  }
+  inner(Qt::{ w: 5 })
+}
+
+export fn _start() -> Int {
+  String::length(outer(7))
+}

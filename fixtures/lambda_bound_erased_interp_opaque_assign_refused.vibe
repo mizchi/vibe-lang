@@ -1,0 +1,38 @@
+//# #2745: an assignment this walk cannot classify must not ERASE what is known.
+//
+// Codex, P1 round 15 on #2761. Measured on `1164350`:
+// `{ let mut p = (a, 1); p = idf((a, 1)); match p { (b, _) => b } }` printed a
+// 3-digit pointer decimal -- having known `p`'s shape one line earlier.
+//
+// Round 13 gave an assignment the whole of `dtd_interp_record_shape`, mask
+// included, and its own commit note argued that was safe because "every
+// assignment to one slot has the slot's type, so they agree on whether that
+// type mentions an erased formal". That premise is right and the conclusion
+// drawn from it was backwards: if they agree, the old records are STILL VALID,
+// which is precisely why they must not be dropped.
+//
+// So the two halves are separated. A `let` introduces a binding whose type is
+// its own and must shadow an outer one of the same spelling; an assignment
+// cannot change the checked type of the slot it writes, so it may only ADD.
+
+struct Qt {
+  w: Int
+}
+
+fn outer[T](x: T) -> String {
+  let inner = [T](a: T) -> String {
+    let idf = [U](u: U) -> U {
+      u
+    }
+    "\{ { let mut p = (a, 1)
+    p = idf((a, 1))
+    match p {
+      (b, _) => b
+    } } }"
+  }
+  inner(Qt::{ w: 5 })
+}
+
+export fn _start() -> Int {
+  String::length(outer(7))
+}

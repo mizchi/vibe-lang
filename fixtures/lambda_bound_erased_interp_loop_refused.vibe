@@ -1,0 +1,29 @@
+//# #2745: a loop's break value reaches the interpolation through an ASSIGNMENT.
+//
+// Codex, P1 round 5 on #2761. `loop (i = 0) { break a }` is LOWERED at parse
+// time into a mutable `__loop_result` initialized with `0`, assigned the break
+// value inside the loop body, and read in the tail of an `ESeq`. The walk took
+// that tail and found `__loop_result` typed from the DUMMY initializer, so an
+// erased `a` reached the renderer -- measured `252`, the tagged pointer.
+//
+// The rule the fix states is about ASSIGNMENT, not about that lowered name: a
+// mutable slot's type is its initializer's OR any assigned value's, and a slot
+// that ever holds an erased formal is erased.
+// `lambda_bound_erased_interp_assign_rebind_refused.vibe` is that rule written
+// in source, which is what keeps the rule from being a special case for
+// `__loop_result`.
+
+struct Qt {
+  w: Int
+}
+
+fn outer[T](x: T) -> String {
+  let inner = [T](a: T) -> String {
+    "\{loop (i = 0) { break a }}"
+  }
+  inner(Qt::{ w: 5 })
+}
+
+export fn _start() -> Int {
+  String::length(outer(7))
+}

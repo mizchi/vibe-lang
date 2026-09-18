@@ -1,0 +1,130 @@
+//# ADR-0093 / #2829: algorithm-tagged content identities.
+//#
+//# On-disk / pin spelling (optional leading `#`):
+//#   {pkg|ct}:{sha1|b3}:{hex}
+//# sha1 hex is 40 lowercase digits (legacy read). b3 hex is 64 lowercase
+//# digits — the 32-byte BLAKE3-256 digest in official-vector byte order
+//# (the same hex `blake3("")` returns; not a word-wise endian swap).
+//#
+//# New writes are BLAKE3-256 (`b3`). A sha1 identity still verifies against
+//# SHA-1 of the same payload. An append-only log row is never relabelled.
+
+import @vibe/core {
+  sha1
+}
+
+import @vibe/blake3 {
+  blake3
+}
+
+fn is_lower_hex(s: String, start: Int, end: Int) -> Bool {
+  if start < 0 || end < start || end > String::length(s) {
+    false
+  } else {
+    let mut i = start
+    let mut ok = true
+    while i < end && ok {
+      let c = String::char_code_at(s, i)
+      if (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') {
+        i = i + 1
+      } else {
+        ok = false
+      }
+    }
+    ok
+  }
+}
+
+fn strip_hash_ref(s: String) -> String {
+  if String::starts_with(s, "#") {
+    String::substring(s, 1, String::length(s))
+  } else {
+    s
+  }
+}
+
+fn algo_hex_len(algo: String) -> Int {
+  if algo == "sha1" {
+    40
+  } else if algo == "b3" {
+    64
+  } else {
+    0
+  }
+}
+
+/// Parse `{kind}:{algo}:{hex}` with an optional leading `#`.
+/// kind is `pkg` or `ct`; algo is `sha1` (40 hex) or `b3` (64 hex).
+export fn parse_content_id(s: String) -> Option[(String, String, String)] {
+  let body = strip_hash_ref(s)
+  let c1 = String::index_of(body, ":")
+  if c1 <= 0 {
+    None
+  } else {
+    let rest = String::substring(body, c1 + 1, String::length(body))
+    let c2 = String::index_of(rest, ":")
+    if c2 <= 0 {
+      None
+    } else {
+      let kind = String::substring(body, 0, c1)
+      let algo = String::substring(rest, 0, c2)
+      let hex = String::substring(rest, c2 + 1, String::length(rest))
+      let n = algo_hex_len(algo)
+      if !(kind == "pkg" || kind == "ct") {
+        None
+      } else if n == 0 {
+        None
+      } else if String::length(hex) != n {
+        None
+      } else if !is_lower_hex(hex, 0, n) {
+        None
+      } else {
+        Some((kind, algo, hex))
+      }
+    }
+  }
+}
+
+/// A require / generated_hash pin: `#pkg:sha1:<40hex>` or `#pkg:b3:<64hex>`.
+export fn is_package_pin(h: String) -> Bool {
+  if !String::starts_with(h, "#") {
+    false
+  } else {
+    match parse_content_id(h) {
+      Some((kind, _, _)) => kind == "pkg",
+      None => false
+    }
+  }
+}
+
+/// Digest hex for a payload under a parsed algorithm.
+export fn content_digest(algo: String, payload: String) -> String {
+  if algo == "sha1" {
+    sha1(payload)
+  } else {
+    blake3(payload)
+  }
+}
+
+/// Canonical new-write identity. Always `b3` / BLAKE3-256.
+export fn emit_content_id(kind: String, payload: String) -> String {
+  emit_content_id_with(kind, "b3", payload)
+}
+
+/// Emit `{kind}:{algo}:{hex}`. `algo` is `sha1` or `b3` (anything else is `b3`).
+export fn emit_content_id_with(kind: String, algo: String, payload: String) -> String {
+  let a = if algo == "sha1" {
+    "sha1"
+  } else {
+    "b3"
+  }
+  "\{kind}:\{a}:\{content_digest(a, payload)}"
+}
+
+/// True when `id` names this payload under the algorithm the id itself carries.
+export fn content_id_matches(id: String, payload: String) -> Bool {
+  match parse_content_id(id) {
+    Some((_, algo, hex)) => content_digest(algo, payload) == hex,
+    None => false
+  }
+}

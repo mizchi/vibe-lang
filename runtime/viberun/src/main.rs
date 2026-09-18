@@ -30,6 +30,8 @@ use wasmtime::{
     Trap, AsContext, GuestProfiler, TypedFunc, Val, ValType,
 };
 
+mod commands;
+
 const FFI_END_OF_STRING_ARRAY: &str = "ffi_end_of_/string_array";
 const WASI_ERRNO_SUCCESS: i32 = 0;
 const WASI_ERRNO_BADF: i32 = 8;
@@ -437,11 +439,26 @@ fn print_help() {
            viberun --dump-imports <input.wasm>\n\
            viberun --dump-linemap <input.wasm>\n\
            viberun --daemon <wasm|cwasm>\n\
+           viberun --commands [--trust-precompiled] <manifest> <verb> [args...]\n\
+           viberun --precompile-component <input.component.wasm> [-o <out.cwasm>]\n\
            viberun --help\n\
          \n\
          A Component Model binary is detected from its header and run through\n\
          the async component path instead (#1230 M1b-3c-2): its `run` export is\n\
          driven to completion and the returned value printed.\n\
+         \n\
+         --commands is the LAZY dispatch lane: the manifest (a\n\
+         `vibe-commands-v1` TSV of `<verb>\\t<artifact>` rows) maps each verb to\n\
+         its own component, and only the invoked verb's artifact is read,\n\
+         compiled and instantiated. Each artifact exports\n\
+         `run: func(args: string) -> string`, takes argv joined by NUL, and\n\
+         returns `vibe-command-result-v1\\t<exit>` then its output.\n\
+         \n\
+         A manifest row may name a `.cwasm` from --precompile-component to skip\n\
+         Cranelift, but only with --trust-precompiled: loading a precompiled\n\
+         image runs native code that no wasm sandbox contains, and a manifest\n\
+         is data. The flag is the invoker vouching for what it names, the same\n\
+         way naming a .cwasm path directly already is.\n\
          \n\
          ENV:\n\
            MOONRUN_WT_MEMORY_MB      soft cap on linear memory (default 8192)\n\
@@ -1109,6 +1126,72 @@ fn is_component_file(path: &str) -> bool {
     buf == [0x00, 0x61, 0x73, 0x6d, 0x0d, 0x00, 0x01, 0x00]
 }
 
+// Engine configuration for the lazy command lane. Deliberately
+// `engine_config()` plus component support and NOTHING else: a `.cwasm`
+// produced by `--precompile-component` is only loadable by an engine with a
+// matching configuration, so every knob added here invalidates every image
+// already on disk. The async/concurrency options `run_async_component` sets
+// stay out for the same reason -- command components are synchronous lifts.
+fn command_engine_config() -> Config {
+    let mut cfg = engine_config();
+    cfg.wasm_component_model(true);
+    cfg
+}
+
+// `viberun --commands <manifest> <verb> [args...]`
+//
+// The native bootstrap half of lazy dispatch: read the manifest, resolve the
+// verb, and load ONLY that artifact. What the verb's component returns is
+// framed (`vibe-command-result-v1`), so a component that returns nonsense
+// fails loudly here instead of exiting 0 with partial output.
+fn run_commands(args: Vec<String>) -> Result<i32> {
+    let mut iter = args.into_iter().peekable();
+    // Options are read BEFORE the manifest, because everything from the verb
+    // onwards belongs to the command. An unrecognized one is refused rather
+    // than taken for the manifest path -- the same discipline `runtime/vibe`'s
+    // `build` arm now applies, and for the same reason: a flag quietly read as
+    // a path is a wrong answer reported as success.
+    let mut precompiled = commands::PrecompiledPolicy::Refuse;
+    while let Some(arg) = iter.peek() {
+        match arg.as_str() {
+            "--trust-precompiled" => {
+                precompiled = commands::PrecompiledPolicy::Trust;
+                iter.next();
+            }
+            other if other.starts_with("--") => {
+                bail!("--commands: unknown option `{other}` (options come before <manifest>)")
+            }
+            _ => break,
+        }
+    }
+    let Some(manifest_path) = iter.next() else {
+        bail!("--commands: missing <manifest>");
+    };
+    let Some(verb) = iter.next() else {
+        bail!("--commands: missing <verb> (usage: viberun --commands [--trust-precompiled] <manifest> <verb> [args...])");
+    };
+    let argv: Vec<String> = std::iter::once(verb.clone()).chain(iter).collect();
+
+    let manifest = commands::CommandManifest::read(std::path::Path::new(&manifest_path))?;
+    let engine = Engine::new(&command_engine_config())?;
+    let mut registry = commands::CommandRegistry::new(engine.clone(), manifest, precompiled);
+    let component = registry.load(&verb)?.clone();
+    let result = commands::invoke_command(
+        &engine,
+        &component,
+        &argv,
+        store_mem_limits(),
+        vibe_stat_token,
+    )?;
+    // Written, not `println!`ed: the payload carries its own trailing newline
+    // (or deliberately does not), and a command that prints nothing must
+    // print nothing.
+    let mut stdout = io::stdout();
+    stdout.write_all(result.stdout.as_bytes())?;
+    stdout.flush()?;
+    Ok(result.exit)
+}
+
 fn parse_guest_profile_interval(value: Option<&str>) -> Result<Duration> {
     match value {
         None => Ok(Duration::from_millis(1)),
@@ -1598,14 +1681,29 @@ fn run(args: Vec<String>) -> Result<i32> {
             // positional one, silently losing the diagnostic all over again.
             // Match read_arg_or_env's precedence: positional arg first.
             if matches!(e.downcast_ref::<Trap>(), Some(Trap::StackOverflow)) {
-                let output_path = args
-                    .get(2)
-                    .cloned()
-                    .filter(|s| !s.is_empty())
-                    .or_else(|| std::env::var("VIBE_OUTPUT").ok());
-                if let Some(output_path) = output_path {
+                // #2858: under the verb protocol (`cli check <file>`) the
+                // positional args are the verb's own words, so `args[2]` is
+                // the user's source path or a flag -- writing `<that>.diag`
+                // would drop a sidecar beside the user's file (or a file
+                // named `--single-file.diag` in the project root). The
+                // launcher names the sidecar explicitly (VIBE_CRASH_DIAG_OUT,
+                // read back by runtime/vibe's invoke_cli); the positional /
+                // VIBE_OUTPUT convention stays for the adapter protocol.
+                let crash_diag = std::env::var("VIBE_CRASH_DIAG_OUT")
+                    .ok()
+                    .filter(|s| !s.is_empty());
+                let sidecar = match crash_diag {
+                    Some(path) => Some(path),
+                    None => args
+                        .get(2)
+                        .cloned()
+                        .filter(|s| !s.is_empty())
+                        .or_else(|| std::env::var("VIBE_OUTPUT").ok())
+                        .map(|output_path| format!("{output_path}.diag")),
+                };
+                if let Some(sidecar) = sidecar {
                     let _ = std::fs::write(
-                        format!("{output_path}.diag"),
+                        sidecar,
                         "expression too deeply nested (stack overflow while type-checking)\n",
                     );
                 }
@@ -5176,6 +5274,21 @@ mod tests {
 
 fn real_main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // FIRST, above the `--help` scan below: everything after the verb belongs
+    // to the command, and that scan is an `any()` over the whole argv. Left
+    // later, `viberun --commands m.tsv build --help` would print THIS help and
+    // the command would never run -- a flag the guest owns, answered by the
+    // host.
+    if args.first().map(|s| s.as_str()) == Some("--commands") {
+        let rest: Vec<String> = args.iter().skip(1).cloned().collect();
+        match run_commands(rest) {
+            Ok(code) => std::process::exit(code),
+            Err(e) => {
+                eprintln!("viberun: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
     if args.iter().any(|a| a == "--help" || a == "-h") {
         print_help();
         std::process::exit(0);
@@ -5237,6 +5350,44 @@ fn real_main() {
             Ok(code) => std::process::exit(code),
             Err(e) => {
                 eprintln!("viberun: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+    if args.first().map(|s| s.as_str()) == Some("--precompile-component") {
+        let mut iter = args.iter().skip(1);
+        let input = match iter.next() {
+            Some(s) => s.clone(),
+            None => {
+                eprintln!("--precompile-component: missing <input.component.wasm>");
+                std::process::exit(2);
+            }
+        };
+        let mut output: Option<String> = None;
+        while let Some(arg) = iter.next() {
+            match arg.as_str() {
+                "-o" => match iter.next() {
+                    Some(p) => output = Some(p.clone()),
+                    None => {
+                        eprintln!("-o: missing path");
+                        std::process::exit(2);
+                    }
+                },
+                other => {
+                    eprintln!("--precompile-component: unknown arg `{other}`");
+                    std::process::exit(2);
+                }
+            }
+        }
+        match Engine::new(&command_engine_config())
+            .and_then(|engine| commands::precompile_component(&engine, &input, output.as_deref()))
+        {
+            Ok(path) => {
+                eprintln!("viberun: precompiled component -> {}", path.display());
+                return;
+            }
+            Err(e) => {
+                eprintln!("viberun: precompile-component failed: {e:?}");
                 std::process::exit(1);
             }
         }
