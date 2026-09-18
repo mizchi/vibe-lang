@@ -353,6 +353,13 @@ build-time boundary that issue names, and `dce-root` is what makes each of
 those artifacts worth cutting out — the same measurement that says a
 per-verb `check` is 2.6 MB rather than 40 MB.
 
+The capability half is designed in
+[host-contract-artifact-lazy-cli.md](host-contract-artifact-lazy-cli.md)
+(ADR-0112): the wrap becomes the generated world of used operations (inline
+interfaces, not `import vibe:host/fs` whole), and a `vibe-commands-v2` row
+carries the verb's requirement so authority is settled before the artifact
+is read.
+
 **The order of the remaining work is set by what was measured, not by what is
 cheapest.** Capability comes first: of the verbs worth splitting out, `check`
 traps and `fmt` is reduced to `--stdout` until the wrap serves `env-get` and
