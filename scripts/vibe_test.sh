@@ -146,11 +146,31 @@ if [ "$coverage" = "1" ]; then
 fi
 
 # Collect the test files: explicit .vibe files, or every *_test.vibe under a dir.
+#
+# The expansion is CHECKED, not trusted (#2870). `find | sort` runs two system
+# binaries, and a broken one exits non-zero with an empty stdout -- which the
+# loop below cannot tell from "this directory holds no tests", so the run ended
+# at `no test files found` and reported it as an ordinary outcome. Measured
+# 2026-09-18: with `LD_LIBRARY_PATH` set to the nix store path the `pkf`
+# wrapper exports, `/usr/bin/sort` dies on `GLIBC_ABI_DT_X86_64_PLT not found`
+# and a directory holding one test file expands to nothing. "Could not decide"
+# and "nothing to do" must not be the same answer (AGENTS.md).
+#
+# The status comes through a sentinel line rather than PIPESTATUS: the pipeline
+# runs in a process substitution, so its status is not the shell's to read.
 files=()
 for arg in "$@"; do
   if [ -d "$arg" ]; then
-    while IFS= read -r f; do files+=("$f"); done \
-      < <(find "$arg" -type f -name '*_test.vibe' | sort)
+    vt_scan_ok=0
+    while IFS= read -r f; do
+      if [ "$f" = "__vt_scan_ok__" ]; then vt_scan_ok=1; continue; fi
+      files+=("$f")
+    done \
+      < <(find "$arg" -type f -name '*_test.vibe' | sort && echo "__vt_scan_ok__")
+    if [ "$vt_scan_ok" != 1 ]; then
+      echo "vibe_test.sh: could not list *_test.vibe under $arg (find|sort failed); this is not the same as finding none" >&2
+      exit 2
+    fi
   elif [ -f "$arg" ]; then
     files+=("$arg")
   else
