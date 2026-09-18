@@ -134,6 +134,23 @@ The `perf-metrics` job in `.github/workflows/ci.yml` runs on every PR and every 
   | Medium | `expr_eval` heap | `expr_eval` wasm | `expr_eval` fuel |
   | Small | — | `fib` wasm | B/op `fib30` |
 
+  **The `parse_*` and `lex_*` corpora are FROZEN** under `bench/perf/corpus/`
+  (#2865). They used to be the live compiler sources, so a PR that edited the
+  checker changed the INPUT of the benchmark that measures the parser, and the
+  report presented the result as a fact about that PR's compiler. Measured on
+  one compiler with only the corpus swapped, across a checker PR that grew
+  `checker.vibe` 9.7%: `parse_checker_vibe` 4,926,112 -> 5,780,608 B/op
+  (+17.3%), while the columns that DO measure the compiler moved +0.04%
+  (selfcompile heap) and +0.20% (stage2 size). Every checker PR of any size
+  tripped the warning, and a real parser regression landing beside a checker
+  edit was indistinguishable from corpus growth.
+
+  The corpus is bumped deliberately (`bash scripts/bump_bench_corpus.sh`), which
+  RESETS these series: readings on either side of a bump are about different
+  inputs. `bench/perf/corpus/README.md` has the rules;
+  `scripts/check_bench_corpus.sh` keeps the snapshots frozen and the benches
+  pointed at them.
+
   It used to render every tracked series instead: ~50 rows, of which ~48 read
   `±0` on an ordinary PR. A reader cannot find the row that moved in that, so
   the report got skipped rather than read.

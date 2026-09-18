@@ -36,29 +36,38 @@ fn lex_token_payload_walk(source: String) -> Int with Exception {
   total
 }
 
-/// These read the REAL lexer/parser sources under `lib/@vibe/parser/`, not
-/// `lib/@vibe/compiler/syntax/{lexer,parser}.vibe` -- #753 (ADR-0065 Phase 3)
-/// moved the implementations into the @vibe/parser contract package and left
-/// those two paths as re-export shims of 350 and 399 bytes. Pointed at the
-/// shims these two series reported ns_p50 ~11us / bytes_per_op ~1,300 next to
-/// `lex_checker_vibe`'s 14.5ms / 2.2MB: they were benchmarking nothing.
-/// `parser_hotspot_probe.vibe` already reads the real paths.
+/// The corpus is FROZEN (`bench/perf/corpus/`, #2865), not the live source.
+///
+/// It is a real program, which is what #1104 established: pointed at the
+/// 350- and 399-byte re-export shims #753 left at
+/// `lib/@vibe/compiler/syntax/{lexer,parser}.vibe`, these two series reported
+/// ns_p50 ~11us and ~1,300 B/op next to `lex_checker_vibe`'s 14.5ms and 2.2MB,
+/// and were benchmarking nothing. A real program that compiler PRs EDIT is not
+/// a fixed input either, which is the half #2865 fixed: the series is supposed
+/// to measure the lexer, and reading the checked-out file made every checker
+/// edit move it.
 export fn probe_lex_lexer_vibe() -> Int with Exception + Fs {
-  lex_token_count(Fs::read_file("lib/@vibe/parser/lexer.vibe"))
+  lex_token_count(Fs::read_file("bench/perf/corpus/lexer.vibe.txt"))
 }
 
 export fn probe_lex_checker_vibe() -> Int with Exception + Fs {
-  lex_token_count(Fs::read_file("lib/@vibe/compiler/checker/checker.vibe"))
+  lex_token_count(Fs::read_file("bench/perf/corpus/checker.vibe.txt"))
 }
 
 export fn probe_lex_parser_vibe() -> Int with Exception + Fs {
-  lex_token_count(Fs::read_file("lib/@vibe/parser/parser.vibe"))
+  lex_token_count(Fs::read_file("bench/perf/corpus/parser.vibe.txt"))
 }
 
 export fn probe_lex_synthetic_keyword_heavy() -> Int with Exception {
   lex_repeat_count("let f: (Int) -> Int = (x) -> { if x > 0 { let mut y = 0 while y < x { y = y + 1 } y } else { 0 } }\nlet g: (Int, Int) -> Int = (a, b) -> { match (a, b) { (0, _) => b, (_, 0) => a, (x, y) => x + y } }\nlet h: (Array[Int]) -> Int = (xs) -> { let mut sum = 0 for x in xs { sum = sum + x } sum }\nlet i: [T: Eq + Ord](T) -> T = (x) -> { x }\n", 32)
 }
 
+/// #2865: this one read `lib/@vibe/compiler/syntax/lexer.vibe` -- the 350-byte
+/// re-export SHIM #753 left behind, which is the exact mistake #1104 found and
+/// fixed for the two series above while missing this one. Measured before the
+/// repoint, same compiler, `--iters 3`: 13.37 us/op and 352 B/op, against
+/// `lex_lexer_vibe`'s 2.72 ms/op and 83,552 B/op from the real file. It was
+/// walking the token payloads of eight lines of re-exports.
 export fn probe_lex_token_payload_walk() -> Int with Exception + Fs {
-  lex_token_payload_walk(Fs::read_file("lib/@vibe/compiler/syntax/lexer.vibe"))
+  lex_token_payload_walk(Fs::read_file("bench/perf/corpus/lexer.vibe.txt"))
 }

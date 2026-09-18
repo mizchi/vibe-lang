@@ -1,0 +1,1561 @@
+// FROZEN BENCH CORPUS -- NOT A SOURCE FILE.
+//
+// A byte-for-byte copy of lib/@vibe/parser/parser.vibe, taken at db84e70eb575d996183866e9ecae4dcb3ddb6c0f, read by the
+// lex/parse benchmark series in lib/@vibe/compiler/{lexer,parser}_bench.vibe.
+//
+// Editing the live file used to change the INPUT of the benchmark that is
+// supposed to measure the lexer and the parser, so every checker PR of any
+// size tripped the bytes-per-op flag and a real parser regression landing
+// beside a checker edit was indistinguishable from corpus growth (#2865).
+//
+// Nothing imports this file and nothing compiles it. Do not edit it to fix a
+// warning, to reformat it, or to keep it in step with the live source -- that
+// is the whole defect. It is bumped DELIBERATELY, by
+// `bash scripts/bump_bench_corpus.sh`, which rewrites this banner and the
+// recorded digest together; bench/perf/corpus/README.md says when that is
+// worth doing and what it costs.
+
+//# Imports
+
+import ./parser_source_span.vibe {
+  source_expr, source_expr_context, source_record_slot, source_rewrap_expr, source_wrap_expr
+}
+
+import @vibe/ast {
+  Expr, ImportItem, Pat, Stmt, TypeExpr, impl_method_binding_name
+}
+
+import ./intern.vibe {
+  intern_qualified
+}
+
+import ./parser_base.vibe {
+  collect_effect_names,
+  collect_import_path,
+  empty_fields,
+  empty_import_items,
+  entry_with_row_message,
+  expect_tk,
+  has_qualified_pattern_refs,
+  has_test_effect_rows,
+  parse_allows_row,
+  parse_binding_name,
+  parse_binding_name_with_binder_context,
+  parse_derive_names,
+  parse_effect_stmt,
+  parse_effect_stmt_with_binder_context,
+  parse_enum_stmt,
+  parse_enum_stmt_with_binder_context,
+  parse_impl_stmt_dispatch,
+  parse_impl_stmt_dispatch_with_binder_context,
+  parse_import_item,
+  parse_import_item_with_binder_context,
+  parse_struct_field,
+  parse_struct_field_with_binder_context,
+  parse_suberror_stmt,
+  parse_suberror_stmt_with_binder_context,
+  parse_tparam_names,
+  parse_tparam_names_with_binder_context,
+  parse_trait_stmt,
+  parse_trait_stmt_with_binder_context,
+  parse_type,
+  parse_type_alias_stmt,
+  parse_type_alias_stmt_with_binder_context,
+  peek,
+  peek_is_allows,
+  record_test_effect_row,
+  skip_derive,
+  take_qualified_pattern_refs,
+  take_test_effect_rows,
+  tk_name
+}
+
+import ./parser_expr.vibe {
+  expand_top_level_pattern_lets,
+  expand_top_level_pattern_lets_with_binder_context,
+  lower_fn_decl_stmt,
+  lower_fn_decl_stmt_with_binder_context,
+  lower_fn_decl_stmts,
+  parse,
+  parse_expr,
+  parse_fn_stmt_with_binder_context,
+  parse_impl,
+  parse_impl_with_binder_context,
+  parse_let_stmt_with_binder_context,
+  parse_ok
+}
+
+import ./token.vibe {
+  Token
+}
+
+import ./lexer.vibe {
+  last_unexpected_token_pos, lex_with_offsets, offset_to_line_col, remember_parse_source
+}
+
+import ./parser_binder_context.vibe {
+  ParserBinderContext,
+  binder_capture_discard_from,
+  binder_capture_eligibility_mark,
+  binder_capture_mark,
+  binder_capture_mark_ineligible,
+  binder_capture_restore_eligibility,
+  binder_capture_source
+}
+
+//# Functions
+
+let parser_mode_block = 20
+
+fn empty_names() -> Array[String] {
+  ArrayBuilder::freeze(ArrayBuilder::new())
+}
+
+/// `allows <row>` between the name and the body widens this test's ambient
+/// effect row (`docs/internal/design/test-example-capabilities.md`, #1508). A test,
+/// bench or example is an entry point: nothing calls it, so its row is a
+/// GRANT and `allows` is the word (ADR-0088). The row is logged and folded
+/// into a trailing `STestEffectRows` marker rather than stored on `STest` --
+/// see the marker's declaration in @vibe/ast for why.
+///
+/// `with <row>` here is refused with the `allows` edit (#2654); `kind` names
+/// the block for the message ("test", "bench", "example").
+fn parse_test_row_suffix(tokens: Array[Token], kind: String, name: String, pos: Int) -> Int with Exception {
+  if peek_is_allows(tokens, pos) {
+    let (row, after) = parse_allows_row(tokens, pos + 1)
+    record_test_effect_row(name, row)
+    after
+  } else {
+    match peek(tokens, pos) {
+      TWith => {
+        let edit = String::concat(kind, String::concat(" \"", String::concat(name, "\"")))
+        throw(entry_with_row_message(tokens, pos, String::concat("`", String::concat(edit, "`")), edit))
+      },
+      _ => pos
+    }
+  }
+}
+
+fn parse_test_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
+  match peek(tokens, pos) {
+    TString(name) => {
+      let after_row = parse_test_row_suffix(tokens, "test", name, pos + 1)
+      let br = expect_tk(tokens, after_row, "{")
+      let (body, end) = parse_impl_with_binder_context(tokens, starts, br, parser_mode_block, context);
+      (STest(name, body), end)
+    },
+    // #1514: blame the token that must become a string literal.
+    _ => throw("expected test name string at #\{pos}")
+  }
+}
+
+/// #819: `example "name" { .. }` -- a documentation example. Same shape as
+/// `test`, and the default parse entry points lower it to STest so it is
+/// compiled and run by the same machinery (an example that does not compile is
+/// the failure mode this form exists to remove). The separate node survives
+/// only through parse_*_preserving, for LSP hover and doc extraction.
+fn parse_example_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
+  match peek(tokens, pos) {
+    TString(name) => {
+      // An example is an entry point like a test and grants its row the same
+      // way (`example "n" allows Console { .. }`); the row is keyed on the
+      // name, which the STest lowering keeps.
+      let after_row = parse_test_row_suffix(tokens, "example", name, pos + 1)
+      let br = expect_tk(tokens, after_row, "{")
+      let (body, end) = parse_impl_with_binder_context(tokens, starts, br, parser_mode_block, context);
+      (SExample(name, body), end)
+    },
+    _ => throw("expected example name string")
+  }
+}
+
+fn parse_bench_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
+  match peek(tokens, pos) {
+    TString(name) => {
+      let after_row = parse_test_row_suffix(tokens, "bench", name, pos + 1)
+      let br = expect_tk(tokens, after_row, "{")
+      let (body, end) = parse_impl_with_binder_context(tokens, starts, br, parser_mode_block, context);
+      (SBench(name, body), end)
+    },
+    _ => throw("expected bench name string")
+  }
+}
+
+/// Parse one export-list name, accepting a qualified `Ns::member`
+/// (e.g. `JsonSchema::validate`) in addition to a bare ident.
+fn parse_export_name(tokens: Array[Token], pos: Int) -> (String, Int) with Exception {
+  match peek(tokens, pos) {
+    TIdent(name) => match peek(tokens, pos + 1) {
+      TDoubleColon => match peek(tokens, pos + 2) {
+        TIdent(member) =>
+        (intern_qualified(name, member), pos + 3),
+        _ => throw("expected qualified member name after '::'")
+      },
+      _ => (name, pos + 1)
+    },
+    _ => throw("expected name in export list")
+  }
+}
+
+fn parse_export_names_rest(tokens: Array[Token], pos: Int, b: ArrayBuilder[String]) -> (Array[String], Int) with Exception {
+  match peek(tokens, pos) {
+    TComma => match peek(tokens, pos + 1) {
+      TRBrace => (ArrayBuilder::freeze(b), pos + 2),
+      TIdent(_) => {
+        let (nm, after) = parse_export_name(tokens, pos + 1)
+        ArrayBuilder::push(b, nm)
+        parse_export_names_rest(tokens, after, b)
+      },
+      _ => throw("expected name in export list")
+    },
+    TRBrace => (ArrayBuilder::freeze(b), pos + 1),
+    _ => throw("expected ',' or '}' in export list")
+  }
+}
+
+fn parse_import_items_rest(tokens: Array[Token], pos: Int, b: ArrayBuilder[ImportItem], context: Option[ParserBinderContext]) -> (Array[ImportItem], Int) with Exception {
+  match peek(tokens, pos) {
+    TComma => match peek(tokens, pos + 1) {
+      TRBrace => (ArrayBuilder::freeze(b), pos + 2),
+      _ => {
+        let (item, next) = parse_import_item_with_binder_context(tokens, pos + 1, context)
+        ArrayBuilder::push(b, item)
+        parse_import_items_rest(tokens, next, b, context)
+      }
+    },
+    TRBrace => (ArrayBuilder::freeze(b), pos + 1),
+    _ => throw("expected ',' or '}' in import list")
+  }
+}
+
+fn parse_import_items(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (Array[ImportItem], Int) with Exception {
+  match peek(tokens, pos) {
+    TRBrace => (empty_import_items(), pos + 1),
+    _ => {
+      let (first, next) = parse_import_item_with_binder_context(tokens, pos, context)
+      let b = ArrayBuilder::new()
+      ArrayBuilder::push(b, first)
+      parse_import_items_rest(tokens, next, b, context)
+    }
+  }
+}
+
+/// #897: `import <path> as <mod> only { x, y }` binds the imported items
+/// under a namespace, accessed as `mod.x`/`mod.y` in the importing file.
+/// No new Stmt/Expr variant: each item's local alias is desugared to the
+/// dot-joined string "mod.x" (real identifiers can never contain '.', so
+/// this can't collide with anything a user could type) and stored as an
+/// ordinary SImport — the existing import_alias_rewrite.vibe machinery
+/// resolves it exactly like any other aliased import. `only` is a
+/// contextual keyword (matched by ident text, not a reserved token) to
+/// avoid reserving "only" globally.
+fn qualify_import_items(mod_name: String, items: Array[ImportItem]) -> Array[ImportItem] {
+  let b = ArrayBuilder::new()
+  let mut i = 0
+  while i < Array::length(items) {
+    let item = Array::get(items, i)
+    let name = item.name
+    let alias_opt = item.alias
+    let local = match alias_opt {
+      Some(alias) => alias,
+      None => name
+    }
+    ArrayBuilder::push(b, ImportItem::{
+      kind: item.kind,
+      name,
+      alias: Some(String::concat(mod_name, String::concat(".", local)))
+    })
+    i = i + 1
+  }
+  ArrayBuilder::freeze(b)
+}
+
+fn parse_qualified_import_tail(tokens: Array[Token], pos: Int, path: String, mod_name: String, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
+  binder_capture_mark_ineligible(context)
+  match peek(tokens, pos) {
+    TIdent(only_kw) => if only_kw == "only" {
+      let br = expect_tk(tokens, pos + 1, "{")
+      let (items, end) = parse_import_items(tokens, br, context);
+      (SImport(path, qualify_import_items(mod_name, items)), end)
+    } else {
+      throw("expected 'only' after 'as <name>' in qualified import")
+    },
+    _ => throw("expected 'only' after 'as <name>' in qualified import")
+  }
+}
+
+fn reject_executable_import_path(path: String) -> Unit with Exception {
+  if String::ends_with(path, ".vibex") {
+    throw(".vibex is an executable root and cannot be imported: \{path}")
+  } else {
+    ()
+  }
+}
+
+/// #769: a trailing `import <path> @alias` alias token must be recognized
+/// regardless of what the path itself starts with. This used to be checked
+/// only on the branch for a path starting with a bare identifier (`import
+/// pkg_name @alias`); a path starting with `.`/`..` (the common case for the
+/// compiler's own facades, e.g. `import ../../../lib/@vibe/json @json`) fell
+/// through the catch-all `_` arm below, which always demanded a `{` next and
+/// never looked for an alias — surfacing as "expected { but got ident" once
+/// collect_import_path correctly stopped just before the alias token.
+fn parse_import_path_tail(tokens: Array[Token], bp: Int, path: String, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
+  match peek(tokens, bp) {
+    TAs => match peek(tokens, bp + 1) {
+      TIdent(mod_name) => parse_qualified_import_tail(tokens, bp + 2, path, mod_name, context),
+      _ => throw("expected namespace name after 'as' in import")
+    },
+    TIdent(alias_name) => if String::length(alias_name) > 1 && String::char_code_at(alias_name, 0) == '@' {
+      let alias_str = String::substring(alias_name, 1, String::length(alias_name))
+      binder_capture_source(context, alias_str, bp, bp)
+      (SAliasDecl(alias_str, path), bp + 1)
+    } else {
+      let br = expect_tk(tokens, bp, "{")
+      let (items, end) = parse_import_items(tokens, br, context);
+      (SImport(path, items), end)
+    },
+    _ => {
+      let br = expect_tk(tokens, bp, "{")
+      let (items, end) = parse_import_items(tokens, br, context);
+      (SImport(path, items), end)
+    }
+  }
+}
+
+fn parse_import_stmt(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
+  match peek(tokens, pos) {
+    TIdent(name) => if name == "symbol" || name == "version" {
+      // #2127: `import symbol@...` / `import version@...` are retired
+      // specs. Without this, `symbol@fixture/missing` is absorbed as path
+      // `symbol` plus an `@alias`, and `{ value }` is then parsed as a
+      // top-level record ("move it into fn main") — an edit that cannot help.
+      throw("`import \{name}@...` is not a valid import spec -- use `import @scope/pkg { names }` or `import ./path.vibe { names }` at #\{pos}")
+    } else if String::length(name) > 1 && String::char_code_at(name, 0) == '@' {
+      parse_import_path_tail(tokens, pos + 1, name, context)
+    } else {
+      let (path, bp) = collect_import_path(tokens, pos, "")
+      reject_executable_import_path(path)
+      parse_import_path_tail(tokens, bp, path, context)
+    },
+    _ => {
+      let (path, bp) = collect_import_path(tokens, pos, "")
+      reject_executable_import_path(path)
+      parse_import_path_tail(tokens, bp, path, context)
+    }
+  }
+}
+
+fn tl_push_mut_name(mb: ArrayBuilder[String], field: (String, TypeExpr), is_mut: Bool) -> Unit {
+  if is_mut {
+    let (fname, _) = field
+    ArrayBuilder::push(mb, fname)
+  } else {
+    ()
+  }
+}
+
+fn parse_toplevel_struct_fields_rest(tokens: Array[Token], pos: Int, b: ArrayBuilder[(String, TypeExpr)], mb: ArrayBuilder[String], context: Option[ParserBinderContext]) -> (Array[(String, TypeExpr)], Array[String], Int) with Exception {
+  match peek(tokens, pos) {
+    TSemicolon => match peek(tokens, pos + 1) {
+      TRBrace => (ArrayBuilder::freeze(b), ArrayBuilder::freeze(mb), pos + 2),
+      _ => {
+        let (field, is_mut, next) = parse_struct_field_with_binder_context(tokens, pos + 1, context)
+        ArrayBuilder::push(b, field)
+        tl_push_mut_name(mb, field, is_mut)
+        parse_toplevel_struct_fields_rest(tokens, next, b, mb, context)
+      }
+    },
+    // Redundant-syntax removal: ',' is not a declaration-body
+    // separator (see parser_base.vibe parse_enum_ctors_rest).
+    TComma => throw("use ';' to separate declaration members; ',' is not a separator at #\{pos}"),
+    TRBrace => (ArrayBuilder::freeze(b), ArrayBuilder::freeze(mb), pos + 1),
+    _ => throw("expected ';' or '}' in struct at #\{pos}")
+  }
+}
+
+fn parse_toplevel_struct_fields(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (Array[(String, TypeExpr)], Array[String], Int) with Exception {
+  match peek(tokens, pos) {
+    TRBrace => (empty_fields(), ArrayBuilder::freeze(ArrayBuilder::new()), pos + 1),
+    _ => {
+      let (first, is_mut, next) = parse_struct_field_with_binder_context(tokens, pos, context)
+      let b = ArrayBuilder::new()
+      let mb = ArrayBuilder::new()
+      ArrayBuilder::push(b, first)
+      tl_push_mut_name(mb, first, is_mut)
+      parse_toplevel_struct_fields_rest(tokens, next, b, mb, context)
+    }
+  }
+}
+
+fn parse_toplevel_struct_stmt(tokens: Array[Token], pos: Int, exported: Bool, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
+  binder_capture_mark_ineligible(context)
+  match peek(tokens, pos) {
+    TIdent(name) => {
+      binder_capture_source(context, name, pos, pos)
+      // Optional type-parameter header `struct Foo[T] { ... }`. #829: the
+      // param NAMES are kept on the SStruct (they used to be discarded) so
+      // the checker can instantiate generic struct literals; representation
+      // stays uniform/tagged like enum type params.
+      let (tparams, after_name) = parse_tparam_names_with_binder_context(tokens, pos + 1, context)
+      let br = expect_tk(tokens, after_name, "{")
+      let (fields, mut_names, end) = parse_toplevel_struct_fields(tokens, br, context);
+      let (derives, final_pos) = parse_derive_names(tokens, end)
+      (SStruct(exported, name, fields, derives, mut_names, tparams), final_pos)
+    },
+    _ => throw("expected struct name")
+  }
+}
+
+/// ADR-0071 step 2: `effectset Name = { A, B, Effect::op }` / the qualified
+/// form `effectset Effect::Name = { ... }` (name itself may be `Ident ::
+/// Ident`, same qualification as parse_binding_name). Body reuses
+/// collect_effect_names' item grammar (bare identifier or `Effect::op`) --
+/// it already returns a comma-joined String, so the member list is
+/// recovered by splitting that back into an Array[String]; no separate
+/// item-collector needed. No type params yet (generic effectsets like
+/// `State::Read[T]` are deferred to a later revision).
+fn parse_effectset_stmt(tokens: Array[Token], pos: Int, exported: Bool, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
+  let (name, after_name) = parse_binding_name_with_binder_context(tokens, pos, context)
+  let ep = expect_tk(tokens, after_name, "=")
+  let bp = expect_tk(tokens, ep, "{")
+  let (joined, next) = collect_effect_names(tokens, bp, "")
+  let members = if String::length(joined) == 0 {
+    ArrayBuilder::freeze(ArrayBuilder::new())
+  } else {
+    String::split(joined, ", ")
+  }
+  (SEffectSet(exported, name, members), next)
+}
+
+/// True when the tokens at `pos` (just past the word `resource`) start a
+/// resource declaration -- i.e. an identifier follows.
+///
+/// One token of lookahead, and it is exact rather than heuristic: at STATEMENT
+/// position no expression can be two adjacent identifiers. A `resource` used
+/// as an ordinary name is always followed by an operator, a delimiter, or
+/// nothing (`resource = f()`, `resource(x)`, `resource + 1`), never by another
+/// identifier. `effect`/`effectset` claim their word unconditionally; this one
+/// does not, because `resource` is a far more plausible variable name.
+///
+/// Deliberately does NOT also require the `:`, so that `resource S3::Posts :
+/// Bucket` (name and kind swapped) still reaches parse_resource_stmt and gets
+/// its own diagnostic instead of a generic expression-parse error.
+fn is_resource_decl_head(tokens: Array[Token], pos: Int) -> Bool {
+  match peek(tokens, pos) {
+    TIdent(_) => true,
+    _ => false
+  }
+}
+
+/// ADR-0075 Phase 2 (#1343 実装順 2): `resource Posts : S3::Bucket`.
+///
+/// The kind must be QUALIFIED (`Owner::Kind`). That is not cosmetic: an
+/// unqualified name here would be indistinguishable from a type, and ADR-0075
+/// is explicit that a resource kind is not a type and a resource name is not a
+/// `String` to be authority-checked. The qualified form makes every kind read
+/// as belonging to some provider (`S3::Bucket`, `Process::Root`).
+fn parse_resource_stmt(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
+  let name = match peek(tokens, pos) {
+    TIdent(n) => {
+      binder_capture_source(context, n, pos, pos)
+      n
+    },
+    _ => throw("expected a resource name after 'resource'")
+  }
+  match peek(tokens, pos + 1) {
+    TDoubleColon => throw("a resource NAME is unqualified (`resource Posts : S3::Bucket`) -- the qualified path goes after the ':' and names the resource KIND (ADR-0075)"),
+    _ => ()
+  }
+  let cp = expect_tk(tokens, pos + 1, ":")
+  let (kind, end) = parse_binding_name(tokens, cp)
+  if !String::contains(kind, "::") {
+    throw("resource kind '\{kind}' must be qualified as `Owner::Kind` (e.g. `S3::Bucket`, `Process::Root`) -- an unqualified name would be indistinguishable from a type, and a resource kind is not a type (ADR-0075)")
+  } else {
+    ()
+  }
+  (SResource(name, kind), end)
+}
+
+fn parse_export_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
+  match peek(tokens, pos) {
+    TLet => parse_let_stmt_with_binder_context(tokens, starts, pos + 1, true, context),
+    TEnum => parse_enum_stmt_with_binder_context(tokens, pos + 1, true, context),
+    TSuberror => parse_suberror_stmt_with_binder_context(tokens, pos + 1, true, context),
+    TStruct => parse_toplevel_struct_stmt(tokens, pos + 1, true, context),
+    // #1280: `fn` lexes as TFn (reserved word), no longer TIdent("fn").
+    TFn => parse_fn_stmt_with_binder_context(tokens, starts, pos + 1, true, context),
+    TIdent(ident_name) => if ident_name == "effect" {
+      parse_effect_stmt_with_binder_context(tokens, pos + 1, true, context)
+    } else if ident_name == "effectset" {
+      parse_effectset_stmt(tokens, pos + 1, true, context)
+    } else if ident_name == "resource" && is_resource_decl_head(tokens, pos + 1) {
+      throw("a `resource` declaration cannot be exported: ADR-0075 puts it at the `.vibex` root only, and a reusable module abstracts over a resource KIND parameter instead of naming a resource")
+    } else {
+      throw(String::concat("unexpected token in export: ", ident_name))
+    },
+    TType => parse_type_alias_stmt_with_binder_context(tokens, pos + 1, true, context),
+    TTrait => parse_trait_stmt_with_binder_context(tokens, pos + 1, true, context),
+    TOpen => match peek(tokens, pos + 1) {
+      TTrait => parse_trait_stmt_with_binder_context(tokens, pos + 2, true, context),
+      _ => throw("expected 'trait' after 'open'")
+    },
+    TLBrace => match peek(tokens, pos + 1) {
+      TRBrace => (SExport(empty_names()), pos + 2),
+      TIdent(_) => {
+        let (first, after) = parse_export_name(tokens, pos + 1)
+        let b = ArrayBuilder::new()
+        ArrayBuilder::push(b, first)
+        let (names, end) = parse_export_names_rest(tokens, after, b);
+        (SExport(names), end)
+      },
+      _ => throw("expected name in export list")
+    },
+    TDot => {
+      let (path, bp) = collect_import_path(tokens, pos, "")
+      reject_executable_import_path(path)
+      let br = expect_tk(tokens, bp, "{")
+      // Re-export items name the dependency's public surface; unlike import
+      // items, neither their source names nor aliases bind locals here.
+      let (items, end) = parse_import_items(tokens, br, None);
+      (SReExport(path, items), end)
+    },
+    // #769: `export ../foo/index.vibe { .. }` (a re-export that climbs OUT of
+    // the current directory, as used by entry/compiler/index.vibe) is exactly
+    // as valid an import-path start as `export ./foo { .. }` — only the
+    // single-dot case was wired up here, so a leading `..` fell through to
+    // the catch-all "unexpected after 'export'" error.
+    TDotDot => {
+      let (path, bp) = collect_import_path(tokens, pos, "")
+      reject_executable_import_path(path)
+      let br = expect_tk(tokens, bp, "{")
+      // Re-export items name the dependency's public surface; unlike import
+      // items, neither their source names nor aliases bind locals here.
+      let (items, end) = parse_import_items(tokens, br, None);
+      (SReExport(path, items), end)
+    },
+    _ => {
+      let actual = tk_name(peek(tokens, pos))
+      throw("unexpected after 'export': \{actual}")
+    }
+  }
+}
+
+fn parse_percent_symbol_name(tokens: Array[Token], pos: Int, label: String, context: Option[ParserBinderContext]) -> (String, Int) with Exception {
+  let pp = expect_tk(tokens, pos, "%")
+  match peek(tokens, pp) {
+    TIdent(name) => {
+      let full_name = "%\{name}"
+      binder_capture_source(context, full_name, pos, pp)
+      (full_name, pp + 1)
+    },
+    _ => throw("expected \{label} after '%'")
+  }
+}
+
+fn parse_extern_let_stmt(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
+  let lp = expect_tk(tokens, pos, "let")
+  let (name, np) = parse_percent_symbol_name(tokens, lp, "extern symbol name", context)
+  let cp = expect_tk(tokens, np, ":")
+  let (ty, end) = parse_type(tokens, cp);
+  (SExternLet(name, ty), end)
+}
+
+/// Statement parser that KEEPS `fn` declarations in declaration form
+/// (SFnDecl, contracts un-desugared) — the input to printer/normalize
+/// round-tripping (ADR-0064 #727). Everything that feeds the checker or
+/// codegen should use `parse_stmt` / `parse_program*` below, which lower
+/// SFnDecl to the legacy SLet shape.
+export fn parse_stmt_preserving_with_binder_context(tokens: Array[Token], starts: Array[Int], pos: Int, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
+  let raw_head = peek(tokens, pos)
+  // #1343: rewrite `resource` to a name no identifier can have UNLESS it
+  // starts a declaration, so the dispatch below routes `resource = f()` /
+  // `resource(x)` to its expression arm unchanged. Done on the token rather
+  // than as an extra arm because that arm is a ~60-line block of
+  // assignment-operator handling with no way to fall through into it.
+  let head = match raw_head {
+    TIdent(hn) => if hn == "resource" && !is_resource_decl_head(tokens, pos + 1) {
+      TIdent("")
+    } else {
+      raw_head
+    },
+    _ => raw_head
+  }
+  match head {
+    TLet => parse_let_stmt_with_binder_context(tokens, starts, pos + 1, false, context),
+    TExport => match peek(tokens, pos + 1) {
+      // ADR-0063 Phase B (#728): module blocks are removed.
+      TModule => throw("'module' blocks are removed (#728); use file boundaries + import/export"),
+      _ => parse_export_stmt(tokens, starts, pos + 1, context)
+    },
+    TModule => throw("'module' blocks are removed (#728); use file boundaries + import/export"),
+    TEnum => parse_enum_stmt_with_binder_context(tokens, pos + 1, false, context),
+    TSuberror => parse_suberror_stmt_with_binder_context(tokens, pos + 1, false, context),
+    TStruct => parse_toplevel_struct_stmt(tokens, pos + 1, false, context),
+    TType => parse_type_alias_stmt_with_binder_context(tokens, pos + 1, false, context),
+    TTrait => parse_trait_stmt_with_binder_context(tokens, pos + 1, false, context),
+    TTest => parse_test_stmt(tokens, starts, pos + 1, context),
+    TExample => parse_example_stmt(tokens, starts, pos + 1, context),
+    TBench => parse_bench_stmt(tokens, starts, pos + 1, context),
+    TImport => parse_import_stmt(tokens, pos + 1, context),
+    // #1280: `fn` lexes as TFn (reserved word), no longer TIdent("fn").
+    TFn => parse_fn_stmt_with_binder_context(tokens, starts, pos + 1, false, context),
+    TIdent(name) => match name {
+      "effect" => parse_effect_stmt_with_binder_context(tokens, pos + 1, false, context),
+      "effectset" => parse_effectset_stmt(tokens, pos + 1, false, context),
+      "resource" => parse_resource_stmt(tokens, pos + 1, context),
+      "extern" => parse_extern_let_stmt(tokens, pos + 1, context),
+      "use" => throw("'use' syntax is removed; use 'import <module-ref> { ... }'"),
+      _ => {
+        let (e, next) = parse_impl_with_binder_context(tokens, starts, pos, 0, context)
+        match peek(tokens, next) {
+          TEq => match source_expr(e) {
+            EIdent(name, _) => {
+              let (val, vn) = parse_impl_with_binder_context(tokens, starts, next + 1, 0, context)
+              source_record_slot("target", name, pos, pos + 1, context)
+              (SExpr(source_wrap_expr(EAssign(name, val, EUnit), pos, vn, context)), vn)
+            },
+            ECall(idx_callee, idx_args, _) => {
+              // `arr[i] = v` at statement level: `__index(arr, i)` receiver
+              // desugars to Array::set (same as the block-expr TEq arm).
+              let is_index = match source_expr(idx_callee) {
+                EIdent(icn, _) => icn == "__index",
+                _ => false
+              }
+              if is_index && Array::length(idx_args) == 2 {
+                let (val, vn) = parse_impl_with_binder_context(tokens, starts, next + 1, 0, context)
+                let set_args = ArrayBuilder::freeze(ArrayBuilder::new())
+                Array::push(set_args, Array::get(idx_args, 0))
+                Array::push(set_args, Array::get(idx_args, 1))
+                Array::push(set_args, val)
+                (SExpr(source_wrap_expr(ECall(EIdent("Array::set", -1), set_args, -1), pos, vn, context)), vn)
+              } else {
+                (SExpr(e), next)
+              }
+            },
+            _ => (SExpr(e), next)
+          },
+          TPlusEq => match source_expr(e) {
+            EIdent(name, _) => {
+              let (val, vn) = parse_impl_with_binder_context(tokens, starts, next + 1, 0, context)
+              source_record_slot("target", name, pos, pos + 1, context)
+              (SExpr(source_wrap_expr(EAssignOp(name, "+", val, EUnit), pos, vn, context)), vn)
+            },
+            _ => (SExpr(e), next)
+          },
+          TMinusEq => match source_expr(e) {
+            EIdent(name, _) => {
+              let (val, vn) = parse_impl_with_binder_context(tokens, starts, next + 1, 0, context)
+              source_record_slot("target", name, pos, pos + 1, context)
+              (SExpr(source_wrap_expr(EAssignOp(name, "-", val, EUnit), pos, vn, context)), vn)
+            },
+            _ => (SExpr(e), next)
+          },
+          TStarEq => match source_expr(e) {
+            EIdent(name, _) => {
+              let (val, vn) = parse_impl_with_binder_context(tokens, starts, next + 1, 0, context)
+              source_record_slot("target", name, pos, pos + 1, context)
+              (SExpr(source_wrap_expr(EAssignOp(name, "*", val, EUnit), pos, vn, context)), vn)
+            },
+            _ => (SExpr(e), next)
+          },
+          TSlashEq => match source_expr(e) {
+            EIdent(name, _) => {
+              let (val, vn) = parse_impl_with_binder_context(tokens, starts, next + 1, 0, context)
+              source_record_slot("target", name, pos, pos + 1, context)
+              (SExpr(source_wrap_expr(EAssignOp(name, "/", val, EUnit), pos, vn, context)), vn)
+            },
+            _ => (SExpr(e), next)
+          },
+          _ => (SExpr(e), next)
+        }
+      }
+    },
+    _ => {
+      let (e, next) = parse_impl_with_binder_context(tokens, starts, pos, 0, context);
+      (SExpr(e), next)
+    }
+  }
+}
+
+export fn parse_stmt_preserving(tokens: Array[Token], starts: Array[Int], pos: Int) -> (Stmt, Int) with Exception {
+  parse_stmt_preserving_with_binder_context(tokens, starts, pos, None)
+}
+
+/// Default statement entry: identical to parse_stmt_preserving except that a
+/// `fn` declaration is lowered to the legacy `SLet(exported, true, name,
+/// None, EFn(..))` shape with its where-contract desugared to runtime
+/// asserts — i.e. exactly what this function returned before #727 kept the
+/// declaration form. All existing consumers (checker, codegen, symbols,
+/// contract engine, ...) keep seeing the pre-#727 AST.
+export fn parse_stmt(tokens: Array[Token], starts: Array[Int], pos: Int) -> (Stmt, Int) with Exception {
+  let (stmt, next) = parse_stmt_preserving(tokens, starts, pos)
+  (lower_fn_decl_stmt(stmt), next)
+}
+
+export fn parse_stmt_with_binder_context(tokens: Array[Token], starts: Array[Int], pos: Int, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
+  let (stmt, next) = parse_stmt_preserving_with_binder_context(tokens, starts, pos, context)
+  (lower_fn_decl_stmt_with_binder_context(stmt, context), next)
+}
+
+/// Expand an impl body `{ method(params) -> ret { body } ... }` into the impl
+/// marker plus one `let Type::method = (params) -> ret { body }` per method
+/// (#641 Phase 1: concrete-receiver dispatch). Trait stays marker-only; the
+/// methods become ordinary qualified free functions resolved by name. `pos` is
+/// at the body `{` (or the next token for a body-less impl). Needs `parse_expr`,
+/// which is why this lives here rather than in parser_base.
+fn parse_impl_methods(tokens: Array[Token], pos: Int, simpl: Stmt, context: Option[ParserBinderContext]) -> (Array[Stmt], Int) with Exception {
+  let out = ArrayBuilder::new()
+  ArrayBuilder::push(out, simpl)
+  match peek(tokens, pos) {
+    TLBrace => {
+      let impl_trait = match simpl {
+        SImpl(_, _, trait_name, _) => trait_name,
+        _ => ""
+      }
+      let impl_target = match simpl {
+        SImpl(_, _, _, target) => target,
+        _ => TyName("")
+      }
+      // A generic impl `impl [T: Bound] Trait for C { method(self){..} }` binds
+      // `T` (and its bound) over each method body, so inject the impl's type
+      // parameters + bounds into every method's `EFn`. This lets the body
+      // dispatch `T::m(elem)` (resolved via the threaded witness dict, #5
+      // Increment B). Non-generic impls have an empty list → methods unchanged.
+      let impl_tparams = match simpl {
+        SImpl(tp, _, _, _) => tp,
+        _ => ArrayBuilder::freeze(ArrayBuilder::new())
+      }
+      let impl_tbounds = match simpl {
+        SImpl(_, tb, _, _) => tb,
+        _ => ArrayBuilder::freeze(ArrayBuilder::new())
+      }
+      let mut p = pos + 1
+      let mut done = false
+      while !done {
+        match peek(tokens, p) {
+          TRBrace => {
+            p = p + 1
+            done = true
+          },
+          TIdent(mname) => {
+            let (efn, p2) = parse_impl_with_binder_context(tokens, [], p + 1, 0, context)
+            let efn2 = if Array::length(impl_tparams) > 0 {
+              match source_expr(efn) {
+                EFn(mtp, mtb, mparams, mret, meff, mbody) => source_rewrap_expr(efn, EFn(Array::concat(impl_tparams, mtp), Array::concat(impl_tbounds, mtb), mparams, mret, meff, mbody)),
+                _ => efn
+              }
+            } else {
+              efn
+            }
+            let qname = impl_method_binding_name(impl_tparams, impl_trait, impl_target, mname)
+            ArrayBuilder::push(out, SLet(false, true, qname, None, efn2))
+            p = match peek(tokens, p2) {
+              TSemicolon => p2 + 1,
+              _ => p2
+            }
+          },
+          _ => throw("expected impl method name or '}'")
+        }
+      }
+      (ArrayBuilder::freeze(out), p)
+    },
+    _ => (ArrayBuilder::freeze(out), pos)
+  }
+}
+
+// Compile-time conditional compilation (#cfg). A top-level statement may be
+// prefixed with `#cfg(flag)`; the statement is KEPT only when `flag` is
+// active, and otherwise parsed (syntax must stay valid, like Rust's cfg) and
+// DISCARDED before checking/codegen -- so disabled debug code adds zero bytes
+// to the output. Flags are activated by `#cfg_enable(flag)` directives, which
+// the CLI appends to the source when `VIBE_CFG=flag1,flag2` is set (appending
+// at the END keeps every source offset -- and thus diagnostics -- unchanged).
+// A pre-scan collects the active set so `#cfg_enable` position is irrelevant.
+//
+// The active set is the union of two sources: the `#cfg_enable` directives in
+// the file itself, and the AMBIENT set below, which the CLI fills once per
+// process from `VIBE_CFG` (#2513). Before the ambient set existed the flags
+// reached only the entry file: the CLI appended `#cfg_enable` to the entry
+// source, and every imported module scanned its own token stream, saw no
+// directive, and dropped all of its `#cfg` statements whatever `VIBE_CFG`
+// said. A dependency that spells `#cfg(dev) export fn f` could therefore
+// never be imported. The same set has to be part of every persistent cache
+// key (persistent_cache_version_tag folds it in), or a module parsed under
+// one flag set is replayed under another.
+//
+// The compiler's own sources may use `#cfg`: `scripts/generate_bundle.sh`
+// flattens the self-build with the COMMITTED SEED's module-source emission,
+// and the seed resolves the directives in `parse_program_spans` since
+// seed/cfg-spans-emission-2026-09-04 (#2497 step 0).
+
+let cfg_ambient_flags: Array[String] = []
+
+let cfg_ambient_flags_csv_cell: Array[String] = [""]
+
+/// Replace the process-wide ambient `#cfg` flag set. Called once per CLI
+/// invocation from the environment; every subsequent parse of any module
+/// treats these flags as active in addition to the file's own `#cfg_enable`.
+export fn set_cfg_ambient_flags(flags: Array[String]) -> Unit {
+  Array::truncate(cfg_ambient_flags, 0)
+  let mut i = 0
+  while i < Array::length(flags) {
+    Array::push(cfg_ambient_flags, Array::get(flags, i))
+    i = i + 1
+  }
+  Array::set(cfg_ambient_flags_csv_cell, 0, String::join(flags, ","))
+}
+
+/// The ambient set as one string, in the caller's order (the same spelling
+/// the persistent caches namespace by, #2513). A parse is a function of the
+/// text AND this set, so anything that remembers a parse across calls keys on
+/// both (#2386's loader memos, Codex review on #2520).
+export fn cfg_ambient_flags_csv() -> String {
+  Array::get(cfg_ambient_flags_csv_cell, 0)
+}
+
+/// Parse the directive after a THash: `cfg(name)`, `cfg_enable(name)`,
+/// `zero_alloc`, or `deprecated` (#1262 ADR-0101 migration marker; optional
+/// `("message")` argument). Returns (directive_kind, payload, next_pos).
+fn parse_cfg_directive(tokens: Array[Token], pos: Int) -> (String, String, Int) with Exception {
+  match peek(tokens, pos) {
+    TIdent(dname) => {
+      if dname == "cfg" || dname == "cfg_enable" {
+        match peek(tokens, pos + 1) {
+          TLParen => match peek(tokens, pos + 2) {
+            TIdent(flag) => match peek(tokens, pos + 3) {
+              TRParen => (dname, flag, pos + 4),
+              _ => throw("expected ')' after #cfg flag name")
+            },
+            _ => throw("expected flag name in #cfg(...)")
+          },
+          _ => throw("expected '(' after #cfg")
+        }
+      } else if dname == "zero_alloc" {
+        match peek(tokens, pos + 1) {
+          TLParen => match peek(tokens, pos + 2) {
+            TIdent(mode) => match peek(tokens, pos + 3) {
+              TRParen => if mode == "strict" || mode == "assume" {
+                (dname, mode, pos + 4)
+              } else {
+                throw(String::concat("#zero_alloc unknown mode '", String::concat(mode, "'; use (strict) or (assume)")))
+              },
+              _ => throw("expected ')' after #zero_alloc mode")
+            },
+            _ => throw("expected #zero_alloc mode name (strict or assume)")
+          },
+          _ => (dname, "", pos + 1)
+        }
+      } else if dname == "deprecated" {
+        match peek(tokens, pos + 1) {
+          TLParen => match peek(tokens, pos + 2) {
+            TString(msg) => match peek(tokens, pos + 3) {
+              TRParen => (dname, msg, pos + 4),
+              _ => throw("expected ')' after #deprecated message")
+            },
+            _ => throw("expected string message in #deprecated(...)")
+          },
+          _ => (dname, "", pos + 1)
+        }
+      } else {
+        throw(String::concat("unknown # directive: ", dname))
+      }
+    },
+    _ => throw("expected directive name after '#'")
+  }
+}
+
+/// Pre-scan the whole token stream for `#cfg_enable(name)` directives and
+/// return the active flag set: the ambient set first, then the file's own
+/// directives. O(tokens), with one fresh result allocation; the result does
+/// not grow unless a THash enables a flag or the ambient set is non-empty.
+fn cfg_scan_enabled(tokens: Array[Token]) -> Array[String] with Exception {
+  let out = ArrayBuilder::freeze(ArrayBuilder::new())
+  let mut a = 0
+  while a < Array::length(cfg_ambient_flags) {
+    Array::push(out, Array::get(cfg_ambient_flags, a))
+    a = a + 1
+  }
+  let mut i = 0
+  let n = Array::length(tokens)
+  while i < n {
+    match Array::get(tokens, i) {
+      THash => {
+        let (dname, flag, next) = parse_cfg_directive(tokens, i + 1)
+        if dname == "cfg_enable" {
+          Array::push(out, flag)
+        } else {
+          ()
+        }
+        i = next
+      },
+      _ => {
+        i = i + 1
+      }
+    }
+  }
+  out
+}
+
+#zero_alloc
+fn cfg_flag_active(active: Array[String], flag: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(active) {
+    if Array::get(active, i) == flag {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Canonical allocation contracts attach to exactly one declaration. Reject
+/// any other placement while the files are still separate, so a marker at
+/// one file's EOF can never bind to the first function of a linked file.
+fn zero_alloc_target_is_fn(tokens: Array[Token], pos: Int) -> Bool {
+  match peek(tokens, pos) {
+    TFn => true,
+    TExport => match peek(tokens, pos + 1) {
+      TFn => true,
+      _ => false
+    },
+    _ => false
+  }
+}
+
+fn require_zero_alloc_target(tokens: Array[Token], pos: Int) -> Unit with Exception {
+  if zero_alloc_target_is_fn(tokens, pos) {
+    ()
+  } else {
+    throw("#zero_alloc must immediately precede a fn declaration")
+  }
+}
+
+fn zero_alloc_marker_ident(mode: String) -> String {
+  if mode == "strict" {
+    "@zero_alloc_strict"
+  } else if mode == "assume" {
+    "@zero_alloc_assume"
+  } else {
+    "@zero_alloc"
+  }
+}
+
+/// Program parser that KEEPS `fn` declarations as SFnDecl (see
+/// parse_stmt_preserving) — used by the printer/normalize round-trip so
+/// `vibe normalize` re-emits `fn name(..) -> T where { .. } { .. }` instead
+/// of rewriting it to `let rec` form (ADR-0064 #727).
+///
+/// The parse's two logs -- the qualified-pattern refs and the `test` /
+/// `bench` / `example` rows (#1508, ADR-0088) -- are folded into their
+/// trailing markers at the end, exactly as `parse_program` folds them: this
+/// entry used to return without draining either, so the rows a block
+/// declared never reached the printer (`vibe normalize` dropped them) and
+/// leaked into the NEXT parse's marker instead (Codex review on PR #2653).
+/// `parse_program` runs its own fold after lowering, which then finds the
+/// logs already drained; the markers were appended last here and the
+/// lowerings keep statement order, so they stay last.
+export fn parse_program_preserving(tokens: Array[Token]) -> Array[Stmt] with Exception {
+  let cfg_active = cfg_scan_enabled(tokens)
+  let b = ArrayBuilder::new()
+  let mut pos = 0
+  let mut done = false
+  while !done {
+    match peek(tokens, pos) {
+      TEof => {
+        done = true
+      },
+      TSemicolon => {
+        pos = pos + 1
+      },
+      THash => {
+        let (dname, flag, dnext) = parse_cfg_directive(tokens, pos + 1)
+        if dname == "zero_alloc" {
+          require_zero_alloc_target(tokens, dnext)
+          ArrayBuilder::push(b, SExpr(EIdent(zero_alloc_marker_ident(flag), 0)))
+          pos = dnext
+        } else if dname == "deprecated" || dname == "cfg_enable" || cfg_flag_active(cfg_active, flag) {
+          // enable directive consumed, or active #cfg: keep the next stmt.
+          pos = dnext
+        } else {
+          // Inactive #cfg: parse the guarded statement and discard it.
+          match peek(tokens, dnext) {
+            TImpl => {
+              let (simpl_d, hp_d) = parse_impl_stmt_dispatch(tokens, dnext + 1)
+              let (_dropped, dn) = parse_impl_methods(tokens, hp_d, simpl_d, None)
+              pos = dn
+            },
+            _ => {
+              let (_dropped, dn) = parse_stmt_preserving(tokens, [], dnext)
+              pos = dn
+            }
+          }
+        }
+      },
+      TImpl => {
+        let (simpl, hp) = parse_impl_stmt_dispatch(tokens, pos + 1)
+        let (impl_stmts, next) = parse_impl_methods(tokens, hp, simpl, None)
+        let mut ii = 0
+        while ii < Array::length(impl_stmts) {
+          ArrayBuilder::push(b, Array::get(impl_stmts, ii))
+          ii = ii + 1
+        }
+        pos = next
+      },
+      _ => {
+        let (stmt, next) = parse_stmt_preserving(tokens, [], pos)
+        ArrayBuilder::push(b, stmt)
+        pos = next
+      }
+    }
+  }
+  // Copied before the markers are appended, so the builder's frozen result
+  // is never pushed to -- and only when there is a marker to append: the
+  // common program has neither log, and the copy showed up as a +2% B/op
+  // drift on parser_bench's parse_deep_binop_chain.
+  let raw = ArrayBuilder::freeze(b)
+  if has_test_effect_rows() || has_qualified_pattern_refs() {
+    attach_qualified_pattern_refs(Array::slice(raw, 0, Array::length(raw)))
+  } else {
+    raw
+  }
+}
+
+/// #1455 step 3: fold the qualified-variant-pattern log this parse produced
+/// into a trailing `SQualifiedPatternRefs` marker, so the pairs travel WITH the
+/// statement array instead of sitting in parser state.
+///
+/// That placement is what makes the check survive two things a process-global
+/// log did not. `runtime/typecheck_fs.vibe`'s `parse_program_with_path`
+/// memoizes statements by `(path, exact source)` and hands out a copy WITHOUT
+/// re-running the parser, so a re-check would have found an already-drained
+/// log and skipped validation silently; and a parse whose module is never
+/// type-checked (`vibe fmt`, an LSP buffer) would have left its pairs for some
+/// later, unrelated check to report against its own enums. Draining here ends
+/// the log's life at the end of the parse that filled it.
+///
+/// Appended LAST so no existing statement index moves (the checker's capture
+/// paths and `reorder_type_decls_first` are index-based), and omitted entirely
+/// when the parse saw no qualified pattern.
+fn attach_qualified_pattern_refs(stmts: Array[Stmt]) -> Array[Stmt] {
+  // Emptiness first: the drain allocates even when it has nothing to hand
+  // back, and a program with no qualified pattern is the common case.
+  let with_refs = if has_qualified_pattern_refs() {
+    Array::push(stmts, SQualifiedPatternRefs(take_qualified_pattern_refs()))
+    stmts
+  } else {
+    stmts
+  }
+  // #1508: same placement rule -- appended LAST so no existing statement index
+  // moves, and omitted entirely when no test declared a row.
+  if has_test_effect_rows() {
+    Array::push(with_refs, STestEffectRows(take_test_effect_rows()))
+    with_refs
+  } else {
+    with_refs
+  }
+}
+
+/// Default program entry: `fn` declarations lowered to the legacy SLet shape
+/// (where-contracts desugared to runtime asserts) — the exact pre-#727
+/// output, so every checker/codegen consumer is unchanged.
+export fn parse_program(tokens: Array[Token]) -> Array[Stmt] with Exception {
+  attach_qualified_pattern_refs(expand_top_level_pattern_lets(lower_fn_decl_stmts(parse_program_preserving(tokens))))
+}
+
+/// Like parse_program but, on a syntax error, prefixes the message with the
+/// failing statement's `line:col` (from `lex_with_offsets` token start offsets).
+/// Per-statement wrapping keeps the change local. Build the prefix with
+/// String::concat (not `+` or interpolation) to avoid selfhost string-concat
+/// NUL fragility. Source-span foundation: located parse diagnostics.
+/// #816: in-body parse errors still carry the failing TOKEN index as "at #N"
+/// (expect_tk and the remaining encode sites). Decode it so recovery and the
+/// located wrapper anchor at the OFFENDING token instead of the enclosing
+/// statement's start. Converted unexpected-token throws keep that index in
+/// `last_unexpected_token_pos` rather than the user-facing message.
+fn extract_err_token_pos(msg: String, fallback_pos: Int) -> (Int, String) {
+  let mi = String::index_of(msg, " at #")
+  if mi < 0 {
+    if String::index_of(msg, "unexpected token") >= 0 {
+      let remembered = last_unexpected_token_pos()
+      if remembered >= 0 {
+        (remembered, msg)
+      } else {
+        (fallback_pos, msg)
+      }
+    } else {
+      (fallback_pos, msg)
+    }
+  } else {
+    let mlen = String::length(msg)
+    let mut di = mi + 5
+    let mut n = 0
+    let mut any = false
+    let mut scanning = true
+    while scanning {
+      if di < mlen {
+        let ch = String::char_code_at(msg, di)
+        if ch >= 48 && ch <= 57 {
+          n = n * 10 + (ch - 48)
+          any = true
+          di = di + 1
+        } else {
+          scanning = false
+        }
+      } else {
+        scanning = false
+      }
+    }
+    if !any {
+      (fallback_pos, msg)
+    } else {
+      let head = String::substring(msg, 0, mi)
+      let tail = String::substring(msg, di, mlen)
+      let joined = String::concat(head, tail)
+      let pi = String::index_of(joined, " (prev=")
+      let cleaned = if pi >= 0 {
+        String::substring(joined, 0, pi)
+      } else {
+        joined
+      }
+      (n, cleaned)
+    }
+  }
+}
+
+/// Prefix `line L:col C:` when the throw site has not already located the
+/// message. Located unexpected-token throws emit the final form themselves;
+/// re-prefixing those would double the location (`line 3:1: line 2:32: ...`).
+fn locate_parse_error(msg: String, fallback_pos: Int, starts: Array[Int], source: String) -> String {
+  if String::index_of(msg, "line ") == 0 {
+    msg
+  } else {
+    let (err_pos, cleaned_msg) = extract_err_token_pos(msg, fallback_pos)
+    let anchor_pos = if err_pos < Array::length(starts) {
+      err_pos
+    } else {
+      fallback_pos
+    }
+    let off = if anchor_pos < Array::length(starts) {
+      Array::get(starts, anchor_pos)
+    } else {
+      0
+    }
+    let (line, col) = offset_to_line_col(source, off)
+    let loc = String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), ": "))))
+    String::concat(loc, cleaned_msg)
+  }
+}
+
+fn parse_program_located_with_context_impl(tokens: Array[Token], starts: Array[Int], source: String, context: Option[ParserBinderContext]) -> (Array[Stmt], Int) with Exception {
+  remember_parse_source(source)
+  let cfg_active = cfg_scan_enabled(tokens)
+  let b = ArrayBuilder::new()
+  let mut pos = 0
+  let mut done = false
+  while !done {
+    match peek(tokens, pos) {
+      TEof => {
+        done = true
+      },
+      TSemicolon => {
+        pos = pos + 1
+      },
+      THash => {
+        let (dname, flag, dnext) = parse_cfg_directive(tokens, pos + 1)
+        if dname == "zero_alloc" {
+          require_zero_alloc_target(tokens, dnext)
+          let marker_offset = if pos < Array::length(starts) {
+            Array::get(starts, pos)
+          } else {
+            0
+          }
+          ArrayBuilder::push(b, SExpr(EIdent(zero_alloc_marker_ident(flag), marker_offset)))
+          pos = dnext
+        } else if dname == "deprecated" || dname == "cfg_enable" || cfg_flag_active(cfg_active, flag) {
+          pos = dnext
+        } else {
+          let capture_mark = binder_capture_mark(context)
+          let eligibility_mark = binder_capture_eligibility_mark(context)
+          match peek(tokens, dnext) {
+            TImpl => {
+              let (simpl_d, hp_d) = parse_impl_stmt_dispatch_with_binder_context(tokens, dnext + 1, context)
+              let (_dropped, dn) = parse_impl_methods(tokens, hp_d, simpl_d, context)
+              pos = dn
+            },
+            _ => {
+              let (_dropped, dn) = parse_stmt_with_binder_context(tokens, starts, dnext, context)
+              pos = dn
+            }
+          }
+          binder_capture_discard_from(context, capture_mark)
+          binder_capture_restore_eligibility(context, eligibility_mark)
+        }
+      },
+      _ => {
+        let start_pos = pos
+        let (stmts, next) = handle {
+          match peek(tokens, pos) {
+            TImpl => {
+              binder_capture_mark_ineligible(context)
+              let (simpl, hp) = parse_impl_stmt_dispatch_with_binder_context(tokens, pos + 1, context)
+              parse_impl_methods(tokens, hp, simpl, context)
+            },
+            _ => {
+              let (stmt, n) = parse_stmt_with_binder_context(tokens, starts, pos, context)
+              ([stmt], n)
+            }
+          }
+        } with { Exception::Throw(msg) => {
+          throw(locate_parse_error(msg, start_pos, starts, source))
+        } }
+        let mut ii = 0
+        while ii < Array::length(stmts) {
+          ArrayBuilder::push(b, Array::get(stmts, ii))
+          ii = ii + 1
+        }
+        pos = next
+      }
+    }
+  }
+  (attach_qualified_pattern_refs(expand_top_level_pattern_lets_with_binder_context(ArrayBuilder::freeze(b), context)), pos)
+}
+
+/// True when `t` is a resynchronization point for `parse_program_recovering`:
+/// it begins a top-level statement, OR is a statement separator (TSemicolon),
+/// OR ends input (TEof). Folding TSemicolon/TEof in here lets the resync loop
+/// use a single `if is_recovery_point(...)` test instead of a mixed
+/// constructor/catch-all `match` (the latter traps the seed codegen on this
+/// shape — keep this a flat function returning Bool).
+#zero_alloc
+fn is_recovery_point(t: Token) -> Bool {
+  match t {
+    TLet => true,
+    TExport => true,
+    TModule => true,
+    TEnum => true,
+    TSuberror => true,
+    TStruct => true,
+    TType => true,
+    TTrait => true,
+    TTest => true,
+    TExample => true,
+    TBench => true,
+    TImport => true,
+    TImpl => true,
+    TDeclare => true,
+    TOpen => true,
+    TSemicolon => true,
+    TEof => true,
+    _ => false
+  }
+}
+
+/// Like `parse_program_located`, but NEVER rethrows. On a per-statement syntax
+/// error it records the located (`line:col`) message into a diagnostics array,
+/// then resynchronizes by advancing `pos` to the next top-level statement start
+/// (or TSemicolon / TEof). At least one token is always consumed to guarantee
+/// progress. Returns the partial AST plus all collected diagnostics. Build all
+/// strings with String::concat (not `+`/interpolation) to avoid selfhost
+/// string-concat NUL fragility. Foundation: collect-all parse diagnostics (LSP).
+
+export fn parse_program_located(tokens: Array[Token], starts: Array[Int], source: String) -> Array[Stmt] with Exception {
+  parse_program_located_with_context_impl(tokens, starts, source, None).0
+}
+
+/// Explicit test/tooling seam for parser-context transport. The supplied
+/// context is forgeable and untrusted: this function never reads it and it
+/// cannot authorize binder rows, semantic artifacts, reuse, or codegen. The
+/// returned token position proves successful parsing consumed through TEof.
+export fn parse_program_located_with_untrusted_binder_context(tokens: Array[Token], starts: Array[Int], source: String, context: Option[ParserBinderContext]) -> (Array[Stmt], Int) with Exception {
+  parse_program_located_with_context_impl(tokens, starts, source, context)
+}
+
+/// Compatibility API retained authority-free: caller-provided token arrays are
+/// never a source of binder authority.
+export fn parse_program_located_with_binder_context(tokens: Array[Token], starts: Array[Int], source: String) -> Array[Stmt] with Exception {
+  parse_program_located_with_context_impl(tokens, starts, source, None).0
+}
+
+export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], source: String) -> (Array[Stmt], Array[String]) with Exception {
+  remember_parse_source(source)
+  let cfg_active = handle {
+    cfg_scan_enabled(tokens)
+  } with { Exception::Throw(_) => ArrayBuilder::freeze(ArrayBuilder::new()) }
+  let b = ArrayBuilder::new()
+  let diags = ArrayBuilder::new()
+  let n = Array::length(tokens)
+  let mut pos = 0
+  let mut done = false
+  while !done {
+    match peek(tokens, pos) {
+      TEof => {
+        done = true
+      },
+      TSemicolon => {
+        pos = pos + 1
+      },
+      THash => {
+        // #cfg directive: on any malformed directive fall through to the
+        // recovery machinery below by treating it like a failed statement.
+        let cfg_res = handle {
+          let (dname, flag, dnext) = parse_cfg_directive(tokens, pos + 1)
+          if dname == "zero_alloc" {
+            require_zero_alloc_target(tokens, dnext)
+            let marker_offset = if pos < Array::length(starts) {
+              Array::get(starts, pos)
+            } else {
+              0
+            }
+            ArrayBuilder::push(b, SExpr(EIdent(zero_alloc_marker_ident(flag), marker_offset)))
+            dnext
+          } else if dname == "deprecated" || dname == "cfg_enable" || cfg_flag_active(cfg_active, flag) {
+            dnext
+          } else {
+            match peek(tokens, dnext) {
+              TImpl => {
+                let (simpl_d, hp_d) = parse_impl_stmt_dispatch(tokens, dnext + 1)
+                let (_dropped, dn) = parse_impl_methods(tokens, hp_d, simpl_d, None)
+                dn
+              },
+              _ => {
+                let (_dropped, dn) = parse_stmt(tokens, starts, dnext)
+                dn
+              }
+            }
+          }
+        } with { Exception::Throw(_) => 0 - 1 }
+        if cfg_res >= 0 {
+          pos = cfg_res
+        } else {
+          // resync: skip to the next recovery point (mirrors the stmt path).
+          let mut rp = pos + 1
+          while rp < n && !is_recovery_point(Array::get(tokens, rp)) {
+            rp = rp + 1
+          }
+          pos = rp
+        }
+      },
+      _ => {
+        let start_pos = pos
+        let res = handle {
+          let (stmts, next) = match peek(tokens, pos) {
+            TImpl => {
+              let (simpl, hp) = parse_impl_stmt_dispatch(tokens, pos + 1)
+              parse_impl_methods(tokens, hp, simpl, None)
+            },
+            _ => {
+              let (stmt, n) = parse_stmt(tokens, starts, pos)
+              ([stmt], n)
+            }
+          }
+          Some((stmts, next))
+        } with { Exception::Throw(msg) => {
+          let err_pos = extract_err_token_pos(msg, start_pos).0
+          let anchor_pos = if err_pos >= start_pos && err_pos < Array::length(starts) {
+            err_pos
+          } else {
+            start_pos
+          }
+          ArrayBuilder::push(diags, locate_parse_error(msg, start_pos, starts, source))
+          // #946: resynchronize from the ERROR ANCHOR, not the statement
+          // start. Every token before the anchor was already consumed as
+          // part of this failed statement, so restarting the parse at each
+          // intervening recovery-point-looking token (e.g. the TLet inside
+          // a failed `export let ...`) re-reported the SAME error 4-5x with
+          // stray positions. Skip at least one token (progress guarantee),
+          // then advance to the next recovery point (top-level statement
+          // start, TSemicolon, or TEof — see is_recovery_point) and hand
+          // the position back through the normal Some path (zero stmts).
+          // #963: if the anchor token IS itself a recovery point (the
+          // failed statement ran into the start of the NEXT top-level
+          // statement, e.g. `export let a =` followed by `test ...`),
+          // resume AT the anchor so that statement is parsed, not skipped.
+          // Progress stays guaranteed: this branch is only taken when
+          // anchor_pos > start_pos (the clamp above enforces
+          // anchor_pos >= start_pos), and the anchor+1 path always
+          // consumes at least one token.
+          let resync_pos = if anchor_pos > start_pos && is_recovery_point(peek(tokens, anchor_pos)) {
+            anchor_pos
+          } else {
+            let mut rp = anchor_pos + 1
+            let mut sync = false
+            while !sync {
+              if rp >= n {
+                sync = true
+              } else {
+                let t = peek(tokens, rp)
+                if is_recovery_point(t) {
+                  sync = true
+                } else {
+                  rp = rp + 1
+                }
+              }
+            }
+            rp
+          }
+          Some((ArrayBuilder::freeze(ArrayBuilder::new()), resync_pos))
+        } }
+        match res {
+          Some((stmts, next)) => {
+            let mut ii = 0
+            while ii < Array::length(stmts) {
+              ArrayBuilder::push(b, Array::get(stmts, ii))
+              ii = ii + 1
+            }
+            pos = next
+          },
+          None => {
+            // Unreachable: the Throw handler above always returns Some with
+            // an empty statement list and the resync position. Kept only for
+            // match exhaustiveness; consume one token if ever reached.
+            pos = start_pos + 1
+          }
+        }
+      }
+    }
+  }
+  (attach_qualified_pattern_refs(expand_top_level_pattern_lets(ArrayBuilder::freeze(b))), ArrayBuilder::freeze(diags))
+}
+
+/// Like `parse_program`, but also returns per top-level statement its source
+/// byte span (start, end), derived from the token offset arrays produced by
+/// `lex_with_offsets`. start = first token's start offset; end = last token's
+/// end offset. The three returned arrays are parallel (one entry per stmt).
+export fn parse_program_spans(tokens: Array[Token], starts: Array[Int], ends: Array[Int]) -> (Array[Stmt], Array[Int], Array[Int]) with Exception {
+  let cfg_active = cfg_scan_enabled(tokens)
+  let b = ArrayBuilder::new()
+  let span_start = ArrayBuilder::new()
+  let span_end = ArrayBuilder::new()
+  let mut pos = 0
+  let mut done = false
+  // Set by an inactive `#cfg`: the next statement is parsed by the ordinary
+  // arm below (syntax must stay valid) and then not recorded. Routing it
+  // through the same arm instead of a second `parse_stmt` call site matters:
+  // measured on the selfcompile KPI, one extra `parse_stmt(...)` call in this
+  // function costs the compiler +48 MB of heap and +10k pages to compile
+  // parser.vibe (#2516).
+  let mut drop_next = false
+  while !done {
+    match peek(tokens, pos) {
+      TEof => {
+        done = true
+      },
+      TSemicolon => {
+        pos = pos + 1
+      },
+      THash => {
+        // `#zero_alloc` is part of the following declaration's source span.
+        // Module-source emission therefore preserves the directive without
+        // adding a synthetic statement that would desynchronise span arrays.
+        let (dname, flag, dnext) = parse_cfg_directive(tokens, pos + 1)
+        if dname == "zero_alloc" {
+          require_zero_alloc_target(tokens, dnext)
+          let st = Array::get(starts, pos)
+          let (stmt, next) = parse_stmt(tokens, starts, dnext)
+          ArrayBuilder::push(b, stmt)
+          ArrayBuilder::push(span_start, st)
+          ArrayBuilder::push(span_end, Array::get(ends, next - 1))
+          pos = next
+        } else if dname == "deprecated" || dname == "cfg_enable" || cfg_flag_active(cfg_active, flag) {
+          // Resolved at this parse, the same way `parse_program` resolves
+          // them: the directive itself owns no span, and the statement an
+          // active `#cfg` / `#deprecated` guards is emitted by the next
+          // iteration as itself. Module-source emission therefore produces a
+          // directive-free flat source for the active set it was given
+          // (#2497), and the span tools see exactly the statements the
+          // checker sees.
+          pos = dnext
+        } else {
+          // Inactive `#cfg`: the guarded statement must still parse (the
+          // TImpl / ordinary arms below do that, an impl through its
+          // methods), and gets no span, so it is absent from the emitted
+          // source rather than emitted under a directive the next compile
+          // would have to resolve again. `parse_program` hands the position
+          // after the directive to `parse_stmt`, which rejects a directive or
+          // EOF there; say the same.
+          match peek(tokens, dnext) {
+            THash => throw("#cfg must be followed by a statement"),
+            TEof => throw("#cfg must be followed by a statement"),
+            _ => {
+              drop_next = true
+              pos = dnext
+            }
+          }
+        }
+      },
+      TImpl => {
+        // One statement, one span, for the whole impl (the emitted text is
+        // the source itself), but the body is parsed through its methods as
+        // `parse_program` does: brace balancing accepted malformed method
+        // syntax and never terminated at EOF.
+        let st = Array::get(starts, pos)
+        let (simpl, hp) = parse_impl_stmt_dispatch(tokens, pos + 1)
+        let (_impl_stmts, next) = parse_impl_methods(tokens, hp, simpl, None)
+        if drop_next {
+          drop_next = false
+        } else {
+          ArrayBuilder::push(b, simpl)
+          ArrayBuilder::push(span_start, st)
+          ArrayBuilder::push(span_end, Array::get(ends, next - 1))
+        }
+        pos = next
+      },
+      _ => {
+        let st = Array::get(starts, pos)
+        let (stmt, next) = parse_stmt(tokens, starts, pos)
+        if drop_next {
+          drop_next = false
+        } else {
+          ArrayBuilder::push(b, stmt)
+          ArrayBuilder::push(span_start, st)
+          ArrayBuilder::push(span_end, Array::get(ends, next - 1))
+        }
+        pos = next
+      }
+    }
+  }
+  // #1455 step 3: this entry feeds editor tooling (spans, symbols, type-at),
+  // which never type-checks, so there is no marker to attach the qualified
+  // pattern refs to -- drop them rather than let them outlive this parse and
+  // be reported against some later file's enums.
+  if has_test_effect_rows() {
+    let _dropped_rows = take_test_effect_rows()
+  } else {
+    ()
+  }
+  if has_qualified_pattern_refs() {
+    let _dropped = take_qualified_pattern_refs()
+  } else {
+    ()
+  }
+  (ArrayBuilder::freeze(b), ArrayBuilder::freeze(span_start), ArrayBuilder::freeze(span_end))
+}
+
+//# Misc
+
+export {
+  Expr,
+  Pat,
+  Stmt,
+  TypeExpr,
+  parse,
+  parse_expr,
+  parse_ok,
+  parse_program,
+  parse_program_preserving,
+  parse_stmt,
+  parse_stmt_preserving,
+  parse_type
+}
+
+/// Parse the source once, retaining exact token extents for editor queries.
+/// Annotations are never passed to the checker or code generator.
+export fn parse_source_with_ranges(source: String) -> Array[Stmt] with Exception {
+  let (tokens, starts, ends) = lex_with_offsets(source)
+  let context = source_expr_context(starts, ends)
+  parse_program_located_with_context_impl(tokens, starts, source, Some(context)).0
+}
