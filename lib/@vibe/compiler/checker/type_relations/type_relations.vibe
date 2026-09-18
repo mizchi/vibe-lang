@@ -17,7 +17,32 @@ import @vibe/core {
 }
 
 import @vibe/compiler/checker/diagnostics {
-  off_marker
+  off_marker, off_marker_len
+}
+
+let assignable_span_end: Array[Int] = array_empty()
+
+export fn check_assignable_set_end(end: Int) -> Unit {
+  Array::truncate(assignable_span_end, 0)
+  if end > 0 {
+    Array::push(assignable_span_end, end)
+  } else {
+    ()
+  }
+}
+
+fn assignable_marker(off: Int) -> String {
+  if Array::length(assignable_span_end) > 0 {
+    let end = Array::get(assignable_span_end, 0)
+    Array::truncate(assignable_span_end, 0)
+    if end > off {
+      off_marker_len(off, end - off)
+    } else {
+      off_marker(off)
+    }
+  } else {
+    off_marker(off)
+  }
 }
 
 /// Erase every effect annotation in a type (recursively), so an argument can be
@@ -688,7 +713,7 @@ export fn check_assignable(expected: Type, actual: Type, s: Subst, errors: Array
 /// the string first: ~25 ms of `__rt_str_concat` under `unify_call_args` in a
 /// cold self-compile, for calls that almost always agree.
 export fn check_assignable_for(expected: Type, actual: Type, s: Subst, errors: Array[String], what_head: String, what_tail: String, off: Int) -> Subst {
-  match unify(expected, actual, s) {
+  let result = match unify(expected, actual, s) {
     Some(su) => su,
     None => {
       let structural = match unify(strip_effects(expected), strip_effects(actual), s) {
@@ -741,7 +766,7 @@ export fn check_assignable_for(expected: Type, actual: Type, s: Subst, errors: A
       // stays on the historical tolerate path.
       let named_vs_scalar = (type_fully_concrete(expected) && is_fully_concrete_named(expected_zonked) && is_builtin_scalar(actual_zonked)) || (is_builtin_scalar(expected_zonked) && is_fully_concrete_named(actual_zonked))
       if stdin_stream_conflict || nominal_conflict || rigid_applied_conflict || (named_vs_scalar && !structural) {
-        Array::push(errors, String::concat(String::concat(what_head, what_tail), String::concat(": expected ", String::concat(type_to_string(expected_zonked), String::concat(", got ", String::concat(type_to_string(actual_zonked), off_marker(off)))))))
+        Array::push(errors, String::concat(String::concat(what_head, what_tail), String::concat(": expected ", String::concat(type_to_string(expected_zonked), String::concat(", got ", String::concat(type_to_string(actual_zonked), assignable_marker(off)))))))
         s
       } else if structural {
         // #939: the structural retry tolerated EVERY effect-only difference,
@@ -753,7 +778,7 @@ export fn check_assignable_for(expected: Type, actual: Type, s: Subst, errors: A
         // stay tolerated (see effect_row_dropped).
         match effect_row_dropped(subst_apply(s, expected), subst_apply(s, actual)) {
           Some(lbl) => {
-            Array::push(errors, String::concat(String::concat(what_head, what_tail), String::concat(": effect row mismatch: a value of type ", String::concat(type_to_string(subst_apply(s, actual)), String::concat(" cannot be used where ", String::concat(type_to_string(subst_apply(s, expected)), String::concat(" is expected (the { ", String::concat(lbl, String::concat(" } effect would be dropped — no handler could ever run)", off_marker(off))))))))))
+            Array::push(errors, String::concat(String::concat(what_head, what_tail), String::concat(": effect row mismatch: a value of type ", String::concat(type_to_string(subst_apply(s, actual)), String::concat(" cannot be used where ", String::concat(type_to_string(subst_apply(s, expected)), String::concat(" is expected (the { ", String::concat(lbl, String::concat(" } effect would be dropped — no handler could ever run)", assignable_marker(off))))))))))
             s
           },
           None => s
@@ -787,11 +812,13 @@ export fn check_assignable_for(expected: Type, actual: Type, s: Subst, errors: A
           s
         }
       } else {
-        Array::push(errors, String::concat(String::concat(what_head, what_tail), String::concat(": expected ", String::concat(type_to_string(subst_apply(s, expected)), String::concat(", got ", String::concat(type_to_string(subst_apply(s, actual)), off_marker(off)))))))
+        Array::push(errors, String::concat(String::concat(what_head, what_tail), String::concat(": expected ", String::concat(type_to_string(subst_apply(s, expected)), String::concat(", got ", String::concat(type_to_string(subst_apply(s, actual)), assignable_marker(off)))))))
         s
       }
     }
   }
+  Array::truncate(assignable_span_end, 0)
+  result
 }
 
 /// #1001: the type's outer constructor's nominal name, when it is one that can
@@ -1031,7 +1058,7 @@ export fn detect_narrowed_generic_mismatch_for(expected: Type, actual: Type, s: 
         match unify(e2, a2, s) {
           Some(_) => s,
           None => {
-            Array::push(errors, String::concat(String::concat(what_head, what_tail), String::concat(": expected ", String::concat(type_to_string(e2), String::concat(", got ", String::concat(type_to_string(a2), off_marker(off)))))))
+            Array::push(errors, String::concat(String::concat(what_head, what_tail), String::concat(": expected ", String::concat(type_to_string(e2), String::concat(", got ", String::concat(type_to_string(a2), assignable_marker(off)))))))
             s
           }
         }

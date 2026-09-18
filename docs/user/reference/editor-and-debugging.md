@@ -56,7 +56,8 @@ vibe symbols --with-path <file.vibe>      # force the PATH field on for a single
 vibe symbols --legend                     # KIND NAME table (LSP SymbolKind + 27 Test / 28 Bench, v2 2026-09-12)
 vibe check <file.vibe>                    # all diagnostics, one per line on stdout; empty output = clean, exit 1 if not
 vibe check --single-file <file.vibe>      # same, analysing the buffer ALONE (no FS import resolution)
-vibe check --single-file --json <file.vibe>  # same diagnostics as a JSON array of LSP Diagnostic objects (#820)
+vibe check --json <file.vibe>                # same diagnostics as a JSON array of LSP Diagnostic objects (FS lane)
+vibe check --single-file --json <file.vibe>  # same JSON contract without resolving imports (#820, #2831)
 ```
 
 - `symbols` takes **several paths, or a directory** (#2381). Each root is one
@@ -164,14 +165,16 @@ vibe check --single-file --json <file.vibe>  # same diagnostics as a JSON array 
   line, `error: ` marking each diagnostic start (continuations like `hint: `
   are indented under it, so `grep -c '^error: '` is an exact count); **clean =
   empty output + exit 0**; anything reported = **exit 1**.
-- `--json` is available in `--single-file` mode, where the compiler's own
-  structured emitter produces real ranges: it reuses the same `[@off=N]`-derived
-  offsets `vibe lsp`'s `publishDiagnostics` uses, wrapped as
-  `{range, severity, source, message}` objects — no separate
+- `--json` is available on both the FS lane and `--single-file` (#2831). Both
+  reuse the same `[@off=N]`-derived offsets `vibe lsp`'s `publishDiagnostics`
+  uses, wrapped as `{range, severity, source, message}` objects — no separate
   structured-diagnostic format to keep in sync. A clean file yields `[]` and
-  exit 0. Without `--single-file` the launcher refuses `--json` rather than
-  inventing ranges: the import-resolving lane reports diagnostics as message
-  text with no per-diagnostic span attached (#1567).
+  exit 0; errors yield a JSON array and exit 1. A node the parser never
+  constructed is marked `data.synthetic: true`; its `range` is an empty one at
+  the document start, because LSP requires `Diagnostic.range` to be two real
+  `Position` objects and a schema-checking client drops a null-bounded payload
+  (Codex review of #2868). `vibe grep`'s own JSON is NOT the protocol and keeps
+  `"start":null,"end":null` for a synthetic match.
 - `vibe diagnostics` is the **deprecated** spelling of `vibe check
   --single-file`. It is kept behaviourally frozen (raw lines with no `error: `
   prefix, always exit 0) for editors already wired to it — see

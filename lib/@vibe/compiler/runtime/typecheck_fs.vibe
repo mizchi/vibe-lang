@@ -5092,6 +5092,41 @@ fn locate_fn_name_marker(source: String, msg: String, mi: Int) -> String {
 /// its exact `line:col`. Otherwise strip the marker and fall through to the
 /// existing first-occurrence heuristics on the cleaned message. If no marker is
 /// present, returns msg unchanged.
+/// The end offset of the string literal token starting at `start`, or
+/// `fallback` when `start` is not one.
+///
+/// Scans to the matching close, honouring `\` escapes, so the span is the
+/// LEXER's rather than the decoded value's length. An interpolated string is
+/// not an `EString`, so no `\{` can appear here; an unterminated literal has
+/// no close to find and keeps the fallback. The result is never SHORTER than
+/// the fallback -- escapes only make the source longer than the decoded value
+/// -- so this can extend a range to the closing quote and never pull one in.
+fn string_token_end(source: String, start: Int, fallback: Int) -> Int {
+  let slen = String::length(source)
+  if start < 0 || start >= slen || String::byte_at(source, start) != 34 {
+    fallback
+  } else {
+    let mut i = start + 1
+    let mut found = 0 - 1
+    while i < slen {
+      let c = String::byte_at(source, i)
+      if c == 92 {
+        i = i + 2
+      } else if c == 34 {
+        found = i + 1
+        i = slen
+      } else {
+        i = i + 1
+      }
+    }
+    if found > fallback {
+      found
+    } else {
+      fallback
+    }
+  }
+}
+
 export fn locate_type_error(source: String, msg: String) -> String {
   let marker = " [@off="
   let mi = String::index_of(msg, marker)
@@ -5126,6 +5161,13 @@ export fn locate_type_error(source: String, msg: String) -> String {
       // Strip the full ` [@off=...]` segment (marker .. closing `]` inclusive).
       let stripped = String::concat(String::substring(msg, 0, mi), String::substring(msg, close + 1, String::length(msg)))
       let slen = String::length(source)
+      // #2868 (Codex P2): recover a string literal's TOKEN end from the source.
+      // `string_lit_end` in the checker computes `off + 2 + String::length(s)`,
+      // the DECODED length, so `"\n"` -- two source bytes, one decoded -- ends
+      // the range inside the token, and every escape costs another byte. The
+      // AST carries no token end and the checker has no source text; this
+      // function has both, so the honest end is derived here.
+      let m = string_token_end(source, n, m)
       if n >= 0 && n < slen {
         if m > n && m <= slen {
           String::concat(offset_line_col_range_prefix(source, n, m), stripped)
@@ -6790,7 +6832,7 @@ fn dedupe_diagnostics(diags: Array[String]) -> Array[String] {
 }
 /// #946(4): find every top-level `fn f(..) -> Int = wasm "<WAT>"` definition
 /// (parsed as `SLet(_, _, name, _, EFn(_, _, params, _, _, ECall(EIdent("%wasm",
-/// _), [EString(wat)], _)))` — see lc_extract_inline_wasm in
+/// _), [EString(wat, -1)], _)))` — see lc_extract_inline_wasm in
 /// codegen/wasi/linked_compile.vibe, whose extraction pattern this mirrors
 /// read-only (no mutation: diagnostics discards `stmts` after this scan, and
 /// running it before codegen would blow away the marker codegen depends on).
@@ -6805,7 +6847,7 @@ fn collect_inline_wasm_fns(stmts: Array[Stmt]) -> Array[(String, String, Array[S
           ECall(iw_cal, iw_args, _) => match iw_cal {
             EIdent(iw_cn, _) => if iw_cn == "%wasm" && Array::length(iw_args) == 1 {
               match Array::get(iw_args, 0) {
-                EString(iw_wat) => {
+                EString(iw_wat, _) => {
                   let pnames = array_empty()
                   // #2348 part 2: the `Array[Int]` params, so this lane
                   // assembles the body the way codegen does -- a `local.set`

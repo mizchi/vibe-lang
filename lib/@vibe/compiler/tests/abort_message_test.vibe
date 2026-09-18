@@ -1,0 +1,92 @@
+//# `abort(msg)` (#2397)
+//
+// Library code with an empty effect row can abort with a caller-supplied
+// message on the same stream `__rt_oob_abort` uses (print_str, then trap).
+// One-argument `assert` / `assert_true` still trap without a message.
+
+//# Imports
+
+import @vibe/compiler/entry/source_compile {
+  compile_source_wasi
+}
+
+import @vibe/compiler/entry/source_compile/gc_only {
+  compile_source_gc_only
+}
+
+//# Helpers
+
+fn bytes_contains(hay: Bytes, needle: String) -> Bool {
+  let nlen = String::length(needle)
+  let hlen = Bytes::length(hay)
+  if nlen == 0 {
+    true
+  } else if nlen > hlen {
+    false
+  } else {
+    let mut found = false
+    let mut i = 0
+    while i + nlen <= hlen && !found {
+      let mut ok = true
+      let mut j = 0
+      while j < nlen && ok {
+        ok = Bytes::get(hay, i + j) == String::char_code_at(needle, j)
+        j = j + 1
+      }
+      if ok {
+        found = true
+      } else {
+        i = i + 1
+      }
+    }
+    found
+  }
+}
+
+fn capture_run(wasm_path: String, bytes: Bytes) -> String with Exception + Fs + Process {
+  Fs::write_bytes(wasm_path, bytes)
+  let _ = sh("bash -c 'scripts/run_wasm_vibe_host_runner.sh \{wasm_path} >\{wasm_path}.out 2>&1 || true'")
+  Fs::read_file(String::concat(wasm_path, ".out"))
+}
+
+//# Tests
+
+test "abort compiles into an empty-row function" {
+  let src = "fn boom() -> Unit {\n  abort(\"invariant: no free slot\")\n}\nfn main() -> Int {\n  boom()\n  0\n}\n"
+  let bytes = compile_source_wasi(src, "main")
+  assert(Bytes::length(bytes) > 8)
+}
+
+test "abort lowering still compiles on the gc lane" {
+  let src = "fn boom() -> Unit {\n  abort(\"invariant: no free slot\")\n}\nfn main() -> Int {\n  boom()\n  0\n}\n"
+  let bytes = compile_source_gc_only(src, "main")
+  assert(Bytes::length(bytes) > 8)
+}
+
+test "abort prints the supplied message and traps" {
+  let src = "fn boom() -> Unit {\n  abort(\"invariant: no free slot\")\n}\nfn main() -> Int {\n  boom()\n  0\n}\n"
+  let err = capture_run("_build/vibe_test/abort_message_probe.wasm", compile_source_wasi(src, "main"))
+  inspect(String::contains(err, "invariant: no free slot"), content = "true")
+  inspect(String::contains(err, "RuntimeError: unreachable") || String::contains(err, "unreachable"), content = "true")
+}
+
+test "abort prints the supplied message and traps on the gc lane" {
+  let src = "fn boom() -> Unit {\n  abort(\"invariant: no free slot\")\n}\nfn main() -> Int {\n  boom()\n  0\n}\n"
+  let err = capture_run("_build/vibe_test/abort_message_probe_gc.wasm", compile_source_gc_only(src, "main"))
+  inspect(String::contains(err, "invariant: no free slot"), content = "true")
+  inspect(String::contains(err, "RuntimeError: unreachable") || String::contains(err, "unreachable") || String::contains(err, "RuntimeError"), content = "true")
+}
+
+test "assert(false) still traps without a message" {
+  let src = "fn main() -> Int {\n  assert(false)\n  0\n}\n"
+  let err = capture_run("_build/vibe_test/assert_silent_probe.wasm", compile_source_wasi(src, "main"))
+  inspect(String::contains(err, "RuntimeError: unreachable") || String::contains(err, "unreachable"), content = "true")
+  inspect(String::contains(err, "invariant: no free slot"), content = "false")
+}
+
+test "abort wasm contains the message as data, not a Stdout import" {
+  let src = "fn boom() -> Unit {\n  abort(\"invariant: no free slot\")\n}\nfn main() -> Int {\n  boom()\n  0\n}\n"
+  let bytes = compile_source_wasi(src, "main")
+  assert(bytes_contains(bytes, "invariant: no free slot"))
+  assert(!bytes_contains(bytes, "Stdout::write_stream"))
+}

@@ -13,6 +13,8 @@
 set -euo pipefail
 
 unset VIBE_BUILTIN_PARITY_REGISTRY
+unset VIBE_BUILTIN_PARITY_LIN_CALLSITE
+unset VIBE_BUILTIN_PARITY_GC_CALLSITE
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -88,5 +90,31 @@ run_case shape   shape   "9-tuple"
 # Lane flags are the FIRST three bools. Clearing them on Array::push must
 # name that row as a dead neither-lane entry.
 run_case neither neither "NEITHER lane"
+
+# --- the call-site exemption (#2397) ----------------------------------------
+#
+# `abort` claims neither lane HONESTLY: both lanes lower it at the call site
+# rather than registering a func-table row. An exemption that is merely a name
+# on a list would keep the row alive after its lowering was deleted or
+# renamed, which is the same "unchecked, not clean" failure #2248 is about. So
+# the exemption reads the arms, and this case proves it does: rename the gc
+# arm on a COPY and the gate must name `abort` rather than waving it through.
+GC_CALLSITE_REAL="lib/@vibe/compiler/codegen/gc/backend_call.vibe"
+GC_COPY="$WORK/backend_call.vibe"
+sed 's/fname == "abort"/fname == "abort_MUTATED"/' "$GC_CALLSITE_REAL" > "$GC_COPY"
+grep -qF 'fname == "abort_MUTATED"' "$GC_COPY" \
+  || fail "callsite mutation did not land (the gc abort arm was not renamed)"
+if grep -qF 'fname == "abort"' "$GC_COPY"; then
+  fail "callsite mutation left an unrenamed gc abort arm; the case would prove nothing"
+fi
+if VIBE_BUILTIN_PARITY_GC_CALLSITE="$GC_COPY" bash "$GATE" >"$WORK/callsite.log" 2>&1; then
+  cat "$WORK/callsite.log" >&2
+  fail "the gate PASSED with the gc abort lowering renamed -- the exemption is a bare name, not a check"
+fi
+if ! grep -qi "call-site-lowered builtin has no" "$WORK/callsite.log"; then
+  cat "$WORK/callsite.log" >&2
+  fail "the callsite mutation failed, but not for its own reason"
+fi
+echo "builtin-parity-selftest:   red ok: callsite-exemption"
 
 echo "builtin-parity-selftest: ok"

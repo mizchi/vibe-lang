@@ -50,12 +50,19 @@ agree and the check would prove nothing, which its self-test pins as a failure.
 
 ## The one deliberate exception: LSP
 
-`vibe check --single-file --json` and the `vibe lsp` server emit **LSP**
+`vibe check --json` (FS lane and `--single-file`) and the `vibe lsp` server emit **LSP**
 positions — 0-based lines, and columns in **UTF-16 code units**, per the
 protocol. That is not this contract leaking; it is the boundary doing its job.
 `lib/@vibe/lsp/lsp_server.vibe` converts in both directions
 (`lsp_pos_to_byte_col`, `lsp_byte_col_to_utf16`) so the compiler underneath
-stays byte-addressed.
+stays byte-addressed. The two `vibe check --json` lanes share this contract:
+clean files emit `[]` and exit 0; errors emit a JSON array and exit 1. A
+diagnostic for a node the parser never constructed is marked
+`data.synthetic: true` and carries an empty range at the document start: LSP
+makes `Diagnostic.range` required and types it as two `Position` objects, so
+null bounds are an invalid payload rather than a weaker claim. `vibe grep`'s
+own JSON is NOT the protocol and keeps `"start":null,"end":null` for a
+synthetic match (below).
 
 Measured on `let bad = quux` preceded on the same line by two 4-byte emoji:
 
@@ -137,19 +144,17 @@ ranges through the CLI and compares synthetic output in text and JSON.
 ## Every type error carries a position
 
 A diagnostic with **no** position fails this contract more completely than one
-in the wrong unit: there is nothing for a client to convert. Two shapes used to
-escape, both because a literal value carries no offset slot in the AST:
+in the wrong unit: there is nothing for a client to convert. String literals
+now carry a parser offset (#2831), so `let a: Int = "not an int"` — local,
+top-level, parenthesized, or as an `if` branch — reports a range that slices
+the string token, including when a multibyte comment precedes it. `vibe check
+--json` on the FS lane and on `--single-file` emit the same LSP conversion of
+that range; `data` is `null` because the node is real source.
 
-- a **local** `let a: Int = "x"` — closed by anchoring the synthetic ascription
-  call on the binder name (`ascribe_wrap`),
-- a **top-level** `let a: Int = "x"` — closed by tagging the binder name with
-  the `[@fn=NAME]` side channel, which `find_fn_anchor_off` already resolved for
-  `fn name` *and* `let name`. The top-level lane keeps its annotation on `SLet`
-  rather than going through `ascribe_wrap`, which is why it needed the second
-  mechanism rather than the first.
-
-The value's own offset still wins wherever it exists — `let a: Int = f()`
-reports at `f()`, because that is where the edit goes. The binder is only the
-fallback. Both are pinned by `scripts/check_source_range_contract.sh` checks 9
-and 10, the second of which asserts the *failing* binder is named rather than
-the first `let` in the file.
+`EInt` / `EBool` / `EFloat` still have no offset slot. Those mismatches keep
+the binder-name fallback (`[@fn=NAME]`) rather than inventing `0:0`. A node
+the parser never constructed still reports null bounds and `synthetic: true`.
+The value's own offset wins wherever it exists — `let a: Int = f()` reports at
+`f()`, because that is where the edit goes. Pinned by
+`lib/@vibe/compiler/tests/source_range_contract_test.vibe` and
+`scripts/check_source_range_contract.sh` checks 9 and 10.

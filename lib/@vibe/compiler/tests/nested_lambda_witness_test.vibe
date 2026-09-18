@@ -1,0 +1,135 @@
+//# #2778: a nested generic lambda that declares bounds honours those bounds.
+//
+// The four rungs already pinned at a top-level binder
+// (`fixtures/lambda_bound_toplevel_witness_test.vibe`) must compile when the
+// binder is a nested lambda. This drives `compile_source_wasi` so the seed
+// compiling THIS file still observes the checkout's desugar (the functions
+// under test are imported from current source). Runtime answers live in
+// `fixtures/lambda_bound_nested_witness_test.vibe` and run against stage2.
+
+import @vibe/compiler/entry/source_compile {
+  compile_source_wasi
+}
+
+fn capture_run(wasm_path: String, bytes: Bytes) -> String with Exception + Fs + Process {
+  Fs::write_bytes(wasm_path, bytes)
+  let _ = sh("bash -c 'scripts/run_wasm_vibe_host_runner.sh \{wasm_path} >\{wasm_path}.out 2>&1 || true'")
+  Fs::read_file(String::concat(wasm_path, ".out"))
+}
+
+fn compile_outcome(label: String, source: String) -> String {
+  String::concat(label, String::concat(": ", handle {
+    let _ = compile_source_wasi(source, "main")
+    "accepted"
+  } with { Exception::Throw(message) => message }))
+}
+
+fn eq_prelude() -> String {
+  "trait Eq {\n  equals(Self, Self) -> Bool\n}\n\nstruct Pt {\n  v: Int\n}\n\nimpl Eq for Pt {\n  equals(a: Pt, b: Pt) -> Bool {\n    a.v == b.v\n  }\n}\n\nimpl Eq for Int {\n  equals(a: Int, b: Int) -> Bool {\n    a == b\n  }\n}\n"
+}
+
+fn show_prelude() -> String {
+  "trait Show {\n  to_string(Self) -> String\n}\n\nstruct Pt {\n  v: Int\n}\n\nimpl Show for Pt {\n  to_string(a: Pt) -> String {\n    \"Pt!\"\n  }\n}\n"
+}
+
+test "nested qualified Eq dispatch compiles" {
+  inspect(compile_outcome("nested-qual", String::concat(eq_prelude(), "fn main() -> Int {\n  let inner = [T: Eq](a: T, b: T) -> Bool {\n    T::equals(a, b)\n  }\n  if inner(Pt::{ v: 1 }, Pt::{ v: 1 }) {\n    1\n  } else {\n    0\n  }\n}\n")), "nested-qual: accepted")
+}
+
+test "nested UFCS Eq dispatch compiles" {
+  inspect(compile_outcome("nested-ufcs", String::concat(eq_prelude(), "fn main() -> Int {\n  let inner = [T: Eq](a: T, b: T) -> Bool {\n    a.equals(b)\n  }\n  if inner(Pt::{ v: 1 }, Pt::{ v: 2 }) {\n    1\n  } else {\n    0\n  }\n}\n")), "nested-ufcs: accepted")
+}
+
+test "nested method-as-value Eq dispatch compiles" {
+  inspect(compile_outcome("nested-value", String::concat(eq_prelude(), "fn main() -> Int {\n  let inner = [T: Eq](a: T, b: T) -> Bool {\n    let cmp = T::equals\n    cmp(a, b)\n  }\n  if inner(7, 8) {\n    1\n  } else {\n    0\n  }\n}\n")), "nested-value: accepted")
+}
+
+test "nested Show interpolation compiles" {
+  inspect(compile_outcome("nested-interp", String::concat(show_prelude(), "fn main() -> Int {\n  let inner = [T: Show](a: T) -> String {\n    \"\\{a}\"\n  }\n  String::length(inner(Pt::{ v: 1 }))\n}\n")), "nested-interp: accepted")
+}
+
+// #2778 threads the bound; it does not invent a RENDERER. `Eq` declares
+// `equals`, not `to_string`, so there is no witness to interpolate through and
+// #2745/#2840 refuses -- at a nested binder exactly as at a top-level one. The
+// shim rewrite does not rescue it either: the call site sees `inner(7)`, but
+// the body was already refused. Bounded-and-renderable is the case above
+// ("nested Show interpolation compiles"); this is bounded-and-not.
+test "a nested Eq bound is not a renderer, so interpolation is refused" {
+  inspect(compile_outcome("nested-eq-interp", String::concat(eq_prelude(), "fn main() -> Int {\n  let inner = [T: Eq](a: T) -> String {\n    \"\\{a}\"\n  }\n  String::length(inner(7))\n}\n")), "nested-eq-interp: pass an explicit renderer `(T) -> String`, or interpolate at a concrete type: type parameter `T` is erased here and has no renderer witness; a marker `Show` bound does not provide one")
+}
+
+test "nested unshadowed binder compiles" {
+  inspect(compile_outcome("nested-unshadowed", String::concat(eq_prelude(), "fn outer[T: Eq](x: T, y: T) -> Bool {\n  let inner = [U: Eq](a: U, b: U) -> Bool {\n    U::equals(a, b)\n  }\n  inner(7, 8)\n}\nfn main() -> Int {\n  if outer(Pt::{ v: 1 }, Pt::{ v: 2 }) {\n    1\n  } else {\n    0\n  }\n}\n")), "nested-unshadowed: accepted")
+}
+
+test "outer Eq dispatch inside an inner unbounded lambda compiles" {
+  inspect(compile_outcome("nested-outer-eq-unbounded", String::concat(eq_prelude(), "fn outer[T: Eq](x: T, y: T) -> Bool {\n  let inner = [U](_u: U) -> Bool {\n    T::equals(x, y)\n  }\n  inner(0)\n}\nfn main() -> Int {\n  if outer(Pt::{ v: 1 }, Pt::{ v: 2 }) {\n    1\n  } else {\n    0\n  }\n}\n")), "nested-outer-eq-unbounded: accepted")
+}
+
+test "outer Eq UFCS inside an inner unbounded lambda compiles" {
+  inspect(compile_outcome("nested-outer-eq-ufcs", String::concat(eq_prelude(), "fn outer[T: Eq](x: T, y: T) -> Bool {\n  let inner = [U](_u: U) -> Bool {\n    x.equals(y)\n  }\n  inner(0)\n}\nfn main() -> Int {\n  if outer(Pt::{ v: 1 }, Pt::{ v: 2 }) {\n    1\n  } else {\n    0\n  }\n}\n")), "nested-outer-eq-ufcs: accepted")
+}
+
+test "outer Eq dispatch inside an inner Eq lambda compiles" {
+  inspect(compile_outcome("nested-outer-eq-under-u", String::concat(eq_prelude(), "fn outer[T: Eq](x: T, y: T) -> Bool {\n  let inner = [U: Eq](a: U, b: U) -> Bool {\n    T::equals(x, y)\n  }\n  inner(7, 8)\n}\nfn main() -> Int {\n  if outer(Pt::{ v: 1 }, Pt::{ v: 2 }) {\n    1\n  } else {\n    0\n  }\n}\n")), "nested-outer-eq-under-u: accepted")
+}
+
+test "outer Show dispatch inside an inner unbounded lambda prints Show text" {
+  let src = String::concat(show_prelude(), "fn outer[T: Show](x: T) -> String {\n  let inner = [U](_u: U) -> String {\n    T::to_string(x)\n  }\n  inner(1)\n}\nfn main allows Console {\n  println(outer(Pt::{ v: 1 }))\n}\n")
+  let out = capture_run("_build/vibe_test/nested_outer_show.wasm", compile_source_wasi(src, "main"))
+  inspect(String::contains(out, "Pt!"), content = "true")
+  inspect(String::contains(out, "RuntimeError"), content = "false")
+}
+
+test "outer Eq dispatch inside an inner unbounded lambda separates values" {
+  let src = String::concat(eq_prelude(), "fn outer[T: Eq](x: T, y: T) -> Bool {\n  let inner = [U](_u: U) -> Bool {\n    T::equals(x, y)\n  }\n  inner(0)\n}\nfn main allows Console {\n  println(if outer(Pt::{ v: 1 }, Pt::{ v: 2 }) { \"true\" } else { \"false\" })\n}\n")
+  let out = capture_run("_build/vibe_test/nested_outer_eq.wasm", compile_source_wasi(src, "main"))
+  inspect(String::contains(out, "false"), content = "true")
+  inspect(String::contains(out, "RuntimeError"), content = "false")
+}
+
+test "outer Eq UFCS inside an inner unbounded lambda separates integers" {
+  let src = String::concat(eq_prelude(), "fn outer[T: Eq](x: T, y: T) -> Bool {\n  let inner = [U](_u: U) -> Bool {\n    x.equals(y)\n  }\n  inner(0)\n}\nfn main allows Console {\n  println(if outer(7, 8) { \"true\" } else { \"false\" })\n}\n")
+  let out = capture_run("_build/vibe_test/nested_outer_eq_ufcs.wasm", compile_source_wasi(src, "main"))
+  inspect(String::contains(out, "false"), content = "true")
+  inspect(String::contains(out, "RuntimeError"), content = "false")
+}
+
+test "outer Eq dispatch inside an inner Eq lambda separates values" {
+  let src = String::concat(eq_prelude(), "fn outer[T: Eq](x: T, y: T) -> Bool {\n  let inner = [U: Eq](_a: U, _b: U) -> Bool {\n    T::equals(x, y)\n  }\n  inner(7, 8)\n}\nfn main allows Console {\n  println(if outer(Pt::{ v: 1 }, Pt::{ v: 2 }) { \"true\" } else { \"false\" })\n}\n")
+  let out = capture_run("_build/vibe_test/nested_outer_eq_under_u.wasm", compile_source_wasi(src, "main"))
+  inspect(String::contains(out, "false"), content = "true")
+  inspect(String::contains(out, "RuntimeError"), content = "false")
+}
+
+test "a nested binder that reuses a top-level generic name compiles" {
+  inspect(compile_outcome("nested-name-collision", String::concat(eq_prelude(), "fn ident_eq[T: Eq](a: T) -> Bool {\n  T::equals(a, a)\n}\nfn main() -> Int {\n  let ident_eq = [T: Eq](a: T, b: T) -> Bool {\n    T::equals(a, b)\n  }\n  if ident_eq(7, 8) {\n    1\n  } else {\n    0\n  }\n}\n")), "nested-name-collision: accepted")
+}
+
+test "an inner unbounded lambda still sees an enclosing Show dictionary" {
+  inspect(compile_outcome("nested-enclosing-show", String::concat(show_prelude(), "fn outer[T: Show](x: T) -> String {\n  let inner = [U](u: U) -> String {\n    T::to_string(x)\n  }\n  inner(1)\n}\nfn main() -> Int {\n  String::length(outer(Pt::{ v: 1 }))\n}\n")), "nested-enclosing-show: accepted")
+}
+
+test "a let-mut nested Eq lambda compiles" {
+  inspect(compile_outcome("nested-letmut", String::concat(eq_prelude(), "fn main() -> Int {\n  let mut inner = [T: Eq](a: T, b: T) -> Bool {\n    T::equals(a, b)\n  }\n  if inner(7, 8) {\n    1\n  } else {\n    0\n  }\n}\n")), "nested-letmut: accepted")
+}
+
+// The rebinding is irrelevant: the FIRST lambda binds `T` with no bound at
+// all, so its `"\{a}"` has no renderer and is refused where it is written.
+// Nothing downstream of a refused body can make it compile.
+test "an unbounded shim is refused even when a later let rebinds its name" {
+  inspect(compile_outcome("nested-shim-shadow", "fn main() -> Int {\n  let inner = [T](a: T) -> String {\n    \"\\{a}\"\n  }\n  let inner = (n: Int) -> Int {\n    n + 1\n  }\n  inner(7)\n}\n"), "nested-shim-shadow: pass an explicit renderer `(T) -> String`, or interpolate at a concrete type: type parameter `T` is erased here and has no renderer witness; a marker `Show` bound does not provide one")
+}
+
+test "rebinding a nested Eq lambda to a non-generic compiles" {
+  inspect(compile_outcome("nested-eq-rebind", String::concat(eq_prelude(), "fn main() -> Int {\n  let inner = [T: Eq](a: T, b: T) -> Bool {\n    T::equals(a, b)\n  }\n  let inner = (n: Int) -> Int {\n    n + 1\n  }\n  inner(7)\n}\n")), "nested-eq-rebind: accepted")
+}
+
+test "a nested non-shim interpolation of a formal is refused" {
+  let msg = compile_outcome("nested-nonsim", String::concat(eq_prelude(), "struct Qt {\n  w: Int\n}\nfn main() -> Int {\n  let inner = [T](a: T) -> String {\n    String::concat(\"v=\", \"\\{a}\")\n  }\n  String::length(inner(Qt::{ w: 1 }))\n}\n"))
+  assert(msg != "nested-nonsim: accepted")
+  // The edit is a RENDERER, not a lift: #2840 measured that moving an
+  // unbounded lambda to a top-level declaration supplies no witness, so
+  // "move the lambda" would be an edit that does not fix it.
+  assert(String::contains(msg, "pass an explicit renderer"))
+}

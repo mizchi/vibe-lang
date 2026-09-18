@@ -119,10 +119,15 @@ test "check and binding-at slice the same unknown identifier quux" {
   assert(occ_contains(occ, start, endo))
 }
 
-/// `fn f() -> Int { "s" }` — the tail is an `EString` with no offset, so
-/// `tail_expr_off` is -1. The diagnostic must still carry `line L:C:` and
-/// must not claim column 1 unless that is truly the function name.
-test "return-type mismatch on a literal is located at the fn name (#1941)" {
+/// `fn f() -> Int { "s" }` — the diagnostic is located at the LITERAL.
+///
+/// This asserted the `fn` NAME until #2199 gave `EString` an offset slot.
+/// The name was never the right answer; it was the fallback `tail_expr_off`
+/// returned when the tail carried -1, and AGENTS.md lists that missing slot as
+/// a standing violation of the CLI policy ("リテラル式が offset スロットを
+/// 持たない"). A literal that carries its own offset is located at itself, so
+/// the edit the reader is sent to is the one that is wrong.
+test "return-type mismatch on a literal is located at the literal (#1941, #2199)" {
   let src = "fn f() -> Int { \"s\" }"
   let diags = collect_all_diagnostics(src)
   assert(Array::length(diags) == 1)
@@ -130,25 +135,31 @@ test "return-type mismatch on a literal is located at the fn name (#1941)" {
   assert(String::contains(msg, "return type mismatch"))
   assert(String::contains(msg, "line "))
   assert(String::contains(msg, "line 1:1:") == false)
-  let name_off = String::index_of(src, "fn f") + 3
-  assert(String::substring(src, name_off, name_off + 1) == "f")
-  let (line, col) = offset_to_line_col(src, name_off)
+  let lit_off = String::index_of(src, "\"s\"")
+  assert(String::substring(src, lit_off, lit_off + 3) == "\"s\"")
+  let (line, col) = offset_to_line_col(src, lit_off)
   let want = String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), "-"))))
   assert(String::contains(msg, want))
+  // Not the fn name it used to fall back to.
+  let name_off = String::index_of(src, "fn f") + 3
+  let (nline, ncol) = offset_to_line_col(src, name_off)
+  let name_want = String::concat("line ", String::concat(__to_string(nline), String::concat(":", String::concat(__to_string(ncol), "-"))))
+  assert(String::contains(msg, name_want) == false)
 }
 
-/// A preceding well-typed `fn` must not steal the range. First-`fn` scan
-/// would point at `ok`; the recovered name is `f`.
-test "return-type mismatch points at the culpable fn, not an earlier fn (#1941)" {
+/// A preceding well-typed `fn` must not steal the range: the located literal
+/// is the one in `f`, on line 2, not anything in `ok`.
+test "return-type mismatch points at the culpable literal, not an earlier fn (#1941, #2199)" {
   let src = "fn ok() -> Int { 1 }\nfn f() -> Int { \"s\" }"
   let diags = collect_all_diagnostics(src)
   assert(Array::length(diags) == 1)
   let msg = Array::get(diags, 0)
   assert(String::contains(msg, "return type mismatch"))
-  let name_off = String::index_of(src, "fn f") + 3
-  assert(String::substring(src, name_off, name_off + 1) == "f")
-  let (line, col) = offset_to_line_col(src, name_off)
+  let lit_off = String::index_of(src, "\"s\"")
+  assert(String::substring(src, lit_off, lit_off + 3) == "\"s\"")
+  let (line, col) = offset_to_line_col(src, lit_off)
+  assert(line == 2)
   let want = String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), "-"))))
   assert(String::contains(msg, want))
-  assert(String::contains(msg, "line 1:4:") == false)
+  assert(String::contains(msg, "line 1:") == false)
 }

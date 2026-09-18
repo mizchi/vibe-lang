@@ -150,17 +150,82 @@ if [ -n "$staged_paths" ] && [ "$grep_available" -eq 1 ]; then
     }
     /^ / { line++ }
   ' > "$added_lines"
+  # The snapshot is materialized in CHUNKS, and the lint runs once per chunk.
+  #
+  # `vibe grep` is a wasm32 program: its linear memory tops out at 4GiB, and
+  # the broadest pattern this lint uses -- `$(ctor:id)($(name:const),
+  # $(rest:args))`, which matches every call with a constant first argument --
+  # exhausts it on a compiler-sized corpus. Measured on this PR's own range
+  # with a stage2 at 94b088c: 55 files scan clean, 70 trap with `memory access
+  # out of bounds`, and raising `MOONRUN_WT_MEMORY_MB` from 8192 to 16384
+  # changes nothing, because the cap was never the binding constraint. The
+  # other five patterns scan all 83.
+  #
+  # A trap there is not a finding: `review_lint.vibex` exits 1 for it, the
+  # summary line never prints, and the driver reports the whole output --
+  # historical findings included -- as though the diff had added them. So the
+  # gate went red with five findings nobody's commit introduced.
+  #
+  # Chunking is the fix that keeps the gate honest: SAME patterns, SAME files,
+  # SAME per-file matching. A file is never split, so a multiline AST shape
+  # still matches within one, and findings are concatenated across chunks
+  # before the added-line filter runs -- nothing is dropped and nothing new is
+  # admitted. `vibe grep`'s own memory use on a large corpus is a separate
+  # defect; this makes the gate stop depending on it.
+  chunk_size="${VIBE_REVIEW_LINT_CHUNK_FILES:-40}"
+  ast_output=""
+  ast_status=0
+  chunk_index=0
+  chunk_paths=""
+  chunk_count=0
+
+  run_chunk() {
+    [ -n "$chunk_paths" ] || return 0
+    chunk_index=$((chunk_index + 1))
+    chunk_root="$tmp_root/chunk$chunk_index"
+    mkdir -p "$chunk_root"
+    while IFS= read -r path; do
+      [ -n "$path" ] || continue
+      mkdir -p "$chunk_root/$(dirname "$path")"
+      git -C "$PROJECT_ROOT" show "$SHOW_REF:$path" > "$chunk_root/$path"
+    done <<< "$chunk_paths"
+    set +e
+    chunk_output="$(cd "$TOOL_ROOT" && bash "$RUNNER" scripts/review_lint.vibex -- \
+      --root "$chunk_root" --vibe "$GREP_BIN" 2>&1)"
+    chunk_status=$?
+    set -e
+    # A finding names its chunk root; rewrite it to the shared prefix so the
+    # added-line filter below sees ONE path shape whatever chunk found it.
+    chunk_output="$(printf '%s\n' "$chunk_output" | sed "s|$chunk_root/|$tmp_root/|g")"
+    if [ -n "$ast_output" ]; then
+      ast_output="$ast_output
+$chunk_output"
+    else
+      ast_output="$chunk_output"
+    fi
+    # Worst status wins: a tool error in ANY chunk must not be hidden by a
+    # clean one, and exit 1 (findings) must not mask exit 2 (did not run).
+    if [ "$chunk_status" -gt "$ast_status" ]; then
+      ast_status=$chunk_status
+    fi
+    chunk_paths=""
+    chunk_count=0
+  }
+
   while IFS= read -r path; do
     [ -n "$path" ] || continue
-    mkdir -p "$tmp_root/$(dirname "$path")"
-    git -C "$PROJECT_ROOT" show "$SHOW_REF:$path" > "$tmp_root/$path"
+    if [ -n "$chunk_paths" ]; then
+      chunk_paths="$chunk_paths
+$path"
+    else
+      chunk_paths="$path"
+    fi
+    chunk_count=$((chunk_count + 1))
+    if [ "$chunk_count" -ge "$chunk_size" ]; then
+      run_chunk
+    fi
   done <<< "$staged_paths"
-
-  set +e
-  ast_output="$(cd "$TOOL_ROOT" && bash "$RUNNER" scripts/review_lint.vibex -- \
-    --root "$tmp_root" --vibe "$GREP_BIN" 2>&1)"
-  ast_status=$?
-  set -e
+  run_chunk
   if [ "$ast_status" -eq 0 ]; then
     violations=""
   elif [ "$ast_status" -eq 1 ]; then

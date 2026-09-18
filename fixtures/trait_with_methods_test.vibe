@@ -1,14 +1,40 @@
 // Trait with method signatures
+//
+// The impl used to be bodyless (`impl Measurable for Int`, no braces), which
+// made this fixture pass by accident rather than by contract. A method-bearing
+// trait's bodyless impl supplies NO witness, so a bound against it cannot be
+// threaded: `synth_dicts` finds nothing and the call site emits a call short
+// its dictionary argument. Measured on main's own stage2 at 3e4fb7c, the
+// top-level spelling of this program is INVALID WASM -- `not enough arguments
+// on the stack for call (need 3, got 2)` -- both when the witness is used and
+// when it is not. The nested spelling below only escaped that because main
+// threads no dictionary for a nested binder at all; #2778 threads it, so the
+// same defect became reachable here.
+//
+// That defect is main's and wants its own issue. What this fixture is FOR is a
+// trait declared with method signatures and a bounded generic lambda over it,
+// so the impl now provides the method and the program is well-formed.
 
 trait Measurable {
-  measure(Int) -> Int
+  measure(Self) -> Int
 }
 
-impl Measurable for Int
+impl Measurable for Int {
+  measure(x: Int) -> Int {
+    x
+  }
+}
 
 test "trait with methods" {
   let measure_it = [T: Measurable](x: T) -> Int {
     1
   }
   inspect(measure_it(42), "1")
+}
+
+test "the bound's witness is reachable from the lambda body" {
+  let measure_it = [T: Measurable](x: T) -> Int {
+    T::measure(x)
+  }
+  inspect(measure_it(42), "42")
 }

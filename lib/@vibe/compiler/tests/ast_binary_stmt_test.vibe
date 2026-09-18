@@ -185,14 +185,33 @@ test "ast_binary: a module with bad magic or a wrong version is refused" {
     "ok"
   } with { Exception::Throw(m) => m }
   assert(msg == "ast_binary: bad magic")
-  // Right magic, version 2.
-  let wrong_version = Bytes::from_array([118, 65, 83, 84, 2, 0])
+  // Right magic, a version this reader does not support. BOTH directions, and
+  // NEITHER of them a neighbour of the current one: this case used to spell
+  // the rejected version `2`, which the v1 -> v2 bump (`EString` carries its
+  // offset, #2868) turned into the CURRENT version -- the assertion then read
+  // "refuse what we accept" and the test failed. A number that can become
+  // current is a number the test stops testing.
+  //
+  // RETIRED (1): the forward-compatibility contract is that an old consumer
+  // raises rather than misreads, and it runs in the other direction too -- a
+  // v1 file left by an older build must not be read as v2 and silently
+  // misparsed at the first `EString`.
+  let retired_version = Bytes::from_array([118, 65, 83, 84, 1, 0])
   let msg2 = handle {
-    let r2 = ast_binary_reader_new(wrong_version)
+    let r2 = ast_binary_reader_new(retired_version)
     let _ = ast_binary_read_module(r2)
     "ok"
   } with { Exception::Throw(m) => m }
-  assert(msg2 == "ast_binary: unsupported version 2")
+  assert(msg2 == "ast_binary: unsupported version 1")
+  // UNREACHABLE (99): a version no bump will plausibly reach, so this half
+  // keeps asserting a refusal however far the format moves.
+  let future_version = Bytes::from_array([118, 65, 83, 84, 99, 0])
+  let msg3 = handle {
+    let r3 = ast_binary_reader_new(future_version)
+    let _ = ast_binary_read_module(r3)
+    "ok"
+  } with { Exception::Throw(m) => m }
+  assert(msg3 == "ast_binary: unsupported version 99")
 }
 
 test "ast_binary Stmt: an unknown tag is refused, not misread" {

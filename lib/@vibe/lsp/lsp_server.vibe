@@ -560,73 +560,171 @@ fn lsp_diag_severity(text: String) -> Int {
 /// editor's caret too far right on any line with non-ASCII before the error,
 /// and silently: the diagnostic still renders, just at the wrong place.
 /// `let 日本 = 1` reports byte column 10 for `本` where LSP wants 8.
-fn lsp_parse_diag_line(source: String, msg: String) -> Json {
+///
+/// The merged FS lane prefixes the ORIGINATING FILE: `check_module_impl`
+/// emits `<path>: line L:C: body`, and `L:C` was computed against THAT file's
+/// text (`locate_type_error(job.source, ..)`). Dropping `<path>` and
+/// converting `C` against the checked buffer is the silent kind of wrong --
+/// the diagnostic still renders, at a position in the wrong document, with no
+/// trace of where it came from (Codex P2 on #2868). So the origin is split off
+/// and kept.
+fn lsp_split_origin(msg: String) -> (String, String) {
   if String::starts_with(msg, "line ") {
-    let after = msg[5: String::length(msg)]
+    ("", msg)
+  } else {
+    let marker = ": line "
+    let at = String::index_of(msg, marker)
+    if at >= 0 {
+      (String::substring(msg, 0, at), String::substring(msg, at + 2, String::length(msg)))
+    } else {
+      ("", msg)
+    }
+  }
+}
+
+/// `path` is the file `source` is the text OF, or `""` when the caller has no
+/// path to compare against (the single-file lanes, where no message carries an
+/// origin). A message whose origin names a DIFFERENT file is answered by
+/// `lsp_diag_foreign_origin`: its `L:C` cannot be converted here, because the
+/// conversion needs that file's bytes and this function is pure.
+fn lsp_parse_diag_line_for(path: String, source: String, raw: String) -> Json {
+  let (origin, payload) = lsp_split_origin(raw)
+  // `path == ""` is "the caller did not say", not "a different file": the
+  // single-file lanes pass nothing and nothing they emit carries an origin,
+  // and `lsp_diagnostics_test.vibe`'s #2831 case feeds a prefixed message with
+  // no path on purpose. Only a caller that NAMED its file can tell the two
+  // apart, so only that caller gets the foreign answer.
+  if origin != "" && path != "" && origin != path {
+    lsp_diag_foreign_origin(raw, origin, payload)
+  } else {
+    let msg = payload
+    if String::starts_with(msg, "line ") {
+      let after = msg[5: String::length(msg)]
+      let colon1 = String::index_of(after, ":")
+      if colon1 < 0 {
+        lsp_diag_fallback(msg)
+      } else {
+        let line_str = after[0: colon1]
+        let rest1 = after[colon1 + 1: String::length(after)]
+        let colon2 = String::index_of(rest1, ":")
+        if colon2 < 0 {
+          lsp_diag_fallback(msg)
+        } else {
+          let col_field = rest1[0: colon2]
+          let text = String::trim(rest1[colon2 + 1: String::length(rest1)])
+          let line1 = lsp_parse_uint_or(line_str, 1)
+          let dash = String::index_of(col_field, "-")
+          let col1 = if dash < 0 {
+            lsp_parse_uint_or(col_field, 1)
+          } else {
+            lsp_parse_uint_or(col_field[0: dash], 1)
+          }
+          let end_col1 = if dash < 0 {
+            0
+          } else {
+            lsp_parse_uint_or(col_field[dash + 1: String::length(col_field)], 0)
+          }
+          let line0 = if line1 > 0 {
+            line1 - 1
+          } else {
+            0
+          }
+          let byte_col0 = if col1 > 0 {
+            col1 - 1
+          } else {
+            0
+          }
+          let line_start = lsp_line_start_offset(source, line0)
+          let col0 = lsp_byte_col_to_utf16(source, line_start, byte_col0)
+          let end_col0 = if end_col1 > col1 {
+            lsp_byte_col_to_utf16(source, line_start, end_col1 - 1)
+          } else {
+            col0 + 1
+          }
+          // #820 sub-item 2: `data` follows the LSP Diagnostic.data convention
+          // (present, JNull when there's no structured fix -- e.g. every
+          // diagnostic that isn't an effect-row mismatch).
+          JObj(Map::from_pairs([
+            ("range", jrange(line0, col0, line0, end_col0)),
+            ("severity", jnum_int(lsp_diag_severity(text))),
+            ("source", JStr("vibe")),
+            ("message", JStr(text)),
+            ("data", lsp_effect_row_mismatch_fix(text))
+          ]))
+        }
+      }
+    } else {
+      lsp_diag_fallback(msg)
+    }
+  }
+}
+
+fn lsp_parse_diag_line(source: String, msg: String) -> Json {
+  lsp_parse_diag_line_for("", source, msg)
+}
+
+/// A diagnostic whose `line L:C` was computed against ANOTHER file.
+///
+/// The range stays synthetic: this document has no honest span for it, and
+/// `lsp_byte_col_to_utf16` against the wrong text answers a plausible number
+/// rather than failing. The `message` keeps the WHOLE original string, origin
+/// path included, so the reader is never shown a location without its file.
+/// `data` carries the pieces a client can act on -- `originPath` plus the
+/// compiler's own 1-based `originLine` / `originByteColumn`. The column is
+/// BYTES, named so: converting it to UTF-16 code units needs that file's text,
+/// which is exactly what this lane does not have.
+fn lsp_diag_foreign_origin(raw: String, origin: String, payload: String) -> Json {
+  let fix = lsp_effect_row_mismatch_fix(raw)
+  let base = match fix {
+    JObj(m) => m,
+    _ => Map::from_pairs([])
+  }
+  let (line1, col1) = lsp_located_line_col(payload)
+  let data = Map::set(Map::set(Map::set(Map::set(base, "synthetic", JBool(true)), "originPath", JStr(origin)), "originLine", jnum_int(line1)), "originByteColumn", jnum_int(col1))
+  JObj(Map::from_pairs([
+    ("range", lsp_diag_synthetic_range()),
+    ("severity", jnum_int(lsp_diag_severity(payload))),
+    ("source", JStr("vibe")),
+    ("message", JStr(raw)),
+    ("data", JObj(data))
+  ]))
+}
+
+/// The 1-based `L` and `C` of a `line L:C: ..` / `line L:C-E: ..` payload, or
+/// `(0, 0)` when it carries neither -- 0 rather than 1 so a client can tell
+/// "the compiler did not locate this" from "the first column".
+fn lsp_located_line_col(payload: String) -> (Int, Int) {
+  if !String::starts_with(payload, "line ") {
+    (0, 0)
+  } else {
+    let after = payload[5: String::length(payload)]
     let colon1 = String::index_of(after, ":")
     if colon1 < 0 {
-      lsp_diag_fallback(msg)
+      (0, 0)
     } else {
-      let line_str = after[0: colon1]
       let rest1 = after[colon1 + 1: String::length(after)]
       let colon2 = String::index_of(rest1, ":")
       if colon2 < 0 {
-        lsp_diag_fallback(msg)
+        (0, 0)
       } else {
         let col_field = rest1[0: colon2]
-        let text = String::trim(rest1[colon2 + 1: String::length(rest1)])
-        let line1 = lsp_parse_uint_or(line_str, 1)
         let dash = String::index_of(col_field, "-")
-        let col1 = if dash < 0 {
-          lsp_parse_uint_or(col_field, 1)
+        let col_text = if dash < 0 {
+          col_field
         } else {
-          lsp_parse_uint_or(col_field[0: dash], 1)
+          col_field[0: dash]
         }
-        let end_col1 = if dash < 0 {
-          0
-        } else {
-          lsp_parse_uint_or(col_field[dash + 1: String::length(col_field)], 0)
-        }
-        let line0 = if line1 > 0 {
-          line1 - 1
-        } else {
-          0
-        }
-        let byte_col0 = if col1 > 0 {
-          col1 - 1
-        } else {
-          0
-        }
-        let line_start = lsp_line_start_offset(source, line0)
-        let col0 = lsp_byte_col_to_utf16(source, line_start, byte_col0)
-        let end_col0 = if end_col1 > col1 {
-          lsp_byte_col_to_utf16(source, line_start, end_col1 - 1)
-        } else {
-          col0 + 1
-        }
-        // #820 sub-item 2: `data` follows the LSP Diagnostic.data convention
-        // (present, JNull when there's no structured fix -- e.g. every
-        // diagnostic that isn't an effect-row mismatch).
-        JObj(Map::from_pairs([
-          ("range", jrange(line0, col0, line0, end_col0)),
-          ("severity", jnum_int(lsp_diag_severity(text))),
-          ("source", JStr("vibe")),
-          ("message", JStr(text)),
-          ("data", lsp_effect_row_mismatch_fix(text))
-        ]))
+        (lsp_parse_uint_or(after[0: colon1], 0), lsp_parse_uint_or(col_text, 0))
       }
     }
-  } else {
-    lsp_diag_fallback(msg)
   }
 }
 
 /// Messages with no `line L:` prefix cannot claim a real source span.
-/// Editors still require a valid LSP range, so this uses an empty range at
-/// the origin (`0:0-0:0`) and marks `data.synthetic` so clients can tell it
-/// apart from a real first-character highlight. A structured effect-row
-/// fix already occupying `data` is kept: `synthetic` is merged in as a
-/// sibling field rather than replacing the payload.
+/// `data.synthetic` is true so clients can tell this apart from a real
+/// first-character highlight (#2831). A structured effect-row fix already
+/// occupying `data` is kept: `synthetic` is merged in as a sibling field
+/// rather than replacing the payload.
 fn lsp_diag_fallback_data(msg: String) -> Json {
   let fix = lsp_effect_row_mismatch_fix(msg)
   match fix {
@@ -635,9 +733,28 @@ fn lsp_diag_fallback_data(msg: String) -> Json {
   }
 }
 
+/// The range an unlocated diagnostic carries.
+///
+/// This was `{"start": null, "end": null}` (#2831), to avoid claiming a
+/// first-character highlight the compiler never computed. LSP does not allow
+/// it: `Diagnostic.range` is REQUIRED and its type is `Range`, two `Position`
+/// objects whose `line` / `character` are `uinteger`. A client decoding the
+/// payload against the schema -- which the typed clients do -- can reject the
+/// diagnostic, or the whole `publishDiagnostics` notification it arrived in,
+/// and the errors it drops are exactly the unlocated ones this path exists to
+/// deliver (Codex review of #2868).
+///
+/// So the WIRE stays valid and the claim moves to where it can be made
+/// honestly: an empty range at the document start, plus `data.synthetic` on
+/// the diagnostic. A client that reads `synthetic` knows the position is
+/// artificial; one that does not still gets a document it can parse.
+fn lsp_diag_synthetic_range() -> Json {
+  jrange(0, 0, 0, 0)
+}
+
 fn lsp_diag_fallback(msg: String) -> Json {
   JObj(Map::from_pairs([
-    ("range", jrange(0, 0, 0, 0)),
+    ("range", lsp_diag_synthetic_range()),
     ("severity", jnum_int(lsp_diag_severity(msg))),
     ("source", JStr("vibe")),
     ("message", JStr(msg)),
@@ -876,9 +993,21 @@ export fn lsp_diagnostics_json_string_with_for_path(input_path: String, source: 
 /// two drifted -- the separate scan read the RAW buffer, so a `.vpkg` header it
 /// could not parse dropped the opt-in error entirely.
 export fn lsp_diagnostics_json_of_messages(source: String, msgs: Array[String]) -> String {
+  lsp_diagnostics_json_of_messages_for("", source, msgs)
+}
+
+/// The same rendering, told WHICH file `source` is.
+///
+/// The merged FS lane (`vibe check --json <entry>`) reports a dependency's
+/// error as `<dep>: line L:C: body`, located against the DEP. Without the
+/// checked file's own path there is no way to tell that from the entry's own
+/// located diagnostic, and both were converted against the entry's text
+/// (Codex P2 on #2868). Callers that know the path pass it; `""` keeps the
+/// old behaviour for the single-file lanes, where nothing carries an origin.
+export fn lsp_diagnostics_json_of_messages_for(path: String, source: String, msgs: Array[String]) -> String {
   Json::stringify(handle {
     JArr(for msg in msgs {
-      lsp_parse_diag_line(source, msg)
+      lsp_parse_diag_line_for(path, source, msg)
     })
   } with { Exception::Throw(_) => JArr([]) })
 }

@@ -2200,7 +2200,9 @@ them.
 `Lines::stringify: (Array[String]) -> String`.
 
 **Assertions**: `assert: (Bool) -> Unit`, `eq: (Eq, Eq) -> Bool`,
-`assert_eq: (Eq, Eq) -> Unit`.
+`assert_eq: (Eq, Eq) -> Unit`. `abort: (String) -> Unit` prints the
+message on the same stream a bounds-check abort uses, then traps; it
+carries no effect row, so an empty-row library function may call it.
 
 ## Shell integration
 
