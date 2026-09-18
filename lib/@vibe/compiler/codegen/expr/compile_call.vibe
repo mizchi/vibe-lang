@@ -2599,67 +2599,8 @@ fn frozen_array_conversion_copy(name: String) -> String {
 /// - `MutList::freeze(l)` / `MutList::to_array(l)` copy out -- see
 ///   `mutlist_exit_copy` for why these two do not share the identity cast,
 ///   and why the arena has no sound release point without them.
-/// #1978: is this callee the parser's local-let ascription wrapper?
-///
-/// A local `let x: T = e` parses to `((__asc: T) -> __asc)(e)` (`ascribe_wrap`,
-/// parser_expr_dispatch.vibe) so the checker can enforce `e : T` through
-/// `unify_call_args` with no dedicated AST node. Nothing erased it afterwards,
-/// so it reached codegen and was emitted as a REAL call through a real identity
-/// lambda. Measured on a stage2 at bc31a46, one annotated local binding:
-///
-///   let x: Int = 1   ->  5 functions, 363 B of code section
-///   let x = 1        ->  4 functions, 307 B
-///
-/// -- one lambda table slot per ascription site plus the call itself, on a
-/// construct that is pervasive in idiomatic code (the annotation is MANDATORY
-/// for an empty literal, so every `let out: Array[Int] = []` paid it).
-///
-/// The wrapper is NOT removed from the AST, deliberately. `ELet` carries no
-/// type field, so `cc_expr_is_boolish` / `cc_expr_is_stringish` /
-/// `cc_expr_is_floatish` read this annotation to pick a slot representation.
-/// Erasing it after `check_program` is what a previous attempt did, and it
-/// broke `bool_interp_no_literal_test`, `show_array_from_call_test` and the
-/// derive(Eq) tests (pointer compare instead of value) because the
-/// classification lost its only type channel. Emission is a separate question
-/// from classification: this drops the CALL while every predicate still sees
-/// the shape it reads.
-///
-/// The match demands the COMPLETE synthetic shape -- no type params, no
-/// declared return type, no effect row, body exactly the param itself -- so a
-/// hand-written identity lambda that happens to be named `__asc` is not
-/// silently given different code than it asks for. `normalize`'s shadow
-/// renaming can rewrite the param to `__shadow_<n>___asc`, which is why the
-/// name test accepts that form too.
-fn cc_is_ascription_identity(callee: Expr) -> Bool {
-  match callee {
-    EFn(tparams, _, params, ret_ty, effect, body) => if Array::length(tparams) == 0 && Array::length(params) == 1 && (match ret_ty {
-      None => true,
-      Some(_) => false
-    }) && (match effect {
-      None => true,
-      Some(_) => false
-    }) {
-      let (asc_name, _) = Array::get(params, 0)
-      if asc_name == "__asc" || (String::starts_with(asc_name, "__shadow_") && String::ends_with(asc_name, "___asc")) {
-        match body {
-          EIdent(bname, _) => bname == asc_name,
-          _ => false
-        }
-      } else {
-        false
-      }
-    } else {
-      false
-    },
-    _ => false
-  }
-}
-
 export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
-  if cc_is_ascription_identity(callee) && Array::length(args) == 1 {
-    // Emit the value, not a call to the identity that returns it.
-    ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
-  } else if is_eident(callee) && get_eident_name(callee) == "__region_run" && Array::length(args) == 1 {
+  if is_eident(callee) && get_eident_name(callee) == "__region_run" && Array::length(args) == 1 {
     if ctx.region_ptr_addr >= 0 {
       emit_region_enter(buf, ctx.region_ptr_addr)
       if ctx.region_exn_tag >= 0 {
