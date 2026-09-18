@@ -140,11 +140,23 @@ expect_missing "no [@off= marker leak (unknown field)" "[@off=" \
   'struct Point { x: Int; y: Int }\nexport let get = (p: Point) -> Int {\n  p.z\n}\nexport let main = () -> Int { 0 }\n'
 
 # #1567, the flip side of the located type errors above — stated so it reads as
-# a decision rather than an accident: an expression built only from LITERALS has
-# no offset to anchor on (EInt/EFloat/EString/EBool have no offset slot in
-# lib/@vibe/ast/index.vpkg), so it stays unlocated rather than borrowing a
-# nearby node's position and confidently pointing at the wrong thing.
-expect_missing "literal-only mismatch does not invent a location" "line " \
+# a decision rather than an accident: an expression built only from literals
+# with NO offset slot has nothing to anchor on, so it stays unlocated rather
+# than borrowing a nearby node's position and confidently pointing at the wrong
+# thing.
+#
+# `EString` left that group when it gained an offset (`EString(String, Int)` in
+# lib/@vibe/ast/index.vpkg): `1 + "s"` now locates AT the literal, which is the
+# case just below. `EInt` / `EFloat` / `EBool` still carry no slot, so the
+# original contract is asserted on those instead -- the rule is "never invent
+# one", not "never have one".
+expect_missing "slotless-literal mismatch does not invent a location" "line " \
+  'export fn main() -> Int {\n  1 + true\n}\n'
+
+# The improvement the widening buys: a String literal anchors itself, so the
+# reader is sent to the operand that is wrong rather than to the enclosing fn.
+# Column 7 on line 2 is the opening quote of `"s"`.
+expect_contains "string-literal mismatch locates at the literal" "line 2:7" \
   'export fn main() -> Int {\n  1 + "s"\n}\n'
 
 # #1567: EXACTLY ONE location per diagnostic, and it must be the crime scene.
