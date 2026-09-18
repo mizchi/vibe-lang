@@ -192,6 +192,33 @@ handler (ADR-0021), not a process-global. Adding any of those would be a new
 public form with its own lifetime, aliasing, escape and `Send` rules, and is
 not part of 0.1.0.
 
+Those three are **withdrawn, not deferred**, and on measurement rather than on
+preference (#2392 criteria 2-4).
+
+*Borrow syntax.* The case it would exist for is a function returning a VIEW of
+its argument instead of a copy. That already works, and already costs nothing:
+measured 2026-09-18 on a stage2 at `e44e726`, writing through the value a
+one-line `fn cells_of(r: Row) -> Array[Int] { r.cells }` returns is observed in
+the caller's object, and summing 256 rows of 4 cells through that return
+allocates **0 B/op** -- the same as reading the field directly, with ~2.3 ns per
+call of ordinary call overhead between them. The syntax would buy a spelling,
+not a capability. Pinned by `fixtures/value_sharing_test.vibe`.
+
+*Module-level `Ref`/cell.* Refused on both of the grounds that would have to
+admit it. ADR-0021 settles cross-call mutable state as an effect plus a handler
+and states that no `Ref[T]` type is planned; #1953 settles configuration as
+invocation-local. A module cell is process-global mutable state, which is
+neither -- and "it is faster" is not an argument this surface accepts, because
+a shared-nothing concurrency model (ADR-0068) has to answer what such a cell
+means across regions before it can have one.
+
+*Lifetime annotations.* They exist to make borrow syntax checkable. With no
+borrow syntax they annotate nothing.
+
+Each stays refusable later on its own merits: what is recorded here is that
+0.1.0 does not ship them and that no measured program needed them, not that
+they could never be right.
+
 ### 2.3 Functions and calling convention
 - Lambdas `(x) -> { ... }`, and the separated-annotation form
   `let f: (T) -> U = (x) -> { ... }`.

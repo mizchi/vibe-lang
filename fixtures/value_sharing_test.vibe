@@ -123,3 +123,39 @@ test "#2392 an uncaptured `let mut` is an ordinary local" {
   n = n + 5
   inspect(n, "5")
 }
+
+//# Criterion 2 (#2392): no measured program needs explicit borrow syntax
+//
+// The case a second-class borrow syntax would exist for is a function that
+// returns a VIEW of its argument rather than a copy. Inference already gives
+// that, and gives it at zero allocation, so the syntax would buy a spelling
+// rather than a capability -- which is why §2.2a of stable-surface.md records
+// it as withdrawn rather than deferred.
+//
+// Measured alongside these tests on a stage2 at e44e726, 256 rows of 4 cells,
+// `--iters 5`: reading through the borrowed return and reading the field
+// directly both allocate 0 B/op. The borrowed route costs ~2.3 ns per call in
+// wall time (9,651 vs 7,307 ns p50 over 1,024 reads) -- call overhead, not a
+// copy.
+
+struct BorrowRow {
+  cells: Array[Int];
+}
+
+fn borrow_cells(r: BorrowRow) -> Array[Int] {
+  r.cells
+}
+
+test "#2392 a user function returning a field returns a VIEW, not a copy" {
+  let row = BorrowRow::{ cells: [1, 2, 3] }
+  let view = borrow_cells(row)
+  Array::set(view, 0, 99)
+  inspect(Array::get(row.cells, 0), "99")
+}
+
+test "#2392 the borrowed return aliases through a container too" {
+  let rows = [BorrowRow::{ cells: [1, 2] }]
+  let view = borrow_cells(Array::get(rows, 0))
+  Array::push(view, 3)
+  inspect(Array::length(Array::get(rows, 0).cells), "3")
+}
