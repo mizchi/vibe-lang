@@ -24,13 +24,45 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 # Parse flags (only --coverage today); leave the rest as positional paths.
+#
+# #2886: an UNRECOGNISED option used to fall through to the positional list and
+# be reported by the path check below as `not found: --update` -- the wording a
+# genuinely missing file gets, so it reads as a typo in a filename rather than
+# as a flag this script does not take. That is the same shape #2870 fixed a few
+# lines further down, where a failed directory scan was reported with the words
+# an empty directory gets.
+#
+# `--update` is called out by name because it is REAL everywhere else:
+# `runtime/vibe` documents `vibe test --update`, and CLAUDE.md tells a compiler
+# change to run its tests through THIS script (it is the only route that takes
+# VIBE_TEST_CLI_WASM). Those two instructions cannot both be followed, so the
+# message says where the flag does work instead of pretending the file is
+# missing. Forwarding it here needs the `inspect-update` verb wired into the
+# run loop and is still open on #2886.
 coverage=0
 _args=()
 for _a in "$@"; do
   if [ "$_a" = "--coverage" ]; then
     coverage=1
   else
-    _args+=("$_a")
+    case "$_a" in
+      --update)
+        echo "vibe_test.sh: --update is not supported here (#2886)." >&2
+        echo "  This wrapper compiles and runs; it does not patch inspect() literals." >&2
+        echo "  Update snapshots with the installed toolchain: vibe test --update <path>" >&2
+        echo "  Supported flags: --coverage" >&2
+        exit 2
+        ;;
+      -*)
+        echo "vibe_test.sh: unrecognised option: $_a" >&2
+        echo "  Supported flags: --coverage" >&2
+        echo "  (a path that begins with '-' can be passed as ./$_a)" >&2
+        exit 2
+        ;;
+      *)
+        _args+=("$_a")
+        ;;
+    esac
   fi
 done
 set -- ${_args[@]+"${_args[@]}"}

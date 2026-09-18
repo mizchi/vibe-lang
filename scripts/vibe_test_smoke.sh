@@ -660,3 +660,61 @@ done
 cleanup_probe
 
 echo "[vibe-test-smoke] ok (seed notice fires on a compiler source outside lib/@vibe/compiler, suppressed on explicit compiler/quiet)"
+
+# #2886: an unrecognised option must not borrow the MISSING-FILE wording.
+#
+# `--update` fell through the flag loop into the positional list and came back
+# as `not found: --update`, which reads as a typo in a filename. The flag is
+# real everywhere else (`runtime/vibe` documents `vibe test --update`), and
+# CLAUDE.md sends a compiler change through THIS wrapper, so the two
+# instructions could not both be followed and the message said the wrong thing
+# about why.
+#
+# Three assertions, because the fix has to be narrow: the named flag explains
+# where it does work, any other `-flag` says it is unrecognised, and a
+# genuinely missing PATH still gets `not found` -- that last one is what a
+# too-wide fix would break.
+assert_unrecognised_option_is_not_a_missing_file() {
+  local out rc
+
+  out="$(VIBE_TEST_QUIET_COMPILER_NOTE=1 bash "$ROOT_DIR/scripts/vibe_test.sh" \
+    fixtures/bit_not_test.vibe --update 2>&1)" && rc=0 || rc=$?
+  if [ "${rc:-0}" -eq 0 ]; then
+    echo "[vibe-test-smoke] FAIL: --update was accepted (#2886)" >&2
+    exit 1
+  fi
+  if printf '%s\n' "$out" | grep -qF "not found: --update"; then
+    echo "[vibe-test-smoke] FAIL: --update still reported with the missing-file wording (#2886)" >&2
+    exit 1
+  fi
+  if ! printf '%s\n' "$out" | grep -qF "vibe test --update"; then
+    echo "[vibe-test-smoke] FAIL: --update refusal does not name where the flag does work (#2886)" >&2
+    exit 1
+  fi
+
+  out="$(VIBE_TEST_QUIET_COMPILER_NOTE=1 bash "$ROOT_DIR/scripts/vibe_test.sh" \
+    --bogus fixtures/bit_not_test.vibe 2>&1)" && rc=0 || rc=$?
+  if [ "${rc:-0}" -eq 0 ]; then
+    echo "[vibe-test-smoke] FAIL: an unrecognised flag was accepted (#2886)" >&2
+    exit 1
+  fi
+  if ! printf '%s\n' "$out" | grep -qF "unrecognised option"; then
+    echo "[vibe-test-smoke] FAIL: an unrecognised flag did not say so (#2886)" >&2
+    exit 1
+  fi
+
+  # The control. A missing PATH is a different fact and keeps its own wording.
+  out="$(VIBE_TEST_QUIET_COMPILER_NOTE=1 bash "$ROOT_DIR/scripts/vibe_test.sh" \
+    no_such_file_2886.vibe 2>&1)" && rc=0 || rc=$?
+  if [ "${rc:-0}" -eq 0 ]; then
+    echo "[vibe-test-smoke] FAIL: a missing path was accepted" >&2
+    exit 1
+  fi
+  if ! printf '%s\n' "$out" | grep -qF "not found: no_such_file_2886.vibe"; then
+    echo "[vibe-test-smoke] FAIL: a missing path lost its own message (#2886 fix is too wide)" >&2
+    exit 1
+  fi
+}
+assert_unrecognised_option_is_not_a_missing_file
+
+echo "[vibe-test-smoke] ok (an unrecognised option is not reported as a missing file, #2886)"
