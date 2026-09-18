@@ -284,6 +284,7 @@ import @vibe/compiler/codegen/common_base {
   is_pwild,
   is_slet,
   linemap_disabled,
+  linemap_flush_fn,
   lookup_ctor,
   lower_optional_performs,
   lower_optional_performs_with_source_names,
@@ -10289,6 +10290,10 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
     offsets: lc_fresh_int_array(),
     file_ids: lc_fresh_int_array(),
     lines: lc_fresh_int_array(),
+    stream: bytebuf_new(),
+    grp_fn: lc_fresh_int_array(),
+    grp_first_off: lc_fresh_int_array(),
+    grp_start: lc_fresh_int_array(),
     site: [0]
   }
   // #2199: the state handed to a function whose file this compile cannot
@@ -12863,6 +12868,13 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
         codegen_body_cache_record(body_cache_out, bi, Array::get(fn_names_list, bi), lc_fn_origin_lookup(lc_fn_file_of, Array::get(fn_names_list, bi)), lc_fn_origin_lookup(lc_fn_stmt_of, Array::get(fn_names_list, bi)), bodies, meta_i32, meta_i64, meta_v128, lt_w, Array::get(lambda_bases, bi), lambda_planned_end, table_slots_used, __slot_lo, Array::length(table_slots_used), blind_owners, blind_offsets, blind_kinds, blind_syms, __blind_lo, Array::length(blind_owners), linemap_state, __lm_lo)
       }
     }
+    // #2874: this function is done contributing rows -- on the replay path,
+    // the compile path, and the slice-skipped path alike -- so encode them and
+    // hand the scratch tables back empty. It runs AFTER
+    // `codegen_body_cache_record`, which reads the very rows being flushed.
+    // Outside the in-slice branch on purpose: a skipped function recorded
+    // nothing, and a flush of nothing is a no-op.
+    linemap_flush_fn(linemap_state)
     bi = bi + 1
   }
   let num_lambdas = Array::length(lt_w.bodies)
@@ -13378,7 +13390,7 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
   // `--break <file>:<line>` spec is matched against its basename.
   // Present whenever linemap is on AND at least one record will be emitted.
   // An empty named section is waste (#2199).
-  if linemap_on && Array::length(linemap_state.offsets) > 0 {
+  if linemap_on && Array::length(linemap_state.grp_fn) > 0 {
     let df_content = bytebuf_new()
     let df_name = "vibe.dbgfiles"
     leb128_encode_u32(df_content, String::length(df_name))
@@ -14442,7 +14454,21 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
   // default) would have reported fabricated functions, offsets, files and
   // lines to the new readers. A reader that does not find `VLM1` has a table
   // it cannot read, and reports no location at all (Codex P2 on PR #2867).
-  if linemap_state.enabled && Array::length(linemap_state.offsets) > 0 {
+  //
+  // #2874: the rows arrive as flushed GROUPS (`linemap_flush_fn`), one per
+  // user function, not as four module-wide tables. A group's payload is
+  // already in the encoding the section wants except for its first row's
+  // offset, which is the only field the locals-header rebase moves -- so this
+  // writes the function delta and that one rebased absolute, then blits the
+  // group verbatim.
+  //
+  // The delta encoding needs each emitted group's function index to be
+  // greater than the last emitted one, which is how the rows are produced:
+  // `cur_fn` is set once per `bi` at the top of the body loop and `bi` only
+  // climbs. A group the header table cannot place is skipped whole, exactly
+  // as its rows were skipped one at a time before, and skipping does not
+  // advance `prev_f`.
+  if linemap_state.enabled && Array::length(linemap_state.grp_fn) > 0 {
     let lm_content = bytebuf_new()
     let lm_name = "vibe.linemap"
     leb128_encode_u32(lm_content, String::length(lm_name))
@@ -14453,27 +14479,35 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
     }
     lc_linemap_put_magic(lm_content)
     let hdr_n = Array::length(linemap_hdrlen_by_bi)
+    let lm_ng = Array::length(linemap_state.grp_fn)
+    let lm_stream_n = bytebuf_length(linemap_state.stream)
     let mut prev_f = 0
-    let mut prev_o = 0
     let mut have = false
-    let mut lm_k = 0
-    while lm_k < Array::length(linemap_state.offsets) {
-      let lm_bi = Array::get(linemap_state.funcs, lm_k)
+    let mut lm_g = 0
+    while lm_g < lm_ng {
+      let lm_bi = Array::get(linemap_state.grp_fn, lm_g)
+      let lm_lo = Array::get(linemap_state.grp_start, lm_g)
+      let lm_hi = if lm_g + 1 < lm_ng {
+        Array::get(linemap_state.grp_start, lm_g + 1)
+      } else {
+        lm_stream_n
+      }
       if lm_bi >= 0 && lm_bi < hdr_n {
         let lm_func_idx = func_offset + lm_bi
-        let lm_off = Array::get(linemap_state.offsets, lm_k) + Array::get(linemap_hdrlen_by_bi, lm_bi)
-        if have && lm_func_idx == prev_f && lm_off == prev_o {
-          ()
+        let lm_off = Array::get(linemap_state.grp_first_off, lm_g) + Array::get(linemap_hdrlen_by_bi, lm_bi)
+        leb128_encode_u32(lm_content, if have {
+          lm_func_idx - prev_f
         } else {
-          let _ = lc_linemap_put_row(lm_content, lm_func_idx, lm_off, Array::get(linemap_state.file_ids, lm_k), Array::get(linemap_state.lines, lm_k), prev_f, prev_o, have, true)
-          prev_f = lm_func_idx
-          prev_o = lm_off
-          have = true
-        }
+          lm_func_idx
+        })
+        leb128_encode_u32(lm_content, lm_off)
+        Bytes::blit(lm_content, linemap_state.stream, lm_lo, lm_hi)
+        prev_f = lm_func_idx
+        have = true
       } else {
         ()
       }
-      lm_k = lm_k + 1
+      lm_g = lm_g + 1
     }
     bytebuf_push_section(out, 0, lm_content)
   } else {
