@@ -855,6 +855,9 @@ function taggedIntToText(tagged) {
   return tagged.toString();
 }
 
+const WASM_PAGE_BYTES = 65536;
+const WASM32_ADDRESS_SPACE_BYTES = 4 * 1024 * 1024 * 1024;
+
 function readUlebAt(buf, pos, end = buf.length) {
   let value = 0;
   let shift = 0;
@@ -1008,6 +1011,61 @@ function parseVibeCovBranchSection(wasmBytes) {
     pos = sectionEnd;
   }
   return null;
+}
+
+// #2876: the declared maximum of the module's own memory, in BYTES -- what a
+// growth request actually stops at, and so the only number a daemon can
+// measure its remaining address space against.
+//
+// Returns null for a shape this does not model: a malformed header, or a
+// memory64 memory, whose cap is nowhere near 4 GiB and whose limits are u64.
+// Declining is not the same as guessing -- the caller leaves the failure
+// unclassified rather than calling something "out of memory" that is not.
+// A module with no memory section (an IMPORTED memory) still gets the wasm32
+// architectural cap, because every wasm32 memory has it.
+function parseWasmMemoryLimitBytes(wasmBytes) {
+  try {
+    return parseWasmMemoryLimitBytesUnguarded(wasmBytes);
+  } catch (_) {
+    // readUlebAt throws on a malformed LEB. Declining is the whole contract
+    // here, so a module this cannot read must not take the runner down with it.
+    return null;
+  }
+}
+
+function parseWasmMemoryLimitBytesUnguarded(wasmBytes) {
+  const buf = Buffer.from(wasmBytes);
+  if (buf.length < 8 || buf[0] !== 0x00 || buf[1] !== 0x61 || buf[2] !== 0x73 || buf[3] !== 0x6d) {
+    return null;
+  }
+  let pos = 8;
+  while (pos < buf.length) {
+    const sectionId = buf[pos++];
+    const sectionLenInfo = readUlebAt(buf, pos);
+    pos = sectionLenInfo.next;
+    const sectionEnd = pos + sectionLenInfo.value;
+    if (sectionEnd > buf.length) {
+      break;
+    }
+    if (sectionId === 5) {
+      const countInfo = readUlebAt(buf, pos, sectionEnd);
+      if (countInfo.value < 1 || countInfo.next >= sectionEnd) {
+        return null;
+      }
+      const flags = buf[countInfo.next];
+      if ((flags & 0x04) !== 0) {
+        return null;
+      }
+      const minInfo = readUlebAt(buf, countInfo.next + 1, sectionEnd);
+      if ((flags & 0x01) === 0) {
+        return WASM32_ADDRESS_SPACE_BYTES;
+      }
+      const maxInfo = readUlebAt(buf, minInfo.next, sectionEnd);
+      return Math.min(maxInfo.value * WASM_PAGE_BYTES, WASM32_ADDRESS_SPACE_BYTES);
+    }
+    pos = sectionEnd;
+  }
+  return WASM32_ADDRESS_SPACE_BYTES;
 }
 
 // #2199: parse `vibe.dbgfiles` (source paths, one per line) and
@@ -3922,6 +3980,63 @@ async function main() {
     if (invokes.length !== 1) {
       throw new Error("--daemon requires exactly one --invoke target");
     }
+    // #2876: a compiler-sized compile never frees, so several in one --daemon
+    // walk the bump allocator into the wasm32 ceiling. What surfaced was a bare
+    // `unreachable` -- or `memory access out of bounds`, the spelling depending
+    // on whether the guest faulted on the access or on its own grow check -- in
+    // `elapsed_us: 1` with no `.diag`, which is exactly the shape a caller
+    // reserves for "the compiler DIED" (checked_module_cache_parity.mjs:
+    // `neither output nor diagnostic`).
+    //
+    // Measured on a stage2 at d82d821, four identical compiles of
+    // fixtures/contract_conformance_test.vibe in one daemon:
+    //
+    //   1  ok    heap 2,386,547,336    2  ok    heap 3,733,990,304
+    //   3  fail  "memory access out of bounds", 65,528 bytes left
+    //   4  fail  "unreachable",                 63,456 bytes left
+    //
+    // The classification below is that arithmetic and nothing else: under one
+    // 64 KiB page of a 4 GiB space remains, so no further allocation can be
+    // served. A trap with room to spare is deliberately left alone -- calling
+    // that "out of memory" would send a reader to recycle the process instead of
+    // filing the compiler bug, which is the same silent-wrong the issue is about.
+    //
+    // A PREDICTIVE check was measured and REJECTED. Growth is not monotonic --
+    // compile 1 cost 2.39 GB cold and compile 2 only 1.35 GB warm -- so a floor
+    // drawn from any past request (max, min, or last) refuses compile 2, which
+    // succeeds. There is no honest way to pre-judge, so the daemon judges after
+    // the fact and refuses only what follows a real exhaustion.
+    const daemonHeapLimit = parseWasmMemoryLimitBytes(wasmBytes);
+    const daemonExhaustionMessage = () => {
+      if (daemonHeapLimit === null) {
+        return null;
+      }
+      const heapPtr = readHeapPtr();
+      if (daemonHeapLimit - heapPtr >= WASM_PAGE_BYTES) {
+        return null;
+      }
+      return `out of memory: this compiler instance has used its whole ${daemonHeapLimit}-byte wasm address space (heap at ${heapPtr}) and cannot compile again. Compile in a fresh process, or recycle the --daemon process between compiles.`;
+    };
+    // Same sidecar convention as the crash handler at the bottom of this file:
+    // VIBE_CRASH_DIAG_OUT when a verb-protocol launcher named one, else the
+    // request's own output argument. Per-request, so a daemon writes the
+    // diagnostic beside the artifact the caller asked for.
+    const writeDaemonDiag = (args, message) => {
+      const sidecar =
+        process.env.VIBE_CRASH_DIAG_OUT || (args.length >= 2 && args[1] ? `${args[1]}.diag` : "");
+      if (!sidecar) {
+        return;
+      }
+      try {
+        fs.writeFileSync(sidecar, `${message}\n`);
+      } catch (_) {}
+    };
+
+    // Once set, this instance can never compile again: every later request is
+    // answered with the same diagnostic instead of being run into the same
+    // trap. The process stays alive so a caller blocked on a response gets
+    // one -- it says what is wrong rather than dying mid-protocol.
+    let exhausted = null;
     const rl = readline.createInterface({
       input: process.stdin,
       crlfDelay: Infinity,
@@ -3935,6 +4050,7 @@ async function main() {
       }
       let capturedStdout = "";
       let response;
+      let requestArgs = [];
       process.stdout.write = (chunk, encoding, callback) => {
         if (typeof encoding === "function") {
           callback = encoding;
@@ -3948,19 +4064,44 @@ async function main() {
       try {
         const req = JSON.parse(row);
         const args = Array.isArray(req.args) ? req.args.map(String) : [];
-        const { result, isSelfhost, elapsedUs } = runInvokes(args);
-        response = {
-          exit_code: resultToExitCode(result, isSelfhost),
-          elapsed_us: Math.max(1, Math.round(elapsedUs)),
-          stdout: capturedStdout,
-          heap_ptr: readHeapPtr(),
-        };
+        requestArgs = args;
+        if (exhausted !== null) {
+          writeDaemonDiag(args, exhausted);
+          response = {
+            exit_code: 1,
+            elapsed_us: 1,
+            stdout: capturedStdout,
+            error: exhausted,
+            memory_exhausted: true,
+            heap_ptr: readHeapPtr(),
+            heap_limit: daemonHeapLimit,
+          };
+        } else {
+          const { result, isSelfhost, elapsedUs } = runInvokes(args);
+          response = {
+            exit_code: resultToExitCode(result, isSelfhost),
+            elapsed_us: Math.max(1, Math.round(elapsedUs)),
+            stdout: capturedStdout,
+            heap_ptr: readHeapPtr(),
+            heap_limit: daemonHeapLimit,
+          };
+        }
       } catch (err) {
+        const outOfMemory = daemonExhaustionMessage();
+        if (outOfMemory !== null) {
+          exhausted = outOfMemory;
+          writeDaemonDiag(requestArgs, outOfMemory);
+        }
         response = {
           exit_code: 1,
           elapsed_us: 1,
           stdout: capturedStdout,
-          error: decodeExceptionMessage(err),
+          error: outOfMemory === null ? decodeExceptionMessage(err) : outOfMemory,
+          ...(outOfMemory === null
+            ? {}
+            : { memory_exhausted: true, trap: decodeExceptionMessage(err) }),
+          heap_ptr: readHeapPtr(),
+          heap_limit: daemonHeapLimit,
         };
       } finally {
         process.stdout.write = originalStdoutWrite;
