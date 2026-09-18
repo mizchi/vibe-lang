@@ -6251,7 +6251,15 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         // restriction as ELet above -- `let rec get = () -> { xs }` returns
         // the same captured array every call, and this site generalized
         // unconditionally.
-        let gen = let_generalize(val, tv, cenv, s2, Some(name))
+        // #2892: generalize the value's RESOLVED type, not the bare recursive
+        // binder variable. `tv` is the fresh var bound for the recursive
+        // occurrence; `let_generalize(val, tv, ..)` produced a scheme whose
+        // body was that variable rather than the lambda's `CtFn`, so
+        // instantiating it at a call site yielded a variable and the call fell
+        // to the unchecked arm. `ELet` above already passes the value's type
+        // (`vt`); after the `unify(tv, vt, ..)` just above the two agree, so
+        // this is the same binding through a type the call path can read.
+        let gen = let_generalize(val, subst_apply(s2, tv), cenv, s2, Some(name))
         // #2848: see the ELet arm.
         refuse_generalized_field_reads(gen, s2, errors)
         cenv = env_bind(cenv, name, gen)
