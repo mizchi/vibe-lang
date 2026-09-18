@@ -138,7 +138,7 @@ The subset that projects in both directions. The forward mapping is
 | `Double` | `f64` | |
 | `Bool` | `bool` | |
 | `Char` | `char` | a Unicode scalar at the boundary; inside vibe `Char` is a transparent `Int` alias (ADR-0098), so the shim validates the range |
-| `String` | `string` | UTF-8 both ways; a byte string that is not valid UTF-8 is refused at the shim |
+| `String` | `string` | valid UTF-8 both ways; an invalid byte string is refused, naming the operation and the first bad byte offset, on the component lane **and** the raw lane alike (host-contract §1.2 — today's raw lane silently replaces, which that section retires). Arbitrary bytes cross as `Bytes` / `list<u8>` |
 | `Bytes` | `list<u8>` | |
 | `Array[T]` | `list<T>` | |
 | `Option[T]` | `option<T>` | |

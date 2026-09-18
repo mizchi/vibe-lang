@@ -198,6 +198,35 @@ Two consequences:
   `fs.read-dir: func(path: string) -> string` (sorted names joined by `\n`).
   The join is the contract, not an artifact of one lowering.
 
+**`String` carries valid UTF-8, and an invalid byte string is refused on BOTH
+lanes.** A vibe `String` is a byte string (ADR-0098) and a WIT `string` is
+Unicode, so a byte string that is not valid UTF-8 has no faithful `string`
+representation. Today the raw lane does not say so — it **silently replaces**:
+`vibe_read_packed_str` ends `String::from_utf8_lossy(&buf).into_owned()`
+(`runtime/viberun/src/main.rs`), and the node runner's
+`new TextDecoder().decode(..)` is non-fatal by default
+(`scripts/wasm_vibe_host_runner.js`), so `Fs::write_file(path, bad)` writes
+U+FFFD where the program had bytes and reports success. Nothing documents
+that, and it is the silent corruption this project ranks worst
+(`docs/internal/project/issue-triage.md`), independent of anything this design
+adds.
+
+So the contract is: **a `string` parameter or result carries valid UTF-8, and
+an invalid byte string is refused by the provider, naming the operation and
+the first bad byte offset.** Both lowerings, one behaviour — the raw lane's
+`from_utf8_lossy` becomes that refusal, and the canonical lane already refuses
+(wasmtime validates a `string` lift). The alternative, making the component
+lane lossy to match, would spread a silent corruption instead of removing it.
+
+**The byte-preserving path already exists and is the edit.** Where a program
+genuinely carries arbitrary bytes, the operation is the `Bytes` one —
+`fs_write_bytes` / `fs_read_bytes`, `list<u8>` in WIT — which is lossless on
+both lanes and needs no new mapping. The refusal message names it.
+
+This is a behaviour change to two shipped runners and gets a migration note
+with the diagnostic, not a flag: a program that today writes replacement bytes
+starts failing, which is the point.
+
 **Handles are WIT resources, and the grouping is part of the generator
 input.** `docs/generated/host-runtime-contract.json` today has only field
 names, bands, and core type indices: `http_request` and `http_close` are
@@ -628,15 +657,35 @@ names:
 - A `.cwasm` row is a wasmtime AOT image (`Engine::precompile_component` /
   `Component::deserialize_file` in `commands.rs`). Custom sections
   (`vibe.entry`, `vibe.capabilities`) and the nested core import section
-  are not in that blob. `--trust-precompiled` rows therefore do **not**
-  re-read those sections from the AOT image. After deserialize, the column
-  is compared to the **component type's import list** (WIT functions the
-  world named). That is why the world is operation-shaped (§1.3): the type
-  names exactly the operations the column lists. The installer also keeps
-  the source `.component.wasm` next to the `.cwasm` and treats the AOT
-  image as a cache of that component, the same way the column is a cache of
-  the requirement; a checkout install writes `.component.wasm` rows and
-  never needs the AOT path.
+  are not in that blob, and the deserialized **component type names the WIT
+  functions but not the grant labels** — so the type can check the function
+  part of the column and can never check the label part. Left there, an
+  edit of `Console:stdout.write-stream` to `Stdout:stdout.write-stream`
+  would pass validation and change the launcher's authorization decision,
+  which is the silent-wrong shape the column exists to prevent.
+
+  So a `.cwasm` row **names its source component and pins it**:
+
+  ```text
+  vibe-commands-v2
+  check	commands/check.cwasm	commands/check.component.wasm	b3:<hex>	Fs:fs.read-file,…
+  ```
+
+  The launcher verifies the digest of that `.component.wasm`, reads the
+  labels from its `vibe.capabilities` `used` rows, and checks the function
+  part against the AOT image's component type. A `.cwasm` row whose source
+  component is missing, whose digest does not match, or whose `used` rows
+  disagree with the column is **refused**; there is no fallback to checking
+  the type alone. The AOT image stays a cache of that component, as the
+  column is a cache of the requirement.
+
+  What this does not buy: nothing binds the image to the component
+  cryptographically, so an image built from different code still runs. That
+  residual is what `--trust-precompiled` already means — the invoker vouches
+  for the native code it names (§ the manifest) — and the pin narrows the
+  authorization decision to a pinned artifact instead of an unverifiable
+  blob. A checkout install writes `.component.wasm` rows and never takes
+  this path.
 
 On either path the row cannot become a second truth: a disagreement is an
 error rather than a quietly different answer.
@@ -726,7 +775,7 @@ each with the mutation that must turn it red:
 | check | what it asserts | red test |
 |---|---|---|
 | **generator diff** | the committed `vibe:host` catalog equals the generator's output from the registry, the manifest, the `resources` table and the `field_labels` table; the emitted interface set equals kebab(`standard_host_provider_resource_defaults`) minus labels that only alias another field; ungrouped raw signatures equal the mapping of their WIT functions (`fs.read-dir` / `sh_lines` are `string`, matching `CtString` and type `3`); grouped fields follow the constructor / method / drop mapping; each raw field has exactly one catalog function | change one WIT parameter type; change one core type index in the JSON; rename `socket` to `tcp`; drop the `http` resource row; emit `list<string>` for `fs.read-dir`; emit a second `console.write-stream` for the same `stdout_write_stream` field; drop `Console` from that field's labels; each must fail naming the field |
-| **semantic conformance** | a fixture set of small programs (one per operation family: read/write/exists/read-dir ordering, `stat-token` on a non-regular path, `env.get` on an unset name, handle close-twice, a withheld optional operation on the **core** lane) runs on both runners with byte-identical stdout and identical exit, on the linear lane | edit one runner's `read-dir` to skip the sort; the fixture must fail on that runner only |
+| **semantic conformance** | a fixture set of small programs (one per operation family: read/write/exists/read-dir ordering, `stat-token` on a non-regular path, `env.get` on an unset name, handle close-twice, **an invalid-UTF-8 byte string through a `string` parameter**, a withheld optional operation on the **core** lane) runs on both runners with byte-identical stdout and identical exit, on the linear lane | edit one runner's `read-dir` to skip the sort, and restore one runner's `from_utf8_lossy` in place of the refusal; each must fail on that runner only |
 | **manifest row** | a `vibe-commands-v2` row equals what `vibe build --component` derives; a `.component.wasm` row is checked against core sections, a `.cwasm` row against the component type's import list | rewrite one row's column; dispatch must refuse before reading the artifact (the row lists a denied operation) and on reading it (the row disagrees). A `.cwasm` mutation that only the custom-section path would have caught, and the type-import path would miss, is a red test that the AOT path is the one under `--trust-precompiled` |
 
 The semantic fixtures pin values, not agreement: "agreement alone passes when
