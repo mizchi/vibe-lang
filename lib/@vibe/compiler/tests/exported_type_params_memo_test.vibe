@@ -20,7 +20,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/loader {
-  ingest_source_text_fs
+  exported_type_params_memo_rows_retained, ingest_source_text_fs, set_exported_type_params_memo_row_bound
 }
 
 fn string_to_bytes(s: String) -> Bytes {
@@ -178,4 +178,69 @@ test "an answer made under one ambient #cfg set does not serve another" {
   switch_cfg([])
   assert_eq(under_dev, "")
   assert_true(String::contains(without_dev, "has no implementation"))
+}
+
+//# #2521: the memo is BOUNDED.
+//#
+//# Each entry stores the complete suffix of the files read and the path
+//# resolutions made beneath it -- a hit re-stats every file and re-runs every
+//# resolution its answer depended on, and a nested hit replays its rows into
+//# the outer entry. For a re-export chain of N sources that is O(N^2) rows
+//# across N entries, and nothing was ever evicted, so a resident compiler
+//# (`vibe --daemon`, the hosted component) kept them for as long as it lived
+//# and grew with every new source path it met.
+//#
+//# The bound is in ROWS, because rows are where the quadratic term lives; a
+//# per-entry count cannot tell a thousand one-row entries from one
+//# thousand-row entry. The two tests below are the two halves that can each be
+//# wrong on their own: the accounting has to be EXACT across a replacement
+//# (`MutMap::set` replaces, so counting a replaced entry's rows forever would
+//# evict a daemon merely recompiling one edited file), and the drop has to
+//# leave the answers intact (the memo is a pure cache, so a miss re-reads).
+//#
+//# The bound is lowered here rather than reached: the shipped 65536 needs tens
+//# of thousands of rows, and a bound no test can reach is one nobody has seen
+//# work.
+
+fn yes_no(b: Bool) -> String {
+  if b {
+    "yes"
+  } else {
+    "no"
+  }
+}
+
+test "#2521 rows are counted, and a replaced entry stops counting" {
+  set_exported_type_params_memo_row_bound(65536)
+  let base_dir = "/tmp/vibe_compiler_exported_type_params_memo_rows"
+  let stamp = __to_string(Profiler::now_us())
+  let contract_path = setup_chain(base_dir, stamp)
+  let before = exported_type_params_memo_rows_retained()
+  assert_eq(ingest_error(contract_path), "")
+  let after_first = exported_type_params_memo_rows_retained()
+  // Rewriting the target under the same path re-records the SAME paths: the
+  // kind changes, then changes back. Without the release half each pass would
+  // add its rows on top of the entry it replaced.
+  write_cold(String::concat(base_dir, "/source/index.vpkg"), "opaque type Container[F]\n")
+  let _ = ingest_error(contract_path)
+  write_cold(String::concat(base_dir, "/source/index.vpkg"), "opaque type Container[F[_]]\n")
+  let _ = ingest_error(contract_path)
+  let after_rewrites = exported_type_params_memo_rows_retained()
+  inspect(String::concat("recorded=", String::concat(yes_no(after_first > before), String::concat(" exact-after-replacement=", yes_no(after_rewrites == after_first)))), "recorded=yes exact-after-replacement=yes")
+}
+
+test "#2521 the memo drops itself past the row bound and still answers" {
+  let stamp = __to_string(Profiler::now_us())
+  set_exported_type_params_memo_row_bound(65536)
+  let filled_dir = "/tmp/vibe_compiler_exported_type_params_memo_bound_a"
+  assert_eq(ingest_error(setup_chain(filled_dir, stamp)), "")
+  let filled = exported_type_params_memo_rows_retained()
+  // Below what is already retained, so the next record drops everything that
+  // is there. A chain whose paths are all new, so it records rather than hits.
+  set_exported_type_params_memo_row_bound(1)
+  let evicting_dir = "/tmp/vibe_compiler_exported_type_params_memo_bound_b"
+  let answer = ingest_error(setup_chain(evicting_dir, String::concat(stamp, "-b")))
+  let after = exported_type_params_memo_rows_retained()
+  set_exported_type_params_memo_row_bound(65536)
+  inspect(String::concat("filled=", String::concat(yes_no(filled > 1), String::concat(" dropped=", String::concat(yes_no(after < filled), String::concat(" still-correct=", yes_no(answer == "")))))), "filled=yes dropped=yes still-correct=yes")
 }

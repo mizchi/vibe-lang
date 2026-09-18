@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/checker {
-  check_program
+  check_program, validate_source_file_exports
 }
 
 import @vibe/core {
@@ -265,6 +265,14 @@ fn collect_parsed_sources_recursive(path: String, file_paths: Array[String], fil
     // conformance-checked facade instead of a parse error on bodyless decls.
     let source = ingest_source_text_fs(path, Fs::read_file(path))
     let stmts = parse_program(lex(source))
+    // #2808: the aggregate-export refusal, per FILE, BEFORE the closure is
+    // flattened. This is the only point where the file's own `export { }` list
+    // and its own declarations are both still readable: `check_program` runs
+    // once on the merged array, by which time declarations have been
+    // namespace-renamed while each `SExport` keeps its written spelling. The
+    // hook sits here, in the one collector both `compile_file_wasi_only` and
+    // `compile_file_wasi_library` reach, rather than at either entry.
+    validate_source_file_exports(path, stmts)
     let base_dir = dir_of_path(path)
     let mut i = 0
     while i < Array::length(stmts) {
