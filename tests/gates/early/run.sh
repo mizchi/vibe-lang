@@ -2192,6 +2192,20 @@ LAMBDA_BOUND_REFUSAL_STAGE2="$stage2_wasm" bash scripts/check_lambda_bound_refus
 echo "[compiler-gate] an aggregate export naming an undeclared name is refused (#2762)"
 EXPORT_REFUSAL_STAGE2="$stage2_wasm" bash scripts/check_export_refusal.sh
 
+# #2872: a bodyless `impl` of a method-bearing trait whose method has no
+# `<Type>::<method>` to fall back to is refused at BUILD time, with a message
+# that LEADS with the edit. It used to pass `vibe check` clean and emit a
+# module the wasm VALIDATOR rejected -- the witness dictionary carried a hole,
+# so the call site was one argument short. The checks, the measurements behind
+# them, and the red test that proves they can fail live in the gate script and
+# its self-test (scripts/check_bodyless_impl_refusal{,_test}.sh); this lane
+# hands it the compiler rather than letting it pick one. The GREEN side -- a
+# bodyless impl whose fallback DOES resolve, to a builtin or to a
+# `derive (Eq)`-generated user function -- rides the unit lane
+# (fixtures/bodyless_impl_witness_test.vibe).
+echo "[compiler-gate] a bodyless impl with no fallback method is refused (#2872)"
+BODYLESS_IMPL_REFUSAL_STAGE2="$stage2_wasm" bash scripts/check_bodyless_impl_refusal.sh
+
 # #2378: `vibe check` reports a qualified `fn` definition of a builtin name.
 #
 # The leak is narrow and so is the rule. Measured on the seed: a BARE `fn eq` in

@@ -33,6 +33,7 @@ import @vibe/compiler/core {
   builtin_iterator_namespace_from_marker,
   builtin_iterator_namespace_markers,
   builtin_iterator_serialized_boundary_markers,
+  builtin_value_form_arity,
   compiler_owned_type_arity,
   expr_child_at,
   expr_children,
@@ -2528,11 +2529,33 @@ fn impl_trait_pattern_matches(template_key: String, actual_key: String, params: 
   }
 }
 
+/// #2872: the witness for a SUPER-trait's method, supplied by a generic impl of
+/// a SUB-trait.
+///
+/// `trait Child: Base` with `impl [T] Child for Array[T]` declaring both
+/// `base_m` and `child_m` is a complete implementation of `Base` for
+/// `Array[T]` -- `flatten_traits` copies the inherited sigs down, and the impl
+/// block writes the bodies. But the dictionary for `Base` looked for a gen
+/// whose `impl_trait` IS `Base`, found none, fell through to the plain
+/// `Array::base_m` (which no impl generates), and left the dictionary with a
+/// hole. Measured against a stage2 built from main at 3017a67 on
+/// `fixtures/typecheck/trait_supertrait_bound_param_type.vibe`: `vibe check`
+/// clean, and a module the wasm validator rejected
+/// (`failed to compile: wasm[0]::function[5]::v`) because the call was emitted
+/// one argument short. The typecheck lane asserted the CHECKER's verdict only,
+/// so nothing saw it.
+///
+/// Counted, not taken on sight: two distinct sub-traits of the same super-trait
+/// implemented for the same target would each carry a candidate, and picking
+/// one of them is a guess. Ambiguity falls through to the caller, which refuses
+/// with a message rather than emitting a short call.
 fn matching_generic_impl_method(gens: Array[DictGen], cname: String, trait_name: String, method: String, actual: TypeExpr) -> Option[String] {
   let mut i = 0
   let mut result = None
   let mut erased_result = None
   let mut erased_count = 0
+  let mut super_result = None
+  let mut super_count = 0
   while i < Array::length(gens) {
     let gen = Array::get(gens, i)
     let bindings = []
@@ -2545,6 +2568,13 @@ fn matching_generic_impl_method(gens: Array[DictGen], cname: String, trait_name:
           result = Some(gen.name)
           i = Array::length(gens)
         } else {
+          let super_bindings = []
+          if impl_target_pattern_matches(target, actual, gen.impl_params, super_bindings) && trait_ref_name(gen.impl_trait) != trait_ref_name(trait_name) && dtd_trait_entails(gen.impl_trait, trait_name) {
+            super_result = Some(gen.name)
+            super_count = super_count + 1
+          } else {
+            ()
+          }
           match actual {
             TyName(actual_head) => if actual_head == cname && generic_impl_target_is_total(target, gen.impl_params) && impl_trait_pattern_matches(gen.impl_trait, trait_name, gen.impl_params, bindings) {
               erased_result = Some(gen.name)
@@ -2566,6 +2596,8 @@ fn matching_generic_impl_method(gens: Array[DictGen], cname: String, trait_name:
     Some(_) => result,
     None => if erased_count == 1 {
       erased_result
+    } else if super_count == 1 {
+      super_result
     } else {
       None
     }
@@ -2846,13 +2878,27 @@ fn dtd_supers_of(name: String) -> Array[String] {
 /// first; there is nothing extra to thread, because the sub-trait's own
 /// dictionary already carries the method.
 fn dtd_bound_entails_eq(trait_name: String) -> Bool {
-  let pending = [trait_ref_name(trait_name)]
+  dtd_trait_entails(trait_name, dtd_eq_witness_trait())
+}
+
+/// Does `sub` entail `super_name` -- is it that trait, or does it inherit from
+/// it, transitively?
+///
+/// The general form of the walk `dtd_bound_entails_eq` used to spell inline.
+/// A second caller arrived with #2872: a generic impl of a SUB-trait supplies
+/// the super-trait's methods too (`flatten_traits` copies the sigs down, and
+/// the impl block declares them), so the witness for the super-trait's
+/// dictionary is that impl's generated function -- found only if the trait
+/// match admits entailment rather than requiring the immediate name.
+fn dtd_trait_entails(sub: String, super_name: String) -> Bool {
+  let target = trait_ref_name(super_name)
+  let pending = [trait_ref_name(sub)]
   let seen = empty_str_array()
   let mut found = false
   while !found && Array::length(pending) > 0 {
     let cur = Array::get(pending, Array::length(pending) - 1)
     Array::truncate(pending, Array::length(pending) - 1)
-    if cur == dtd_eq_witness_trait() {
+    if cur == target {
       found = true
     } else if str_array_contains(seen, cur) {
       ()
@@ -5772,6 +5818,55 @@ fn bind_impl_target_key_into(out: Array[(String, String)], name: String, value: 
 /// (`arg_expr`) — a dictionary-of-dictionaries (#5 Increment B). If the element
 /// type is missing from an Array target, require an annotation before emitting
 /// a call without its nested dictionary. Other unresolved witnesses return None.
+/// #2872: a witness slot holds a VALUE, and a builtin is not one until it is
+/// eta-expanded -- its body lives below `func_offset` and takes no closure
+/// env, so a dictionary field pointing at it directly is not callable.
+///
+/// A third verbatim copy of `builtin_value_closure`, which is file-local in
+/// both backends for the reason `compile_lambda.vibe` records on its own
+/// duplicate: a brand-new cross-file export and its first cross-file caller in
+/// one commit are silently dropped by the merge/flatten tool. The ARITY comes
+/// from `builtin_value_form_arity`, the shared predicate the checker and both
+/// backends already read, so this cannot disagree with the value form they
+/// emit for the same name.
+fn dtd_builtin_value_closure(name: String, arity: Int) -> Expr {
+  let params: Array[(String, Option[TypeExpr])] = []
+  let args: Array[Expr] = []
+  let mut i = 0
+  while i < arity {
+    let param = String::concat("__builtin_value_arg", Int::to_string(i))
+    Array::push(params, (param, None))
+    Array::push(args, EIdent(param, -1))
+    i = i + 1
+  }
+  EFn(array_empty(), array_empty(), params, None, None, ECall(EIdent(name, -1), args, -1))
+}
+
+/// #2872: the witness for a trait method an impl declares no body for, when
+/// the fallback `<Type>::<method>` is a BUILTIN rather than a user function.
+///
+/// `build_concrete_dict_for_target` already falls back to `<Type>::<method>` --
+/// that is what lets a `derive (Eq)` struct satisfy a bodyless impl, measured
+/// working. It asks `fn_exists`, which knows only user functions, so a name
+/// the language does provide (`String::equals` is a real builtin) answered NO
+/// and the dictionary was left with a hole. The call was then emitted one
+/// argument short: invalid wasm, after a clean `vibe check`.
+///
+/// Reusing `builtin_value_form_arity` is what makes this safe rather than a
+/// second opinion about which builtins are usable as values: it refuses an
+/// effectful row (a value form would launder authority, ADR-0075/0084/0088)
+/// and a row with an unconstrained position (nothing could relate what the
+/// witness takes to what it returns), which are exactly the builtins that must
+/// not sit in a witness slot either.
+fn dtd_builtin_witness(name: String) -> Option[Expr] {
+  let arity = builtin_value_form_arity(name)
+  if arity >= 0 {
+    Some(dtd_builtin_value_closure(name, arity))
+  } else {
+    None
+  }
+}
+
 fn build_concrete_dict_for_target(actual_target: TypeExpr, trait_name: String, traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)], arg_expr: Option[Expr]) -> Option[Expr] with Exception {
   let cname = impl_target_head(actual_target)
   match lookup_trait_sigs(traits, trait_ref_name(trait_name)) {
@@ -5791,10 +5886,28 @@ fn build_concrete_dict_for_target(actual_target: TypeExpr, trait_name: String, t
           None => plain_qm
         }
         if not(fn_exists(fn_returns, qm)) {
-          // A renderer witness needs an actual implementation, like every
-          // other method. Falling back to erased __to_string would recreate
-          // the pointer-as-text defect (#2840).
-          failed = true
+          // #2872: the name may still be a BUILTIN -- `fn_exists` knows only
+          // user functions, and `String::equals` is a real builtin that a
+          // bodyless `impl Eq for String` should be able to resolve to.
+          // Eta-expanded, because a witness slot holds a value.
+          //
+          // A renderer witness still needs an actual implementation, like
+          // every other method: `builtin_value_form_arity` refuses an
+          // effectful or unconstrained row, so falling back to erased
+          // __to_string cannot happen here and the pointer-as-text defect
+          // (#2840) stays closed.
+          match dtd_builtin_witness(qm) {
+            Some(closure) => Array::push(recfields, (m, closure)),
+            None => {
+              // #2872 case (1): the impl declares no body for `m` and there
+              // is no `<Type>::<m>` of any kind to stand in. Leaving the
+              // dictionary with a hole emitted the call one argument short,
+              // which the wasm VALIDATOR rejected -- after `vibe check`
+              // certified the program. Refuse here instead, naming the edit
+              // (#2475's shape: a build error, not a bare trap).
+              throw(String::concat("add a body for `", String::concat(m, String::concat("` to `impl ", String::concat(trait_ref_name(trait_name), String::concat(" for ", String::concat(cname, String::concat("`: a method-bearing trait's impl must implement every method, and there is no `", String::concat(qm, "` to fall back to")))))))))
+            }
+          }
         } else {
           match lookup_gen(gens, qm) {
             Some(threaded) => if Array::length(threaded) == 0 {

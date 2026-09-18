@@ -932,6 +932,40 @@ local testCheckExportRefusal = new Task {
   }
   deps { selfhostGeneration }
 }
+// #2872: a bodyless `impl` of a method-bearing trait passed `vibe check` clean
+// and built a module the wasm validator rejected -- the witness dictionary had
+// a hole where the method belonged, so the call site was emitted one argument
+// short. Asked of the running compiler, message included, and asserted to LEAD
+// with the edit.
+local checkBodylessImplRefusal = new Task {
+  name = "check-bodyless-impl-refusal"
+  description =
+    "a bodyless impl with no `<Type>::<method>` fallback is refused, leading with the edit"
+  cmd = "bash scripts/check_bodyless_impl_refusal.sh"
+  inputs {
+    ...compilerProbeInputs
+    ...scriptSources
+    "fixtures/bodyless_impl_missing_method_refused.vibe"
+    "fixtures/bodyless_impl_struct_missing_method_refused.vibe"
+  }
+  deps { selfhostGeneration }
+}
+// Not `scriptTask`: every one of its four red cases needs a compiler that
+// actually refuses, so it probes the compiler and must declare the dependency
+// (CLAUDE.md, "Which compiler answered?"). It reads the lane's compiler from
+// VIBE_STAGE2_WASM, which is what makes the selftests lane share the
+// compiler-gate matrix.
+local testCheckBodylessImplRefusal = new Task {
+  name = "test-check-bodyless-impl-refusal"
+  cmd = "bash scripts/check_bodyless_impl_refusal_test.sh"
+  inputs {
+    ...compilerProbeInputs
+    ...scriptSources
+    "fixtures/bodyless_impl_missing_method_refused.vibe"
+    "fixtures/bodyless_impl_struct_missing_method_refused.vibe"
+  }
+  deps { selfhostGeneration }
+}
 // #2510/#2735: an opt-in observation must never destroy what it observes.
 // `VIBE_INCREMENTAL_TELEMETRY_OUT` names a file the CLI deletes before the
 // compile and writes after it, and the two sit ~600 lines apart in cli_main,
@@ -2400,6 +2434,8 @@ local releaseCheck = new Task {
     testCheckLambdaBoundRefusal
     checkExportRefusal
     testCheckExportRefusal
+    checkBodylessImplRefusal
+    testCheckBodylessImplRefusal
     checkTelemetrySidecarGuards
     testCheckTelemetrySidecarGuards
     checkHostRemoveParity
@@ -2525,6 +2561,8 @@ tasks {
   testCheckLambdaBoundRefusal
   checkExportRefusal
   testCheckExportRefusal
+  checkBodylessImplRefusal
+  testCheckBodylessImplRefusal
   checkTelemetrySidecarGuards
   testCheckTelemetrySidecarGuards
   checkHostRemoveParity
