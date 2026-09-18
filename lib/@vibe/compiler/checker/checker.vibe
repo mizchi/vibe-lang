@@ -11621,6 +11621,23 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                 CtBool => true,
                 CtString => true,
                 CtChar => true,
+                // #2893: an EMPTY literal first (`[[], [a]]`). #2447 gives it a
+                // real element slot -- `CtArray(<fresh var>)` -- and that var is
+                // what the whole literal's element type becomes. Falling to
+                // `false` here meant no later element was ever unified with it,
+                // so it stayed unconstrained and absorbed anything: measured,
+                //
+                //   let xs = [[], [a]]            // a: T
+                //   let v: Int = Array::get(Array::get(xs, 1), 0)
+                //
+                // compiled clean and printed 233, the allocation address. The
+                // same literal with the empty row SECOND (`[xs, []]`) was
+                // rejected, because then a real type went in first.
+                //
+                // Cross-checking costs one `subst_apply` per element, and a
+                // variable is not the "large struct/tuple" case the comment
+                // above is protecting against.
+                CtVar(_) => true,
                 _ => false
               },
               _ => false
