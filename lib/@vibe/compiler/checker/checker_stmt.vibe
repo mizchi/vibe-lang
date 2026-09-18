@@ -88,6 +88,7 @@ import ./checker.vibe {
   bind_function_dependency_contracts,
   check_assignable,
   check_assignable_for,
+  check_assignable_set_end,
   check_expr,
   check_expr_capture,
   collect_formal_applications_by,
@@ -1069,6 +1070,12 @@ fn statement_root_type_observation_from_capture(checked: CheckedProgram, entries
 fn top_stmt_expr_off(e: Expr) -> Int {
   match e {
     EIdent(_, off) => off,
+    // A string literal carries its own offset on this branch (`EString(String,
+    // Int)`), so a `let a: Int = "not an int"` locates at the LITERAL rather
+    // than falling back to the binder. AGENTS.md lists the missing slot as a
+    // standing violation of the CLI policy; main's #2199 records at call sites
+    // and does not need the widening, but nothing about it conflicts.
+    EString(_, off) => off,
     ECall(callee, _, off) => if off >= 0 {
       off
     } else {
@@ -2074,7 +2081,7 @@ fn collect_deferred_type_name_sentinels(stmts: Array[Stmt]) -> Array[(Array[Stri
     match Array::get(stmts, i) {
       SLet(_, _, lname, _, value) => if String::starts_with(lname, "__vpkg_deferred_type_names_") {
         match value {
-          EString(names) => {
+          EString(names, _) => {
             // `<protected decls> : <deferred names>` -- names before the `:`
             // are the declarations the exemption applies to (Codex round 3 on
             // #2162: unscoped, a merge-lane sentinel excused an unrelated
@@ -3193,6 +3200,24 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
             // `defs` and would be reported as unknown. Inside the
             // `ann_err_before` window so the binder name anchors it.
             report_unknown_type_names(te, defs, array_empty(), env, array_empty(), String::concat(String::concat("the annotation of `", name), "`"), errors)
+            // Give the binding mismatch an END so the range covers the whole
+            // literal, not just its first byte: `locate_type_error` emits the
+            // `C-E` form only when both ends are known.
+            //
+            // This end is the DECODED length, so it is short by one byte per
+            // escape. `locate_type_error` corrects it: it holds the offset AND
+            // the source text, so it reads the lexer's own token span
+            // (`string_token_end`, #2868). Nothing is lost by computing the
+            // cheap estimate here -- the correction never shortens a range --
+            // and the checker has no source text at this point to do better.
+            match val {
+              EString(s, soff) => if soff >= 0 {
+                check_assignable_set_end(soff + 2 + String::length(s))
+              } else {
+                ()
+              },
+              _ => ()
+            }
             let ns_b = check_assignable_for(resolved_te, actual_v, ns0, errors, "binding type mismatch for ", name, top_stmt_expr_off(val))
             // #1941: a literal value carries no offset, so anchor the binder
             // name instead of emitting the one unlocated diagnostic left in
@@ -8881,7 +8906,7 @@ fn collect_referenced_names_expr(expr: Expr, bound: Array[String], out: Array[St
     },
     EInt(_) => (),
     EFloat(_) => (),
-    EString(_) => (),
+    EString(_, _) => (),
     EBool(_) => (),
     EUnit => (),
     EBreak(opt) => match opt {

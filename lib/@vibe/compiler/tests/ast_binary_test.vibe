@@ -356,14 +356,19 @@ test "ast_binary: a varint must be in canonical form" {
 }
 
 test "ast_binary: the module decoder reads its version through the checked reader" {
-  // Magic + version 1 + count 0 -- the empty module, accepted.
-  assert_eq(module_outcome([118, 65, 83, 84, 1, 0]), "0")
-  // Magic + a PADDED version 1 + count 0. The raw header reader answers
-  // `version == 1` and the blob used to decode as an empty AST -- a wrong
-  // answer rather than a cache miss.
-  assert_eq(module_outcome([118, 65, 83, 84, 129, 0, 0]), "ast_binary: varint is not in canonical form")
-  // An unsupported version is still reported as one.
-  assert_eq(module_outcome([118, 65, 83, 84, 2, 0]), "ast_binary: unsupported version 2")
+  // Magic + version 2 + count 0 -- the empty module, accepted. `2` is
+  // AST_BINARY_VERSION since `EString` gained its offset (#2868).
+  assert_eq(module_outcome([118, 65, 83, 84, 2, 0]), "0")
+  // Magic + a PADDED version 2 + count 0 (`130, 0` is 2 in two bytes). The raw
+  // header reader answers `version == 2` and the blob used to decode as an
+  // empty AST -- a wrong answer rather than a cache miss.
+  assert_eq(module_outcome([118, 65, 83, 84, 130, 0, 0]), "ast_binary: varint is not in canonical form")
+  // An unsupported version is still reported as one. `99`, not a neighbour of
+  // the current version: this line used to say `2`, and the bump made `2` the
+  // accepted one, so the assertion inverted into "refuse what we accept".
+  assert_eq(module_outcome([118, 65, 83, 84, 99, 0]), "ast_binary: unsupported version 99")
+  // The RETIRED version is refused too, not read as the current one.
+  assert_eq(module_outcome([118, 65, 83, 84, 1, 0]), "ast_binary: unsupported version 1")
   // Bad magic is still bad magic.
   assert_eq(module_outcome([0, 0, 0, 0, 1, 0]), "ast_binary: bad magic")
 }

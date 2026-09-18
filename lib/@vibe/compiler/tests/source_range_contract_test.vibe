@@ -18,10 +18,11 @@
 //   | check text `line L:C-E:` | line, byte column | 1    | half-open |
 //   | type-at / binding-at IN  | line, byte column | 1    | --        |
 //
-// `vibe check --single-file --json` is the one deliberate exception: LSP
-// positions are 0-based lines and UTF-16 code units, `lib/@vibe/lsp` converts
-// at the boundary (`lsp_pos_to_byte_col` / `lsp_byte_col_to_utf16`), and that
-// conversion is the LSP spec's, not this contract's.
+// `vibe check --json` (FS lane and `--single-file`) is the one deliberate
+// exception: LSP positions are 0-based lines and UTF-16 code units,
+// `lib/@vibe/lsp` converts at the boundary (`lsp_pos_to_byte_col` /
+// `lsp_byte_col_to_utf16`), and that conversion is the LSP spec's, not this
+// contract's.
 //
 // Every case below slices the source by the range the command reported and
 // compares it to the token that range is supposed to name -- the acceptance
@@ -159,6 +160,56 @@ test "a codepoint column addresses a different position, silently" {
     ()
   }
   assert(Array::length(by_codepoints) != Array::length(by_bytes))
+}
+
+test "a literal binding mismatch slices the string token, not 0:0 (#2831)" {
+  let src = "let a: Int = \"not an int\"\n"
+  let diags = collect_all_diagnostics(src)
+  assert(Array::length(diags) > 0)
+  let (line, start_col, end_col) = diag_range(Array::get(diags, 0))
+  assert_eq(line, 1)
+  let base = line_start_offset(src, line)
+  assert_eq(String::substring(src, base + start_col - 1, base + end_col - 1), "\"not an int\"")
+}
+
+test "a parenthesized literal mismatch still slices the string (#2831)" {
+  let src = "fn main() -> Int {\n  let a: Int = (\"not an int\")\n  0\n}\n"
+  let diags = collect_all_diagnostics(src)
+  assert(Array::length(diags) > 0)
+  let (line, start_col, end_col) = diag_range(Array::get(diags, 0))
+  assert_eq(line, 2)
+  let base = line_start_offset(src, line)
+  assert_eq(String::substring(src, base + start_col - 1, base + end_col - 1), "\"not an int\"")
+}
+
+test "a local literal mismatch slices the string, including a multibyte prefix (#2831)" {
+  let src = "// 日本語\nfn main() -> Int {\n  let a: Int = \"not an int\"\n  0\n}\n"
+  let diags = collect_all_diagnostics(src)
+  assert(Array::length(diags) > 0)
+  let (line, start_col, end_col) = diag_range(Array::get(diags, 0))
+  assert_eq(line, 3)
+  let base = line_start_offset(src, line)
+  assert_eq(String::substring(src, base + start_col - 1, base + end_col - 1), "\"not an int\"")
+}
+
+test "an if-branch string mismatch slices the string, not 0:0 (#2831)" {
+  let src = "// 日本語\nfn main() -> Int {\n  if true { 1 } else { \"x\" }\n}\n"
+  let diags = collect_all_diagnostics(src)
+  assert(Array::length(diags) > 0)
+  let (line, start_col, end_col) = diag_range(Array::get(diags, 0))
+  assert_eq(line, 3)
+  let base = line_start_offset(src, line)
+  assert_eq(String::substring(src, base + start_col - 1, base + end_col - 1), "\"x\"")
+}
+
+test "a bool/int mismatch still locates and does not hang (#2831)" {
+  let src = "let a: Int = true\n"
+  let diags = collect_all_diagnostics(src)
+  assert(Array::length(diags) > 0)
+  let (line, start_col, end_col) = diag_range(Array::get(diags, 0))
+  assert(line >= 1)
+  assert(start_col >= 1)
+  assert(end_col > start_col)
 }
 
 test "a text diagnostic's line and columns are 1-based bytes, half-open" {

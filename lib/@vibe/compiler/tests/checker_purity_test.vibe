@@ -35,7 +35,7 @@ fn no_constraints() -> Array[(String, Array[String])] {
 test "pure literals return 0" {
   assert(eq(analyze_purity(EInt(42)), 0))
   assert(eq(analyze_purity(EFloat(3.14)), 0))
-  assert(eq(analyze_purity(EString("hello")), 0))
+  assert(eq(analyze_purity(EString("hello", -1)), 0))
   assert(eq(analyze_purity(EBool(true)), 0))
   assert(eq(analyze_purity(EUnit), 0))
 }
@@ -64,7 +64,7 @@ test "EWhile is StateLocal" {
 }
 
 test "ECall print is Impure" {
-  let expr = ECall(EIdent("print", -1), [EString("hello")], -1)
+  let expr = ECall(EIdent("print", -1), [EString("hello", -1)], -1)
   assert(eq(analyze_purity(expr), 2))
 }
 
@@ -79,7 +79,7 @@ test "ECall Array::push is StateLocal" {
 }
 
 test "ECall Fs::read_file is Impure" {
-  let expr = ECall(EIdent("Fs::read_file", -1), [EString("test.txt")], -1)
+  let expr = ECall(EIdent("Fs::read_file", -1), [EString("test.txt", -1)], -1)
   assert(eq(analyze_purity(expr), 2))
 }
 
@@ -87,14 +87,14 @@ test "throw desugar (perform Exception::Throw) is Impure" {
   // #640 Stage 3: `throw(x)` parses to `perform Exception::Throw(x)` (Stage 2),
   // so the throw-is-impure guarantee now rides on builtin_purity("perform").
   let expr = ECall(EIdent("perform", -1), [
-    ECall(EIdent("Exception::Throw", -1), [EString("error")], -1)
+    ECall(EIdent("Exception::Throw", -1), [EString("error", -1)], -1)
   ], -1)
   assert(eq(analyze_purity(expr), 2))
 }
 
 test "EFn lambda creation is Pure" {
   let expr = EFn(no_strings(), no_constraints(), no_params(), None, None, ECall(EIdent("print", -1), [
-    EString("hi")
+    EString("hi", -1)
   ], -1))
   assert(eq(analyze_purity(expr), 0))
 }
@@ -104,7 +104,7 @@ test "is_pure returns true for pure expr" {
 }
 
 test "is_pure returns false for impure expr" {
-  assert(!is_pure(ECall(EIdent("print", -1), [EString("hi")], -1)))
+  assert(!is_pure(ECall(EIdent("print", -1), [EString("hi", -1)], -1)))
 }
 
 test "is_local returns true for StateLocal expr" {
@@ -123,13 +123,15 @@ test "merge_purity takes maximum" {
 }
 
 test "ELet with impure body is Impure" {
-  let expr = ELet("x", EInt(1), ECall(EIdent("println", -1), [EString("hi")], -1), -1)
+  let expr = ELet("x", EInt(1), ECall(EIdent("println", -1), [
+    EString("hi", -1)
+  ], -1), -1)
   assert(eq(analyze_purity(expr), 2))
 }
 
 test "EIf with mixed purity takes max" {
   let expr = EIf(EBool(true), EInt(1), ECall(EIdent("print", -1), [
-    EString("hi")
+    EString("hi", -1)
   ], -1))
   assert(eq(analyze_purity(expr), 2))
 }
@@ -177,13 +179,13 @@ test "chained pure calls stay pure" {
 }
 
 test "impure call propagates" {
-  let call = ECall(EIdent("print", -1), [EString("hello")], -1)
+  let call = ECall(EIdent("print", -1), [EString("hello", -1)], -1)
   assert(eq(analyze_purity(call), 2))
 }
 
 test "nested let with impure body" {
   let expr = ELet("x", EInt(1), ECall(EIdent("Fs::read_file", -1), [
-    EString("test.txt")
+    EString("test.txt", -1)
   ], -1), -1)
   assert(eq(analyze_purity(expr), 2))
 }

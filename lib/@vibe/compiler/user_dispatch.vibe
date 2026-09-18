@@ -105,7 +105,7 @@ import ./wit_gen.vibe {
 }
 
 import @vibe/lsp {
-  lsp_diagnostics_json_of_messages, lsp_main
+  lsp_diagnostics_json_of_messages, lsp_diagnostics_json_of_messages_for, lsp_main
 }
 
 //# Helpers
@@ -760,8 +760,6 @@ export fn parse_user_check_args(args: Array[String]) -> (String, Bool, Bool) wit
     }
     if src == "" {
       throw("usage: vibe check [--jobs N] [--single-file] [--json] <file.vibe>...")
-    } else if json && !single && !missing_vpkg && !deps_missing {
-      throw("check --json needs --single-file today: the import-resolving lane has no per-diagnostic ranges to emit (#1567)")
     } else {
       (src, single, json)
     }
@@ -802,11 +800,27 @@ fn user_check_single(src: String, json: Bool) -> Int with Exception + Fs + Env +
     throw(String::concat("not found: ", src))
   } else {
     let text = Fs::read_file(src)
+    // A throw that reaches HERE is an internal failure, not a diagnostic
+    // about the source: `collect_all_diagnostics_with_unstable_for_path`
+    // already degrades the one recoverable half itself (`typecheck_fs.vibe`
+    // catches the unstable scan's lex throw so the lexer's own diagnostics
+    // survive). Answering `[]` certified the file CLEAN -- empty stdout in
+    // text mode, `[]` in JSON, exit 0 either way (Codex P1 on #2868). This
+    // lane SELLS "empty output = clean" (CLAUDE.md, the CLI query policy), so
+    // the one thing it may never do is spend that sentence on a check it
+    // could not run. The message becomes an ERROR diagnostic: it starts with
+    // neither `warning: ` nor `line `, so `is_warning_line` reads it as an
+    // error and the exit code is 1.
+    //
+    // `user_diagnostics_report` below keeps the swallow on purpose: that verb
+    // is deprecated and FROZEN at exit 0 for the editors still calling it, so
+    // unfreezing it is a separate decision, not this fix.
     let diags = handle {
       collect_all_diagnostics_with_unstable_for_path(src, text, unstable_opt_in())
-    } with { Exception::Throw(_) => {
-      let empty: Array[String] = []
-      empty
+    } with { Exception::Throw(message) => {
+      let failed: Array[String] = []
+      Array::push(failed, String::concat("check failed: ", message))
+      failed
     } }
     if json {
       print(line_terminated(lsp_diagnostics_json_of_messages(text, diags)))
@@ -991,6 +1005,38 @@ fn user_check_linked(src: String) -> Int with Exception + Fs + Env + Stderr {
   }
 }
 
+/// `user_check_linked` answered as a JSON array of LSP Diagnostic objects
+/// (#2831). The FS lane reports diagnostics by RAISING them, so the whole
+/// check runs under a handler here and the raised text becomes the array's
+/// one entry; a clean file yields `[]` and exit 0. `not found` stays an
+/// exception -- a usage error is not a diagnostic about the file's contents.
+fn user_check_linked_json(src: String) -> Int with Exception + Fs + Env + Stdout + Stderr {
+  if !Fs::exists(src) {
+    throw(String::concat("not found: ", src))
+  } else {
+    let text = Fs::read_file(src)
+    let diags = handle {
+      let _ = user_check_linked(src)
+      let empty: Array[String] = []
+      empty
+    } with { Exception::Throw(message) => {
+      let out: Array[String] = []
+      Array::push(out, message)
+      out
+    } }
+    // Told WHICH file `text` is: this lane reports a DEPENDENCY's error as
+    // `<dep>: line L:C: body`, located against the dep. Rendered without the
+    // path, that column was converted against the entry's text and the origin
+    // was dropped from the message (Codex P2 on #2868).
+    print(line_terminated(lsp_diagnostics_json_of_messages_for(src, text, diags)))
+    if Array::length(diags) == 0 {
+      0
+    } else {
+      1
+    }
+  }
+}
+
 /// The two profiling sidecars `vibe check` can be asked for: `--profile-tsv P`
 /// and `--profile-callstack P`. Parsed apart from `parse_user_check_args` so
 /// that tuple keeps the shape `dispatch_test.vibe` pins; a flag without a
@@ -1090,6 +1136,8 @@ fn selfhost_cli_user_check_args(args: Array[String]) -> Int with Exception + Fs 
       let file_code = handle {
         if single {
           user_check_single(src, json)
+        } else if json {
+          user_check_linked_json(src)
         } else {
           user_check_linked(src)
         }

@@ -140,12 +140,40 @@ expect_missing "no [@off= marker leak (unknown field)" "[@off=" \
   'struct Point { x: Int; y: Int }\nexport let get = (p: Point) -> Int {\n  p.z\n}\nexport let main = () -> Int { 0 }\n'
 
 # #1567, the flip side of the located type errors above — stated so it reads as
-# a decision rather than an accident: an expression built only from LITERALS has
-# no offset to anchor on (EInt/EFloat/EString/EBool have no offset slot in
-# lib/@vibe/ast/index.vpkg), so it stays unlocated rather than borrowing a
-# nearby node's position and confidently pointing at the wrong thing.
-expect_missing "literal-only mismatch does not invent a location" "line " \
+# a decision rather than an accident: an expression built only from literals
+# with NO offset slot has nothing to anchor on, so it stays unlocated rather
+# than borrowing a nearby node's position and confidently pointing at the wrong
+# thing.
+#
+# `EString` left that group when it gained an offset (`EString(String, Int)` in
+# lib/@vibe/ast/index.vpkg): `1 + "s"` now locates AT the literal, which is the
+# case just below. `EInt` / `EFloat` / `EBool` still carry no slot, so the
+# original contract is asserted on those instead -- the rule is "never invent
+# one", not "never have one".
+expect_missing "slotless-literal mismatch does not invent a location" "line " \
+  'export fn main() -> Int {\n  1 + true\n}\n'
+
+# The improvement the widening buys: a String literal anchors itself, so the
+# reader is sent to the operand that is wrong rather than to the enclosing fn.
+# Column 7 on line 2 is the opening quote of `"s"`.
+expect_contains "string-literal mismatch locates at the literal" "line 2:7" \
   'export fn main() -> Int {\n  1 + "s"\n}\n'
+
+# #2868 (Codex P2): the END of a string literal's range is the LEXER's token
+# end, not the decoded value's length. `check_assignable_set_end` computes
+# `off + 2 + String::length(s)`, and `s` is decoded -- so each escape made the
+# range one byte SHORT and it stopped inside the token. Measured before the fix
+# on the line below, whose literal holds three escapes: `line 1:14-20` where
+# the closing quote is at column 22, so the range ended three bytes early. The
+# end is now recovered in `locate_type_error`, which is the one place holding
+# both the offset and the source text.
+expect_contains "an escaped literal's range reaches its closing quote" "line 1:14-23" \
+  'let a: Int = "\\n\\t\\\\x"\n'
+
+# The unescaped case must not move: decoded length and token length agree
+# there, so a fix that simply widened every range would break this.
+expect_contains "an unescaped literal's range is unchanged" "line 1:14-21" \
+  'let b: Int = "plain"\n'
 
 # #1567: EXACTLY ONE location per diagnostic, and it must be the crime scene.
 #

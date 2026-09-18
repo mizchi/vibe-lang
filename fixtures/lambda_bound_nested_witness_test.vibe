@@ -1,0 +1,288 @@
+//# #2778: a NESTED binder's bound is threaded and keeps working.
+//
+// The four rungs that used to be refused when the bound sat on a lambda
+// are the same code as `lambda_bound_toplevel_witness_test.vibe` with the
+// binder left nested.
+// Runtime answers, not merely "did not throw": `7 != 8` so a commutative
+// `==` cannot hide a reordering, and Show text is `Pt!` / `7`.
+
+trait Eq {
+  equals(Self, Self) -> Bool
+}
+
+trait Show {
+  to_string(Self) -> String
+}
+
+struct Pt {
+  v: Int
+}
+
+impl Eq for Pt {
+  equals(a: Pt, b: Pt) -> Bool {
+    a.v == b.v
+  }
+}
+
+impl Eq for Int {
+  equals(a: Int, b: Int) -> Bool {
+    a == b
+  }
+}
+
+impl Show for Pt {
+  to_string(a: Pt) -> String {
+    "Pt!"
+  }
+}
+
+impl Show for Int {
+  to_string(a: Int) -> String {
+    "\{a}"
+  }
+}
+
+fn equality_snapshot(value: Bool) -> String {
+  if value {
+    "true"
+  } else {
+    "false"
+  }
+}
+
+fn via_nested_qualified() -> Bool {
+  let inner = [T: Eq](a: T, b: T) -> Bool {
+    T::equals(a, b)
+  }
+  inner(Pt::{ v: 1 }, Pt::{ v: 1 })
+}
+
+fn via_nested_qualified_diff() -> Bool {
+  let inner = [T: Eq](a: T, b: T) -> Bool {
+    T::equals(a, b)
+  }
+  inner(Pt::{ v: 1 }, Pt::{ v: 2 })
+}
+
+fn via_nested_ufcs() -> Bool {
+  let inner = [T: Eq](a: T, b: T) -> Bool {
+    a.equals(b)
+  }
+  inner(Pt::{ v: 1 }, Pt::{ v: 1 })
+}
+
+fn via_nested_ufcs_diff() -> Bool {
+  let inner = [T: Eq](a: T, b: T) -> Bool {
+    a.equals(b)
+  }
+  inner(7, 8)
+}
+
+fn via_nested_value() -> Bool {
+  let inner = [T: Eq](a: T, b: T) -> Bool {
+    let cmp = T::equals
+    cmp(a, b)
+  }
+  inner(Pt::{ v: 1 }, Pt::{ v: 1 })
+}
+
+fn via_nested_value_diff() -> Bool {
+  let inner = [T: Eq](a: T, b: T) -> Bool {
+    let cmp = T::equals
+    cmp(a, b)
+  }
+  inner(Pt::{ v: 1 }, Pt::{ v: 2 })
+}
+
+fn via_nested_interp() -> String {
+  let inner = [T: Show](a: T) -> String {
+    "\{a}"
+  }
+  inner(Pt::{ v: 1 })
+}
+
+fn via_nested_interp_int() -> String {
+  let inner = [T: Show](a: T) -> String {
+    "\{a}"
+  }
+  inner(7)
+}
+
+test "the qualified spelling dispatches through a nested binder's witness" {
+  inspect(equality_snapshot(via_nested_qualified()), content = "true")
+}
+
+test "the qualified spelling still separates different values" {
+  inspect(equality_snapshot(via_nested_qualified_diff()), content = "false")
+}
+
+test "the UFCS spelling dispatches through the same nested witness" {
+  inspect(equality_snapshot(via_nested_ufcs()), content = "true")
+}
+
+test "the UFCS spelling still separates different integers" {
+  inspect(equality_snapshot(via_nested_ufcs_diff()), content = "false")
+}
+
+test "the witness taken as a value dispatches through a nested binder" {
+  inspect(equality_snapshot(via_nested_value()), content = "true")
+}
+
+test "the witness taken as a value still separates different values" {
+  inspect(equality_snapshot(via_nested_value_diff()), content = "false")
+}
+
+test "interpolation dispatches through a nested Show witness" {
+  inspect(via_nested_interp(), content = "Pt!")
+}
+
+test "nested interpolation of Int prints the value, not a pointer decimal" {
+  inspect(via_nested_interp_int(), content = "7")
+}
+
+
+
+trait Mappable[F[_]] {
+  map[A, B](F[A], (A) -> B) -> F[B]
+}
+
+enum Slot[T] {
+  Full(T)
+}
+
+impl Mappable[Slot] for Slot {
+  map(xs: Slot[A], f: (A) -> B) -> Slot[B] {
+    match xs {
+      Full(value) => Full(f(value))
+    }
+  }
+}
+
+fn via_nested_kinded() -> Int {
+  let inner = [F[_]: Mappable[F]](ys: F[Int]) -> F[Int] {
+    F::map(ys, (x) -> {
+      x + 1
+    })
+  }
+  match inner(Full(5)) {
+    Full(v) => v
+  }
+}
+
+test "a kinded nested binder dispatches through its own dictionary" {
+  inspect(via_nested_kinded(), content = "6")
+}
+
+fn ident_eq[T: Eq](a: T) -> Bool {
+  T::equals(a, a)
+}
+
+fn via_nested_name_collision() -> Bool {
+  let ident_eq = [T: Eq](a: T, b: T) -> Bool {
+    T::equals(a, b)
+  }
+  ident_eq(7, 8)
+}
+
+test "a nested binder that reuses a top-level generic name keeps its own witness" {
+  inspect(equality_snapshot(via_nested_name_collision()), content = "false")
+}
+
+fn outer_show[T: Show](x: T) -> String {
+  let inner = [U](_u: U) -> String {
+    T::to_string(x)
+  }
+  inner(1)
+}
+
+fn via_nested_enclosing_show() -> String {
+  outer_show(Pt::{ v: 1 })
+}
+
+test "an inner unbounded lambda still renders through the enclosing Show dict" {
+  inspect(via_nested_enclosing_show(), content = "Pt!")
+}
+
+fn outer_eq[T: Eq](x: T, y: T) -> Bool {
+  let inner = [U](_u: U) -> Bool {
+    T::equals(x, y)
+  }
+  inner(0)
+}
+
+fn via_nested_enclosing_eq() -> Bool {
+  outer_eq(Pt::{ v: 1 }, Pt::{ v: 2 })
+}
+
+fn outer_eq_ufcs[T: Eq](x: T, y: T) -> Bool {
+  let inner = [U](_u: U) -> Bool {
+    x.equals(y)
+  }
+  inner(0)
+}
+
+fn via_nested_enclosing_eq_ufcs() -> Bool {
+  outer_eq_ufcs(7, 8)
+}
+
+fn outer_eq_under_u[T: Eq](x: T, y: T) -> Bool {
+  let inner = [U: Eq](_a: U, _b: U) -> Bool {
+    T::equals(x, y)
+  }
+  inner(7, 8)
+}
+
+fn via_nested_enclosing_eq_under_u() -> Bool {
+  outer_eq_under_u(Pt::{ v: 1 }, Pt::{ v: 2 })
+}
+
+test "an inner unbounded lambda still dispatches through the enclosing Eq dict" {
+  inspect(equality_snapshot(via_nested_enclosing_eq()), content = "false")
+}
+
+test "an inner unbounded lambda still UFCS-dispatches through the enclosing Eq dict" {
+  inspect(equality_snapshot(via_nested_enclosing_eq_ufcs()), content = "false")
+}
+
+test "an inner Eq lambda still dispatches through the enclosing Eq dict" {
+  inspect(equality_snapshot(via_nested_enclosing_eq_under_u()), content = "false")
+}
+
+fn via_nested_letmut() -> Bool {
+  let mut inner = [T: Eq](a: T, b: T) -> Bool {
+    T::equals(a, b)
+  }
+  inner(7, 8)
+}
+
+test "a let-mut nested Eq lambda dispatches through its witness" {
+  inspect(equality_snapshot(via_nested_letmut()), content = "false")
+}
+
+fn via_shadowed_shim() -> Int {
+  let inner = [T: Show](a: T) -> String {
+    "\{a}"
+  }
+  let inner = (n: Int) -> Int {
+    n + 1
+  }
+  inner(7)
+}
+
+test "rebinding a local Show shim name calls the new function, not __to_string" {
+  inspect(via_shadowed_shim(), content = "8")
+}
+
+fn via_eq_rebind() -> Int {
+  let inner = [T: Eq](a: T, b: T) -> Bool {
+    T::equals(a, b)
+  }
+  let inner = (n: Int) -> Int {
+    n + 1
+  }
+  inner(7)
+}
+
+test "rebinding a nested Eq lambda to a non-generic does not prepend a dict" {
+  inspect(via_eq_rebind(), content = "8")
+}

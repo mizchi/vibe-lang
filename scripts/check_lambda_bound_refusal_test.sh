@@ -51,7 +51,7 @@ if ! run_gate "fixtures/lambda_bound_dispatch_*_refused.vibe"; then
   fail "the gate does not pass on the unmutated corpus; the red cases below would prove nothing"
 fi
 
-# RED 1: the program compiles. The body is the qualified fixture with the lambda
+# RED 1: the program compiles. The body is the interp fixture with the lambda
 # LIFTED to a top-level binder -- the very edit the message names, so this case is
 # also the proof that the named edit works. Written out rather than derived by sed:
 # the mutation that matters is structural, and an edit that lands as a syntax error
@@ -59,40 +59,40 @@ fi
 # first time this was written).
 mkdir -p "$WORK/r1"
 cat > "$WORK/r1/lambda_bound_dispatch_lifted_refused.vibe" <<'VIBE'
-trait Eq {
-  equals(Self, Self) -> Bool
+trait Show {
+  to_string(Self) -> String
 }
 
 struct Pt {
   v: Int
 }
 
-impl Eq for Pt {
-  equals(a: Pt, b: Pt) -> Bool {
-    a.v == b.v
+struct Qt {
+  w: Int
+}
+
+impl Show for Pt {
+  to_string(a: Pt) -> String {
+    "Pt!"
   }
 }
 
-impl Eq for Int {
-  equals(a: Int, b: Int) -> Bool {
-    a == b
+impl Show for Qt {
+  to_string(a: Qt) -> String {
+    "Qt!"
   }
 }
 
-fn inner_lifted[T: Eq](a: T, b: T) -> Bool {
-  T::equals(a, b)
+fn inner_lifted[T: Show](a: T) -> String {
+  "\{a}"
 }
 
-fn outer_qualified[T: Eq](x: T, y: T) -> Bool {
-  inner_lifted(7, 8)
+fn outer_show[T: Show](x: T) -> String {
+  inner_lifted(Qt::{ w: 5 })
 }
 
 export fn _start() -> Int {
-  if outer_qualified(Pt::{ v: 1 }, Pt::{ v: 2 }) {
-    1
-  } else {
-    0
-  }
+  String::length(outer_show(Pt::{ v: 1 }))
 }
 VIBE
 if run_gate "$WORK/r1/*.vibe"; then
@@ -123,7 +123,7 @@ grep -qF 'refused without the #2737 message' "$WORK/out" \
 # cannot classify (RED 7 below pins that). A name chosen for the temp directory
 # alone would fail these cases for the wrong reason.
 mkdir -p "$WORK/r3"
-cp fixtures/lambda_bound_dispatch_qualified_refused.vibe "$WORK/r3/lambda_bound_dispatch_keep_refused.vibe"
+cp fixtures/lambda_bound_dispatch_interp_refused.vibe "$WORK/r3/lambda_bound_dispatch_keep_refused.vibe"
 # Targets the "names an edit" grep specifically: its pattern carries the
 # ` .* to a top-level` suffix that EDIT_NEEDLE does not, so the leads-check
 # below is left intact and a failure here can only come from this assertion.
@@ -152,17 +152,17 @@ grep -qF 'refusal does not name an edit' "$WORK/out" \
 # genuinely IN the message but not at its start. "Contains" would pass; "begins
 # with" must fail.
 mkdir -p "$WORK/r5"
-cp fixtures/lambda_bound_dispatch_qualified_refused.vibe "$WORK/r5/lambda_bound_dispatch_keep_refused.vibe"
-sed 's/^EDIT_NEEDLE="move the lambda that binds"$/EDIT_NEEDLE="has no witness here"/' \
+cp fixtures/lambda_bound_dispatch_interp_refused.vibe "$WORK/r5/lambda_bound_dispatch_keep_refused.vibe"
+sed 's/^EDIT_NEEDLE="move the lambda that binds"$/EDIT_NEEDLE="interpolate at a concrete type"/' \
   scripts/check_lambda_bound_refusal.sh > "$WORK/r5/gate.sh"
-grep -q '^EDIT_NEEDLE="has no witness here"$' "$WORK/r5/gate.sh" \
+grep -q '^EDIT_NEEDLE="interpolate at a concrete type"$' "$WORK/r5/gate.sh" \
   || fail "RED 5 mutation did not land (EDIT_NEEDLE was not repointed)"
 # The mutation only proves anything if the phrase really is present in the
 # message -- a needle that matched nothing would fail the check for the wrong
 # reason and show the same verdict.
 LAMBDA_BOUND_REFUSAL_STAGE2="$STAGE2_OVERRIDE" LAMBDA_BOUND_REFUSAL_FIXTURES="$WORK/r5/*.vibe" \
   bash scripts/check_lambda_bound_refusal.sh >/dev/null 2>&1 || true
-grep -qF 'has no witness here' "$ROOT_DIR/_build/_lambda_bound_refusal/lambda_bound_dispatch_keep_refused.wasm.diag" 2>/dev/null \
+grep -qF 'interpolate at a concrete type' "$ROOT_DIR/_build/_lambda_bound_refusal/lambda_bound_dispatch_keep_refused.wasm.diag" 2>/dev/null \
   || fail "RED 5 needle is absent from the message; the case would fail for the wrong reason"
 if [ -n "$STAGE2_OVERRIDE" ]; then
   VIBE_LAMBDA_BOUND_REFUSAL_ROOT="$ROOT_DIR" LAMBDA_BOUND_REFUSAL_STAGE2="$STAGE2_OVERRIDE" \
@@ -190,9 +190,9 @@ grep -qF 'no fixtures matched' "$WORK/out" \
 # -- it just carries the other family's reason -- so a gate that accepted either
 # would pass it. The name is the only thing changed.
 mkdir -p "$WORK/r6"
-cp fixtures/lambda_bound_dispatch_qualified_refused.vibe \
+cp fixtures/lambda_bound_dispatch_interp_refused.vibe \
    "$WORK/r6/lambda_bound_erased_interp_mislabelled_refused.vibe"
-grep -q 'T::equals(a, b)' "$WORK/r6/lambda_bound_erased_interp_mislabelled_refused.vibe" \
+grep -qF 'let inner = [T: Show](a: T) -> String {' "$WORK/r6/lambda_bound_erased_interp_mislabelled_refused.vibe" \
   || fail "RED 6 setup did not land (the copied fixture is not the dispatch one)"
 if run_gate "$WORK/r6/*.vibe"; then
   fail "RED 6: the gate accepted a fixture refused by the OTHER family's rule (the reason is not per-family)"
@@ -203,7 +203,7 @@ grep -qF 'refused without the #2745 message' "$WORK/out" \
 # RED 7: a name inside the glob but in no family. Silence is "unchecked", and a
 # fixture nobody classified is exactly that -- the same rule as the empty corpus.
 mkdir -p "$WORK/r7"
-cp fixtures/lambda_bound_dispatch_qualified_refused.vibe \
+cp fixtures/lambda_bound_dispatch_interp_refused.vibe \
    "$WORK/r7/lambda_bound_unclassified_refused.vibe"
 if run_gate "$WORK/r7/*.vibe"; then
   fail "RED 7: the gate accepted a fixture belonging to no family"

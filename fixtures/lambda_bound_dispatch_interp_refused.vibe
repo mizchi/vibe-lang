@@ -1,24 +1,32 @@
-//# #2737: interpolating a value whose type is a lambda binder's is refused.
+//# #2737 / #2778: interpolating a formal whose spelling an ENCLOSING binder
+//# also bound is refused.
 //
-// The interpolation rung consults the same `find_dict_for_method` as the two
-// explicit spellings, so before the fix it took the enclosing binder's `Show`
-// dictionary by spelling. Measured on main at 8f70aa1, `outer` at `Pt` with
-// `inner` applied to a `Qt` printed `Pt!` -- a `Qt` rendered through
-// `Pt::to_string`, the same defect as the `Eq` one and the reason the withholding
-// guard lives in the lookup rather than in the `==` rung.
+// #2778 threads a nested binder's own bound: `rewrite_expr`'s EFn arm overlays
+// the lambda's dictionaries on the enclosing ones and drops the rows it
+// rebinds, so the other five rungs of this family -- qualified, UFCS, the
+// method as a value, the kinded binder, and an inner binder spelled apart from
+// the outer one -- now dispatch correctly and their fixtures are gone. This one
+// is what is LEFT, and it is left for a reason of its own.
 //
-// This rung LOOKS like one that can fall through honestly, because interpolation
-// has a total builtin renderer. It cannot, and that was measured rather than
-// assumed: with the dictionary withheld and nothing else changed, the same
-// program printed `284` -- the tagged pointer. A formal-typed value is erased, so
-// the renderer reads a representation, not a value. `Pt!` is a lie about the type
-// and `284` is not information; neither is the program's value, so the rung is
-// refused like the others.
+// `dtd_show_witness_dict` declines a formal that `dtd_formal_is_shadowed`
+// reports, and here the inner `[T: Show]` shadows an outer `[T: Show]` of the
+// same spelling. Under the overlay that guard is arguably redundant -- the
+// outer row is dropped, so the only dictionary reachable for `T` is the inner
+// one, and `inner(Qt::{ w: 5 })` would render `Qt!`. Arguably is not measured,
+// and the pre-#2778 measurement of this exact program is on record: `outer` at
+// `Pt` with `inner` applied to a `Qt` printed `Pt!` -- a `Qt` rendered through
+// `Pt::to_string` -- and with the dictionary withheld instead it printed `284`,
+// the tagged pointer. `Pt!` is a lie about the type and `284` is not
+// information.
+//
+// So the shadowed spelling stays refused until someone measures it, which is
+// the fail-closed side of "never be silently wrong". Removing the guard is the
+// remaining half of #2778, and the green side for every UNSHADOWED nested rung
+// is `fixtures/lambda_bound_nested_witness_test.vibe`.
 //
 // A SCALAR does render truthfully, and it never reaches here: `interp_shape`
 // answers first. That is also why a top-level `[T: Show]` applied to `7` prints
-// `7` and not `Int!` (measured on both sides of this change -- pre-existing, and
-// untouched by it).
+// `7` and not `Int!`.
 
 trait Show {
   to_string(Self) -> String
