@@ -19,6 +19,11 @@ ships.
 | `0.2.0` | Structured concurrency, a type system aimed at formalization, a dedicated agent harness | after 0.1.0 |
 | `1.0.0` | Maturity. Not a synonym for the first public release | unscheduled |
 
+Work that carries no release commitment — internal compiler optimization,
+architecture experiments, repository tooling, stdlib additions — lives in the
+[Backlog (unscheduled) milestone](https://github.com/mizchi/vibe-lang/milestone/4)
+rather than in a version above. It is not a fourth rung of the ladder.
+
 Until the `0.1.0` tag is cut, `runtime/vibe` reports `0.1.0-dev`.
 `scripts/build_release_assets.sh` requires `VIBE_VERSION` to equal the tag being
 built, so a release cannot ship carrying `-dev`, and
@@ -83,9 +88,11 @@ changes; it is complete only when those changes are reviewed and merged. Keep
 the public contract and the book current as each release decision lands.
 
 Internal compiler optimization is tracked separately by
-[#2833](https://github.com/mizchi/vibe-lang/issues/2833). The 128 MiB per-unit
-compiler, per-module production prelude, complete TypeEnv nodes, and broader
-body relocation are measured backlog, not implicit prerequisites for 0.1.0.
+[#2833](https://github.com/mizchi/vibe-lang/issues/2833), under the
+[Backlog (unscheduled) milestone](https://github.com/mizchi/vibe-lang/milestone/4).
+The 128 MiB per-unit compiler, per-module production prelude, complete TypeEnv
+nodes, and broader body relocation are measured backlog, not implicit
+prerequisites for 0.1.0.
 Preserve the existing cold/warm selfhost metrics and choose additional CI
 observation according to its cost; do not require a new expensive benchmark
 lane merely to complete this inventory.
@@ -93,8 +100,9 @@ lane merely to complete this inventory.
 ### What 0.2.0 holds
 
 The [0.2.0 milestone](https://github.com/mizchi/vibe-lang/milestone/3) holds all
-remaining async work: #1537, #2064, #2065, #2066, #2221, #2500 and #2832.
-Existing async APIs remain unstable in 0.1.0.
+remaining async work: #1537, #2064, #2065, #2066, #2221, #2500 and #2832, plus
+the async half of the standard-effect metadata migration (#1963). Existing async
+APIs remain unstable in 0.1.0.
 
 1. **Shared-nothing structured concurrency** — `Task` bound to a generative
    nursery, typed channels, `Send`, cooperative cancellation as the public
