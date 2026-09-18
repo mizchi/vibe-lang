@@ -25,9 +25,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use wasmtime::{
-    bail, format_err, Caller, CallHook, Config, Engine, ExternRef, ExternType, Instance, Linker,
-    Module, ResourceLimiter, Result, Rooted, Store, StoreLimits, StoreLimitsBuilder, Strategy,
-    Trap, AsContext, GuestProfiler, TypedFunc, Val, ValType,
+    bail, format_err, AsContext, CallHook, Caller, Config, Engine, ExternRef, ExternType,
+    GuestProfiler, Instance, Linker, Module, ResourceLimiter, Result, Rooted, Store, StoreLimits,
+    StoreLimitsBuilder, Strategy, Trap, TypedFunc, Val, ValType,
 };
 
 mod commands;
@@ -221,11 +221,12 @@ struct HostState {
     // dbgargs values with their names so a breakpoint prints `args: [name=value]`.
     // Empty => no section => fall back to positional values.
     dbgnames: Arc<std::collections::HashMap<String, Vec<String>>>,
-    // interior-line breakpoints (span-arc step5, multi-file): source-file
-    // basenames indexed by file id, parsed from the `vibe.dbgfiles` custom section
-    // (break builds with dbg_line only). `vibe::dbg_line(file_id, line)` passes the
-    // file id; we index this to recover the basename and match a `--break
-    // <file>:<line>` spec's file against it. Empty => bare-line specs still match.
+    // interior-line breakpoints (span-arc step5, multi-file) and #2199 trap
+    // provenance: the SOURCE PATHS indexed by file id, parsed from the
+    // `vibe.dbgfiles` custom section. `vibe::dbg_line(file_id, line)` passes the
+    // file id; we index this to recover the file, take its basename, and match a
+    // `--break <file>:<line>` spec's file against that. A trap annotation prints
+    // the whole path. Empty => bare-line specs still match.
     dbgfiles: Arc<Vec<String>>,
     // #644: static (wasm func index -> sorted (code offset, file id, line))
     // table parsed from the module's `vibe.linemap` custom section (break
@@ -615,10 +616,10 @@ fn dump_imports(input: &str) -> Result<()> {
 
 // #644: dump the `vibe.linemap` custom section (if any) as
 // `<func_index>\t<code_offset>\t<file>\t<line>` lines, sorted by
-// (func_index, offset). `<file>` is the basename from `vibe.dbgfiles` when
-// present, else the raw file id. Missing/empty section => no output (exit 0,
-// like `vibe diagnostics` on a clean file) rather than an error, since most
-// modules (non-debug-break builds) simply don't carry one.
+// (func_index, offset). `<file>` is the source path from `vibe.dbgfiles` when
+// present, else the raw file id. Missing/empty/stripped section => no output
+// (exit 0), including a `vibe build` artifact whose mapping was dropped with
+// the name section and a compile that recorded zero sites.
 fn dump_linemap(input: &str) -> Result<()> {
     let wasm = fs::read(input).map_err(|e| format_err!("read {input}: {e}"))?;
     let dbgfiles = find_custom_section(&wasm, "vibe.dbgfiles")
@@ -964,9 +965,9 @@ fn run_async_component(path: &str) -> Result<i32> {
                                     &mut access,
                                     async move {
                                         if ms > 0 {
-                                            tokio::time::sleep(
-                                                std::time::Duration::from_millis(ms),
-                                            )
+                                            tokio::time::sleep(std::time::Duration::from_millis(
+                                                ms,
+                                            ))
                                             .await;
                                         }
                                         Ok::<u32, wasmtime::Error>(value)
@@ -1197,7 +1198,9 @@ fn parse_guest_profile_interval(value: Option<&str>) -> Result<Duration> {
         None => Ok(Duration::from_millis(1)),
         Some(value) => {
             let micros = value.parse::<u64>().map_err(|_| {
-                format_err!("VIBE_GUEST_PROFILE_INTERVAL_US must be a positive integer, got `{value}`")
+                format_err!(
+                    "VIBE_GUEST_PROFILE_INTERVAL_US must be a positive integer, got `{value}`"
+                )
             })?;
             if micros == 0 {
                 bail!("VIBE_GUEST_PROFILE_INTERVAL_US must be greater than zero");
@@ -1265,11 +1268,7 @@ impl GuestCpuClock {
     }
 }
 
-fn run_epoch_ticker(
-    engine: Engine,
-    stop: Arc<std::sync::atomic::AtomicBool>,
-    interval: Duration,
-) {
+fn run_epoch_ticker(engine: Engine, stop: Arc<std::sync::atomic::AtomicBool>, interval: Duration) {
     let max_sleep = Duration::from_millis(10);
     let mut deadline = Instant::now() + interval;
     while !stop.load(std::sync::atomic::Ordering::Relaxed) {
@@ -1598,8 +1597,8 @@ fn run(args: Vec<String>) -> Result<i32> {
     // profile. The execution result is interpreted only after the file closes.
     if let Some(path) = guest_profile_path {
         let profiler = store.data_mut().guest_profiler.take().unwrap();
-        let output = fs::File::create(&path)
-            .map_err(|e| format_err!("create guest profile {path}: {e}"))?;
+        let output =
+            fs::File::create(&path).map_err(|e| format_err!("create guest profile {path}: {e}"))?;
         let mut output = io::BufWriter::new(output);
         profiler
             .finish(&mut output)
@@ -1714,66 +1713,72 @@ fn run(args: Vec<String>) -> Result<i32> {
             // a Wasm exception) should read as a tool error, not a runner crash —
             // show only the message. Set VIBE_RUNNER_BACKTRACE=1 (or RUST_BACKTRACE)
             // for the full anyhow backtrace when debugging the runner itself.
-            if std::env::var_os("VIBE_RUNNER_BACKTRACE").is_some()
-                || std::env::var_os("RUST_BACKTRACE").is_some()
-            {
+            // Empty `VIBE_RUNNER_BACKTRACE=` is still "set" for var_os, and
+            // `test_vibe_linemap.sh` uses that spelling to mean OFF. Treat
+            // empty / "0" as unset so a plain `vibe run` still gets path:line.
+            let runner_bt = match std::env::var_os("VIBE_RUNNER_BACKTRACE") {
+                Some(v) => !v.is_empty() && v != "0",
+                None => false,
+            };
+            let rust_bt = match std::env::var_os("RUST_BACKTRACE") {
+                Some(v) => !v.is_empty() && v != "0",
+                None => false,
+            };
+            if runner_bt || rust_bt {
                 eprintln!("viberun: {e:?}");
             } else {
                 eprintln!("viberun: {e}");
-                // #2825: the not-granted stub's refusal has to REACH the user.
-                // wasmtime wraps a host-function error as "error while
-                // executing at wasm backtrace: ...", and the branch above is
-                // the only one that prints the chain -- so which capability
-                // was withheld was visible only to someone who already knew to
-                // set a debug variable. Measured: CI, with no RUST_BACKTRACE,
-                // showed the wasm backtrace alone, while a dev shell that had
-                // it set showed `Caused by: vibe capability withheld:
-                // fs_read_file` and the gate passed for that reason and no
-                // other (#2252: a test must not inherit the environment that
-                // decides its answer). Narrow on purpose: every other guest
-                // trap keeps rendering exactly as before.
-                if let Some(refusal) = withheld_capability_refusal(&e) {
-                    eprintln!("viberun: {refusal}");
-                }
-                // #644: a debug-break build (non-empty `linemap`) that traps
-                // mid-run -- not via an explicit `--break` pause -- still
-                // deserves a precise per-frame source line, not just the bare
-                // function name wasmtime's default Display already shows via
-                // the name section. A genuine wasm trap/uncaught exception
-                // carries a WasmBacktrace in the same error chain (verified
-                // against wasmtime 45); resolve each frame's
-                // (func_index, func_offset) through the same linemap
-                // vibe::dbg_break/dbg_line already rely on.
-                //
-                // Deliberately labelled "frame:", NOT "  at " -- runtime/vibe's
-                // stderr annotator (annotate_run_stream) pattern-matches any
-                // "  at <name>" line and appends a SECOND, declaration-line
-                // annotation from the `.funcmap` sidecar. Since ALL of this
-                // runner's stderr is piped through that annotator (see the
-                // `run` case's FIFO), reusing "  at " here would double-
-                // annotate ("helper (prog.vibex:1) (prog.vibex:1)", the two
-                // numbers disagreeing whenever the trap isn't on helper's
-                // first line). Best-effort: silent when the module carries no
-                // linemap (the overwhelmingly common case) or nothing resolves.
-                if !store.data().linemap.is_empty() {
-                    if let Some(bt) = e.downcast_ref::<wasmtime::WasmBacktrace>() {
-                        let dbgfiles = Arc::clone(&store.data().dbgfiles);
-                        let linemap = Arc::clone(&store.data().linemap);
-                        for frame in bt.frames() {
-                            let name = frame.func_name().unwrap_or("<unknown>");
-                            match frame
-                                .func_offset()
-                                .and_then(|off| resolve_linemap(&linemap, frame.func_index(), off as u32))
-                            {
-                                Some((file_id, line)) => {
-                                    let file = dbgfiles
-                                        .get(file_id as usize)
-                                        .map(|s| s.as_str())
-                                        .unwrap_or("?");
-                                    eprintln!("  frame: {name} ({file}:{line})");
-                                }
-                                None => eprintln!("  frame: {name}"),
+            }
+            // #2825: the not-granted stub's refusal has to REACH the user.
+            // wasmtime wraps a host-function error as "error while
+            // executing at wasm backtrace: ...", and the branch above is
+            // the only one that prints the chain -- so which capability
+            // was withheld was visible only to someone who already knew to
+            // set a debug variable. Measured: CI, with no RUST_BACKTRACE,
+            // showed the wasm backtrace alone, while a dev shell that had
+            // it set showed `Caused by: vibe capability withheld:
+            // fs_read_file` and the gate passed for that reason and no
+            // other (#2252: a test must not inherit the environment that
+            // decides its answer). Narrow on purpose: every other guest
+            // trap keeps rendering exactly as before.
+            if let Some(refusal) = withheld_capability_refusal(&e) {
+                eprintln!("viberun: {refusal}");
+            }
+            // #644 / #2199: a module with a non-empty `vibe.linemap`
+            // (production trap provenance, and debug-break) that traps
+            // mid-run -- not via an explicit `--break` pause -- still
+            // deserves a precise per-frame source line, not just the bare
+            // function name wasmtime's default Display already shows via
+            // the name section. Independent of VIBE_RUNNER_BACKTRACE: a
+            // test that unsets the debug dump still wants path:line.
+            //
+            // Deliberately labelled "frame:", NOT "  at " -- runtime/vibe's
+            // stderr annotator (annotate_run_stream) pattern-matches any
+            // "  at <name>" line and appends a SECOND, declaration-line
+            // annotation from the `.funcmap` sidecar. Since ALL of this
+            // runner's stderr is piped through that annotator (see the
+            // `run` case's FIFO), reusing "  at " here would double-
+            // annotate ("helper (prog.vibex:1) (prog.vibex:1)", the two
+            // numbers disagreeing whenever the trap isn't on helper's
+            // first line). Best-effort: silent when the module carries no
+            // linemap or nothing resolves.
+            if !store.data().linemap.is_empty() {
+                if let Some(bt) = e.downcast_ref::<wasmtime::WasmBacktrace>() {
+                    let dbgfiles = Arc::clone(&store.data().dbgfiles);
+                    let linemap = Arc::clone(&store.data().linemap);
+                    for frame in bt.frames() {
+                        let name = frame.func_name().unwrap_or("<unknown>");
+                        match frame.func_offset().and_then(|off| {
+                            resolve_linemap(&linemap, frame.func_index(), off as u32)
+                        }) {
+                            Some((file_id, line)) => {
+                                let file = dbgfiles
+                                    .get(file_id as usize)
+                                    .map(|s| s.as_str())
+                                    .unwrap_or("?");
+                                eprintln!("  frame: {name} ({file}:{line})");
                             }
+                            None => eprintln!("  frame: {name}"),
                         }
                     }
                 }
@@ -1912,9 +1917,12 @@ fn profile_filename(label: &str) -> String {
     // Sanitizing is not injective (`a/b` and `a?b` both become `a_b`). Add a
     // deterministic FNV-1a suffix so distinct legal labels cannot overwrite
     // each other's profile within one benchmark invocation.
-    let hash = label.as_bytes().iter().fold(0xcbf29ce484222325u64, |hash, byte| {
-        (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
-    });
+    let hash = label
+        .as_bytes()
+        .iter()
+        .fold(0xcbf29ce484222325u64, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+        });
     format!("{sanitized}-{hash:016x}.json")
 }
 
@@ -1975,7 +1983,10 @@ fn bench(args: Vec<String>) -> Result<i32> {
     // after it 8-10×. A fresh instance gives every block the same pristine
     // heap; per-block warmup below still pays lazy module init before timing.
     let make_instance = |linker: &Linker<HostState>| -> Result<(Store<HostState>, Instance)> {
-        let mut state = HostState::new(vec!["viberun".to_string()], MemLimiter::new(store_mem_limits()));
+        let mut state = HostState::new(
+            vec!["viberun".to_string()],
+            MemLimiter::new(store_mem_limits()),
+        );
         state.capture_stdout = true; // suppress per-iteration program output
         let mut store = Store::new(&engine, state);
         store.limiter(|s| &mut s.mem);
@@ -2149,11 +2160,11 @@ fn bench(args: Vec<String>) -> Result<i32> {
                     Some(ExitTrap(0)) => Ok(()),
                     Some(ExitTrap(code)) => bail!("bench `{label}`: exit({code}) during {phase}"),
                     None => match withheld_capability_refusal(&e) {
-                                Some(refusal) => bail!(
-                                    "bench `{label}`: trap during {phase}: {e} ({refusal})"
-                                ),
-                                None => bail!("bench `{label}`: trap during {phase}: {e}"),
-                            },
+                        Some(refusal) => {
+                            bail!("bench `{label}`: trap during {phase}: {e} ({refusal})")
+                        }
+                        None => bail!("bench `{label}`: trap during {phase}: {e}"),
+                    },
                 },
             }
         },
@@ -2631,8 +2642,12 @@ fn vibe_alloc_packed_bytes(caller: &mut Caller<'_, HostState>, data: &[u8]) -> R
         .map_err(|e| format_err!("vibe host import: bytes cap write @{base}: {e}"))?;
     mem.write(&mut *caller, base + 4, &(len as u32).to_le_bytes())
         .map_err(|e| format_err!("vibe host import: bytes len write: {e}"))?;
-    mem.write(&mut *caller, base + 8, &((aligned + 12) as u32).to_le_bytes())
-        .map_err(|e| format_err!("vibe host import: bytes ptr write: {e}"))?;
+    mem.write(
+        &mut *caller,
+        base + 8,
+        &((aligned + 12) as u32).to_le_bytes(),
+    )
+    .map_err(|e| format_err!("vibe host import: bytes ptr write: {e}"))?;
     mem.write(&mut *caller, base + 12, data)
         .map_err(|e| format_err!("vibe host import: bytes data write: {e}"))?;
     let set = if is_i64 {
@@ -3190,7 +3205,8 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
         |mut caller: Caller<'_, HostState>, src: i64, dst: i64| -> Result<()> {
             let src = vibe_read_packed_str(&mut caller, src)?;
             let dst = vibe_read_packed_str(&mut caller, dst)?;
-            fs::copy(&src, &dst).map_err(|e| format_err!("vibe fs_copy '{src}' -> '{dst}': {e}"))?;
+            fs::copy(&src, &dst)
+                .map_err(|e| format_err!("vibe fs_copy '{src}' -> '{dst}': {e}"))?;
             Ok(())
         },
     )?;
@@ -3315,20 +3331,16 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
             Ok(())
         },
     )?;
-    linker.func_wrap(
-        "vibe",
-        "stdout_write_char",
-        |code: i64| -> Result<()> {
-            let cu = (code as u32 & 0xffff) as u16;
-            let s = String::from_utf16_lossy(&[cu]);
-            let stdout = io::stdout();
-            let mut h = stdout.lock();
-            h.write_all(s.as_bytes())
-                .map_err(|e| format_err!("vibe stdout_write_char: {e}"))?;
-            h.flush().ok();
-            Ok(())
-        },
-    )?;
+    linker.func_wrap("vibe", "stdout_write_char", |code: i64| -> Result<()> {
+        let cu = (code as u32 & 0xffff) as u16;
+        let s = String::from_utf16_lossy(&[cu]);
+        let stdout = io::stdout();
+        let mut h = stdout.lock();
+        h.write_all(s.as_bytes())
+            .map_err(|e| format_err!("vibe stdout_write_char: {e}"))?;
+        h.flush().ok();
+        Ok(())
+    })?;
     linker.func_wrap(
         "vibe",
         "stderr_write_stream",
@@ -3342,20 +3354,16 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
             Ok(())
         },
     )?;
-    linker.func_wrap(
-        "vibe",
-        "stderr_write_char",
-        |code: i64| -> Result<()> {
-            let cu = (code as u32 & 0xffff) as u16;
-            let s = String::from_utf16_lossy(&[cu]);
-            let stderr = io::stderr();
-            let mut h = stderr.lock();
-            h.write_all(s.as_bytes())
-                .map_err(|e| format_err!("vibe stderr_write_char: {e}"))?;
-            h.flush().ok();
-            Ok(())
-        },
-    )?;
+    linker.func_wrap("vibe", "stderr_write_char", |code: i64| -> Result<()> {
+        let cu = (code as u32 & 0xffff) as u16;
+        let s = String::from_utf16_lossy(&[cu]);
+        let stderr = io::stderr();
+        let mut h = stderr.lock();
+        h.write_all(s.as_bytes())
+            .map_err(|e| format_err!("vibe stderr_write_char: {e}"))?;
+        h.flush().ok();
+        Ok(())
+    })?;
     // #lsp-selfhost: `Stdin` (lib/@vibe/io) -- same pre-existing-JS-only gap
     // as Stdout/Stderr above (#901), just never hit until a program that
     // actually READS stdin (rather than only writing it) was run under this
@@ -3721,7 +3729,12 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
     linker.func_wrap(
         "vibe",
         "http_request",
-        |mut caller: Caller<'_, HostState>, method: i64, url: i64, headers: i64, body: i64| -> Result<i64> {
+        |mut caller: Caller<'_, HostState>,
+         method: i64,
+         url: i64,
+         headers: i64,
+         body: i64|
+         -> Result<i64> {
             let method = vibe_read_packed_str(&mut caller, method)?;
             let url = vibe_read_packed_str(&mut caller, url)?;
             let headers = vibe_read_packed_str(&mut caller, headers)?;
@@ -3761,9 +3774,9 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
                     Some((name.to_lowercase(), value))
                 })
                 .collect();
-            let resp_body = response
-                .into_string()
-                .map_err(|e| format_err!("vibe http_request '{method} {url}': reading body: {e}"))?;
+            let resp_body = response.into_string().map_err(|e| {
+                format_err!("vibe http_request '{method} {url}': reading body: {e}")
+            })?;
             let host_state = caller.data_mut();
             let handle = host_state.next_http_handle;
             host_state.next_http_handle += 1;
@@ -4161,12 +4174,15 @@ fn vibe_dbg_line(mut caller: Caller<'_, HostState>, file_id: i32, line: i32) -> 
         return Ok(());
     }
     let cur: u32 = if line < 0 { return Ok(()) } else { line as u32 };
-    // Resolve this statement's source file basename from the dbgfiles table; a
-    // `--break <file>:<line>` spec matches only when its file equals that basename
-    // (bare-line specs match any file).
+    // Resolve this statement's source file from the dbgfiles table, then take
+    // its BASENAME: the table carries the path the compiler opened (#2199, so a
+    // trap prints something editable), while `parse_line_break_spec` reduces a
+    // `--break <file>:<line>` spec to a basename. Both sides of the comparison
+    // are basenames, so a spec matches exactly the files it matched before the
+    // table held paths (bare-line specs match any file).
     let dbgfiles = Arc::clone(&caller.data().dbgfiles);
     let cur_file: Option<&str> = if file_id >= 0 {
-        dbgfiles.get(file_id as usize).map(|s| s.as_str())
+        dbgfiles.get(file_id as usize).map(|s| path_basename(s.as_str()))
     } else {
         None
     };
@@ -4814,6 +4830,21 @@ fn read_u32_le(bytes: &[u8], off: usize) -> Option<u32> {
     Some(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
 }
 
+/// The last path component, which is what a `vibe.dbgfiles` entry and a
+/// `--break <file>:<line>` spec are compared as. The table itself carries the
+/// compiler's own path so a trap can print a location the reader can open;
+/// breakpoint matching predates that and stays basename-based.
+///
+/// `Path::file_name`, the same call `parse_line_break_spec` reduces the spec
+/// with -- one rule, so the two sides cannot disagree about what a component
+/// is.
+fn path_basename(p: &str) -> &str {
+    std::path::Path::new(p)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(p)
+}
+
 // span-arc step5: parse a single VIBE_BREAK entry as a LINE breakpoint spec.
 // Accepts `<file>:<line>` (e.g. `prog.vibe:5`) -> (Some("prog.vibe"), 5), or a
 // bare all-digit `<line>` (e.g. `5`) -> (None, 5). Returns None when the spec is
@@ -4867,8 +4898,9 @@ fn parse_funcmap(text: &str) -> std::collections::HashMap<String, u32> {
 // remaining fields the parameter names (in declaration order). Empty/garbled
 // records are skipped. Robust to trailing newline and missing-param functions.
 // Interior-line breakpoints (span-arc step5): parse the `vibe.dbgfiles` section
-// (source-file basenames, one per line in file-id order) into a Vec indexed by
-// file id. `vibe::dbg_line(file_id, line)` uses the id to look up the basename.
+// (source paths, one per line in file-id order) into a Vec indexed by file id.
+// `vibe::dbg_line(file_id, line)` uses the id to look up the file; breakpoint
+// matching then compares basenames (`path_basename`), a trap prints the path.
 fn parse_dbgfiles(section: &[u8]) -> Vec<String> {
     String::from_utf8_lossy(section)
         .split('\n')
@@ -4877,25 +4909,63 @@ fn parse_dbgfiles(section: &[u8]) -> Vec<String> {
         .collect()
 }
 
-// #644: parse the `vibe.linemap` custom section into a (wasm func index ->
-// sorted (code offset, file id, line) list) map. The section is a flat run of
-// 16-byte little-endian records (func_index, offset, file_id, line); a
-// trailing partial record (a corrupt/truncated section) is ignored rather
-// than panicking. Entries are grouped by func_index and sorted by offset so
-// `resolve_linemap` below can binary-search each function's list. Absent
-// section / non-debug-break build => empty map => resolution always misses,
-// callers fall back to their existing (coarser) behavior.
+// #644 / #2199: parse the `vibe.linemap` custom section into a (wasm func
+// index -> sorted (code offset, file id, line) list) map. Compact encoding:
+// the 4-byte marker `VLM1`, then a run of four unsigned LEBs per unique
+// (func, offset) —
+// (func_delta, offset_delta, file_id, line). func_delta is relative to the
+// previous func (absolute for the first record); when it is zero, offset
+// is relative to the previous offset, otherwise absolute. A trailing
+// partial record is ignored rather than panicking. Entries are grouped by
+// func_index and sorted by offset so `resolve_linemap` can binary-search.
+// Absent / stripped section => empty map => no fabricated location.
+//
+// The marker is REQUIRED. #644's table under this same name held 16-byte
+// little-endian records, and those bytes decode as LEB quadruples without
+// erroring — a module from any compiler older than #2199 (the committed
+// seed among them) would otherwise annotate traps with fabricated
+// functions, offsets, files and lines. An unmarked table is one this
+// reader cannot read, and reads as empty.
+const LINEMAP_MAGIC: &[u8; 4] = b"VLM1";
+
 fn parse_linemap(section: &[u8]) -> std::collections::HashMap<u32, Vec<(u32, u32, u32)>> {
     let mut by_func: std::collections::HashMap<u32, Vec<(u32, u32, u32)>> =
         std::collections::HashMap::new();
-    let mut pos = 0usize;
-    while pos + 16 <= section.len() {
-        let func_idx = read_u32_le(section, pos).unwrap_or(0);
-        let offset = read_u32_le(section, pos + 4).unwrap_or(0);
-        let file_id = read_u32_le(section, pos + 8).unwrap_or(0);
-        let line = read_u32_le(section, pos + 12).unwrap_or(0);
-        by_func.entry(func_idx).or_default().push((offset, file_id, line));
-        pos += 16;
+    if section.len() < LINEMAP_MAGIC.len() || &section[..LINEMAP_MAGIC.len()] != LINEMAP_MAGIC {
+        return by_func;
+    }
+    let mut pos = LINEMAP_MAGIC.len();
+    let mut func: u32 = 0;
+    let mut offset: u32 = 0;
+    let mut have = false;
+    while pos < section.len() {
+        let fd = match read_leb_u32(section, &mut pos) {
+            Some(v) => v,
+            None => break,
+        };
+        let od = match read_leb_u32(section, &mut pos) {
+            Some(v) => v,
+            None => break,
+        };
+        let file_id = match read_leb_u32(section, &mut pos) {
+            Some(v) => v,
+            None => break,
+        };
+        let line = match read_leb_u32(section, &mut pos) {
+            Some(v) => v,
+            None => break,
+        };
+        if have && fd == 0 {
+            offset = offset.saturating_add(od);
+        } else {
+            func = if have { func.saturating_add(fd) } else { fd };
+            offset = od;
+            have = true;
+        }
+        by_func
+            .entry(func)
+            .or_default()
+            .push((offset, file_id, line));
     }
     for entries in by_func.values_mut() {
         entries.sort_by_key(|e| e.0);
@@ -5050,16 +5120,29 @@ mod tests {
     #[test]
     fn profile_filenames_fit_common_component_limits() {
         let filename = profile_filename(&"a".repeat(1_000));
-        assert!(filename.len() <= 255, "filename is {} bytes", filename.len());
+        assert!(
+            filename.len() <= 255,
+            "filename is {} bytes",
+            filename.len()
+        );
         assert!(filename.ends_with(".json"));
     }
 
     #[test]
     fn guest_profile_interval_rejects_invalid_explicit_values() {
-        assert_eq!(parse_guest_profile_interval(None).unwrap(), Duration::from_millis(1));
-        assert_eq!(parse_guest_profile_interval(Some("250")).unwrap(), Duration::from_micros(250));
+        assert_eq!(
+            parse_guest_profile_interval(None).unwrap(),
+            Duration::from_millis(1)
+        );
+        assert_eq!(
+            parse_guest_profile_interval(Some("250")).unwrap(),
+            Duration::from_micros(250)
+        );
         for invalid in ["0", "-1", "100O", ""] {
-            assert!(parse_guest_profile_interval(Some(invalid)).is_err(), "accepted {invalid:?}");
+            assert!(
+                parse_guest_profile_interval(Some(invalid)).is_err(),
+                "accepted {invalid:?}"
+            );
         }
     }
 

@@ -112,21 +112,56 @@ import @vibe/compiler/contract {
 /// observed even though no file that was read changed (Codex review on
 /// #2520). One entry per path, replaced on a token or resolution change, so
 /// a resident compiler holds one answer per source.
-let exported_type_params_memo: MutMap[String, (Array[(String, Int)], Array[String], Array[(String, Array[String])], Array[(String, String, String)])] = MutMap::new_string()
+/// #2521: the entries live in a CELL so the whole memo can be replaced. There
+/// is no `MutMap::clear`, and the located-parse memo next to it
+/// (`header_cache.vibe`) already drops itself this way.
+let exported_type_params_memo_cell: Array[MutMap[String, (Array[(String, Int)], Array[String], Array[(String, Array[String])], Array[(String, String, String)])]] = [
+  MutMap::new_string()
+]
+
+/// #2521: the ROWS the memo currently retains -- summed over its entries, the
+/// read rows plus the resolution rows each one stores. Kept exact rather than
+/// monotonic: `MutMap::set` REPLACES an entry when its path is asked again
+/// under a changed token, resolution or `#cfg` set, and counting the replaced
+/// entry's rows forever would evict a daemon that is merely recompiling one
+/// edited file over and over.
+let exported_type_params_memo_rows: Array[Int] = [0]
+
+/// #2521: the bound, in rows.
+///
+/// ROWS and not entries, because rows are where the quadratic term lives.
+/// Each entry stores the complete suffix of the files read and the path
+/// resolutions made BENEATH it -- a hit has to re-stat every file and re-run
+/// every resolution its answer depended on, and a nested hit replays its rows
+/// into the outer entry -- so a re-export chain of N sources is O(N^2) rows
+/// across N entries. A per-entry count cannot tell a thousand one-row entries
+/// from one thousand-row entry, and it is the second that this issue is about.
+///
+/// Dropping is always SAFE, never merely cheap: the memo is a pure cache of
+/// `exported_type_params_uncached_fs`, so a miss re-reads and re-parses and
+/// costs one parse pass per contract path afterwards. That is the same trade
+/// #2386 measured in the other direction.
+///
+/// A cell, not a literal, so the regression test can lower it and observe an
+/// eviction. A bound no test can reach is a bound nobody has seen work
+/// (CLAUDE.md: a gate is worth nothing until it is shown able to fail).
+let exported_type_params_memo_row_bound: Array[Int] = [65536]
 
 let exported_type_params_read_log: Array[(String, Int)] = []
 
 /// The ambient `#cfg` set each recorded answer was parsed under: the parsers
 /// keep or drop `#cfg`-gated declarations by that set, so an answer is only
 /// fresh under the set it was made with (Codex review on #2520).
-let exported_type_params_memo_cfg: MutMap[String, String] = MutMap::new_string()
+let exported_type_params_memo_cfg_cell: Array[MutMap[String, String]] = [
+  MutMap::new_string()
+]
 
 let exported_type_params_resolve_log: Array[(String, String, String)] = []
 
 let exported_type_params_cycle_hits: Array[Int] = [0]
 
 fn exported_type_params_entry_cfg_matches(path: String, cfg: String) -> Bool {
-  match MutMap::get(exported_type_params_memo_cfg, path) {
+  match MutMap::get(Array::get(exported_type_params_memo_cfg_cell, 0), path) {
     Some(recorded) => recorded == cfg,
     None => false
   }
@@ -166,6 +201,53 @@ fn exported_type_params_entry_fresh(reads: Array[(String, Int)], resolves: Array
   same
 }
 
+/// #2521: stop counting the rows of the entry about to be REPLACED.
+///
+/// No effectful call inside the match arm: `exported_type_params_entry_fresh`
+/// is a plain function for exactly that reason (the #708 trap shape), and this
+/// one only reads lengths.
+fn exported_type_params_memo_release(path: String) -> Unit {
+  match MutMap::get(Array::get(exported_type_params_memo_cell, 0), path) {
+    Some(entry) => {
+      let (reads, _, _, resolves) = entry
+      Array::set(exported_type_params_memo_rows, 0, Array::get(exported_type_params_memo_rows, 0) - (Array::length(reads) + Array::length(resolves)))
+    },
+    None => ()
+  }
+}
+
+/// #2521: make room for `rows` more, dropping the whole memo past the bound.
+///
+/// BOTH maps go together. A `#cfg` row that outlived its answer would make
+/// `exported_type_params_entry_cfg_matches` report a match for an entry that
+/// is no longer there -- harmless today, because the caller reads the entry
+/// first and a miss re-parses either way, but it is the kind of split state
+/// that stops being harmless the moment someone reorders those two reads.
+fn exported_type_params_memo_reserve(rows: Int) -> Unit {
+  if Array::get(exported_type_params_memo_rows, 0) + rows > Array::get(exported_type_params_memo_row_bound, 0) {
+    Array::set(exported_type_params_memo_cell, 0, MutMap::new_string())
+    Array::set(exported_type_params_memo_cfg_cell, 0, MutMap::new_string())
+    Array::set(exported_type_params_memo_rows, 0, 0)
+  } else {
+    ()
+  }
+  Array::set(exported_type_params_memo_rows, 0, Array::get(exported_type_params_memo_rows, 0) + rows)
+}
+
+/// #2521: how many rows the memo retains right now. Instrumentation for the
+/// regression test and for measuring a real compile against the bound; it
+/// reports state and changes none.
+export fn exported_type_params_memo_rows_retained() -> Int {
+  Array::get(exported_type_params_memo_rows, 0)
+}
+
+/// #2521: lower (or restore) the row bound. The regression test uses it to
+/// reach an eviction from a handful of files instead of the tens of thousands
+/// of rows the shipped bound would need.
+export fn set_exported_type_params_memo_row_bound(rows: Int) -> Unit {
+  Array::set(exported_type_params_memo_row_bound, 0, rows)
+}
+
 fn exported_type_params_fs(path: String, dep_paths: Array[String], dep_fingerprints: Array[String], visiting: Array[String]) -> Array[(String, Array[String])] with Exception + Fs {
   if contains_path(visiting, path) {
     Array::set(exported_type_params_cycle_hits, 0, Array::get(exported_type_params_cycle_hits, 0) + 1)
@@ -179,7 +261,7 @@ fn exported_type_params_fs(path: String, dep_paths: Array[String], dep_fingerpri
   } else {
     ()
   }
-  let fresh = match MutMap::get(exported_type_params_memo, path) {
+  let fresh = match MutMap::get(Array::get(exported_type_params_memo_cell, 0), path) {
     Some(entry) => {
       let (reads, _, _, resolves) = entry
       if exported_type_params_entry_cfg_matches(path, cfg_ambient_flags_csv()) && exported_type_params_entry_fresh(reads, resolves) {
@@ -218,8 +300,10 @@ fn exported_type_params_fs(path: String, dep_paths: Array[String], dep_fingerpri
       let fps = Array::slice(dep_fingerprints, dep_mark, Array::length(dep_fingerprints))
       let resolves = Array::slice(exported_type_params_resolve_log, resolve_mark, Array::length(exported_type_params_resolve_log))
       if Array::get(exported_type_params_cycle_hits, 0) == hits_before && Array::length(reads) == Array::length(fps) {
-        MutMap::set(exported_type_params_memo, path, (reads, fps, out, resolves))
-        MutMap::set(exported_type_params_memo_cfg, path, cfg_ambient_flags_csv())
+        exported_type_params_memo_release(path)
+        exported_type_params_memo_reserve(Array::length(reads) + Array::length(resolves))
+        MutMap::set(Array::get(exported_type_params_memo_cell, 0), path, (reads, fps, out, resolves))
+        MutMap::set(Array::get(exported_type_params_memo_cfg_cell, 0), path, cfg_ambient_flags_csv())
       } else {
         ()
       }

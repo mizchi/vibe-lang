@@ -272,6 +272,15 @@ export struct CodegenBodyCache {
   blind_offsets: Array[Int];
   blind_kinds: Array[Int];
   blind_syms: Array[Int];
+  /// #2199: production `vibe.linemap` rows this function recorded. Replay
+  /// skips `compile_expr`, so without these a warm/verify compile emits a
+  /// shorter (or empty) linemap than a fresh one and `verify` traps on the
+  /// byte mismatch. Offsets are body-relative, same as `LineMapState` at
+  /// record time; the consuming compile adds locals-header length.
+  lm_owner: Array[Int];
+  lm_offsets: Array[Int];
+  lm_file_ids: Array[Int];
+  lm_lines: Array[Int];
   /// #2721: the ORIGINAL merged-statement index, before the prelude or DCE,
   /// parallel to fn_indices (-1 for an unknown or ambiguous origin). Replay ignores
   /// it; the cross-compile persistence layer uses it to keep only the
@@ -382,7 +391,15 @@ export struct CodegenBodyCache {
   /// above do not hold, so widening can never leave a build with less than it
   /// had. Empty means "no narrowing available", which is what an in-process
   /// cache and a hand-built one both are.
-  consumer_src_limit: Array[Int]
+  consumer_src_limit: Array[Int];
+  /// #2199 follow-up: does anyone READ what this cache collects? One element,
+  /// 1 to record and 0 to decline. The ordinary `vibe run` / `vibe test`
+  /// compile passes a fresh cache as its out-parameter and drops it on the
+  /// floor, so every row `codegen_body_cache_record` fills there is allocated
+  /// and never read -- and the per-function `vibe.linemap` rows made that the
+  /// largest of them (measured: 4.6 MiB of the selfcompile KPI's bump heap,
+  /// which never frees). `codegen_body_cache_discard` is that cache.
+  collect: Array[Int]
 }
 
 /// An empty cache. Threading one of these in means "compile everything, cache
@@ -410,6 +427,10 @@ export fn codegen_body_cache_new() -> CodegenBodyCache {
     blind_offsets: array_empty(),
     blind_kinds: array_empty(),
     blind_syms: array_empty(),
+    lm_owner: array_empty(),
+    lm_offsets: array_empty(),
+    lm_file_ids: array_empty(),
+    lm_lines: array_empty(),
     fn_src_stmts: array_empty(),
     guard_meta: array_empty(),
     guard_synth_names: array_empty(),
@@ -420,8 +441,19 @@ export fn codegen_body_cache_new() -> CodegenBodyCache {
     guard_unmangled_names: array_empty(),
     guard_layout: array_empty(),
     guard_typed_lowering: array_empty(),
-    consumer_src_limit: array_empty()
+    consumer_src_limit: array_empty(),
+    collect: [1]
   }
+}
+
+/// An out-cache for a compile that will not read it: `record` is a no-op, so
+/// the compile allocates none of the per-function rows. Everything else --
+/// the guards a caller pushes directly, replay from an IN cache -- is
+/// unchanged, and reading this cache afterwards is what the name refuses.
+export fn codegen_body_cache_discard() -> CodegenBodyCache {
+  let c = codegen_body_cache_new()
+  Array::set(c.collect, 0, 0)
+  c
 }
 
 /// Position of `fn_index` in the cache, or -1. Linear scan.
@@ -604,8 +636,15 @@ export fn codegen_body_cache_find_at(slot_index: Array[Int], fn_index: Int) -> I
 /// Reads the LAST entry of `bodies` / `meta_i32` / `meta_i64` -- the loop has
 /// just pushed them -- and the lambda table slice `[lam_lo, lam_hi)`, which is
 /// exactly the range the plan assigned this function.
-export fn codegen_body_cache_record(cache: CodegenBodyCache, fn_index: Int, fn_name: String, fn_file: Int, src_stmt: Int, bodies: Array[Bytes], meta_i32: Array[Int], meta_i64: Array[Int], meta_v128: Array[Int], lt: LambdaTable, lam_lo: Int, lam_hi: Int, slots: Array[Int], slot_lo: Int, slot_hi: Int, blind_bodies: Array[Int], blind_offsets: Array[Int], blind_kinds: Array[Int], blind_syms: Array[Int], blind_lo: Int, blind_hi: Int) -> Unit {
-  let n = Array::length(bodies)
+export fn codegen_body_cache_record(cache: CodegenBodyCache, fn_index: Int, fn_name: String, fn_file: Int, src_stmt: Int, bodies: Array[Bytes], meta_i32: Array[Int], meta_i64: Array[Int], meta_v128: Array[Int], lt: LambdaTable, lam_lo: Int, lam_hi: Int, slots: Array[Int], slot_lo: Int, slot_hi: Int, blind_bodies: Array[Int], blind_offsets: Array[Int], blind_kinds: Array[Int], blind_syms: Array[Int], blind_lo: Int, blind_hi: Int, lm: LineMapState, lm_lo: Int) -> Unit {
+  // A cache nobody will read collects nothing: `n == 0` is already the
+  // "nothing to record" exit, so declining lands there (see `collect`).
+  let declined = Array::length(cache.collect) > 0 && Array::get(cache.collect, 0) == 0
+  let n = if declined {
+    0
+  } else {
+    Array::length(bodies)
+  }
   if n == 0 {
     ()
   } else {
@@ -646,6 +685,14 @@ export fn codegen_body_cache_record(cache: CodegenBodyCache, fn_index: Int, fn_n
       Array::push(cache.blind_kinds, Array::get(blind_kinds, bi))
       Array::push(cache.blind_syms, Array::get(blind_syms, bi))
       bi = bi + 1
+    }
+    let mut lmi = lm_lo
+    while lmi < Array::length(lm.offsets) {
+      Array::push(cache.lm_owner, fn_index)
+      Array::push(cache.lm_offsets, Array::get(lm.offsets, lmi))
+      Array::push(cache.lm_file_ids, Array::get(lm.file_ids, lmi))
+      Array::push(cache.lm_lines, Array::get(lm.lines, lmi))
+      lmi = lmi + 1
     }
   }
 }
@@ -709,6 +756,15 @@ export fn codegen_body_cache_merge(a: CodegenBodyCache, b: CodegenBodyCache) -> 
       Array::push(out.blind_kinds, Array::get(src.blind_kinds, m))
       Array::push(out.blind_syms, Array::get(src.blind_syms, m))
       m = m + 1
+    }
+    let lm_n = Array::length(src.lm_owner)
+    let mut lmi = 0
+    while lmi < lm_n {
+      Array::push(out.lm_owner, Array::get(src.lm_owner, lmi))
+      Array::push(out.lm_offsets, Array::get(src.lm_offsets, lmi))
+      Array::push(out.lm_file_ids, Array::get(src.lm_file_ids, lmi))
+      Array::push(out.lm_lines, Array::get(src.lm_lines, lmi))
+      lmi = lmi + 1
     }
     si = si + 1
   }
@@ -980,7 +1036,7 @@ export fn bcc_layout_fp_string_matrix(out: Array[Int], xs: Array[Array[String]])
 /// planned: `lt.bodies` is `lam_lo` long when this runs. That is the same
 /// invariant the compile path relies on, so a replayed function and a compiled
 /// one leave the table identical.
-export fn codegen_body_cache_replay(cache: CodegenBodyCache, at: Int, bodies: Array[Bytes], meta_i32: Array[Int], meta_i64: Array[Int], meta_v128: Array[Int], lt: LambdaTable, slots: Array[Int], blind_bodies: Array[Int], blind_offsets: Array[Int], blind_kinds: Array[Int], blind_syms: Array[Int]) -> Unit {
+export fn codegen_body_cache_replay(cache: CodegenBodyCache, at: Int, bodies: Array[Bytes], meta_i32: Array[Int], meta_i64: Array[Int], meta_v128: Array[Int], lt: LambdaTable, slots: Array[Int], blind_bodies: Array[Int], blind_offsets: Array[Int], blind_kinds: Array[Int], blind_syms: Array[Int], lm: LineMapState, replay_bi: Int) -> Unit {
   let owner = Array::get(cache.fn_indices, at)
   Array::push(bodies, Array::get(cache.fn_bodies, at))
   Array::push(meta_i32, Array::get(cache.fn_meta_i32, at))
@@ -1026,6 +1082,27 @@ export fn codegen_body_cache_replay(cache: CodegenBodyCache, at: Int, bodies: Ar
       ()
     }
     bi = bi + 1
+  }
+  // #2199: a disabled state is the compile declining to place this function's
+  // file (see `lc_dbg_file_placed`), so a replay into it drops the cached rows
+  // for the same reason a fresh compile of it records none -- the two paths
+  // have to agree, or `verify` compares a populated table against an empty one.
+  let ln = if lm.enabled {
+    Array::length(cache.lm_owner)
+  } else {
+    0
+  }
+  let mut lmi = 0
+  while lmi < ln {
+    if Array::get(cache.lm_owner, lmi) == owner {
+      Array::push(lm.funcs, replay_bi)
+      Array::push(lm.offsets, Array::get(cache.lm_offsets, lmi))
+      Array::push(lm.file_ids, Array::get(cache.lm_file_ids, lmi))
+      Array::push(lm.lines, Array::get(cache.lm_lines, lmi))
+    } else {
+      ()
+    }
+    lmi = lmi + 1
   }
 }
 
@@ -1172,6 +1249,19 @@ fn bcc_filter_entries(cache: CodegenBodyCache, keep_entry: Array[Int]) -> Codege
     }
     k = k + 1
   }
+  let mut lmi = 0
+  while lmi < Array::length(cache.lm_owner) {
+    let lowner = Array::get(cache.lm_owner, lmi)
+    if array_contains_int_bcc(keep_fn, lowner) {
+      Array::push(out.lm_owner, lowner)
+      Array::push(out.lm_offsets, Array::get(cache.lm_offsets, lmi))
+      Array::push(out.lm_file_ids, Array::get(cache.lm_file_ids, lmi))
+      Array::push(out.lm_lines, Array::get(cache.lm_lines, lmi))
+    } else {
+      ()
+    }
+    lmi = lmi + 1
+  }
   bcc_copy_guards(cache, out)
   out
 }
@@ -1307,7 +1397,9 @@ export fn codegen_body_cache_to_bytes(cache: CodegenBodyCache) -> Bytes with Exc
   // replay reach past the leading prefix.
   // '4' -> '5': fn_src_stmts now uses pre-prelude coordinates. Reading an
   // old compacted position against a source-prefix boundary is unsound.
-  bytebuf_push(buf, '5')
+  // '5' -> '6': per-function vibe.linemap rows, so a replayed body still
+  // contributes production trap provenance (#2199).
+  bytebuf_push(buf, '6')
   bcc_push_int_array(buf, cache.fn_indices)
   bcc_push_string_array(buf, cache.fn_names)
   bcc_push_int_array(buf, cache.fn_files)
@@ -1330,6 +1422,10 @@ export fn codegen_body_cache_to_bytes(cache: CodegenBodyCache) -> Bytes with Exc
   bcc_push_int_array(buf, cache.blind_offsets)
   bcc_push_int_array(buf, cache.blind_kinds)
   bcc_push_int_array(buf, cache.blind_syms)
+  bcc_push_int_array(buf, cache.lm_owner)
+  bcc_push_int_array(buf, cache.lm_offsets)
+  bcc_push_int_array(buf, cache.lm_file_ids)
+  bcc_push_int_array(buf, cache.lm_lines)
   bcc_push_int_array(buf, cache.guard_meta)
   bcc_push_string_array(buf, cache.guard_synth_names)
   bcc_push_int_array(buf, cache.guard_synth_stmts)
@@ -1526,7 +1622,7 @@ fn bcc_read_string_arrays(b: Bytes, pos: Int, out: Array[Array[String]]) -> Int 
 }
 
 export fn codegen_body_cache_from_bytes(b: Bytes) -> Option[CodegenBodyCache] {
-  if Bytes::length(b) < 4 || Bytes::get(b, 0) != 'V' || Bytes::get(b, 1) != 'B' || Bytes::get(b, 2) != 'C' || Bytes::get(b, 3) != '5' {
+  if Bytes::length(b) < 4 || Bytes::get(b, 0) != 'V' || Bytes::get(b, 1) != 'B' || Bytes::get(b, 2) != 'C' || Bytes::get(b, 3) != '6' {
     None
   } else {
     let out = codegen_body_cache_new()
@@ -1638,6 +1734,26 @@ export fn codegen_body_cache_from_bytes(b: Bytes) -> Option[CodegenBodyCache] {
       ()
     }
     if p >= 0 {
+      p = bcc_read_int_array(b, p, out.lm_owner)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_int_array(b, p, out.lm_offsets)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_int_array(b, p, out.lm_file_ids)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_int_array(b, p, out.lm_lines)
+    } else {
+      ()
+    }
+    if p >= 0 {
       p = bcc_read_int_array(b, p, out.guard_meta)
     } else {
       ()
@@ -1703,7 +1819,7 @@ export fn codegen_body_cache_from_bytes(b: Bytes) -> Option[CodegenBodyCache] {
       }
       fni = fni + 1
     }
-    if p < 0 || fn_index_negative || Array::length(out.fn_names) != fn_n || Array::length(out.fn_files) != fn_n || Array::length(out.fn_src_stmts) != fn_n || Array::length(out.fn_bodies) != fn_n || Array::length(out.fn_meta_i32) != fn_n || Array::length(out.fn_meta_i64) != fn_n || Array::length(out.fn_meta_v128) != fn_n || Array::length(out.lam_indices) != lam_n || Array::length(out.lam_bodies) != lam_n || Array::length(out.lam_param_counts) != lam_n || Array::length(out.lam_captures) != lam_n || Array::length(out.lam_meta_i32) != lam_n || Array::length(out.lam_meta_i64) != lam_n || Array::length(out.slot_owner) != Array::length(out.slot_values) || Array::length(out.blind_body) != Array::length(out.blind_fn) || Array::length(out.blind_offsets) != Array::length(out.blind_fn) || Array::length(out.blind_kinds) != Array::length(out.blind_fn) || Array::length(out.blind_syms) != Array::length(out.blind_fn) || (guard_n != 0 && guard_n != 5) || Array::length(out.guard_synth_names) != Array::length(out.guard_synth_stmts) || Array::length(out.guard_borrow_names) != Array::length(out.guard_borrow_masks) || Array::length(out.guard_layout) % 2 != 0 || Array::length(out.guard_typed_lowering) % 2 != 0 {
+    if p < 0 || fn_index_negative || Array::length(out.fn_names) != fn_n || Array::length(out.fn_files) != fn_n || Array::length(out.fn_src_stmts) != fn_n || Array::length(out.fn_bodies) != fn_n || Array::length(out.fn_meta_i32) != fn_n || Array::length(out.fn_meta_i64) != fn_n || Array::length(out.fn_meta_v128) != fn_n || Array::length(out.lam_indices) != lam_n || Array::length(out.lam_bodies) != lam_n || Array::length(out.lam_param_counts) != lam_n || Array::length(out.lam_captures) != lam_n || Array::length(out.lam_meta_i32) != lam_n || Array::length(out.lam_meta_i64) != lam_n || Array::length(out.slot_owner) != Array::length(out.slot_values) || Array::length(out.blind_body) != Array::length(out.blind_fn) || Array::length(out.blind_offsets) != Array::length(out.blind_fn) || Array::length(out.blind_kinds) != Array::length(out.blind_fn) || Array::length(out.blind_syms) != Array::length(out.blind_fn) || Array::length(out.lm_offsets) != Array::length(out.lm_owner) || Array::length(out.lm_file_ids) != Array::length(out.lm_owner) || Array::length(out.lm_lines) != Array::length(out.lm_owner) || (guard_n != 0 && guard_n != 5) || Array::length(out.guard_synth_names) != Array::length(out.guard_synth_stmts) || Array::length(out.guard_borrow_names) != Array::length(out.guard_borrow_masks) || Array::length(out.guard_layout) % 2 != 0 || Array::length(out.guard_typed_lowering) % 2 != 0 {
       None
     } else {
       Some(out)
@@ -2250,7 +2366,9 @@ export struct CompileCtx {
   // `cur_fn`'s enclosing top-level index would point at the wrong function
   // entirely. That is a known, documented gap (like the funcmap's
   // entry-file-only scope): lambda-body statements are simply absent from
-  // the linemap.
+  // the linemap. The runner resolves each frame on its own, so a trap inside
+  // a lambda degrades to a wasm frame and never borrows the enclosing
+  // function's line (#2199).
   linemap: LineMapState;
   // #2669 slice 2: where THIS body puts a reference the instruction encoding
   // cannot expose. A `call` immediate says what it is -- the opcode declares
@@ -2354,7 +2472,17 @@ export struct LineMapState {
   funcs: Array[Int];
   offsets: Array[Int];
   file_ids: Array[Int];
-  lines: Array[Int]
+  lines: Array[Int];
+  /// #2199: the source line of the construct currently being compiled, as a
+  /// 1-slot cell (0 = none). A statement sets it; `compile_expr`'s call arm
+  /// saves it, sets its own, and RESTORES it once `compile_call` returns --
+  /// which re-asserts the enclosing line at the offset the enclosing call's
+  /// own instruction is about to land past. Without that, a call in an
+  /// argument (`Array::get(xs, compute_index())`) leaves the last row before
+  /// the outer call, and the outer call's trap is reported at the argument's
+  /// line (Codex P2 on PR #2867). The file id is not stored: every row in one
+  /// body uses that function's own `ctx.dbg_line_file_id`.
+  site: Array[Int]
 }
 
 /// A disabled LineMapState (no newline tables, and every lambda-derived
@@ -2366,7 +2494,8 @@ export fn linemap_disabled() -> LineMapState {
     funcs: array_empty(),
     offsets: array_empty(),
     file_ids: array_empty(),
-    lines: array_empty()
+    lines: array_empty(),
+    site: [0]
   }
 }
 
@@ -3154,7 +3283,7 @@ export fn expr_tag(expr: Expr) -> Int {
     EInt(_) => 0,
     EBool(_) => 1,
     EFloat(_) => 2,
-    EString(_, _) => 3,
+    EString(_) => 3,
     EIdent(_, _) => 4,
     EBinOp(_, _, _, _) => 5,
     EUnaryOp(_, _) => 6,

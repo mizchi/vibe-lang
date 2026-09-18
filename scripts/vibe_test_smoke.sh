@@ -195,9 +195,7 @@ echo "[vibe-test-smoke] ok (percent-encoded quoted names decode on FAIL)"
 # #2228: the launcher condenser's detail lines carry the SAME 7-space
 # indent as vt_fail_detail's, so the two reporters render one format (the
 # one book/en/12_tests.vibe.md documents). Pin the indent on the canned
-# trap above: `failing test:` and `trap:` must start at column 8.
-# This branch's launcher condenser does not echo wasm frames; vt_fail_detail
-# still does. Do not require a frame line here.
+# trap above: `failing test:` and `at` frames must start at column 8.
 assert_condense_indent() {
   local errf="$WORK/canned_condense_indent.err" out
   cat > "$errf" <<'EOF'
@@ -217,6 +215,11 @@ EOF
     printf '%s\n' "$out" >&2
     exit 1
   fi
+  if ! printf '%s\n' "$out" | grep -qE '^       at some_helper'; then
+    echo "[vibe-test-smoke] FAIL: condense_test_trap frame line is not 7-space indented (#2228)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
 }
 assert_condense_indent
 echo "[vibe-test-smoke] ok (launcher condenser indent matches vt_fail_detail, #2228)"
@@ -224,15 +227,19 @@ echo "[vibe-test-smoke] ok (launcher condenser indent matches vt_fail_detail, #2
 # #1946 leftover: vt_fail_detail must surface the assert_eq diagnostic that
 # the guest writes to stderr (vibe test discards stdout).
 #
-# #2219: a marker-less complete assert_eq failed/expected:/actual: block
-# adjacent to a trap is reported as a trap. The consecutive-block
-# recognizer is gone; only `assert failed: aborting` suppresses the echo.
+# #2219: the canned stream carries the abort marker, because the real one
+# does -- `lower_assert_eq` prints it as the closing line and the committed
+# seed emits it. It used to be absent here and the trap was suppressed by the
+# marker-less block recognizer this issue deleted; without the marker this
+# case would now assert that a trap IS reported, which is a different case and
+# is covered on its own below.
 assert_canned_assert_eq_diag() {
   local errf="$WORK/canned_assert_eq.err" out
   cat > "$errf" <<'EOF'
 assert_eq failed
   expected: 2
   actual:   1
+assert failed: aborting
 RuntimeError: unreachable
     at __test_bad (wasm://wasm/00000000:wasm-function[3]:0x42)
     at _start (wasm://wasm/00000000:wasm-function[1]:0x10)
@@ -253,9 +260,10 @@ EOF
     printf '%s\n' "$out" >&2
     exit 1
   fi
-  # #2219: marker-less block is a trap, not an assert abort.
-  if ! printf '%s\n' "$out" | grep -qF "trap:"; then
-    echo "[vibe-test-smoke] FAIL: marker-less assert_eq-shaped block did not report trap: (#2219)" >&2
+  # #2202: the assert's own abort trap must NOT be echoed after the assert
+  # block -- it read as a second, unexplained failure.
+  if printf '%s\n' "$out" | grep -qF "trap:"; then
+    echo "[vibe-test-smoke] FAIL: assert_eq failure still echoes its own abort trap (#2202)" >&2
     printf '%s\n' "$out" >&2
     exit 1
   fi
@@ -305,14 +313,18 @@ EOF
 }
 assert_imitated_block_keeps_real_trap
 
-# #2219: a marker-less complete block plus crash-debug is still just a
-# trap. Only the generated `assert failed: aborting` marker suppresses.
-assert_real_shape_with_crash_debug_reports_trap() {
+# #2202: the real abort shape has the host's crash-debug dump (and a blank
+# line) between the assert block and the trap reason -- those must not break
+# the adjacency, or the suppression never fires on a real failure. #2219: the
+# marker is what adjacency is measured from now, so it sits where the real
+# abort puts it, before the dump.
+assert_real_shape_with_crash_debug_suppressed() {
   local errf="$WORK/canned_real_assert.err" out
   cat > "$errf" <<'EOF'
 assert_eq failed
   expected: 5
   actual:   4
+assert failed: aborting
 
 [crash debug] heap_ptr=480 (0x1e0), memory_size=4194304 (64 pages) / unreachable
 [crash debug] mem[0..32]: 00 00 00 00
@@ -321,13 +333,51 @@ RuntimeError: unreachable
     at _start (wasm://wasm/00000000:wasm-function[1]:0x10)
 EOF
   out="$(vt_fail_detail "$errf" "" "canned.vibe")"
-  if ! printf '%s\n' "$out" | grep -qF "trap:"; then
-    echo "[vibe-test-smoke] FAIL: marker-less assert-shaped block with crash-debug did not report trap: (#2219)" >&2
+  if printf '%s\n' "$out" | grep -qF "trap:"; then
+    echo "[vibe-test-smoke] FAIL: real assert abort (with crash-debug between) still echoed its trap (#2202)" >&2
     printf '%s\n' "$out" >&2
     exit 1
   fi
 }
-assert_real_shape_with_crash_debug_reports_trap
+assert_real_shape_with_crash_debug_suppressed
+
+# #2219: THE case the deletion is about. A COMPLETE consecutive
+# failed/expected/actual block, directly adjacent to the trap with only a
+# crash-debug line between -- the exact shape the deleted recognizer accepted
+# -- and NO marker. It must now REPORT the trap.
+#
+# This is the one that flips: before #2219 the block alone suppressed it, and
+# because assert output and user output share one stream, any program that
+# printed these three lines and then trapped for an unrelated reason lost its
+# trap reason. The block recognizer existed only for a seed that predated the
+# marker; the committed seed emits the marker, so nothing real produces this
+# shape any more and anything that does is imitation.
+assert_marker_less_block_keeps_real_trap() {
+  local errf="$WORK/canned_markerless_block.err" out
+  cat > "$errf" <<'EOF'
+assert_eq failed
+  expected: 2
+  actual:   1
+[crash debug] heap_ptr=480 (0x1e0), memory_size=4194304 (64 pages) / unreachable
+RuntimeError: unreachable
+    at __test_bad (wasm://wasm/00000000:wasm-function[3]:0x42)
+    at _start (wasm://wasm/00000000:wasm-function[1]:0x10)
+EOF
+  out="$(vt_fail_detail "$errf" "" "canned.vibe")"
+  if ! printf '%s\n' "$out" | grep -qF "trap: RuntimeError: unreachable"; then
+    echo "[vibe-test-smoke] FAIL: a marker-less assert block still suppressed the trap (#2219)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+  # ...and the block itself is still surfaced: #2219 removed the block from
+  # the SUPPRESSION vote, not from the report.
+  if ! printf '%s\n' "$out" | grep -qF "assert_eq failed"; then
+    echo "[vibe-test-smoke] FAIL: a marker-less assert block lost its diagnostic (#2219)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+}
+assert_marker_less_block_keeps_real_trap
 
 # #2202 (Codex round 2 on #2213): a rendered value may contain newlines, so
 # the block is not always consecutive -- the generated abort therefore prints

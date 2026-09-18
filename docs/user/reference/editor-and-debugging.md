@@ -56,8 +56,7 @@ vibe symbols --with-path <file.vibe>      # force the PATH field on for a single
 vibe symbols --legend                     # KIND NAME table (LSP SymbolKind + 27 Test / 28 Bench, v2 2026-09-12)
 vibe check <file.vibe>                    # all diagnostics, one per line on stdout; empty output = clean, exit 1 if not
 vibe check --single-file <file.vibe>      # same, analysing the buffer ALONE (no FS import resolution)
-vibe check --json <file.vibe>                # same diagnostics as a JSON array of LSP Diagnostic objects (FS lane)
-vibe check --single-file --json <file.vibe>  # same JSON contract without resolving imports (#820, #2831)
+vibe check --single-file --json <file.vibe>  # same diagnostics as a JSON array of LSP Diagnostic objects (#820)
 ```
 
 - `symbols` takes **several paths, or a directory** (#2381). Each root is one
@@ -165,15 +164,14 @@ vibe check --single-file --json <file.vibe>  # same JSON contract without resolv
   line, `error: ` marking each diagnostic start (continuations like `hint: `
   are indented under it, so `grep -c '^error: '` is an exact count); **clean =
   empty output + exit 0**; anything reported = **exit 1**.
-- `--json` is available on both the FS lane and `--single-file`. Both reuse
-  the same `[@off=N]`-derived offsets `vibe lsp`'s `publishDiagnostics` uses,
-  wrapped as `{range, severity, source, message}` objects — no separate
+- `--json` is available in `--single-file` mode, where the compiler's own
+  structured emitter produces real ranges: it reuses the same `[@off=N]`-derived
+  offsets `vibe lsp`'s `publishDiagnostics` uses, wrapped as
+  `{range, severity, source, message}` objects — no separate
   structured-diagnostic format to keep in sync. A clean file yields `[]` and
-  exit 0; errors yield a JSON array and exit 1. A node the parser never
-  constructed is marked `data.synthetic: true`; its `range` is an empty one at
-  the document start, because LSP requires `Diagnostic.range` to be two real
-  `Position` objects and a schema-checking client drops a null-bounded payload
-  (#2831, Codex review of #2868).
+  exit 0. Without `--single-file` the launcher refuses `--json` rather than
+  inventing ranges: the import-resolving lane reports diagnostics as message
+  text with no per-diagnostic span attached (#1567).
 - `vibe diagnostics` is the **deprecated** spelling of `vibe check
   --single-file`. It is kept behaviourally frozen (raw lines with no `error: `
   prefix, always exit 0) for editors already wired to it — see
@@ -405,7 +403,9 @@ Interior-line breakpoints work across **multiple files**: `--break helper.vibe:3
 pauses inside an imported module while `--break main.vibex:3` pauses in the entry
 file, even though both are "line 3" — the compiler records each statement's source
 file (a `vibe.dbgfiles` table) so the runner matches the breakpoint's `<file>`
-against the right one. A statement whose value is a bare literal (e.g. `let a = 1`)
+against the right one. The table holds each file's PATH; a spec and an entry
+are compared by their last component, so `--break helper.vibe:3` and
+`--break pkg/helper.vibe:3` are the same breakpoint. A statement whose value is a bare literal (e.g. `let a = 1`)
 is breakable too (#644): the `let`/`let mut` keyword's own offset anchors the probe
 when the value itself carries none.
 
@@ -438,11 +438,18 @@ produces its normal result when continued.
 
 #### Static line map (`vibe.linemap`) and more precise trap frames
 
-A compiled module carries a `vibe.linemap` custom section (production
-builds included, not only `--break`):
-a static table mapping each user function's wasm code offset to a source
+A compiled module carries a `vibe.linemap` custom section (`vibe run` /
+`vibe test`; `vibe build` strips it with the name section, ADR-0077):
+a compact table mapping each user function's wasm code offset to a source
 `(file, line)`, recorded at statement boundaries and call sites (#644,
-#2199). Unlike `dbg_line`, this table needs no
+#2199). Duplicate offsets are stored once; the on-disk form is the 4-byte
+marker `VLM1` followed by LEB deltas, not a source string per access. The
+marker is what identifies the encoding — a reader that does not find it
+reports no location rather than decoding #644's older 16-byte records as
+if they were deltas. The `(file, line)` names the path the compiler
+opened (`vibe.dbgfiles`), so it is openable from the directory you
+compiled in; a `--break <file>:<line>` spec is still matched against the
+last path component. Unlike `dbg_line`, this table needs no
 cooperation from the running program — it can be read straight out of the
 compiled `.wasm`, e.g. with `viberun --dump-linemap <file.wasm>` (one
 `func_index<TAB>offset<TAB>file<TAB>line` row per probe), and the runner
@@ -477,18 +484,26 @@ degrades to the wasm frame and never invents a source location.
 function bodies — a probe compiled inside a lambda/closure body is absent
 from the static table (its LIVE `--break`/`dbg_line` pause still works
 normally; only the *static*, no-execution-needed lookup has this gap).
-Genuine **instruction-offset breakpoints** (pausing mid-statement, at an
-arbitrary sub-expression) remain future work: it needs every `Expr` node to
-carry its own source span, not just statements, which the linemap alone
-doesn't provide (docs/internal/project/release-roadmap.md テーマ3, 3-P0's "残").
+The runner resolves each frame independently, so an OOB inside a lambda
+prints the wasm frame for that body and does not borrow the enclosing
+function's line. A top-level function whose source file the compile cannot
+name — a comparator or dispatcher the prelude synthesized for the whole
+program, or a `test "..."` label two modules both use — records no rows
+either, for the same reason: a row is printed at a trap, so a placeholder
+file there would be a fabricated location. Genuine **instruction-offset breakpoints** (pausing
+mid-statement, at an arbitrary sub-expression) remain future work: it
+needs every `Expr` node to carry its own source span, not just statements,
+which the linemap alone doesn't provide
+(docs/internal/project/release-roadmap.md テーマ3, 3-P0's "残").
 
-**wasm-gc**: production `vibe.linemap` is the linear/RC FS lane. A
-`VIBE_BACKEND=gc` module does not carry the section, so a trap there stays
-a wasm frame. `Array::get` / `Array::set` on that lane trap as the engine's
-`array element access out of bounds` and do not print the linear lane's
-`<op>: index <idx> out of bounds for length <len>` line; `Bytes::get` /
-`Bytes::set` keep the historical bare `unreachable`. `abort(msg)` still
-prints the message and traps on both lanes (#2199, #2397).
+**wasm-gc / bump**: production `vibe.linemap` is the linear/RC FS lane
+(`vibe run` / `vibe test`). `VIBE_RC=0` (bump) does not fill newline tables,
+so a trap there stays a wasm frame. A `VIBE_BACKEND=gc` module does not
+carry the section either. `Array::get` / `Array::set` on wasm-gc trap as
+the engine's `array element access out of bounds` and do not print the
+linear lane's `<op>: index <idx> out of bounds for length <len>` line;
+`Bytes::get` / `Bytes::set` keep the historical bare `unreachable`.
+`abort(msg)` still prints the message and traps on both lanes (#2199, #2397).
 
 ---
 

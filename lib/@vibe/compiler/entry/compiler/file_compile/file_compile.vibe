@@ -66,6 +66,7 @@ import @vibe/compiler/codegen/common_base {
   bcc_layout_fp_ints,
   bcc_layout_fp_strings,
   bcc_string_lists_equal,
+  codegen_body_cache_discard,
   codegen_body_cache_filter_src_below,
   codegen_body_cache_filter_src_keep,
   codegen_body_cache_from_bytes,
@@ -1091,7 +1092,8 @@ fn prelude_oracle_merge(source_groups: Array[(String, Array[(String, String)])],
   // from the very `file_paths` array the merge mangles with
   // (`build_grouped_merged_stmts_impl` pushes `file_paths[source_idx]`), so
   // `sanitize_namespace_path` of one of these IS a module's stamp -- no
-  // parsing, no ambiguity. `files` is NOT this: it is `path_basename(...)`.
+  // parsing, no ambiguity. `files` carries the same paths (#2199) but is a
+  // per-FILE table, not the per-statement one this builds.
   let mut fp = 0
   while fp < Array::length(flat_paths) {
     Array::push(out_paths, Array::get(flat_paths, fp))
@@ -1212,24 +1214,6 @@ fn module_lane_filter_stmts(stmts: Array[Stmt]) -> Array[Stmt] {
   filtered
 }
 
-/// Interior-line breakpoints (span-arc step5): the basename of a file path (text
-/// after the last '/'). Used as the `vibe.dbgfiles` key the runner matches a
-/// `--break <file>:<line>` spec against. String::concat-free (substring only).
-fn path_basename(p: String) -> String {
-  let n = String::length(p)
-  let mut last = 0 - 1
-  let mut i = 0
-  while i < n {
-    if String::char_code_at(p, i) == 47 {
-      last = i
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  String::substring(p, last + 1, n)
-}
-
 /// Interior-line breakpoints: sorted char-offsets of each '\n' in `src` (local
 /// copy of the codegen helper, to avoid an entry->codegen import).
 fn file_newline_offsets(src: String) -> Array[Int] {
@@ -1267,9 +1251,18 @@ fn file_newline_offsets(src: String) -> Array[Int] {
 /// the float-offset union (via the caller-passed sinks, same contract as
 /// build_grouped_merged_stmts_impl) speaks the same offset space.
 /// #2388: the merge plus the per-file debug provenance the break lane needs --
-/// `files[k]` the basename of flat source k, `file_nls[k]` its newline offsets
+/// `files[k]` the PATH of flat source k, `file_nls[k]` its newline offsets
 /// already shifted into the merge's offset space, `stmt_file_id[s]` the flat
 /// source that owns merged statement s.
+///
+/// #2199: the path, not the basename it used to be. `files` is also what a
+/// production trap prints (`vibe.dbgfiles`, via `frame: main (<file>:<line>)`),
+/// and a basename there is not a thing to open from the project root -- and
+/// names no one file as soon as the program pulls in two packages, each with
+/// its own `index.vibe` (Codex P2 on PR #2867). What the loader opened is what
+/// the reader can open. The break lane is unaffected: a `--break <file>:<line>`
+/// spec is reduced to its basename before matching, and the runner matches and
+/// prints these entries by basename too.
 ///
 /// This used to be a SECOND COPY of build_grouped_merged_stmts_impl with the
 /// provenance collection interleaved, carrying a comment promising that its
@@ -1293,7 +1286,7 @@ fn build_grouped_merged_stmts_prov(source_groups: Array[(String, Array[(String, 
   let mut si = 0
   while si < Array::length(flat_sources) {
     let (flat_path, flat_source) = Array::get(flat_sources, si)
-    Array::push(files, path_basename(flat_path))
+    Array::push(files, flat_path)
     let base = if si < Array::length(flat_bases_out) {
       Array::get(flat_bases_out, si)
     } else {
@@ -1503,7 +1496,11 @@ export fn compile_file_fs_mode_rc(entry_path: String, entry_name: String) -> Byt
   let (float_offsets, tl_rels, tl_pluses, int_offsets, bool_offsets) = split_typed_lowering_offsets(union_module_typed_lowering_with_clones(flat_paths, flat_bases, clone_float_offsets))
   let (eq_offsets, eq_keys) = union_module_typed_eq_rows(flat_paths, flat_bases)
   let merged_stmts = rewrite_string_binops_stmts(merged_stmts_raw, tl_rels, tl_pluses, typed_lowering_binop_anchor)
-  compile_wasi_module_rc_cached_impl_with_prov(merged_stmts, entry_name, codegen_body_cache_new(), codegen_body_cache_new(), DbgProv::{
+  // The out-cache is dropped the moment this returns, so it declines to
+  // collect: `codegen_body_cache_record` would otherwise fill one row per
+  // function plus one per `vibe.linemap` site, on the lane every `vibe run`
+  // and `vibe test` takes, for nobody (#2199 follow-up).
+  compile_wasi_module_rc_cached_impl_with_prov(merged_stmts, entry_name, codegen_body_cache_new(), codegen_body_cache_discard(), DbgProv::{
     files: dbg_files,
     file_nls: dbg_file_nls,
     stmt_file_id: dbg_stmt_file_id
@@ -1957,7 +1954,10 @@ fn ordinary_lane_dbg_prov(file_paths: Array[String], file_counts: Array[Int], so
   let stmt_file_id = array_empty()
   let mut i = 0
   while i < Array::length(file_paths) && i < Array::length(file_counts) {
-    Array::push(files, path_basename(Array::get(file_paths, i)))
+    // #2199: the path the loader opened, like `build_grouped_merged_stmts_prov`
+    // -- the two lanes feed the same `vibe.dbgfiles`, so a basename here would
+    // make a trap's location depend on whether the body cache was on.
+    Array::push(files, Array::get(file_paths, i))
     let n = Array::get(file_counts, i)
     let mut k = 0
     while k < n {

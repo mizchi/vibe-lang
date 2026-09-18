@@ -204,10 +204,14 @@ echo "[compiler-gate] derive(Show) source-name rendering ok"
 
 # 4e. OOB abort names the operation, index, and length, and reports an
 #     editable path:line for the access (#2199). A production-style compile
-#     (no VIBE_DEBUG_BREAK) emits compact vibe.linemap; missing/stripped
+#     (no VIBE_DEBUG_BREAK) emits compact LEB vibe.linemap; missing/stripped
 #     mapping degrades to the wasm frame, never a fabricated location.
-#     This gate is the linear/RC production lane. wasm-gc Array OOB is the
-#     engine's native trap (no __rt_oob_abort, no production linemap).
+#     `vibe build` strips the section with `name`; this compile keeps it via
+#     VIBE_WASM_NAMES=1 (the same knob `vibe run` uses).
+#     This gate is the linear/RC production lane (`vibe run` / `vibe test`).
+#     The rest of early pins VIBE_RC=0 (bump); 4e's compile unsets that so
+#     it asks the lane users actually hit. wasm-gc Array OOB is the engine's
+#     native trap (no __rt_oob_abort, no production linemap).
 echo "[compiler-gate] 4e OOB abort names the operation, index, length, and path:line (#2199)"
 oobdir="_build/_gate_arr_oob"
 rm -rf "$oobdir"; mkdir -p "$oobdir"
@@ -249,7 +253,10 @@ fn main allows Console {
 VEOF
 oob_compile_one() {
   local src="$1" out="$2"
-  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  # Production RC: this lane's VIBE_RC=0 pin would compile bump, which has
+  # no production linemap.
+  # VIBE_WASM_NAMES=1 keeps vibe.linemap (release strip drops it with `name`).
+  env -u VIBE_RC VIBE_WASM_NAMES=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$src" "$out" main >/dev/null 2>&1 || true
   if [ ! -s "$out" ]; then
@@ -296,11 +303,16 @@ oob_bytes_set_rc=$?
 oob_str_out="$(oob_run_one "$oobdir/str_byte_at.wasm")"
 oob_str_rc=$?
 set -e
-oob_check "Array::get" "Array::get: index 10 out of bounds for length 3" "arr_get.vibe:4" "$oob_arr_get_out" "$oob_arr_get_rc"
-oob_check "Array::set" "Array::set: index 10 out of bounds for length 3" "arr_set.vibe:4" "$oob_arr_set_out" "$oob_arr_set_rc"
-oob_check "Bytes::get" "Bytes::get: index 9 out of bounds for length 3" "bytes_get.vibe:4" "$oob_bytes_get_out" "$oob_bytes_get_rc"
-oob_check "Bytes::set" "Bytes::set: index 9 out of bounds for length 3" "bytes_set.vibe:4" "$oob_bytes_set_out" "$oob_bytes_set_rc"
-oob_check "String::byte_at" "String::byte_at: index 5 out of bounds for length 3" "str_byte_at.vibe:4" "$oob_str_out" "$oob_str_rc"
+# The expected location carries the DIRECTORY the source was compiled from,
+# not just its file name: `vibe.dbgfiles` holds the path the compiler opened
+# so the location is openable from the project root and still names one file
+# when a program pulls in two packages that each have an `index.vibe`
+# (#2199, PR #2867).
+oob_check "Array::get" "Array::get: index 10 out of bounds for length 3" "$oobdir/arr_get.vibe:4" "$oob_arr_get_out" "$oob_arr_get_rc"
+oob_check "Array::set" "Array::set: index 10 out of bounds for length 3" "$oobdir/arr_set.vibe:4" "$oob_arr_set_out" "$oob_arr_set_rc"
+oob_check "Bytes::get" "Bytes::get: index 9 out of bounds for length 3" "$oobdir/bytes_get.vibe:4" "$oob_bytes_get_out" "$oob_bytes_get_rc"
+oob_check "Bytes::set" "Bytes::set: index 9 out of bounds for length 3" "$oobdir/bytes_set.vibe:4" "$oob_bytes_set_out" "$oob_bytes_set_rc"
+oob_check "String::byte_at" "String::byte_at: index 5 out of bounds for length 3" "$oobdir/str_byte_at.vibe:4" "$oob_str_out" "$oob_str_rc"
 # Stripped mapping: OOB line and wasm frame remain; no fabricated path:line.
 node scripts/wasm_custom_section.js strip "$oobdir/arr_get.wasm" "$oobdir/arr_get.stripped.wasm" vibe.linemap vibe.dbgfiles
 set +e

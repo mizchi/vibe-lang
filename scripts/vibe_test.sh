@@ -322,11 +322,25 @@ vt_fail_detail() {
       sub(/[[:space:]]+$/, "", failing)
       if (failing != "") seen_test = 1
     }
-    # Assert-abort recognizer (#2202 / #2219). Suppressing the trailing trap
-    # must not trust arbitrary captured output that happens to contain these
-    # lines (a test can println them and then hit a REAL unrelated trap).
-    # The generated abort closing marker is the signal; a marker-less
-    # assert_eq-shaped block is reported as a trap.
+    # Assert-abort recognizer (#2202, narrowed by #2219). Suppressing the
+    # trailing trap must not trust arbitrary captured output that happens to
+    # contain these lines: a test can println them and then hit a REAL
+    # unrelated trap. The ONE signal is the closing marker the generated abort
+    # prints (`assert failed: aborting`, `lower_assert_eq`), and it must
+    # directly precede the trap reason -- only the host crash-debug dump or
+    # blank lines may come between.
+    #
+    # #2219 deleted the second recognizer that sat here: a COMPLETE
+    # consecutive failed/expected/actual block, adjacent to the trap, also
+    # suppressed it. That existed ONLY because the committed seed predated the
+    # marker and `vibe test` compiles with the seed by default. It no longer
+    # does -- `assert failed: aborting` is present in
+    # `bootstrap/seed/compiler.wasm` (seed `bytes-capacity-2026-09-15`,
+    # verified 2026-09-18) -- so the fallback bought nothing and cost the one
+    # thing a text recognizer can lose: a marker-less block is exactly what
+    # ordinary program output can imitate, and imitating it suppressed a real
+    # trap. The lines below still BUILD the report; they no longer vote on
+    # whether the trap belongs to the assert.
     { __blk = 0 }
     $0 == "assert_eq failed" {
       __blk = 1
@@ -368,7 +382,9 @@ vt_fail_detail() {
     # The closing line the generated assert_eq abort prints (lower_assert_eq
     # in normalize/desugar_trait_dict.vibe): the definitive signal, immune to
     # multiline rendered values and to output that imitates the block. Hidden
-    # from the report (the block above already told the story).
+    # from the report (the block above already told the story). Since #2219 it
+    # is the ONLY signal, which is also what the condenser in `runtime/vibe`
+    # has been reading.
     $0 == "assert failed: aborting" {
       __blk = 1
       pending_abort = 1
@@ -378,13 +394,19 @@ vt_fail_detail() {
     !seen_reason && /RuntimeError:|wasm trap:/ {
       __blk = 1
       seen_reason = 1
+      # #2219: `ablk == 3` (the marker-less block) was the other disjunct.
+      # The two condensers were NOT the same expression -- the one in
+      # `runtime/vibe` reads `pre_abort`, its own marker test on the last
+      # stdout line of the guest -- so each had its remaining condition
+      # checked on its own rather than assumed identical. What is left here is
+      # the marker, with adjacency enforced by the reset rule below.
       assert_abort = (pending_abort == 1)
       reason = $0
       sub(/^[[:space:]]+/, "", reason)
       sub(/^[0-9]+: /, "", reason)
       sub(/^viberun: /, "", reason)
     }
-    # Any other non-blank, non-crash-debug line between the marker and
+    # Any other non-blank, non-crash-debug line between the block/marker and
     # the trap breaks the adjacency: the trap is then not the assert abort.
     !seen_reason && __blk == 0 && $0 != "" && $0 !~ /^\[crash debug\]/ {
       pending_abort = 0

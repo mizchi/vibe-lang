@@ -1100,19 +1100,22 @@ fn strip_push_uleb(out: Bytes, value: Int) -> Unit {
   }
 }
 
-/// Executable-output post-pass: drop the `name` custom section (debug info)
-/// and/or filter the export section down to the entries an executable's
-/// runners actually address by name — the entry function, `_start`,
-/// `cli_main`, per-block `__bench_*`/`__test_*` exports, and every non-function
-/// export (memory / `__heap_ptr` global / `error` tag). Everything else is a
-/// module-linking artifact (`*_exp_lib__*` mangled names from the flat module
-/// source) that nothing external can reasonably call. Section-level surgery
-/// only: removing a custom section or export ENTRIES never renumbers any
-/// index, so the code/table/elem sections are byte-identical. Any parse
-/// anomaly returns the input untouched. Component/library/test paths must NOT
-/// come through here — components lift core exports by name and `vibe test`
-/// tooling reads `__test_*` frames from the name section (callers gate on
-/// entry_name/env, see strip_executable_wasm_env).
+/// Executable-output post-pass: drop debug custom sections (`name`,
+/// `vibe.linemap`, `vibe.dbgfiles`) and/or filter the export section down to
+/// the entries an executable's runners actually address by name — the entry
+/// function, `_start`, `cli_main`, per-block `__bench_*`/`__test_*` exports,
+/// and every non-function export (memory / `__heap_ptr` global / `error`
+/// tag). Everything else is a module-linking artifact (`*_exp_lib__*`
+/// mangled names from the flat module source) that nothing external can
+/// reasonably call. Section-level surgery only: removing a custom section or
+/// export ENTRIES never renumbers any index, so the code/table/elem sections
+/// are byte-identical. Any parse anomaly returns the input untouched.
+/// Component/library/test paths must NOT come through here — components lift
+/// core exports by name and `vibe test` tooling reads `__test_*` frames from
+/// the name section (callers gate on entry_name/env, see
+/// strip_executable_wasm_env). `vibe run` keeps these sections
+/// (`write_user_run_executable` passes strip_names=false) so a trap still
+/// reports path:line (#2199).
 export fn strip_executable_wasm(wasm: Bytes, entry_name: String, strip_names: Bool, filter_exports: Bool) -> Bytes {
   if !strip_names && !filter_exports {
     return wasm
@@ -1141,7 +1144,7 @@ export fn strip_executable_wasm(wasm: Bytes, entry_name: String, strip_names: Bo
         // custom section: drop iff its name is exactly "name"
         let (cn_len, cn_start) = strip_read_uleb(wasm, payload_start, payload_end)
         if cn_len >= 0 && cn_start + cn_len <= payload_end {
-          if strip_bytes_range_eq_str(wasm, cn_start, cn_len, "name") {
+          if strip_bytes_range_eq_str(wasm, cn_start, cn_len, "name") || strip_bytes_range_eq_str(wasm, cn_start, cn_len, "vibe.linemap") || strip_bytes_range_eq_str(wasm, cn_start, cn_len, "vibe.dbgfiles") {
             handled = true
           } else {
             ()
