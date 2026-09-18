@@ -510,37 +510,53 @@ test expectations, and remain gitignored.
 先へ進まない。CLI が答えられない質問はそのまま、LLM がこのリポジトリで
 作業するときのコストとして毎回効いてくる。
 
-現に効いている既知の穴 (どれもこの方針違反として扱う):
-**型エラーの位置が「範囲」ではなく、しかも指す先が式ではないこと**
-(**#2831**、#1567 の残り)。
+A gap that still bites (treat it as a violation of this policy):
+**a type error's location is a POINT, and it anchors the enclosing
+construct rather than the expression** (**#2831**, the rest of #1567) --
+except where the operand is a string literal, which now carries both.
 
-この節はかつて「型エラーに位置が付かない」と書いていた。**実測
-(2026-09-18) では誤り** — 2026-08-19 の測定以降に位置が付くようになっている。
-FS レーンでも `--single-file` でも:
+This section has been wrong twice, in opposite directions. It first said type
+errors carry NO location; measurement on 2026-08-19 disproved that. It then
+said they carry a point and never a range, which #2199 (`EString` gained an
+offset slot) and #2868 (`locate_type_error` recovers the token end from the
+source) disproved for a string literal -- both of those are ON MAIN now, so the
+old text described a compiler this tree no longer builds. Measured 2026-09-18
+against a stage2 built from main at 254ffcf, the same on the FS lane and under
+`--single-file`:
 
-| 入力 | 報告 |
+| input | reported |
 |---|---|
-| `  let a: Int = "not an int"` | `line 2:7` |
-| `  let b = takes("...")` | `line 6:11` |
-| `  let s = "日本語ですよ"; let c = takes(s)` | `line 6:41` |
+| `  let a: Int = "not an int"` | `2:16-28` -- the LITERAL, as a range |
+| `  let x: String = 42` | `2:7` -- the binder name, point |
+| `  let y: Int = true` | `2:7` -- the binder name, point |
+| `  let b = takes("nope")` | `6:11` -- the CALLEE name, point |
+| `  no_such_name_here(1)` | `2:3-20` -- the contrast: a range, at the name |
 
-マルチバイトの後でも **byte column が正しい** (ADR-0108 の契約どおり。3 例目の
-`takes` の byte column はちょうど 41)。
+Byte columns stay correct after multibyte text (the ADR-0108 contract): with
+`let s = "日本語ですよ"` bound first, the `takes(s)` mismatch still reports the
+callee's own byte column.
 
-残っているのは別の 2 点:
+So what remains is narrower than "no range, wrong anchor", and it is TWO
+defects rather than one:
 
-1. **終端が無い**。`unknown name` は `2:11-30` と範囲を返すのに、型不一致は
-   点しか返さない。
-2. **指す先が囲みの先頭**。`2:7` は束縛名 `a` (リテラルは 16-27 桁)、`6:11` は
-   callee 名 `takes` (問題の引数は 17 桁)。直すべきテキストそのものではない。
+1. **Literals other than `String` carry no offset slot** (`EInt(Int)` /
+   `EFloat(Double)` / `EBool(Bool)` against `EString(String, Int)` and
+   `EIdent(String, Int)` in `lib/@vibe/ast/index.vpkg`), so the binder anchors
+   them and there is no end. Fixing this means widening those constructors,
+   which is an AST ABI bump (`AST_BINARY_VERSION`, and every snapshot that
+   pins a wire).
+2. **The ARGUMENT path anchors the callee** even when the argument IS a string
+   literal that already has an offset -- `takes("nope")` reports `takes`, not
+   `"nope"`. That is not a missing slot; it is a call site declining to read
+   the one it has, so it is cheaper than (1) and independent of it.
 
-原因は今も **リテラル式が offset スロットを持たない**こと (`EInt(Int)` /
-`EString(String)` に対し `EIdent(String, Int)`)。anchor 機構
-(`off_marker` / `railway_expr_off`) 自体は動いている。
+The anchor machinery itself (`off_marker` / `railway_expr_off`) works;
+`check_assignable_set_end` supplies an end and `string_token_end` corrects it
+to the lexer's span.
 
-**同じ測定で見つかった別の穴**: lexer エラーは今も完全に位置無しで、
-`unexpected character: 日` はファイル名しか付かない (行すら無い)。これは型
-エラーではないので #2831 の対象外。
+**A separate hole found by the same measurement**: lexer errors still carry no
+location at all -- `unexpected character: 日` comes back with no line, no
+column, and not even a path. That is not a type error, so it is outside #2831.
 
 > **解決済み: 「どちらの動詞を使うか」問題 (#1567)。** かつて `vibe check` と
 > `vibe diagnostics` が同じ質問に別の答え方をしていた (import 解決の有無・
