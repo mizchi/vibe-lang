@@ -946,6 +946,11 @@ let r = match s { Shape::Circle(r) => r, _ => 0 }
 // Imported enums work the same way, including parameterized ones:
 //   import ./m.vibe { Attempt, Good }
 //   let a = Attempt::Good(7)
+// ONE exception, and it is an absence rather than a rule: `Option` has no
+// qualified spelling. `Option::Some(5)` reports `unknown name: Option::Some`;
+// write `Some(5)`. Everything else measured (#2830, ADR-0096) takes both --
+// a local enum, a type alias, an imported enum plain or aliased, and the
+// WIT-local `@vibe/wit_runtime` `Result`.
 
 struct Point { x: Int; y: Int } derive(Eq, Ord, Show)
 let p = Point::{ x: 1, y: 2 }
@@ -1795,8 +1800,10 @@ separate `ambiguous trait import alias` error.
 `@` 接頭辞は package 参照を開き、そこから先の `-` と `/` は演算子ではなく
 名前の一部になる。`.` は識別子の一部にはならず、常に member アクセス演算子
 (優先順位 1) として解釈される。`::` は型・module のメンバを指す
-(`Array::length`, `Option::Some`, `String::substring`, `MyModule::x`,
-`Point::{ x: 1, y: 2 }`)。
+(`Array::length`, `Color::Red`, `String::substring`, `MyModule::x`,
+`Point::{ x: 1, y: 2 }`)。**`Option::Some` はこの例にならない** — Option の
+constructor に qualified 綴りは無く、`unknown name` になる (上の
+"Type Definitions" 節、#2830 / ADR-0096)。
 
 ### Keywords
 

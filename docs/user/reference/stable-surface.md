@@ -201,6 +201,26 @@ not part of 0.1.0.
 - `.` is field access only — there is no method-call sugar.
 - Name resolution order: local > lexical > import > prelude.
 
+### 2.3a Naming (#2830, ADR-0083)
+
+`snake_case` for functions, methods and local bindings. `CamelCase` for types,
+structs, enums, traits and enum constructors. A capability builtin is
+`Effect::snake_case` (`Fs::read_file`) because it is a function; a declared
+algebraic operation is `Effect::CamelCase` (`Log::Emit`) because it is a
+constructor — that split is ADR-0084's, and it is told apart by whether
+`perform` is needed.
+
+This is what ships and what the examples teach. An earlier lowerCamelCase
+proposal was never implemented and is withdrawn (ADR-0083): renaming the public
+API behind a seed transition would buy a spelling preference at the cost of
+every consumer's code, and not doing it costs nothing.
+
+**Constructor qualification is optional** (ADR-0096). A constructor may be
+written bare or qualified, in expressions and in patterns, and both mean the
+same variant; a wrong qualifier is an error (`Shape::Red` → "enum `Shape` has
+no variant `Red`"). The one exception is `Option`, which has no qualified
+spelling at all — `Option::Some` reports `unknown name`, so write `Some`.
+
 ### 2.4 Control flow
 - `if`/`else` (an expression), `match` (with `if` guards and or-patterns
   `A | B`), `while`, `for-in` (collects into an `Array`; indexed form
