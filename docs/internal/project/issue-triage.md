@@ -73,11 +73,19 @@ host waits, outbound async HTTP, suspend state and experimental WasmFX. The
 synchronous host ABI and frozen authorization contract can be settled before
 those implementations. The async host ABI has its own task, #2832.
 
-**No milestone** means a useful backlog item without a release commitment.
-Examples are the per-module production driver (#2826), measured compiler
-tuning (#2833), and internal artifact/TypeEnv redesigns. Keep these experiments
-off by default until their correctness and cost criteria hold; a successful
-experiment does not by itself create a release requirement.
+**Backlog (unscheduled)** holds useful work carrying no release commitment:
+internal compiler optimization, architecture experiments, repository tooling,
+and stdlib additions. Examples are the per-module production driver (#2826),
+measured compiler tuning (#2833), and internal artifact/TypeEnv redesigns. Keep
+these experiments off by default until their correctness and cost criteria hold;
+a successful experiment does not by itself create a release requirement.
+Promote one to a release milestone only for a reproduced correctness or resource
+failure, or a durable contract decision.
+
+**No milestone** means the issue has not been scheduled yet, not that it was
+judged unscheduled. Every open issue carries one of the three, so an empty
+milestone is a triage gap: filing an issue includes choosing between 0.1.0,
+0.2.0, and Backlog, the same way it includes the three axes above.
 
 Use the current GitHub state instead of copying counts or lists of open PRs
 into this document:
@@ -85,6 +93,8 @@ into this document:
 ```bash
 gh issue list --repo mizchi/vibe-lang --state open --milestone 0.1.0 --limit 200
 gh issue list --repo mizchi/vibe-lang --state open --milestone 0.2.0 --limit 200
+gh issue list --repo mizchi/vibe-lang --state open --milestone "Backlog (unscheduled)" --limit 200
+gh issue list --repo mizchi/vibe-lang --state open --search "no:milestone" --limit 200
 gh issue list --repo mizchi/vibe-lang --state open --label P0 --limit 200
 gh pr list --repo mizchi/vibe-lang --state open --limit 100
 ```
