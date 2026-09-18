@@ -1,0 +1,125 @@
+// #2392: the value-sharing and aliasing rules that `docs/user/reference/
+// stable-surface.md` §2.2a freezes, as executable claims.
+//
+// That section is a promise about what a binding, an argument and a field read
+// MEAN. Written only as prose it would rot the way the docs policy predicts --
+// the compiler's private ABI (borrowed returns, RC, Perceus reuse, the
+// direct-call path) is free to change underneath it, and nothing would notice
+// if a change made one of these observable. Each `inspect` below is one
+// sentence of that section.
+//
+// Registered on all THREE lanes in tests/gates/early/run.sh (linear/bump,
+// wasm-gc, linear/RC), because "the lanes agree" is itself one of the claims:
+// an aggregate is a handle on every backend, not a property of whichever one
+// the reader happens to build with.
+
+struct Pt { mut x: Int; mut y: Int }
+
+fn bump(p: Pt) -> Unit {
+  p.x = p.x + 100
+}
+
+fn push_into(xs: Array[Int]) -> Unit {
+  Array::push(xs, 99)
+}
+
+fn first_two(xs: Array[Int]) -> Array[Int] {
+  Array::slice(xs, 0, 2)
+}
+
+fn counter() -> () -> Int {
+  let mut n = 0
+  () -> {
+    n = n + 1
+    n
+  }
+}
+
+test "#2392 an array binding is a shared handle, not a copy" {
+  let xs = [1, 2, 3]
+  let alias = xs
+  Array::push(alias, 4)
+  inspect(Array::length(xs), "4")
+  Array::set(alias, 0, 10)
+  inspect(Array::get(xs, 0), "10")
+}
+
+test "#2392 an array passed to a function is the caller's array" {
+  let xs = [1, 2]
+  push_into(xs)
+  inspect(Array::length(xs), "3")
+}
+
+test "#2392 a struct with mut fields is shared through a binding and a call" {
+  let p = Pt::{ x: 1, y: 2 }
+  let q = p
+  q.x = 5
+  inspect(p.x, "5")
+  bump(p)
+  inspect(q.x, "105")
+}
+
+test "#2392 a slice is a fresh array, not a view" {
+  // The one place a copy happens, and it is an explicit call. If this ever
+  // became a view, writing through it would reach the source -- silently.
+  let xs = [1, 2, 3]
+  let ys = first_two(xs)
+  Array::set(ys, 0, 77)
+  inspect(Array::get(xs, 0), "1")
+  inspect(Array::get(ys, 0), "77")
+}
+
+test "#2392 nesting does not deep-copy" {
+  let inner = [1, 2]
+  let outer = [inner]
+  Array::push(Array::get(outer, 0), 3)
+  inspect(Array::length(inner), "3")
+}
+
+test "#2392 a struct stored in an array is the same object" {
+  let p = Pt::{ x: 1, y: 1 }
+  let ps = [p]
+  Array::get(ps, 0).x = 42
+  inspect(p.x, "42")
+}
+
+test "#2392 a String is immutable, so its sharing is unobservable" {
+  let s = "abc"
+  let t = s
+  let u = String::concat(t, "d")
+  inspect(s, "abc")
+  inspect(u, "abcd")
+}
+
+test "#2392 a closure captures the binding, and sees later mutation" {
+  let xs = [1]
+  let add = () -> Array::push(xs, 2)
+  add()
+  inspect(Array::length(xs), "2")
+}
+
+test "#2392 a captured `let mut` outlives the frame that made it" {
+  let next = counter()
+  inspect(next(), "1")
+  inspect(next(), "2")
+  inspect(next(), "3")
+}
+
+test "#2392 two closures over one `let mut` share one cell" {
+  let mut n = 0
+  let inc = () -> {
+    n = n + 1
+    n
+  }
+  let read = () -> n
+  let _ = inc()
+  let _ = inc()
+  inspect(read(), "2")
+  inspect(n, "2")
+}
+
+test "#2392 an uncaptured `let mut` is an ordinary local" {
+  let mut n = 0
+  n = n + 5
+  inspect(n, "5")
+}

@@ -5,20 +5,26 @@
 // value form. That left the language answering the same question two ways
 // depending on which name you wrote, and the rule a reader had to learn was a
 // two-element list rather than a property. It is now a property: a builtin has
-// a value form exactly when it is QUALIFIED, its registry signature is
-// CONCRETE, and its effect row is empty (`builtin_value_form_arity`,
-// core/builtin_name.vibe).
+// a value form exactly when its registry signature relates its positions and
+// its effect row is empty (`builtin_value_form_arity`, core/builtin_name.vibe).
 //
-// Both restrictions are compiler limitations with measured reasons, recorded on
-// that function and pinned in the unit test beside this file:
+// The one remaining restriction is a compiler limitation with a measured
+// reason, recorded on that function and pinned in the unit test beside this
+// file:
 //
-//   * QUALIFIED, because the whole-program lambda-site planner is scope-free
-//     and cannot tell a use of the builtin `eq` from a use of a local named
-//     `eq`, and the walk THROWS on a disagreement;
 //   * a row with a position still spelled as an unconstrained unknown -- an
 //     internal handle (`Map::get`'s map) or a relationship nobody has written
 //     as a variable yet (`FixedArray::*`) -- because nothing could relate what
 //     the value form takes to what it returns.
+//
+// #2442 removed the other one, which used to read QUALIFIED. It was there
+// because the whole-program lambda-site planner was scope-free and could not
+// tell a use of the builtin `eq` from a use of a local named `eq`, and the
+// walk THROWS on a disagreement. The planner now threads a bound set, and the
+// value-form arm moved BELOW the module-level constants and the constructors
+// in both backends -- the order the checker already resolves in. The shapes
+// that can shadow a bare name are pinned at the bottom of this file and in
+// `builtin_value_form_shadow_{const,ctor}_test.vibe`.
 //
 // #2451 removed the third restriction, which used to read "CONCRETE". A row
 // whose openness is a real type VARIABLE (`reg_var`: `Array::get` is
@@ -122,3 +128,77 @@ test "#2451 a polymorphic builtin value form over Strings" {
   let slice = Array::slice
   inspect(Array::length(slice(ss, 0, 1)), "1")
 }
+
+//# #2442: the BARE names. `eq` and `not` were the last two rows refused, and
+//# each needed a different thing.
+//#
+//# `not` was refused only by the bare-name clause. `eq` was ALSO refused by its
+//# own registry row, which spelled both parameters as independent `reg_any()`
+//# unknowns -- measured on ae838ff, `registry_builtin_pure_arity("eq") = -1`,
+//# so deleting the clause alone would have left it refused. Its row now uses
+//# ONE type variable, which is both what admits it and what makes the value
+//# form honest: two independent unknowns would have typed `f(1, "x")` clean,
+//# the `FrozenArray` lesson #2451 records.
+
+fn apply_int_pair(f: (Int, Int) -> Bool, a: Int, b: Int) -> Bool {
+  f(a, b)
+}
+
+test "#2442 the bare builtin `eq` answers through a binding" {
+  let f = eq
+  inspect(f(3, 3), "true")
+  inspect(f(3, 4), "false")
+  inspect(eq(3, 3), "true")
+}
+
+test "#2442 the bare builtin `eq` at a second type" {
+  // The row's variable is instantiated per occurrence, so this is not the Int
+  // case answering by accident.
+  let f = eq
+  inspect(f("ab", "ab"), "true")
+  inspect(f("ab", "ac"), "false")
+}
+
+test "#2442 the bare builtin `not` answers through a binding" {
+  let f = not
+  inspect(f(true), "false")
+  inspect(f(false), "true")
+  inspect(not(true), "false")
+}
+
+test "#2442 a bare builtin passed directly as an argument" {
+  inspect(apply_int_pair(eq, 5, 5), "true")
+  inspect(apply_int_pair(eq, 5, 6), "false")
+}
+
+//# The four shapes that shadow a bare name. Each one compiles TODAY and
+//# resolves below the value-form arm, so each is a way the admission could have
+//# turned a working program into a wrong one rather than into a refusal. They
+//# are the half that fails if the arm is moved back above them, or if the
+//# lambda-site planner is handed back its scope-free walk.
+
+test "#2442 a LOCAL binding still shadows the bare builtin" {
+  // The regression the old restriction existed to prevent: the planner must
+  // resolve this to the local, not reserve a lambda slot for an eta-expansion.
+  // `!=`, so a wrong resolution answers differently rather than the same.
+  let eq = (a: Int, b: Int) -> a != b
+  let f = eq
+  inspect(f(1, 1), "false")
+  inspect(f(1, 2), "true")
+}
+
+test "#2442 a PARAMETER still shadows the bare builtin" {
+  // A lambda's parameters are bound too -- the plan walks the whole EFn rather
+  // than its body for exactly this.
+  let g = (eq: (Int, Int) -> Bool) -> eq(7, 8)
+  inspect(g((a, b) -> a > b), "false")
+  inspect(g((a, b) -> a < b), "true")
+}
+
+// The MODULE-LEVEL shadows -- a constant and a constructor named `eq` -- are in
+// their own files, `builtin_value_form_shadow_{const,ctor}_test.vibe`. They
+// cannot live here: a top-level `let eq = 5` shadows the builtin for the whole
+// module, so every value-form test above would be reading the constant. Named
+// anything else they would be vacuous, which is what a first draft of them was
+// -- measured, they passed against a compiler with the value-form arm back
+// above the constants, the exact regression they are supposed to catch.

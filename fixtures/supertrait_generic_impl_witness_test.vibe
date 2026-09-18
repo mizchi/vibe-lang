@@ -1,0 +1,54 @@
+// #2872: a generic impl of a SUB-trait supplies the SUPER-trait's methods too,
+// and the super-trait's witness dictionary has to find them.
+//
+// `trait Child: Base` with `impl [T] Child for Array[T]` writing both bodies is
+// a complete implementation of `Base` for `Array[T]`. The dictionary for `Base`
+// looked for a generic impl whose declared trait IS `Base`, found none, and
+// fell through to a plain `Array::base_m` that nothing generates -- leaving the
+// dictionary with a hole, so the call was emitted one argument SHORT.
+//
+// Measured against a stage2 built from main at 3017a67, on the CHECK-only
+// sibling of this file (`fixtures/typecheck/trait_supertrait_bound_param_type
+// .vibe`, which exists since #1503/#1528):
+//
+//   vibe check -> clean, exit 0
+//   load       -> viberun: from_file: failed to compile: wasm[0]::function[5]::v
+//
+// That fixture rides the `fixtures/typecheck` lane, which asserts the CHECKER's
+// verdict and nothing else, so the invalid module it produced was never seen.
+// This file is the executable half: it CALLS the inherited method through the
+// super-trait bound, so a hole in the dictionary is a wrong answer here and not
+// merely an unloadable module.
+
+trait Base {
+  base_m(Self) -> Int
+}
+
+trait Child: Base {
+  child_m(Self) -> Int
+}
+
+impl [T] Child for Array[T] {
+  base_m(self) -> Int {
+    Array::length(self)
+  }
+  child_m(self) -> Int {
+    Array::length(self) * 10
+  }
+}
+
+fn via_base[T: Base](x: T) -> Int {
+  T::base_m(x)
+}
+
+fn via_child[T: Child](x: T) -> Int {
+  T::child_m(x)
+}
+
+test "a super-trait bound finds the sub-trait impl's inherited method (#2872)" {
+  inspect(via_base([1, 2, 3]), "3")
+}
+
+test "the sub-trait's own method keeps resolving (#2872)" {
+  inspect(via_child([1, 2, 3]), "30")
+}

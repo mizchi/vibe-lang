@@ -511,14 +511,36 @@ test expectations, and remain gitignored.
 作業するときのコストとして毎回効いてくる。
 
 現に効いている既知の穴 (どれもこの方針違反として扱う):
-**型エラーに位置が付かないこと** (**#1567** の残り)。これは import レーン
-固有ではない — 実測 (2026-08-19): `let a: Int = "not an int"` は
-`vibe check` でも `vibe check --single-file` でも位置なしで、`--json` すら
-`0:0` + `"data":{"synthetic":true}` を返す。checker の anchor 機構自体は
-動いていて (`off_marker` / `railway_expr_off`)、**リテラル式が offset
-スロットを持たない**のが原因。`vibe check --json` が `--single-file` でしか
-使えないのも同根で、「import レーンに range が無い」ではなく
-「型エラーにそもそも位置が無い」。
+**型エラーの位置が「範囲」ではなく、しかも指す先が式ではないこと**
+(**#2831**、#1567 の残り)。
+
+この節はかつて「型エラーに位置が付かない」と書いていた。**実測
+(2026-09-18) では誤り** — 2026-08-19 の測定以降に位置が付くようになっている。
+FS レーンでも `--single-file` でも:
+
+| 入力 | 報告 |
+|---|---|
+| `  let a: Int = "not an int"` | `line 2:7` |
+| `  let b = takes("...")` | `line 6:11` |
+| `  let s = "日本語ですよ"; let c = takes(s)` | `line 6:41` |
+
+マルチバイトの後でも **byte column が正しい** (ADR-0108 の契約どおり。3 例目の
+`takes` の byte column はちょうど 41)。
+
+残っているのは別の 2 点:
+
+1. **終端が無い**。`unknown name` は `2:11-30` と範囲を返すのに、型不一致は
+   点しか返さない。
+2. **指す先が囲みの先頭**。`2:7` は束縛名 `a` (リテラルは 16-27 桁)、`6:11` は
+   callee 名 `takes` (問題の引数は 17 桁)。直すべきテキストそのものではない。
+
+原因は今も **リテラル式が offset スロットを持たない**こと (`EInt(Int)` /
+`EString(String)` に対し `EIdent(String, Int)`)。anchor 機構
+(`off_marker` / `railway_expr_off`) 自体は動いている。
+
+**同じ測定で見つかった別の穴**: lexer エラーは今も完全に位置無しで、
+`unexpected character: 日` はファイル名しか付かない (行すら無い)。これは型
+エラーではないので #2831 の対象外。
 
 > **解決済み: 「どちらの動詞を使うか」問題 (#1567)。** かつて `vibe check` と
 > `vibe diagnostics` が同じ質問に別の答え方をしていた (import 解決の有無・

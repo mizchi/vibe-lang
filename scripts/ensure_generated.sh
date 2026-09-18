@@ -219,13 +219,14 @@ if [ "$MODE" != "check" ] && [ -s "$INPUTS" ] && all_present; then
     echo "  (none -- the list is identical, so the digest moved for another reason;" >&2
     echo "   that is a bug in compute_fingerprint, not a stale tree)" >&2
   else
-    # `| head -20` closes the pipe on a long diff, and `printf` then takes
-    # SIGPIPE -- which `set -o pipefail` turns into 141 and `set -e` turns into
-    # an exit, BEFORE anything is regenerated. A tree more than 20 inputs
-    # behind could therefore never heal itself: every run died on this line and
-    # reported nothing, leaving the stale bundles this script exists to
-    # replace. `sed -n` reads its input to the end, so there is no pipe to
-    # close.
+    # `sed -n 1,20p` and not `head -20`: head EXITS after its 20th line, and a
+    # diff longer than the 64KiB pipe buffer leaves printf still writing -- it
+    # takes SIGPIPE, `pipefail` makes that the pipeline's status, and `set -e`
+    # kills the script at 141. So the "say what moved" diagnostic ABORTED the
+    # regeneration it was added to explain, and only in the large case: a
+    # fresh clone or a seed bump, where the stamped list differs by hundreds of
+    # lines and the regeneration is most needed. Measured here at 869 differing
+    # lines. `sed` drains its input, so there is no early close to signal.
     printf '%s\n' "$diff_out" | sed -n '1,20p' >&2
     changed="$(printf '%s\n' "$diff_out" | grep -c '^[<>]' || true)"
     echo "  ($changed differing line(s); < stamped, > now)" >&2

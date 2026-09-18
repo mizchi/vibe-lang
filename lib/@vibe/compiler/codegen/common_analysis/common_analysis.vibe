@@ -4640,38 +4640,76 @@ export fn may_return_view_link_parts(parts: Array[Array[Stmt]], user_fn_names: A
 /// reachable in the body -- nested lambdas included, since compile_lambda
 /// compiles its own body through the same dispatch.
 ///
-/// The traversal mirrors dce.vibe's collect_refs_into arm for arm. Binding
-/// structure is irrelevant here (a count, not a scope analysis), so the arms
-/// that clone a bound set there simply recurse.
+/// The traversal mirrors dce.vibe's collect_refs_into arm for arm, and since
+/// #2442 that includes its BOUND SET: the walk has to answer "does codegen
+/// resolve this name to the eta-expanded builtin, or to something that shadows
+/// it", and a bare builtin name can be shadowed. See
+/// `count_lambda_sites_ident`.
 ///
 /// It is a PREDICTION of what the sequential walk does, and it is checked
 /// against the live length at every allocation rather than trusted -- see
 /// CompileCtx.lambda_plan_next. A silent mismatch would key a body's emitted
 /// constants to a table slot nothing installs.
-export fn count_lambda_sites_expr(expr: Expr, user_fn_names: Array[String]) -> Int {
-  match expr {
-    // #1733 / #2442: a builtin with a value form lives before func_offset, so
-    // both backends materialize it as a tiny ordinary lambda with a valid table
-    // slot. Count that synthetic site in the frozen plan.
-    //
-    // The predicate is `builtin_value_form_arity`, shared with the checker and
-    // both backends rather than restated as a name list here -- this walk was
-    // the THIRD copy of #1733's two names, and a plan that disagrees with the
-    // walk is not a wrong answer, it is a thrown `lambda plan over-count`.
-    // That the shared predicate admits only QUALIFIED names is what makes this
-    // scope-free walk able to agree with codegen at all; see its doc comment.
-    //
-    // `user_fn_names` is the one piece of scope this walk needs and can have
-    // (Codex review on #2448). A user program may declare `fn Array::get(...)`,
-    // and the checker resolves that name to the DECLARATION -- so codegen must
-    // emit the user function's table slot, not an eta-expansion, and this walk
-    // must not reserve a slot for one. Locals still cannot be seen here, which
-    // is why a bare name has no value form at all.
-    EIdent(name, _) => if builtin_value_form_arity(name) >= 0 && bsearch_leftmost(user_fn_names, name) < 0 {
-      1
+export fn count_lambda_sites_expr(expr: Expr, shadow_names: Array[String]) -> Int {
+  count_lambda_sites_scoped(expr, shadow_names, common_analysis_fresh_string_array())
+}
+
+/// #2442: `x~: Int` / `x?: Int` reach codegen as the parameter names `x~` /
+/// `x?`, and compile_lambda pushes the STRIPPED name into `local_names` -- so
+/// that is the spelling a body reference resolves against, and the spelling
+/// this walk has to treat as bound.
+///
+/// File-local by the same rule `compile_lambda.vibe` states on its own copy: a
+/// brand-new cross-file export and its first cross-file caller in one commit
+/// are silently dropped by the merge/flatten tool.
+fn cls_strip_param_label_marker(n: String) -> String {
+  let ln = String::length(n)
+  if ln > 0 {
+    let c = String::char_code_at(n, ln - 1)
+    if c == '~' || c == '?' {
+      n[0: ln - 1]
     } else {
-      0
-    },
+      n
+    }
+  } else {
+    n
+  }
+}
+
+/// #1733 / #2442: does codegen materialize this identifier as the synthetic
+/// eta-expansion that owns a table slot?
+///
+/// The predicate is `builtin_value_form_arity`, shared with the checker and
+/// both backends rather than restated as a name list here -- this walk was the
+/// THIRD copy of #1733's two names, and a plan that disagrees with the walk is
+/// not a wrong answer, it is a thrown `lambda plan over-count`.
+///
+/// The two shadow tests are the walk mirroring codegen's `EIdent` resolution
+/// order, which since #2442 is
+/// `locals -> consts -> constructors -> VALUE FORM -> func table`:
+///
+/// - `bound` is the LOCAL half, threaded through the binder arms below. Before
+///   #2442 only QUALIFIED names had a value form and nothing local can be
+///   spelled `A::b`, which is what let this walk be scope-free. A bare name
+///   can be, so an ordinary `let eq = (a, b) -> a == b` would otherwise
+///   reserve a slot for a use codegen resolves to the local.
+/// - `shadow_names` is the WHOLE-PROGRAM half: user functions (#2448 -- a
+///   program may declare `fn Array::get`, and the checker resolves the name to
+///   the declaration), module-level int constants, and constructors. Those
+///   three are what codegen finds before the value-form arm, and all three are
+///   known without scope, which is why they ride a sorted array rather than
+///   the bound set.
+fn count_lambda_sites_ident(name: String, shadow_names: Array[String], bound: Array[String]) -> Int {
+  if builtin_value_form_arity(name) >= 0 && !array_contains_str(bound, name) && bsearch_leftmost(shadow_names, name) < 0 {
+    1
+  } else {
+    0
+  }
+}
+
+fn count_lambda_sites_scoped(expr: Expr, shadow_names: Array[String], bound: Array[String]) -> Int {
+  match expr {
+    EIdent(name, _) => count_lambda_sites_ident(name, shadow_names, bound),
     EInt(_) => 0,
     EFloat(_) => 0,
     EString(_, _) => 0,
@@ -4680,78 +4718,134 @@ export fn count_lambda_sites_expr(expr: Expr, user_fn_names: Array[String]) -> I
     EStringInterp(_) => 0,
     EBreak(_) => 0,
     EContinue(_) => 0,
-    EReturn(e) => count_lambda_sites_expr(e, user_fn_names),
-    EUnaryOp(_, e) => count_lambda_sites_expr(e, user_fn_names),
-    ESpread(e) => count_lambda_sites_expr(e, user_fn_names),
-    EDot(obj, _, _, _) => count_lambda_sites_expr(obj, user_fn_names),
-    ELabeledArg(_, _, e) => count_lambda_sites_expr(e, user_fn_names),
-    ETuple(items) => count_lambda_sites_exprs(items, user_fn_names),
-    EArray(items) => count_lambda_sites_exprs(items, user_fn_names),
-    ERecord(_, fields, _) => count_lambda_sites_fields(fields, user_fn_names),
-    EMap(fields) => count_lambda_sites_fields(fields, user_fn_names),
-    EBinOp(_, l, r, _) => count_lambda_sites_expr(l, user_fn_names) + count_lambda_sites_expr(r, user_fn_names),
-    ESeq(l, r) => count_lambda_sites_expr(l, user_fn_names) + count_lambda_sites_expr(r, user_fn_names),
-    // A direct conversion call stays direct; only a value-position identifier
-    // is materialized as the synthetic lambda above.
+    EReturn(e) => count_lambda_sites_scoped(e, shadow_names, bound),
+    EUnaryOp(_, e) => count_lambda_sites_scoped(e, shadow_names, bound),
+    ESpread(e) => count_lambda_sites_scoped(e, shadow_names, bound),
+    EDot(obj, _, _, _) => count_lambda_sites_scoped(obj, shadow_names, bound),
+    ELabeledArg(_, _, e) => count_lambda_sites_scoped(e, shadow_names, bound),
+    ETuple(items) => count_lambda_sites_exprs(items, shadow_names, bound),
+    EArray(items) => count_lambda_sites_exprs(items, shadow_names, bound),
+    ERecord(_, fields, _) => count_lambda_sites_fields(fields, shadow_names, bound),
+    EMap(fields) => count_lambda_sites_fields(fields, shadow_names, bound),
+    EBinOp(_, l, r, _) => count_lambda_sites_scoped(l, shadow_names, bound) + count_lambda_sites_scoped(r, shadow_names, bound),
+    ESeq(l, r) => count_lambda_sites_scoped(l, shadow_names, bound) + count_lambda_sites_scoped(r, shadow_names, bound),
+    // A direct call stays direct; only a value-position identifier is
+    // materialized as the synthetic lambda above. A callee that IS shadowed is
+    // an ordinary local/global call, which allocates no table entry either, so
+    // this arm answers 0 for both readings.
     ECall(callee, args, _) => {
       let callee_count = match callee {
-        EIdent(name, _) => if builtin_value_form_arity(name) >= 0 {
-          0
-        } else {
-          count_lambda_sites_expr(callee, user_fn_names)
-        },
-        _ => count_lambda_sites_expr(callee, user_fn_names)
+        EIdent(_, _) => 0,
+        _ => count_lambda_sites_scoped(callee, shadow_names, bound)
       }
-      callee_count + count_lambda_sites_exprs(args, user_fn_names)
+      callee_count + count_lambda_sites_exprs(args, shadow_names, bound)
     },
     EIf(cond, then_e, else_e) =>
-    count_lambda_sites_expr(cond, user_fn_names) + count_lambda_sites_expr(then_e, user_fn_names) + count_lambda_sites_expr(else_e, user_fn_names),
-    ELet(_, val, body, _) => count_lambda_sites_expr(val, user_fn_names) + count_lambda_sites_expr(body, user_fn_names),
-    ELetRec(_, val, body) => count_lambda_sites_expr(val, user_fn_names) + count_lambda_sites_expr(body, user_fn_names),
-    ELetMut(_, val, body, _) => count_lambda_sites_expr(val, user_fn_names) + count_lambda_sites_expr(body, user_fn_names),
-    EAssign(_, val, body) => count_lambda_sites_expr(val, user_fn_names) + count_lambda_sites_expr(body, user_fn_names),
-    EAssignOp(_, _, val, body) => count_lambda_sites_expr(val, user_fn_names) + count_lambda_sites_expr(body, user_fn_names),
-    EWhile(cond, body) => count_lambda_sites_expr(cond, user_fn_names) + count_lambda_sites_expr(body, user_fn_names),
-    EForIn(_, _, iter, body) => count_lambda_sites_expr(iter, user_fn_names) + count_lambda_sites_expr(body, user_fn_names),
-    ELoop(params, body) => count_lambda_sites_fields(params, user_fn_names) + count_lambda_sites_expr(body, user_fn_names),
-    EMatch(scr, arms) => count_lambda_sites_expr(scr, user_fn_names) + count_lambda_sites_arms(arms, user_fn_names),
-    EHandle(body_expr, arms) => count_lambda_sites_expr(body_expr, user_fn_names) + count_lambda_sites_arms(arms, user_fn_names),
+    count_lambda_sites_scoped(cond, shadow_names, bound) + count_lambda_sites_scoped(then_e, shadow_names, bound) + count_lambda_sites_scoped(else_e, shadow_names, bound),
+    ELet(name, val, body, _) => {
+      let total = count_lambda_sites_scoped(val, shadow_names, bound)
+      let mark = Array::length(bound)
+      Array::push(bound, name)
+      let body_total = count_lambda_sites_scoped(body, shadow_names, bound)
+      Array::truncate(bound, mark)
+      total + body_total
+    },
+    ELetRec(name, val, body) => {
+      let mark = Array::length(bound)
+      Array::push(bound, name)
+      let total = count_lambda_sites_scoped(val, shadow_names, bound) + count_lambda_sites_scoped(body, shadow_names, bound)
+      Array::truncate(bound, mark)
+      total
+    },
+    ELetMut(name, val, body, _) => {
+      let total = count_lambda_sites_scoped(val, shadow_names, bound)
+      let mark = Array::length(bound)
+      Array::push(bound, name)
+      let body_total = count_lambda_sites_scoped(body, shadow_names, bound)
+      Array::truncate(bound, mark)
+      total + body_total
+    },
+    EAssign(_, val, body) => count_lambda_sites_scoped(val, shadow_names, bound) + count_lambda_sites_scoped(body, shadow_names, bound),
+    EAssignOp(_, _, val, body) => count_lambda_sites_scoped(val, shadow_names, bound) + count_lambda_sites_scoped(body, shadow_names, bound),
+    EWhile(cond, body) => count_lambda_sites_scoped(cond, shadow_names, bound) + count_lambda_sites_scoped(body, shadow_names, bound),
+    EForIn(name, index_name, iter, body) => {
+      let total = count_lambda_sites_scoped(iter, shadow_names, bound)
+      let mark = Array::length(bound)
+      Array::push(bound, name)
+      match index_name {
+        Some(index_name) => Array::push(bound, index_name),
+        None => ()
+      }
+      let body_total = count_lambda_sites_scoped(body, shadow_names, bound)
+      Array::truncate(bound, mark)
+      total + body_total
+    },
+    ELoop(params, body) => {
+      let mark = Array::length(bound)
+      let mut i = 0
+      let mut total = 0
+      while i < Array::length(params) {
+        let (name, init) = Array::get(params, i)
+        total = total + count_lambda_sites_scoped(init, shadow_names, bound)
+        Array::push(bound, name)
+        i = i + 1
+      }
+      let body_total = count_lambda_sites_scoped(body, shadow_names, bound)
+      Array::truncate(bound, mark)
+      total + body_total
+    },
+    EMatch(scr, arms) => count_lambda_sites_scoped(scr, shadow_names, bound) + count_lambda_sites_arms(arms, shadow_names, bound),
+    EHandle(body_expr, arms) => count_lambda_sites_scoped(body_expr, shadow_names, bound) + count_lambda_sites_arms(arms, shadow_names, bound),
     // The one arm that counts: this node IS a table entry, and its body may
     // hold more.
-    EFn(_, _, _, _, _, body) => 1 + count_lambda_sites_expr(body, user_fn_names)
+    EFn(_, _, params, _, _, body) => {
+      let mark = Array::length(bound)
+      let mut i = 0
+      while i < Array::length(params) {
+        let (pname, _) = Array::get(params, i)
+        Array::push(bound, cls_strip_param_label_marker(pname))
+        i = i + 1
+      }
+      let body_total = count_lambda_sites_scoped(body, shadow_names, bound)
+      Array::truncate(bound, mark)
+      1 + body_total
+    }
   }
 }
 
-fn count_lambda_sites_exprs(items: Array[Expr], user_fn_names: Array[String]) -> Int {
+fn count_lambda_sites_exprs(items: Array[Expr], shadow_names: Array[String], bound: Array[String]) -> Int {
   let n = Array::length(items)
   let mut i = 0
   let mut total = 0
   while i < n {
-    total = total + count_lambda_sites_expr(Array::get(items, i), user_fn_names)
+    total = total + count_lambda_sites_scoped(Array::get(items, i), shadow_names, bound)
     i = i + 1
   }
   total
 }
 
-fn count_lambda_sites_fields(fields: Array[(String, Expr)], user_fn_names: Array[String]) -> Int {
+fn count_lambda_sites_fields(fields: Array[(String, Expr)], shadow_names: Array[String], bound: Array[String]) -> Int {
   let n = Array::length(fields)
   let mut i = 0
   let mut total = 0
   while i < n {
     let (_, val) = Array::get(fields, i)
-    total = total + count_lambda_sites_expr(val, user_fn_names)
+    total = total + count_lambda_sites_scoped(val, shadow_names, bound)
     i = i + 1
   }
   total
 }
 
-fn count_lambda_sites_arms(arms: Array[(Pat, Expr)], user_fn_names: Array[String]) -> Int {
+fn count_lambda_sites_arms(arms: Array[(Pat, Expr)], shadow_names: Array[String], bound: Array[String]) -> Int {
   let n = Array::length(arms)
   let mut i = 0
   let mut total = 0
   while i < n {
-    let (_, body) = Array::get(arms, i)
-    total = total + count_lambda_sites_expr(body, user_fn_names)
+    let (pat, body) = Array::get(arms, i)
+    let mark = Array::length(bound)
+    collect_pattern_bindings(pat, bound)
+    total = total + count_lambda_sites_scoped(body, shadow_names, bound)
+    Array::truncate(bound, mark)
     i = i + 1
   }
   total

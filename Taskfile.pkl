@@ -448,6 +448,15 @@ local checkGatePortability =
   scriptTask("check-gate-portability", "scripts/check_gate_portability.sh")
 local testCheckGatePortability =
   scriptTask("test-check-gate-portability", "scripts/check_gate_portability_test.sh")
+// The "say what moved" report in ensure_generated.sh must not be able to kill
+// the regeneration it explains: `printf | head` takes SIGPIPE on a diff larger
+// than the pipe buffer, and pipefail + set -e turned that into exit 141 with no
+// artifacts written. It failed only in the large case -- a fresh clone or a
+// seed bump -- which is exactly when regeneration is needed.
+local checkGeneratedStampReport =
+  scriptTask("check-generated-stamp-report", "scripts/check_generated_stamp_report.sh")
+local testCheckGeneratedStampReport =
+  scriptTask("test-check-generated-stamp-report", "scripts/check_generated_stamp_report_test.sh")
 local testLintTrackedExperimentNames =
   scriptTask("test-lint-tracked-experiment-names", "scripts/lint_tracked_experiment_names_test.sh")
 // The bundles and the flat module source are no longer committed, so there is
@@ -920,6 +929,40 @@ local testCheckExportRefusal = new Task {
     ...compilerProbeInputs
     ...scriptSources
     "fixtures/typecheck/export_aggregate_undeclared_refused.vibe"
+  }
+  deps { selfhostGeneration }
+}
+// #2872: a bodyless `impl` of a method-bearing trait passed `vibe check` clean
+// and built a module the wasm validator rejected -- the witness dictionary had
+// a hole where the method belonged, so the call site was emitted one argument
+// short. Asked of the running compiler, message included, and asserted to LEAD
+// with the edit.
+local checkBodylessImplRefusal = new Task {
+  name = "check-bodyless-impl-refusal"
+  description =
+    "a bodyless impl with no `<Type>::<method>` fallback is refused, leading with the edit"
+  cmd = "bash scripts/check_bodyless_impl_refusal.sh"
+  inputs {
+    ...compilerProbeInputs
+    ...scriptSources
+    "fixtures/bodyless_impl_missing_method_refused.vibe"
+    "fixtures/bodyless_impl_struct_missing_method_refused.vibe"
+  }
+  deps { selfhostGeneration }
+}
+// Not `scriptTask`: every one of its four red cases needs a compiler that
+// actually refuses, so it probes the compiler and must declare the dependency
+// (CLAUDE.md, "Which compiler answered?"). It reads the lane's compiler from
+// VIBE_STAGE2_WASM, which is what makes the selftests lane share the
+// compiler-gate matrix.
+local testCheckBodylessImplRefusal = new Task {
+  name = "test-check-bodyless-impl-refusal"
+  cmd = "bash scripts/check_bodyless_impl_refusal_test.sh"
+  inputs {
+    ...compilerProbeInputs
+    ...scriptSources
+    "fixtures/bodyless_impl_missing_method_refused.vibe"
+    "fixtures/bodyless_impl_struct_missing_method_refused.vibe"
   }
   deps { selfhostGeneration }
 }
@@ -2345,6 +2388,8 @@ local releaseCheck = new Task {
     testCheckGateWiring
     checkGatePortability
     testCheckGatePortability
+    checkGeneratedStampReport
+    testCheckGeneratedStampReport
     checkTreesitterArtifacts
     testCheckTreesitterArtifacts
     checkTreesitterWasmCorpus
@@ -2389,6 +2434,8 @@ local releaseCheck = new Task {
     testCheckLambdaBoundRefusal
     checkExportRefusal
     testCheckExportRefusal
+    checkBodylessImplRefusal
+    testCheckBodylessImplRefusal
     checkTelemetrySidecarGuards
     testCheckTelemetrySidecarGuards
     checkHostRemoveParity
@@ -2469,6 +2516,8 @@ tasks {
   testCheckGateWiring
   checkGatePortability
   testCheckGatePortability
+  checkGeneratedStampReport
+  testCheckGeneratedStampReport
   checkTreesitterArtifacts
   testCheckTreesitterArtifacts
   checkTreesitterWasmCorpus
@@ -2512,6 +2561,8 @@ tasks {
   testCheckLambdaBoundRefusal
   checkExportRefusal
   testCheckExportRefusal
+  checkBodylessImplRefusal
+  testCheckBodylessImplRefusal
   checkTelemetrySidecarGuards
   testCheckTelemetrySidecarGuards
   checkHostRemoveParity

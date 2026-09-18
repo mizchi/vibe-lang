@@ -1,0 +1,74 @@
+// #2872 case (2): a bodyless `impl` of a method-bearing trait resolves its
+// witness to `<Type>::<method>` -- and that fallback now reaches BUILTINS, not
+// only user functions.
+//
+// `fn_exists` knows the program's own functions. `String::equals` is a real
+// builtin with no declaration site, so it answered NO and the dictionary was
+// left with a hole; the call was then emitted one argument SHORT and the wasm
+// validator rejected the module, after `vibe check` had certified it. Measured
+// against a stage2 built from main at 3017a67:
+//
+//   vibe check -> clean, exit 0
+//   run        -> viberun: from_file: failed to compile: wasm[0]::function[6]
+//
+// A witness slot holds a VALUE, so the builtin is eta-expanded rather than
+// named directly: its body lives below `func_offset` and takes no closure env.
+// The arity comes from `builtin_value_form_arity`, the same predicate the
+// checker and both backends read for a bare builtin used as a value (#2442),
+// which is also what keeps an effectful or unconstrained row out of a witness
+// slot (a value form there would launder authority, ADR-0075/0084/0088).
+//
+// The two rows below `String` are the controls that would catch a fallback
+// grown too wide or too narrow: `Pt` has a `derive (Eq)`-generated
+// `Pt::equals` (a USER function, the route that already worked), and `Int`
+// declares an explicit body, which must keep winning over any fallback.
+//
+// The refused side -- a bodyless impl with NO `<Type>::<method>` of any kind --
+// is `fixtures/bodyless_impl_*_refused.vibe`, checked by
+// `scripts/check_bodyless_impl_refusal.sh`.
+
+trait Cmp {
+  equals(Self, Self) -> Bool
+}
+
+struct Pt {
+  x: Int;
+  y: Int;
+} derive (Eq)
+
+impl Cmp for String
+
+impl Cmp for Pt
+
+impl Cmp for Int {
+  equals(a: Int, b: Int) -> Bool {
+    a - b == 0
+  }
+}
+
+fn same[T: Cmp](a: T, b: T) -> Int {
+  if T::equals(a, b) {
+    1
+  } else {
+    0
+  }
+}
+
+fn row(tag: String, eq: Int, ne: Int) -> String {
+  String::concat(tag, String::concat(" ", String::concat(Int::to_string(eq), Int::to_string(ne))))
+}
+
+test "a bodyless impl resolves its witness to a builtin (#2872)" {
+  inspect(row("String", same("ab", "ab"), same("ab", "cd")), "String 10")
+}
+
+test "a bodyless impl still resolves to a derived user function (#2872)" {
+  let a = Pt::{ x: 1, y: 2 }
+  let b = Pt::{ x: 1, y: 2 }
+  let c = Pt::{ x: 3, y: 4 }
+  inspect(row("Pt", same(a, b), same(a, c)), "Pt 10")
+}
+
+test "an explicit impl body still wins over the fallback (#2872)" {
+  inspect(row("Int", same(7, 7), same(7, 8)), "Int 10")
+}
