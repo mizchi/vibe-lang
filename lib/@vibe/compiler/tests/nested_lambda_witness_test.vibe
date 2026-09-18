@@ -48,8 +48,14 @@ test "nested Show interpolation compiles" {
   inspect(compile_outcome("nested-interp", String::concat(show_prelude(), "fn main() -> Int {\n  let inner = [T: Show](a: T) -> String {\n    \"\\{a}\"\n  }\n  String::length(inner(Pt::{ v: 1 }))\n}\n")), "nested-interp: accepted")
 }
 
-test "nested Eq shim interpolation compiles at Int" {
-  inspect(compile_outcome("nested-eq-interp", String::concat(eq_prelude(), "fn main() -> Int {\n  let inner = [T: Eq](a: T) -> String {\n    \"\\{a}\"\n  }\n  String::length(inner(7))\n}\n")), "nested-eq-interp: accepted")
+// #2778 threads the bound; it does not invent a RENDERER. `Eq` declares
+// `equals`, not `to_string`, so there is no witness to interpolate through and
+// #2745/#2840 refuses -- at a nested binder exactly as at a top-level one. The
+// shim rewrite does not rescue it either: the call site sees `inner(7)`, but
+// the body was already refused. Bounded-and-renderable is the case above
+// ("nested Show interpolation compiles"); this is bounded-and-not.
+test "a nested Eq bound is not a renderer, so interpolation is refused" {
+  inspect(compile_outcome("nested-eq-interp", String::concat(eq_prelude(), "fn main() -> Int {\n  let inner = [T: Eq](a: T) -> String {\n    \"\\{a}\"\n  }\n  String::length(inner(7))\n}\n")), "nested-eq-interp: pass an explicit renderer `(T) -> String`, or interpolate at a concrete type: type parameter `T` is erased here and has no renderer witness; a marker `Show` bound does not provide one")
 }
 
 test "nested unshadowed binder compiles" {
@@ -108,8 +114,11 @@ test "a let-mut nested Eq lambda compiles" {
   inspect(compile_outcome("nested-letmut", String::concat(eq_prelude(), "fn main() -> Int {\n  let mut inner = [T: Eq](a: T, b: T) -> Bool {\n    T::equals(a, b)\n  }\n  if inner(7, 8) {\n    1\n  } else {\n    0\n  }\n}\n")), "nested-letmut: accepted")
 }
 
-test "a later let that rebinds a local shim name still compiles" {
-  inspect(compile_outcome("nested-shim-shadow", "fn main() -> Int {\n  let inner = [T](a: T) -> String {\n    \"\\{a}\"\n  }\n  let inner = (n: Int) -> Int {\n    n + 1\n  }\n  inner(7)\n}\n"), "nested-shim-shadow: accepted")
+// The rebinding is irrelevant: the FIRST lambda binds `T` with no bound at
+// all, so its `"\{a}"` has no renderer and is refused where it is written.
+// Nothing downstream of a refused body can make it compile.
+test "an unbounded shim is refused even when a later let rebinds its name" {
+  inspect(compile_outcome("nested-shim-shadow", "fn main() -> Int {\n  let inner = [T](a: T) -> String {\n    \"\\{a}\"\n  }\n  let inner = (n: Int) -> Int {\n    n + 1\n  }\n  inner(7)\n}\n"), "nested-shim-shadow: pass an explicit renderer `(T) -> String`, or interpolate at a concrete type: type parameter `T` is erased here and has no renderer witness; a marker `Show` bound does not provide one")
 }
 
 test "rebinding a nested Eq lambda to a non-generic compiles" {
@@ -119,5 +128,8 @@ test "rebinding a nested Eq lambda to a non-generic compiles" {
 test "a nested non-shim interpolation of a formal is refused" {
   let msg = compile_outcome("nested-nonsim", String::concat(eq_prelude(), "struct Qt {\n  w: Int\n}\nfn main() -> Int {\n  let inner = [T](a: T) -> String {\n    String::concat(\"v=\", \"\\{a}\")\n  }\n  String::length(inner(Qt::{ w: 1 }))\n}\n"))
   assert(msg != "nested-nonsim: accepted")
-  assert(String::contains(msg, "move the lambda"))
+  // The edit is a RENDERER, not a lift: #2840 measured that moving an
+  // unbounded lambda to a top-level declaration supplies no witness, so
+  // "move the lambda" would be an edit that does not fix it.
+  assert(String::contains(msg, "pass an explicit renderer"))
 }

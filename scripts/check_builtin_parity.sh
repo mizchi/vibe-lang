@@ -25,8 +25,15 @@ cd "$ROOT_DIR"
 python3 - <<'PY'
 import os, re, sys
 
-LIN_CALLSITE = "lib/@vibe/compiler/codegen/expr/compile_call.vibe"
-GC_CALLSITE = "lib/@vibe/compiler/codegen/gc/backend_call.vibe"
+# Overridable for the same reason REGISTRY is: the self-test points the gate at
+# a MUTATED COPY rather than editing the tree's own sources. Unset on every
+# real invocation.
+LIN_CALLSITE = os.environ.get(
+    "VIBE_BUILTIN_PARITY_LIN_CALLSITE",
+    "lib/@vibe/compiler/codegen/expr/compile_call.vibe")
+GC_CALLSITE = os.environ.get(
+    "VIBE_BUILTIN_PARITY_GC_CALLSITE",
+    "lib/@vibe/compiler/codegen/gc/backend_call.vibe")
 REGISTRY = os.environ.get(
     "VIBE_BUILTIN_PARITY_REGISTRY",
     "lib/@vibe/compiler/core/builtin_registry.vibe")
@@ -178,8 +185,30 @@ if wrapper_only_found != wrapper_only_expected:
     print("[builtin-parity] FAIL: compiler-owned StdinStream wrapper shape "
           f"changed (found {sorted(wrapper_only_found)})", file=sys.stderr)
     sys.exit(1)
+# #2397: `abort` is served on BOTH lanes by a call-site lowering rather than a
+# func-table row, so `in_linear_table` / `in_gc_table` are honestly false and
+# the row is not dead. Same posture as the wrapper exception above -- the
+# exemption is mutation-checked against the arms that actually serve it, so a
+# lowering that is deleted or renamed fails here instead of being waved
+# through as "a name nobody registered".
+callsite_only_expected = {"abort"}
+lin_callsite_text = open(LIN_CALLSITE).read()
+gc_callsite_text = open(GC_CALLSITE).read()
+callsite_only_found = {
+    n for n in callsite_only_expected
+    if f'fname == "{n}"' in lin_callsite_text and f'fname == "{n}"' in gc_callsite_text
+}
+if callsite_only_found != callsite_only_expected:
+    missing = sorted(callsite_only_expected - callsite_only_found)
+    print("[builtin-parity] FAIL: call-site-lowered builtin has no `fname == "
+          f'"<name>"` arm on both lanes: {", ".join(missing)} -- either the '
+          "lowering moved (update this exemption) or the row is dead (drop "
+          "it from the registry)", file=sys.stderr)
+    sys.exit(1)
 neither = sorted(n for n, l, g, v, *_ in rows
-                 if l == "false" and g == "false" and n not in wrapper_only_expected)
+                 if l == "false" and g == "false"
+                 and n not in wrapper_only_expected
+                 and n not in callsite_only_expected)
 if neither:
     print(f"[builtin-parity] FAIL: registry rows claiming NEITHER lane "
           f"(dead rows?): {', '.join(neither)}", file=sys.stderr)
