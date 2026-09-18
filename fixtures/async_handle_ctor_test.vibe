@@ -1,0 +1,84 @@
+// #2856: a data CONSTRUCTOR inside a body handled for an effect is inert.
+//
+// `edp_callee_is_resolvable` admits `perform`, `resume`, a pure builtin, a
+// host-raw callee, an inert fn, or a top-level `fn`. A constructor is none of
+// those, so `Some(v)` counted as an OPAQUE CALL and the handle covering it was
+// refused -- at BUILD time, after `vibe check` passed:
+//
+//   handle of effect 'Async' cannot be compiled here: every `perform Async`
+//   this handle covers has to be visible to it, and one of them is not.
+//
+// Applying a constructor allocates a tagged value. It can neither perform an
+// effect nor invoke a function-typed argument, which is exactly the criterion
+// that set encodes.
+//
+// The issue reported this as "`HostStream::next` is invisible to the Async
+// handle pass", because that builtin's row returns `Option[Int]` and the
+// spelling that failed was the one whose value is built with `Some`. Measured:
+// the BARE `host_stream_next` wrapped to return `Option[Int]` failed
+// identically, and `HostStream::close` -- no Option, no Async -- compiled
+// through the qualified spelling all along. The `::` was never the difference.
+//
+// These tests RUN, not merely compile: a visibility pass that accepts a program
+// it should not is a worse failure than one that refuses it, so the answers are
+// what is pinned.
+
+enum Verdict {
+  Big(Int);
+  Small
+}
+
+fn classify(n: Int) -> Option[Int] with Async {
+  let f = Future::ready(n)
+  let v = await(f)
+  if v > 10 {
+    Some(v * 2)
+  } else {
+    None
+  }
+}
+
+fn drive(n: Int) -> Option[Int] {
+  handle {
+    classify(n)
+  } with { Async::Suspend(_) => resume(0) }
+}
+
+fn show(o: Option[Int]) -> String {
+  match o {
+    Some(x) => Int::to_string(x),
+    None => "none"
+  }
+}
+
+/// The same shape through a USER enum, which is what says the repair is about
+/// constructors and not about `Option` in particular.
+fn judge(n: Int) -> Verdict with Async {
+  let f = Future::ready(n)
+  let v = await(f)
+  if v > 10 {
+    Big(v + 1)
+  } else {
+    Small
+  }
+}
+
+fn drive_verdict(n: Int) -> String {
+  let v = handle {
+    judge(n)
+  } with { Async::Suspend(_) => resume(0) }
+  match v {
+    Big(x) => Int::to_string(x),
+    Small => "small"
+  }
+}
+
+test "a builtin constructor in an Async-handled body compiles and answers (#2856)" {
+  inspect(show(drive(21)), "42")
+  inspect(show(drive(3)), "none")
+}
+
+test "a user-enum constructor in an Async-handled body compiles and answers (#2856)" {
+  inspect(drive_verdict(21), "22")
+  inspect(drive_verdict(3), "small")
+}

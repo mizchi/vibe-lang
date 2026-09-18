@@ -457,12 +457,10 @@ CLOSE_SITES="$(grep -c 'host_stream_close' "$CLOSE_WAT" || true)"
 echo "[named-hoststreams-component-gate] close half is gated on use (absent from the drain-only component, guest import + adapter export present in the closing one)"
 
 # --- #1955 multiple live streams: interleaved reads, EOS, early close --------
-# HostStream::next (Option) cannot compile through the Async handle yet
-# (ADR-0076: the perform is not visible to this pass). The drain-only probes
-# above use host_stream_next, which returns -1 at EOS; this block uses the
-# same spelling so the gate can still check two live streams, repeated EOS
-# reads, and idempotent close. The Option protocol stays a compiler bug,
-# not a dark gate.
+# The SCALAR spelling: two live streams, repeated EOS reads, idempotent close.
+# `host_stream_next` returns -1 at EOS. The nominal `Option` protocol is the
+# step right after this one; it was a compiler bug until #2856, and this block
+# was written to keep the rest of the coverage alive while that was true.
 PROTOCOL_SRC="$OUT_DIR/stream_protocol.vibe"
 cat >"$PROTOCOL_SRC" <<'EOF'
 let run: () -> Int with Async = () -> {
@@ -499,5 +497,58 @@ PROTOCOL_GOT="$(cat "$PROTOCOL_LOG")"
 [ "$PROTOCOL_GOT" = "42" ] \
   || { echo "named hoststreams component gate FAILED: nominal protocol expected 42, got: $PROTOCOL_GOT" >&2; exit 1; }
 echo "[named-hoststreams-component-gate] nominal protocol: 42 (Option EOS, repeated reads, early/idempotent close, two live parked streams)"
+
+# --- #2856: the same protocol through the NOMINAL Option spelling ------------
+# `HostStream::next` returns `Option[Int]`, so EOS is `None` rather than -1.
+# This probe was the one the issue was filed from, and `d3e32af` rewrote it to
+# the scalar spelling above because it could not compile: a constructor in a
+# body handled for `Async` counted as an opaque call, so `Some(byte)` -- built
+# inside the builtin the program never writes -- made the handle unprovable.
+# Restored as its OWN step rather than in place of the scalar one: the two
+# spellings are different lowerings (`__hs_next_option` vs `__hs_next`) and
+# nothing else covers the Option half.
+OPTION_SRC="$OUT_DIR/stream_protocol_option.vibe"
+cat >"$OPTION_SRC" <<'EOF'
+fn pull(s: HostStream) -> Int with Async {
+  match HostStream::next(s) {
+    Some(byte) => byte,
+    None => 0 - 1
+  }
+}
+
+let run: () -> Int with Async = () -> {
+  let left = host_stream_named("left")
+  let right = host_stream_named("right")
+  let a = pull(left)
+  let b = pull(right)
+  let c = pull(left)
+  let d = pull(right)
+  let left_eos_1 = pull(left)
+  let left_eos_2 = pull(left)
+  host_stream_close(right)
+  host_stream_close(right)
+  let right_after_close = pull(right)
+  let terminals = if left_eos_1 == 0 - 1 && left_eos_2 == 0 - 1 && right_after_close == 0 - 1 {
+    0
+  } else {
+    1000
+  }
+  a + b + c + d + terminals
+}
+EOF
+
+OPTION_COMPONENT="$OUT_DIR/stream_protocol_option.component.wasm"
+compile_fixture "$OPTION_SRC" "$OPTION_COMPONENT"
+check_component_header "$OPTION_COMPONENT"
+OPTION_LOG="$OUT_DIR/run.protocol_option.log"
+if ! VIBE_ASYNC_STREAMS="left=10|20@20,right=5|7|99@20" timeout 60 "$RUNNER" "$OPTION_COMPONENT" >"$OPTION_LOG" 2>&1; then
+  echo "named hoststreams component gate FAILED: Option protocol run did not exit 0" >&2
+  cat "$OPTION_LOG" >&2
+  exit 1
+fi
+OPTION_GOT="$(cat "$OPTION_LOG")"
+[ "$OPTION_GOT" = "42" ] \
+  || { echo "named hoststreams component gate FAILED: Option protocol expected 42, got: $OPTION_GOT" >&2; exit 1; }
+echo "[named-hoststreams-component-gate] Option protocol: 42 (same run through HostStream::next, None at EOS) (#2856)"
 
 echo "named hoststreams component gate OK"
