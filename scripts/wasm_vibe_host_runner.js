@@ -1010,6 +1010,241 @@ function parseVibeCovBranchSection(wasmBytes) {
   return null;
 }
 
+// #2199: parse `vibe.dbgfiles` (source paths, one per line) and
+// `vibe.linemap` (the 4-byte marker `VLM1`, then compact LEB deltas:
+// func_delta, offset_delta, file_id, line per unique (func, offset)). Used to
+// annotate an uncaught trap with an editable path:line. Missing/empty/
+// stripped sections => no annotation, never a fabricated location.
+//
+// The marker is required: #644's table under the same section name was
+// 16-byte little-endian records, which decode as LEB quadruples without
+// erroring, so an older module would annotate with fabricated values. An
+// unmarked table reads as empty.
+function findWasmCustomSection(wasmBytes, wantName) {
+  const buf = Buffer.from(wasmBytes);
+  if (buf.length < 8 || buf[0] !== 0x00 || buf[1] !== 0x61 || buf[2] !== 0x73 || buf[3] !== 0x6d) {
+    return null;
+  }
+  let pos = 8;
+  while (pos < buf.length) {
+    const sectionId = buf[pos++];
+    const sectionLenInfo = readUlebAt(buf, pos);
+    pos = sectionLenInfo.next;
+    const sectionEnd = pos + sectionLenInfo.value;
+    if (sectionEnd > buf.length) {
+      break;
+    }
+    if (sectionId === 0) {
+      const nameLenInfo = readUlebAt(buf, pos, sectionEnd);
+      const nameStart = nameLenInfo.next;
+      const nameEnd = nameStart + nameLenInfo.value;
+      if (nameEnd <= sectionEnd) {
+        const name = buf.slice(nameStart, nameEnd).toString("utf8");
+        if (name === wantName) {
+          return buf.slice(nameEnd, sectionEnd);
+        }
+      }
+    }
+    pos = sectionEnd;
+  }
+  return null;
+}
+
+function parseVibeDbgfiles(wasmBytes) {
+  const payload = findWasmCustomSection(wasmBytes, "vibe.dbgfiles");
+  if (!payload) {
+    return [];
+  }
+  return payload.toString("utf8").split("\n").filter((l) => l.length > 0);
+}
+
+const LINEMAP_MAGIC = "VLM1";
+
+function parseCompactLinemapPayload(payload) {
+  const rows = [];
+  if (!payload || payload.length < LINEMAP_MAGIC.length) {
+    return rows;
+  }
+  if (payload.slice(0, LINEMAP_MAGIC.length).toString("latin1") !== LINEMAP_MAGIC) {
+    return rows;
+  }
+  let pos = LINEMAP_MAGIC.length;
+  const end = payload.length;
+  const uleb = () => {
+    let result = 0;
+    let shift = 0;
+    while (pos < end) {
+      const byte = payload[pos++];
+      result |= (byte & 0x7f) << shift;
+      if ((byte & 0x80) === 0) {
+        return result >>> 0;
+      }
+      shift += 7;
+      if (shift > 35) {
+        return null;
+      }
+    }
+    return null;
+  };
+  let func = 0;
+  let offset = 0;
+  let have = false;
+  while (pos < end) {
+    const fd = uleb();
+    const od = uleb();
+    const fileId = uleb();
+    const line = uleb();
+    if (fd === null || od === null || fileId === null || line === null) {
+      break;
+    }
+    if (have && fd === 0) {
+      offset += od;
+    } else {
+      func = have ? func + fd : fd;
+      offset = od;
+      have = true;
+    }
+    rows.push({ funcIdx: func, offset, fileId, line });
+  }
+  return rows;
+}
+
+function parseVibeLinemap(wasmBytes) {
+  const payload = findWasmCustomSection(wasmBytes, "vibe.linemap");
+  const byFunc = new Map();
+  if (!payload) {
+    return byFunc;
+  }
+  for (const rec of parseCompactLinemapPayload(payload)) {
+    let entries = byFunc.get(rec.funcIdx);
+    if (!entries) {
+      entries = [];
+      byFunc.set(rec.funcIdx, entries);
+    }
+    entries.push({ offset: rec.offset, fileId: rec.fileId, line: rec.line });
+  }
+  for (const entries of byFunc.values()) {
+    entries.sort((a, b) => a.offset - b.offset);
+  }
+  return byFunc;
+}
+
+function parseWasmFuncEntryStarts(wasmBytes) {
+  const buf = Buffer.from(wasmBytes);
+  if (buf.length < 8 || buf[0] !== 0x00 || buf[1] !== 0x61 || buf[2] !== 0x73 || buf[3] !== 0x6d) {
+    return { nimported: 0, starts: [] };
+  }
+  let pos = 8;
+  let nimported = 0;
+  let starts = [];
+  while (pos < buf.length) {
+    const sectionId = buf[pos++];
+    const sectionLenInfo = readUlebAt(buf, pos);
+    pos = sectionLenInfo.next;
+    const sectionEnd = pos + sectionLenInfo.value;
+    if (sectionEnd > buf.length) {
+      break;
+    }
+    if (sectionId === 2) {
+      const countInfo = readUlebAt(buf, pos, sectionEnd);
+      let q = countInfo.next;
+      for (let i = 0; i < countInfo.value && q < sectionEnd; i += 1) {
+        const ml = readUlebAt(buf, q, sectionEnd);
+        q = ml.next + ml.value;
+        const nl = readUlebAt(buf, q, sectionEnd);
+        q = nl.next + nl.value;
+        const kind = buf[q++];
+        if (kind === 0) {
+          nimported += 1;
+          const t = readUlebAt(buf, q, sectionEnd);
+          q = t.next;
+        } else {
+          break;
+        }
+      }
+    } else if (sectionId === 10) {
+      const countInfo = readUlebAt(buf, pos, sectionEnd);
+      let q = countInfo.next;
+      for (let i = 0; i < countInfo.value && q < sectionEnd; i += 1) {
+        const sz = readUlebAt(buf, q, sectionEnd);
+        starts.push(sz.next);
+        q = sz.next + sz.value;
+      }
+    }
+    pos = sectionEnd;
+  }
+  return { nimported, starts };
+}
+
+function resolveLinemap(byFunc, funcIdx, offset) {
+  const entries = byFunc.get(funcIdx);
+  if (!entries || entries.length === 0) {
+    return null;
+  }
+  let lo = 0;
+  let hi = entries.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (entries[mid].offset <= offset) {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+  if (lo === 0) {
+    return null;
+  }
+  return entries[lo - 1];
+}
+
+function annotateTrapWithLinemap(err, wasmBytes) {
+  if (!wasmBytes || !err) {
+    return;
+  }
+  const byFunc = parseVibeLinemap(wasmBytes);
+  if (byFunc.size === 0) {
+    return;
+  }
+  const files = parseVibeDbgfiles(wasmBytes);
+  const layout = parseWasmFuncEntryStarts(wasmBytes);
+  const toRel = (funcIdx, moduleOff) => {
+    const bi = funcIdx - layout.nimported;
+    if (bi < 0 || bi >= layout.starts.length) {
+      return moduleOff;
+    }
+    const start = layout.starts[bi];
+    if (moduleOff >= start) {
+      return moduleOff - start;
+    }
+    return moduleOff;
+  };
+  const emit = (name, funcIdx, moduleOff) => {
+    const offset = toRel(funcIdx, moduleOff);
+    const hit = resolveLinemap(byFunc, funcIdx, offset);
+    if (hit && hit.line > 0 && hit.fileId >= 0 && hit.fileId < files.length && files[hit.fileId]) {
+      console.error(`  frame: ${name} (${files[hit.fileId]}:${hit.line})`);
+    } else {
+      console.error(`  frame: ${name}`);
+    }
+  };
+  const stack = err.stack ? String(err.stack) : "";
+  // Node 24: `at wasm://wasm/hash:wasm-function[N]:0xOFF` (module offset)
+  // Named:   `at main (wasm://wasm/hash:wasm-function[N]:0xOFF)`
+  const reNamed = /at ([^(\n]+) \(wasm:\/\/wasm\/[^:]+:wasm-function\[(\d+)\]:0x([0-9a-fA-F]+)\)/g;
+  const reBare = /at wasm:\/\/wasm\/[^:]+:wasm-function\[(\d+)\]:0x([0-9a-fA-F]+)/g;
+  let match;
+  let any = false;
+  while ((match = reNamed.exec(stack)) !== null) {
+    any = true;
+    emit(match[1].trim(), Number(match[2]), parseInt(match[3], 16));
+  }
+  if (!any) {
+    while ((match = reBare.exec(stack)) !== null) {
+      emit(`wasm-function[${match[1]}]`, Number(match[1]), parseInt(match[2], 16));
+    }
+  }
+}
+
 function normalizeHostImportAbi(value) {
   if (value === "raw" || value === "tagged") {
     return value;
@@ -3916,6 +4151,11 @@ main().catch((err) => {
     usage();
   }
   console.error(err && err.stack ? err.stack : String(err));
+  // #2199: production trap provenance. Same compact vibe.linemap the
+  // wasmtime runner already reads. Missing mapping => no extra location.
+  try {
+    annotateTrapWithLinemap(err, covWasmBytesGlobal);
+  } catch (_) {}
   process.exit(1);
 });
 }
