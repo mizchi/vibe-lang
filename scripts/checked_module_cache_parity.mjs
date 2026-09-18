@@ -116,8 +116,66 @@ class Compiler {
   }
 }
 
+// #2875: every comparison below assumes the three compiles of a case read ONE
+// input. Nothing enforced that, and when it broke the gate still blamed the
+// cache: a session editing `lib/@vibe/compiler/**` and running
+// `scripts/vibe_test.sh` (which regenerates the bundles through
+// `ensure_generated.sh`) changed the sources under a running gate, and what it
+// printed was `parity mismatch: fixtures/contract_conformance_test.vibe`. The
+// artifacts said otherwise -- all 45 `assert_eq failed. at off=<N>` strings
+// baked into them differed by exactly 70, which is one compile reading 70 more
+// bytes of source than the other, not a cache that disagrees with itself.
+//
+// So: fingerprint what a run compiles, and when it moves, say THAT. Stat only
+// (path, size, mtime) over the two trees a case can read -- 21 ms for 2833
+// files here, so it is taken at the start, again whenever a comparison is
+// about to fail, and once more at the end. A run whose inputs moved has no
+// verdict to give, whether its comparisons happened to agree or not.
+const TREE_ROOTS = ["lib", "fixtures"];
+function treeFingerprint() {
+  const entries = new Map();
+  const walk = dir => {
+    let listing;
+    try { listing = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of listing) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) { walk(full); continue; }
+      const key = path.relative(root, full);
+      let stat;
+      try { stat = fs.statSync(full); } catch { entries.set(key, "gone"); continue; }
+      entries.set(key, `${stat.size}:${stat.mtimeMs}`);
+    }
+  };
+  for (const dir of TREE_ROOTS) walk(path.join(root, dir));
+  return entries;
+}
+function treeChanges(before, after) {
+  const changed = [];
+  for (const [file, stamp] of after) {
+    const was = before.get(file);
+    if (was === undefined) changed.push(`added ${file}`);
+    else if (was !== stamp) changed.push(`changed ${file}`);
+  }
+  for (const file of before.keys()) if (!after.has(file)) changed.push(`removed ${file}`);
+  return changed;
+}
+const treeBefore = treeFingerprint();
+function refuseIfTreeMoved(context) {
+  const changed = treeChanges(treeBefore, treeFingerprint());
+  if (!changed.length) return;
+  const shown = changed.slice(0, 10).join("\n  ");
+  throw new Error(`the source tree changed during the run, so ${context} cannot be compared`
+    + ` -- ${changed.length} file(s) under ${TREE_ROOTS.join(", ")} moved:\n  ${shown}`
+    + (changed.length > 10 ? `\n  ... and ${changed.length - 10} more` : "")
+    + `\nRe-run on a tree nobody is editing. A gate and \`scripts/vibe_test.sh\``
+    + ` (which regenerates the bundles) cannot share a checkout.`);
+}
+
 function equal(expected, actual, label) {
   if (JSON.stringify(expected) !== JSON.stringify(actual)) {
+    // The tree first: a mismatch explained by a moving input is not a mismatch,
+    // and naming the cache there sends the reader after the wrong thing.
+    refuseIfTreeMoved(`\`${label}\``);
     fs.writeFileSync(path.join(work, "failure.json"), JSON.stringify({ label, expected, actual }, null, 2));
     throw new Error(`parity mismatch: ${label}; see ${work}/failure.json`);
   }
@@ -372,6 +430,9 @@ try {
     // WHICH module each plant displaced: the evidence that the probe paired by
     // module rather than settling for a neighbour's bytes.
     edit_stale_artifact_modules: edits.planted.map(entry => `${entry.case}:${entry.module}`) };
+  // Nothing disagreed -- but a run whose inputs moved was measuring two trees,
+  // so it has no verdict either way (#2875).
+  refuseIfTreeMoved("this run's results");
   fs.writeFileSync(path.join(work, "report.json"), JSON.stringify(report, null, 2));
   console.log(`[checked-module-parity] ok ${JSON.stringify(report)}`);
   console.log(`[checked-module-parity] evidence: ${work}`);
