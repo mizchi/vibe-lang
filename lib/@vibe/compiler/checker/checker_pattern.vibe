@@ -12,6 +12,10 @@ import ./checker_trait.vibe {
   send_subst_vars
 }
 
+import @vibe/compiler/checker/resolution {
+  subst_type_params
+}
+
 //# Functions
 
 fn find_ctor_in_defs(defs: Array[TypeDef], ctor_name: String) -> Option[(String, Array[Type])] {
@@ -204,6 +208,73 @@ export fn pat_has_unsupported_or_binding(pat: Pat) -> Bool {
       found
     },
     _ => false
+  }
+}
+
+/// #2888: the declared type of `field` on the struct the scrutinee names,
+/// instantiated against that scrutinee's own type arguments.
+///
+/// The `PStruct` arm used to bind EVERY field pattern at `CtUnknown`, without
+/// even reading the struct name. `CtUnknown` unifies with anything, so a
+/// generic field bound this way carried no type at all and an annotation on it
+/// constrained nothing:
+///
+///   fn take[T](a: T) -> Int {
+///     let r = Box1::{ value: a }
+///     let v: Int = match r { Box1::{ value } => value }
+///     v + 1
+///   }
+///
+/// compiled clean and printed the allocation address (233, constant across
+/// `w: 5` / `99` / `1000`). The same formal read through a declared-return
+/// helper, or destructured from a TUPLE, was rejected correctly -- only the
+/// struct pattern lost it.
+///
+/// Resolution mirrors `receiver_struct_field_type` in checker.vibe: an applied
+/// generic struct substitutes its arguments into the declared field type; a
+/// plain struct keeps the declared type; anything this cannot resolve stays
+/// `CtUnknown`, which is exactly the old behaviour, so a scrutinee whose type
+/// is not yet known is no stricter than before.
+fn cp_struct_field_ty(defs: Array[TypeDef], scrutinee_ty: Type, field: String) -> Type {
+  match scrutinee_ty {
+    CtStruct(sname) => cp_declared_field_ty(defs, sname, field),
+    CtNamed(sname, targs) => match find_typedef(defs, sname) {
+      Some(TDStruct(_, _, _, tparams)) => {
+        let ft = cp_declared_field_ty(defs, sname, field)
+        match ft {
+          CtUnknown => CtUnknown,
+          _ => if Array::length(tparams) > 0 && Array::length(tparams) == Array::length(targs) {
+            subst_type_params(ft, tparams, targs)
+          } else {
+            ft
+          }
+        }
+      },
+      _ => CtUnknown
+    },
+    _ => CtUnknown
+  }
+}
+
+fn cp_declared_field_ty(defs: Array[TypeDef], sname: String, field: String) -> Type {
+  match find_typedef(defs, sname) {
+    Some(TDStruct(_, fields, _, _)) => {
+      let flen = Array::length(fields)
+      let rec go: (Int) -> Type = (i) -> {
+        if i >= flen {
+          CtUnknown
+        } else {
+          let (fname, ftype) = Array::get(fields, i)
+          if fname == field {
+            ftype
+          } else {
+            go(i + 1)
+          }
+        }
+      }
+      go(0)
+    },
+    _ => CtUnknown
   }
 }
 
@@ -468,8 +539,8 @@ export fn check_pattern(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[
         if i >= flen {
           acc_env
         } else {
-          let (_, fpat) = Array::get(fields, i)
-          let next_env = check_pattern(fpat, CtUnknown, acc_env, defs, errors)
+          let (fname, fpat) = Array::get(fields, i)
+          let next_env = check_pattern(fpat, cp_struct_field_ty(defs, scrutinee_ty, fname), acc_env, defs, errors)
           bind_fields(i + 1, next_env)
         }
       }
