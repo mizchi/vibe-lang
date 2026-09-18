@@ -12873,7 +12873,16 @@ fn synth_dicts_if(prepend: Bool, callee_type_params: Array[String], threaded: Ar
 /// time. A plain local lambda inside a bounded generic is everywhere, which is
 /// why the failure looked unrelated to nested bounds.
 fn gen_prepends_dicts(gen: DictGen) -> Bool {
-  Array::length(gen.type_params) > 0
+  if gen.impl_trait == lambda_gen_marker() {
+    Array::length(gen.type_params) > 0
+  } else {
+    // `build_gens` derives `threaded` from BOUNDS, and a generic impl method
+    // can carry them with an empty `type_params` (its formals live in
+    // `impl_params`). Testing the arity alone therefore suppressed dictionaries
+    // those methods really do take -- measured, that is what stopped
+    // `s5_wasm_test` self-compiling the compiler.
+    true
+  }
 }
 
 /// The dict parameters a lambda's rewritten signature CARRIES (#2778).
@@ -13053,13 +13062,22 @@ fn threaded_from_lambda_sig(bounds: Array[(String, Array[String])], params: Arra
   threaded
 }
 
+/// The marker that separates a LAMBDA binder's gen from `build_gens`'s.
+///
+/// `impl_trait` is read only under `match gen.impl_target { Some(target) =>`,
+/// and a lambda gen's target is always None, so the field is free here and
+/// the two producers stay distinguishable without widening `DictGen`.
+fn lambda_gen_marker() -> String {
+  "__lambda_binder"
+}
+
 fn dict_gen_of_lambda(name: String, tparams: Array[String], threaded: Array[(String, String, Int)]) -> DictGen {
   DictGen::{
     name: name,
     type_params: tparams,
     threaded: threaded,
     return_constructor_param: "",
-    impl_trait: "",
+    impl_trait: lambda_gen_marker(),
     impl_params: [],
     impl_target: None,
     constructor_recvs: []
