@@ -1,4 +1,4 @@
-# AST Binary ABI v1
+# AST Binary ABI v2
 
 Stable binary encoding for the vibe surface-syntax AST — `Array[Stmt]` and
 the `Stmt` / `Expr` / `Pat` / `TypeExpr` trees underneath it, as declared
@@ -31,14 +31,20 @@ added, removed or renamed without this document following it.
 ```
 +----------------+------------------+----------------+
 | magic (4B)     | version (varint) | module body    |
-| "vAST"         | = 1              |                |
+| "vAST"         | = 2              |                |
 +----------------+------------------+----------------+
 ```
 
 Magic: ASCII `'v' 'A' 'S' 'T'` (`0x76 0x41 0x53 0x54`). Followed by a
-varint version number; this document defines **version 1**. The
+varint version number; this document defines **version 2**. The
 deserializer rejects any other magic or any version it doesn't
 recognize.
+
+**v1 -> v2**: `EString` gained its source offset. v1 wrote only the value and
+rebuilt the offset as `-1`, so a cached parse lost what locates a literal's
+type error AT the literal -- the same program reported at the binder on a warm
+cache and at the literal on a cold one. The deserializer rejects v1 rather
+than reading it short.
 
 ## Primitives
 
@@ -161,7 +167,7 @@ ImportItem : opt<ImportKind>(kind) string(name) optstr(alias)
 |------|---------|---------|
 | 0x01 | `EInt(Int)` | `svarint(value)` |
 | 0x02 | `EFloat(Double)` | `f64(value)` |
-| 0x03 | `EString(String)` | `string(value)` |
+| 0x03 | `EString(String, Int)` | `string(value)`, `svarint(off)` |
 | 0x04 | `EBool(Bool)` | `bool(value)` |
 | 0x05 | `EIdent(String, Int)` | `string(name) svarint(byte_offset)` |
 | 0x06 | `ETuple(Array[Expr])` | `array<Expr>(items)` |

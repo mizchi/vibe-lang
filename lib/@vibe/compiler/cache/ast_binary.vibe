@@ -43,7 +43,7 @@ import @vibe/compiler/core {
 
 //# Constants ===
 
-export let AST_BINARY_VERSION: Int = 1
+export let AST_BINARY_VERSION: Int = 2
 export let AST_BINARY_MAGIC_V: Int = 118
 /// 'v'
 export let AST_BINARY_MAGIC_A: Int = 65
@@ -1078,9 +1078,15 @@ export fn ast_binary_write_expr(buf: Bytes, e: Expr) -> Unit {
       Bytes::push(buf, AST_BINARY_TAG_E_FLOAT)
       ast_binary_write_f64(buf, d)
     }
-    EString(v, _) => {
+    EString(v, off) => {
       Bytes::push(buf, AST_BINARY_TAG_E_STRING)
       ast_binary_write_string(buf, v)
+      // The offset is part of the value, not decoration: it is what locates a
+      // literal's type error AT the literal. Dropping it here made a cached
+      // parse answer `-1`, so the same program's diagnostic pointed at the
+      // binder on a warm cache and at the literal on a cold one. Same encoding
+      // as EIdent's, for the same reason.
+      ast_binary_write_svarint(buf, off)
     }
     EBool(v) => {
       Bytes::push(buf, AST_BINARY_TAG_E_BOOL)
@@ -1253,7 +1259,11 @@ export fn ast_binary_read_expr(r: AstBinaryReader) -> Expr with Exception {
   } else if tag == AST_BINARY_TAG_E_FLOAT {
     EFloat(ast_binary_read_f64_checked(r))
   } else if tag == AST_BINARY_TAG_E_STRING {
-    EString(ast_binary_read_string_checked(r), -1)
+    {
+      let sv = ast_binary_read_string_checked(r)
+      let soff = ast_binary_read_svarint_checked(r)
+      EString(sv, soff)
+    }
   } else if tag == AST_BINARY_TAG_E_BOOL {
     EBool(ast_binary_read_bool_checked(r))
   } else if tag == AST_BINARY_TAG_E_IDENT {
