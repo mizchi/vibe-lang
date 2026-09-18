@@ -170,8 +170,10 @@ vibe check --single-file --json <file.vibe>  # same JSON contract without resolv
   wrapped as `{range, severity, source, message}` objects — no separate
   structured-diagnostic format to keep in sync. A clean file yields `[]` and
   exit 0; errors yield a JSON array and exit 1. A node the parser never
-  constructed uses null bounds and `synthetic: true` rather than an invented
-  `0:0` (#2831).
+  constructed is marked `data.synthetic: true`; its `range` is an empty one at
+  the document start, because LSP requires `Diagnostic.range` to be two real
+  `Position` objects and a schema-checking client drops a null-bounded payload
+  (#2831, Codex review of #2868).
 - `vibe diagnostics` is the **deprecated** spelling of `vibe check
   --single-file`. It is kept behaviourally frozen (raw lines with no `error: `
   prefix, always exit 0) for editors already wired to it — see

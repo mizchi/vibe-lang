@@ -43,26 +43,39 @@ import @vibe/json {
 
 //# Tests
 
-test "an unlocated diagnostic is null bounds + synthetic, not 0:0 (#2831)" {
+test "an unlocated diagnostic carries a VALID range plus synthetic (#2831)" {
   // Binder-name fallback is ambiguous when `fn v` and `let v` share a spelling,
-  // so the type error has no `line L:` prefix. JSON must not invent origin.
+  // so the type error has no `line L:` prefix.
+  //
+  // This asserted `"start": null, "end": null` until Codex review of #2868.
+  // LSP makes `Diagnostic.range` required and types it as two `Position`
+  // objects with `uinteger` fields, so null is not a weaker claim -- it is an
+  // invalid payload, and a schema-checking client drops the very diagnostics
+  // this path exists to deliver. The claim lives in `data.synthetic` instead,
+  // which is what a client should read to know the position is artificial.
   let src = "fn v() -> Int {\n  1\n}\n\nfn f() -> Bool {\n  let v = if true { 1 } else { true }\n  true\n}\n"
   let parsed = Json::parse(lsp_diagnostics_json_string(src))
   assert(Json::length(parsed) >= 1)
   let diag = Json::index(parsed, 0)
   let range = Json::field(diag, "range")
-  assert(Json::field(range, "start") is JNull)
-  assert(Json::field(range, "end") is JNull)
+  let start = Json::field(range, "start")
+  let fin = Json::field(range, "end")
+  assert(!(start is JNull))
+  assert(!(fin is JNull))
+  assert(Double::to_int(Json::number(Json::field(start, "line"))) == 0)
+  assert(Double::to_int(Json::number(Json::field(start, "character"))) == 0)
+  assert(Double::to_int(Json::number(Json::field(fin, "line"))) == 0)
+  assert(Double::to_int(Json::number(Json::field(fin, "character"))) == 0)
   let data = Json::field(diag, "data")
   assert(!(data is JNull))
   assert(Json::bool(Json::field(data, "synthetic")))
   let raw = lsp_diagnostics_json_of_messages(src, [
     "if branches have incompatible types: expected Int, got Bool"
   ])
-  assert(!String::contains(raw, "\"line\":0"))
-  assert(!String::contains(raw, "\"character\":0"))
-  assert(String::contains(raw, "\"start\":null"))
-  assert(String::contains(raw, "\"end\":null"))
+  // The marker, not the coordinates, is what separates this from a real
+  // first-character highlight -- so the marker is what is asserted.
+  assert(!String::contains(raw, "\"start\":null"))
+  assert(!String::contains(raw, "\"end\":null"))
   assert(String::contains(raw, "\"synthetic\":true"))
 }
 

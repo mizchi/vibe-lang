@@ -57,8 +57,12 @@ protocol. That is not this contract leaking; it is the boundary doing its job.
 (`lsp_pos_to_byte_col`, `lsp_byte_col_to_utf16`) so the compiler underneath
 stays byte-addressed. The two `vibe check --json` lanes share this contract:
 clean files emit `[]` and exit 0; errors emit a JSON array and exit 1. A
-diagnostic for a node the parser never constructed uses null bounds and
-`synthetic: true` rather than an invented `0:0`.
+diagnostic for a node the parser never constructed is marked
+`data.synthetic: true` and carries an empty range at the document start: LSP
+makes `Diagnostic.range` required and types it as two `Position` objects, so
+null bounds are an invalid payload rather than a weaker claim. `vibe grep`'s
+own JSON is NOT the protocol and keeps `"start":null,"end":null` for a
+synthetic match (below).
 
 Measured on `let bad = quux` preceded on the same line by two 4-byte emoji:
 
