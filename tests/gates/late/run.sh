@@ -6125,6 +6125,15 @@ bash "$ROOT_DIR/scripts/check_bench_corpus_test.sh"
 # `codegen_body_cache_new()` there is provably unread.
 bash "$ROOT_DIR/scripts/check_body_cache_discard.sh"
 bash "$ROOT_DIR/scripts/check_body_cache_discard_test.sh"
+# ...and the sixth: a lane that CAN no longer do its work and does not say so.
+# Several compiler-sized compiles in one `--daemon` exhaust the wasm32 address
+# space; before #2876 the next request answered a bare `unreachable` in 1us
+# with no `.diag`, which is the shape a caller reserves for a crash rather than
+# a refusal. Two directions, and the second is the sharper one: an ordinary
+# trap must NOT be relabelled "out of memory", or a compiler bug reads as a
+# reason to recycle the process.
+bash "$ROOT_DIR/scripts/check_daemon_memory_diagnostic.sh"
+bash "$ROOT_DIR/scripts/check_daemon_memory_diagnostic_test.sh"
 # check_book_console.sh landed (#2253) with no self-test and CI caught it the
 # same day -- the ratchet working as intended. Its cases hand the gate a STUB
 # compiler so the transcripts fail identically for all of them, and assert the
