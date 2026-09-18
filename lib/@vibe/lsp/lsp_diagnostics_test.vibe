@@ -30,7 +30,7 @@
 //# Imports
 
 import .{
-  lsp_diagnostics_json_of_messages, lsp_diagnostics_json_string
+  lsp_diagnostics_json_of_messages, lsp_diagnostics_json_of_messages_for, lsp_diagnostics_json_string
 }
 
 import @vibe/compiler/runtime {
@@ -209,4 +209,59 @@ test "a top-level let bound to a literal is located at the string (#2831)" {
   assert(Json::string(Json::field(diag, "message")) == "binding type mismatch for x: expected Int, got String")
   let data = Json::field(diag, "data")
   assert(data is JNull)
+}
+
+//# #2868 (Codex P2): the merged FS lane reports a DEPENDENCY's error as
+//# `<dep>: line L:C: body`, where `L:C` was computed against the dep's own
+//# text. Rendered against the ENTRY's text the column is converted with the
+//# wrong bytes and the origin path is dropped from the message, so the
+//# diagnostic reads as a confident location in a file that never had the
+//# error. Measured before the fix on the source below, whose error line holds
+//# 9 bytes of Japanese before the column: byte column 22 was answered as
+//# UTF-16 character 21, a position the entry's own line does not even reach.
+//#
+//# Both halves are pinned. A foreign origin must NOT be converted; the entry's
+//# OWN located diagnostic, which arrives through the same prefixed spelling,
+//# must still be.
+
+test "a dependency's located diagnostic is not converted against the entry (#2868)" {
+  let entry_src = "import ./dep.vibe { bad }\nexport fn main() -> Int {\n  bad()\n}\n"
+  let parsed = Json::parse(lsp_diagnostics_json_of_messages_for("entry.vibe", entry_src, [
+    "dep.vibe: line 2:22: binding type mismatch for a: expected Int, got String"
+  ]))
+  assert(Json::length(parsed) == 1)
+  let diag = Json::index(parsed, 0)
+  // The range is the synthetic one: this document has no honest span for
+  // another file's error.
+  let range = Json::field(diag, "range")
+  assert(Double::to_int(Json::number(Json::field(Json::field(range, "start"), "line"))) == 0)
+  assert(Double::to_int(Json::number(Json::field(Json::field(range, "start"), "character"))) == 0)
+  assert(Double::to_int(Json::number(Json::field(Json::field(range, "end"), "character"))) == 0)
+  // The message keeps the origin path -- a location without its file is what
+  // made this wrong in the first place.
+  assert(String::contains(Json::string(Json::field(diag, "message")), "dep.vibe"))
+  let data = Json::field(diag, "data")
+  assert(Json::bool(Json::field(data, "synthetic")))
+  assert(Json::string(Json::field(data, "originPath")) == "dep.vibe")
+  assert(Double::to_int(Json::number(Json::field(data, "originLine"))) == 2)
+  // BYTES, as the compiler emitted them: converting to UTF-16 needs dep.vibe's
+  // text, which this lane does not have.
+  assert(Double::to_int(Json::number(Json::field(data, "originByteColumn"))) == 22)
+}
+
+test "the entry's own prefixed diagnostic is still located (#2868)" {
+  let src = "let a: Int = \"not an int\"\n"
+  let raw = Array::get(collect_all_diagnostics(src), 0)
+  let parsed = Json::parse(lsp_diagnostics_json_of_messages_for("entry.vibe", src, [
+    String::concat("entry.vibe: ", raw)
+  ]))
+  let direct = Json::parse(lsp_diagnostics_json_of_messages(src, [raw]))
+  let range = Json::field(Json::index(parsed, 0), "range")
+  let direct_range = Json::field(Json::index(direct, 0), "range")
+  let sc = Double::to_int(Json::number(Json::field(Json::field(range, "start"), "character")))
+  let ec = Double::to_int(Json::number(Json::field(Json::field(range, "end"), "character")))
+  assert(String::substring(src, sc, ec) == "\"not an int\"")
+  assert(sc == Double::to_int(Json::number(Json::field(Json::field(direct_range, "start"), "character"))))
+  // Same file, so the path is consumed like any other located prefix.
+  assert(!String::contains(Json::string(Json::field(Json::index(parsed, 0), "message")), "entry.vibe"))
 }
