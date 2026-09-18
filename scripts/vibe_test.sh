@@ -3,7 +3,7 @@
 # the filesystem) with the committed seed compiler, then execute it via the Rust
 # runner — no MoonBit host.
 #
-#   bash scripts/vibe_test.sh [--coverage] <path.vibe | dir> [more paths...]
+#   bash scripts/vibe_test.sh [--coverage] [--update] <path.vibe | dir> [more paths...]
 #
 # A test file declares `test "name" { ... }` blocks and (typically) no entry
 # function. The selfhost compiler lowers each block into a `__test_<name>`
@@ -23,7 +23,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-# Parse flags (only --coverage today); leave the rest as positional paths.
+# Parse flags; leave the rest as positional paths.
 #
 # #2886: an UNRECOGNISED option used to fall through to the positional list and
 # be reported by the path check below as `not found: --update` -- the wording a
@@ -32,43 +32,38 @@ cd "$ROOT_DIR"
 # lines further down, where a failed directory scan was reported with the words
 # an empty directory gets.
 #
-# `--update` is called out by name because it is REAL everywhere else:
-# `runtime/vibe` documents `vibe test --update`, and CLAUDE.md tells a compiler
-# change to run its tests through THIS script (it is the only route that takes
-# VIBE_TEST_CLI_WASM). Those two instructions cannot both be followed, so the
-# message says where the flag does work instead of pretending the file is
-# missing. Forwarding it here needs the `inspect-update` verb wired into the
-# run loop and is still open on #2886.
+# `--update` in particular was REAL everywhere else: `runtime/vibe` documents
+# `vibe test --update`, and CLAUDE.md tells a compiler change to run its tests
+# through THIS script (it is the only route that takes VIBE_TEST_CLI_WASM).
+# Those two instructions could not both be followed. It is now implemented
+# here too (see vt_try_update_patch), against the SAME compiler the run used,
+# which is the whole point of routing a compiler change through this script.
 coverage=0
+update=0
 _args=()
 for _a in "$@"; do
-  if [ "$_a" = "--coverage" ]; then
-    coverage=1
-  else
-    case "$_a" in
-      --update)
-        echo "vibe_test.sh: --update is not supported here (#2886)." >&2
-        echo "  This wrapper compiles and runs; it does not patch inspect() literals." >&2
-        echo "  Update snapshots with the installed toolchain: vibe test --update <path>" >&2
-        echo "  Supported flags: --coverage" >&2
-        exit 2
-        ;;
-      -*)
-        echo "vibe_test.sh: unrecognised option: $_a" >&2
-        echo "  Supported flags: --coverage" >&2
-        echo "  (a path that begins with '-' can be passed as ./$_a)" >&2
-        exit 2
-        ;;
-      *)
-        _args+=("$_a")
-        ;;
-    esac
-  fi
+  case "$_a" in
+    --coverage)
+      coverage=1
+      ;;
+    --update)
+      update=1
+      ;;
+    -*)
+      echo "vibe_test.sh: unrecognised option: $_a" >&2
+      echo "  Supported flags: --coverage --update" >&2
+      echo "  (a path that begins with '-' can be passed as ./$_a)" >&2
+      exit 2
+      ;;
+    *)
+      _args+=("$_a")
+      ;;
+  esac
 done
 set -- ${_args[@]+"${_args[@]}"}
 
 if [ "$#" -lt 1 ]; then
-  echo "usage: vibe_test.sh [--coverage] <path.vibe | dir> [more paths...]" >&2
+  echo "usage: vibe_test.sh [--coverage] [--update] <path.vibe | dir> [more paths...]" >&2
   exit 2
 fi
 
@@ -226,8 +221,13 @@ fi
 vt_hw_jobs="$(nproc 2>/dev/null || echo 1)"
 [ "$vt_hw_jobs" -gt 4 ] && vt_hw_jobs=4
 VT_JOBS="${VIBE_TEST_JOBS:-$vt_hw_jobs}"
+# #2886: --update REWRITES source files, and a worker's patch-and-retry
+# recompiles. Running that fan-out would have several processes writing the
+# shared persistent build cache while sources move underneath it, and would
+# interleave the per-file retry output. Serialize, as runtime/vibe does.
+[ "$update" = "1" ] && VT_JOBS=1
 vt_results="$(mktemp -d -t vibe-test-results-XXXXXX)"
-export ROOT_DIR coverage backend cli_wasm covdir vt_results
+export ROOT_DIR coverage update backend cli_wasm covdir vt_results
 
 # #948: count the lowered `__test_<name>` functions in a compiled test wasm.
 # Prefer a real name-section parse (a raw `grep -c __test_` double-counts under
@@ -494,6 +494,49 @@ vt_fail_detail() {
 }
 export -f vt_fail_detail
 
+# #2886 `--update`: patch a failing file's stale `inspect(value, content)`
+# literals to the values this run actually printed, then let the caller
+# recompile and re-run. The patch itself is done by the COMPILER, through
+# cli_main's VIBE_INSPECT_UPDATE adapter mode -- the same mode `runtime/vibe`
+# drives behind its `inspect-update` verb, so there is one implementation of
+# "what does this diagnostic mean" and this script only moves files around.
+#
+# It runs against "$cli_wasm", i.e. the same compiler that produced the
+# failing output. That is the reason the flag belongs here at all: CLAUDE.md
+# routes a compiler change through this script because it is the only lane
+# that honours VIBE_TEST_CLI_WASM, and a snapshot updated by a DIFFERENT
+# compiler than the one under test records the wrong answer (the "which
+# compiler answered?" failure, in its most durable form -- committed).
+#
+# Returns 0 only when the source file actually changed. An unrecognized
+# mismatch, or a literal an earlier iteration already patched, makes the
+# adapter write the input back unchanged; calling that progress would spin
+# until the depth bound with nothing to show. The adapter reads and writes
+# through the wasm preopen, so both scratch paths are repo-relative.
+# $1 = repo-relative source path, $2 = flat name, $3 = the run's captured output.
+vt_try_update_patch() {
+  local src_rel="$1" flat="$2" captured="$3"
+  local cap_rel="_build/vibe_test/$flat.captured"
+  local pat_rel="_build/vibe_test/$flat.patched"
+  [ -s "$captured" ] || return 1
+  rm -f "$ROOT_DIR/$pat_rel"
+  cp "$captured" "$ROOT_DIR/$cap_rel" || return 1
+  if ! env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_INSPECT_UPDATE=1       VIBE_INSPECT_UPDATE_STDOUT="$cap_rel" VIBE_IMPORT_ABI=raw       bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh"       --invoke cli_main "$cli_wasm" "$src_rel" "$pat_rel" >/dev/null 2>&1; then
+    rm -f "$ROOT_DIR/$cap_rel" "$ROOT_DIR/$pat_rel"
+    return 1
+  fi
+  # An empty output is a failed patch, not an empty program: never truncate a
+  # source file on it.
+  if [ ! -s "$ROOT_DIR/$pat_rel" ] || cmp -s "$ROOT_DIR/$pat_rel" "$ROOT_DIR/$src_rel"; then
+    rm -f "$ROOT_DIR/$cap_rel" "$ROOT_DIR/$pat_rel"
+    return 1
+  fi
+  cp "$ROOT_DIR/$pat_rel" "$ROOT_DIR/$src_rel" || return 1
+  rm -f "$ROOT_DIR/$cap_rel" "$ROOT_DIR/$pat_rel"
+  return 0
+}
+export -f vt_try_update_patch
+
 vt_worker() {
   local src="$1"
   local src_rel
@@ -563,18 +606,28 @@ vt_worker() {
   # (previously discarded, leaving a bare `FAIL <file>` with no test name).
   local run_ok=0
   local run_err="$vt_results/$flat.err"
+  # #2886: stdout is kept SEPARATELY as well. `inspect` prints its mismatch
+  # diagnostic to stdout, and the compiler's snapshot patcher reads the
+  # "expected:" value as everything that follows -- a snapshot may contain
+  # newlines. Handing it the merged stream makes the wasm trap's stack frames
+  # part of the expected value, which then matches no literal in the file and
+  # the patch silently no-ops. The merged file stays for vt_fail_detail, which
+  # needs the trap (stderr) and the mismatch (stdout) together.
+  local run_out="$vt_results/$flat.out"
+  local run_errf="$vt_results/$flat.err2"
   if [ "$backend" = "gc" ]; then
     if timeout 60 wasmtime run -W gc=y,function-references=y,exceptions=y \
-        --invoke _start "$ROOT_DIR/$out_rel" >"$run_err" 2>&1; then
+        --invoke _start "$ROOT_DIR/$out_rel" >"$run_out" 2>"$run_errf"; then
       run_ok=1
     fi
   else
     if VIBE_COV_OUT="$cov_out" VIBE_PREOPEN_DIR="$ROOT_DIR" \
         bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" \
-        --invoke _start "$out_rel" >"$run_err" 2>&1; then
+        --invoke _start "$out_rel" >"$run_out" 2>"$run_errf"; then
       run_ok=1
     fi
   fi
+  cat "$run_out" "$run_errf" > "$run_err"
   if [ "$run_ok" = "1" ]; then
     if [ "$coverage" = "1" ] && [ -s "$cov_out" ]; then
       local f_hit f_total b_hit b_total
@@ -607,27 +660,57 @@ PY
     else
       # #948: annotate (don't fail) a file with zero recognized `test {}`
       # blocks — a typo'd block otherwise passes silently via an empty _start.
+      local upd_note=""
+      if [ "${VIBE_TEST_UPDATE_PATCHES:-0}" -gt 0 ]; then
+        upd_note=" (updated ${VIBE_TEST_UPDATE_PATCHES} snapshot(s))"
+      fi
       if [ "$n_tests" = "0" ]; then
-        echo "ok   $src_rel (no tests found)"
+        echo "ok   $src_rel (no tests found)$upd_note"
       else
-        echo "ok   $src_rel"
+        echo "ok   $src_rel$upd_note"
       fi
       printf 'ok 0 0 0 0 0 %s\n' "$n_tests" > "$vt_results/$flat.res"
     fi
-    rm -f "$run_err"
+    rm -f "$run_err" "$run_out" "$run_errf"
   else
+    # #2886 `--update`: before reporting, try to bring the file's stale
+    # inspect() snapshots up to date and run it again. The re-run re-enters
+    # this worker, so it recompiles -- a patched literal changes the program,
+    # and reporting a pass from the wasm built before the patch would be a
+    # green that does not correspond to any source on disk. The depth bound
+    # (same 50 as runtime/vibe) stops a file whose inspect() calls can never
+    # all agree at once from looping forever.
+    local _depth="${VIBE_TEST_UPDATE_DEPTH:-0}"
+    if [ "$update" = "1" ] && [ "$_depth" -lt 50 ] \
+        && vt_try_update_patch "$src_rel" "$flat" "$run_out"; then
+      rm -f "$run_err" "$run_out" "$run_errf"
+      VIBE_TEST_UPDATE_DEPTH=$((_depth + 1)) \
+        VIBE_TEST_UPDATE_PATCHES=$((${VIBE_TEST_UPDATE_PATCHES:-0} + 1)) \
+        vt_worker "$src"
+      return 0
+    fi
     # #948: FAIL + condensed detail in ONE write so parallel workers cannot
     # interleave inside the block; detail lines are indented, so downstream
     # `^(ok|FAIL) <file>` parsers (coverage_suite.sh) are unaffected.
     local detail
     detail="$(vt_fail_detail "$run_err" "$ROOT_DIR/$out_rel.funcmap" "$(basename "$src_rel")" "$ROOT_DIR/$src_rel")"
+    # #2886: say so when --update rewrote the file and it STILL fails. Without
+    # it the two outcomes -- "nothing here was a stale snapshot" and "snapshots
+    # were patched and something else is wrong" -- print identically, and the
+    # source on disk is no longer the one the reader is looking at. The note
+    # goes after the path, which the `^(ok|FAIL)\s+(\S+\.vibe)` parsers
+    # (coverage_suite_report.py) already tolerate, same as `(no tests found)`.
+    local fail_note=""
+    if [ "${VIBE_TEST_UPDATE_PATCHES:-0}" -gt 0 ]; then
+      fail_note=" (after ${VIBE_TEST_UPDATE_PATCHES} snapshot patch(es))"
+    fi
     if [ -n "$detail" ]; then
-      printf 'FAIL %s\n%s\n' "$src_rel" "$detail"
+      printf 'FAIL %s%s\n%s\n' "$src_rel" "$fail_note" "$detail"
     else
-      echo "FAIL $src_rel"
+      echo "FAIL $src_rel$fail_note"
     fi
     printf 'fail 0 0 0 0 0 %s\n' "$n_tests" > "$vt_results/$flat.res"
-    rm -f "$run_err"
+    rm -f "$run_err" "$run_out" "$run_errf"
   fi
   return 0
 }
