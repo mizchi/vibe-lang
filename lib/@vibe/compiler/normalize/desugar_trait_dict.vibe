@@ -13070,14 +13070,15 @@ fn gens_after_let(gens: Array[DictGen], name: String, val: Expr, traits: Array[(
 
 fn lambda_dict_gen(name: String, val: Expr, traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], dict_binds: Array[(String, String, String, Array[String])]) -> Option[DictGen] {
   match val {
-    EFn(tparams, bounds, params, _, _, _) => {
-      let threaded = lambda_threaded_sig(tparams, bounds, params, traits, dict_binds)
-      if Array::length(threaded) > 0 {
-        Some(dict_gen_of_lambda(name, tparams, threaded))
-      } else {
-        None
-      }
-    },
+    // An EFn always gets an ENTRY, even when it threads nothing. Returning
+    // None instead sends `gens_after_let` down its mask branch, which adds one
+    // only when the name already shadows a generic -- so a plain
+    // `let rec go = ...` under a fresh name got no entry at all, and the
+    // interpolation expander reads `gens` to find a formal's renderer.
+    // Measured: that refused `add_by` in `s5_wasm_test`'s self-compile. The
+    // entry for a lambda that threads nothing is the same shape the mask
+    // branch builds, so this is that branch's answer, reached directly.
+    EFn(tparams, bounds, params, _, _, _) => Some(dict_gen_of_lambda(name, tparams, lambda_threaded_sig(tparams, bounds, params, traits, dict_binds))),
     _ => None
   }
 }
