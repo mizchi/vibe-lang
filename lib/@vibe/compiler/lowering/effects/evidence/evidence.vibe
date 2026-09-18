@@ -485,6 +485,7 @@ export fn evidence_dict_pass(stmts: Array[Stmt], entry_name: String) -> Array[St
   let vhe_fn_names_arr = edp_all_fn_names(vhe_fn_defs)
   let vhe_inert_arr = edp_pure_fn_names(vhe_fn_defs)
   edp_append_free_host_inert_names(stmts, vhe_inert_arr)
+  edp_append_ctor_inert_names(stmts, vhe_inert_arr)
   // #2386: indexed AFTER the append, which is the last writer. Everything
   // downstream asks membership per call node and never reads the order, so
   // the array form ends here.
@@ -591,6 +592,7 @@ export fn evidence_dict_pass(stmts: Array[Stmt], entry_name: String) -> Array[St
         let li_fn_names_arr = edp_all_fn_names(li_fn_defs)
         let li_inert_arr = edp_pure_fn_names(li_fn_defs)
         edp_append_free_host_inert_names(stmts, li_inert_arr)
+        edp_append_ctor_inert_names(stmts, li_inert_arr)
         let li_fn_names = edp_name_set(li_fn_names_arr)
         let li_inert = edp_name_set(li_inert_arr)
         let (culprit_opaque, culprit_raw, culprit_off) = edp_live_handle_opaque_info(stmts, keep, bad, li_inert, li_fn_names)
@@ -2570,6 +2572,7 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
   // effect before the effect-specific appends.
   let plan_base_inert = edp_pure_fn_names(fn_defs)
   edp_append_free_host_inert_names(stmts, plan_base_inert)
+  edp_append_ctor_inert_names(stmts, plan_base_inert)
   let mut ei = 0
   while ei < Array::length(effect_defs) {
     let (ename, ops) = Array::get(effect_defs, ei)
@@ -2781,6 +2784,7 @@ fn edp_try_plan_for_effect(stmts: Array[Stmt], ename: String, ops: Array[(String
 fn edp_any_handle_owner_cp(stmts: Array[Stmt], ename: String, needing: Array[String], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], row_labels: Array[Array[String]]) -> Bool {
   let pure_fns = edp_pure_fn_names(fn_defs)
   edp_append_free_host_inert_names(stmts, pure_fns)
+  edp_append_ctor_inert_names(stmts, pure_fns)
   edp_append_self_discharging_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
   edp_append_perform_free_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
   edp_append_effect_irrelevant_row_fns(fn_defs, ename, pure_fns, row_labels)
@@ -3389,6 +3393,87 @@ fn edp_append_free_host_inert_names(stmts: Array[Stmt], pure_fns: Array[String])
   }
 }
 
+/// #2856: data CONSTRUCTORS are inert for this pass.
+///
+/// `edp_callee_is_resolvable` admits `perform`, `resume`, a pure builtin, a
+/// host-raw callee, an inert fn, or a top-level `fn` -- and nothing else. A
+/// call to `Some(b)`, or to a user enum-s `Yes(b)`, matched none of them, so it
+/// counted as an OPAQUE CALL and every `handle` covering it was refused.
+/// Applying a constructor allocates a tagged value: it can neither perform an
+/// effect nor invoke a function-typed argument, which is exactly the criterion
+/// this set encodes.
+///
+/// Measured on a stage2 at e8468ed, entry `run`, one line changed between rows:
+///
+///   let o = Some(7)                  in a body with `Async` -> refused
+///   match Yes(b) { .. }  (user enum) in a body with `Async` -> refused
+///   either of those with no `Async` row                     -> compiles
+///
+/// This is what #2856 reported as "`HostStream::next` is invisible to the Async
+/// handle pass". Its row returns `Option[Int]`, so the spelling that failed is
+/// the one whose value is built with `Some` -- the qualified name was never the
+/// difference. Measured: the BARE `host_stream_next` wrapped in a function that
+/// returns `Option[Int]` fails identically, and `HostStream::close` (no Option,
+/// no Async) compiles through the qualified spelling.
+///
+/// A top-level value binding of the same name WINS, exactly as in
+/// `edp_append_free_host_inert_names` just above: the call then resolves to the
+/// binding, which this pass must keep judging by the ordinary rules. Local
+/// shadowing is already handled upstream -- the `__edpsh_` rename walk is what
+/// makes a flat name set safe here, and it is the same guarantee `fn_names`
+/// relies on.
+fn edp_append_ctor_inert_names(stmts: Array[Stmt], pure_fns: Array[String]) -> Unit {
+  let top_names = empty_str_array()
+  let mut ti = 0
+  while ti < Array::length(stmts) {
+    match Array::get(stmts, ti) {
+      SLet(_, _, nm, _, _) => Array::push(top_names, nm),
+      SLetMut(nm, _, _) => Array::push(top_names, nm),
+      _ => ()
+    }
+    ti = ti + 1
+  }
+  let found = empty_str_array()
+  // The compiler-provided constructors have no declaration in the program.
+  // `None` is nullary, so it is never a CALLEE and needs no row here.
+  Array::push(found, "Some")
+  Array::push(found, "Ok")
+  Array::push(found, "Err")
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SEnum(_, _, _, ctors, _) => {
+        let mut ci = 0
+        while ci < Array::length(ctors) {
+          let (cn, _) = Array::get(ctors, ci)
+          Array::push(found, cn)
+          ci = ci + 1
+        }
+      },
+      SSuberror(_, _, ctors) => {
+        let mut ci = 0
+        while ci < Array::length(ctors) {
+          let (cn, _) = Array::get(ctors, ci)
+          Array::push(found, cn)
+          ci = ci + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  let mut fi = 0
+  while fi < Array::length(found) {
+    let nm = Array::get(found, fi)
+    if edp_str_array_contains(top_names, nm) || edp_str_array_contains(pure_fns, nm) {
+      ()
+    } else {
+      Array::push(pure_fns, nm)
+    }
+    fi = fi + 1
+  }
+}
+
 fn edp_collect_host_raw_callees(expr: Expr, out: Array[String]) -> Unit {
   match expr {
     ECall(callee, args, _) => {
@@ -3882,6 +3967,7 @@ fn edp_all_sites_eligible(stmts: Array[Stmt], ename: String, needing: Array[Stri
   } else {
     let pure_fns = edp_pure_fn_names(fn_defs)
     edp_append_free_host_inert_names(stmts, pure_fns)
+    edp_append_ctor_inert_names(stmts, pure_fns)
     edp_append_self_discharging_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
     edp_append_perform_free_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
     edp_append_effect_irrelevant_row_fns(fn_defs, ename, pure_fns, row_labels)
@@ -5691,6 +5777,7 @@ fn edp_apply_migration(stmts: Array[Stmt], ename: String, ops: Array[(String, Ar
   let dict_tyname = edp_dict_struct_name(ename)
   let pure_fns = edp_pure_fn_names(fn_defs)
   edp_append_free_host_inert_names(stmts, pure_fns)
+  edp_append_ctor_inert_names(stmts, pure_fns)
   edp_append_self_discharging_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
   edp_append_perform_free_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
   edp_append_effect_irrelevant_row_fns(fn_defs, ename, pure_fns, row_labels)

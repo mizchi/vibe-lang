@@ -1,0 +1,1478 @@
+// FROZEN BENCH CORPUS -- NOT A SOURCE FILE.
+//
+// A byte-for-byte copy of lib/@vibe/parser/lexer.vibe, taken at 83ed88a274d2d3c16894a9a1ae2350709c2c9a32, read by the
+// lex/parse benchmark series in lib/@vibe/compiler/{lexer,parser}_bench.vibe.
+//
+// Editing the live file used to change the INPUT of the benchmark that is
+// supposed to measure the lexer and the parser, so every checker PR of any
+// size tripped the bytes-per-op flag and a real parser regression landing
+// beside a checker edit was indistinguishable from corpus growth (#2865).
+//
+// Nothing imports this file and nothing compiles it. Do not edit it to fix a
+// warning, to reformat it, or to keep it in step with the live source -- that
+// is the whole defect. It is bumped DELIBERATELY, by
+// `bash scripts/bump_bench_corpus.sh`, which rewrites this banner and the
+// recorded digest together; bench/perf/corpus/README.md says when that is
+// worth doing and what it costs.
+
+//# Imports
+
+import ./token.vibe {
+  Token
+}
+
+import ./float_format.vibe {
+  parse_decimal_float
+}
+
+import ./intern.vibe {
+  intern_slice
+}
+
+//# Functions
+
+#zero_alloc
+fn is_ws(c: Int) -> Bool {
+  c == ' ' || c == '\n' || c == '\t' || c == '\r'
+}
+
+#zero_alloc
+fn is_alpha(c: Int) -> Bool {
+  (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'
+}
+
+#zero_alloc
+fn is_digit(c: Int) -> Bool {
+  c >= '0' && c <= '9'
+}
+
+#zero_alloc
+fn is_alnum(c: Int) -> Bool {
+  is_alpha(c) || is_digit(c)
+}
+
+/// #946: byte-length of the UTF-8 sequence LED by byte `c` (a raw 0..255 byte,
+/// as returned by String::char_code_at -- this lexer is byte-indexed, not
+/// codepoint-indexed). 2/3/4 for a valid 2/3/4-byte lead byte, else 1 (ASCII,
+/// a bare continuation byte 0x80..0xBF, or an invalid/overlong lead 0xF8..0xFF
+/// all fall back to single-byte granularity -- there is nothing more sensible
+/// to do with a malformed sequence, and 1 keeps the "advance at least one
+/// byte" progress guarantee the recovering lexer relies on).
+#zero_alloc
+fn utf8_seq_len(c: Int) -> Int {
+  if c >= 0xF0 && c <= 0xF7 {
+    4
+  } else if c >= 0xE0 && c <= 0xEF {
+    3
+  } else if c >= 0xC2 && c <= 0xDF {
+    2
+  } else {
+    1
+  }
+}
+
+/// #946: byte-length of a leading UTF-8 BOM (EF BB BF, U+FEFF), else 0. Common
+/// editors/Windows tools prepend this to "UTF-8" text files; treating it as
+/// just another unlexable character produced a located-but-pointless lex
+/// error on line 1 col 1 of an otherwise perfectly ordinary file. Every other
+/// mainstream tokenizer silently skips a leading BOM, so this lexer does too
+/// -- ONLY at absolute position 0 (a BOM anywhere else in the file is not
+/// special and still lexes -- i.e. fails -- as ordinary bytes).
+#zero_alloc
+fn skip_bom(source: String, len: Int) -> Int {
+  if len >= 3 && String::char_code_at(source, 0) == 0xEF && String::char_code_at(source, 1) == 0xBB && String::char_code_at(source, 2) == 0xBF {
+    3
+  } else {
+    0
+  }
+}
+
+/// #946: the ORIGINAL bytes of the (possibly multi-byte UTF-8) character at
+/// `pos`, clamped to `len` -- used to build a display-safe "unexpected
+/// character: <text>" message. Slicing the source's own bytes (rather than
+/// reconstructing them from the decoded codepoint) sidesteps
+/// String::from_char_code entirely: that builtin only ever stores ONE raw
+/// byte (see gen_str_from_char_code_body), so calling it on a lone
+/// continuation byte produced mojibake (an invalid lone byte, not the
+/// original multi-byte character) instead of the real character.
+fn utf8_char_text(source: String, len: Int, pos: Int) -> String {
+  let c = String::char_code_at(source, pos)
+  let seq_len = utf8_seq_len(c)
+  let clamp_end = if pos + seq_len <= len {
+    pos + seq_len
+  } else {
+    len
+  }
+  String::substring(source, pos, clamp_end)
+}
+
+fn lex_char(s: String, len: Int, i: Int) -> (Token, Int) with Exception {
+  let start = i + 1
+  if start >= len {
+    throw("unterminated char literal")
+  }
+  let c = String::char_code_at(s, start)
+  if c == '\\' {
+    let esc_pos = start + 1
+    if esc_pos >= len {
+      throw("unterminated char escape")
+    }
+    let esc = String::char_code_at(s, esc_pos)
+    let val = if esc == 'n' {
+      10
+    }
+    else if esc == 't' {
+      9
+    }
+    else if esc == 'r' {
+      13
+    }
+    else if esc == '\\' {
+      92
+    }
+    else if esc == '\'' {
+      39
+    }
+    else if esc == '0' {
+      0
+    }
+    else throw("invalid char escape")
+    let close = esc_pos + 1
+    if close >= len || String::char_code_at(s, close) != '\'' {
+      throw("expected closing quote for char literal")
+    };
+    (TInt(val), close + 1)
+  } else {
+    let close = start + 1
+    if close >= len || String::char_code_at(s, close) != '\'' {
+      throw("expected closing quote for char literal")
+    };
+    (TInt(c), close + 1)
+  }
+}
+
+#zero_alloc
+fn slice_eq(source: String, start: Int, end: Int, text: String) -> Bool {
+  let len = end - start
+  let text_len = String::length(text)
+  if len != text_len {
+    false
+  } else {
+    let mut i = 0
+    let mut ok = true
+    while ok && i < text_len {
+      ok = String::char_code_at(source, start + i) == String::char_code_at(text, i)
+      i = i + 1
+    }
+    ok
+  }
+}
+
+#zero_alloc
+fn is_hex_digit(c: Int) -> Bool {
+  (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+}
+
+fn keyword_lookup(source: String, start: Int, end: Int) -> Token {
+  let len = end - start
+  if len == 2 {
+    let c0 = String::char_code_at(source, start)
+    if c0 == 'f' {
+      if slice_eq(source, start, end, "fn") {
+        // #1280: `fn` is a reserved word (TFn), not a soft-keyword ident.
+        TFn
+      } else TIdent(intern_slice(source, start, end))
+    } else if c0 == 'i' {
+      if slice_eq(source, start, end, "if") {
+        TIf
+      } else if slice_eq(source, start, end, "in") {
+        TIn
+      } else if slice_eq(source, start, end, "is") {
+        // ADR-0023: `expr is pattern` is a Bool-returning pattern test.
+        TIs
+      } else TIdent(intern_slice(source, start, end))
+    } else if c0 == 'd' {
+      if slice_eq(source, start, end, "do") {
+        TDo
+      } else TIdent(intern_slice(source, start, end))
+    } else if c0 == 'a' {
+      if slice_eq(source, start, end, "as") {
+        TAs
+      } else TIdent(intern_slice(source, start, end))
+    } else TIdent(intern_slice(source, start, end))
+  } else if len == 3 {
+    let c0 = String::char_code_at(source, start)
+    if c0 == 'l' {
+      if slice_eq(source, start, end, "let") {
+        TLet
+      } else TIdent(intern_slice(source, start, end))
+    } else if c0 == 'r' {
+      if slice_eq(source, start, end, "rec") {
+        TRec
+      } else TIdent(intern_slice(source, start, end))
+    } else if c0 == 'm' {
+      if slice_eq(source, start, end, "mut") {
+        TMut
+      } else TIdent(intern_slice(source, start, end))
+    } else if c0 == 'f' {
+      if slice_eq(source, start, end, "for") {
+        TFor
+      } else TIdent(intern_slice(source, start, end))
+    } else TIdent(intern_slice(source, start, end))
+  } else if len == 4 {
+    let c0 = String::char_code_at(source, start)
+    if c0 == 'e' {
+      if slice_eq(source, start, end, "else") {
+        TElse
+      } else if slice_eq(source, start, end, "enum") {
+        TEnum
+      } else TIdent(intern_slice(source, start, end))
+    } else if c0 == 't' {
+      if slice_eq(source, start, end, "true") {
+        TIdent("true")
+      } else if slice_eq(source, start, end, "type") {
+        TType
+      } else if slice_eq(source, start, end, "test") {
+        TTest
+      } else TIdent(intern_slice(source, start, end))
+    } else if c0 == 'w' {
+      if slice_eq(source, start, end, "with") {
+        TWith
+      } else TIdent(intern_slice(source, start, end))
+    } else if c0 == 'l' {
+      if slice_eq(source, start, end, "loop") {
+        TLoop
+      } else TIdent(intern_slice(source, start, end))
+    } else if c0 == 'o' {
+      if slice_eq(source, start, end, "open") {
+        TOpen
+      } else TIdent(intern_slice(source, start, end))
+    } else if c0 == 'i' {
+      if slice_eq(source, start, end, "impl") {
+        TImpl
+      } else TIdent(intern_slice(source, start, end))
+    } else TIdent(intern_slice(source, start, end))
+  } else if len == 5 {
+    let c0 = String::char_code_at(source, start)
+    if c0 == 'f' {
+      if slice_eq(source, start, end, "false") {
+        TIdent("false")
+      } else TIdent(intern_slice(source, start, end))
+    } else if c0 == 'm' {
+      if slice_eq(source, start, end, "match") {
+        TMatch
+      } else TIdent(intern_slice(source, start, end))
+    } else if c0 == 'g' {
+      // #1283: `guard` is a HARD keyword, not a soft one. At statement start
+      // `guard x is Some(v) else { .. }` and an expression statement naming a
+      // binding `guard` are the same token stream up to the second token, so a
+      // soft keyword would have to guess. A reserved word means a stale
+      // `guard` binding is a named parse error instead of a silent reparse.
+      if slice_eq(source, start, end, "guard") {
+        TGuard
+      } else TIdent(intern_slice(source, start, end))
+    } else if c0 == 't' {
+      if slice_eq(source, start, end, "trait") {
+        TTrait
+      } else if slice_eq(source, start, end, "throw") {
+        TThrow
+      } else TIdent(intern_slice(source, start, end))
+    } else if c0 == 'w' {
+      if slice_eq(source, start, end, "while") {
+        TWhile
+      } else TIdent(intern_slice(source, start, end))
+    } else if c0 == 'b' {
+      if slice_eq(source, start, end, "break") {
+        TBreak
+      } else if slice_eq(source, start, end, "bench") {
+        TBench
+      } else TIdent(intern_slice(source, start, end))
+    } else if c0 == 'r' {
+      if slice_eq(source, start, end, "raise") {
+        TRaise
+      } else TIdent(intern_slice(source, start, end))
+    } else if c0 == 'y' {
+      if slice_eq(source, start, end, "yield") {
+        TYield
+      } else TIdent(intern_slice(source, start, end))
+    } else TIdent(intern_slice(source, start, end))
+  } else if len == 6 {
+    let c0 = String::char_code_at(source, start)
+    if c0 == 's' {
+      if slice_eq(source, start, end, "struct") {
+        TStruct
+      } else TIdent(intern_slice(source, start, end))
+    } else if c0 == 'e' {
+      if slice_eq(source, start, end, "export") {
+        TExport
+      } else TIdent(intern_slice(source, start, end))
+    } else if c0 == 'r' {
+      if slice_eq(source, start, end, "return") {
+        TReturn
+      } else if slice_eq(source, start, end, "region") {
+        TRegion
+      } else TIdent(intern_slice(source, start, end))
+    } else if c0 == 'h' {
+      if slice_eq(source, start, end, "handle") {
+        THandle
+      } else TIdent(intern_slice(source, start, end))
+    } else if c0 == 'm' {
+      if slice_eq(source, start, end, "module") {
+        TModule
+      } else TIdent(intern_slice(source, start, end))
+    } else if c0 == 'd' {
+      if slice_eq(source, start, end, "derive") {
+        TDerive
+      } else TIdent(intern_slice(source, start, end))
+    } else if c0 == 'i' {
+      if slice_eq(source, start, end, "import") {
+        TImport
+      } else TIdent(intern_slice(source, start, end))
+    } else TIdent(intern_slice(source, start, end))
+  } else if len == 7 {
+    if slice_eq(source, start, end, "declare") {
+      TDeclare
+    } else if slice_eq(source, start, end, "example") {
+      // #819: reserved like `test` / `bench`, for the same reason -- it starts
+      // a top-level block form, so a binding of that name at statement
+      // position would be indistinguishable until the following token.
+      TExample
+    } else TIdent(intern_slice(source, start, end))
+  } else if len == 8 {
+    let c0 = String::char_code_at(source, start)
+    if c0 == 'c' {
+      if slice_eq(source, start, end, "continue") {
+        TContinue
+      } else TIdent(intern_slice(source, start, end))
+    } else if c0 == 's' {
+      if slice_eq(source, start, end, "suberror") {
+        TSuberror
+      } else TIdent(intern_slice(source, start, end))
+    } else TIdent(intern_slice(source, start, end))
+  } else if len == 9 {
+    if slice_eq(source, start, end, "taskgroup") {
+      TTaskGroup
+    } else TIdent(intern_slice(source, start, end))
+  } else TIdent(intern_slice(source, start, end))
+}
+
+#zero_alloc
+fn scan_ident_end(s: String, len: Int, i: Int) -> Int {
+  let mut out = i
+  while out < len && is_alnum(String::char_code_at(s, out)) {
+    out = out + 1
+  }
+  out
+}
+
+fn lex_ident(s: String, len: Int, i: Int) -> (Token, Int) {
+  let end = scan_ident_end(s, len, i)
+  if end == i + 1 && String::char_code_at(s, i) == 'r' && end < len && String::char_code_at(s, end) == '#' {
+    let ri_start = end + 1
+    let ri_end = scan_ident_end(s, len, ri_start)
+    // #1280: no raw-identifier escape for `fn` — `r#fn` lexes as the keyword,
+    // so a binding named fn cannot be smuggled back in through r#.
+    if ri_end == ri_start + 2 && slice_eq(s, ri_start, ri_end, "fn") {
+      (TFn, ri_end)
+    } else {
+      (TIdent(intern_slice(s, ri_start, ri_end)), ri_end)
+    }
+  }
+  else if end == i + 1 && String::char_code_at(s, i) == 'r' && end < len && String::char_code_at(s, end) == '"' {
+    let mut ri = end + 1
+    while ri < len && String::char_code_at(s, ri) != '"' {
+      ri = ri + 1
+    }
+    (TString(s[end + 1: ri]), if ri >= len {
+      ri
+    } else {
+      ri + 1
+    })
+  } else {
+    (keyword_lookup(s, i, end), end)
+  }
+}
+
+#zero_alloc
+fn scan_digits_end(s: String, len: Int, i: Int) -> Int {
+  let mut out = i
+  while out < len && is_digit(String::char_code_at(s, out)) {
+    out = out + 1
+  }
+  out
+}
+
+fn scan_interp_end(s: String, len: Int, idx: Int, depth: Int) -> Int with Exception {
+  let mut out = idx
+  let mut current_depth = depth
+  let mut found = -1
+  while out < len && found < 0 {
+    let c = String::char_code_at(s, out)
+    if c == '{' {
+      current_depth = current_depth + 1
+    } else if c == '}' {
+      if current_depth == 1 {
+        found = out
+      } else {
+        current_depth = current_depth - 1
+      }
+    }
+    if found < 0 {
+      out = out + 1
+    }
+  }
+  if found >= 0 {
+    found
+  } else {
+    throw("unterminated string interpolation")
+  }
+}
+
+/// #997: 1-based "line L:C: " prefix for a 0-based char offset, matching the
+/// located-diagnostic convention used elsewhere in this lexer (see the
+/// `\(expr)`-removal message below). The generic offset-based diagnostic
+/// collector (`lex_with_offsets_recovering`) always records the START offset
+/// of the enclosing `lex_one_token` call as the error location, so a throw
+/// raised partway through a multi-char token (e.g. at the `e`/`E` of a long
+/// numeric literal, not at its first digit) would otherwise be misattributed
+/// to the token's start. Embedding the precise location directly in the
+/// message — the same workaround already used for the `\(expr)` message —
+/// keeps the report pointing at the actual offending character.
+fn located_prefix(s: String, pos: Int) -> String {
+  let mut eline = 1
+  let mut ecol = 1
+  let mut ei = 0
+  while ei < pos {
+    if String::char_code_at(s, ei) == '\n' {
+      eline = eline + 1
+      ecol = 1
+    } else {
+      ecol = ecol + 1
+    }
+    ei = ei + 1
+  }
+  String::concat("line ", String::concat(__to_string(eline), String::concat(":", String::concat(__to_string(ecol), ": "))))
+}
+
+/// #956/#997: numeric literal followed directly by `e`/`E` + digits (or +/-
+/// digits) looks like scientific notation, which vibe does not support — it
+/// used to lex as `<number>` + identifier and surface as a confusing
+/// downstream `unknown name: e20`. Reject it at the lexer with an
+/// explanatory error, precisely located at the `e`/`E` (not the start of the
+/// number — #997: the generic offset-based collector would otherwise blame
+/// the wrong column for anything but a single-digit literal).
+///
+/// #997: `e`/`E` immediately followed by a bare `+`/`-` with no digit after
+/// it (`1e+`, `2e-`) is unambiguously a botched exponent, unlike a plain
+/// identifier continuation (`1even` still lexes as `1` + `even`, #956's
+/// `e_prefixed_identifier_after_number_still_lexes`) — a sign can never
+/// legally continue an identifier, so there's no ambiguity to preserve for
+/// that shape, and it used to silently fall through to the same confusing
+/// `unknown name: e` diagnostic.
+fn check_no_scientific_suffix(s: String, len: Int, pos: Int) -> Unit with Exception {
+  if pos < len {
+    let c = String::char_code_at(s, pos)
+    if c == 'e' || c == 'E' {
+      let has_sign = pos + 1 < len && (String::char_code_at(s, pos + 1) == '+' || String::char_code_at(s, pos + 1) == '-')
+      let digits_start = if has_sign {
+        pos + 2
+      } else {
+        pos + 1
+      }
+      let has_digits = digits_start < len && is_digit(String::char_code_at(s, digits_start))
+      if has_digits {
+        throw(String::concat(located_prefix(s, pos), "scientific notation is not supported; write the digits out or compute the value"))
+      } else if has_sign {
+        throw(String::concat(located_prefix(s, pos), "incomplete exponent: expected digit(s) after the sign in scientific notation"))
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+}
+
+fn empty_string_array() -> Array[String] {
+  Array::slice([""], 0, 0)
+}
+
+/// 0-based column (char offset from the start of its line) of `pos`.
+#zero_alloc
+fn column_of(source: String, pos: Int) -> Int {
+  let mut i = pos
+  let mut col = 0
+  while i > 0 && String::char_code_at(source, i - 1) != '\n' {
+    i = i - 1
+    col = col + 1
+  }
+  col
+}
+
+/// `#|` multi-line raw string literal (MoonBit-style). `source[pos] == '#'`
+/// and `source[pos + 1] == '|'` on entry. Each participating physical line's
+/// `#` must sit at the SAME column as the block's first `#` — a later line
+/// starting with `#|` at a DIFFERENT column is a located lex error, never a
+/// silently different/shorter block. A following line that does not start
+/// with `#|` at all (whatever its indentation) simply ends the block — that
+/// is not an error, just where the literal stops. Content is the raw text
+/// after `#|` up to end of line, verbatim (no escape processing, no
+/// interpolation); participating lines are joined with "\n". Produces an
+/// ordinary TString so the parser/checker/codegen need no changes to accept
+/// one — `#|` is purely an alternate spelling for a (possibly multi-line)
+/// string literal.
+fn lex_multiline_string(source: String, len: Int, pos: Int) -> (Token, Int) with Exception {
+  let col = column_of(source, pos)
+  let buf = StringBuilder::new()
+  let mut cur = pos
+  let mut first = true
+  let mut running = true
+  let mut final_next = pos
+  while running {
+    let content_start = cur + 2
+    let mut k = content_start
+    while k < len && String::char_code_at(source, k) != '\n' {
+      k = k + 1
+    }
+    let content_end = if k > content_start && String::char_code_at(source, k - 1) == '\r' {
+      k - 1
+    } else {
+      k
+    }
+    if !first {
+      StringBuilder::push(buf, "\n")
+    } else {
+      ()
+    }
+    first = false
+    StringBuilder::push(buf, String::substring(source, content_start, content_end))
+    final_next = k
+    if k >= len {
+      running = false
+    } else {
+      // k is at the '\n' ending this line; inspect the next physical line.
+      let next_line_start = k + 1
+      let mut m = next_line_start
+      while m < len && (String::char_code_at(source, m) == ' ' || String::char_code_at(source, m) == '\t') {
+        m = m + 1
+      }
+      if m + 1 < len && String::char_code_at(source, m) == '#' && String::char_code_at(source, m + 1) == '|' {
+        let next_col = m - next_line_start
+        if next_col == col {
+          cur = m
+        } else {
+          throw(String::concat(located_prefix(source, m), "#| multi-line string continuation must start at the same column as the opening #|"))
+        }
+      } else {
+        running = false
+      }
+    }
+  }
+  (TString(StringBuilder::freeze(buf)), final_next)
+}
+
+/// Rust-style outer doc comments: consecutive `///` lines (not `////...` —
+/// four or more slashes is an ordinary comment, matching rustc) are
+/// concatenated (joined by "\n", one leading space after `///` stripped when
+/// present) and associated with the 1-based line number of the next
+/// non-blank, non-`///` line — the declaration the block documents. A blank
+/// line (or EOF) immediately after the block breaks attachment: nothing is
+/// emitted for it, same as a doc comment with no following item in Rust.
+/// This is a plain text scan over `source`, independent of tokenization —
+/// `///` lines are still ordinary `//` comments to the tokenizer (silently
+/// skipped by skip_ws_with_newline exactly as before); this function is the
+/// only place that gives them meaning, for hover/`vibe doc-at` consumers.
+export fn collect_doc_comments(source: String) -> Array[(Int, String)] {
+  let len = String::length(source)
+  let out = ArrayBuilder::new()
+  let mut i = 0
+  let mut line = 1
+  let mut acc = ArrayBuilder::new()
+  let mut in_block = false
+  while i < len {
+    let mut j = i
+    while j < len && (String::char_code_at(source, j) == ' ' || String::char_code_at(source, j) == '\t') {
+      j = j + 1
+    }
+    let has3 = j + 2 < len && String::char_code_at(source, j) == '/' && String::char_code_at(source, j + 1) == '/' && String::char_code_at(source, j + 2) == '/'
+    let is_doc = has3 && !(j + 3 < len && String::char_code_at(source, j + 3) == '/')
+    let mut k = i
+    while k < len && String::char_code_at(source, k) != '\n' {
+      k = k + 1
+    }
+    let line_end = if k > i && String::char_code_at(source, k - 1) == '\r' {
+      k - 1
+    } else {
+      k
+    }
+    if is_doc {
+      let content_start0 = j + 3
+      let content_start = if content_start0 < line_end && String::char_code_at(source, content_start0) == ' ' {
+        content_start0 + 1
+      } else {
+        content_start0
+      }
+      ArrayBuilder::push(acc, String::substring(source, content_start, line_end))
+      in_block = true
+    } else {
+      if in_block {
+        if j < line_end {
+          ArrayBuilder::push(out, (line, join_doc_lines(ArrayBuilder::freeze(acc))))
+        } else {
+          ()
+        }
+        acc = ArrayBuilder::new()
+        in_block = false
+      } else {
+        ()
+      }
+    }
+    i = if k < len {
+      k + 1
+    } else {
+      k
+    }
+    line = line + 1
+  }
+  ArrayBuilder::freeze(out)
+}
+
+fn join_doc_lines(lines: Array[String]) -> String {
+  let buf = StringBuilder::new()
+  let mut i = 0
+  while i < Array::length(lines) {
+    if i > 0 {
+      StringBuilder::push(buf, "\n")
+    } else {
+      ()
+    }
+    StringBuilder::push(buf, Array::get(lines, i))
+    i = i + 1
+  }
+  StringBuilder::freeze(buf)
+}
+
+#zero_alloc
+fn skip_until_newline(s: String, len: Int, i: Int) -> Int {
+  let mut out = i
+  let mut done = false
+  // Most source comments are short. Keep one SIMD chunk scalar so they avoid
+  // the builtin-call/setup cost; long ordinary runs hand off at byte 16.
+  while out < len && out - i < 16 && !done {
+    if String::char_code_at(s, out) == '\n' {
+      out = out + 1
+      done = true
+    } else {
+      out = out + 1
+    }
+  }
+  if done || out >= len {
+    out
+  } else {
+    let line_end = simd_scan_line_end_str(s, out, len)
+    if line_end < len {
+      line_end + 1
+    } else {
+      len
+    }
+  }
+}
+
+/// Pack `(next_offset, saw_newline)` into one tagged Int. This is on every
+/// token boundary; returning a tuple allocated once per token even though the
+/// offset is bounded by wasm linear memory and has a spare low bit.
+#zero_alloc
+fn skip_ws_with_newline(s: String, len: Int, i: Int) -> Int {
+  let mut out = i
+  let mut saw_newline = false
+  let mut skipping = true
+  while skipping && out < len {
+    let c = String::char_code_at(s, out)
+    if is_ws(c) {
+      if c == '\n' {
+        saw_newline = true
+      } else {
+        ()
+      }
+      out = out + 1
+    } else if c == '/' && out + 1 < len && String::char_code_at(s, out + 1) == '/' {
+      let next = skip_until_newline(s, len, out + 2)
+      if next > out + 2 && String::char_code_at(s, next - 1) == '\n' {
+        saw_newline = true
+      } else {
+        ()
+      }
+      out = next
+    } else {
+      skipping = false
+    }
+  }
+  out * 2 + if saw_newline {
+    1
+  } else {
+    0
+  }
+}
+
+/// Newlines are normally trivia, but two expression boundaries need a
+/// synthetic statement separator:
+/// - before `(`/`[` after an expression, so they do not become postfix syntax;
+/// - after `break`, whose optional payload is deliberately same-line only.
+///
+/// Keeping this decision in one helper prevents `lex`, offset lexing, and the
+/// recovering lexer from drifting apart.
+#zero_alloc
+fn needs_synthetic_semicolon(c: Int, nl_before: Bool, prev_tok: Token) -> Bool {
+  if !nl_before {
+    false
+  } else {
+    match prev_tok {
+      // A closing delimiter/comma already terminates a bare break. Inserting
+      // `;` there breaks match-arm parsing (`_ => break\n}` makes the
+      // separator look like the next pattern). Only separate a real token
+      // that could otherwise become the optional payload.
+      TBreak => c != '}' && c != ')' && c != ']' && c != ',' && c != ';',
+      _ => (c == '[' || c == '(') && is_expr_ending_tok(prev_tok)
+    }
+  }
+}
+
+fn concat_string_parts(parts: Array[String], tail: String) -> String {
+  // O(N) join via StringBuilder; the previous `out = String::concat(out, ...)`
+  // per part was O(N²) over the joined length (issue #366).
+  let out = StringBuilder::new()
+  let mut i = 0
+  while i < Array::length(parts) {
+    StringBuilder::push(out, Array::get(parts, i))
+    i = i + 1
+  }
+  StringBuilder::push(out, tail)
+  StringBuilder::freeze(out)
+}
+
+fn lex_string_go(s: String, len: Int, idx: Int, start: Int, parts_acc: Array[String], has_interp: Bool, parts: ArrayBuilder[String], offsets: ArrayBuilder[Int]) -> (Token, Int) with Exception {
+  let mut current_idx = idx
+  let mut current_start = start
+  let mut current_parts_acc = parts_acc
+  let mut current_has_interp = has_interp
+  let mut out_tok = TEof
+  let mut out_next = -1
+  let mut done = false
+  let mut ordinary_run = 0
+  while !done {
+    // Ordinary string bytes dominate long literals. Skip complete 16-byte
+    // chunks in the fused runtime scanner, then keep quote, escape,
+    // interpolation, and control-byte semantics in this scalar state machine.
+    // Confirm one full ordinary chunk scalarly first. This keeps short
+    // literals on the old path even when a large source tail follows them.
+    if ordinary_run >= 16 && len - current_idx >= 16 {
+      current_idx = simd_scan_string_special_str(s, current_idx, len)
+    }
+    if current_idx >= len {
+      throw("unterminated string")
+    }
+    let c = String::char_code_at(s, current_idx)
+    if c == '"' {
+      let value = concat_string_parts(current_parts_acc, s[current_start: current_idx])
+      if current_has_interp {
+        ArrayBuilder::push(parts, value)
+        ArrayBuilder::push(offsets, -1)
+        out_tok = TStringInterp(ArrayBuilder::freeze(parts), ArrayBuilder::freeze(offsets))
+        out_next = current_idx + 1
+      } else {
+        out_tok = TString(value)
+        out_next = current_idx + 1
+      }
+      done = true
+    } else if c == '\\' {
+      ordinary_run = 0
+      let chunk = s[current_start: current_idx]
+      let next = current_idx + 1
+      if next >= len {
+        throw("unterminated string escape")
+      }
+      let esc = String::char_code_at(s, next)
+      if esc == '(' {
+        // Redundant-syntax removal (#805): the `\(expr)` interpolation
+        // spelling is gone — only `\{expr}` remains. Reject with a located
+        // (1-based `line L:C:` of the backslash) message, matching the
+        // parser's located diagnostic prefix.
+        let mut eline = 1
+        let mut ecol = 1
+        let mut ei = 0
+        while ei < current_idx {
+          if String::char_code_at(s, ei) == '\n' {
+            eline = eline + 1
+            ecol = 1
+          } else {
+            ecol = ecol + 1
+          }
+          ei = ei + 1
+        }
+        let eloc = String::concat("line ", String::concat(__to_string(eline), String::concat(":", String::concat(__to_string(ecol), ": "))))
+        throw(String::concat(eloc, "string interpolation \\(expr) is not supported; use \\{expr}"))
+      } else if esc == '{' {
+        ArrayBuilder::push(parts, concat_string_parts(current_parts_acc, chunk))
+        ArrayBuilder::push(offsets, -1)
+        let interp_end = scan_interp_end(s, len, next + 1, 1)
+        let expr_src = s[next + 1: interp_end]
+        ArrayBuilder::push(parts, expr_src)
+        // #947: absolute source offset of `expr_src`'s first char, so a
+        // fragment re-lexed in isolation (build_interp_expr) can shift its
+        // (fragment-relative) offsets back to real file positions.
+        ArrayBuilder::push(offsets, next + 1)
+        current_idx = interp_end + 1
+        current_start = interp_end + 1
+        current_parts_acc = empty_string_array()
+        current_has_interp = true
+      } else {
+        let escaped = if esc == '"' {
+          "\""
+        }
+        else if esc == '\\' {
+          "\\"
+        }
+        else if esc == 'n' {
+          "\n"
+        }
+        else if esc == 't' {
+          "\t"
+        }
+        else if esc == 'r' {
+          String::from_char_code(13)
+        }
+        else if esc == '0' {
+          String::from_char_code(0)
+        }
+        else throw("invalid escape sequence")
+        Array::push(current_parts_acc, chunk)
+        Array::push(current_parts_acc, escaped)
+        current_idx = next + 1
+        current_start = next + 1
+      }
+    } else {
+      current_idx = current_idx + 1
+      if c < 32 {
+        ordinary_run = 0
+      } else {
+        ordinary_run = ordinary_run + 1
+      }
+    }
+  }
+  (out_tok, out_next)
+}
+
+fn lex_string(s: String, len: Int, i: Int) -> (Token, Int) with Exception {
+  lex_string_go(s, len, i + 1, i + 1, empty_string_array(), false, ArrayBuilder::new(), ArrayBuilder::new())
+}
+
+#zero_alloc
+fn scan_hex_digits_end(s: String, len: Int, i: Int) -> Int {
+  let mut out = i
+  while out < len && is_hex_digit(String::char_code_at(s, out)) {
+    out = out + 1
+  }
+  out
+}
+
+// #997: Int is 62-bit tagged (range -2^61..2^61-1); a literal magnitude
+// above Int::max_value (4611686018427387903) cannot be represented.
+// Without a guard, the digit-accumulation loop below overflows vibe's OWN
+// `Int` (the accumulator is a plain tagged Int too) and silently wraps into
+// a bogus in-range value instead of raising `IntLiteralOverflow` — this
+// used to happen on EVERY numeric literal path (decimal AND hex; see
+// fixtures/err_parse_int_overflow_tagged.vibe, which predates any actual
+// check). The bound is checked digit-by-digit, BEFORE each multiply/add,
+// using the standard `acc > (max / base)`-style pre-check (mirrors the
+// runtime `Int::parse` guard in codegen/int_parse_expr.vibe) so the
+// overflow is caught at the exact moment it would occur, never after the
+// accumulator has already wrapped.
+
+fn parse_hex_from_string(s: String) -> Int with Exception {
+  let len = String::length(s)
+  // Int::max_value (0x1FFFFFFFFFFFFFFF) in base 16: floor(max/16) and
+  // max%16, precomputed so the per-digit check below never itself overflows.
+  let max_div_16 = 288230376151711743
+  let max_mod_16 = 15
+  let mut i = 0
+  let mut acc = 0
+  while i < len {
+    let c = String::char_code_at(s, i)
+    let digit = if c >= '0' && c <= '9' {
+      c - 48
+    } else if c >= 'a' && c <= 'f' {
+      c - 87
+    } else c - 55
+    if acc > max_div_16 || (acc == max_div_16 && digit > max_mod_16) {
+      throw("IntLiteralOverflow: hex integer literal exceeds Int::max_value (4611686018427387903)")
+    } else {
+      ()
+    }
+    acc = acc * 16 + digit
+    i = i + 1
+  }
+  acc
+}
+
+fn parse_int_from_string(s: String) -> Int with Exception {
+  let len = String::length(s)
+  // Int::max_value in base 10: floor(max/10) and max%10.
+  let max_div_10 = 461168601842738790
+  let max_mod_10 = 3
+  let mut i = 0
+  let mut acc = 0
+  while i < len {
+    let c = String::char_code_at(s, i)
+    let digit = c - 48
+    if acc > max_div_10 || (acc == max_div_10 && digit > max_mod_10) {
+      throw("IntLiteralOverflow: integer literal exceeds Int::max_value (4611686018427387903)")
+    } else {
+      ()
+    }
+    acc = acc * 10 + digit
+    i = i + 1
+  }
+  acc
+}
+
+fn lex_decimal(s: String, len: Int, i: Int) -> (Token, Int) with Exception {
+  let int_end = scan_digits_end(s, len, i)
+  if int_end == i {
+    throw("expected digit")
+  }
+  // Tuple field access `t.0.0`: a number immediately preceded by a single field
+  // dot must NOT absorb a trailing `.<digit>` as a float decimal — that `.` is
+  // the next tuple-index projection, not this number's fraction. (Mirrors
+  // src/parser/lexer.mbt `after_field_dot`.) Excludes `..`/`...` (range/spread)
+  // by requiring the char two back to not also be a dot.
+  let after_field_dot = i >= 1 && String::char_code_at(s, i - 1) == '.' && (i < 2 || String::char_code_at(s, i - 2) != '.')
+  if !after_field_dot && int_end < len && String::char_code_at(s, int_end) == '.' {
+    if int_end + 1 < len && is_digit(String::char_code_at(s, int_end + 1)) {
+      let frac_end = scan_digits_end(s, len, int_end + 1)
+      // #956: build the Double from the full digit strings (correctly
+      // rounded), instead of routing the mantissa through Int (which
+      // silently wrapped past ~2.3e18).
+      let value = parse_decimal_float(s[i: int_end], s[int_end + 1: frac_end])
+      check_no_scientific_suffix(s, len, frac_end)
+      if frac_end < len && String::char_code_at(s, frac_end) == 'f' {
+        (TFloat(value), frac_end + 1)
+      } else {
+        (TFloat(value), frac_end)
+      }
+    } else {
+      let int_str = s[i: int_end];
+      (TInt(parse_int_from_string(int_str)), int_end)
+    }
+  } else if int_end < len && String::char_code_at(s, int_end) == 'f' {
+    // Integer-form float literal with an `f` suffix, e.g. `10f`, `0f`.
+    let value = parse_decimal_float(s[i: int_end], "")
+    (TFloat(value), int_end + 1)
+  } else {
+    check_no_scientific_suffix(s, len, int_end)
+    let int_str = s[i: int_end];
+    (TInt(parse_int_from_string(int_str)), int_end)
+  }
+}
+
+fn lex_number(s: String, len: Int, i: Int) -> (Token, Int) with Exception {
+  if i + 1 < len && String::char_code_at(s, i) == '0' {
+    let next_c = String::char_code_at(s, i + 1)
+    if next_c == 'x' || next_c == 'X' {
+      let hex_start = i + 2
+      let hex_end = scan_hex_digits_end(s, len, hex_start)
+      if hex_end == hex_start {
+        throw("expected hex digit after 0x")
+      }
+      let hex_str = s[hex_start: hex_end];
+      (TInt(parse_hex_from_string(hex_str)), hex_end)
+    } else lex_decimal(s, len, i)
+  } else lex_decimal(s, len, i)
+}
+
+/// Can this token end a complete (primary) expression? After such a token, a
+/// newline followed by `[` starts a NEW statement (an array literal), not a
+/// postfix subscript — the lexer inserts a synthetic `;` to disambiguate.
+#zero_alloc
+fn is_expr_ending_tok(t: Token) -> Bool {
+  match t {
+    TRParen => true,
+    TRBracket => true,
+    TRBrace => true,
+    TIdent(_) => true,
+    TInt(_) => true,
+    TFloat(_) => true,
+    TString(_) => true,
+    // #1318/#1319: an interpolated string ends an expression exactly like a
+    // plain one. Omitting it let `let s = "a\{x}b"` followed by a line
+    // starting with `(` absorb that line as a call argument list, which
+    // swallowed the `let` body (block inferred as `()`) or made the binding
+    // invisible to its own continuation (`unknown name: s`).
+    TStringInterp(_, _) => true,
+    _ => false
+  }
+}
+
+/// Classify and consume a single token starting at byte `pos`, returning the
+/// token and the byte offset just past it. Shared by `lex` and
+/// `lex_with_offsets` so the large classification logic (and its codegen) exists
+/// only once.
+fn lex_one_token(source: String, len: Int, pos: Int) -> (Token, Int) with Exception {
+  let c = String::char_code_at(source, pos)
+  if is_alpha(c) {
+    lex_ident(source, len, pos)
+  } else if is_digit(c) {
+    lex_number(source, len, pos)
+  } else if c == '"' {
+    lex_string(source, len, pos)
+  } else if c == '+' {
+    if pos + 1 < len && String::char_code_at(source, pos + 1) == '=' {
+      (TPlusEq, pos + 2)
+    } else (TPlus, pos + 1)
+  } else if c == '-' {
+    if pos + 1 < len && String::char_code_at(source, pos + 1) == '>' {
+      (TThinArrow, pos + 2)
+    } else if pos + 1 < len && String::char_code_at(source, pos + 1) == '=' {
+      (TMinusEq, pos + 2)
+    } else (TMinus, pos + 1)
+  } else if c == '*' {
+    if pos + 1 < len && String::char_code_at(source, pos + 1) == '=' {
+      (TStarEq, pos + 2)
+    } else (TStar, pos + 1)
+  } else if c == '/' {
+    if pos + 1 < len && String::char_code_at(source, pos + 1) == '=' {
+      (TSlashEq, pos + 2)
+    } else (TSlash, pos + 1)
+  } else if c == '%' {
+    if pos + 1 < len && String::char_code_at(source, pos + 1) == '=' {
+      (TPercentEq, pos + 2)
+    } else (TPercent, pos + 1)
+  } else if c == '=' {
+    if pos + 1 < len && String::char_code_at(source, pos + 1) == '=' {
+      (TEqEq, pos + 2)
+    } else if pos + 1 < len && String::char_code_at(source, pos + 1) == '>' {
+      (TArrow, pos + 2)
+    } else (TEq, pos + 1)
+  } else if c == '!' {
+    if pos + 1 < len && String::char_code_at(source, pos + 1) == '=' {
+      (TNeq, pos + 2)
+    } else (TNot, pos + 1)
+  } else if c == '<' {
+    if pos + 1 < len && String::char_code_at(source, pos + 1) == '=' {
+      (TLte, pos + 2)
+    } else if pos + 1 < len && String::char_code_at(source, pos + 1) == '<' {
+      (TLShift, pos + 2)
+    } else (TLt, pos + 1)
+  } else if c == '>' {
+    if pos + 1 < len && String::char_code_at(source, pos + 1) == '=' {
+      (TGte, pos + 2)
+    } else if pos + 1 < len && String::char_code_at(source, pos + 1) == '>' {
+      (TRShift, pos + 2)
+    } else (TGt, pos + 1)
+  } else if c == '&' {
+    if pos + 1 < len && String::char_code_at(source, pos + 1) == '&' {
+      (TAnd, pos + 2)
+    } else (TBitAnd, pos + 1)
+  } else if c == '|' {
+    if pos + 1 < len && String::char_code_at(source, pos + 1) == '|' {
+      (TOr, pos + 2)
+    } else if pos + 1 < len && String::char_code_at(source, pos + 1) == '>' {
+      (TPipeGt, pos + 2)
+    } else (TBitOr, pos + 1)
+  } else if c == '^' {
+    (TBitXor, pos + 1)
+  } else if c == '(' {
+    (TLParen, pos + 1)
+  } else if c == ')' {
+    (TRParen, pos + 1)
+  } else if c == '{' {
+    (TLBrace, pos + 1)
+  } else if c == '}' {
+    (TRBrace, pos + 1)
+  } else if c == '[' {
+    (TLBracket, pos + 1)
+  } else if c == ']' {
+    (TRBracket, pos + 1)
+  } else if c == ',' {
+    (TComma, pos + 1)
+  } else if c == ';' {
+    (TSemicolon, pos + 1)
+  } else if c == '.' {
+    if pos + 2 < len && String::char_code_at(source, pos + 1) == '.' && String::char_code_at(source, pos + 2) == '.' {
+      (TDotDotDot, pos + 3)
+    } else if pos + 1 < len && String::char_code_at(source, pos + 1) == '.' {
+      (TDotDot, pos + 2)
+    } else (TDot, pos + 1)
+  } else if c == ':' {
+    if pos + 1 < len && String::char_code_at(source, pos + 1) == ':' {
+      (TDoubleColon, pos + 2)
+    } else (TColon, pos + 1)
+  } else if c == '#' {
+    if pos + 1 < len && String::char_code_at(source, pos + 1) == '|' {
+      lex_multiline_string(source, len, pos)
+    } else {
+      (THash, pos + 1)
+    }
+  } else if c == '~' {
+    (TTilde, pos + 1)
+  } else if c == '?' {
+    (TQuestion, pos + 1)
+  } else if c == '@' {
+    // Package refs: `@scope/name` — '/', '-', '_' are part of the name after
+    // '@' (#730; matches the documented `@lib/path` form). A trailing '/'
+    // is not consumed (so `@a/` is `@a` + '/').
+    let mut end = pos + 1
+    while end < len {
+      let ec = String::char_code_at(source, end)
+      if is_alnum(ec) || ec == '_' || ec == '-' {
+        end = end + 1
+      } else if ec == '/' && end + 1 < len && is_alnum(String::char_code_at(source, end + 1)) {
+        end = end + 1
+      } else {
+        break
+      }
+    }
+    if end > pos + 1 {
+      (TIdent(intern_slice(source, pos, end)), end)
+    } else {
+      throw("unexpected '@' without identifier")
+    }
+  } else if c == '\'' {
+    lex_char(source, len, pos)
+  } else {
+    // #946: c >= 0x80 is (the lead byte of) a multi-byte UTF-8 character --
+    // report the ORIGINAL source bytes, not String::from_char_code(c) (which
+    // only ever encodes ONE raw byte and mojibake'd multi-byte characters
+    // into an invalid lone-byte "character").
+    let ch_text = if c >= 128 {
+      utf8_char_text(source, len, pos)
+    } else {
+      String::from_char_code(c)
+    }
+    throw(String::concat("unexpected character: ", ch_text))
+  }
+}
+
+/// Position-tracking lexer: identical token production to `lex`, but also returns
+/// per emitted token its start and end byte offset in `source` (three parallel
+/// arrays — one entry per token, including any synthetic `;` separators and the
+/// trailing `TEof`). Used by module-source emission to recover top-level
+/// statement source spans.
+export fn lex_with_offsets(source: String) -> (Array[Token], Array[Int], Array[Int]) with Exception {
+  let len = String::length(source)
+  {
+    let b = ArrayBuilder::new()
+    let starts = ArrayBuilder::new()
+    let ends = ArrayBuilder::new()
+    let mut prev_tok = TEof
+    let first_skip = skip_ws_with_newline(source, len, skip_bom(source, len))
+    let mut pos = first_skip>>1
+    let mut nl_before = (first_skip&1) == 1
+    while pos < len {
+      let c = String::char_code_at(source, pos)
+      let (tok, next) = lex_one_token(source, len, pos)
+      if needs_synthetic_semicolon(c, nl_before, prev_tok) {
+        ArrayBuilder::push(b, TSemicolon)
+        ArrayBuilder::push(starts, pos)
+        ArrayBuilder::push(ends, pos)
+      } else {
+        ()
+      }
+      ArrayBuilder::push(b, tok)
+      ArrayBuilder::push(starts, pos)
+      ArrayBuilder::push(ends, next)
+      prev_tok = tok
+      let skipped = skip_ws_with_newline(source, len, next)
+      pos = skipped>>1
+      nl_before = (skipped&1) == 1
+    }
+    ArrayBuilder::push(b, TEof)
+    ArrayBuilder::push(starts, len)
+    ArrayBuilder::push(ends, len)
+    (ArrayBuilder::freeze(b), ArrayBuilder::freeze(starts), ArrayBuilder::freeze(ends))
+  }
+}
+
+/// #946: recovering variant of `lex_with_offsets` — NEVER throws. On a lex
+/// error (unexpected character, bad escape, unterminated string, ...) it
+/// records the 0-based char offset of the offending position plus the raw
+/// error message into two parallel diagnostic arrays, skips ONE char (progress
+/// guarantee), and keeps lexing. Returns (tokens, starts, ends, err_offsets,
+/// err_msgs); err arrays empty = clean lex, identical token stream to
+/// `lex_with_offsets`. Foundation for `vibe diagnostics` reporting lexer
+/// errors as located diagnostics instead of an empty ("clean") report.
+export fn lex_with_offsets_recovering(source: String) -> (Array[Token], Array[Int], Array[Int], Array[Int], Array[String]) {
+  let len = String::length(source)
+  let b = ArrayBuilder::new()
+  let starts = ArrayBuilder::new()
+  let ends = ArrayBuilder::new()
+  let err_offsets = ArrayBuilder::new()
+  let err_msgs = ArrayBuilder::new()
+  let mut prev_tok = TEof
+  let first_skip = skip_ws_with_newline(source, len, skip_bom(source, len))
+  let mut pos = first_skip>>1
+  let mut nl_before = (first_skip&1) == 1
+  while pos < len {
+    let c = String::char_code_at(source, pos)
+    let res = handle {
+      let (tok, next) = lex_one_token(source, len, pos)
+      Some((tok, next))
+    } with { Exception::Throw(msg) => {
+      ArrayBuilder::push(err_offsets, pos)
+      ArrayBuilder::push(err_msgs, msg)
+      None
+    } }
+    match res {
+      Some((tok, next)) => {
+        if needs_synthetic_semicolon(c, nl_before, prev_tok) {
+          ArrayBuilder::push(b, TSemicolon)
+          ArrayBuilder::push(starts, pos)
+          ArrayBuilder::push(ends, pos)
+        } else {
+          ()
+        }
+        ArrayBuilder::push(b, tok)
+        ArrayBuilder::push(starts, pos)
+        ArrayBuilder::push(ends, next)
+        prev_tok = tok
+        let skipped = skip_ws_with_newline(source, len, next)
+        pos = skipped>>1
+        nl_before = (skipped&1) == 1
+      },
+      None => {
+        // #963: resume PAST the failed construct, not inside it. A failure
+        // in a multi-char quoted token (string/char literal with a bad
+        // escape) would otherwise re-lex the token's interior and invent
+        // follow-on diagnostics (the backslash as an unexpected char, the
+        // closing quote as a new unterminated string). For quote-delimited
+        // constructs skip to just past the matching close quote (honoring
+        // backslash escapes; stop at newline/EOF for unterminated ones);
+        // anything else advances one char (progress guarantee).
+        let resume = if c == '"' || c == '\'' {
+          let mut j = pos + 1
+          let mut stop = false
+          while !stop {
+            if j >= len {
+              stop = true
+            } else {
+              let cc = String::char_code_at(source, j)
+              if cc == c {
+                j = j + 1
+                stop = true
+              } else if cc == 10 {
+                stop = true
+              } else if cc == 92 && j + 1 < len {
+                j = j + 2
+              } else {
+                j = j + 1
+              }
+            }
+          }
+          j
+        } else if c >= 128 {
+          // #946: a multi-byte UTF-8 character failed as a single logical
+          // token (identifiers/operators are ASCII-only) -- skip the WHOLE
+          // encoded sequence, not one byte at a time, or a single 3-byte
+          // character re-lexes as 3 separate "unexpected character" errors
+          // (one per continuation byte) instead of one error for the one
+          // character actually in the source.
+          let seq_len = utf8_seq_len(c)
+          if pos + seq_len <= len {
+            pos + seq_len
+          } else {
+            len
+          }
+        } else {
+          pos + 1
+        }
+        let skipped = skip_ws_with_newline(source, len, resume)
+        pos = skipped>>1
+        nl_before = (skipped&1) == 1
+      }
+    }
+  }
+  ArrayBuilder::push(b, TEof)
+  ArrayBuilder::push(starts, len)
+  ArrayBuilder::push(ends, len)
+  (ArrayBuilder::freeze(b), ArrayBuilder::freeze(starts), ArrayBuilder::freeze(ends), ArrayBuilder::freeze(err_offsets), ArrayBuilder::freeze(err_msgs))
+}
+
+/// Source of the parse that supplied `starts`. Located/recovering entries
+/// set this so `format_unexpected_token` can turn a token index into
+/// `line:col`. `lex` must not write it: a later lex of B must not relocate
+/// a parse of A's tokens (#1862).
+let last_parse_source_cell: Array[String] = Array::slice([""], 0, 0)
+
+/// Failing token index for the last `format_unexpected_token`. Recovery
+/// used to decode `at #N` from the message; the user-facing form no longer
+/// carries that index, so the pos lives here instead of in the string.
+let last_unexpected_token_pos_cell: Array[Int] = Array::slice([0], 0, 0)
+
+export fn remember_parse_source(source: String) -> Unit {
+  Array::truncate(last_parse_source_cell, 0)
+  Array::push(last_parse_source_cell, source)
+}
+
+fn last_parse_source() -> String {
+  if Array::length(last_parse_source_cell) > 0 {
+    Array::get(last_parse_source_cell, 0)
+  } else {
+    ""
+  }
+}
+
+export fn last_unexpected_token_pos() -> Int {
+  if Array::length(last_unexpected_token_pos_cell) > 0 {
+    Array::get(last_unexpected_token_pos_cell, 0)
+  } else {
+    -1
+  }
+}
+
+fn remember_unexpected_token_pos(pos: Int) -> Unit {
+  Array::truncate(last_unexpected_token_pos_cell, 0)
+  Array::push(last_unexpected_token_pos_cell, pos)
+}
+
+/// User-facing unexpected-token diagnostic (#1862). Never encodes a token
+/// index or lexer `(prev=..., next=...)` debris. Emits `line L:col C:` only
+/// when `starts` contains the failing token and this parse remembered its
+/// source; tokens-only `parse_program` has empty `starts` and must not
+/// invent a location from a leftover source.
+export fn format_unexpected_token(starts: Array[Int], pos: Int, actual: String) -> String {
+  remember_unexpected_token_pos(pos)
+  let source = last_parse_source()
+  if pos >= 0 && pos < Array::length(starts) && String::length(source) > 0 {
+    let off = Array::get(starts, pos)
+    let (line, col) = offset_to_line_col(source, off)
+    String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), String::concat(": unexpected token: ", actual)))))
+  } else {
+    String::concat("unexpected token: ", actual)
+  }
+}
+
+/// The byte offset each line starts at, line 1 first. Built in ONE pass.
+///
+/// #2670: `offset_to_line_col` below counts newlines from offset 0 on every
+/// call, which is right for a one-shot lookup and quadratic for a caller in a
+/// loop. Measured on `vibe symbols lib` -- 26,823 declarations, one call each
+/// -- it was 41.3s of a 49.35s sweep, 83.7%, against 3.3% for all lexing and
+/// parsing combined.
+///
+/// Newlines are found by BYTE (ADR-0108), which is safe: 0x0A cannot occur
+/// inside a UTF-8 multi-byte sequence, so a byte scan and a character scan
+/// find the same line breaks.
+export fn line_start_offsets(source: String) -> Array[Int] {
+  let out = ArrayBuilder::new()
+  ArrayBuilder::push(out, 0)
+  let len = String::length(source)
+  let mut i = 0
+  while i < len {
+    if String::char_code_at(source, i) == 10 {
+      ArrayBuilder::push(out, i + 1)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ArrayBuilder::freeze(out)
+}
+
+/// `offset_to_line_col` against a prebuilt index: O(log lines) per call
+/// instead of O(offset). Answers exactly what `offset_to_line_col` answers
+/// for the same source -- pinned over every offset of a real file in
+/// `line_index_test.vibe`, not merely on the shapes someone thought to pick.
+export fn offset_to_line_col_indexed(line_starts: Array[Int], source: String, offset: Int) -> (Int, Int) {
+  let len = String::length(source)
+  let bound = if offset < len {
+    offset
+  } else {
+    len
+  }
+  // The greatest i with line_starts[i] <= bound. line_starts is non-empty
+  // (it always holds 0) and strictly increasing, so this terminates with
+  // `lo` on the line containing `bound`.
+  let mut lo = 0
+  let mut hi = Array::length(line_starts) - 1
+  while lo < hi {
+    let mid = (lo + hi + 1) / 2
+    if Array::get(line_starts, mid) <= bound {
+      lo = mid
+    } else {
+      hi = mid - 1
+    }
+  }
+  (lo + 1, bound - Array::get(line_starts, lo) + 1)
+}
+
+/// Convert a 0-based char offset (from lex_with_offsets) to 1-based (line, col).
+/// Source-span foundation: lets diagnostics report a real `line:col`.
+///
+/// This scans from 0, which is the right shape for a SINGLE lookup (one
+/// diagnostic) and the wrong one inside a loop. A caller converting many
+/// offsets over the same source builds `line_start_offsets` once and uses
+/// `offset_to_line_col_indexed` (#2670).
+export fn offset_to_line_col(source: String, offset: Int) -> (Int, Int) {
+  let len = String::length(source)
+  let bound = if offset < len {
+    offset
+  } else {
+    len
+  }
+  let mut i = 0
+  let mut line = 1
+  let mut col = 1
+  while i < bound {
+    if String::char_code_at(source, i) == 10 {
+      line = line + 1
+      col = 1
+    } else {
+      col = col + 1
+    }
+    i = i + 1
+  }
+  (line, col)
+}
+
+export fn lex(source: String) -> Array[Token] with Exception {
+  let len = String::length(source)
+  {
+    let b = ArrayBuilder::new()
+    let mut prev_tok = TEof
+    let first_skip = skip_ws_with_newline(source, len, skip_bom(source, len))
+    let mut pos = first_skip>>1
+    let mut nl_before = (first_skip&1) == 1
+    while pos < len {
+      let c = String::char_code_at(source, pos)
+      let (tok, next) = lex_one_token(source, len, pos)
+      // Newline-sensitive disambiguation: `expr <newline> [ ... ]` is two
+      // statements (the `[...]` is an array literal), not a postfix subscript
+      // `expr[...]`; likewise `expr <newline> ( ... )` is two statements (the
+      // `(...)` is a paren/tuple expression), not a call `expr(...)`. The lexer
+      // discards newlines, so insert a synthetic `;` when a `[`/`(` is
+      // newline-preceded and follows an expression-ending token; the statement
+      // parser already treats `;` as a separator. A same-line `(`/`[` (no
+      // newline) still attaches as a call/subscript suffix.
+      if needs_synthetic_semicolon(c, nl_before, prev_tok) {
+        ArrayBuilder::push(b, TSemicolon)
+      } else {
+        ()
+      }
+      ArrayBuilder::push(b, tok)
+      prev_tok = tok
+      let skipped = skip_ws_with_newline(source, len, next)
+      pos = skipped>>1
+      nl_before = (skipped&1) == 1
+    }
+    ArrayBuilder::push(b, TEof)
+    ArrayBuilder::freeze(b)
+  }
+}
+
+export fn lex_ok(source: String) -> Bool {
+  handle {
+    let _ = lex(source)
+    true
+  } with { Exception::Throw(_) => false }
+}

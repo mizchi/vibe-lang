@@ -6109,6 +6109,22 @@ bash "$ROOT_DIR/scripts/check_gate_portability_test.sh"
 # seed bump -- which is exactly when the regeneration is needed.
 bash "$ROOT_DIR/scripts/check_generated_stamp_report.sh"
 bash "$ROOT_DIR/scripts/check_generated_stamp_report_test.sh"
+# ...and the fourth: a MEASUREMENT whose input moves with the change it is
+# measuring. The lex/parse series read the live compiler sources, so a PR that
+# edited the checker moved the input of the benchmark that measures the parser
+# -- +17.3% B/op on one such PR with the compiler held fixed, reported to the
+# reviewer as a warning about their own change (#2865). The corpus is frozen
+# under bench/perf/corpus/; this keeps it frozen and the benches pointed at it.
+bash "$ROOT_DIR/scripts/check_bench_corpus.sh"
+bash "$ROOT_DIR/scripts/check_bench_corpus_test.sh"
+# ...and the fifth: work a lane does that nobody reads. A compile that passes a
+# fresh cache for BOTH body-cache parameters records a body, three meta counts,
+# three slices and one vibe.linemap row per function into an out-cache the
+# caller never bound -- and on the bump lane none of it is ever reclaimed
+# (#2873). The OUT cache is the second of the pair, so an inline
+# `codegen_body_cache_new()` there is provably unread.
+bash "$ROOT_DIR/scripts/check_body_cache_discard.sh"
+bash "$ROOT_DIR/scripts/check_body_cache_discard_test.sh"
 # check_book_console.sh landed (#2253) with no self-test and CI caught it the
 # same day -- the ratchet working as intended. Its cases hand the gate a STUB
 # compiler so the transcripts fail identically for all of them, and assert the
