@@ -309,19 +309,91 @@ fn emit_dbg_line_for(buf: Bytes, value: Expr, ctx: CompileCtx) -> Unit {
   emit_dbg_line_stmt(buf, value, -1, ctx)
 }
 
-/// #644: append one (owning function, body-relative byte offset, file id,
-/// line) entry to `lm` for the `vibe.linemap` custom section -- called right
-/// before emit_dbg_line_stmt writes the runtime dbg_line probe, so the
-/// recorded offset is exactly where that probe's instructions begin (the
-/// static table and the live `--break` hook agree on where each source line
-/// starts). No-op when `lm` is disabled (non-debug-break builds, and every
-/// lambda-derived ctx -- see LineMapState's doc comment).
+/// #644 / #2199: append one (owning function, body-relative byte offset, file
+/// id, line) entry to `lm` for the `vibe.linemap` custom section. Called at
+/// statement boundaries and at call sites so a trap inside a bounds-checked
+/// builtin attributes the ACCESS, not a helper. No-op when `lm` is disabled
+/// (no file newline tables, and every lambda-derived ctx).
 fn linemap_record(lm: LineMapState, buf: Bytes, file_id: Int, line: Int) -> Unit {
   if lm.enabled {
-    Array::push(lm.funcs, Array::get(lm.cur_fn, 0))
-    Array::push(lm.offsets, bytebuf_length(buf))
-    Array::push(lm.file_ids, file_id)
-    Array::push(lm.lines, line)
+    let off = bytebuf_length(buf)
+    let fn_i = Array::get(lm.cur_fn, 0)
+    let n = Array::length(lm.offsets)
+    let same_fn = n > 0 && Array::get(lm.funcs, n - 1) == fn_i
+    if same_fn && Array::get(lm.offsets, n - 1) == off {
+      // Same (func, offset) as the previous probe: keep ONE row and let the
+      // later record win so a call-site OOB attributes the access, not the
+      // enclosing statement (#2199 size).
+      Array::set(lm.file_ids, n - 1, file_id)
+      Array::set(lm.lines, n - 1, line)
+    } else if same_fn && Array::get(lm.file_ids, n - 1) == file_id && Array::get(lm.lines, n - 1) == line {
+      // A row that answers what the row already covering this offset answers.
+      // Resolution is "the last row at or before the target", so every offset
+      // this one would cover resolves to the same (file, line) without it.
+      // Dropping it is what keeps the enclosing-site re-assert
+      // (`linemap_leave_call_site`) free on the common case where a call and
+      // its arguments are written on one line.
+      ()
+    } else {
+      Array::push(lm.funcs, fn_i)
+      Array::push(lm.offsets, off)
+      Array::push(lm.file_ids, file_id)
+      Array::push(lm.lines, line)
+    }
+  } else {
+    ()
+  }
+}
+
+/// #2199: record the current body offset against `expr`'s source line, so a
+/// trap in a callee can resolve the caller's frame, and make that line the
+/// ENCLOSING SITE while `expr` is compiled. Returns the site that was in
+/// effect, which `linemap_leave_call_site` takes back. No-op (and 0) when
+/// linemap is off or the expression has no source offset.
+export fn linemap_enter_call_site(buf: Bytes, expr: Expr, ctx: CompileCtx) -> Int {
+  if ctx.linemap.enabled {
+    let prev = Array::get(ctx.linemap.site, 0)
+    let off = first_offset(expr)
+    if off >= 0 {
+      let line = offset_to_line(ctx.dbg_line_nl, off)
+      linemap_record(ctx.linemap, buf, ctx.dbg_line_file_id, line)
+      Array::set(ctx.linemap.site, 0, line)
+    } else {
+      ()
+    }
+    prev
+  } else {
+    0
+  }
+}
+
+/// The other half. `prev` becomes the site again AND is recorded here, at the
+/// offset the finished call left behind.
+///
+/// This is the row an enclosing call's trap resolves to: arguments are
+/// compiled before the call instruction, so a call in one of them
+/// (`Array::get(xs, compute_index())`) is the last row before the outer
+/// `call` and would otherwise own it -- the array access reported at
+/// `compute_index()`'s line (Codex P2 on PR #2867). A statement sets the site
+/// too, so the last call in a statement restores the statement's own line
+/// rather than leaving the innermost callee's.
+///
+/// Free where nothing moved: `linemap_record` drops a row that answers
+/// identically to the one already in place, which is every call whose
+/// arguments are written on its own line.
+///
+/// Where a statement is a bare call, nothing records a statement site for it,
+/// so the restored site is the PREVIOUS statement's line. That row covers only
+/// the bytes between this call and the next recorded site -- stack cleanup and
+/// the function epilogue, which contain no call to trap in.
+export fn linemap_leave_call_site(buf: Bytes, ctx: CompileCtx, prev: Int) -> Unit {
+  if ctx.linemap.enabled {
+    Array::set(ctx.linemap.site, 0, prev)
+    if prev > 0 {
+      linemap_record(ctx.linemap, buf, ctx.dbg_line_file_id, prev)
+    } else {
+      ()
+    }
   } else {
     ()
   }
@@ -332,23 +404,31 @@ fn linemap_record(lm: LineMapState, buf: Bytes, file_id: Int, line: Int) -> Unit
 /// carries no offset (first_offset = -1) -- the ELet/ELetMut node's stmt offset
 /// (the `let` keyword token) still locates the line, so the probe is emitted
 /// and the line is breakpoint-able.
+///
+/// #2199: linemap recording is independent of the live dbg_line probe. A
+/// production compile records the statement even when `dbg_line_idx < 0`.
 fn emit_dbg_line_stmt(buf: Bytes, value: Expr, stmt_off: Int, ctx: CompileCtx) -> Unit {
-  if ctx.dbg_line_idx >= 0 {
-    let voff = first_offset(value)
-    let off = if voff >= 0 {
-      voff
-    } else {
-      stmt_off
-    }
-    if off >= 0 {
-      let line = offset_to_line(ctx.dbg_line_nl, off)
-      linemap_record(ctx.linemap, buf, ctx.dbg_line_file_id, line)
-      emit_i32_const(buf, ctx.dbg_line_file_id)
-      emit_i32_const(buf, line)
-      emit_call(buf, ctx.dbg_line_idx)
-    } else {
-      ()
-    }
+  let voff = first_offset(value)
+  let off = if voff >= 0 {
+    voff
+  } else {
+    stmt_off
+  }
+  if off >= 0 && ctx.linemap.enabled {
+    let line = offset_to_line(ctx.dbg_line_nl, off)
+    linemap_record(ctx.linemap, buf, ctx.dbg_line_file_id, line)
+    // #2199: and this statement is the enclosing site until the next one, so
+    // the last call in it restores THIS line rather than leaving the
+    // innermost callee's behind for whatever the statement emits after it.
+    Array::set(ctx.linemap.site, 0, line)
+  } else {
+    ()
+  }
+  if ctx.dbg_line_idx >= 0 && off >= 0 {
+    let line = offset_to_line(ctx.dbg_line_nl, off)
+    emit_i32_const(buf, ctx.dbg_line_file_id)
+    emit_i32_const(buf, line)
+    emit_call(buf, ctx.dbg_line_idx)
   } else {
     ()
   }

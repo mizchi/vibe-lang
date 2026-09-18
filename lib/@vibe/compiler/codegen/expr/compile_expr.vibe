@@ -234,7 +234,7 @@ import ./compile_call.vibe {
 }
 
 import ./compile_expr_tail.vibe {
-  compile_expr_tail, expr_is_floatish, expr_is_intish
+  compile_expr_tail, expr_is_floatish, expr_is_intish, linemap_enter_call_site, linemap_leave_call_site
 }
 
 import ./compile_lambda.vibe {
@@ -1698,7 +1698,19 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
     }
     max_nl_if
   } else if __tag == 8 {
-    compile_call(buf, get_ecall_callee(expr), get_ecall_args(expr), local_names, next_local, ctx, ld, compile_expr)
+    // #2199: record the call site so a trap inside a bounds-checked builtin
+    // resolves to the access, not the previous statement. Consecutive
+    // (func, offset) rows collapse; a nested call after a dbg_line probe
+    // has a later offset, so --break still attributes the access.
+    //
+    // `compile_call` compiles the ARGUMENTS before emitting this call, so a
+    // call inside one of them records the last row before this call's own
+    // instruction. Leaving the site restores this line at that point, so the
+    // access is not reported at its argument's line.
+    let lm_site = linemap_enter_call_site(buf, expr, ctx)
+    let call_res = compile_call(buf, get_ecall_callee(expr), get_ecall_args(expr), local_names, next_local, ctx, ld, compile_expr)
+    linemap_leave_call_site(buf, ctx, lm_site)
+    call_res
   } else {
     compile_expr_tail(buf, expr, local_names, next_local, ctx, ld, compile_expr)
   }
