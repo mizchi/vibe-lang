@@ -69,7 +69,7 @@ def read_prov():
         if not line or line.startswith("#"):
             continue
         parts = line.split("\t")
-        if len(parts) != 5:
+        if len(parts) != 6:
             print("[bench-corpus] FAIL: malformed PROVENANCE.tsv row: %s" % line, file=sys.stderr)
             sys.exit(1)
         rows[parts[0]] = parts
@@ -112,12 +112,19 @@ if mode == "check":
 
 rev = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
 out = ["# Frozen bench corpus (#2865). One row per snapshot.",
-       "# corpus\tsource\ttaken_at\tsha256\tbytes"]
+       "# `sha256` is the IDENTITY -- it is what --check verifies and what survives a",
+       "# squash merge. `taken_at` is provenance only: this repository squash-merges, so",
+       "# the commit a snapshot was cut from is rewritten and the recorded SHA becomes",
+       "# unreachable. `source_sha256` is the live file digest at freeze time, which is",
+       "# what answers \"was this copy faithful?\" without needing that commit to exist.",
+       "# corpus\tsource\ttaken_at\tsha256\tbytes\tsource_sha256"]
 for src, dst in PAIRS:
-    text = BANNER.format(src=src, rev=rev) + pathlib.Path(src).read_text()
+    body = pathlib.Path(src).read_text()
+    text = BANNER.format(src=src, rev=rev) + body
     pathlib.Path(dst).write_text(text)
     raw = text.encode()
-    out.append("\t".join([dst, src, rev, hashlib.sha256(raw).hexdigest(), str(len(raw))]))
+    out.append("\t".join([dst, src, rev, hashlib.sha256(raw).hexdigest(), str(len(raw)),
+                          hashlib.sha256(body.encode()).hexdigest()]))
     print("[bench-corpus] froze %s (%d bytes)" % (dst, len(raw)))
 PROV.write_text("\n".join(out) + "\n")
 print("[bench-corpus] wrote %s at %s" % (PROV, rev))

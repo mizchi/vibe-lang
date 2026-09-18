@@ -9,8 +9,15 @@ benchmark series in `lib/@vibe/compiler/{lexer,parser}_bench.vibe`.
 | `parser.vibe.txt` | `lib/@vibe/parser/parser.vibe` | medium |
 | `checker.vibe.txt` | `lib/@vibe/compiler/checker/checker.vibe` | large |
 
-`PROVENANCE.tsv` records each snapshot's source path, the revision it was taken
-at, its sha256 and its byte count.
+`PROVENANCE.tsv` records each snapshot's source path, its sha256, its byte
+count, the revision it was taken at, and the live source file's digest at that
+moment.
+
+The **sha256 is the identity** — it is what `--check` verifies, and it is what
+survives a squash merge. `taken_at` is provenance only: this repository
+squash-merges, so the commit a snapshot was cut from is rewritten and the
+recorded SHA becomes unreachable. `source_sha256` is what answers "was this copy
+faithful?" without needing that commit to exist.
 
 ## Why the copies exist
 
