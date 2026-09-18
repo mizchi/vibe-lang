@@ -23,24 +23,45 @@ fn ensure_source(box: Array[String], path: String) -> String with Exception + Fs
 
 //# Benches
 
-// Small file: a handful of imports + a couple of small functions.
+// #2878: the corpus is FROZEN (`bench/perf/corpus/`), and the three tiers are
+// real tiers again -- 6.5 KB, 52 KB, 532 KB.
+//
+// The comments here used to say "format.vibe itself (~2.3k lines)" and "the
+// biggest tracked .vibe file in lib/ (~9.4k lines)". Both were true when they
+// were written and stopped being true at #753, which moved the implementations
+// into contract packages and left re-export SHIMS at those paths. Nothing
+// re-measured them, so "large" was 662 bytes and "medium" 2,046 -- the same
+// mistake #1104 found and fixed for the lex/parse series while missing this
+// one. Measured on a stage2 at 9b850db, `--iters 3`:
+//
+//   format_small_file    156.07 us/op   9,728 B/op
+//   format_medium_file   483.97 us/op   4,198 B/op
+//   format_large_file    167.02 us/op   1,126 B/op   <- the "large" one
+//
+// inverted on both axes: "large" was faster than "medium" and allocated an
+// eighth of "small".
+//
+// Frozen as well as resized, for #2865's reason: `format_medium_file` read
+// `fmt/format.vibe`, THE FORMATTER ITSELF, so a formatter PR moved the subject
+// and the input together and a real regression was indistinguishable from
+// corpus growth.
 bench "format_small_file" {
   let _ = handle {
-    String::length(format_script(ensure_source(small_source_box, "lib/@vibe/path/index_import_test.vibe")))
+    String::length(format_script(ensure_source(small_source_box, "bench/perf/corpus/small.vibe.txt")))
   } with { Exception::Throw(_) => 0 }
 }
 
-// Medium file: format.vibe itself (~2.3k lines, the formatter's own source).
 bench "format_medium_file" {
   let _ = handle {
-    String::length(format_script(ensure_source(medium_source_box, "lib/@vibe/compiler/fmt/format.vibe")))
+    String::length(format_script(ensure_source(medium_source_box, "bench/perf/corpus/lexer.vibe.txt")))
   } with { Exception::Throw(_) => 0 }
 }
 
-// Large file: the biggest tracked .vibe file in lib/ (~9.4k lines), to see
-// whether format_tokens scales linearly or shows super-linear blowup.
+// Large: 532 KB, which is what answers whether format_tokens scales linearly
+// or shows super-linear blowup -- the question the old comment claimed to ask
+// of a 662-byte barrel file.
 bench "format_large_file" {
   let _ = handle {
-    String::length(format_script(ensure_source(large_source_box, "lib/@vibe/compiler/codegen/common_base/inline_direct_perform.vibe")))
+    String::length(format_script(ensure_source(large_source_box, "bench/perf/corpus/checker.vibe.txt")))
   } with { Exception::Throw(_) => 0 }
 }

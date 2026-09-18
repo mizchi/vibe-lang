@@ -95,4 +95,51 @@ VIBE_BENCH_CORPUS_GLOBS="$WORK/r5/*_bench.vibe" bash scripts/check_bench_corpus.
 grep -qF 'no bench files matched' "$WORK/out" \
   || { cat "$WORK/out" >&2; fail "RED 5 failed for the wrong reason"; }
 
-echo "[bench-corpus-test] ok (5 red cases + 1 control, each mutation verified to land)"
+# RED 6: `bump_bench_corpus.sh` is ADDITIVE by default (#2878). Adding a corpus
+# entry must not re-freeze the ones already there -- the first attempt at the
+# fourth entry did exactly that, because `main` had changed `checker.vibe` in
+# between, and silently reset two series the change was not about. Only `--all`
+# is a bump.
+#
+# Built in a scratch root so the tree's own corpus is never touched. The paths
+# are the ones the script hardcodes.
+mkdir -p "$WORK/r6/lib/@vibe/compiler/checker" \
+         "$WORK/r6/lib/@vibe/parser" \
+         "$WORK/r6/lib/@vibex/url" \
+         "$WORK/r6/bench/perf/corpus" \
+         "$WORK/r6/scripts"
+cp scripts/bump_bench_corpus.sh "$WORK/r6/scripts/"
+printf 'fn checker() -> Int {\n  1\n}\n'  > "$WORK/r6/lib/@vibe/compiler/checker/checker.vibe"
+printf 'fn lexer() -> Int {\n  1\n}\n'    > "$WORK/r6/lib/@vibe/parser/lexer.vibe"
+printf 'fn parser() -> Int {\n  1\n}\n'   > "$WORK/r6/lib/@vibe/parser/parser.vibe"
+printf 'fn url() -> Int {\n  1\n}\n'      > "$WORK/r6/lib/@vibex/url/url.vibe"
+
+VIBE_BENCH_CORPUS_ROOT="$WORK/r6" bash scripts/bump_bench_corpus.sh --all >"$WORK/out" 2>&1 \
+  || { cat "$WORK/out" >&2; fail "RED 6 setup: the initial --all freeze failed"; }
+before="$(cat "$WORK/r6/bench/perf/corpus/checker.vibe.txt")"
+
+# The mutation: the SOURCE moves, exactly as a merge from main would move it.
+printf 'fn checker() -> Int {\n  2\n}\n' > "$WORK/r6/lib/@vibe/compiler/checker/checker.vibe"
+if cmp -s "$WORK/r6/lib/@vibe/compiler/checker/checker.vibe" /dev/null; then
+  fail "RED 6 mutation did not land (the source file is empty)"
+fi
+
+VIBE_BENCH_CORPUS_ROOT="$WORK/r6" bash scripts/bump_bench_corpus.sh >"$WORK/out" 2>&1 \
+  || { cat "$WORK/out" >&2; fail "RED 6: the default (additive) run failed"; }
+if [ "$(cat "$WORK/r6/bench/perf/corpus/checker.vibe.txt")" != "$before" ]; then
+  fail "RED 6: the default run RE-FROZE an existing snapshot; adding an entry would bump the others"
+fi
+grep -qF 'already frozen at' "$WORK/out" \
+  || { cat "$WORK/out" >&2; fail "RED 6: the default run did not report keeping the existing snapshot"; }
+
+# ...and the control: --all DOES re-freeze, or "additive" would just mean broken.
+VIBE_BENCH_CORPUS_ROOT="$WORK/r6" bash scripts/bump_bench_corpus.sh --all >"$WORK/out" 2>&1 \
+  || { cat "$WORK/out" >&2; fail "RED 6 control: the --all run failed"; }
+if [ "$(cat "$WORK/r6/bench/perf/corpus/checker.vibe.txt")" = "$before" ]; then
+  fail "RED 6 control: --all did NOT re-freeze a moved source; the bump path is broken"
+fi
+# Whichever mode ran, the result must still verify against its own record.
+VIBE_BENCH_CORPUS_ROOT="$WORK/r6" bash scripts/bump_bench_corpus.sh --check >"$WORK/out" 2>&1 \
+  || { cat "$WORK/out" >&2; fail "RED 6 control: the re-frozen corpus does not match its recorded digest"; }
+
+echo "[bench-corpus-test] ok (6 red cases + 3 controls, each mutation verified to land)"

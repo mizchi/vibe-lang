@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Re-freeze the bench corpus from today's sources (#2865).
 #
-# The corpus under bench/perf/corpus/ is a byte-for-byte copy of three compiler
+# The corpus under bench/perf/corpus/ is a byte-for-byte copy of four real
 # sources, taken once. Reading the LIVE files made every checker PR move the
 # input of the series that measures the parser; measured on one compiler with
 # only the corpus swapped, `parse_checker_vibe` went 4,926,112 -> 5,780,608 B/op
@@ -16,19 +16,27 @@
 # It rewrites the banner and PROVENANCE.tsv together, which is what keeps
 # check_bench_corpus.sh able to tell a bump from an edit.
 #
+# ADDING a corpus entry is not a bump, so the default is ADDITIVE: only
+# snapshots that are MISSING get frozen. Adding the fourth entry re-froze the
+# other three the first time this was tried, because main had changed
+# `checker.vibe` in between -- silently resetting two series the change was not
+# about. `--all` is the real bump and says so.
+#
 # Usage:
-#   bash scripts/bump_bench_corpus.sh            # re-freeze at HEAD
+#   bash scripts/bump_bench_corpus.sh            # freeze only MISSING snapshots
+#   bash scripts/bump_bench_corpus.sh --all      # re-freeze every snapshot (a BUMP)
 #   bash scripts/bump_bench_corpus.sh --check    # exit 1 if a snapshot does not
 #                                                # match its recorded digest
 set -euo pipefail
 ROOT_DIR="${VIBE_BENCH_CORPUS_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 cd "$ROOT_DIR"
 
-MODE="bump"
+MODE="add"
 case "${1:-}" in
   --check) MODE="check" ;;
+  --all) MODE="all" ;;
   "") ;;
-  *) echo "unknown argument: $1 (expected --check)" >&2; exit 2 ;;
+  *) echo "unknown argument: $1 (expected --check or --all)" >&2; exit 2 ;;
 esac
 
 python3 - "$MODE" <<'PY'
@@ -40,12 +48,20 @@ PAIRS = [
     ("lib/@vibe/compiler/checker/checker.vibe", "bench/perf/corpus/checker.vibe.txt"),
     ("lib/@vibe/parser/lexer.vibe",             "bench/perf/corpus/lexer.vibe.txt"),
     ("lib/@vibe/parser/parser.vibe",            "bench/perf/corpus/parser.vibe.txt"),
+    # #2878: the formatter series needs a genuinely SMALL program, and the three
+    # above are 52 KB and up. Frozen for the same reason as the others.
+    #
+    # `url.vibe` (5.6 KB) rather than the 438-byte file the formatter bench used
+    # to read: the banner every snapshot carries is ~950 bytes, so a 438-byte
+    # source would have made the corpus 69% banner and the "small" series would
+    # mostly have measured comment handling.
+    ("lib/@vibex/url/url.vibe",                 "bench/perf/corpus/small.vibe.txt"),
 ]
 BANNER = (
 "// FROZEN BENCH CORPUS -- NOT A SOURCE FILE.\n"
 "//\n"
-"// A byte-for-byte copy of {src}, taken at {rev}, read by the\n"
-"// lex/parse benchmark series in lib/@vibe/compiler/{{lexer,parser}}_bench.vibe.\n"
+"// A byte-for-byte copy of {src}, taken at {rev}, read by the lex, parse and\n"
+"// format benchmark series in lib/@vibe/compiler/*_bench.vibe.\n"
 "//\n"
 "// Editing the live file used to change the INPUT of the benchmark that is\n"
 "// supposed to measure the lexer and the parser, so every checker PR of any\n"
@@ -110,7 +126,17 @@ if mode == "check":
             bad = 1
     sys.exit(1 if bad else 0)
 
-rev = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+# `taken_at` is provenance only -- the sha256 columns are the identity -- so a
+# tree with no git (a scratch root, an export) records `unknown` and says so
+# rather than aborting the freeze.
+try:
+    rev = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True,
+                                  stderr=subprocess.DEVNULL).strip()
+except Exception:
+    rev = "unknown"
+    print("[bench-corpus] NOTE: no git revision available; taken_at recorded as `unknown`",
+          file=sys.stderr)
+existing = read_prov()
 out = ["# Frozen bench corpus (#2865). One row per snapshot.",
        "# `sha256` is the IDENTITY -- it is what --check verifies and what survives a",
        "# squash merge. `taken_at` is provenance only: this repository squash-merges, so",
@@ -119,9 +145,17 @@ out = ["# Frozen bench corpus (#2865). One row per snapshot.",
        "# what answers \"was this copy faithful?\" without needing that commit to exist.",
        "# corpus\tsource\ttaken_at\tsha256\tbytes\tsource_sha256"]
 for src, dst in PAIRS:
+    p = pathlib.Path(dst)
+    row = existing.get(dst)
+    if mode == "add" and p.exists() and row is not None:
+        # Kept verbatim, including its recorded revision: re-freezing it here
+        # would be a bump nobody asked for.
+        out.append("\t".join(row))
+        print("[bench-corpus] kept %s (already frozen at %s)" % (dst, row[2][:9]))
+        continue
     body = pathlib.Path(src).read_text()
     text = BANNER.format(src=src, rev=rev) + body
-    pathlib.Path(dst).write_text(text)
+    p.write_text(text)
     raw = text.encode()
     out.append("\t".join([dst, src, rev, hashlib.sha256(raw).hexdigest(), str(len(raw)),
                           hashlib.sha256(body.encode()).hexdigest()]))

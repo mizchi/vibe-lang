@@ -1,13 +1,19 @@
 # Frozen bench corpus (#2865)
 
-Three byte-for-byte copies of compiler sources, read by the lex and parse
-benchmark series in `lib/@vibe/compiler/{lexer,parser}_bench.vibe`.
+Four byte-for-byte copies of real sources, read by the lex, parse and format
+benchmark series in `lib/@vibe/compiler/*_bench.vibe`.
 
-| file | copy of | role |
-|---|---|---|
-| `lexer.vibe.txt` | `lib/@vibe/parser/lexer.vibe` | small |
-| `parser.vibe.txt` | `lib/@vibe/parser/parser.vibe` | medium |
-| `checker.vibe.txt` | `lib/@vibe/compiler/checker/checker.vibe` | large |
+| file | copy of | bytes |
+|---|---|---:|
+| `small.vibe.txt` | `lib/@vibex/url/url.vibe` | 6.5 K |
+| `lexer.vibe.txt` | `lib/@vibe/parser/lexer.vibe` | 53 K |
+| `parser.vibe.txt` | `lib/@vibe/parser/parser.vibe` | 66 K |
+| `checker.vibe.txt` | `lib/@vibe/compiler/checker/checker.vibe` | 532 K |
+
+Each snapshot carries a ~950-byte banner, which is why the formatter's small
+tier reads a 6.5 K source rather than the 438-byte file it used to: at that
+size the corpus would have been 69% banner and the series would mostly have
+measured comment handling.
 
 `PROVENANCE.tsv` records each snapshot's source path, its sha256, its byte
 count, the revision it was taken at, and the live source file's digest at that
@@ -51,12 +57,18 @@ corpus growth. A measurement that cannot tell those apart is not one.
 ## Bumping
 
 ```bash
-bash scripts/bump_bench_corpus.sh          # re-freeze from today's sources
+bash scripts/bump_bench_corpus.sh          # freeze only MISSING snapshots
+bash scripts/bump_bench_corpus.sh --all    # re-freeze every snapshot (a BUMP)
 bash scripts/bump_bench_corpus.sh --check  # verify digests only
 ```
 
 It rewrites the banners and `PROVENANCE.tsv` together, which is what lets the
 gate tell a bump from an edit.
+
+**The default is additive, and that is load-bearing.** Adding the fourth entry
+re-froze the other three the first time it was tried, because `main` had changed
+`checker.vibe` in between — silently resetting two series the change was not
+about. Only `--all` is a bump.
 
 Bump when the frozen program has drifted far enough from real code to stop
 representing it — not to silence a flag, and never in a PR whose own numbers are
