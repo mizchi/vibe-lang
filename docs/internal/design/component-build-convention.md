@@ -308,14 +308,23 @@ must still get the exact vibe view.
 `.vibe/store/@scope/pkg/` holding the `.component.wasm` and an `index.vpkg`
 **extracted from its `vibe.contract` section**. That `.vpkg` is derived like
 every other artifact here and is never edited. Two identities, both on
-ADR-0093's line: the **package pin** (`pkg:b3:`, the `require` row in the
-consumer's `index.vpkg`) hashes the component bytes together with the
-extracted `.vpkg`, so a component with different code and the same contract
-does not satisfy the pin; the **contract identity** (`ct:b3:`, the
-`generated_hash`) hashes the contract text alone, which is what a consumer
-was checked against. A contract-only pin would leave the executable unpinned,
-which is the one thing a pin is for. `vibe add` refuses an artifact whose
-section and sidecar disagree.
+ADR-0093's line, and **they live in different directives**:
+
+| identity | directive | what it hashes |
+|---|---|---|
+| package pin | `generated_hash = #pkg:b3:<64hex>`, and the `require` row in the consumer's `index.vpkg` | the extracted `.vpkg` **together with the component bytes**, so a component with different code and the same contract does not satisfy the pin |
+| contract identity | `contract_hash = #ct:b3:<64hex>` (**new**) | the contract text alone — what a consumer was type-checked against, so a producer rebuild that keeps the contract is visible as such |
+
+`generated_hash` keeps its package-pin domain because that is what the
+parser admits: `scan_package_header` refuses anything but an empty value,
+`#pkg:sha1:<40hex>` or `#pkg:b3:<64hex>` ("generated_hash must be empty or
+…"), so a `ct:b3:` value there would make every installed component contract
+fail to parse before linkage. The contract identity therefore needs its own
+directive, and admitting `contract_hash` (empty or `#ct:b3:`) in
+`scan_package_header` / `parse_contract_header` is a **prerequisite** of this
+section, not a consequence of it. A contract-only pin would leave the
+executable unpinned, which is the one thing a pin is for. `vibe add` refuses
+an artifact whose section and sidecar disagree.
 
 The loader's resolution rule does not change: it finds an `index.vpkg` under
 the store exactly as for a source package. The one new fact it reads is the
@@ -344,12 +353,30 @@ declares `import acme:greeter/greeter@0.1.0` in its world.
 
 **A component dependency makes the consumer a component** (decided by the
 owner, 2026-09-17, on the safe side: a refusal can be relaxed later, a
-second linkage in the runner cannot be taken back). A core module has
-no component imports, so a program that imports a component package cannot be
-emitted as a core `.wasm`; `vibe build` of such a program refuses with the
-edit (`--component`), and `vibe run` / `vibe test` take the component lane
-for it. This is the one place the transparency leaks into the build command,
-and it leaks as a refusal, never as a different artifact.
+second linkage in the runner cannot be taken back). A core module has no
+component imports, so a program that imports a component package cannot be
+emitted as a core `.wasm`.
+
+**An executable or test root takes the `wasi-command` form, derived, never
+requested.** A `.vibex`'s `main` and the harness entry `vibe test` / `vibe
+bench` synthesize match none of §1.3's three surface-derived kinds, because
+none of them is a surface the author writes: they are roots. So the
+dependency decides the form, not a flag — `kind=wasi-command`,
+`core-export=_start`, `component-export=wasi:cli/run` (host-contract §2.3).
+Explicit `vibe build --component <file.vibex>` stays refused (§1.1): that
+asks for an export surface a `.vibex` does not have, which is a different
+request from "this root depends on a component".
+
+**That producer does not exist yet, and until it does the dependency is
+refused on every lane.** §1.3 records that the two gates asserting
+`export wasi:cli/run@0.2.6` call builder scripts no longer in the tree, so
+nothing currently lifts a root to `wasi:cli/run`. Routing `vibe run` and
+`vibe test` to a lane with no producer would promise a run that cannot
+happen, so until the `wasi-command` producer lands, `build`, `run` and
+`test` alike refuse a component dependency with one message naming the
+package, the missing lane and this section. Building that producer is the
+first item of any implementation of this convention, ahead of the store and
+the shims.
 
 ### 6.3 Host capabilities take the same shim and the same linker
 

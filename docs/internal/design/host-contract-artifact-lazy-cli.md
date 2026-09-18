@@ -129,16 +129,27 @@ interface http {
 ```
 
 The remaining interfaces are named by kebab of the registry's `Some("…")`
-label — the rest of the ten names `standard_host_provider_resource_defaults`
-lists (`lib/@vibe/compiler/core/standard_effect_policy.vibe`): `stdin`,
-`stdout`, `stderr`, `console`, `process`, `profiler`, `socket`. There is no
-`tcp`, `sh`, or `clock`. `vibe_tcp_*` is tagged `Socket`; `sh*` and `process_exit`
-share `Process`; `sleep` is tagged `Async`, which is a runtime-managed
-effect rather than a host provider, and stays out of this residual (#2832).
-`Console` is a provider this list must include. The kebab mapping
-`wit_gen.vibe` already applies (`Http` → `http`, `read_file` → `read-file`).
-The generator-diff gate pins the emitted interface set against
-`standard_host_provider_resource_defaults`.
+label, over the names `standard_host_provider_resource_defaults` lists
+(`lib/@vibe/compiler/core/standard_effect_policy.vibe`): `stdin`, `stdout`,
+`stderr`, `process`, `profiler`, `socket`. There is no `tcp`, `sh`, or
+`clock`. `vibe_tcp_*` is tagged `Socket`; `sh*` and `process_exit` share
+`Process`; `sleep` is tagged `Async`, which is a runtime-managed effect
+rather than a host provider, and stays out of this residual (#2832). The
+kebab mapping `wit_gen.vibe` already applies (`Http` → `http`, `read_file` →
+`read-file`).
+
+**A provider that owns no raw field of its own gets no interface, and
+`Console` is the one.** All six `Console::*` operations lower to fields the
+stdio providers already own — the registry says so in its own comment at the
+`Console` block, "`Console::write_stream` is already taken by stdout" — so a
+`console` interface would either repeat `stdout.write-stream` under a second
+name, breaking the one-function-per-field rule below, or be empty. It is
+therefore a **grant label only**: it appears in `field_labels`, in the
+`used` rows (§2.2) and in a manifest column entry (§3.1), and a policy can
+grant or deny it, but the catalog has no `console` interface and a world
+never imports one. The generator-diff gate pins the emitted interface set to
+kebab(`standard_host_provider_resource_defaults`) **minus the labels that
+only alias another provider's fields**, which is exactly this rule.
 
 **One WIT function per raw field, not per registry spelling.**
 `Stdout::write_stream` and `Console::write_stream` both emit
