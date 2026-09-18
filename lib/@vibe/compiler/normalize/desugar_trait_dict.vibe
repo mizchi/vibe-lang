@@ -12100,7 +12100,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
                 None => match as_method {
                   Some(dict_pname) => ECall(EDot(EIdent(dict_pname, -1), member_of(name), -1, -1), rwargs, off),
                   None => match lookup_gen_entry(gens, name) {
-                    Some(gen) => match synth_dicts(gen.type_params, gen.threaded, gen.constructor_recvs, args, traits, struct_sets, var_types, dict_binds, fn_returns, gens) {
+                    Some(gen) => match synth_dicts_if(gen_prepends_dicts(gen), gen.type_params, gen.threaded, gen.constructor_recvs, args, traits, struct_sets, var_types, dict_binds, fn_returns, gens) {
                       Some(dicts) => ECall(EIdent(name, coff), concat_expr_arrays(dicts, rwargs), off),
                       None => ECall(EIdent(name, coff), rwargs, off)
                     },
@@ -12185,7 +12185,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
                   // falling back to the un-dicted call (same as the EIdent
                   // arm's own fallback) when synth_dicts can't resolve one.
                   Some(qual) => match lookup_gen_entry(gens, qual) {
-                    Some(gen) => match synth_dicts(gen.type_params, gen.threaded, gen.constructor_recvs, prepend_expr(obj, args), traits, struct_sets, var_types, dict_binds, fn_returns, gens) {
+                    Some(gen) => match synth_dicts_if(gen_prepends_dicts(gen), gen.type_params, gen.threaded, gen.constructor_recvs, prepend_expr(obj, args), traits, struct_sets, var_types, dict_binds, fn_returns, gens) {
                       Some(dicts) => ECall(EIdent(qual, doff), concat_expr_arrays(dicts, prepend_expr(robj, rwargs)), off),
                       None => ECall(EIdent(qual, doff), prepend_expr(robj, rwargs), off)
                     },
@@ -12849,6 +12849,33 @@ fn concat_threaded(a: Array[(String, String, Int)], b: Array[(String, String, In
   out
 }
 
+/// `synth_dicts` when the callee actually declares dict parameters, None when
+/// it does not -- see gen_prepends_dicts.
+fn synth_dicts_if(prepend: Bool, callee_type_params: Array[String], threaded: Array[(String, String, Int)], constructor_recvs: Array[(String, Int)], args: Array[Expr], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], dict_binds: Array[(String, String, String, Array[String])], fn_returns: Array[(String, String)], gens: Array[DictGen]) -> Option[Array[Expr]] {
+  if prepend {
+    synth_dicts(callee_type_params, threaded, constructor_recvs, args, traits, struct_sets, var_types, dict_binds, fn_returns, gens)
+  } else {
+    None
+  }
+}
+
+/// Whether a resolved gen's dictionaries are PASSED at its call sites.
+///
+/// A lambda that binds no type parameters of its own takes no dict parameter:
+/// `rewrite_expr`'s EFn arm threads only when `tp` is non-empty, and the
+/// enclosing dictionaries reach such a body by CAPTURE, not by argument. Its
+/// gen still lists them -- the interpolation expander reads that to resolve a
+/// renderer -- so the question of what to pass is answered here instead.
+///
+/// Measured without this: `Set::from_array[T: Hash]`'s inner
+/// `let rec go = (i, acc) -> ...` takes two parameters and was called with
+/// three, which is a `null function or function signature mismatch` at run
+/// time. A plain local lambda inside a bounded generic is everywhere, which is
+/// why the failure looked unrelated to nested bounds.
+fn gen_prepends_dicts(gen: DictGen) -> Bool {
+  Array::length(gen.type_params) > 0
+}
+
 /// The dict parameters a lambda's rewritten signature CARRIES (#2778).
 ///
 /// `threaded_from_outer_binds` drops only the formals the binder REBINDS, so
@@ -13070,15 +13097,21 @@ fn gens_after_let(gens: Array[DictGen], name: String, val: Expr, traits: Array[(
 
 fn lambda_dict_gen(name: String, val: Expr, traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], dict_binds: Array[(String, String, String, Array[String])]) -> Option[DictGen] {
   match val {
-    // An EFn always gets an ENTRY, even when it threads nothing. Returning
-    // None instead sends `gens_after_let` down its mask branch, which adds one
-    // only when the name already shadows a generic -- so a plain
-    // `let rec go = ...` under a fresh name got no entry at all, and the
-    // interpolation expander reads `gens` to find a formal's renderer.
-    // Measured: that refused `add_by` in `s5_wasm_test`'s self-compile. The
-    // entry for a lambda that threads nothing is the same shape the mask
-    // branch builds, so this is that branch's answer, reached directly.
-    EFn(tparams, bounds, params, _, _, _) => Some(dict_gen_of_lambda(name, tparams, lambda_threaded_sig(tparams, bounds, params, traits, dict_binds))),
+    // The entry keeps DESCRIBING the enclosing dictionaries even for a binder
+    // that declares none: the interpolation expander reads `gens` to resolve a
+    // formal's renderer, and narrowing this to what the signature carries
+    // refused `add_by` in `s5_wasm_test`'s self-compile of the whole compiler.
+    // Whether those dicts are PASSED is the call site's question, and
+    // `gen_prepends_dicts` answers it there.
+    EFn(tparams, bounds, params, _, _, _) => {
+      let own = threaded_from_lambda_sig(bounds, params, traits)
+      let threaded = concat_threaded(threaded_from_outer_binds(dict_binds, tparams), own)
+      if Array::length(threaded) > 0 {
+        Some(dict_gen_of_lambda(name, tparams, threaded))
+      } else {
+        None
+      }
+    },
     _ => None
   }
 }
