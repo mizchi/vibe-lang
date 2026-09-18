@@ -1,0 +1,80 @@
+// #2837: `Array::truncate` changes the array's LENGTH, not the lifetime of an
+// element someone already took out of it.
+//
+// That is the ownership rule `docs/user/reference/stable-surface.md` §2.2a
+// freezes -- an aggregate is a handle, and `Array::get` hands you the same
+// object rather than a view owned by the array -- and it is the rule #2837
+// asks to define before removed elements may be reclaimed. It is also why the
+// eager drop-on-truncate experiment during #2554 had to be reverted: under
+// this rule freeing the removed element is wrong by construction, and the
+// reclamation has to come from an ordinary refcount decrement instead, so the
+// element survives exactly as long as some handle remains.
+//
+// Nothing pinned it. The #715 shadow fixture next door covers dup/drop
+// accounting shapes, not this one, and the reservation regression #2554
+// mentions is not in the tree. So this is the guard that makes a future
+// reclamation change fail loudly rather than silently hand back a freed block:
+// under `VIBE_RC=shadow` a drop-of-freed traps on the FIRST occurrence instead
+// of corrupting the free list.
+//
+// Each shape contributes at a distinct decimal place, so a wrong answer names
+// which one broke rather than just differing.
+//
+//   shape 1 (x1)        the issue's own example
+//   shape 2 (x100)      through an ALIAS and a helper function
+//   shape 3 (x10000)    the same sequence on a RESERVED array (#2554)
+//   shape 4 (x1000000)  a NESTED element, saved one level down
+//
+// Expected: 12 + 23*100 + 12*10000 + 2*1000000 = 2122312
+
+fn clobber(ys: Array[Array[Int]]) -> Unit {
+  Array::truncate(ys, 0)
+  Array::push(ys, [91, 92])
+  Array::push(ys, [93, 94])
+}
+
+/// Shape 1: the example in #2837's body, unchanged.
+fn shape_plain() -> Int {
+  let xs = [[11, 12]]
+  let saved = Array::get(xs, 0)
+  Array::truncate(xs, 0)
+  Array::push(xs, [91, 92])
+  Array::get(saved, 1)
+}
+
+/// Shape 2: the truncation happens through an ALIAS, inside a helper, so the
+/// saved handle and the mutation are not even in the same function.
+fn shape_aliased() -> Int {
+  let xs = [[11, 12], [21, 22]]
+  let saved = Array::get(xs, 0)
+  let alias = xs
+  clobber(alias)
+  Array::get(saved, 1) + Array::get(saved, 0)
+}
+
+/// Shape 3: the reserved-capacity variant #2837 names -- capacity must stay
+/// reusable without the reuse reaching a handed-out element.
+fn shape_reserved() -> Int {
+  let xs: Array[Array[Int]] = Array::with_capacity(4)
+  Array::push(xs, [11, 12])
+  let saved = Array::get(xs, 0)
+  Array::truncate(xs, 0)
+  Array::push(xs, [91, 92])
+  Array::push(xs, [93, 94])
+  Array::get(saved, 1)
+}
+
+/// Shape 4: the saved handle is one level further down, so a reclamation that
+/// only checked the directly-removed element would still free it.
+fn shape_nested() -> Int {
+  let xs = [[[1, 2]]]
+  let saved_outer = Array::get(xs, 0)
+  let saved_inner = Array::get(saved_outer, 0)
+  Array::truncate(xs, 0)
+  Array::push(xs, [[91, 92]])
+  Array::get(saved_inner, 1)
+}
+
+export fn main() -> Int {
+  shape_plain() + shape_aliased() * 100 + shape_reserved() * 10000 + shape_nested() * 1000000
+}

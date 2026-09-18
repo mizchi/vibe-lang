@@ -543,6 +543,43 @@ fi
 rm -rf "$shdir"
 echo "[compiler-gate] RC shadow-liveness regression guard ok (25377489)"
 
+# 40f0. #2837: `Array::truncate` changes the array's LENGTH, not the lifetime
+#       of an element someone already took out of it. That is the ownership
+#       rule stable-surface.md §2.2a freezes and the one #2837 asks to define
+#       before removed elements may be reclaimed -- and it is why the eager
+#       drop-on-truncate experiment during #2554 had to be reverted.
+#
+#       Four shapes at distinct decimal places (plain / aliased through a
+#       helper / reserved capacity / nested one level down), on all four
+#       lanes, because the issue asks for bump-RC-GC value parity AND the
+#       shadow pin. Under VIBE_RC=shadow a drop-of-freed traps on the FIRST
+#       occurrence, so a future reclamation change fails loudly here instead
+#       of handing back a freed block at an unrelated location.
+echo "[compiler-gate] 40f0/40 truncate does not invalidate a saved element view (#2837)"
+svdir="_build/_gate_truncate_saved_view"
+rm -rf "$svdir"; mkdir -p "$svdir"
+for sv_lane in bump rc shadow gc; do
+  rm -f "$svdir/sv.wasm" "$svdir/sv.wasm.diag"
+  case "$sv_lane" in
+    bump) env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_truncate_saved_view_test.vibe" "$svdir/sv.wasm" main >/dev/null 2>&1 || true ;;
+    rc) env VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_truncate_saved_view_test.vibe" "$svdir/sv.wasm" main >/dev/null 2>&1 || true ;;
+    shadow) env VIBE_RC=shadow VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_truncate_saved_view_test.vibe" "$svdir/sv.wasm" main >/dev/null 2>&1 || true ;;
+    gc) env VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_truncate_saved_view_test.vibe" "$svdir/sv.wasm" main >/dev/null 2>&1 || true ;;
+  esac
+  if [ ! -s "$svdir/sv.wasm" ]; then
+    echo "[compiler-gate] FAIL: rc_truncate_saved_view fixture did not compile on the $sv_lane lane (#2837)" >&2
+    cat "$svdir/sv.wasm.diag" >&2 2>/dev/null || true
+    exit 1
+  fi
+  sv_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$svdir/sv.wasm" 2>&1 | tail -1)"
+  if [ "$sv_out" != "2122312" ]; then
+    echo "[compiler-gate] FAIL: rc_truncate_saved_view got '$sv_out' on the $sv_lane lane (want 2122312). Each shape sits at its own decimal place -- 1s plain, 100s aliased, 10000s reserved, 1000000s nested -- so the digit that moved names the one that broke. A trap means a saved element view was freed by a truncation (#2837)." >&2
+    exit 1
+  fi
+done
+rm -rf "$svdir"
+echo "[compiler-gate] truncate saved-view guard ok (2122312 on bump/rc/shadow/gc)"
+
 # 40f1a. #2427: the shadow table must not overlap the heap it describes.
 #        40f above proves the marks catch a real dup/drop-of-freed; this
 #        proves they are marks at all. The table sat at a FIXED 256 MiB while
