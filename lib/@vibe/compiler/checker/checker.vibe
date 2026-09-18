@@ -4158,20 +4158,54 @@ fn resolve_record_struct_name(defs: Array[TypeDef], actual: Array[(String, Type)
 /// of silently swallowing it. `__to_string` (the polymorphic interpolation
 /// stringifier: `"\{x}"` -> `__to_string(x)` wraps values of any type, but the
 /// polyfill annotates it `(Int) -> String`) is exempt.
-fn unify_call_args(param_tys: Array[Type], arg_tys: Array[Type], s: Subst, errors: Array[String], label: String, off: Int) -> Subst {
+fn unify_call_args(param_tys: Array[Type], arg_tys: Array[Type], arg_exprs: Array[Expr], s: Subst, errors: Array[String], label: String, off: Int) -> Subst {
   let mut out = s
   let mut ui = 0
   let ul = min_int(Array::length(arg_tys), Array::length(param_tys))
+  // One expression per TYPE, not merely enough of them: a length floor would
+  // admit an array that is misaligned but long enough, which is exactly how the
+  // two receiver-prepended method sites below slipped through a first draft
+  // (their `arg_tys` comes from `all_args`, one longer than `args`).
+  let have_exprs = Array::length(arg_exprs) == Array::length(arg_tys)
   while ui < ul {
     let pty = Array::get(param_tys, ui)
     let aty = Array::get(arg_tys, ui)
+    // #2831 (2): anchor the ARGUMENT, not the callee. `takes("nope")` used to
+    // report the column of `takes`, so the reader was sent to the name rather
+    // than to the text they have to edit. The offset was already there -- this
+    // path simply did not read it, which is why it is independent of #2831 (1)
+    // (widening `EInt` / `EFloat` / `EBool`, an AST_BINARY_VERSION bump).
+    //
+    // Indexing `arg_exprs` positionally is sound because `arg_tys` is built by
+    // walking `args` in order, and `desugar_labeled_args` reorders a labeled
+    // call BEFORE checking; an `ELabeledArg` that survives types as CtUnknown,
+    // which never mismatches. The length guard keeps a caller that cannot
+    // supply the expressions on the old callee anchor rather than on a
+    // MISALIGNED one -- a wrong location is worse than a coarse one.
+    let a_off = if have_exprs {
+      let ao = railway_expr_off(Array::get(arg_exprs, ui))
+      if ao >= 0 {
+        ao
+      } else {
+        off
+      }
+    } else {
+      off
+    }
     out = if label == "__to_string" {
       match unify(pty, aty, out) {
         Some(su) => su,
         None => out
       }
     } else {
-      check_assignable_for(pty, aty, out, errors, "argument type mismatch for ", label, off)
+      // Set unconditionally (with -1 clearing it) so a range never leaks from
+      // one argument onto the next argument's diagnostic.
+      if have_exprs {
+        check_assignable_set_end(string_lit_end(Array::get(arg_exprs, ui)))
+      } else {
+        ()
+      }
+      check_assignable_for(pty, aty, out, errors, "argument type mismatch for ", label, a_off)
     }
     ui = ui + 1
   }
@@ -9226,7 +9260,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                   let (a0_ty, s1, c2) = check_expr_capture(Array::get(args, 0), env, defs, s0, c1, errors, tytab, capture, lane)
                   let (a1_ty, s2, c3) = check_expr_capture(Array::get(args, 1), env, defs, s1, c2, errors, tytab, capture, lane)
                   let arg_tys = [a0_ty, a1_ty]
-                  let s3 = unify_call_args(param_tys, arg_tys, s2, errors, name, callee_off)
+                  let s3 = unify_call_args(param_tys, arg_tys, args, s2, errors, name, callee_off)
                   match subst_apply(s3, a0_ty) {
                     CtNamed(tg_name, tg_args) => if tg_name == "TaskGroup" && Array::length(tg_args) == 2 {
                       let violations = check_spawnable_captures(env, s3, defs, Array::get(args, 1), Array::get(tg_args, 0))
@@ -9430,7 +9464,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                       if alen3 != plen2 {
                         Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(name, String::concat(": expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))))), off_marker_len(callee_off, String::length(name))))
                       }
-                      let s3 = unify_call_args(call_param_tys, arg_tys, s2, errors, name, callee_off)
+                      let s3 = unify_call_args(call_param_tys, arg_tys, args, s2, errors, name, callee_off)
                       let call_ret = call_result_with_provenance(Array::get(ret_box, 0), call_param_tys, arg_tys, s3)
                       (tab_call_ty(tytab, call_off, call_ret, capture, lane), s3, c2)
                     },
@@ -9584,7 +9618,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                   if alen2 != plen {
                     Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(qualified, String::concat(": expected ", String::concat(__to_string(plen), String::concat(" args, got ", __to_string(alen2)))))), off_marker_len(call_off, String::length(qualified))))
                   }
-                  let s4 = unify_call_args(call_param_tys, arg_tys, s3, errors, qualified, call_off)
+                  let s4 = unify_call_args(call_param_tys, arg_tys, all_args, s3, errors, qualified, call_off)
                   let call_ret = Array::get(ret_box, 0)
                   let selected_ret = match direct_ret {
                     Some(t) => t,
@@ -9612,7 +9646,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                       if Array::length(fpts) != Array::length(explicit) {
                         Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(qualified, String::concat(": expected ", String::concat(__to_string(Array::length(fpts)), String::concat(" args, got ", __to_string(Array::length(explicit))))))), off_marker_len(call_off, String::length(qualified))))
                       }
-                      let s4 = unify_call_args(fpts, explicit, s3, errors, qualified, call_off)
+                      let s4 = unify_call_args(fpts, explicit, Array::slice(all_args, 1, Array::length(all_args)), s3, errors, qualified, call_off)
                       let result_ty = call_result_with_provenance(fret, fpts, explicit, s4)
                       (tab_call_ty(tytab, call_off, result_ty, capture, lane), s4, c3)
                     },
@@ -9799,7 +9833,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                       if alen3 != plen2 {
                         Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(callee_name0, String::concat(": expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))))), off_marker_len(call_off, String::length(callee_name0))))
                       }
-                      let s3 = unify_call_args(call_param_tys, arg_tys, s2, errors, callee_name0, call_off)
+                      let s3 = unify_call_args(call_param_tys, arg_tys, args, s2, errors, callee_name0, call_off)
                       let call_ret = call_result_with_provenance(Array::get(ret_box, 0), call_param_tys, arg_tys, s3)
                       (tab_call_ty(tytab, call_off, call_ret, capture, lane), s3, c2)
                     },
@@ -9835,7 +9869,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                   if alen3 != plen2 {
                     Array::push(errors, String::concat(String::concat("function arity mismatch for <expr>: expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))), off_marker(call_off)))
                   }
-                  let s3 = unify_call_args(call_param_tys, arg_tys, s2, errors, "<expr>", call_off)
+                  let s3 = unify_call_args(call_param_tys, arg_tys, args, s2, errors, "<expr>", call_off)
                   let call_ret = call_result_with_provenance(Array::get(ret_box, 0), call_param_tys, arg_tys, s3)
                   (tab_call_ty(tytab, call_off, call_ret, capture, lane), s3, c2)
                 },
