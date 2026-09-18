@@ -132,45 +132,48 @@ the fix, and landing it removes the arm rather than working around it.
 `fixtures/structural_eq_contexts_test.vibe`,
 `lib/@vibe/compiler/tests/marker_cmp_bound_test.vibe` and
 `fixtures/err_type_{eq,ord}_marker_bound_struct.vibe` hold the regression.
-**A bound only works on a TOP-LEVEL binder** (#2737). `build_gens` /
+**A nested binder's bound is threaded too** (#2737, #2778). `build_gens` /
 `thread_dict_params` thread a witness dictionary for a top-level `fn` / `let`
-generic; `rewrite_expr`'s `EFn` arm rebuilds a nested lambda with its bounds
-untouched and never extends `dict_binds`. So `let inner = [T: Eq](a: T, b: T)`
-declares a bound the parser accepts, the checker accepts — #2474's message even
-suggests writing it — and nothing honours. The fallthrough was not a worse
-answer but undefined behaviour: the dispatch kept its written spelling, which
-resolves to no function, and codegen lowered it to a table call on a bogus
-index. Measured on main at 8f70aa1, `U::equals(a, b)` inside a nested `[U: Eq]`
-applied to `7, 8` answered `true` with two impls in the program (landing on
-`Pt::equals`) and trapped `null function or function signature mismatch` with
-three — the answer was a function of the module's function-table layout. The
-shadowing route reported in #2737 reached the same place differently:
-`find_dict_for_method` matched `tp == head` by spelling and handed back the
-ENCLOSING binder's dictionary. **Four rungs are now refused at build time with
-a message LEADING with the edit** (move the lambda to a top-level declaration —
-the order is asserted by the gate, not just the presence of both clauses): the
-qualified spelling, the UFCS spelling (#931's rung), the method taken as a VALUE
-(`let cmp = T::equals`, which reaches the qualified EIdent arm rather than either
-call site — it answered `true` for `equals(7, 8)` until a review round found it),
-and interpolation — the last one too, because a formal-typed value is erased, so
-the builtin renderer prints the representation and not the value (`Pt!` through
-the wrong witness, `284` — a tagged pointer — with the witness withheld). Concrete scalar operands use `interp_shape`. A formal remains erased even
-when a caller supplies `Int`, so it needs a renderer witness (#2840). `==` is NOT refused — it falls back to the ladder, which is
-#2523's subject, not this one. The condition reads the INNERMOST binder's own
-bound (`dtd_scope_formal_bounds`) and whether that binder is a lambda's
-(`dtd_scope_formal_nested`), so it is about the binder — not about a spelling
-collision, and not about a dictionary merely being absent, which is a different
-fact that happens to coincide. **The stack stores the CANONICAL name**: a kinded
-formal arrives as `type_param_key(name, arity)` (`F[_]` is `<prefix>1$F`) while
-every lookup passes a bare head, so stored as the key a kinded binder was
-invisible to `formal_in_scope`, `dtd_formal_is_shadowed` and
-`dtd_formal_bound_promises` alike — its nested dispatch died on a bare
-`trap: RuntimeError: unreachable` instead of carrying the message. Pinned by
-`fixtures/lambda_bound_dispatch_*_refused.vibe`
-(the refusals, message asserted by `scripts/check_lambda_bound_refusal.sh`) and
-`fixtures/lambda_bound_toplevel_witness_test.vibe` (the same four rungs at a
-top-level binder, which is what would catch a refusal that grew too wide).
-Threading a lambda binder's own bound is the remaining half of #2737.
+generic. `rewrite_expr`'s `EFn` arm used to rebuild a nested lambda with its
+bounds untouched and never extend `dict_binds`, so `let inner = [T: Eq](a: T,
+b: T)` declared a bound the parser accepts, the checker accepts — #2474's
+message even suggests writing it — and nothing honoured. The fallthrough was
+not a worse answer but undefined behaviour: the dispatch kept its written
+spelling, which resolves to no function, and codegen lowered it to a table call
+on a bogus index. Measured on main at 8f70aa1, `U::equals(a, b)` inside a
+nested `[U: Eq]` applied to `7, 8` answered `true` with two impls in the
+program (landing on `Pt::equals`) and trapped `null function or function
+signature mismatch` with three — the answer was a function of the module's
+function-table layout. A stopgap refused four rungs at build time rather than
+emit that.
+
+**The EFn arm now OVERLAYS**: a nested lambda's own bounds become dictionaries
+of its own, laid over the enclosing ones, dropping exactly the formals this
+binder rebinds — so an inner `[U]` still sees an outer `[T: Show]`, and an
+inner `[T: Eq]` uses its own `T` rather than the enclosing binder's. That
+retires the refusal for the qualified spelling, the UFCS spelling (#931's
+rung), the method taken as a VALUE (`let cmp = T::equals`), the kinded binder
+(`F[_]` arrives as `type_param_key(name, arity)`, so a lookup passing a bare
+head could not see it), and an inner binder spelled apart from the outer one.
+`find_dict_for_method` no longer withholds on a shadowed spelling, because the
+overlay leaves only the right dictionary reachable. Pinned by
+`fixtures/lambda_bound_nested_witness_test.vibe` (17 runtime answers, not
+merely "did not throw") and `fixtures/lambda_bound_toplevel_witness_test.vibe`
+(the same rungs at a top-level binder).
+
+**One rung still fails closed**: interpolating a formal whose spelling an
+ENCLOSING binder also bound. `dtd_show_witness_dict` declines what
+`dtd_formal_is_shadowed` reports, and nobody has measured the overlay's answer
+for that shape — the pre-#2778 measurements are `Pt!` (a `Qt` rendered through
+`Pt::to_string`) with the enclosing dictionary, and `284`, a tagged pointer,
+with it withheld. Refusing until it is measured is the fail-closed reading of
+"never be silently wrong"; the message LEADS with the edit (move the lambda to
+a top-level declaration — the order is asserted by the gate, not just the
+presence of both clauses). `==` is NOT refused — it falls back to the ladder,
+which is #2523's subject, not this one. Pinned by
+`fixtures/lambda_bound_dispatch_interp_refused.vibe`, message asserted by
+`scripts/check_lambda_bound_refusal.sh`. Dropping that guard is the remaining
+half of #2778.
 
 **Interpolating an erased formal requires a renderer** (#2745, #2840).
 Top-level generic bodies are not specialized, so moving an unbounded lambda to
@@ -179,7 +182,9 @@ without a method-bearing renderer bound, including formals inside arrays,
 options, tuples, and named type arguments; a marker `Show` does not suffice.
 The diagnostic asks for an explicit `(T) -> String` renderer or interpolation
 at a concrete type. A top-level method-bearing `to_string(Self) -> String`
-bound uses its witness; nested bound dispatch remains subject to #2737.
+bound uses its witness, and since #2778 a NESTED method-bearing bound uses its
+own — what still has no renderer is an UNBOUNDED formal at either binder level,
+and a formal whose spelling an enclosing binder also bound (above).
 
 A direct top-level one-parameter rendering shim is expanded at each call site,
 where its argument type is still available. Local generic lambdas cannot use
