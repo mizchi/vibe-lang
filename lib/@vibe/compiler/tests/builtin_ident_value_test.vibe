@@ -49,15 +49,23 @@
 // #1733's two FrozenArray conversions were the carve-out kept through that
 // refusal (polymorphic, but shipped with a value form since #1733); they are
 // ordinary rows again, and their unannotated hole is closed with the rest.
-//   * a BARE name (`eq`, `not`) -- a compiler limitation, not a decision about
-//     the language, and the one row of #2442 left open. `count_lambda_sites_expr`
-//     predicts for the whole program how many lambda table slots the codegen
-//     walk will allocate, and the walk THROWS when the two disagree. It is
-//     scope-free by construction, so it decides the value form from the name
-//     alone, while codegen decides it only after the locals, constructors,
-//     constants and func table have failed. Those agree for a name nothing
-//     else can bind and disagree for one that can -- the count test below
-//     measures the disagreement on an ordinary `let eq = ...`.
+//
+// #2442 removed the last refusal, a BARE name (`eq`, `not`). It was a compiler
+// limitation, not a decision about the language: `count_lambda_sites_expr`
+// predicts for the whole program how many lambda table slots the codegen walk
+// will allocate, the walk THROWS when the two disagree, and the walk was
+// scope-free -- so it decided the value form from the name alone, while
+// codegen decided it only after the locals, constants, constructors and func
+// table had failed. Those agree for a name nothing else can bind and disagree
+// for one that can.
+//
+// Both sides moved. The planner threads a bound set for locals and takes the
+// whole-program names that shadow (user functions, module-level int constants,
+// constructors), and the value-form arm moved BELOW the constants and the
+// constructors in both backends -- the order the checker already resolves in.
+// `eq` also needed its registry row to relate its two positions: spelled as
+// independent `reg_any()` unknowns it was refused by
+// `registry_builtin_pure_arity` regardless, measured -1 on ae838ff.
 //
 // `builtin_value_form_arity` (core/builtin_name.vibe) is the single source of
 // truth: the checker asks it what to admit and both lanes ask it what to
@@ -119,10 +127,12 @@ test "#2442: the value form is decided by arity and effect, not by a name list" 
   // checker type, so there is nothing for a variable to relate.
   inspect(builtin_value_form_arity("Map::get"), "-1")
   inspect(builtin_value_form_arity("ArrayBuilder::push"), "-1")
-  // Bare names are pure two-argument rows and are still refused, for the
-  // planner reason above rather than anything about the builtins themselves.
-  inspect(builtin_value_form_arity("eq"), "-1")
-  inspect(builtin_value_form_arity("not"), "-1")
+  // #2442: bare names answer with their arity now. `not` is a ONE-argument row
+  // (`(Bool) -> Bool`) and `eq` a two-argument one; `eq`'s row had to gain a
+  // real type variable first, since two independent unknowns are refused by
+  // `registry_builtin_pure_arity` whatever the name looks like.
+  inspect(builtin_value_form_arity("eq"), "2")
+  inspect(builtin_value_form_arity("not"), "1")
   // #1733's two are no longer special-cased anywhere: #2442 removed the name
   // list in the codegen planner and #2451 removed the last one here.
   inspect(builtin_value_form_arity("FrozenArray::from_array"), "1")
@@ -221,19 +231,39 @@ test "#2442: a pure builtin is a value -- String::concat" {
   inspect(first_check_error(value_ident_program("String::concat")), content = "")
 }
 
-test "#2442: a bare builtin name is still refused, and says why" {
-  let msg = first_check_error(value_ident_program("eq"))
-  assert(String::contains(msg, "`eq`"))
-  assert(String::contains(msg, "not a value"))
-  assert(String::contains(msg, "unqualified"))
-  assert(String::contains(msg, "eq(a, b)"))
-  assert(!String::contains(msg, "internal compiler error"))
+test "#2442: a bare builtin name is accepted, like any other row" {
+  // This test used to assert the opposite, with the reason "unqualified" in
+  // the message. #2442 removed that refusal from both sides -- the planner
+  // learned scope, and the value-form arm moved below the constants and the
+  // constructors -- so the two bare rows are now judged the way every other
+  // row is. `value_ident_program` binds the name and calls it, so an empty
+  // error means the whole shape checked.
+  assert(first_check_error(value_ident_program("eq")) == "")
+  assert(first_check_error(value_ident_program("not")) == "")
 }
 
-test "#2442: `not` is refused the same way" {
-  let msg = first_check_error(value_ident_program("not"))
-  assert(String::contains(msg, "`not`"))
-  assert(String::contains(msg, "unqualified"))
+test "#2442: `eq`'s value form relates its two operands" {
+  // The reason the row had to gain a real type VARIABLE rather than merely
+  // losing the bare-name clause. Two independent `reg_any()` unknowns would
+  // have typed this clean -- the `FrozenArray` hole #2451 closed, and the same
+  // shape as `let get = Array::get; let s: String = get([1], 0)`.
+  let msg = first_check_error("fn main() -> Unit {\n  let f = eq\n  let _b = f(1, \"x\")\n  ()\n}\n")
+  assert(String::contains(msg, "expected Int"))
+  assert(String::contains(msg, "got String"))
+  // ...and the same-type call it is there to allow still checks.
+  assert(first_check_error("fn main() -> Unit {\n  let f = eq\n  let _b = f(1, 2)\n  ()\n}\n") == "")
+}
+
+test "#2442: the reasons that remain still say why" {
+  // The refusals that are NOT about the name being bare are untouched, and
+  // each still names itself. An effect row is the permanent one; an
+  // unconstrained position is the gap.
+  let eff = first_check_error(value_ident_program("Fs::read_file"))
+  assert(String::contains(eff, "`Fs::read_file`"))
+  assert(String::contains(eff, "not a value"))
+  assert(String::contains(eff, "performs"))
+  assert(!String::contains(eff, "unqualified"))
+  assert(!String::contains(eff, "internal compiler error"))
 }
 
 let no_user_fns: Array[String] = []
@@ -247,11 +277,13 @@ test "#2442: the planner reserves a slot for exactly the names with a value form
   inspect(count_lambda_sites_expr(EIdent("String::concat", -1), no_user_fns), "1")
   inspect(count_lambda_sites_expr(EIdent("FrozenArray::from_array", -1), no_user_fns), "1")
   // No value form, so no slot: an effectful builtin, a name with no registry
-  // row, an ordinary name, and a bare builtin.
+  // row, and an ordinary name.
   inspect(count_lambda_sites_expr(EIdent("Fs::read_file", -1), no_user_fns), "0")
   inspect(count_lambda_sites_expr(EIdent("Map::set", -1), no_user_fns), "0")
   inspect(count_lambda_sites_expr(EIdent("some_local", -1), no_user_fns), "0")
-  inspect(count_lambda_sites_expr(EIdent("eq", -1), no_user_fns), "0")
+  // #2442: a bare builtin reserves one like any other, when nothing shadows it.
+  inspect(count_lambda_sites_expr(EIdent("eq", -1), no_user_fns), "1")
+  inspect(count_lambda_sites_expr(EIdent("not", -1), no_user_fns), "1")
   // A DIRECT call stays direct: only a value-position identifier becomes the
   // synthetic lambda, so the callee must not be counted.
   inspect(count_lambda_sites_expr(ECall(EIdent("String::concat", -1), [
@@ -265,6 +297,23 @@ test "#2442: the planner reserves a slot for exactly the names with a value form
   inspect(count_lambda_sites_expr(EIdent("String::concat", -1), [
     "String::concat"
   ]), "0")
+  // #2442: the SHADOW tests, which are what let a bare name be admitted at
+  // all. Each mirrors one rung of codegen's `EIdent` ladder.
+  //
+  // A local binding: `let eq = <lambda>` in `let eq = ...; eq` is one EFn (the
+  // lambda itself) and NO slot for the trailing `eq`, which codegen resolves
+  // to the local. Counting that `eq` would be the `lambda plan over-count` the
+  // old restriction existed to prevent.
+  inspect(count_lambda_sites_expr(ELet("eq", EFn([], [], [("a", None)], None, None, EIdent("a", -1)), EIdent("eq", -1), -1), no_user_fns), "1")
+  // A lambda PARAMETER, the same way.
+  inspect(count_lambda_sites_expr(EFn([], [], [("eq", None)], None, None, EIdent("eq", -1)), no_user_fns), "1")
+  // A whole-program name -- a module-level int constant or a constructor -- is
+  // not in scope structure at all, so it rides the same sorted array user
+  // functions do.
+  inspect(count_lambda_sites_expr(EIdent("eq", -1), ["eq"]), "0")
+  // ...and the binding must not leak past its own scope: the second `eq` here
+  // is free, so it reserves a slot even though the first is bound.
+  inspect(count_lambda_sites_expr(ESeq(ELet("eq", EInt(1), EIdent("eq", -1), -1), EIdent("eq", -1)), no_user_fns), "1")
 }
 
 test "#2451: a row with an unconstrained position is refused, and says why" {

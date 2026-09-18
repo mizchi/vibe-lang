@@ -440,21 +440,31 @@ echo "[compiler-gate] insert_raw bounded probe ok (terminated, rc=$hm_rc)"
 #     pass.
 #
 #     #2433 changed what "resolves" looks like in the VALUE form, and the
-#     control had to follow. A builtin used as a value is now a checker error
-#     on every lane -- no builtin has a value form, because the indirect table
-#     is populated from user functions and lambdas only -- so `let _x =
-#     simd_skip_ws` reports "`simd_skip_ws` is a builtin operation, not a
-#     value", where it used to report nothing.
+#     control had to follow: a builtin used as a value became a checker error
+#     on every lane, so `let _x = simd_skip_ws` reported "`simd_skip_ws` is a
+#     builtin operation, not a value" where it used to report nothing. That
+#     expectation was then doing two jobs at once -- proving the name resolves,
+#     and proving the harness emits diagnostics at all.
 #
-#     The CLASSIFIER above is unaffected: it counts a name unreachable only
-#     when both forms say `unknown name: <n>`, and "not a value" is not that
-#     string, so a reachable-but-call-only name is still classified reachable.
-#     Only the control's expectation ("no diagnostic at all") was wrong. It now
-#     asserts the property the classifier actually uses -- the name is NOT
-#     `unknown name` -- plus, so that a harness which compiled nothing cannot
-#     pass, that the diagnostic it does get is the "not a value" one NAMING
-#     simd_skip_ws. That is strictly stronger than the old empty-output test,
-#     which an empty `.diag` from a dead runner satisfied.
+#     #2442 took the first job back. Bare builtin names have value forms now,
+#     and `simd_skip_ws` is a pure, fully concrete arity-3 row, so
+#     `let _x = simd_skip_ws` compiles and reports NOTHING again. The two jobs
+#     are therefore split, because one control can no longer do both:
+#
+#       * REACHABILITY stays on simd_skip_ws, in both forms, and is what the
+#         classifier actually uses -- the name is not `unknown name`. With a
+#         value form that is again "no diagnostic at all", the same assertion
+#         the call form makes.
+#       * LIVENESS moves to a name that is STILL refused in value position. An
+#         effectful builtin is the permanent case (`builtin_value_form_arity`
+#         refuses an effect row by design, not as a gap), so `let _x =
+#         Fs::read_file` must report "not a value" NAMING Fs::read_file. That
+#         is what an empty `.diag` from a dead runner cannot satisfy, which is
+#         the property #2433 added here.
+#
+#     The CLASSIFIER above is unaffected either way: it counts a name
+#     unreachable only when both forms say `unknown name: <n>`, and neither
+#     "not a value" nor an empty diagnostic is that string.
 echo "[compiler-gate] 4g the WASM-intrinsics block is codegen-internal, as it claims (#2343)"
 dcldir="_build/_gate_declarations_reach"
 rm -rf "$dcldir"; mkdir -p "$dcldir"
@@ -546,25 +556,35 @@ for ctl_form in value call; do
     rm -rf "$dcldir"
     exit 1
   fi
-  if [ "$ctl_form" = "value" ]; then
-    # #2433: the expected answer here is the "not a value" diagnostic, naming
-    # the control. Requiring it (rather than accepting anything that is not
-    # `unknown name`) is what keeps a harness that produced NO output from
-    # passing -- see the header.
-    if ! grep -qF "not a value" "$dcldir/ctl.out.diag" 2>/dev/null \
-       || ! grep -qF "simd_skip_ws" "$dcldir/ctl.out.diag" 2>/dev/null; then
-      echo "[compiler-gate] FAIL: the #2343 value-form control did not produce the expected \"not a value\" diagnostic naming simd_skip_ws -- the probe did not compile, or the diagnostic changed, so this harness is not measuring reachability (#2433)" >&2
-      cat "$dcldir/ctl.out.diag" >&2 2>/dev/null || true
-      rm -rf "$dcldir"
-      exit 1
-    fi
-  elif [ -s "$dcldir/ctl.out.diag" ]; then
+  if [ -s "$dcldir/ctl.out.diag" ]; then
     echo "[compiler-gate] FAIL: the #2343 $ctl_form-form control reported a diagnostic -- simd_skip_ws is declared in $decl_src and must resolve, so this harness is calling everything unreachable" >&2
     cat "$dcldir/ctl.out.diag" >&2 2>/dev/null || true
     rm -rf "$dcldir"
     exit 1
   fi
 done
+# LIVENESS (#2433's property, re-homed by #2442). The reachability control
+# above now expects an EMPTY diagnostic in both forms, and an empty `.diag` is
+# exactly what a dead runner produces -- so on its own it would pass while
+# compiling nothing, which is the failure mode #2433 closed here.
+#
+# This probe must therefore still be REFUSED. An effectful builtin is the case
+# that cannot quietly gain a value form the way `simd_skip_ws` did: an effect
+# row is refused by `builtin_value_form_arity` by design (a value form would
+# carry authority to an indirect call site where the row is not checked --
+# ADR-0075/0084/0088), not as a gap someone may close.
+printf 'fn probe() -> Int {\n  let _x = Fs::read_file\n  0\n}\n' > "$dcldir/ctl.vibe"
+rm -f "$dcldir/ctl.out" "$dcldir/ctl.out.diag"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$dcldir/ctl.vibe" "$dcldir/ctl.out" __no_entry__ check >/dev/null 2>&1 || true
+if ! grep -qF "not a value" "$dcldir/ctl.out.diag" 2>/dev/null \
+   || ! grep -qF "Fs::read_file" "$dcldir/ctl.out.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the #2343 liveness control did not produce the expected \"not a value\" diagnostic naming Fs::read_file -- the probe did not compile, or the diagnostic changed, so this harness is not measuring reachability (#2433/#2442)" >&2
+  cat "$dcldir/ctl.out.diag" >&2 2>/dev/null || true
+  rm -rf "$dcldir"
+  exit 1
+fi
 rm -rf "$dcldir"
 if [ -n "$reachable" ]; then
   echo "[compiler-gate] FAIL: these names are under the codegen-internal WASM-intrinsics banner in $decl_src but the checker resolved them in the value form, the call form, or both:$reachable" >&2
@@ -2249,6 +2269,20 @@ LAMBDA_BOUND_REFUSAL_STAGE2="$stage2_wasm" bash scripts/check_lambda_bound_refus
 echo "[compiler-gate] an aggregate export naming an undeclared name is refused (#2762)"
 EXPORT_REFUSAL_STAGE2="$stage2_wasm" bash scripts/check_export_refusal.sh
 
+# #2872: a bodyless `impl` of a method-bearing trait whose method has no
+# `<Type>::<method>` to fall back to is refused at BUILD time, with a message
+# that LEADS with the edit. It used to pass `vibe check` clean and emit a
+# module the wasm VALIDATOR rejected -- the witness dictionary carried a hole,
+# so the call site was one argument short. The checks, the measurements behind
+# them, and the red test that proves they can fail live in the gate script and
+# its self-test (scripts/check_bodyless_impl_refusal{,_test}.sh); this lane
+# hands it the compiler rather than letting it pick one. The GREEN side -- a
+# bodyless impl whose fallback DOES resolve, to a builtin or to a
+# `derive (Eq)`-generated user function -- rides the unit lane
+# (fixtures/bodyless_impl_witness_test.vibe).
+echo "[compiler-gate] a bodyless impl with no fallback method is refused (#2872)"
+BODYLESS_IMPL_REFUSAL_STAGE2="$stage2_wasm" bash scripts/check_bodyless_impl_refusal.sh
+
 # #2378: `vibe check` reports a qualified `fn` definition of a builtin name.
 #
 # The leak is narrow and so is the rule. Measured on the seed: a BARE `fn eq` in
@@ -2549,9 +2583,29 @@ echo '[compiler-gate] gc-lane scalar parity ok'
 #         eta-expanded lambda emitted independently by each backend, so the
 #         three lanes are three separate implementations of the same contract.
 echo '[compiler-gate] 15b-3b/15 builtin value form (#2442)'
+# #2392: the value-sharing and aliasing rules stable-surface.md §2.2a freezes.
+# All three lanes, because "the lanes agree" is one of the claims -- an
+# aggregate is a handle on every backend, not a property of the one the reader
+# built with.
+run_test_block_fixtures "value sharing (linear, bump)" fixtures/value_sharing_test.vibe
+run_test_block_fixtures_gc "value sharing (gc)" fixtures/value_sharing_test.vibe
+run_test_block_fixtures_rc "value sharing (linear, RC)" fixtures/value_sharing_test.vibe
 run_test_block_fixtures "builtin value form (linear, bump)" fixtures/builtin_value_form_test.vibe
 run_test_block_fixtures_gc "builtin value form (gc)" fixtures/builtin_value_form_test.vibe
 run_test_block_fixtures_rc "builtin value form (linear, RC)" fixtures/builtin_value_form_test.vibe
+# #2442: the two MODULE-LEVEL shadows of a bare builtin name, each in its own
+# file because the name shadows the builtin module-wide. They pin codegen's
+# resolution ORDER -- `locals -> consts -> constructors -> value form -> func
+# table` -- which the value-form arm had to move down into once bare names
+# gained a value form. Measured against a stage2 with the arm back where it
+# was, both fail with `lambda plan over-count: planned through 0, walk stopped
+# at 2`.
+run_test_block_fixtures "builtin value form const shadow (linear, bump)" fixtures/builtin_value_form_shadow_const_test.vibe
+run_test_block_fixtures_gc "builtin value form const shadow (gc)" fixtures/builtin_value_form_shadow_const_test.vibe
+run_test_block_fixtures_rc "builtin value form const shadow (linear, RC)" fixtures/builtin_value_form_shadow_const_test.vibe
+run_test_block_fixtures "builtin value form ctor shadow (linear, bump)" fixtures/builtin_value_form_shadow_ctor_test.vibe
+run_test_block_fixtures_gc "builtin value form ctor shadow (gc)" fixtures/builtin_value_form_shadow_ctor_test.vibe
+run_test_block_fixtures_rc "builtin value form ctor shadow (linear, RC)" fixtures/builtin_value_form_shadow_ctor_test.vibe
 echo '[compiler-gate] builtin value form ok'
 
 # 15b-3c. #2630: the three length views of a byte string (`unicode_length` /

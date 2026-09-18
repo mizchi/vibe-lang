@@ -2416,6 +2416,16 @@ export fn selfhost_cli_test_plan_args(args: Array[String], action_path: String) 
         }
         reject_unstable_closure_surface()
         write_wasm(out, bytes)
+        // #2870: the trap-frame annotation the launcher prints on a failing
+        // test reads this sidecar, exactly as `vibe run` does. Without it a
+        // frame is a bare `at helper` -- a name with no file and no line --
+        // while the same failure through `scripts/vibe_test.sh` says
+        // `at helper (oob_test.vibe:1)`, because that lane compiles through
+        // the FS entry point that writes one. Two reporters, one format
+        // (#2228). Best-effort by construction: `write_user_funcmap` swallows
+        // its own failure and removes a stale sidecar first, so a map it
+        // cannot build costs an unannotated frame and never a failed test run.
+        write_user_funcmap(src, out)
         true
       } with { Exception::Throw(e) => {
         Stderr::write_stream(line_terminated(format_check_report(e)))

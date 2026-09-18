@@ -1,0 +1,38 @@
+// #2442: a CONSTRUCTOR named `eq` still wins over the builtin.
+//
+// Lowercase constructors are legal, so a bare builtin name can be one. Its own
+// file for the same reason as the constant twin: the name shadows the builtin
+// module-wide, so in `builtin_value_form_test.vibe` it would silently change
+// what every value-form test there reads.
+//
+// Codegen's `EIdent` ladder is
+// `locals -> consts -> constructors -> VALUE FORM -> func table`, and the
+// value-form arm used to sit directly under the locals -- safe only while no
+// bare name had a value form, since nothing local, constant or constructor can
+// be spelled `A::b`. Left there, `eq` here would be an eta-expansion of the
+// equality builtin instead of the constructor.
+//
+// Measured against a stage2 with the arm back above the constructors: this
+// file does not compile, `lambda plan over-count: planned through 0, walk
+// stopped at 2`. That is the red test for the reorder.
+//
+// NO `match` here, deliberately. A lowercase arm pattern is a BINDING, not a
+// constructor pattern, so `match k { eq => 1, other => 2 }` is a catch-all that
+// answers 1 for every input -- measured, and it made a first draft of this
+// fixture pass while proving nothing. Structural `==` distinguishes the two
+// constructors without that trap.
+
+enum ShadowKind {
+  eq;
+  other
+}
+
+test "#2442 a constructor named `eq` shadows the builtin" {
+  let a = eq
+  let b = other
+  // A constructed value, equal to its own constructor and not to the sibling.
+  // An eta-expansion of the builtin would be a closure, not either of these.
+  inspect(a == eq, "true")
+  inspect(b == other, "true")
+  inspect(a == b, "false")
+}

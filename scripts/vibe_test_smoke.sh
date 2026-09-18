@@ -224,6 +224,60 @@ EOF
 assert_condense_indent
 echo "[vibe-test-smoke] ok (launcher condenser indent matches vt_fail_detail, #2228)"
 
+# #2870: and the frames are ANNOTATED, which is the half of #2228 that had no
+# case. The frames themselves came back with the block above; nothing said the
+# `.funcmap` sidecar reaches them, and for most of the gap `vibe test` did not
+# write one at all -- so a frame read `at helper`, a name with no file and no
+# line, while the same failure through vt_fail_detail read
+# `at helper (oob_test.vibe:1)`. Two reporters, one format is the contract; a
+# test that only pins the indent lets the formats diverge in the field that
+# carries the information.
+#
+# The funcmap format is `name<TAB>declLine` per line, which is what
+# `build_funcmap_from_source` writes.
+assert_condense_funcmap_annotation() {
+  local errf="$WORK/canned_condense_fm.err" fmf="$WORK/canned_condense_fm.funcmap" out
+  cat > "$errf" <<'EOF'
+RuntimeError: unreachable
+    at some_helper (wasm://wasm/00000000:wasm-function[7]:0x99)
+    at other_helper (wasm://wasm/00000000:wasm-function[8]:0xaa)
+    at __test_annot_pin (wasm://wasm/00000000:wasm-function[3]:0x42)
+    at _start (wasm://wasm/00000000:wasm-function[1]:0x10)
+EOF
+  printf 'some_helper	17
+' > "$fmf"
+  out="$(condense_test_trap "$errf" "$fmf" "canned.vibe")"
+  if ! printf '%s
+' "$out" | grep -qxF '       at some_helper (canned.vibe:17)'; then
+    echo "[vibe-test-smoke] FAIL: condense_test_trap did not annotate a funcmap frame (#2870)" >&2
+    printf '%s
+' "$out" >&2
+    exit 1
+  fi
+  # A function the map does not name keeps the bare frame. Without this the
+  # case above would also pass a condenser that annotated every frame with the
+  # same line, which is a wrong answer rather than a missing one.
+  if ! printf '%s
+' "$out" | grep -qxF '       at other_helper'; then
+    echo "[vibe-test-smoke] FAIL: condense_test_trap annotated a frame the funcmap does not name (#2870)" >&2
+    printf '%s
+' "$out" >&2
+    exit 1
+  fi
+  # A missing sidecar is the common case (an older artifact, a map that could
+  # not be built) and must degrade to bare frames, never to an error.
+  out="$(condense_test_trap "$errf" "$WORK/no_such.funcmap" "canned.vibe")"
+  if ! printf '%s
+' "$out" | grep -qxF '       at some_helper'; then
+    echo "[vibe-test-smoke] FAIL: condense_test_trap does not degrade to bare frames without a funcmap (#2870)" >&2
+    printf '%s
+' "$out" >&2
+    exit 1
+  fi
+}
+assert_condense_funcmap_annotation
+echo "[vibe-test-smoke] ok (launcher condenser annotates frames from the funcmap, #2870)"
+
 # #1946 leftover: vt_fail_detail must surface the assert_eq diagnostic that
 # the guest writes to stderr (vibe test discards stdout).
 #
@@ -492,6 +546,50 @@ if ! VIBE_TEST_QUIET_COMPILER_NOTE=1 \
   exit 1
 fi
 echo "[vibe-test-smoke] ok (directory input expands *_test.vibe)"
+
+# #2870: and a directory scan that FAILED must not be reported as a directory
+# that held nothing. `find | sort` runs two system binaries; when one of them
+# dies the pipeline produces an empty list, and the old code answered
+# `no test files found` -- the same words a genuinely empty directory gets.
+# That is how a one-variable environment fault (the `pkf` wrapper exports an
+# LD_LIBRARY_PATH that kills /usr/bin/sort) read as an ordinary outcome, and it
+# took six steps to tell the two apart.
+#
+# Broken portably, by a `sort` earlier on PATH that exits non-zero -- the real
+# trigger is a store path specific to one machine, and a case that can only run
+# there is a case that does not run (#2252).
+assert_dir_scan_failure_is_not_empty() {
+  local bin="$WORK/fakebin" out
+  mkdir -p "$bin" "$WORK/dir_scan"
+  printf 'test "in dir" {\n  assert_eq(1, 1)\n}\n' > "$WORK/dir_scan/foo_test.vibe"
+  printf '#!/bin/sh\nexit 3\n' > "$bin/sort"
+  chmod +x "$bin/sort"
+  out="$(PATH="$bin:$PATH" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+    bash "$ROOT_DIR/scripts/vibe_test.sh" "$WORK/dir_scan" 2>&1)" && {
+    echo "[vibe-test-smoke] FAIL: a directory scan whose sort failed still exited 0 (#2870)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  }
+  if ! printf '%s\n' "$out" | grep -qF "could not list"; then
+    echo "[vibe-test-smoke] FAIL: a failed directory scan is reported as an empty directory (#2870)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+  rm -rf "$bin"
+  # The control: a genuinely empty directory still gets the other message. It is
+  # what would catch the distinction collapsing the other way -- every scan
+  # reported as a failure is as useless as every failure reported as empty.
+  mkdir -p "$WORK/dir_empty"
+  out="$(VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+    bash "$ROOT_DIR/scripts/vibe_test.sh" "$WORK/dir_empty" 2>&1)" || true
+  if ! printf '%s\n' "$out" | grep -qF "no test files found"; then
+    echo "[vibe-test-smoke] FAIL: an empty directory no longer reports 'no test files found' (#2870)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+}
+assert_dir_scan_failure_is_not_empty
+echo "[vibe-test-smoke] ok (a failed directory scan is distinguished from an empty one, #2870)"
 
 # The seed-compiler notice. A green run through the committed seed says nothing
 # about a compiler change in this checkout, and the two are indistinguishable
