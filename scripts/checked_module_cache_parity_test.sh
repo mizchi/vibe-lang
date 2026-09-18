@@ -99,7 +99,51 @@ expect_red closure-is-two "planned 2 of 3 modules" mid.vibe \
 }
 '
 
+# 5. #2875: the tree moved under the run. The rows above ask the compiler;
+#    this one asks whether the gate notices that its INPUT changed while it was
+#    comparing. It used to not: a session editing `lib/@vibe/compiler/**` while
+#    a gate ran got `parity mismatch: fixtures/contract_conformance_test.vibe`,
+#    and an hour went into the cache before the artifacts showed every baked-in
+#    source offset shifted by a constant.
+#
+#    `--only-edits` compiles the three-module edit corpus with a prebuilt
+#    stage2, so a `lib/` edit changes NOTHING about what this run computes --
+#    the only thing that can fail is the guard. The victim is restored whatever
+#    happens, and the mutation is verified to have landed before the verdict is
+#    read (an edit that changed nothing would prove nothing, #2248).
+tree_victim="lib/@vibe/compiler/contract/contract.vibe"
+tree_log="$work/tree-moved.log"
+tree_backup="$work/tree-victim.bak"
+cp "$tree_victim" "$tree_backup"
+restore_victim() { cp "$tree_backup" "$tree_victim"; }
+trap 'restore_victim; rm -rf "$work"' EXIT
+node scripts/checked_module_cache_parity.mjs "$stage2" --only-edits >"$tree_log" 2>&1 &
+tree_pid=$!
+sleep 2
+printf '\n// #2875 self-test: this line is appended and removed by scripts/checked_module_cache_parity_test.sh\n' >> "$tree_victim"
+if cmp -s "$tree_victim" "$tree_backup"; then
+  echo "[checked-module-parity-test] FAIL: the tree mutation changed nothing" >&2
+  failures=$((failures + 1))
+fi
+if wait "$tree_pid"; then
+  echo "[checked-module-parity-test] FAIL: the run was accepted although its input moved" >&2
+  failures=$((failures + 1))
+elif ! grep -qF "the source tree changed during the run" "$tree_log"; then
+  echo "[checked-module-parity-test] FAIL: the run failed for the wrong reason (wanted the tree refusal)" >&2
+  sed -n '1,20p' "$tree_log" >&2
+  failures=$((failures + 1))
+elif ! grep -qF "$tree_victim" "$tree_log"; then
+  echo "[checked-module-parity-test] FAIL: the refusal does not name $tree_victim" >&2
+  sed -n '1,20p' "$tree_log" >&2
+  failures=$((failures + 1))
+else
+  echo "[checked-module-parity-test] red ok: tree-moved"
+fi
+restore_victim
+
 # The green control. Without it a red test that always fails would pass here.
+# It runs LAST on purpose: the victim above is restored by now, so a guard that
+# fired on its own restore would show up here rather than passing unnoticed.
 if ! node scripts/checked_module_cache_parity.mjs "$stage2" --only-edits >"$work/green.log" 2>&1; then
   echo "[checked-module-parity-test] FAIL: the unmutated corpus was rejected" >&2
   sed -n '1,20p' "$work/green.log" >&2
