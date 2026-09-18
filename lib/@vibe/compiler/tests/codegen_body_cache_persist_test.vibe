@@ -26,6 +26,7 @@ import @vibe/compiler/codegen/common_base {
   codegen_body_cache_slot_index,
   codegen_body_cache_to_bytes,
   linemap_disabled,
+  linemap_flush_fn,
   unique_name_flags
 }
 
@@ -304,18 +305,98 @@ test "#2199: a replay into a disabled linemap contributes no rows" {
   inspect(replay_into(linemap_disabled()), content = "0")
   // The control: the same entry through an ENABLED state does replay its row,
   // so the 0 above is the guard and not a cache that carries nothing.
-  let on = LineMapState::{
+  let on = linemap_scratch_on()
+  inspect(replay_into(on), content = "1")
+  inspect(Array::get(on.funcs, 0), content = "7")
+  inspect(Array::get(on.lines, 0), content = "4")
+}
+
+/// #2874: an enabled state with empty tables, for the cases below.
+fn linemap_scratch_on() -> LineMapState {
+  LineMapState::{
     enabled: true,
     cur_fn: [0],
     funcs: [],
     offsets: [],
     file_ids: [],
     lines: [],
+    stream: Bytes::new(),
+    grp_fn: [],
+    grp_first_off: [],
+    grp_start: [],
     site: [0]
   }
-  inspect(replay_into(on), content = "1")
-  inspect(Array::get(on.funcs, 0), content = "7")
-  inspect(Array::get(on.lines, 0), content = "4")
+}
+
+/// #2874: the scratch tables hold ONE function's rows and
+/// `linemap_flush_fn` moves them into `stream` as a group, so what the
+/// emitter reads is the group list and not four module-wide tables.
+///
+/// The group's payload is the section's own encoding minus the two fields the
+/// emitter supplies: the first row keeps only its file id and line (its
+/// offset is `grp_first_off`, held out because the locals-header rebase moves
+/// it, and its function delta is not known until the emitter knows which
+/// group came before). Every row AFTER the first is a whole LEB quadruple,
+/// the zero function delta included -- omitting it produced a section that
+/// still validated and that the late-DCE prune re-parsed into garbage.
+test "#2874: a flush encodes one function's rows and empties the scratch" {
+  let lm = linemap_scratch_on()
+  // Two rows for function 7: (offset 4, file 1, line 9) and (12, 1, 11).
+  Array::push(lm.funcs, 7)
+  Array::push(lm.offsets, 4)
+  Array::push(lm.file_ids, 1)
+  Array::push(lm.lines, 9)
+  Array::push(lm.funcs, 7)
+  Array::push(lm.offsets, 12)
+  Array::push(lm.file_ids, 1)
+  Array::push(lm.lines, 11)
+  linemap_flush_fn(lm)
+  inspect(Array::length(lm.offsets), content = "0")
+  inspect(Array::length(lm.grp_fn), content = "1")
+  inspect(Array::get(lm.grp_fn, 0), content = "7")
+  inspect(Array::get(lm.grp_first_off, 0), content = "4")
+  inspect(Array::get(lm.grp_start, 0), content = "0")
+  // file 1, line 9, then the second row as (fd=0, od=8, file=1, line=11).
+  inspect(bytes_codes(lm.stream), content = "[1, 9, 0, 8, 1, 11]")
+}
+
+test "#2874: a second flush appends a group and leaves the first alone" {
+  let lm = linemap_scratch_on()
+  Array::push(lm.funcs, 2)
+  Array::push(lm.offsets, 3)
+  Array::push(lm.file_ids, 0)
+  Array::push(lm.lines, 5)
+  linemap_flush_fn(lm)
+  Array::push(lm.funcs, 9)
+  Array::push(lm.offsets, 1)
+  Array::push(lm.file_ids, 4)
+  Array::push(lm.lines, 6)
+  linemap_flush_fn(lm)
+  inspect(Array::length(lm.grp_fn), content = "2")
+  inspect(Array::get(lm.grp_fn, 1), content = "9")
+  inspect(Array::get(lm.grp_first_off, 1), content = "1")
+  // The second group starts where the first one's payload ended.
+  inspect(Array::get(lm.grp_start, 1), content = "2")
+  inspect(bytes_codes(lm.stream), content = "[0, 5, 4, 6]")
+}
+
+test "#2874: flushing an empty scratch is a no-op, not an empty group" {
+  let lm = linemap_scratch_on()
+  linemap_flush_fn(lm)
+  linemap_flush_fn(lm)
+  inspect(Array::length(lm.grp_fn), content = "0")
+  inspect(Bytes::length(lm.stream), content = "0")
+}
+
+/// The stream's bytes, so a snapshot can name them rather than a length.
+fn bytes_codes(b: Bytes) -> Array[Int] {
+  let out: Array[Int] = []
+  let mut i = 0
+  while i < Bytes::length(b) {
+    Array::push(out, Bytes::get(b, i))
+    i = i + 1
+  }
+  out
 }
 
 test "filter_src_below keeps only guarded source-region entries below the limit" {

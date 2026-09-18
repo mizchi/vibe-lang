@@ -8,6 +8,7 @@ import @vibe/compiler/core {
   __to_string,
   apply_perm_strings,
   bsearch_leftmost,
+  bytebuf_length,
   bytebuf_new,
   bytebuf_push,
   bytebuf_push_buf,
@@ -2469,10 +2470,41 @@ export fn empty_dbg_prov() -> DbgProv {
 export struct LineMapState {
   enabled: Bool;
   cur_fn: Array[Int];
+  /// #2874: the rows of the function currently being compiled, and ONLY
+  /// those. `linemap_flush_fn` encodes them into `stream` and truncates these
+  /// four back to zero at each function boundary, so they stay at the widest
+  /// single function rather than growing to the whole module. On the bump
+  /// lane a grown Array's abandoned buffers are never reclaimed, so a table
+  /// that ends at N entries has allocated about 2N: measured on the
+  /// selfcompile corpus these four reached 73,920 rows -- 8.00 MiB of
+  /// allocation, against 2.26 MiB of live rows and 406 KiB of encoded
+  /// section. `Array::truncate` writes the length and leaves the capacity, so
+  /// the reset costs nothing and the next function reuses the same buffer.
   funcs: Array[Int];
   offsets: Array[Int];
   file_ids: Array[Int];
   lines: Array[Int];
+  /// #2874: every flushed function's rows, in the `vibe.linemap` encoding
+  /// minus the one field that is not known yet. The section's own format
+  /// restarts the offset as an ABSOLUTE whenever the function delta is
+  /// non-zero (`lc_linemap_put_row`), and rows are recorded in function
+  /// order, so adding a function's locals-header length -- the thing only the
+  /// assembled code section knows -- moves its FIRST row's offset and leaves
+  /// every delta after it alone. That is what lets a group be encoded before
+  /// the header length exists and copied verbatim afterwards.
+  ///
+  /// Per flushed group g: `grp_fn[g]` is the user function index, and
+  /// `grp_first_off[g]` its first row's body-relative offset (held out of the
+  /// stream because it is the field that gets rebased). `stream` from
+  /// `grp_start[g]` holds LEB(file_id), LEB(line) -- the rest of that first
+  /// row -- and then a whole LEB quadruple, function delta 0 included, for
+  /// each row after it. The emitter supplies the first row's two missing
+  /// fields and blits the rest, so what lands in the section is byte for byte
+  /// what `lc_linemap_put_row` wrote before.
+  stream: Bytes;
+  grp_fn: Array[Int];
+  grp_first_off: Array[Int];
+  grp_start: Array[Int];
   /// #2199: the source line of the construct currently being compiled, as a
   /// 1-slot cell (0 = none). A statement sets it; `compile_expr`'s call arm
   /// saves it, sets its own, and RESTORES it once `compile_call` returns --
@@ -2495,7 +2527,55 @@ export fn linemap_disabled() -> LineMapState {
     offsets: array_empty(),
     file_ids: array_empty(),
     lines: array_empty(),
+    stream: bytebuf_new(),
+    grp_fn: array_empty(),
+    grp_first_off: array_empty(),
+    grp_start: array_empty(),
     site: [0]
+  }
+}
+
+/// #2874: end the function whose rows are in the scratch tables -- encode them
+/// as one group of `stream` and reset the scratch. Called at every function
+/// boundary, including one that recorded nothing (then it does nothing) and
+/// one the compile skipped.
+///
+/// The offsets a group carries are still body-relative. `lc_pf_emit_linemap`'s
+/// reader wants them measured from the start of the code entry, which is the
+/// body plus that function's locals-declaration header; the header length is
+/// only known once the code section is assembled. Because the encoding makes
+/// the first row of a function absolute and every later row a delta from its
+/// predecessor, the rebase touches `grp_first_off` alone -- so the emitter
+/// re-encodes that one field and blits the rest of the group unchanged.
+export fn linemap_flush_fn(lm: LineMapState) -> Unit {
+  let n = Array::length(lm.offsets)
+  if n == 0 {
+    ()
+  } else {
+    Array::push(lm.grp_fn, Array::get(lm.funcs, 0))
+    Array::push(lm.grp_first_off, Array::get(lm.offsets, 0))
+    Array::push(lm.grp_start, bytebuf_length(lm.stream))
+    leb128_encode_u32(lm.stream, Array::get(lm.file_ids, 0))
+    leb128_encode_u32(lm.stream, Array::get(lm.lines, 0))
+    let mut i = 1
+    while i < n {
+      // The zero function delta is part of the row, not an optimization the
+      // group structure makes redundant. Every reader of this section decodes
+      // fixed LEB QUADRUPLES -- including `lc_linemap_remap_stream`, which
+      // re-parses the finished section during the late-DCE prune. Omitting it
+      // for rows after the group's first cost a whole afternoon: the module
+      // still validated, and the prune re-emitted 449 bytes of plausible
+      // garbage where 406 KiB of rows belonged.
+      leb128_encode_u32(lm.stream, 0)
+      leb128_encode_u32(lm.stream, Array::get(lm.offsets, i) - Array::get(lm.offsets, i - 1))
+      leb128_encode_u32(lm.stream, Array::get(lm.file_ids, i))
+      leb128_encode_u32(lm.stream, Array::get(lm.lines, i))
+      i = i + 1
+    }
+    Array::truncate(lm.funcs, 0)
+    Array::truncate(lm.offsets, 0)
+    Array::truncate(lm.file_ids, 0)
+    Array::truncate(lm.lines, 0)
   }
 }
 
