@@ -3356,7 +3356,7 @@ fn dtd_interp_lamret_src_formal(src: String, cargs: Array[Expr], struct_sets: Ar
   } else {
     let ix = dtd_interp_index_of_field(src)
     if ix >= 0 && ix < Array::length(cargs) {
-      ""
+      dtd_erased_interp_formal(Array::get(cargs, ix), struct_sets, var_types, fn_returns)
     } else {
       ""
     }
@@ -3366,7 +3366,7 @@ fn dtd_interp_lamret_src_formal(src: String, cargs: Array[Expr], struct_sets: Ar
 fn dtd_interp_lamret_apply(slot: String, arg: Expr, cargs: Array[Expr], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
   let named = dtd_interp_lamret_type_name(slot)
   if String::length(slot) == 0 {
-    ""
+    dtd_erased_interp_leaf(arg, struct_sets, var_types, fn_returns)
   } else if String::length(named) > 0 {
     // The declared return names a type outright. It is erased exactly when the
     // leaf would call it so -- the same guard, because a name is a name and
@@ -3384,13 +3384,13 @@ fn dtd_interp_lamret_apply(slot: String, arg: Expr, cargs: Array[Expr], struct_s
     // binding records them.
     ""
   } else if slot == dtd_interp_lamret_any() {
-    ""
+    dtd_erased_interp_any_arg(cargs, struct_sets, var_types, fn_returns)
   } else {
     let ix = dtd_interp_index_of_field(slot)
     if ix >= 0 && ix < Array::length(cargs) {
-      ""
+      dtd_erased_interp_formal(Array::get(cargs, ix), struct_sets, var_types, fn_returns)
     } else {
-      ""
+      dtd_erased_interp_any_arg(cargs, struct_sets, var_types, fn_returns)
     }
   }
 }
@@ -3440,7 +3440,7 @@ fn dtd_interp_elem_formal_of(e: Expr, struct_sets: Array[(String, Array[String])
         // fails if this ever stops discriminating.
         let f = match el {
           ESpread(esrc) => dtd_interp_elem_formal_of(esrc, struct_sets, var_types, fn_returns),
-          _ => ""
+          _ => dtd_erased_interp_formal(el, struct_sets, var_types, fn_returns)
         }
         if String::length(f) > 0 && String::length(found) == 0 {
           found = f
@@ -3457,7 +3457,7 @@ fn dtd_interp_elem_formal_of(e: Expr, struct_sets: Array[(String, Array[String])
     // because a map builtin is a constructor-shaped name and would otherwise
     // never reach an arm of its own.
     ECall(EIdent("Map::set", _), margs, _) => if Array::length(margs) == 3 {
-      let mv = ""
+      let mv = dtd_erased_interp_formal(Array::get(margs, 2), struct_sets, var_types, fn_returns)
       if String::length(mv) > 0 {
         mv
       } else {
@@ -3479,7 +3479,7 @@ fn dtd_interp_elem_formal_of(e: Expr, struct_sets: Array[(String, Array[String])
       while pi < Array::length(mfields) {
         let (_, fv) = Array::get(mfields, pi)
         if String::length(found) == 0 {
-          found = ""
+          found = dtd_erased_interp_formal(fv, struct_sets, var_types, fn_returns)
         } else {
           ()
         }
@@ -3844,7 +3844,7 @@ fn dtd_interp_absorb_named(out: Array[(String, String)], fields: Array[(String, 
 fn dtd_interp_absorb_arms(out: Array[(String, String)], arms: Array[(Pat, Expr)], scrut: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Unit {
   // Classified ONCE, in the environment the scrutinee is evaluated in -- which
   // is this one, before any arm binds anything.
-  let scrut_formal = ""
+  let scrut_formal = dtd_erased_interp_formal(scrut, struct_sets, out, fn_returns)
   let mut i = 0
   while i < Array::length(arms) {
     let (ap, ab) = Array::get(arms, i)
@@ -3859,7 +3859,7 @@ fn dtd_interp_absorb_into(out: Array[(String, String)], e: Expr, struct_sets: Ar
   match e {
     EAssign(n, v, cont) => {
       dtd_interp_absorb_into(out, v, struct_sets, fn_returns)
-      let f = ""
+      let f = dtd_erased_interp_formal(v, struct_sets, out, fn_returns)
       if String::length(f) > 0 {
         Array::push(out, (n, f))
       } else {
@@ -3906,16 +3906,16 @@ fn dtd_interp_absorb_into(out: Array[(String, String)], e: Expr, struct_sets: Ar
     // the block. See dtd_interp_absorb_scoped.
     ELet(n, v, b, _) => {
       dtd_interp_absorb_into(out, v, struct_sets, fn_returns)
-      dtd_interp_absorb_scoped1(out, n, "", v, b, struct_sets, fn_returns)
+      dtd_interp_absorb_scoped1(out, n, dtd_erased_interp_formal(v, struct_sets, out, fn_returns), v, b, struct_sets, fn_returns)
     },
     ELetMut(n, v, b, _) => {
       dtd_interp_absorb_into(out, v, struct_sets, fn_returns)
-      dtd_interp_absorb_scoped1(out, n, "", v, b, struct_sets, fn_returns)
+      dtd_interp_absorb_scoped1(out, n, dtd_erased_interp_formal(v, struct_sets, out, fn_returns), v, b, struct_sets, fn_returns)
     },
     // A `let rec` binder is in scope for its own value as well as its body.
     ELetRec(n, v, b) => {
       dtd_interp_absorb_scoped1(out, n, "", EUnit, v, struct_sets, fn_returns)
-      dtd_interp_absorb_scoped1(out, n, "", v, b, struct_sets, fn_returns)
+      dtd_interp_absorb_scoped1(out, n, dtd_erased_interp_formal(v, struct_sets, out, fn_returns), v, b, struct_sets, fn_returns)
     },
     ESeq(a, b) => {
       dtd_interp_absorb_into(out, a, struct_sets, fn_returns)
@@ -3977,7 +3977,7 @@ fn dtd_interp_absorb_into(out: Array[(String, String)], e: Expr, struct_sets: Ar
                 None => ""
               }
               if String::length(known) == 0 {
-                let pef = ""
+                let pef = dtd_erased_interp_formal(Array::get(args, 1), struct_sets, out, fn_returns)
                 if String::length(pef) > 0 {
                   Array::push(out, (array_elem_key(an), pef))
                 } else {
@@ -4048,7 +4048,7 @@ fn dtd_interp_bind_local(var_types: Array[(String, String)], name: String, val: 
   // so `{ let b = if true { a } else { a }; b } ` recorded `b` as unknown and the
   // refusal declined -- measured, it printed `260`. Asking the walker keeps the
   // two halves of this check reading the same language.
-  let from_walk = ""
+  let from_walk = dtd_erased_interp_formal(val, struct_sets, var_types, fn_returns)
   let bound = if String::length(from_walk) > 0 {
     from_walk
   } else {
@@ -4061,6 +4061,52 @@ fn dtd_interp_bind_local(var_types: Array[(String, String)], name: String, val: 
   Array::push(out, (name, bound))
   out
 }
+
+/// The first arm whose value is an erased nested formal; "" when none is.
+///
+/// #2745 (Codex, P1 round 4 on #2761): each arm is read in ITS OWN environment.
+/// Discarding the pattern was wrong in both directions, both measured:
+/// `"\{match a { b => b }}"` with `a: T` printed `260` (the arm binder was
+/// unknown), and `"\{match 1 { a => a }}"` was REFUSED (the outer `a: T`
+/// survived a pattern that rebinds the spelling at `Int`).
+///
+/// `scrutinee_formal` is the scrutinee's erased formal, or "". A whole-value
+/// binder (`PBind`) takes it; every other binder takes a payload this pass cannot
+/// type, so it is bound to "" -- which SHADOWS rather than inherits, the same rule
+/// the let-forms follow.
+fn dtd_erased_interp_arms(arms: Array[(Pat, Expr)], scrutinee: Expr, scrutinee_formal: String, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
+  let mut i = 0
+  let mut found = ""
+  while i < Array::length(arms) {
+    let (pat, body) = Array::get(arms, i)
+    let arm_vars = dtd_interp_bind_pattern(var_types, pat, scrutinee, scrutinee_formal, struct_sets, fn_returns)
+    let from_arm = dtd_erased_interp_formal(body, struct_sets, arm_vars, fn_returns)
+    if String::length(from_arm) > 0 {
+      found = from_arm
+      i = Array::length(arms)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// Bind an arm's pattern variables against the SCRUTINEE'S SHAPE.
+///
+/// #2745 (Codex, P1 round 5 on #2761): a DESTRUCTURING pattern bound every
+/// payload binder to "", so only a whole-value `PBind` ever carried the
+/// scrutinee's formal. `"\{match (a, 1) { (b, _) => b }}"` with `a: T` therefore
+/// read `b` as unknown and rendered the representation -- measured `252`, the
+/// tagged pointer, the same number the unwrapped spelling printed before this PR.
+///
+/// A payload's type is not knowable in general: this pass has no types, and a
+/// scrutinee that is a name or a call says nothing about what its pieces are. It
+/// IS knowable when the scrutinee is WRITTEN AT THE SITE in the shape the pattern
+/// takes apart -- a tuple literal against `PTuple`, a constructor call against
+/// `PCtor` of the same name and arity, a record literal against `PStruct` of the
+/// same name -- because then each binder stands for an expression this same walk
+/// can classify. Those pair positionally (by field name for a record); anything
+/// else keeps "", which SHADOWS the outer spelling rather than inheriting it.
 fn dtd_interp_bind_pattern(var_types: Array[(String, String)], pat: Pat, scrutinee: Expr, scrutinee_formal: String, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
   let out = clone_var_types(var_types)
   dtd_interp_bind_pat_into(out, pat, scrutinee, scrutinee_formal, struct_sets, var_types, fn_returns)
@@ -4989,7 +5035,7 @@ fn dtd_interp_record_shape_into(out: Array[(String, String)], name: String, val:
       let mut i = 0
       while i < Array::length(fields) {
         let (fname, fe) = Array::get(fields, i)
-        Array::push(out, (dtd_interp_field_key(name, fname), ""))
+        Array::push(out, (dtd_interp_field_key(name, fname), dtd_erased_interp_formal(fe, struct_sets, var_types, fn_returns)))
         // #2745 round 11: the field's own shape, under the field's synthetic
         // name, so a nested pattern resolves through the named-aggregate routes.
         dtd_interp_record_shape(out, dtd_interp_field_name(name, fname), fe, struct_sets, var_types, fn_returns)
@@ -5010,7 +5056,7 @@ fn dtd_interp_record_shape_into(out: Array[(String, String)], name: String, val:
       let mut i = 0
       let mut found = ""
       while i < Array::length(es) {
-        let f = ""
+        let f = dtd_erased_interp_formal(Array::get(es, i), struct_sets, var_types, fn_returns)
         if String::length(f) > 0 && String::length(found) == 0 {
           found = f
         } else {
@@ -5184,7 +5230,7 @@ fn dtd_interp_bind_pat_into(out: Array[(String, String)], pat: Pat, scrut: Expr,
         let mut i = 0
         while i < Array::length(ps) {
           let el = Array::get(es, i)
-          dtd_interp_bind_pat_into(out, Array::get(ps, i), el, "", struct_sets, var_types, fn_returns)
+          dtd_interp_bind_pat_into(out, Array::get(ps, i), el, dtd_erased_interp_formal(el, struct_sets, var_types, fn_returns), struct_sets, var_types, fn_returns)
           i = i + 1
         }
       } else {
@@ -5222,7 +5268,7 @@ fn dtd_interp_bind_pat_into(out: Array[(String, String)], pat: Pat, scrut: Expr,
           let mut i = 0
           while i < Array::length(ps) {
             let el = Array::get(es, i)
-            dtd_interp_bind_pat_into(out, Array::get(ps, i), el, "", struct_sets, var_types, fn_returns)
+            dtd_interp_bind_pat_into(out, Array::get(ps, i), el, dtd_erased_interp_formal(el, struct_sets, var_types, fn_returns), struct_sets, var_types, fn_returns)
             i = i + 1
           }
         } else {
@@ -5270,7 +5316,7 @@ fn dtd_interp_bind_pat_into(out: Array[(String, String)], pat: Pat, scrut: Expr,
         while i < Array::length(fps) {
           let (fname, fpat) = Array::get(fps, i)
           match dtd_interp_record_field(fes, fname) {
-            Some(fe) => dtd_interp_bind_pat_into(out, fpat, fe, "", struct_sets, var_types, fn_returns),
+            Some(fe) => dtd_interp_bind_pat_into(out, fpat, fe, dtd_erased_interp_formal(fe, struct_sets, var_types, fn_returns), struct_sets, var_types, fn_returns),
             None => dtd_interp_blank_binders(out, fpat)
           }
           i = i + 1
@@ -5337,7 +5383,7 @@ fn dtd_interp_record_elems(out: Array[(String, String)], name: String, es: Array
   let mut i = 0
   while i < Array::length(es) {
     let el = Array::get(es, i)
-    Array::push(out, (dtd_interp_tuple_elem_key(name, i), ""))
+    Array::push(out, (dtd_interp_tuple_elem_key(name, i), dtd_erased_interp_formal(el, struct_sets, var_types, fn_returns)))
     // #2745 round 11: the element's own shape, under the element's synthetic
     // name. The recursion is on a STRUCTURALLY SMALLER expression, so it is
     // bounded by the literal's nesting depth.
