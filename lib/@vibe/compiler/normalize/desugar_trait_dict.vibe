@@ -12197,7 +12197,10 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
             },
             EFn(tp, bs, ps, _, _, _) => {
               let rewritten = rewrite_expr(callee, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
-              let threaded = threaded_from_lambda_sig(bs, ps, traits)
+              // Codex review of #2868: this synthesized the lambda's OWN bounds
+              // only, so an immediately-invoked inner lambda referencing an
+              // enclosing formal got no dictionary at all.
+              let threaded = lambda_threaded_sig(tp, bs, ps, traits, dict_binds)
               if Array::length(threaded) > 0 {
                 match synth_dicts(tp, threaded, array_empty(), args, traits, struct_sets, var_types, dict_binds, fn_returns, gens) {
                   Some(dicts) => ECall(rewritten, concat_expr_arrays(dicts, rwargs), off),
@@ -12765,11 +12768,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
         } else {
           threaded_from_lambda_sig(bs, ps, traits)
         }
-        let threaded = if already_threaded(bs, ps) {
-          empty_threaded()
-        } else {
-          concat_threaded(threaded_from_outer_binds(dict_binds, tp), own)
-        }
+        let threaded = lambda_threaded_sig(tp, bs, ps, traits, dict_binds)
         let binds = dict_binds_overlay(dict_binds, tp, dict_binds_of(own, traits))
         let new_params = if Array::length(threaded) > 0 {
           thread_dict_params(threaded, ps)
@@ -12842,6 +12841,35 @@ fn concat_threaded(a: Array[(String, String, Int)], b: Array[(String, String, In
     j = j + 1
   }
   out
+}
+
+/// The dict parameters a lambda's REWRITTEN signature carries (#2778).
+///
+/// The EFn rewrite arm, the `let`-bound gen registration and the
+/// immediately-invoked call arm each used to compute this for themselves, and
+/// they disagreed in two ways that both produce a call whose arity does not
+/// match the callee -- invalid wasm at validation, or a `null function or
+/// function signature mismatch` trap at run time.
+///
+/// 1. `threaded_from_outer_binds` drops only the formals the binder REBINDS,
+///    so with `tp` empty it returns every enclosing dictionary. The rewrite arm
+///    threads nothing when `tp` is empty, but `lambda_dict_gen` claimed those
+///    outer dicts anyway: measured, `Set::from_array[T: Hash]`'s inner
+///    `let rec go = (i, acc) -> ...` took 2 parameters and was called with 3.
+///    That shape -- a plain local lambda inside a bounded generic -- is
+///    everywhere, which is why the failure looked unrelated to nested bounds.
+/// 2. `already_threaded` means the parameters ALREADY carry their dicts, so the
+///    rewrite arm adds none; a caller that added them again over-supplied.
+///
+/// So the answer is computed ONCE, here, and the three callers ask. Keeping
+/// them in step by inspection is exactly the proxy #2248 says a check may not
+/// rest on -- there is no gate that can see two expressions drift apart.
+fn lambda_threaded_sig(tp: Array[String], bounds: Array[(String, Array[String])], params: Array[(String, Option[TypeExpr])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], dict_binds: Array[(String, String, String, Array[String])]) -> Array[(String, String, Int)] {
+  if Array::length(tp) > 0 && !already_threaded(bounds, params) {
+    concat_threaded(threaded_from_outer_binds(dict_binds, tp), threaded_from_lambda_sig(bounds, params, traits))
+  } else {
+    empty_threaded()
+  }
 }
 
 fn threaded_from_outer_binds(outer: Array[(String, String, String, Array[String])], inner_tp: Array[String]) -> Array[(String, String, Int)] {
@@ -13038,8 +13066,7 @@ fn gens_after_let(gens: Array[DictGen], name: String, val: Expr, traits: Array[(
 fn lambda_dict_gen(name: String, val: Expr, traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], dict_binds: Array[(String, String, String, Array[String])]) -> Option[DictGen] {
   match val {
     EFn(tparams, bounds, params, _, _, _) => {
-      let own = threaded_from_lambda_sig(bounds, params, traits)
-      let threaded = concat_threaded(threaded_from_outer_binds(dict_binds, tparams), own)
+      let threaded = lambda_threaded_sig(tparams, bounds, params, traits, dict_binds)
       if Array::length(threaded) > 0 {
         Some(dict_gen_of_lambda(name, tparams, threaded))
       } else {
