@@ -473,6 +473,207 @@ export fn validate_user_source_exports_excluding(stmts: Array[Stmt], env: TypeEn
   }
 }
 
+/// #2808: the names a `let`-pattern binding introduces. `PCtor`'s head is a
+/// reference to a constructor, not a binding, so only `PBind` contributes.
+fn push_pat_bound_names(p: Pat, out: Array[String]) -> Unit {
+  match p {
+    PBind(name) => Array::push(out, name),
+    PCtor(_, args) => {
+      let mut i = 0
+      while i < Array::length(args) {
+        push_pat_bound_names(Array::get(args, i), out)
+        i = i + 1
+      }
+    },
+    PTuple(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        push_pat_bound_names(Array::get(items, i), out)
+        i = i + 1
+      }
+    },
+    POr(a, b) => {
+      push_pat_bound_names(a, out)
+      push_pat_bound_names(b, out)
+    },
+    PStruct(_, fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, field_pat) = Array::get(fields, i)
+        push_pat_bound_names(field_pat, out)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+/// An import item binds its ALIAS when it has one. Both are pushed anyway:
+/// the set is a superset on purpose, and a file that writes
+/// `import ./dep.vibe { foo as bar }` and then `export { foo }` is a
+/// different mistake from the one this predicate reports -- publication, which
+/// has the real environment, is where it belongs.
+fn push_import_item_scope_names(items: Array[ImportItem], out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(items) {
+    let item = Array::get(items, i)
+    Array::push(out, item.name)
+    match item.alias {
+      Some(alias) => Array::push(out, alias),
+      None => ()
+    }
+    i = i + 1
+  }
+}
+
+/// #2808: every name ONE user source file puts in its own scope, as that
+/// file's own statements spell it.
+///
+/// The env-based predicates above cannot answer for the FILE-BASED merged
+/// entries. `compile_file_wasi_only`, `compile_file_wasi_library` and
+/// `compile_file_wasi_linked_artifacts` flatten a whole import closure into
+/// ONE statement array and call `check_program` once, so there is no
+/// per-module environment to ask; and by then declarations have been
+/// namespace-renamed while each `SExport` keeps its written spelling, so
+/// asking the merged array would refuse every legitimate aggregate export --
+/// the same reason #2806 gates its own validation on "user source, not a
+/// generated statement graph".
+///
+/// So this reads the file's TEXT instead: every name a declaration
+/// introduces, plus every name an import item lands in scope under. It is
+/// deliberately a SUPERSET of what the module can actually publish -- an
+/// enum's variants, a trait's methods, an effect's operations, BOTH halves of
+/// an alias and both an import item's written name and its alias are all
+/// counted, and `SModule` bodies are walked -- because a syntactic answer and
+/// the env's answer must not be able to disagree in the direction that
+/// refuses working code. What it is exact about is the one case #2808 is: a
+/// name that appears NOWHERE in the file.
+///
+/// Measured 2026-09-18 over the tree, one ingest + parse per file: 1320 files
+/// under `lib/`, and the predicate refuses NONE of them. The compiler's own
+/// closure is the same answer from the other direction --
+/// `merged_program_source_fs("lib/@vibe/compiler/cli_adapter.vibe")`, the
+/// flatten `scripts/generate_bundle.sh` performs, still produces its 10.0 MB
+/// of merged source with this hook in the collector.
+fn push_source_scope_names(stmts: Array[Stmt], out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, _) => Array::push(out, name),
+      SLetMut(name, _, _) => Array::push(out, name),
+      SLetPat(pat, _) => push_pat_bound_names(pat, out),
+      SEnum(_, name, _, variants, _) => {
+        Array::push(out, name)
+        let mut j = 0
+        while j < Array::length(variants) {
+          let (variant_name, _) = Array::get(variants, j)
+          Array::push(out, variant_name)
+          j = j + 1
+        }
+      },
+      SSuberror(_, name, variants) => {
+        Array::push(out, name)
+        let mut j = 0
+        while j < Array::length(variants) {
+          let (variant_name, _) = Array::get(variants, j)
+          Array::push(out, variant_name)
+          j = j + 1
+        }
+      },
+      SStruct(_, name, _, _, _, _) => Array::push(out, name),
+      STypeAlias(_, name, _, _) => Array::push(out, name),
+      STrait(_, name, _, methods, _, _) => {
+        Array::push(out, name)
+        let mut j = 0
+        while j < Array::length(methods) {
+          let (method_name, _, _) = Array::get(methods, j)
+          Array::push(out, method_name)
+          j = j + 1
+        }
+      },
+      SEffectDef(_, name, _, ops) => {
+        Array::push(out, name)
+        let mut j = 0
+        while j < Array::length(ops) {
+          let (op_name, _, _) = Array::get(ops, j)
+          Array::push(out, op_name)
+          j = j + 1
+        }
+      },
+      SEffectSet(_, name, _) => Array::push(out, name),
+      SExternLet(name, _) => Array::push(out, name),
+      SFnDecl(_, name, _, _, _) => Array::push(out, name),
+      SAliasDecl(local, target) => {
+        Array::push(out, local)
+        Array::push(out, target)
+      },
+      SResource(local, target) => {
+        Array::push(out, local)
+        Array::push(out, target)
+      },
+      SImport(_, items) => push_import_item_scope_names(items, out),
+      SReExport(_, items) => push_import_item_scope_names(items, out),
+      SModule(_, name, body) => {
+        Array::push(out, name)
+        push_source_scope_names(body, out)
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+/// #2808: the first name this file's aggregate `export { }` publishes that the
+/// file itself neither declares nor imports, or `None`.
+///
+/// Source order, like `unresolved_aggregate_export_name`, so which one it is
+/// does not depend on anything but the text. The builtin clause is the same
+/// predicate publication mints authority from, so `export { Option }` -- the
+/// shape `lib/@vibe/builtin/option.vibe` opens with -- keeps answering here
+/// too.
+export fn unresolved_aggregate_export_name_in_source(stmts: Array[Stmt]) -> Option[String] {
+  let names = aggregate_export_names(stmts)
+  if Array::length(names) == 0 {
+    None
+  } else {
+    let scope = array_empty()
+    push_source_scope_names(stmts, scope)
+    let mut i = 0
+    let mut found = None
+    while i < Array::length(names) {
+      let name = Array::get(names, i)
+      if found == None && !string_array_contains_exact(scope, name) && !is_explicit_builtin_declaration(name) {
+        found = Some(name)
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    found
+  }
+}
+
+/// #2808: the same refusal text, with the FILE named.
+///
+/// The merged entries compile an import closure of many files under one
+/// command, so "in this module" has no referent for the reader -- the edit is
+/// in one specific file and the message has to say which. The sentence itself
+/// is `unresolved_export_message`'s, so the two lanes cannot drift into
+/// describing the same defect differently.
+export fn unresolved_export_message_in_file(name: String, path: String) -> String {
+  String::concat(unresolved_export_message(name), String::concat(" (in ", String::concat(path, ")")))
+}
+
+/// #2808: the file-based merged entries' door. Called on each user source file
+/// BEFORE the closure is flattened, which is the only point at which the
+/// file's own export list and its own declarations are both still readable.
+export fn validate_source_file_exports(path: String, stmts: Array[Stmt]) -> Unit with Exception {
+  match unresolved_aggregate_export_name_in_source(stmts) {
+    Some(name) => throw(unresolved_export_message_in_file(name, path)),
+    None => ()
+  }
+}
+
 /// Declared arity of a type constructor used by an impl target. Keep builtin
 /// container authority here; user declarations come from defs.
 fn impl_target_declared_arity(defs: Array[TypeDef], name: String) -> Option[Int] {

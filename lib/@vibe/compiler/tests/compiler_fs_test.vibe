@@ -492,3 +492,153 @@ test "compile_file_wasi_only: no profiler use reserves no profiler import" {
   assert(!bytes_contains_ascii(bytes, "profile-heap-bytes"))
   assert(!bytes_contains_ascii(bytes, "profile-now-us"))
 }
+
+//# #2808: the FILE-BASED merged entries answer the aggregate-export question
+//# the same way every other lane does.
+//#
+//# #2762/#2806 made `export { X }` naming a name the module neither declares
+//# nor imports a compile-time refusal, and covered every lane a user command
+//# reaches plus the flat single-source entries. It did NOT cover these three,
+//# which merge a whole import closure into one statement array before checking
+//# and so have no per-module environment to ask. Measured 2026-09-18 against a
+//# stage2 built from pristine main at ae838ff, on a file whose only oddity is
+//# `export { NotDeclaredAnywhere }`: `compile_file_wasi_only` and
+//# `compile_file_wasi_library` both ACCEPTED it, and
+//# `compile_file_wasi_linked_artifacts` accepted it too.
+//#
+//# What is wrong is the DISAGREEMENT, not a user's broken build -- no
+//# user-facing command reaches these entries (#2808 calls this P2 for exactly
+//# that reason). So the refusal here reads one FILE's own statements rather
+//# than an environment, and the message names the file, because the command
+//# compiled many.
+//#
+//# The DEP cases are the ones that need the closure walk: the entry is clean
+//# and the broken export is in a file the entry merely imports. The ACCEPT
+//# cases are the other half -- a private fn, a local trait, a builtin
+//# (`export { Option }`, the shape `lib/@vibe/builtin/option.vibe` opens with)
+//# and an imported name republished by an aggregate export all still compile,
+//# so a refusal grown wide enough to reject working code fails here.
+
+fn write_source(path: String, text: String) -> Unit with Fs {
+  Fs::write_bytes(path, string_to_bytes(text))
+}
+
+/// `label` prefixes the answer so no two expectations in this file are the same
+/// literal -- several legitimately answer "accepted", and the snapshot updater
+/// matches the EXPECTED literal (CLAUDE.md, executable fixture snapshots).
+fn wasi_only_outcome(label: String, entry_path: String) -> String with Fs {
+  String::concat(label, String::concat(": ", handle {
+    let _ = compile_file_wasi_only(entry_path, "main")
+    "accepted"
+  } with { Exception::Throw(message) => message }))
+}
+
+fn library_outcome(label: String, dep_path: String) -> String with Fs {
+  String::concat(label, String::concat(": ", handle {
+    let _ = compile_file_wasi_library(dep_path)
+    "accepted"
+  } with { Exception::Throw(message) => message }))
+}
+
+fn linked_outcome(label: String, entry_path: String) -> String with Fs {
+  String::concat(label, String::concat(": ", handle {
+    let _ = compile_file_wasi_linked_artifacts(entry_path, "_start")
+    "accepted"
+  } with { Exception::Throw(message) => message }))
+}
+
+test "#2808 compile_file_wasi_only refuses a bogus aggregate export in the entry" {
+  let base_dir = "/tmp/vibe_2808_only_entry"
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  write_source(main_path, "export {\n  NotDeclaredAnywhere\n}\n\nexport fn main() -> Int {\n  1\n}\n")
+  inspect(wasi_only_outcome("only-entry", main_path), "only-entry: declare or import NotDeclaredAnywhere in this module, or remove it from the `export { }` list; the export publishes a name this module does not have, so a consumer importing it fails at its own import (in /tmp/vibe_2808_only_entry/main.vibe)")
+}
+
+test "#2808 compile_file_wasi_only refuses a bogus aggregate export in a dep" {
+  let base_dir = "/tmp/vibe_2808_only_dep"
+  let dep_path = String::concat(base_dir, "/dep.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  write_source(dep_path, "export {\n  MissingFromDep\n}\n\nexport fn add(a: Int, b: Int) -> Int {\n  a + b\n}\n")
+  write_source(main_path, "import ./dep.vibe { add }\n\nexport fn main() -> Int {\n  add(1, 2)\n}\n")
+  inspect(wasi_only_outcome("only-dep", main_path), "only-dep: declare or import MissingFromDep in this module, or remove it from the `export { }` list; the export publishes a name this module does not have, so a consumer importing it fails at its own import (in /tmp/vibe_2808_only_dep/dep.vibe)")
+}
+
+test "#2808 compile_file_wasi_library refuses a bogus aggregate export" {
+  let base_dir = "/tmp/vibe_2808_library"
+  let dep_path = String::concat(base_dir, "/lib.vibe")
+  Fs::mkdir_p(base_dir)
+  write_source(dep_path, "export {\n  MissingFromLibrary\n}\n\nexport let add: (Int, Int) -> Int = (a, b) -> {\n  a + b\n}\n")
+  inspect(library_outcome("library", dep_path), "library: declare or import MissingFromLibrary in this module, or remove it from the `export { }` list; the export publishes a name this module does not have, so a consumer importing it fails at its own import (in /tmp/vibe_2808_library/lib.vibe)")
+}
+
+test "#2808 compile_file_wasi_linked_artifacts refuses a bogus aggregate export in the entry" {
+  let base_dir = "/tmp/vibe_2808_linked_entry"
+  let helper_path = String::concat(base_dir, "/lib.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  write_source(helper_path, "export let add: (Int, Int) -> Int = (a, b) -> {\n  a + b\n}\n")
+  write_source(main_path, "import ./lib.vibe { add }\nexport {\n  MissingFromLinkedEntry\n}\nlet _start: () -> Int = () -> {\n  add(1, 2)\n}\n")
+  inspect(linked_outcome("linked-entry", main_path), "linked-entry: declare or import MissingFromLinkedEntry in this module, or remove it from the `export { }` list; the export publishes a name this module does not have, so a consumer importing it fails at its own import (in /tmp/vibe_2808_linked_entry/main.vibe)")
+}
+
+test "#2808 compile_file_wasi_linked_artifacts refuses a bogus aggregate export in a dep" {
+  let base_dir = "/tmp/vibe_2808_linked_dep"
+  let helper_path = String::concat(base_dir, "/lib.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  write_source(helper_path, "export {\n  MissingFromLinkedDep\n}\nexport let add: (Int, Int) -> Int = (a, b) -> {\n  a + b\n}\n")
+  write_source(main_path, "import ./lib.vibe { add }\nlet _start: () -> Int = () -> {\n  add(1, 2)\n}\n")
+  inspect(linked_outcome("linked-dep", main_path), "linked-dep: declare or import MissingFromLinkedDep in this module, or remove it from the `export { }` list; the export publishes a name this module does not have, so a consumer importing it fails at its own import (in /tmp/vibe_2808_linked_dep/lib.vibe)")
+}
+
+//# The other half: the shapes an aggregate export legitimately names must keep
+//# compiling on these entries. Without these a refusal that simply rejected
+//# every `export { }` would pass every test above.
+
+test "#2808 compile_file_wasi_only accepts an aggregate export naming a private fn" {
+  let base_dir = "/tmp/vibe_2808_ok_private"
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  write_source(main_path, "export {\n  helper\n}\n\nfn helper() -> Int {\n  3\n}\n\nexport fn main() -> Int {\n  helper()\n}\n")
+  inspect(wasi_only_outcome("ok-private-fn", main_path), "ok-private-fn: accepted")
+}
+
+test "#2808 compile_file_wasi_only accepts an aggregate export naming a local trait" {
+  let base_dir = "/tmp/vibe_2808_ok_trait"
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  write_source(main_path, "export {\n  Marker\n}\n\ntrait Marker\n\nexport fn main() -> Int {\n  1\n}\n")
+  inspect(wasi_only_outcome("ok-local-trait", main_path), "ok-local-trait: accepted")
+}
+
+test "#2808 compile_file_wasi_only accepts an aggregate export naming a builtin" {
+  let base_dir = "/tmp/vibe_2808_ok_builtin"
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  write_source(main_path, "export {\n  Option\n}\n\nexport fn main() -> Int {\n  1\n}\n")
+  inspect(wasi_only_outcome("ok-builtin", main_path), "ok-builtin: accepted")
+}
+
+test "#2808 compile_file_wasi_only accepts a dep republishing an imported name" {
+  let base_dir = "/tmp/vibe_2808_ok_imported"
+  let inner_path = String::concat(base_dir, "/inner.vibe")
+  let dep_path = String::concat(base_dir, "/dep.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  write_source(inner_path, "export fn add(a: Int, b: Int) -> Int {\n  a + b\n}\n")
+  write_source(dep_path, "import ./inner.vibe { add }\n\nexport {\n  add\n}\n")
+  write_source(main_path, "import ./dep.vibe { add }\n\nexport fn main() -> Int {\n  add(1, 2)\n}\n")
+  inspect(wasi_only_outcome("ok-imported", main_path), "ok-imported: accepted")
+}
+
+test "#2808 compile_file_wasi_linked_artifacts accepts a clean entry and dep" {
+  let base_dir = "/tmp/vibe_2808_ok_linked"
+  let helper_path = String::concat(base_dir, "/lib.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  write_source(helper_path, "export {\n  scale\n}\nfn scale(a: Int) -> Int {\n  a * 2\n}\nexport let add: (Int, Int) -> Int = (a, b) -> {\n  scale(a) + b\n}\n")
+  write_source(main_path, "import ./lib.vibe { add }\nlet _start: () -> Int = () -> {\n  add(1, 2)\n}\n")
+  inspect(linked_outcome("ok-linked", main_path), "ok-linked: accepted")
+}
