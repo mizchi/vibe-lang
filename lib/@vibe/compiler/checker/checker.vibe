@@ -9856,9 +9856,30 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                 c2 = nc
                 ai = ai + 1
               }
-              let applied_callee_ty = match ct {
-                CtFn(_, _, _) => ct,
-                _ => subst_apply(s2, ct)
+              // #2890: a lambda carrying `[U]` checks to a `CtForAll` scheme,
+              // not a `CtFn`. This path matched only `CtFn` / `CtStruct`, so an
+              // IIFE whose lambda was generic fell to the `CtUnknown` arm and
+              // the call was NOT CHECKED AT ALL -- measured, `([U](u: U) -> U {
+              // u })(1, 2)` (one parameter, two arguments), a `String` passed to
+              // a declared `Int` parameter, and a concrete declared return bound
+              // to an unrelated struct were all accepted, and
+              // `let v: Int = ([U](u: U) -> U { u })(Qt::{ w: 5 }); v + 1`
+              // printed 233, the allocation address.
+              //
+              // The same lambda bound to a NAME first is checked, because that
+              // callee is an `EIdent` and takes the named path; only applying it
+              // where it is written reached here. Opening the scheme with fresh
+              // variables is what that named path effectively gets, so the call
+              // is checked exactly as any other.
+              let (opened_callee_ty, c2o) = match ct {
+                CtForAll(_, _, _) => match instantiate(ct, c2) {
+                  (ity, nc, _) => (ity, nc)
+                },
+                _ => (ct, c2)
+              }
+              let applied_callee_ty = match opened_callee_ty {
+                CtFn(_, _, _) => opened_callee_ty,
+                _ => subst_apply(s2, opened_callee_ty)
               }
               match applied_callee_ty {
                 CtFn(param_tys, ret, _) => {
@@ -9871,10 +9892,10 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                   }
                   let s3 = unify_call_args(call_param_tys, arg_tys, args, s2, errors, "<expr>", call_off)
                   let call_ret = call_result_with_provenance(Array::get(ret_box, 0), call_param_tys, arg_tys, s3)
-                  (tab_call_ty(tytab, call_off, call_ret, capture, lane), s3, c2)
+                  (tab_call_ty(tytab, call_off, call_ret, capture, lane), s3, c2o)
                 },
-                CtStruct(sname) => (tab_call_ty(tytab, call_off, CtStruct(sname), capture, lane), s2, c2),
-                _ => (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), s2, c2)
+                CtStruct(sname) => (tab_call_ty(tytab, call_off, CtStruct(sname), capture, lane), s2, c2o),
+                _ => (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), s2, c2o)
               }
             }
           }
