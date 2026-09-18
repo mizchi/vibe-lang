@@ -2492,6 +2492,13 @@ echo '[compiler-gate] gc-lane scalar parity ok'
 #         eta-expanded lambda emitted independently by each backend, so the
 #         three lanes are three separate implementations of the same contract.
 echo '[compiler-gate] 15b-3b/15 builtin value form (#2442)'
+# #2392: the value-sharing and aliasing rules stable-surface.md §2.2a freezes.
+# All three lanes, because "the lanes agree" is one of the claims -- an
+# aggregate is a handle on every backend, not a property of the one the reader
+# built with.
+run_test_block_fixtures "value sharing (linear, bump)" fixtures/value_sharing_test.vibe
+run_test_block_fixtures_gc "value sharing (gc)" fixtures/value_sharing_test.vibe
+run_test_block_fixtures_rc "value sharing (linear, RC)" fixtures/value_sharing_test.vibe
 run_test_block_fixtures "builtin value form (linear, bump)" fixtures/builtin_value_form_test.vibe
 run_test_block_fixtures_gc "builtin value form (gc)" fixtures/builtin_value_form_test.vibe
 run_test_block_fixtures_rc "builtin value form (linear, RC)" fixtures/builtin_value_form_test.vibe

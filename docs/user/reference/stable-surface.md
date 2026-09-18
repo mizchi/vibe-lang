@@ -118,6 +118,80 @@ of each item is [spec/syntax.md](syntax.md) and the
   (ADR-0052 — despite that ADR's wasm-gc framing, these run on the linear lane
   too; measured 2026-08-19).
 
+### 2.2a Value sharing, aliasing and mutation (#2392)
+
+What a binding, an argument and a field READ mean is part of the frozen
+surface. How the compiler implements it -- borrowed returns, reference
+counting, Perceus reuse, the direct-call ABI -- is **not** (§6), and none of it
+is observable through the rules below.
+
+**An aggregate is shared, never copied.** `Array`, `Bytes`, a `struct` and an
+`enum` payload are handles. Binding one to a second name, passing it to a
+function, storing it in another aggregate, or capturing it in a closure all
+give the SAME object, and a mutation through any of them is visible through
+all of them. Measured 2026-09-18 on all three lanes (linear/bump, linear/RC,
+wasm-gc), which agree:
+
+```vibe skip
+let xs = [1, 2, 3]
+let alias = xs
+Array::push(alias, 4)
+Array::length(xs)                 // 4 -- one array, two names
+
+fn push_into(ys: Array[Int]) -> Unit { Array::push(ys, 99) }
+push_into(xs)                     // the callee mutates the caller's array
+
+let inner = [1, 2]
+let outer = [inner]
+Array::push(Array::get(outer, 0), 3)
+Array::length(inner)              // 3 -- nesting does not deep-copy
+
+let p = Pt::{ x: 1, y: 2 }        // struct Pt { mut x: Int; mut y: Int }
+let ps = [p]
+Array::get(ps, 0).x = 42
+p.x                               // 42 -- the same object
+```
+
+There is no implicit copy anywhere in that list, and no syntax that asks for
+one. A **copy is always an explicit call**: `Array::slice(xs, 0, n)` returns a
+fresh array, so writing through the result does not reach the source.
+
+```vibe skip
+let ys = Array::slice(xs, 0, 2)
+Array::set(ys, 0, 77)
+Array::get(xs, 0)                 // unchanged -- slice is a copy, not a view
+```
+
+**A `String` is immutable**, so its sharing is unobservable; `String::concat`
+and friends return new strings.
+
+**A `let mut` is a place, and capturing one extends its life.** Uncaptured it
+is an ordinary local. Captured by a closure it becomes a shared cell: the
+closure outlives the frame that made it, and two closures over the same
+binding see one value.
+
+```vibe skip
+fn counter() -> () -> Int {
+  let mut n = 0
+  () -> { n = n + 1; n }
+}
+let next = counter()
+next(); next(); next()            // 1, 2, 3 -- n outlived `counter`
+```
+
+`vibe escapes` reports which `let mut` bindings a file turns into cells, and
+`--strict` answers the narrower "can that closure really reach this binding"
+question (see [editor-and-debugging.md](editor-and-debugging.md)). Both report
+an implementation choice about an already-frozen meaning; they are a cost
+readout, not a rule.
+
+**What is NOT in this contract.** There is no second-class borrow syntax, no
+lifetime annotation and no module-level `Ref`/cell. Borrowing is inferred and
+stays an implementation detail; cross-call mutable state is an effect and a
+handler (ADR-0021), not a process-global. Adding any of those would be a new
+public form with its own lifetime, aliasing, escape and `Send` rules, and is
+not part of 0.1.0.
+
 ### 2.3 Functions and calling convention
 - Lambdas `(x) -> { ... }`, and the separated-annotation form
   `let f: (T) -> U = (x) -> { ... }`.
