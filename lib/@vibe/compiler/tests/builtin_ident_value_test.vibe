@@ -82,7 +82,7 @@ import @vibe/compiler/codegen/common_analysis {
 }
 
 import @vibe/compiler/core {
-  Expr, builtin_value_form_arity
+  Expr, TypeExpr, builtin_value_form_arity
 }
 
 import @vibe/compiler/syntax {
@@ -267,6 +267,39 @@ test "#2442: the reasons that remain still say why" {
 }
 
 let no_user_fns: Array[String] = []
+
+test "#1978: the ascription wrapper reserves no slot, but a real lambda still does" {
+  // A local `let x: T = e` parses to `((__asc: T) -> __asc)(e)` (`ascribe_wrap`,
+  // parser_expr_dispatch.vibe). It used to reach codegen and be emitted as a
+  // real call through a real identity lambda -- measured on one annotated
+  // binding, 5 functions / 363 B of code section against 4 / 307 B for the
+  // same program written without the annotation. `compile_call` now emits the
+  // argument and never the identity, so the plan must not reserve its slot:
+  // a disagreement here is a thrown `lambda plan over-count`, which is how the
+  // first cut of this change was caught (it changed emission alone, and
+  // stage1 -> stage2 died with `planned through 1, walk stopped at 0`).
+  let asc = EFn([], [], [("__asc", Some(TyName("Int")))], None, None, EIdent("__asc", -1))
+  inspect(count_lambda_sites_expr(ECall(asc, [EInt(1)], -1), no_user_fns), "0")
+  // normalize's shadow renaming can rewrite the parameter, so that spelling
+  // counts as the same wrapper.
+  let asc_shadowed = EFn([], [], [("__shadow_3___asc", Some(TyName("Int")))], None, None, EIdent("__shadow_3___asc", -1))
+  inspect(count_lambda_sites_expr(ECall(asc_shadowed, [EInt(1)], -1), no_user_fns), "0")
+  // The CONTROLS, which are what stop the bypass from swallowing real lambdas.
+  // An identity lambda the USER wrote is not the parser's device and keeps its
+  // slot -- the name is the gate, exactly as it is in the classification
+  // predicates that read this same shape.
+  let user_identity = EFn([], [], [("v", Some(TyName("Int")))], None, None, EIdent("v", -1))
+  inspect(count_lambda_sites_expr(ECall(user_identity, [EInt(1)], -1), no_user_fns), "1")
+  // Named `__asc` but NOT an identity: the body is not the parameter, so it is
+  // a real lambda with a real body and owns a slot.
+  let not_identity = EFn([], [], [("__asc", Some(TyName("Int")))], None, None, EInt(7))
+  inspect(count_lambda_sites_expr(ECall(not_identity, [EInt(1)], -1), no_user_fns), "1")
+  // Named `__asc`, an identity, but carrying a declared return type -- one of
+  // the four shape conditions. Anything the parser did not synthesise keeps
+  // its slot rather than being given code it did not ask for.
+  let annotated_ret = EFn([], [], [("__asc", Some(TyName("Int")))], Some(TyName("Int")), None, EIdent("__asc", -1))
+  inspect(count_lambda_sites_expr(ECall(annotated_ret, [EInt(1)], -1), no_user_fns), "1")
+}
 
 test "#2442: the planner reserves a slot for exactly the names with a value form" {
   // `count_lambda_sites_expr` is the whole-program prediction the codegen walk

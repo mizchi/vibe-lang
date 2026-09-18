@@ -4707,6 +4707,46 @@ fn count_lambda_sites_ident(name: String, shadow_names: Array[String], bound: Ar
   }
 }
 
+/// #1978: the parser's local-let ascription wrapper, `((__asc: T) -> __asc)(e)`
+/// (`ascribe_wrap`, parser_expr_dispatch.vibe).
+///
+/// **This must agree, shape for shape, with `cc_is_ascription_identity` in
+/// `codegen/expr/compile_call.vibe`.** That one makes the call emit only its
+/// argument; this one makes the plan stop reserving a table slot for the
+/// identity lambda it no longer emits. A disagreement is not a wrong answer,
+/// it is a thrown `lambda plan over-count` -- which is exactly how the first
+/// cut of #1978 was caught: emission was changed alone, and stage1 -> stage2
+/// died with `planned through 1, walk stopped at 0`.
+///
+/// File-local rather than imported for the reason stated on
+/// `cls_strip_param_label_marker` above: a brand-new cross-file export and its
+/// first cross-file caller in one commit are silently dropped by the
+/// merge/flatten tool.
+fn cls_is_ascription_identity(callee: Expr) -> Bool {
+  match callee {
+    EFn(tparams, _, params, ret_ty, effect, body) => if Array::length(tparams) == 0 && Array::length(params) == 1 && (match ret_ty {
+      None => true,
+      Some(_) => false
+    }) && (match effect {
+      None => true,
+      Some(_) => false
+    }) {
+      let (asc_name, _) = Array::get(params, 0)
+      if asc_name == "__asc" || (String::starts_with(asc_name, "__shadow_") && String::ends_with(asc_name, "___asc")) {
+        match body {
+          EIdent(bname, _) => bname == asc_name,
+          _ => false
+        }
+      } else {
+        false
+      }
+    } else {
+      false
+    },
+    _ => false
+  }
+}
+
 fn count_lambda_sites_scoped(expr: Expr, shadow_names: Array[String], bound: Array[String]) -> Int {
   match expr {
     EIdent(name, _) => count_lambda_sites_ident(name, shadow_names, bound),
@@ -4734,9 +4774,15 @@ fn count_lambda_sites_scoped(expr: Expr, shadow_names: Array[String], bound: Arr
     // an ordinary local/global call, which allocates no table entry either, so
     // this arm answers 0 for both readings.
     ECall(callee, args, _) => {
-      let callee_count = match callee {
-        EIdent(_, _) => 0,
-        _ => count_lambda_sites_scoped(callee, shadow_names, bound)
+      let callee_count = if cls_is_ascription_identity(callee) && Array::length(args) == 1 {
+        // compile_call emits the argument and never the identity, so the
+        // identity owns no slot. See cls_is_ascription_identity.
+        0
+      } else {
+        match callee {
+          EIdent(_, _) => 0,
+          _ => count_lambda_sites_scoped(callee, shadow_names, bound)
+        }
       }
       callee_count + count_lambda_sites_exprs(args, shadow_names, bound)
     },
