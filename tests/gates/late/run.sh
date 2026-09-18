@@ -6100,6 +6100,15 @@ bash "$ROOT_DIR/scripts/check_selector_precedence_test.sh"
 # `xt` and the check answers "no match" forever). #2252.
 bash "$ROOT_DIR/scripts/check_gate_portability.sh"
 bash "$ROOT_DIR/scripts/check_gate_portability_test.sh"
+# ...and the third way a gate stops meaning anything: a DIAGNOSTIC in it aborts
+# the work it explains. `ensure_generated.sh` reports which inputs moved before
+# regenerating, sliced with `printf | head -20`; `head` leaves after its 20th
+# line, so a diff larger than the pipe buffer gives printf SIGPIPE, and
+# pipefail + set -e turn that into exit 141 with no artifacts written. Measured
+# at 869 differing lines. It fires only in the LARGE case -- a fresh clone or a
+# seed bump -- which is exactly when the regeneration is needed.
+bash "$ROOT_DIR/scripts/check_generated_stamp_report.sh"
+bash "$ROOT_DIR/scripts/check_generated_stamp_report_test.sh"
 # check_book_console.sh landed (#2253) with no self-test and CI caught it the
 # same day -- the ratchet working as intended. Its cases hand the gate a STUB
 # compiler so the transcripts fail identically for all of them, and assert the
