@@ -391,7 +391,15 @@ export struct CodegenBodyCache {
   /// above do not hold, so widening can never leave a build with less than it
   /// had. Empty means "no narrowing available", which is what an in-process
   /// cache and a hand-built one both are.
-  consumer_src_limit: Array[Int]
+  consumer_src_limit: Array[Int];
+  /// #2199 follow-up: does anyone READ what this cache collects? One element,
+  /// 1 to record and 0 to decline. The ordinary `vibe run` / `vibe test`
+  /// compile passes a fresh cache as its out-parameter and drops it on the
+  /// floor, so every row `codegen_body_cache_record` fills there is allocated
+  /// and never read -- and the per-function `vibe.linemap` rows made that the
+  /// largest of them (measured: 4.6 MiB of the selfcompile KPI's bump heap,
+  /// which never frees). `codegen_body_cache_discard` is that cache.
+  collect: Array[Int]
 }
 
 /// An empty cache. Threading one of these in means "compile everything, cache
@@ -433,8 +441,19 @@ export fn codegen_body_cache_new() -> CodegenBodyCache {
     guard_unmangled_names: array_empty(),
     guard_layout: array_empty(),
     guard_typed_lowering: array_empty(),
-    consumer_src_limit: array_empty()
+    consumer_src_limit: array_empty(),
+    collect: [1]
   }
+}
+
+/// An out-cache for a compile that will not read it: `record` is a no-op, so
+/// the compile allocates none of the per-function rows. Everything else --
+/// the guards a caller pushes directly, replay from an IN cache -- is
+/// unchanged, and reading this cache afterwards is what the name refuses.
+export fn codegen_body_cache_discard() -> CodegenBodyCache {
+  let c = codegen_body_cache_new()
+  Array::set(c.collect, 0, 0)
+  c
 }
 
 /// Position of `fn_index` in the cache, or -1. Linear scan.
@@ -618,7 +637,14 @@ export fn codegen_body_cache_find_at(slot_index: Array[Int], fn_index: Int) -> I
 /// just pushed them -- and the lambda table slice `[lam_lo, lam_hi)`, which is
 /// exactly the range the plan assigned this function.
 export fn codegen_body_cache_record(cache: CodegenBodyCache, fn_index: Int, fn_name: String, fn_file: Int, src_stmt: Int, bodies: Array[Bytes], meta_i32: Array[Int], meta_i64: Array[Int], meta_v128: Array[Int], lt: LambdaTable, lam_lo: Int, lam_hi: Int, slots: Array[Int], slot_lo: Int, slot_hi: Int, blind_bodies: Array[Int], blind_offsets: Array[Int], blind_kinds: Array[Int], blind_syms: Array[Int], blind_lo: Int, blind_hi: Int, lm: LineMapState, lm_lo: Int) -> Unit {
-  let n = Array::length(bodies)
+  // A cache nobody will read collects nothing: `n == 0` is already the
+  // "nothing to record" exit, so declining lands there (see `collect`).
+  let declined = Array::length(cache.collect) > 0 && Array::get(cache.collect, 0) == 0
+  let n = if declined {
+    0
+  } else {
+    Array::length(bodies)
+  }
   if n == 0 {
     ()
   } else {

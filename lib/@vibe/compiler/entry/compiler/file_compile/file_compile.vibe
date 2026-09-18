@@ -66,6 +66,7 @@ import @vibe/compiler/codegen/common_base {
   bcc_layout_fp_ints,
   bcc_layout_fp_strings,
   bcc_string_lists_equal,
+  codegen_body_cache_discard,
   codegen_body_cache_filter_src_below,
   codegen_body_cache_filter_src_keep,
   codegen_body_cache_from_bytes,
@@ -1495,7 +1496,11 @@ export fn compile_file_fs_mode_rc(entry_path: String, entry_name: String) -> Byt
   let (float_offsets, tl_rels, tl_pluses, int_offsets, bool_offsets) = split_typed_lowering_offsets(union_module_typed_lowering_with_clones(flat_paths, flat_bases, clone_float_offsets))
   let (eq_offsets, eq_keys) = union_module_typed_eq_rows(flat_paths, flat_bases)
   let merged_stmts = rewrite_string_binops_stmts(merged_stmts_raw, tl_rels, tl_pluses, typed_lowering_binop_anchor)
-  compile_wasi_module_rc_cached_impl_with_prov(merged_stmts, entry_name, codegen_body_cache_new(), codegen_body_cache_new(), DbgProv::{
+  // The out-cache is dropped the moment this returns, so it declines to
+  // collect: `codegen_body_cache_record` would otherwise fill one row per
+  // function plus one per `vibe.linemap` site, on the lane every `vibe run`
+  // and `vibe test` takes, for nobody (#2199 follow-up).
+  compile_wasi_module_rc_cached_impl_with_prov(merged_stmts, entry_name, codegen_body_cache_new(), codegen_body_cache_discard(), DbgProv::{
     files: dbg_files,
     file_nls: dbg_file_nls,
     stmt_file_id: dbg_stmt_file_id
