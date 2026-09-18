@@ -12768,7 +12768,13 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
         } else {
           threaded_from_lambda_sig(bs, ps, traits)
         }
-        let threaded = lambda_threaded_sig(tp, bs, ps, traits, dict_binds)
+        // What to ADD, which is nothing when the parameters already carry
+        // their dicts -- not the same question lambda_threaded_sig answers.
+        let threaded = if already_threaded(bs, ps) {
+          empty_threaded()
+        } else {
+          concat_threaded(threaded_from_outer_binds(dict_binds, tp), own)
+        }
         let binds = dict_binds_overlay(dict_binds, tp, dict_binds_of(own, traits))
         let new_params = if Array::length(threaded) > 0 {
           thread_dict_params(threaded, ps)
@@ -12843,29 +12849,28 @@ fn concat_threaded(a: Array[(String, String, Int)], b: Array[(String, String, In
   out
 }
 
-/// The dict parameters a lambda's REWRITTEN signature carries (#2778).
+/// The dict parameters a lambda's rewritten signature CARRIES (#2778).
 ///
-/// The EFn rewrite arm, the `let`-bound gen registration and the
-/// immediately-invoked call arm each used to compute this for themselves, and
-/// they disagreed in two ways that both produce a call whose arity does not
-/// match the callee -- invalid wasm at validation, or a `null function or
-/// function signature mismatch` trap at run time.
+/// `threaded_from_outer_binds` drops only the formals the binder REBINDS, so
+/// with `tp` empty it returns every enclosing dictionary -- while the `EFn`
+/// rewrite arm threads nothing at all unless `tp` is non-empty. Reading that
+/// difference off two separately written expressions is what let them drift:
+/// `Set::from_array[T: Hash]`'s inner `let rec go = (i, acc) -> ...` takes two
+/// parameters and was called with three, because the call site claimed the
+/// enclosing `T: Hash` dictionary for a lambda that binds nothing. A plain
+/// local lambda inside a bounded generic is everywhere, which is why the
+/// failure looked unrelated to nested bounds.
 ///
-/// 1. `threaded_from_outer_binds` drops only the formals the binder REBINDS,
-///    so with `tp` empty it returns every enclosing dictionary. The rewrite arm
-///    threads nothing when `tp` is empty, but `lambda_dict_gen` claimed those
-///    outer dicts anyway: measured, `Set::from_array[T: Hash]`'s inner
-///    `let rec go = (i, acc) -> ...` took 2 parameters and was called with 3.
-///    That shape -- a plain local lambda inside a bounded generic -- is
-///    everywhere, which is why the failure looked unrelated to nested bounds.
-/// 2. `already_threaded` means the parameters ALREADY carry their dicts, so the
-///    rewrite arm adds none; a caller that added them again over-supplied.
-///
-/// So the answer is computed ONCE, here, and the three callers ask. Keeping
-/// them in step by inspection is exactly the proxy #2248 says a check may not
-/// rest on -- there is no gate that can see two expressions drift apart.
+/// This answers for the CALL SITES, which is not the same question the rewrite
+/// arm asks. The arm asks what to ADD, and adds nothing when `already_threaded`
+/// reports the parameters already carry their dicts -- but a signature that
+/// already carries them still has to be CALLED with them. Those two answers
+/// differ exactly there, so the arm keeps its own expression and this one does
+/// not mention `already_threaded`. Collapsing them cost a round: it made every
+/// `already_threaded` lambda's gen vanish and refused `add_by` in
+/// `s5_wasm_test`.
 fn lambda_threaded_sig(tp: Array[String], bounds: Array[(String, Array[String])], params: Array[(String, Option[TypeExpr])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], dict_binds: Array[(String, String, String, Array[String])]) -> Array[(String, String, Int)] {
-  if Array::length(tp) > 0 && !already_threaded(bounds, params) {
+  if Array::length(tp) > 0 {
     concat_threaded(threaded_from_outer_binds(dict_binds, tp), threaded_from_lambda_sig(bounds, params, traits))
   } else {
     empty_threaded()
