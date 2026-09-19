@@ -196,10 +196,20 @@ else
       echo "  size:     MISSING"
     fi
     echo "  runner:   $VIBERUN"
+    # Which LANE compiled it. `compile_release_lane` branches on VIBE_RC, and
+    # a capability decision must not depend on that branch -- when it did, the
+    # mvp and shadow arms dropped the grant table and produced exactly this
+    # failure. Printed so the log says which arm ran instead of leaving it to
+    # be guessed from an env block.
+    echo "  VIBE_RC:  ${VIBE_RC:-<unset, default rc lane>}"
+    echo "  VIBE_BACKEND: ${VIBE_BACKEND:-<unset>}"
     echo "  no-flag perform? answer: $(opt_case --allow-stdout --allow-fs 2>&1 | tr '\n' ' ')"
     echo "  ambient (no flags at all): $(opt_case 2>&1 | tr '\n' ' ')"
-    echo "  -> ambient NOTGRANTED means this compiler does not carry #2828 rung 2;"
-    echo "     ambient GRANTED means it does and the --allow-fs path is the bug."
+    echo "  -> ambient GRANTED: the compiler carries rung 2 and the --allow-* path is the bug."
+    echo "  -> ambient NOTGRANTED with VIBE_RC unset: the compiler does not carry rung 2."
+    echo "  -> ambient NOTGRANTED with VIBE_RC=0 or shadow: the LANE dropped the grant"
+    echo "     table. compile_release_lane branches on VIBE_RC and each arm must carry"
+    echo "     the grants; an arm that does not makes authority depend on the allocator."
   } >&2
 fi
 
