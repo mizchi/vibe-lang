@@ -152,7 +152,8 @@ awk '
   # them would make the two lanes report different corpora for the same tree,
   # and a floor row written from the batch lane would fail in the fallback
   # with "is in the floor but the sweep did not report it". Ratcheting the
-  # published API's own doc coverage is worth doing and is its own change:
+  # doc coverage of the published API is worth ratcheting, and is its own
+  # change:
   # it needs both lanes moved together.
   $1 ~ /\.vpkg$/ || $1 ~ /\.vibei$/ { next }
   NF >= 1 { files[$1] = 1 }
