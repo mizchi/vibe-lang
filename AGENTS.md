@@ -192,10 +192,30 @@ own — what still has no renderer is an UNBOUNDED formal at either binder level
 and a formal whose spelling an enclosing binder also bound (above).
 
 A direct top-level one-parameter rendering shim is expanded at each call site,
-where its argument type is still available. Local generic lambdas cannot use
-this exemption. Adding a prefix or a local binding
+where its argument type is still available, so `check_interp_formal` stands
+down inside its body — and **the call site re-asks the question** (#2773).
+That second half was missing: the body deferred and nothing checked the
+argument, so `shim(if c { a } else { a })` over an erased formal compiled and
+printed the pointer. `check_stmts`'s hoist marks a shim's NAME (in the hoist,
+so a shim declared below its call site still counts) and the named-call arm
+checks the argument there. Local generic lambdas cannot use this exemption.
+Adding a prefix or a local binding
 makes the body cease to be a shim. Passing a generic shim as a value is
 refused by lowering; use a lambda with a concrete parameter type instead.
+
+**The erased-formal refusal is the CHECKER's alone now** (#2773 closed).
+`dtd_erased_interp_formal` answered "is this interpolated value an erased
+formal?" from syntax, in `normalize`, which has no types — so it carried an
+ad-hoc environment, and twenty-six review rounds found sixty-three routes past
+it without the rate falling. It is deleted: 57 functions, 1,970 lines. The
+measurement that licensed the deletion, in order, because the first number
+alone would have been wrong: with the walk stubbed, all 65
+`lambda_bound_*_refused.vibe` fixtures still refused and so did all three
+routes the issue listed as open — but the 1315-file unit corpus said 1314, and
+the one shape it found (the shim call above) compiled and printed `v=232` /
+`v=252`, two allocation addresses. **The refusal-fixture corpus alone says
+65/65 and is not sufficient evidence for a deletion**; the pass's own fixtures
+cannot see what it never learned to catch.
 A generated `derive(Show)` array helper also refuses an erased element without
 a renderer; binding its type parameter alone does not make rendering safe.
 `StringSet`'s `*_by` helpers now take an explicit key function, and the imported
