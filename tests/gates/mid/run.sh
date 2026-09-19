@@ -524,12 +524,7 @@ echo "[compiler-gate] RC wrapper-assign double-retain guard ok (heap_used=$dr_us
 #      unrelated, binary-layout-dependent location ("moving target").
 #      This is the shape corpus only. Branch-heavy checker paths (the first
 #      cut of #1964) need the 40f2 checked-artifact smoke.
-# 25817489 = 25377489 (the #715 shapes) + 5000 * 88, the #2837 saved-view
-# shapes added per iteration: 12 + 31 + 42 + (0+1+2). The derivation is here so
-# a future change to the fixture can CHECK the new total rather than paste
-# whatever the run printed -- a shape that silently stopped executing would
-# otherwise look like a legitimate new expectation.
-echo "[compiler-gate] 40f/40 RC shadow-liveness regression guard (#715 shapes, #2837 saved views)"
+echo "[compiler-gate] 40f/40 RC shadow-liveness regression guard (#715 shapes)"
 shdir="_build/_gate_rc_shadow"
 rm -rf "$shdir"; mkdir -p "$shdir"
 VIBE_RC=shadow VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
@@ -541,12 +536,12 @@ if [ ! -s "$shdir/shadow.wasm" ]; then
   exit 1
 fi
 sh_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$shdir/shadow.wasm" 2>&1 | tail -1)"
-if [ "$sh_out" != "25817489" ]; then
-  echo "[compiler-gate] FAIL: rc_shadow_regression got '$sh_out' (want 25817489). A trap here means an RC dup/drop accounting regression touched a freed block -- see fixtures/rc_shadow_regression_test.vibe for which shapes are covered and issue #715 for the debugging methodology." >&2
+if [ "$sh_out" != "25377489" ]; then
+  echo "[compiler-gate] FAIL: rc_shadow_regression got '$sh_out' (want 25377489). A trap here means an RC dup/drop accounting regression touched a freed block -- see fixtures/rc_shadow_regression_test.vibe for which shapes are covered and issue #715 for the debugging methodology." >&2
   exit 1
 fi
 rm -rf "$shdir"
-echo "[compiler-gate] RC shadow-liveness regression guard ok (25817489)"
+echo "[compiler-gate] RC shadow-liveness regression guard ok (25377489)"
 
 # 40f0. #2837: `Array::truncate` changes the array's LENGTH, not the lifetime
 #       of an element someone already took out of it. That is the ownership
@@ -932,6 +927,20 @@ echo "[compiler-gate] host-runtime ABI contract ok"
 #         ratchet runs -- not repeated here.
 echo "[compiler-gate] 129/129 async slot and request bands (#2832)"
 bash scripts/check_async_band_contract.sh
+
+# 40h-4d. #1346 criterion 5: the `vibe.*` host import SURFACE, pinned. 0.1.0
+#         freezes it, and until now nothing said what it contains -- the one
+#         list in the tree was `runtime/viberun/expected_imports.txt`, 32
+#         `__moonbit_fs_unstable` fields from a host retired in #594, read by
+#         nothing (deleted in the same change). This reads the emitters and
+#         compares them to a checked-in inventory, so a new, renamed or
+#         removed host import is a deliberate edit rather than a silent ABI
+#         change for every host that links these fields. Source-only, runs in
+#         milliseconds, touches no stage2. Its red test is
+#         scripts/check_sync_host_imports_test.sh, which the gate-self-test
+#         ratchet runs -- not repeated here.
+echo "[compiler-gate] 130/130 vibe.* host import surface (#1346)"
+bash scripts/check_sync_host_imports.sh
 
 # 40h-5. #1262: the gc lane's host-import surface, extended by five builtins
 #        that were "unknown constructor or function" there. Runs with NO

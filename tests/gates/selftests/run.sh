@@ -90,4 +90,9 @@ bash "$ROOT_DIR/scripts/host_capability_withhold_test.sh"
 # is #2252's lesson and cost this gate a CI cycle already.
 CAPABILITY_PREFLIGHT_STAGE2="$stage2_wasm" bash "$ROOT_DIR/scripts/check_capability_preflight.sh"
 CAPABILITY_PREFLIGHT_STAGE2="$stage2_wasm" bash "$ROOT_DIR/scripts/check_capability_preflight_test.sh"
+
+# #1346 criterion 5's red test: a new, renamed or resized `vibe.*` host import
+# must FAIL check_sync_host_imports.sh. Source-only -- it mutates copies of the
+# emitters and of the inventory, so it needs no compiler and no runner.
+bash "$ROOT_DIR/scripts/check_sync_host_imports_test.sh"
 echo "[compiler-gate] gate self-tests ok (#2248)"
