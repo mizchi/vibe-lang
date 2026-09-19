@@ -73,7 +73,8 @@ import @vibe/compiler/runtime {
   set_incremental_interface_trace_enabled,
   set_incremental_typecheck_telemetry_enabled,
   symbol_spans_fs_report,
-  symbol_spans_with_docs,
+  symbol_spans_locate_failure,
+  symbol_spans_with_docs_for_path,
   type_at_source
 }
 
@@ -1830,7 +1831,16 @@ fn selfhost_cli_user_symbols_args(args: Array[String]) -> Int with Exception + F
         if !Fs::exists(src) {
           throw(String::concat("not found: ", src))
         } else {
-          print_text(join_symbol_spans(symbol_spans_with_docs(Fs::read_file(src))))
+          // #2898: the file DECIDES the grammar -- a `.vpkg` is a list of
+          // bodyless declarations, not statement grammar. A failure carries
+          // the path and, where the contract parser can say which token it
+          // stopped on, a `line L:col C:` prefix: `unexpected token: type`
+          // with neither was a non-zero exit the caller could not act on.
+          let text = Fs::read_file(src)
+          let syms = handle {
+            symbol_spans_with_docs_for_path(src, text)
+          } with { Exception::Throw(msg) => throw(String::concat(src, String::concat(": ", symbol_spans_locate_failure(src, text, msg)))) }
+          print_text(join_symbol_spans(syms))
           0
         }
       }

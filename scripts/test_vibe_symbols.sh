@@ -311,6 +311,122 @@ else
   ok "symbols on an unparseable file exits non-zero"
 fi
 
+
+# --- #2898: a package CONTRACT is a declaration file, so `symbols` reads it ---
+# `index.vpkg` IS a package's public API (ADR-0070) and `vibe symbols` is the
+# documented way to discover an API -- so the one file that IS the API was the
+# one file the outline refused. Measured on a stage2 from main before the fix:
+# `vibe symbols lib/@vibe/core/index.vpkg` exited 1 with `error: unexpected
+# token: type` and no path, no line and no column, while `vibe check` on the
+# same file was clean.
+#
+# `slice_at out NAME` cuts the file at the START/END the row reports, so these
+# assert the SPAN and not merely that a row with the right name exists -- a
+# lane that emitted plausible offsets would pass a name-only check.
+slice_at() {
+  local file="$1" row="$2"
+  local s e
+  s="$(printf '%s\n' "$row" | awk '{print $3}')"
+  e="$(printf '%s\n' "$row" | awk '{print $4}')"
+  tail -c "+$((s + 1))" "$file" | head -c "$((e - s))"
+}
+row_for() {
+  printf '%s\n' "$1" | grep -E "^$2 [0-9]+ [0-9]+ [0-9]+$" | head -1
+}
+
+cdir="$WORK/cpkg"; mkdir -p "$cdir"
+cat > "$cdir/index.vpkg" <<'VPKG'
+name = @demo/pkg
+version = 0.1.0
+deps = {}
+
+type List[T]
+opaque type Handle
+fn make(n: Int) -> Int
+fn Handle::close(h: Handle) -> Unit
+let origin: Int
+VPKG
+c_out="$WORK/contract.out"; c_err="$WORK/contract.err"
+if "$VIBE" symbols "$cdir/index.vpkg" >"$c_out" 2>"$c_err"; then
+  co="$(cat "$c_out")"
+  if has_sym "$co" List 26 && has_sym "$co" Handle 26 \
+     && has_sym "$co" make 12 && has_sym "$co" Handle::close 12 \
+     && has_sym "$co" origin 13; then
+    ok "symbols reads a package contract's declarations (#2898)"
+  else
+    bad "symbols on a .vpkg: got [$co]"
+  fi
+  # Every span must cut the declaration's own NAME out of the file.
+  span_bad=""
+  for nm in List Handle make Handle::close origin; do
+    got="$(slice_at "$cdir/index.vpkg" "$(row_for "$co" "$nm")")"
+    [ "$got" = "$nm" ] || span_bad="$span_bad $nm=[$got]"
+  done
+  if [ -z "$span_bad" ]; then
+    ok "symbols spans on a contract cut the declaration name out of the file"
+  else
+    bad "symbols contract spans mis-anchored:$span_bad"
+  fi
+else
+  bad "symbols on a .vpkg must succeed; err=[$(cat "$c_err")]"
+fi
+
+# The anchor is the declaration's OWN first token, not wherever the previous
+# row stopped: `fn f(origin: Int)` puts the spelling `origin` in a PARAMETER
+# before the `let origin` that declares it, and a scan resuming from the end of
+# the previous row would report the parameter.
+cat > "$cdir/shadow.vpkg" <<'VPKG'
+name = @demo/pkg
+version = 0.1.0
+
+fn f(origin: Int) -> Int
+let origin: Int
+VPKG
+s_out="$("$VIBE" symbols "$cdir/shadow.vpkg" 2>/dev/null || true)"
+s_row="$(row_for "$s_out" origin)"
+s_start="$(printf '%s\n' "$s_row" | awk '{print $3}')"
+decl_start="$(grep -bo 'let origin' "$cdir/shadow.vpkg" | head -1 | cut -d: -f1)"
+if [ -n "$s_start" ] && [ -n "$decl_start" ] && [ "$s_start" -gt "$decl_start" ]; then
+  ok "a contract declaration anchors on its own name, not an earlier parameter"
+else
+  bad "contract name anchor: row=[$s_row] declared at byte $decl_start"
+fi
+
+# The SWEEP takes contracts too. Before this it collected `.vibe`/`.vibex`
+# only, so a directory sweep answered a complete-looking inventory with no row
+# from any package's published surface and said nothing -- measured,
+# `vibe symbols lib/@vibe/core` returned 793 rows and zero from `index.vpkg`.
+sw_out="$("$VIBE" symbols "$cdir" 2>/dev/null || true)"
+if printf '%s\n' "$sw_out" | grep -qE "^$cdir/index.vpkg make 12 [0-9]+ [0-9]+$"; then
+  ok "a directory sweep includes package contracts (#2898)"
+else
+  bad "sweep should carry .vpkg rows; got: $sw_out"
+fi
+
+# `vibe grep` must NOT take them: a contract holds no expressions, so every one
+# would come back as a "could not be parsed" warning about a well-formed file.
+g_err="$("$VIBE" grep --pattern '$(f:id)($(a:args))' "$cdir" 2>&1 >/dev/null || true)"
+if printf '%s\n' "$g_err" | grep -q 'index.vpkg'; then
+  bad "grep must not sweep package contracts; got: $g_err"
+else
+  ok "grep's corpus is unchanged by the symbols contract sweep"
+fi
+
+# Defect 2: a contract that really is broken says WHERE. `unexpected token:
+# type` with no path, no line and no column is a non-zero exit the caller
+# cannot act on.
+printf 'name = @demo/pkg\nversion = 0.1.0\n\nfn make(n: Int) -> Int {\n' > "$cdir/broken.vpkg"
+b_err="$WORK/broken.err"
+if "$VIBE" symbols "$cdir/broken.vpkg" >/dev/null 2>"$b_err"; then
+  bad "symbols on a broken contract must exit non-zero"
+else
+  if grep -q 'broken.vpkg' "$b_err" && grep -qE 'line [0-9]+:col [0-9]+' "$b_err"; then
+    ok "a broken contract's outline failure carries the path and a line:col (#2898)"
+  else
+    bad "broken contract diagnostic should name the file and the position; got: $(cat "$b_err")"
+  fi
+fi
+
 echo "----"
 echo "passed: $pass, failed: $fail"
 [ "$fail" -eq 0 ]

@@ -50,7 +50,11 @@
 // interpolation): both mis-codegen to NUL here.
 
 import @vibe/compiler/core {
-  Expr, Stmt
+  Expr, Stmt, is_contract_ext
+}
+
+import @vibe/compiler/contract {
+  contract_parse_error_offset, extract_require_pins, parse_contract_program_spans_opaque_at
 }
 
 import @vibe/core {
@@ -58,7 +62,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/syntax {
-  Token, collect_doc_comments, lex_with_offsets, line_start_offsets, offset_to_line_col_indexed, parse_program_spans
+  Token, collect_doc_comments, lex_with_offsets, line_start_offsets, offset_to_line_col, offset_to_line_col_indexed, parse_program_spans
 }
 
 //# Functions
@@ -442,7 +446,13 @@ fn sym_doc_for_line(docs: Array[(Int, String)], line: Int) -> String {
 /// for. Both go through `symbol_spans_impl`, so the outline can never differ
 /// between them.
 export fn symbol_spans_with_docs(source: String) -> Array[(String, Int, Int, Int, String)] with Exception {
-  let syms = symbol_spans_impl(source)
+  sym_attach_docs(source, symbol_spans_impl(source))
+}
+
+/// Attach each declaration's `///` doc comment to its outline row. Shared by
+/// both grammars (#2898): the script lane and the contract lane differ in how
+/// declarations are FOUND, never in how a doc comment attaches to one.
+fn sym_attach_docs(source: String, syms: Array[(String, Int, Int, Int)]) -> Array[(String, Int, Int, Int, String)] {
   let docs = collect_doc_comments(source)
   let out = ArrayBuilder::new()
   // #2670: ONE pass for the line index, then a binary search per declaration.
@@ -458,4 +468,150 @@ export fn symbol_spans_with_docs(source: String) -> Array[(String, Int, Int, Int
     i = i + 1
   }
   ArrayBuilder::freeze(out)
+}
+
+/// The kind for a contract `fn` / `let` declaration, read from the signature
+/// text the contract parser produced: a bodyless value declaration is
+/// fingerprinted as `val <type>` (#752), everything else in `decls` is a `fn`.
+fn sym_contract_decl_kind(sig: String) -> Int {
+  if String::starts_with(sig, "val ") {
+    13
+  } else {
+    12
+  }
+}
+
+/// Symbols for a package CONTRACT (`.vpkg`), which is not statement grammar.
+///
+/// #2898: `index.vpkg` IS a package's public API (ADR-0070) and `vibe symbols`
+/// is the documented way to discover an API -- so the one file that is the API
+/// was the one file the outline could not read. It answered `unexpected token:
+/// type` for `lib/@vibe/core/index.vpkg`, because a bodyless `type List[T]` is
+/// contract grammar and `parse_program_spans` only knows script grammar.
+///
+/// Three streams come back from the contract parser, each already in source
+/// order and each carrying the TOKEN INDEX its entry started at: fn/val
+/// declarations, opaque and bodyless types, and the ordinary statements a
+/// contract may also hold (type aliases, impl markers). They are merged by
+/// that index so the result is one source-ordered outline, which is what makes
+/// `sym_emit`'s advancing floor correct.
+///
+/// The floor for each entry is set to the DECLARATION's own first token, not
+/// left where the previous entry ended: the first token run spelling the name
+/// at or after `fn` / `let` / `type` / `opaque` is the declaration's name for
+/// every contract shape, so the anchor is exact rather than a search over the
+/// whole file. Without it, `fn f(x: Int)` followed by `let x: Int` would
+/// anchor the second declaration on the first one's PARAMETER.
+///
+/// The header (`name = @vibe/core`, `deps = { .. }`) is not vibe syntax, so it
+/// is blanked first -- `extract_require_pins` preserves byte length, so every
+/// offset here is an offset into the file the caller passed in.
+///
+/// A bodyless `type Name[T]` reports kind 26, the same kind the `type` keyword
+/// gets in script grammar. It is not an alias, but one keyword answering with
+/// two kinds depending on the file it sits in is the drift `--legend` exists
+/// to prevent.
+fn contract_symbol_spans_impl(source: String) -> Array[(String, Int, Int, Int)] with Exception {
+  let (_pins, blanked) = extract_require_pins(source)
+  let (tokens, starts, ends) = lex_with_offsets(blanked)
+  let (decls, opaques, stmts, stmt_at, decl_at, opaque_at) = parse_contract_program_spans_opaque_at(tokens)
+  let out = sym_empty_items()
+  let hi = String::length(blanked)
+  let ntok = Array::length(tokens)
+  let mut di = 0
+  let mut oi = 0
+  let mut si = 0
+  while di < Array::length(decls) || oi < Array::length(opaques) || si < Array::length(stmts) {
+    let dtok = if di < Array::length(decl_at) {
+      Array::get(decl_at, di)
+    } else {
+      ntok + 1
+    }
+    let otok = if oi < Array::length(opaque_at) {
+      Array::get(opaque_at, oi)
+    } else {
+      ntok + 1
+    }
+    let stok = if si < Array::length(stmt_at) {
+      Array::get(stmt_at, si)
+    } else {
+      ntok + 1
+    }
+    let pick = if dtok <= otok && dtok <= stok {
+      0
+    } else if otok <= stok {
+      1
+    } else {
+      2
+    }
+    let tok = if pick == 0 {
+      dtok
+    } else if pick == 1 {
+      otok
+    } else {
+      stok
+    }
+    let floor = sym_box_int(if tok >= 0 && tok < Array::length(starts) {
+      Array::get(starts, tok)
+    } else {
+      0
+    })
+    if pick == 0 {
+      let (dname, dsig) = Array::get(decls, di)
+      sym_emit(out, tokens, starts, ends, dname, sym_contract_decl_kind(dsig), floor, hi)
+      di = di + 1
+    } else if pick == 1 {
+      let (oname, _params) = Array::get(opaques, oi)
+      sym_emit(out, tokens, starts, ends, oname, 26, floor, hi)
+      oi = oi + 1
+    } else {
+      sym_walk_stmt(out, blanked, tokens, starts, ends, Array::get(stmts, si), floor, hi)
+      si = si + 1
+    }
+  }
+  out
+}
+
+/// `symbol_spans_with_docs`, told which FILE the source came from -- the only
+/// thing that decides whether it is script grammar or contract grammar
+/// (#2898). Both lanes return the same five fields, so a caller cannot tell
+/// them apart except by the rows it gets.
+///
+/// A path with no contract extension takes the script lane unchanged, so this
+/// is a strict extension of the previous answer for every file that had one.
+export fn symbol_spans_with_docs_for_path(path: String, source: String) -> Array[(String, Int, Int, Int, String)] with Exception {
+  if is_contract_ext(path) {
+    sym_attach_docs(source, contract_symbol_spans_impl(source))
+  } else {
+    symbol_spans_with_docs(source)
+  }
+}
+
+/// The message a failed outline should carry for `path`: the thrown text with
+/// a `line L:col C:` prefix when the contract parser can say which token it
+/// stopped on, and the bare text when it cannot.
+///
+/// #2898 defect 2: `unexpected token: type` with no line, no column and no
+/// path is not actionable, which is the property AGENTS.md asks these queries
+/// for. The offset comes from the contract grammar's own binary search over
+/// token prefixes (`contract_parse_error_offset`), not from a scan of the
+/// message -- an unlocatable failure stays bare rather than being placed
+/// somewhere plausible.
+export fn symbol_spans_locate_failure(path: String, source: String, msg: String) -> String {
+  if !is_contract_ext(path) {
+    return msg
+  } else {
+    ()
+  }
+  let off = handle {
+    let (_pins, blanked) = extract_require_pins(source)
+    let (tokens, starts, _ends) = lex_with_offsets(blanked)
+    contract_parse_error_offset(tokens, starts, msg)
+  } with { Exception::Throw(_) => 0 - 1 }
+  if off < 0 {
+    msg
+  } else {
+    let (line, col) = offset_to_line_col(source, off)
+    String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), String::concat(": ", msg)))))
+  }
 }

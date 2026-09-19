@@ -666,7 +666,18 @@ vibe symbols file.vibe
 # fields (#2723). DOC is exempt -- it is last, and nothing is parsed after it.
 # Split on ASCII: a NBSP inside a label is NOT escaped (the separators are
 # ascii spaces), so a Unicode-aware class drops the row instead of reading it.
+# A package CONTRACT (`index.vpkg`) is read with CONTRACT grammar -- bodyless
+# `fn` / `let` declarations and `type` / `opaque type`, plus the key=value
+# header, which is blanked first (#2898). That file IS the package's public
+# API (ADR-0070), so it is also swept as part of a directory. Before this it
+# was the one file `vibe symbols` refused (`unexpected token: type`, with no
+# path and no position) while `vibe check` on the same file was clean, and a
+# directory sweep omitted every contract in the tree WITHOUT SAYING SO --
+# measured, `vibe symbols lib/@vibe/core` answered 793 rows and not one came
+# from `index.vpkg`. `vibe grep`'s sweep is deliberately unchanged: a contract
+# holds no expressions.
 vibe symbols lib
+vibe symbols lib/@vibe/core/index.vpkg
 vibe symbols --with-path file.vibe
 
 # カーソル位置 (1-based line,col) の識別子の推論型。hover の基盤

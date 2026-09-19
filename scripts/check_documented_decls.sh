@@ -146,6 +146,15 @@ is_generated() {
 # Batch `vibe symbols` rows: PATH NAME KIND START END [DOC]. DOC is present
 # iff there is a sixth field (it may contain spaces; NAME never does).
 awk '
+  # A package CONTRACT is out of scope, stated here rather than inherited.
+  # Since #2898 the symbols sweep also reads `.vpkg` files -- but the
+  # per-file FALLBACK below enumerates `.vibe` / `.vibex` only, so admitting
+  # them would make the two lanes report different corpora for the same tree,
+  # and a floor row written from the batch lane would fail in the fallback
+  # with "is in the floor but the sweep did not report it". Ratcheting the
+  # published API's own doc coverage is worth doing and is its own change:
+  # it needs both lanes moved together.
+  $1 ~ /\.vpkg$/ || $1 ~ /\.vibei$/ { next }
   NF >= 1 { files[$1] = 1 }
   NF >= 6 { docs[$1]++ }
   END {

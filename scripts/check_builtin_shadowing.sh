@@ -196,7 +196,16 @@ fi
 
 # Declarations that BIND a value: KIND 12 (Function) and 13 (Variable). 13 is
 # the one a regex misses (`export let Fs::exists = exists`).
-awk '$3 == 12 || $3 == 13 { print $2 }' "$SYMS" | sort -u > "$WORK/declared.txt"
+#
+# A package CONTRACT is excluded, and the exclusion is STATED here rather than
+# inherited: since #2898 the symbols sweep also reads `.vpkg` files, and a
+# contract does not BIND anything -- it declares the signature of an alias its
+# implementation file defines, and that definition is swept in its own file,
+# where this gate can see it. Letting them in added 27 apparent shadows
+# (`Fs::read_file`, `String::split`, `println`, ...) that are one published
+# surface each, not one definition each, and the allowlist would have had to
+# carry a reason for every one of them saying exactly that.
+awk '$1 !~ /\.vpkg$/ && $1 !~ /\.vibei$/ && ($3 == 12 || $3 == 13) { print $2 }' "$SYMS" | sort -u > "$WORK/declared.txt"
 comm -12 "$WORK/registry.txt" "$WORK/declared.txt" > "$WORK/found.txt"
 
 # A `test "X"` / `bench "X"` BLOCK label is kind 27 / 28 since #2632 (legend
