@@ -103,7 +103,7 @@ import @vibe/compiler/runtime {
 // is one-error-at-a-time; `vibe diagnostics` is the multi-diagnostic surface
 // — collect_all_diagnostics already uses this same recovering parser).
 import @vibe/compiler/syntax {
-  Token, lex_with_offsets, parse_program_recovering, token_to_string
+  Token, lex_with_offsets, lex_with_offsets_recovering, offset_to_line_col, parse_program_recovering, token_to_string
 }
 
 //# Functions
@@ -408,6 +408,58 @@ fn resolved_dep_sources(input_path: String, groups: Array[(String, Array[(String
 /// real compile) on the merged program, so a handle/suspend shape codegen
 /// would reject fails here instead of first failing at build/test/doctest.
 /// Still no wasm and no builtin-body linking.
+/// #2831: a lexer error, with the position `lex_with_offsets_recovering`
+/// already recorded for it.
+///
+/// A local twin of `typecheck_fs.vibe`'s `located_lex_errors`, which is
+/// file-local there. The rule it encodes is not: a handful of lexer throw
+/// sites (the `\(expr)` interpolation message, #997's scientific-notation
+/// ones) embed their OWN `line L:C: ` prefix, because the recorded offset is
+/// the START of the enclosing `lex_one_token` call and is wrong for a throw
+/// raised partway through a multi-char token. Prepending the outer location
+/// on top of a self-located message produced `line 1:9: line 1:18: ...`.
+/// So a message that already starts with `line ` is passed through.
+///
+/// The dedupe is the other half: a non-quote-delimited lex error resumes ONE
+/// character past the failure, so a multi-digit literal re-throws the same
+/// underlying error once per remaining digit. With the outer prefix
+/// suppressed those reports are byte-identical and collapse to one.
+fn cli_located_lex_errors(source: String, lex_err_offsets: Array[Int], lex_err_msgs: Array[String]) -> Array[String] {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(lex_err_msgs) {
+    let msg = Array::get(lex_err_msgs, i)
+    let entry = if String::starts_with(msg, "line ") {
+      msg
+    } else {
+      let off = Array::get(lex_err_offsets, i)
+      let (line, col) = offset_to_line_col(source, off)
+      String::concat("line ", String::concat(Int::to_string(line), String::concat(":", String::concat(Int::to_string(col), String::concat(": ", msg)))))
+    }
+    // An explicit scan rather than `Array::contains`: that builtin does not
+    // resolve on the merge-flatten compiler build this file is part of
+    // (`internal compiler error: Array::contains (local, @call) reached code
+    // generation unresolved`), measured on this very edit.
+    let mut seen = false
+    let mut j = 0
+    while !seen && j < Array::length(out) {
+      if Array::get(out, j) == entry {
+        seen = true
+      } else {
+        ()
+      }
+      j = j + 1
+    }
+    if seen {
+      ()
+    } else {
+      Array::push(out, entry)
+    }
+    i = i + 1
+  }
+  out
+}
+
 export fn check_linked_file(input_path: String) -> Int with Exception + Fs {
   let _groups = check_linked_file_source_groups(input_path)
   0
@@ -452,7 +504,26 @@ export fn check_linked_file_source_groups(input_path: String) -> Array[(String, 
     let (_, pin_blanked) = extract_require_pins(raw_entry_source)
     pin_blanked
   }
-  let (tokens, starts, _ends) = lex_with_offsets(entry_source)
+  // #2831: the RECOVERING lexer, for the same reason the parse below is
+  // recovering. `lex_with_offsets` throws a bare message, so a lex error on
+  // this lane reported `unexpected character: 日` with no line, no column and
+  // not even a path -- while `vibe check --single-file --json` reported
+  // `line 1, character 10-11` for that identical file and the FS lane's own
+  // `--json` answered `0:0` with `synthetic: true`. The position was never
+  // missing; this call site threw it away, and the JSON lane then INVENTED
+  // one, which is what the source-range contract forbids outright and what
+  // made the two `--json` lanes disagree.
+  let (tokens, starts, _ends, lex_err_offsets, lex_err_msgs) = lex_with_offsets_recovering(entry_source)
+  if Array::length(lex_err_msgs) > 0 {
+    // Only the lexer errors: the recovered token stream has holes, so
+    // parse diagnostics on it would be follow-on noise. Same rule as
+    // `collect_all_diagnostics_on`'s lex branch, and the same `\n`-joined
+    // throw the parse branch below already uses -- the renderer splits on
+    // lines and prefixes each with `error: `.
+    throw(String::join(cli_located_lex_errors(entry_source, lex_err_offsets, lex_err_msgs), "\n"))
+  } else {
+    ()
+  }
   ingestion_pipeline_telemetry_add(14, 1)
   let (entry_stmts, parse_diags) = parse_program_recovering(tokens, starts, entry_source)
   if Array::length(parse_diags) > 0 {

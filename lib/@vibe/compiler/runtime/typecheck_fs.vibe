@@ -5127,6 +5127,239 @@ fn string_token_end(source: String, start: Int, fallback: Int) -> Int {
   }
 }
 
+/// #2831 criterion 1: the range of a BINDING's literal initializer, or
+/// `(n, -1)` when this does not apply.
+///
+/// `EInt` / `EFloat` / `EBool` carry no offset slot -- `EString` and `EIdent`
+/// do -- so a mismatch on one of them anchors the enclosing binder instead.
+/// Measured on a stage2 from this checkout:
+///
+///   let a: Int = "not an int"   5:16-28   the literal, as a range
+///   let b: String = 42          5:7       the BINDER NAME, a point
+///   let c: Int = true           5:7       the binder
+///   let d: Int = 1.5            5:7       the binder
+///
+/// Widening those three constructors is an AST ABI bump across 174 files.
+/// This is the same answer without one, and by the same means `string_token_end`
+/// above already uses: the AST has no offset, this function has the SOURCE, so
+/// the honest range is derived from it. Nothing is invented -- the bytes are
+/// read back, and when they are not a literal the binder anchor stands.
+///
+/// Four conditions, each one narrowing:
+///   * no end was supplied (`m < 0`), so this cannot touch a case that already
+///     has a real range -- the string literal above keeps its own;
+///   * the message IS a binding mismatch, so a callee or argument anchor
+///     (#2885) is never moved;
+///   * `n` lands on an identifier start, i.e. a binder name;
+///   * the initializer after `=` is a bare INT / FLOAT / BOOL literal. Anything
+///     else -- a name, a call, a string, a leading `-` -- returns no answer.
+fn binding_literal_range(source: String, stripped: String, n: Int) -> (Int, Int) {
+  let slen = String::length(source)
+  if n < 0 || n >= slen {
+    (n, 0 - 1)
+  } else if !String::starts_with(stripped, "binding type mismatch") {
+    (n, 0 - 1)
+  } else if !lit_is_ident_start(String::byte_at(source, n)) {
+    (n, 0 - 1)
+  } else {
+    let eq = lit_scan_to_eq(source, n, slen)
+    if eq < 0 {
+      (n, 0 - 1)
+    } else {
+      let start = lit_skip_ws(source, eq + 1, slen)
+      let end = lit_token_end(source, start, slen)
+      if end > start {
+        (start, end)
+      } else {
+        (n, 0 - 1)
+      }
+    }
+  }
+}
+
+fn lit_is_ident_start(c: Int) -> Bool {
+  (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || c == 95
+}
+
+fn lit_is_digit(c: Int) -> Bool {
+  c >= 48 && c <= 57
+}
+
+fn lit_is_ident_char(c: Int) -> Bool {
+  lit_is_ident_start(c) || lit_is_digit(c)
+}
+
+fn lit_skip_ws(source: String, from: Int, slen: Int) -> Int {
+  let mut i = from
+  while i < slen && (String::byte_at(source, i) == 32 || String::byte_at(source, i) == 9 || String::byte_at(source, i) == 10 || String::byte_at(source, i) == 13) {
+    i = i + 1
+  }
+  i
+}
+
+/// The binding's `=`, or -1. A comparison (`==` `!=` `<=` `>=`) is not it, and
+/// neither is anything after the statement ends -- `;` or `}` stop the scan so
+/// a binder with NO initializer on this line cannot reach a later statement's.
+fn lit_scan_to_eq(source: String, from: Int, slen: Int) -> Int {
+  let mut i = from
+  let mut found = 0 - 1
+  while found < 0 && i < slen {
+    let c = String::byte_at(source, i)
+    if c == 59 || c == 125 {
+      i = slen
+    } else if c == 61 {
+      let prev = if i > from {
+        String::byte_at(source, i - 1)
+      } else {
+        0
+      }
+      let next = if i + 1 < slen {
+        String::byte_at(source, i + 1)
+      } else {
+        0
+      }
+      if next == 61 || prev == 61 || prev == 33 || prev == 60 || prev == 62 {
+        i = i + 1
+      } else {
+        found = i
+      }
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// The end of a bare INT / FLOAT / BOOL literal starting at `from`, or `from`
+/// when what is there is something else. A leading `-` is deliberately NOT
+/// accepted: that is a unary operator over a literal, a different node, and
+/// guessing at its extent is how an invented range gets in.
+fn lit_token_end(source: String, from: Int, slen: Int) -> Int {
+  if from >= slen {
+    from
+  } else {
+    let c = String::byte_at(source, from)
+    if lit_is_digit(c) {
+      let mut i = from
+      while i < slen && (lit_is_digit(String::byte_at(source, i)) || lit_is_ident_char(String::byte_at(source, i))) {
+        i = i + 1
+      }
+      // A fractional part, and an exponent, each only when a digit follows.
+      let mut j = i
+      if j < slen && String::byte_at(source, j) == 46 && j + 1 < slen && lit_is_digit(String::byte_at(source, j + 1)) {
+        j = j + 1
+        while j < slen && lit_is_ident_char(String::byte_at(source, j)) {
+          j = j + 1
+        }
+      } else {
+        ()
+      }
+      j
+    } else if lit_word_at(source, from, slen, "true") {
+      from + 4
+    } else if lit_word_at(source, from, slen, "false") {
+      from + 5
+    } else {
+      from
+    }
+  }
+}
+
+/// `word` at `from`, not followed by another identifier character -- so
+/// `truely` is not `true`.
+fn lit_word_at(source: String, from: Int, slen: Int, word: String) -> Bool {
+  let wlen = String::length(word)
+  if from + wlen > slen {
+    false
+  } else if String::substring(source, from, from + wlen) != word {
+    false
+  } else if from + wlen == slen {
+    true
+  } else {
+    !lit_is_ident_char(String::byte_at(source, from + wlen))
+  }
+}
+
+/// #2831: locate and path-prefix each diagnostic in a `\n`-joined message.
+///
+/// One entry per line, in order, blank lines dropped. A single-diagnostic
+/// message goes through unchanged, so this is the same answer it always gave
+/// for the one-error case.
+fn locate_each_line(path: String, source: String, msg: String) -> Array[String] with Exception {
+  let parts = split_diagnostics(msg)
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(parts) {
+    let part = Array::get(parts, i)
+    let located = locate_type_error(source, part)
+    match type_diagnostic_display(path, source, located) {
+      (disp_path, disp_msg) => Array::push(out, String::concat(String::concat(disp_path, ": "), disp_msg))
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// #2831: one located diagnostic per line of a `\n`-joined message, for the
+/// single-file lane (which carries no path prefix of its own).
+fn locate_type_error_lines(source: String, msg: String) -> Array[String] {
+  let parts = split_diagnostics(msg)
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(parts) {
+    Array::push(out, locate_type_error(source, Array::get(parts, i)))
+    i = i + 1
+  }
+  out
+}
+
+/// #2831: a `\n`-joined report split into ONE STRING PER DIAGNOSTIC.
+///
+/// Not per line. A diagnostic may carry continuation lines -- `hint: ...`, and
+/// anything indented -- and `format_check_report` has kept them attached since
+/// #1888 so that `grep -c '^error: '` is an exact count. Splitting on every
+/// newline instead turned the one-error program
+///
+///   fn f() -> Unit { println("x") }
+///
+/// into TWO reported diagnostics, the second being its own hint. Measured; it
+/// is what the 1315-file corpus caught and the fixtures did not.
+///
+/// The continuation rule is a verbatim twin of `is_check_report_continuation`
+/// in user_dispatch.vibe. It is duplicated rather than shared because the
+/// framing and the locating live on opposite sides of the compiler, and a
+/// brand-new cross-file export plus its first caller in one commit is the
+/// shape the merge/flatten tool drops.
+fn split_diagnostics(msg: String) -> Array[String] {
+  let lines = String::split(msg, "\n")
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(lines) {
+    let line = Array::get(lines, i)
+    if String::length(line) == 0 {
+      ()
+    } else if diag_line_is_continuation(line) && Array::length(out) > 0 {
+      let last = Array::length(out) - 1
+      Array::set(out, last, String::concat(Array::get(out, last), String::concat("\n", line)))
+    } else {
+      Array::push(out, line)
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn diag_line_is_continuation(line: String) -> Bool {
+  if String::starts_with(line, "hint: ") {
+    true
+  } else if String::length(line) == 0 {
+    false
+  } else {
+    let c = String::byte_at(line, 0)
+    c == 32 || c == 9
+  }
+}
+
 export fn locate_type_error(source: String, msg: String) -> String {
   let marker = " [@off="
   let mi = String::index_of(msg, marker)
@@ -5168,6 +5401,15 @@ export fn locate_type_error(source: String, msg: String) -> String {
       // AST carries no token end and the checker has no source text; this
       // function has both, so the honest end is derived here.
       let m = string_token_end(source, n, m)
+      // #2831: a literal with no offset slot anchors its BINDER; move to the
+      // literal when the source says that is what the initializer is.
+      let (n, m) = if m < 0 {
+        match binding_literal_range(source, stripped, n) {
+          (ln, lm) => (ln, lm)
+        }
+      } else {
+        (n, m)
+      }
       if n >= 0 && n < slen {
         if m > n && m <= slen {
           String::concat(offset_line_col_range_prefix(source, n, m), stripped)
@@ -5430,11 +5672,12 @@ fn check_module_impl(job: ModuleJob, observe_typing_artifact: Bool, program_tran
       }
       Checked(job.path, fingerprint, checked_env, interface_identity, checked_env_identity, persistent_type_env_transport_identity, module_typing_artifact)
     } with { Exception::Throw(msg) => {
-      let located = locate_type_error(job.source, msg)
-      let (disp_path, disp_msg) = type_diagnostic_display(job.path, job.source, located)
-      Diagnosed(job.path, [
-        String::concat(String::concat(disp_path, ": "), disp_msg)
-      ])
+      // #2831 criterion 4: the checker now throws EVERY diagnostic it
+      // collected, `\n`-joined. Locate and path-prefix each one -- the
+      // markers are per-diagnostic, so running this over the joined string
+      // would stamp the FIRST `[@off=]` it found onto the whole report and
+      // leave the rest unlocated (measured).
+      Diagnosed(job.path, locate_each_line(job.path, job.source, msg))
     } }
   }
 }
@@ -5479,8 +5722,15 @@ fn commit_module_outcome(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep
     // driver still fails fast on the first one so the observable behaviour
     // is byte-identical to the pre-Phase-1 compiler. Collecting them into
     // a canonical set is Phase 2's job.
+    // #2831 criterion 4: throw ALL of them, `\n`-joined. The comment that
+    // stood here said the driver "fails fast on the first one so the
+    // observable behaviour is byte-identical to the pre-Phase-1 compiler" --
+    // which is exactly the behaviour this criterion asks to change. Each entry
+    // is already located and path-prefixed on its own by `locate_each_line`,
+    // and `format_check_report` splits on lines and prefixes each with
+    // `error: `, so joining them is the whole change on this side.
     Diagnosed(_, diags) => if Array::length(diags) > 0 {
-      throw(Array::get(diags, 0))
+      throw(String::join(diags, "\n"))
     } else {
       throw(String::concat(job.path, ": type error"))
     },
@@ -7602,7 +7852,7 @@ fn contract_parse_diagnostic(source: String, tokens: Array[Token], starts: Array
     // Bare rather than wrong: `locate_type_error` will render this at the
     // synthetic 0:0, which is what an unlocatable diagnostic already does
     // everywhere else in this lane.
-    [locate_type_error(source, msg)]
+    locate_type_error_lines(source, msg)
   }
 }
 
@@ -7636,7 +7886,7 @@ fn contract_classify_diagnostic(source: String, starts: Array[Int], stmts: Array
   } else {
     ()
   }
-  [locate_type_error(source, msg)]
+  locate_type_error_lines(source, msg)
 }
 
 /// #2317: anchor a duplicate declaration on the REPEAT, not on the first one.
@@ -7672,7 +7922,7 @@ fn contract_duplicate_diagnostic(source: String, starts: Array[Int], decls: Arra
   } else {
     ()
   }
-  [locate_type_error(source, msg)]
+  locate_type_error_lines(source, msg)
 }
 
 fn collect_all_diagnostics_on(input_path: String, source: String, pkg_version: String) -> Array[String] with Exception {
@@ -7782,7 +8032,7 @@ fn collect_all_diagnostics_on(input_path: String, source: String, pkg_version: S
         // adjacent validation here too so `compile`'s located inline-wasm
         // errors aren't invisible to diagnostics.
         match check_inline_wasm_fns(stmts) {
-          Some(msg) => [locate_type_error(source, msg)],
+          Some(msg) => locate_type_error_lines(source, msg),
           None => {
             // #1129 + companion "unbound non-Unit return value" request:
             // both are warning-level (never affect exit status -- `vibe
@@ -7819,7 +8069,7 @@ fn collect_all_diagnostics_on(input_path: String, source: String, pkg_version: S
             extra
           }
         }
-      } with { Exception::Throw(msg) => [locate_type_error(source, msg)] }
+      } with { Exception::Throw(msg) => locate_type_error_lines(source, msg) }
     }
   }
 }

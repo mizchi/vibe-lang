@@ -4196,6 +4196,37 @@ fn marker_cmp_bound_is_unsound(env: TypeEnv, trait_bound: String, resolved: Type
 /// error per unsatisfied bound (matches fixtures/err_type_trait_*bound* messages).
 /// Import projection supplies the selected trait authority and implementations,
 /// so this is enforced identically for standalone and FS/import checking.
+/// #2831: the collected diagnostics, in order, without exact repeats.
+///
+/// Several collectors run over the same statements and can reach the same
+/// conclusion; one duplicated line in a report is a reader wondering which of
+/// the two they are meant to fix. Order is preserved -- first occurrence wins
+/// -- so the message that used to be the only one reported is still line 1.
+fn dedupe_error_lines(msgs: Array[String]) -> Array[String] {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(msgs) {
+    let msg = Array::get(msgs, i)
+    let mut seen = false
+    let mut j = 0
+    while !seen && j < Array::length(out) {
+      if Array::get(out, j) == msg {
+        seen = true
+      } else {
+        ()
+      }
+      j = j + 1
+    }
+    if seen {
+      ()
+    } else {
+      Array::push(out, msg)
+    }
+    i = i + 1
+  }
+  out
+}
+
 fn push_error_strings(msgs: Array[String], errors: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(msgs) {
@@ -6671,7 +6702,16 @@ fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: Option[
   // qualifiers drained above can finally be checked against it.
   check_qualified_pattern_refs(qualified_pattern_refs, empty_defs, frozen_errors)
   if Array::length(frozen_errors) > 0 {
-    throw(Array::get(frozen_errors, 0))
+    // #2831 criterion 4: report EVERY diagnostic this check collected, not
+    // just the first. They are all computed by the time we get here, and
+    // measured on a three-error file they are real, distinct and none a
+    // cascade of another -- so throwing `frozen_errors[0]` made `vibe check`
+    // answer a strictly worse version of a question it had already answered:
+    // three broken bindings took three edit-and-rerun cycles instead of one.
+    // The parse lane has joined its diagnostics with `\n` since #1567 for
+    // exactly this reason, and every locate/prefix site downstream maps over
+    // the lines.
+    throw(String::join(dedupe_error_lines(frozen_errors), "\n"))
   }
   // #1947: `__try_none` is a checker-only origin marker. Codegen resolves
   // constructors by name and would ICE on it (`reached code generation

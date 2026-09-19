@@ -488,3 +488,53 @@ test "grep: a capture's text is a PRINTED form, not a source slice" {
   assert(String::contains(out, "\"text\":\"(a + b)\""))
   assert(!String::contains(out, "\"text\":\"a  +  b\""))
 }
+
+// #2894: a constructor in PATTERN position used to be unreachable.
+//
+// A query is compiled by the real parser, which only ever hands back an
+// `Expr`, and the walk visited each arm's BODY and threw its pattern away
+// (`let (_, v) = ...`). So `EInt($(p:pat))` found no call and the answer was
+// EMPTY -- indistinguishable from "this constructor is never matched on",
+// which is the shape AGENTS.md's CLI policy calls a diagnostic hole rather
+// than a caller's mistake. Measured before the fix against a stage2 from
+// main: `EInt($(p:pat))`, `EInt($(p:exp))` and
+// `match $(s:exp) { EInt($(p:pat)) => $(b:exp), $(r:arms) }` all answered
+// nothing, and `EInt($(p:pat)) => $(b:exp)` failed to parse outright.
+//
+// The `pat` hole is the OPT-IN. It is the one kind that means nothing outside
+// pattern position, so writing one says "I am asking about a pattern", and
+// every query without one answers exactly as it did before -- measured,
+// `scripts/review_lint.vibex` uses no `pat` hole at all.
+
+fn pat_src() -> String {
+  "enum E {\n  EInt(Int);\n  EStr(String);\n  ENone\n}\n\nfn f(e: E) -> Int {\n  match e {\n    EInt(n) => n,\n    EStr(_) => 0,\n    ENone => -1\n  }\n}\n\nfn g() -> Int {\n  let v = EInt(7)\n  f(v)\n}\n"
+}
+
+test "grep: a pat hole reaches a constructor in PATTERN position" {
+  inspect(scan(pat_src(), "EInt($(p:pat))"), "a.vibe:9:5: EInt(n)\t$p=n\n")
+}
+
+test "grep: an exp hole still sees only the call, not the pattern" {
+  inspect(scan(pat_src(), "EInt($(p:exp))"), "a.vibe:16:11: EInt(7)\t$p=7\n")
+}
+
+test "grep: a bare pat hole enumerates every pattern, outer before inner" {
+  inspect(scan(pat_src(), "$(p:pat)"), "a.vibe:9:5: EInt(n)\t$p=EInt(n)\na.vibe:9:10: n\t$p=n\na.vibe:10:5: EStr(_)\t$p=EStr(_)\na.vibe:10:10: _\t$p=_\na.vibe:11:5: ENone\t$p=ENone\n")
+}
+
+test "grep: a query with no pat hole leaves patterns alone" {
+  // The opt-in stated as an answer: `ENone` is never CONSTRUCTED in this
+  // source, only matched on, so a query that does not ask about patterns
+  // still finds nothing.
+  inspect(scan(pat_src(), "ENone"), "")
+}
+
+test "grep: a destructuring let binds a pattern too" {
+  let src = "fn f() -> Int {\n  let (a, b) = (1, 2)\n  a + b\n}\n"
+  inspect(scan(src, "($(x:pat), $(y:pat))"), "a.vibe:2:7: (a, b)\t$x=a\t$y=b\n")
+}
+
+test "grep: a handler arm's pattern is reachable" {
+  let src = "fn f() -> Int {\n  handle {\n    1\n  } with {\n    Exception::Throw(m) => 0\n  }\n}\n"
+  inspect(scan(src, "Exception::Throw($(m:pat))"), "a.vibe:5:5: Exception::Throw(m)\t$m=m\n")
+}

@@ -91,5 +91,48 @@ if ! grep -qF '"character":21' "$WORK/multibyte.fs.json" 2>/dev/null; then
   echo "  got: $(cat "$WORK/multibyte.fs.json")" >&2
 fi
 
+# A LEXER error, which is the case the two lanes used to disagree about
+# outright (#2831). `cli_support.vibe` lexed the entry file with the THROWING
+# `lex_with_offsets`, so the FS lane lost the position: its text output was
+# `unexpected character:` with no line, no column and not even a path, and its
+# JSON answered `0:0` with `"data":{"synthetic":true}` -- an INVENTED location
+# for a node the parser did see and whose offset `--single-file` printed
+# correctly. Inventing one is what the source-range contract forbids, and the
+# two lanes disagreeing is what this gate exists to catch.
+#
+# `\xe6\x97\xa5` is a 3-byte character at byte column 11 of line 2, which is
+# UTF-16 unit 10 on 0-based line 1 -- so this probe also covers the conversion
+# for a lex error, not only for a type error.
+printf 'fn f() -> Int {\n  let s = \xe6\x97\xa5\n  1\n}\n' > "$WORK/lexerr.vibe"
+probe lexerr 1
+if ! grep -qF '"character":10' "$WORK/lexerr.fs.json" 2>/dev/null; then
+  bad "lexerr: the FS lane does not carry the lexer error's position (want character 10)"
+  echo "  got: $(cat "$WORK/lexerr.fs.json")" >&2
+fi
+if grep -qF 'synthetic' "$WORK/lexerr.fs.json" 2>/dev/null; then
+  bad "lexerr: the FS lane still marks a REAL lexer position synthetic"
+  echo "  got: $(cat "$WORK/lexerr.fs.json")" >&2
+fi
+
+# THREE diagnostics in one file (#2831 criterion 4). The checker collects every
+# error and used to throw `frozen_errors[0]`, so a file with three broken
+# bindings took three edit-and-rerun cycles. Reporting the rest is only half
+# the change: the markers are per-diagnostic, so locating the JOINED string
+# stamps the first `[@off=]` onto the whole report -- measured, line 1 came
+# back carrying line 2's location. Each lane locates per line now, and this
+# probe is what keeps them emitting the same THREE objects rather than one
+# with embedded newlines.
+printf 'fn f() -> Unit {\n  let a: Int = "not an int"\n  let b: String = 42\n  let c: Int = true\n  ()\n}\n' > "$WORK/multi.vibe"
+probe multi 1
+count="$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$WORK/multi.fs.json" 2>/dev/null || echo 0)"
+if [ "$count" != "3" ]; then
+  bad "multi: the FS lane emitted $count diagnostics, want 3"
+  echo "  got: $(cat "$WORK/multi.fs.json")" >&2
+fi
+if grep -qF '\n' "$WORK/multi.fs.json" 2>/dev/null; then
+  bad "multi: a diagnostic message carries an embedded newline -- the lines were not split"
+  echo "  got: $(cat "$WORK/multi.fs.json")" >&2
+fi
+
 [ "$fails" -eq 0 ] || exit 1
-echo "[check-json-parity] ok (3 probes: both lanes agree on diagnostics, exit code, and UTF-16 offsets)"
+echo "[check-json-parity] ok (5 probes: both lanes agree on diagnostics, exit code, and UTF-16 offsets)"

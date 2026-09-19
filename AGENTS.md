@@ -583,10 +583,15 @@ defects rather than one:
 
 1. **Literals other than `String` carry no offset slot** (`EInt(Int)` /
    `EFloat(Double)` / `EBool(Bool)` against `EString(String, Int)` and
-   `EIdent(String, Int)` in `lib/@vibe/ast/index.vpkg`), so the binder anchors
-   them and there is no end. Fixing this means widening those constructors,
-   which is an AST ABI bump (`AST_BINARY_VERSION`, and every snapshot that
-   pins a wire).
+   `EIdent(String, Int)` in `lib/@vibe/ast/index.vpkg`). The slot is still
+   missing -- widening those constructors is an AST ABI bump across 174 files
+   -- but **the diagnostic no longer needs it** (#2831): `locate_type_error`
+   reads the range back from the SOURCE, the way `string_token_end` already
+   recovers a string token's end, so `let v: Int = true` reports `2:16-20`
+   slicing `true` instead of `2:7` at the binder. It fires only when no end was
+   supplied, the message is a binding mismatch, the anchor is an identifier,
+   and what follows `=` is a bare literal; anything else keeps the binder
+   anchor rather than guessing.
 2. **The ARGUMENT path anchors the callee** even when the argument IS a string
    literal that already has an offset -- `takes("nope")` reports `takes`, not
    `"nope"`. That is not a missing slot; it is a call site declining to read
@@ -596,9 +601,22 @@ The anchor machinery itself (`off_marker` / `railway_expr_off`) works;
 `check_assignable_set_end` supplies an end and `string_token_end` corrects it
 to the lexer's span.
 
-**A separate hole found by the same measurement**: lexer errors still carry no
-location at all -- `unexpected character: 日` comes back with no line, no
-column, and not even a path. That is not a type error, so it is outside #2831.
+**A separate hole found by the same measurement, now CLOSED**: lexer errors
+came back with no line, no column and not even a path -- `unexpected
+character: 日`. This paragraph called it "outside #2831" on the grounds that a
+lex error is not a type error. Measurement showed it was inside after all, and
+for a sharper reason than the missing text: the position was never missing.
+`check_linked_file_source_groups` lexed the entry file with the THROWING
+`lex_with_offsets`, beside a comment explaining that the PARSE below it is
+recovering precisely so errors get an exact `line:col`, and threw the offset
+away -- while `vibe check --single-file --json` printed it correctly for the
+same file and the FS lane's own `--json` answered `0:0` with
+`"data":{"synthetic":true}`. An INVENTED location for a real node is what
+criterion 1 forbids; the two `--json` lanes disagreeing is what criterion 2
+forbids. Both lanes now answer `line 2:11: unexpected character: 日` and its
+LSP conversion byte-identically, and
+`scripts/check_check_json_lane_parity.sh`'s fourth probe fails on a stage2
+from before the fix.
 
 > **解決済み: 「どちらの動詞を使うか」問題 (#1567)。** かつて `vibe check` と
 > `vibe diagnostics` が同じ質問に別の答え方をしていた (import 解決の有無・
@@ -708,10 +726,20 @@ vibe deps file.vibe
 vibe deps --direct file.vibe
 
 # AST パターン検索 (#1572)。上の4つが「位置 → 意味」なのに対しこれは逆向きの
-# 「構造 → 位置」。メタ変数は `$(name:kind)` (kind: exp/id/const/arg/args/pat/type)。
+# 「構造 → 位置」。メタ変数は `$(name:kind)`
+# (kind: exp/id/const/arg/args/pat/type/arms — この 8 つだけで、単数形 `arm` は無い)。
 # 出力は 1件1行 `path:line:col: <マッチ本文>` + tab 区切りの `$var=<capture>`。
 # 空出力 = マッチなし (--json では `[]`)
 vibe grep --pattern 'Iterator::map($(a:args))' lib
+# **パターン位置も検索できる** (#2894)。クエリは実パーサが `Expr` として読むので
+# コンストラクタは「式」としてしか探せず、`match` の腕に書かれた `EInt(n)` は
+# 到達不能だった — しかも答えは空出力で、「その構文は表現できない」と
+# 「そのコンストラクタは一度も match されていない」が見分けられなかった。
+# **`$(x:pat)` ホールが opt-in**: `pat` はパターン位置以外で意味を持たない
+# 唯一の kind なので、それを書くこと自体が「パターンについて訊いている」
+# という宣言になる。`pat` ホールを含まないクエリの答えは従来どおり変わらない。
+vibe grep --pattern 'EInt($(p:pat))' lib      # match の腕・handler の腕・分解 let
+vibe grep --pattern 'EInt($(p:exp))' lib      # 呼び出し式だけ (従来どおり)
 # **文法だけで止まらない**のが moongrep / ast-grep との差: filter は checker の
 # 答え (推論型・effect row・解決済み名・型エラー) で書く。これらを付けると
 # `vibe check` と同じ import 解決レーンに乗る (typed tier)

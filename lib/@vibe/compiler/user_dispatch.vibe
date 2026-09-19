@@ -1020,8 +1020,28 @@ fn user_check_linked_json(src: String) -> Int with Exception + Fs + Env + Stdout
       let empty: Array[String] = []
       empty
     } with { Exception::Throw(message) => {
+      // #2831 criterion 4: the raised text is now every diagnostic the check
+      // collected, `\n`-joined and each one located and path-prefixed on its
+      // own. One ARRAY ENTRY per line, or the JSON lane would emit a single
+      // Diagnostic whose `message` carries embedded newlines -- which is not
+      // a thing an LSP client can place.
+      // Per DIAGNOSTIC, not per line: `is_check_report_continuation` above
+      // decides which lines belong to the one before them.
+      let lines = String::split(message, "\n")
       let out: Array[String] = []
-      Array::push(out, message)
+      let mut li = 0
+      while li < Array::length(lines) {
+        let line = Array::get(lines, li)
+        if String::length(line) == 0 {
+          ()
+        } else if is_check_report_continuation(line) && Array::length(out) > 0 {
+          let last = Array::length(out) - 1
+          Array::set(out, last, String::concat(Array::get(out, last), String::concat("\n", line)))
+        } else {
+          Array::push(out, line)
+        }
+        li = li + 1
+      }
       out
     } }
     // Told WHICH file `text` is: this lane reports a DEPENDENCY's error as

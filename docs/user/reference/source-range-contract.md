@@ -151,10 +151,88 @@ the string token, including when a multibyte comment precedes it. `vibe check
 --json` on the FS lane and on `--single-file` emit the same LSP conversion of
 that range; `data` is `null` because the node is real source.
 
-`EInt` / `EBool` / `EFloat` still have no offset slot. Those mismatches keep
-the binder-name fallback (`[@fn=NAME]`) rather than inventing `0:0`. A node
-the parser never constructed still reports null bounds and `synthetic: true`.
-The value's own offset wins wherever it exists — `let a: Int = f()` reports at
-`f()`, because that is where the edit goes. Pinned by
+## How MANY diagnostics, and which carry a position
+
+Measured 2026-09-19 against a stage2 built from this checkout, on three files
+that each contain three errors of one kind. This is the `#2831` criterion-4
+limit, recorded rather than implied:
+
+| input | `vibe check` | `--single-file` | either `--json` |
+| --- | --- | --- | --- |
+| three type errors | **all 3**, each with its own range | all 3 | 3-element array |
+| three parse errors | **all 3**, each `line:col` | all 3 | 3-element array |
+| one lexer error | 1, with `line:col` | same | 1 element, with a range |
+
+Exit is 1 in every row.
+
+**Every collected diagnostic is reported** — it was one until #2831.
+`check_program` accumulates them into `frozen_errors` and used to end with
+`throw(Array::get(frozen_errors, 0))`; the rest were computed and discarded, so
+a file with three broken bindings took three edit-and-rerun cycles. Measured
+before the change, the three were real, distinct and none a cascade of another,
+which is what made reporting them right rather than noisy.
+
+The exception channel still carries one string, so they cross `\n`-joined —
+the shape the parse lane has used since #1567 — and **every site downstream
+maps over the lines**. That is the part that is not free: the `[@off=]` markers
+are per diagnostic, so locating the joined string stamps the FIRST one onto the
+whole report. Measured mid-change, line 1 came back carrying line 2's location
+and lines 2–3 carried none. `locate_each_line` (path-prefixed, FS lane),
+`locate_type_error_lines` (single-file), the driver's `Diagnosed` join and the
+JSON lane's split are the four places that make it per diagnostic instead.
+
+The fixture corpus needed no change: `scripts/check_typecheck_fixtures.sh` reads
+`head -1` of each `.diag` and substring-matches it, so extra lines after the
+first leave all 233 of its rows passing, and the late lane's `send_check_reject`
+rows are substring matches over the whole output.
+
+**A lexer error carries its position on every lane** — it did not until
+#2831. `check_linked_file_source_groups` lexed the entry file with the
+THROWING `lex_with_offsets`, beside a comment explaining that the PARSE below
+it is recovering so that errors get an exact `line:col`. So the FS lane lost
+the position the recovering lexer had already recorded: its text output was
+
+    error: unexpected character: 日
+
+with no line, no column and not even a path, and its JSON answered
+
+    {"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":0}},
+     "message":"unexpected character: 日","data":{"synthetic":true}}
+
+— `0:0` with `synthetic: true` for a node the parser did see, and whose offset
+`--single-file --json` printed correctly on the same file. Inventing a location
+is what the rule at the top of this document forbids, and the two `--json`
+lanes disagreeing is what criterion 2 of #2831 forbids. Both lanes now answer
+
+    error: line 2:11: unexpected character: 日
+    [{"range":{"start":{"line":1,"character":10},"end":{"line":1,"character":11}},
+      …,"data":null}]
+
+byte-identically. `lex_with_offsets_recovering` (#946) is what computes it, and
+`scripts/check_check_json_lane_parity.sh`'s fourth probe is what keeps the two
+lanes agreeing — it fails on a stage2 from before the fix with exactly the
+three assertions above.
+
+`EInt` / `EBool` / `EFloat` still have no offset SLOT — widening those three
+constructors is an AST ABI bump across 174 files — but the diagnostic no longer
+needs one. They anchored the enclosing binder and reported a point:
+
+| initializer | before | now |
+| --- | --- | --- |
+| `let v: String = 42` | `2:7` (the binder `v`) | `2:19-21`, slicing `42` |
+| `let v: Int = true` | `2:7` | `2:16-20`, slicing `true` |
+| `let v: Int = 1.5` | `2:7` | `2:16-19`, slicing `1.5` |
+
+`locate_type_error` derives the range from the SOURCE, by the same means
+`string_token_end` above already recovers a string token's end: the AST has no
+offset, this function has the text, so the honest range is read back from it.
+Four conditions narrow it, and none of them can move a range that already
+exists — no end was supplied, the message is a binding mismatch (so a callee or
+argument anchor is never touched), the anchor lands on an identifier, and what
+follows `=` is a bare `Int` / `Double` / `Bool` literal. Anything else, a
+leading `-` included, keeps the binder anchor rather than guessing at an
+extent. A node the parser never constructed still reports null bounds and
+`synthetic: true`. The value's own offset wins wherever it exists — `let a: Int
+= f()` reports at `f()`, because that is where the edit goes. Pinned by
 `lib/@vibe/compiler/tests/source_range_contract_test.vibe` and
-`scripts/check_source_range_contract.sh` checks 9 and 10.
+`scripts/check_source_range_contract.sh` checks 9, 10 and 11.
