@@ -12,6 +12,16 @@
 // pass that no longer exists, which is the opposite of an actionable
 // diagnostic) and the gate had never grepped for it.
 //
+// #2065: `opaque` takes a FUNCTION-typed parameter, and that is load-bearing.
+// `edp_callee_first_order` now admits a row-variable callee whose parameters
+// and return type mention no function type, because then no argument can
+// instantiate the row variable to the handled effect. A first-order
+// `fn opaque(n: Int) -> Int with e` -- what this fixture used to declare --
+// is exactly that shape: measured, it now MIGRATES and the program compiles
+// and answers 3, which is the right answer but leaves this fixture pinning
+// nothing. The function parameter is what keeps the callee genuinely
+// un-seeable, which is the condition this fixture exists to hold.
+//
 // The culprit here is one level down from the handled body -- `asker` is a
 // named top-level `fn`, and it is `opaque` INSIDE it that the pass cannot see
 // through -- so this fixture is also the pin for the third wording branch:
@@ -20,13 +30,13 @@ effect Ask {
   Get -> Int
 }
 
-fn opaque(n: Int) -> Int with e {
-  n
+fn opaque(n: Int, g: (Int) -> Int) -> Int with e {
+  g(n)
 }
 
 fn asker() -> Int with Ask {
   let x = perform Ask::Get
-  opaque(x)
+  opaque(x, (y) -> y)
 }
 
 let _start = () -> Int {

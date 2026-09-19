@@ -314,7 +314,7 @@ trampoline を将来 `wasi:http/service` の
    `test_async_sleep_component_gate.sh` の主張。あわせて
    self-contained wrap が満たせない host import を **fail closed** に
    した — 以前は instantiate 不能な component を書いて exit 0 していた。
-   残り: TaskGroup 併用 (mixing guard reject のまま — #2065)。**#2065 で実測**: convention の不一致は綴りだけで、boundary arm の `resume(v)` を名前に束縛すれば同じ handler が suspend-class になり guard は何も拒否しなくなる。露出するのは本当の壁のほうで、suspend-class boundary は entry body 全体の split 適格性を要求し、TaskGroup への入口は全部 `TaskGroup::run[T, rg, e](body: (TaskGroup[rg, e]) -> T with e)` = **row 変数の下の関数型パラメータ** を通る (#1727 の残り 1、健全性の線)。したがって依存は #1727 → #2065 であって park_kind ではない。
+   残り: TaskGroup 併用 (mixing guard reject のまま — #2065)。**#2065 で実測**: convention の不一致は綴りだけで、boundary arm の `resume(v)` を名前に束縛すれば同じ handler が suspend-class になり guard は何も拒否しなくなる。露出するのは本当の壁のほうで、suspend-class boundary は entry body 全体の split 適格性を要求し、TaskGroup への入口は全部 `TaskGroup::run[T, rg, e](body: (TaskGroup[rg, e]) -> T with e)` = **row 変数の下の関数型パラメータ** を通る (#1727 の残り 1、健全性の線)。当初はここから「依存は #1727 → #2065」と結論したが、**それは誤りだった** — #1727 は #2081 で着地し、この拒否は何も変わらなかった。実測で確定した順序は (1) evidence 側の row 変数適格性、(2) suspend-class 適格性、(3) boundary の綴り替え、(4) park_kind。#2065 の第1段として (1) の **first-order** 分は着地済み (`edp_callee_first_order`) だが、`TaskGroup::run` は関数型パラメータを取るので first-order ではなく、到達には call-site の引数 inertness 規則 (`scps_callee_fn_args_inert` 相当) が evidence 側にも要る。
    **Decision 3 の named host streams も landed (spec §3.18)**: D3 終端
    probe (§3.17) の実測を受けて、`host_stream_named("body") ->
    HostStream` (pure、cell `[3, handle]`。当初は `Stream[Int]` だったが

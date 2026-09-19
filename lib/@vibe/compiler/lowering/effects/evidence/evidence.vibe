@@ -315,6 +315,41 @@ fn edp_ho_texprs_have_block_row(ts: Array[TypeExpr], ename: String) -> Bool {
 /// in evidence_dict_pass), because which one a given program trips depends on
 /// whether the block is written as a row-annotated literal — an accident of
 /// spelling, not a different limitation.
+/// The ADR-0076 追記34 V1 guard's message (#2065).
+///
+/// The wording this replaced named three possible causes -- "a handle body,
+/// a needing function, or a row-carrying closure literal" -- and in the
+/// measured shapes none of them is what the reader can act on. The decisive
+/// contributors are (a) the row-VARIABLE callees this pass withheld, and
+/// (b) when no closure literal exists, a function-typed parameter carrying
+/// the effect in a signature that may never be called. Both are names, and
+/// naming them is what makes the refusal an instruction instead of a
+/// classification (CLAUDE.md's CLI policy: lead with the edit that fixes it).
+///
+/// The "type-directed evidence" phrase is load-bearing beyond prose -- gate
+/// rows grep it -- so it stays in the opening clause.
+fn edp_v1_guard_error_msg(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], ename: String, row_labels: Array[Array[String]], es_names: Array[String], es_members_list: Array[Array[String]], has_literal: Bool) -> String {
+  let mut msg = String::concat(String::concat("effect ", ename), " has closure values whose row carries it (type-directed evidence, ADR-0076 追記34), but its evidence migration is not fully eligible")
+  let withheld = edp_rowvar_withheld_callees(stmts, fn_defs, ename, row_labels)
+  if Array::length(withheld) > 0 {
+    msg = String::concat(msg, String::concat(" -- the pass cannot see through ", edp_join_and(withheld)))
+    msg = String::concat(msg, ", whose declared row has a row variable and which takes or returns a function. Give it a concrete row, or make its parameters and return type mention no function type")
+  } else {
+    msg = String::concat(msg, " -- a handle body, a needing function, or a row-carrying closure literal calls something the pass cannot see through")
+  }
+  if has_literal {
+    ()
+  } else {
+    let owner = edp_row_typed_param_owner(stmts, fn_defs, ename, es_names, es_members_list)
+    if String::length(owner) > 0 {
+      msg = String::concat(msg, String::concat(String::concat(". The closure VALUES here are the ", ename), String::concat(String::concat("-row function parameter of `", owner), "`, which counts even if it is never called -- drop it, or drop its row, if it is not needed")))
+    } else {
+      ()
+    }
+  }
+  String::concat(msg, ". Replay fallback is not available for closure-value programs")
+}
+
 fn edp_higher_order_error_msg(ename: String, ho: String) -> String {
   let tail = String::concat(ho, String::concat("` takes a block whose own row carries '", String::concat(ename, "', and invoking that block from a handler arm would require migrating the effect's evidence across the arm boundary. Higher-order effects (an operation parameterised by an EFFECTFUL block) are not supported -- ADR-0089 Part A / #1347. Make the block PURE (a row-free function parameter works, and keeps the arm's start/end pairing), or handle the effect inside the function that builds the block")))
   String::concat("effect '", String::concat(ename, String::concat("' cannot be compiled here: operation `", tail)))
@@ -2728,7 +2763,7 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
               if String::length(ho) > 0 {
                 Array::push(errs, edp_higher_order_error_msg(ename, ho))
               } else {
-                Array::push(errs, String::concat(String::concat("effect ", ename), " has closure values whose row carries it (type-directed evidence, ADR-0076 追記34), but its evidence migration is not fully eligible -- a handle body, a needing function, or a row-carrying closure literal calls something the pass cannot see through; replay fallback is not available for closure-value programs"))
+                Array::push(errs, edp_v1_guard_error_msg(stmts, fn_defs, ename, row_labels, es_names, es_members_list, Array::length(gb) > 0 || Array::length(gl) > 0))
               }
             } else {
               ()
@@ -3257,6 +3292,49 @@ fn edp_callee_first_order(stmts: Array[Stmt], name: String) -> Bool {
   found && ok
 }
 
+/// Is this callee withheld from `pure_fns` because its row mentions a
+/// VARIABLE the pass cannot rule out?
+///
+/// A row variable can be instantiated with the handled effect at the call
+/// site, and the perform then happens inside the callee where the handler
+/// cannot see it -- unless the callee is first order, which rules that
+/// instantiation out (edp_callee_first_order).
+///
+/// One predicate, two readers: edp_append_effect_irrelevant_row_fns acts on
+/// it and edp_rowvar_withheld_callees reports it to the diagnostic. A second
+/// copy of this condition would be a second thing to keep in step, and the
+/// message would start naming callees the pass did not actually withhold.
+fn edp_rowvar_callee_withheld(stmts: Array[Stmt], labels: Array[String], name: String) -> Bool {
+  edp_row_labels_have_var(labels) && !edp_callee_first_order(stmts, name)
+}
+
+/// The callees `edp_append_effect_irrelevant_row_fns` withheld for `ename`,
+/// in declaration order -- the names the V1 guard's message points the
+/// reader at (#2065).
+fn edp_rowvar_withheld_callees(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], ename: String, row_labels: Array[Array[String]]) -> Array[String] {
+  let out = empty_str_array()
+  let mut i = 0
+  while i < Array::length(fn_defs) {
+    let (_, _, _, name, _, _) = Array::get(fn_defs, i)
+    let labels = Array::get(row_labels, i)
+    if Array::length(labels) == 0 {
+      ()
+    } else if edp_str_array_contains(labels, ename) {
+      ()
+    } else if edp_rowvar_callee_withheld(stmts, labels, name) {
+      if edp_str_array_contains(out, name) {
+        ()
+      } else {
+        Array::push(out, name)
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
 fn edp_append_effect_irrelevant_row_fns(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], ename: String, pure_fns: Array[String], row_labels: Array[Array[String]]) -> Unit {
   let base_len = Array::length(pure_fns)
   let mut names: Array[String] = []
@@ -3271,10 +3349,7 @@ fn edp_append_effect_irrelevant_row_fns(stmts: Array[Stmt], fn_defs: Array[(Int,
       // Carries the effect: the needing / perform-free / self-discharging
       // machinery decides this one, and it must keep deciding it.
       ()
-    } else if edp_row_labels_have_var(labels) && !edp_callee_first_order(stmts, name) {
-      // A row VARIABLE can be instantiated with the handled effect at
-      // the call site -- unless the callee is first order, which rules
-      // that instantiation out. See edp_callee_first_order.
+    } else if edp_rowvar_callee_withheld(stmts, labels, name) {
       ()
     } else {
       // Copy the existing prefix only when a row can contribute a name.
@@ -4788,6 +4863,53 @@ fn edp_row_lit_scan_expr(e: Expr, ename: String, needing: Array[String], es_name
 }
 
 /// Any top-level fn with a row-E-typed parameter?
+/// The first top-level fn whose declared parameters carry `ename` in a
+/// function type -- the row-carrying closure VALUE the V1 guard is about
+/// when no closure literal was found (#2065).
+///
+/// `edp_any_row_typed_param` answers the same scan with a Bool, and applies
+/// NO reachability test: an entirely unused declaration satisfies it. That
+/// is what made the guard's generic wording unactionable -- the reader is
+/// told to look at "a handle body, a needing function, or a row-carrying
+/// closure literal" while the decisive contributor is a signature elsewhere
+/// in the file that nothing calls. Naming it is the whole point.
+/// `a`, `a` and `b`, `a`, `b` and `c` -- for naming culprits in a message.
+fn edp_join_and(names: Array[String]) -> String {
+  let n = Array::length(names)
+  let mut out = ""
+  let mut i = 0
+  while i < n {
+    let nm = String::concat(String::concat("`", Array::get(names, i)), "`")
+    if i == 0 {
+      out = nm
+    } else if i == n - 1 {
+      out = String::concat(String::concat(out, " and "), nm)
+    } else {
+      out = String::concat(String::concat(out, ", "), nm)
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn edp_row_typed_param_owner(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], ename: String, es_names: Array[String], es_members_list: Array[Array[String]]) -> String {
+  let mut out = ""
+  let mut i = 0
+  while i < Array::length(fn_defs) {
+    let (idx, _, _, _, _, _) = Array::get(fn_defs, i)
+    match Array::get(stmts, idx) {
+      SLet(_, _, snm, _, EFn(_, _, params, _, _, _)) => if String::length(out) == 0 && Array::length(edp_row_typed_param_names(params, ename, es_names, es_members_list)) > 0 {
+        out = snm
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
 fn edp_any_row_typed_param(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], ename: String, es_names: Array[String], es_members_list: Array[Array[String]]) -> Bool {
   let mut i = 0
   let mut found = false
