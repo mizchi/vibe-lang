@@ -524,7 +524,12 @@ echo "[compiler-gate] RC wrapper-assign double-retain guard ok (heap_used=$dr_us
 #      unrelated, binary-layout-dependent location ("moving target").
 #      This is the shape corpus only. Branch-heavy checker paths (the first
 #      cut of #1964) need the 40f2 checked-artifact smoke.
-echo "[compiler-gate] 40f/40 RC shadow-liveness regression guard (#715 shapes)"
+# 25817489 = 25377489 (the #715 shapes) + 5000 * 88, the #2837 saved-view
+# shapes added per iteration: 12 + 31 + 42 + (0+1+2). The derivation is here so
+# a future change to the fixture can CHECK the new total rather than paste
+# whatever the run printed -- a shape that silently stopped executing would
+# otherwise look like a legitimate new expectation.
+echo "[compiler-gate] 40f/40 RC shadow-liveness regression guard (#715 shapes, #2837 saved views)"
 shdir="_build/_gate_rc_shadow"
 rm -rf "$shdir"; mkdir -p "$shdir"
 VIBE_RC=shadow VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
@@ -536,12 +541,12 @@ if [ ! -s "$shdir/shadow.wasm" ]; then
   exit 1
 fi
 sh_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$shdir/shadow.wasm" 2>&1 | tail -1)"
-if [ "$sh_out" != "25377489" ]; then
-  echo "[compiler-gate] FAIL: rc_shadow_regression got '$sh_out' (want 25377489). A trap here means an RC dup/drop accounting regression touched a freed block -- see fixtures/rc_shadow_regression_test.vibe for which shapes are covered and issue #715 for the debugging methodology." >&2
+if [ "$sh_out" != "25817489" ]; then
+  echo "[compiler-gate] FAIL: rc_shadow_regression got '$sh_out' (want 25817489). A trap here means an RC dup/drop accounting regression touched a freed block -- see fixtures/rc_shadow_regression_test.vibe for which shapes are covered and issue #715 for the debugging methodology." >&2
   exit 1
 fi
 rm -rf "$shdir"
-echo "[compiler-gate] RC shadow-liveness regression guard ok (25377489)"
+echo "[compiler-gate] RC shadow-liveness regression guard ok (25817489)"
 
 # 40f0. #2837: `Array::truncate` changes the array's LENGTH, not the lifetime
 #       of an element someone already took out of it. That is the ownership

@@ -208,6 +208,81 @@ let shape10 = (tys: Array[Ty]) -> Int {
   Array::length(kept) + folded + found + use_ty(r1) + Array::length(mapped) + use_ty(m1) + Array::length(cat) + use_ty(t1)
 }
 
+// Shape 11 (#2837): a SAVED ELEMENT VIEW must survive a truncate that removes
+// it, and the refill that follows.
+//
+// `Array::truncate` changes the live length and does not release the removed
+// elements on the RC lane, so repeatedly filling and truncating arrays of
+// owned values leaks them. An experimental truncate body that DID drop the
+// removed suffix was reverted because it broke exactly this: a previously
+// saved element was freed and then overwritten by the next allocation.
+//
+// Nothing pinned that. `array_capacity_test.vibe` checks the array's own
+// contents after a truncate, which is a different property -- it never holds a
+// view taken BEFORE the truncate. So the shape the revert was protecting had
+// no regression test, and the next attempt at reclamation would have had to
+// rediscover it by hand.
+//
+// Under VIBE_RC=shadow a freed-then-read element traps on the dup-of-freed
+// rather than returning whatever the refill wrote there, so this fails loudly
+// instead of returning a plausible number.
+let shape11_saved_view = () -> {
+  let xs = [[11, 12]]
+  let saved = Array::get(xs, 0)
+  Array::truncate(xs, 0)
+  Array::push(xs, [91, 92])
+  Array::get(saved, 1)
+}
+
+// Shape 12 (#2837): the same, through an ALIAS. The issue's acceptance asks
+// for "calls through aliases and helper functions" because that is where an
+// ownership rule stops being obvious: the truncate happens to a binding the
+// saved view does not mention.
+let shape12_truncate_via_alias = (ys) -> {
+  Array::truncate(ys, 0)
+}
+
+let shape12_saved_view_aliased = () -> {
+  let xs = [[21, 22], [31, 32]]
+  let saved = Array::get(xs, 1)
+  shape12_truncate_via_alias(xs)
+  Array::push(xs, [81, 82])
+  Array::get(saved, 0)
+}
+
+// Shape 13 (#2837): NESTED -- a view of a view. The outer element is removed
+// by the truncate while an inner view into it is still held, so a reclamation
+// that walks one level deep frees something the program can still reach.
+let shape13_saved_view_nested = () -> {
+  let xs = [[[41, 42]]]
+  let outer = Array::get(xs, 0)
+  let inner = Array::get(outer, 0)
+  Array::truncate(xs, 0)
+  Array::push(xs, [[71, 72]])
+  Array::get(inner, 1)
+}
+
+// Shape 14 (#2837): repeated fill / truncate / refill, the workload the issue
+// measures for boundedness. Correctness only here -- the heap frontier is a
+// separate measurement -- but a reclamation that frees a live element shows up
+// on the very first round.
+let shape14_refill_rounds = (rounds) -> {
+  let xs = [[0, 1]]
+  Array::truncate(xs, 0)
+  let mut total = 0
+  let mut i = 0
+  while i < rounds {
+    Array::push(xs, [i, i + 1])
+    let saved = Array::get(xs, 0)
+    Array::truncate(xs, 0)
+    Array::push(xs, [i + 100, i + 101])
+    total = total + Array::get(saved, 0)
+    Array::truncate(xs, 0)
+    i = i + 1
+  }
+  total
+}
+
 let main = () -> Int {
   let names = ["a", "b", "c"]
   let effs = [[TInt], [TFn([TInt], TInt)], [TInt]]
@@ -240,6 +315,13 @@ let main = () -> Int {
     acc = acc + Array::length(borrowed)
     acc = acc + shape9_optional(x=borrowed)
     acc = acc + Array::length(borrowed)
+    // #2837 saved-view shapes. Inside the hot loop on purpose: a
+    // use-after-free that only shows up once the allocator reuses the block
+    // needs the refill to have actually happened many times.
+    acc = acc + shape11_saved_view()
+    acc = acc + shape12_saved_view_aliased()
+    acc = acc + shape13_saved_view_nested()
+    acc = acc + shape14_refill_rounds(3)
     k = k + 1
   }
   acc
