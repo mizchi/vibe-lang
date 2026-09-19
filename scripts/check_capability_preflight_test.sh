@@ -100,7 +100,7 @@ if [ -z "$post_fix" ]; then
   echo "  the compiler built from this tree; it will not guess one from disk." >&2
 else
   out="$(CAPABILITY_PREFLIGHT_STAGE2="$post_fix" bash "$ROOT_DIR/scripts/check_capability_preflight.sh" 2>&1 || true)"
-  if printf '%s\n' "$out" | grep -q '10 passed, 0 failed'; then
+  if printf '%s\n' "$out" | grep -q '11 passed, 0 failed'; then
     ok "a compiler with the connected ladder PASSES the gate"
   else
     bad "the green control did not pass: $out"

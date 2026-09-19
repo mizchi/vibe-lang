@@ -236,5 +236,29 @@ else
   bad "deny must beat allow for perform?; got: $out"
 fi
 
+# 11. LANE INDEPENDENCE. The invariant is not "the grants reach the lowering on
+#     the lane this gate happens to run on" -- it is that authority does not
+#     depend on the allocator at all. Nothing tested that, and the gap was not
+#     theoretical: rung 2 shipped wiring only `compile_release_lane`'s default
+#     arm, so `VIBE_RC=0` and `VIBE_RC=shadow` answered `NotGranted` for every
+#     optional capability whatever the run was granted.
+#
+#     It hid because of WHERE the gate runs. `tests/gates/lib.sh` pins
+#     `VIBE_RC=0` for every lane, so CI exercised the broken arm; running this
+#     script directly leaves VIBE_RC unset and takes the working one. Same gate,
+#     same compiler, opposite answers -- decided by inherited environment
+#     (#2252). So the lanes are named HERE rather than inherited.
+lane_fail=0
+for rc in 0 shadow 1; do
+  lane_out="$(VIBE_RC="$rc" opt_case --allow-fs --allow-stdout)"
+  if ! printf '%s\n' "$lane_out" | grep -q '^GRANTED:hello-from-file$'; then
+    bad "VIBE_RC=$rc must answer Granted like every other lane; got: $lane_out"
+    lane_fail=1
+  fi
+done
+if [ "$lane_fail" -eq 0 ]; then
+  ok "a granted provider answers Granted on every allocator lane (rc/mvp/shadow)"
+fi
+
 echo "capability-preflight: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
