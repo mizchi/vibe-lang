@@ -30,6 +30,30 @@ fn inert_row_program(side_row: String) -> Array[Stmt] {
   ]
 }
 
+/// The same program, but `side` takes a FUNCTION -- the one difference
+/// `edp_callee_first_order` keys on (#2065). Under a row VARIABLE that
+/// parameter can carry the handled effect into the callee, so the row stays
+/// opaque here where the first-order shape above is now admitted.
+fn ho_row_program(side_row: String) -> Array[Stmt] {
+  let ask = ECall(EIdent("ask", 0), [], 0)
+  [
+    SEffectDef(false, "Ask", [], [("Get", [], TyName("Int"))]),
+    SLet(false, false, "ask", None, EFn([], [], [], Some(TyName("Int")), Some("Ask"), ECall(EIdent("perform", 0), [
+      ECall(EIdent("Ask::Get", 0), [], 0)
+    ], 0))),
+    SLet(false, false, "side", None, EFn([], [], [
+      ("n", Some(TyName("Int"))),
+      ("g", Some(TyFn([TyName("Int")], TyName("Int"), None)))
+    ], Some(TyName("Int")), Some(side_row), ECall(EIdent("g", 0), [
+      EIdent("n", 0)
+    ], 0))),
+    SLet(false, false, "main", None, EFn([], [], [], Some(TyName("Int")), Some("Stdout"), EHandle(ECall(EIdent("side", 0), [
+      ask,
+      EFn([], [], [("y", Some(TyName("Int")))], Some(TyName("Int")), None, EIdent("y", 0))
+    ], 0), [(PCtor("Ask::Get", []), ECall(EIdent("resume", 0), [EInt(42)], 0))])))
+  ]
+}
+
 fn lowered_side_arity(side_row: String) -> Int {
   let stmts = inert_row_program(side_row)
   let errors = evidence_dict_pass(stmts, "main")
@@ -54,8 +78,20 @@ test "inert row membership does not suppress a later program's required dictiona
   ], "[1, 2, 1]")
 }
 
-test "a row variable remains opaque to the handled effect" {
-  let stmts = inert_row_program("e")
-  let errors = evidence_dict_pass(stmts, "main")
-  inspect(Array::length(errors) > 0, "true")
+/// #2065 wall 1. This test used to assert that a row variable is opaque
+/// FULL STOP, and `inert_row_program` happens to build `side` as
+/// `fn side(n: Int) -> Int with e` -- one annotated non-function parameter,
+/// i.e. exactly the first-order shape `edp_callee_first_order` now admits,
+/// because no argument can carry a row into it and so `e` can only be the
+/// empty row.
+///
+/// The pair is the point: opacity is a property of the callee's SHAPE, not
+/// of the row variable alone. Asserting only the first-order half would pass
+/// for a port that admitted everything; only the higher-order half, for one
+/// that admitted nothing.
+test "a first-order row-variable callee is admitted, a higher-order one stays opaque" {
+  inspect([
+    Array::length(evidence_dict_pass(inert_row_program("e"), "main")) == 0,
+    Array::length(evidence_dict_pass(ho_row_program("e"), "main")) > 0
+  ], content = "[true, true]")
 }
