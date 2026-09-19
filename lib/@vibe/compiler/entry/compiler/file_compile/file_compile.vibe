@@ -80,6 +80,7 @@ import @vibe/compiler/codegen/wasi {
   compile_wasi_module_impl_with_typed_offsets,
   compile_wasi_module_no_dce_impl_with_typed_offsets,
   compile_wasi_module_rc_cached_impl_with_prov,
+  compile_wasi_module_rc_cached_impl_with_prov_grants,
   compile_wasi_module_rc_cached_impl_with_split,
   compile_wasi_module_rc_cached_impl_with_typed_offsets,
   compile_wasi_module_rc_impl_with_typed_offsets,
@@ -1477,7 +1478,15 @@ export fn compile_file_fs_mode_gc(entry_path: String, entry_name: String) -> Byt
 /// through the Perceus RC codegen (compile_wasi_module_rc_impl, enable_rc) so an
 /// import-resolving / `vibe run` program actually honors VIBE_RC. Without this
 /// the FS-compile path silently used the bump allocator regardless of VIBE_RC.
+/// Pre-#2828-rung-2 arity: no launcher grants, so `perform?` resolves
+/// `NotGranted` exactly as before. Every caller but `vibe run` uses this.
 export fn compile_file_fs_mode_rc(entry_path: String, entry_name: String) -> Bytes with Exception + Fs {
+  compile_file_fs_mode_rc_grants(entry_path, entry_name, array_empty())
+}
+
+/// #2828 rung 2: ADR-0088's L1 grants, frozen by the launcher before the
+/// artifact is built, reach the optional-capability lowering through here.
+export fn compile_file_fs_mode_rc_grants(entry_path: String, entry_name: String, grants: Array[(String, String)]) -> Bytes with Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let _ = next_db
@@ -1500,11 +1509,11 @@ export fn compile_file_fs_mode_rc(entry_path: String, entry_name: String) -> Byt
   // collect: `codegen_body_cache_record` would otherwise fill one row per
   // function plus one per `vibe.linemap` site, on the lane every `vibe run`
   // and `vibe test` takes, for nobody (#2199 follow-up).
-  compile_wasi_module_rc_cached_impl_with_prov(merged_stmts, entry_name, codegen_body_cache_new(), codegen_body_cache_discard(), DbgProv::{
+  compile_wasi_module_rc_cached_impl_with_prov_grants(merged_stmts, entry_name, codegen_body_cache_new(), codegen_body_cache_discard(), DbgProv::{
     files: dbg_files,
     file_nls: dbg_file_nls,
     stmt_file_id: dbg_stmt_file_id
-  }, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
+  }, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys, grants)
 }
 
 /// #2388 step 3: like the rc lane's merge, but ALSO reports, per flat source

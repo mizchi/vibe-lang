@@ -139,5 +139,66 @@ else
   bad "--allow-nope must be refused; got: $out"
 fi
 
+# 7-10. ADR-0088 L2 (#2828 rung 2): the grants must actually REACH the
+#       optional-capability lowering, not merely travel beside it.
+#
+#       This case exists because of a measured near-miss. The grant table was
+#       threaded through all nine hops from the CLI to the lowering, every hop
+#       type-checked, the build was clean, the control program ran -- and every
+#       `perform?` still answered `NotGranted`, because
+#       `optional_perform_artifact_resolution` has TWO call sites and the
+#       non-split one still passed `array_empty()`. A single-file `vibe run`
+#       takes exactly that fallback. Nothing but RUNNING a `perform?` program
+#       distinguishes "wired" from "wired and read", which is why the property
+#       here is an ANSWER and not the presence of a call.
+OPT="$WORK/opt.vibex"
+DATA="$WORK/data.txt"
+printf 'hello-from-file\n' > "$DATA"
+cat > "$OPT" <<VIBE
+fn main() -> Unit allows Stdout + Fs::read_file? {
+  let a = perform? Fs::read_file("$DATA")
+  match a {
+    Granted(v) => println("GRANTED:" + v),
+    Errored(_) => println("ERRORED"),
+    NotGranted => println("NOTGRANTED")
+  }
+}
+VIBE
+
+opt_case() {
+  VIBE_CLI_WASM="$STAGE2" VIBE_RUNNER="$VIBERUN" \
+    bash "$ROOT_DIR/runtime/vibe" run "$@" "$OPT" 2>&1 || true
+}
+
+out="$(opt_case --allow-fs --allow-stdout)"
+if printf '%s\n' "$out" | grep -q '^GRANTED:hello-from-file$'; then
+  ok "a granted provider resolves perform? to Granted and the call runs"
+else
+  bad "--allow-fs must make perform? Fs::read_file Granted; got: $out"
+fi
+
+out="$(opt_case --deny-fs --allow-stdout)"
+if printf '%s\n' "$out" | grep -q '^NOTGRANTED$'; then
+  ok "a denied provider resolves perform? to NotGranted"
+else
+  bad "--deny-fs must make perform? NotGranted; got: $out"
+fi
+
+# An allow-list is a list here too: Stdout alone does not grant Fs.
+out="$(opt_case --allow-stdout)"
+if printf '%s\n' "$out" | grep -q '^NOTGRANTED$'; then
+  ok "an allow-list omitting the provider leaves perform? NotGranted"
+else
+  bad "--allow-stdout alone must leave perform? NotGranted; got: $out"
+fi
+
+# Deny beats allow for the optional surface too, not just the required one.
+out="$(opt_case --allow-fs --deny-fs --allow-stdout)"
+if printf '%s\n' "$out" | grep -q '^NOTGRANTED$'; then
+  ok "--deny-* beats --allow-* for perform? as well"
+else
+  bad "deny must beat allow for perform?; got: $out"
+fi
+
 echo "capability-preflight: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
