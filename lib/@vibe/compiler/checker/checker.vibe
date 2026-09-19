@@ -3244,7 +3244,12 @@ fn interp_erased_formal_in(types: Array[Type], s: Subst, env: TypeEnv) -> String
 
 // The entire body must be a direct pass-through. Such calls are expanded at
 // their use sites by trait lowering; adding a prefix or binding ends this case.
-fn interp_is_shim_body(params: Array[(String, Option[TypeExpr])], body: Expr) -> Bool {
+//
+// #2773: exported so `check_stmts`'s hoist can mark the top-level shim NAMES
+// with the same rule that grants the body its exemption. A second copy of this
+// predicate is exactly the shape that made #1978 miscompile -- two mirrors that
+// agree until they do not.
+export fn interp_is_shim_body(params: Array[(String, Option[TypeExpr])], body: Expr) -> Bool {
   if Array::length(params) != 1 {
     false
   } else {
@@ -3260,6 +3265,21 @@ fn interp_is_shim_body(params: Array[(String, Option[TypeExpr])], body: Expr) ->
       },
       _ => false
     }
+  }
+}
+
+/// #2773: the env key `check_stmts`'s hoist marks a top-level rendering shim
+/// with. Spelled by this function on both sides, so the writer and the reader
+/// cannot drift apart.
+export fn interp_shim_marker(name: String) -> String {
+  String::concat("#interp.shim.fn.", name)
+}
+
+/// Whether `name` is a top-level rendering shim in this statement list.
+fn interp_name_is_shim(env: TypeEnv, name: String) -> Bool {
+  match env_lookup(env, interp_shim_marker(name)) {
+    Some(CtBool) => true,
+    _ => false
   }
 }
 
@@ -9458,6 +9478,28 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                     }
                     c2 = nc
                     ai = ai + 1
+                  }
+                  // #2773: THE CALL SITE THE BODY EXEMPTION DEFERS TO.
+                  //
+                  // `check_interp_formal` stands down inside a top-level
+                  // rendering shim's body (the `#interp.shim.body` marker bound
+                  // in the EFn arm) on the grounds that the shim is expanded at
+                  // each of its call sites, where the argument's type is still
+                  // available. That was half a contract: nothing re-asked the
+                  // question HERE, so the deferral deferred to nobody, and what
+                  // actually caught `shim(if c { a } else { a })` was
+                  // normalize's syntactic walk -- #2773's subject, and a pass
+                  // with no types. Measured with that walk stubbed, the shape
+                  // compiled and printed `v=232` / `v=252`: two allocation
+                  // addresses for two different values.
+                  //
+                  // The name is marked by `check_stmts`'s hoist rather than
+                  // when the declaration is reached, so a shim declared BELOW
+                  // its call site is still recognised.
+                  if Array::length(arg_tys) == 1 && interp_name_is_shim(env, name) {
+                    check_interp_formal(Array::get(arg_tys, 0), s2, env, errors, call_off)
+                  } else {
+                    ()
                   }
                   let applied_callee_ty = match ct {
                     CtFn(_, _, _) => ct,

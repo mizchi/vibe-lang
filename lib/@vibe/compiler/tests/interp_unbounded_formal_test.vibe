@@ -117,6 +117,35 @@ test "#2840: wrapping a shim argument does not hide its erased type" {
   assert(String::contains(lowering_error(source), "pass an explicit renderer"))
 }
 
+// #2773: the CHECKER's half of the case above.
+//
+// A shim's body is exempt from check_interp_formal because the shim is
+// expanded at each call site, where the argument type survives. Nothing
+// re-asked the question at the call site, so only normalize's syntactic walk
+// caught this -- and that walk is what #2773 is about deleting. Measured with
+// it stubbed: this program compiled and printed `v=232` / `v=252`, two
+// allocation addresses for two different values.
+//
+// Asserted through `check_error` and NOT `lowering_error`, because the two
+// channels emit the SAME message text; only the channel distinguishes them.
+test "#2773: a shim call's erased argument is caught by the CHECKER" {
+  let source = "fn shim[T](a: T) -> String { __to_string(a) }\nfn render[T](a: T, c: Bool) -> String { String::concat(\"v=\", shim(if c { a } else { a })) }"
+  assert(String::contains(check_error(source), "pass an explicit renderer"))
+}
+
+// The control the check above needs: a shim call whose argument is CONCRETE
+// still compiles. The call-site rule is one condition away from rejecting
+// every use of a shim, which is the shape the exemption exists to permit.
+test "#2773: a shim call at a concrete type is untouched" {
+  assert(check_error("fn shim[T](a: T) -> String { __to_string(a) }\nfn render() -> String { shim(5) }") == "")
+}
+
+// ... and so does one whose argument is a formal carrying a real renderer.
+test "#2773: a shim call on a formal with a renderer bound is untouched" {
+  let source = "trait Show { to_string(Self) -> String }\nfn shim[T](a: T) -> String { __to_string(a) }\nfn render[T: Show](a: T) -> String { shim(a) }"
+  assert(check_error(source) == "")
+}
+
 test "#2860: unbounded container elements require renderers during check" {
   assert_erased("fn render[T](xs: Array[T]) -> String { let text = __to_string(xs); text }")
   assert_erased("fn render[T](xs: Option[T]) -> String { let text = __to_string(xs); text }")

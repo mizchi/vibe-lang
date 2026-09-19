@@ -95,6 +95,8 @@ import ./checker.vibe {
   constructor_dependency_row,
   fn_return_env_name,
   formal_application_error,
+  interp_is_shim_body,
+  interp_shim_marker,
   is_array_builder_ty,
   is_region_tagged_ty,
   let_generalize,
@@ -3007,6 +3009,21 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         let (ht, hnc) = hoisted_value_type(hann, hval, defs, cur_c)
         cur_c = hnc
         cur_env = env_bind(cur_env, hname, ht)
+        // #2773: mark a top-level rendering shim's NAME, by the same predicate
+        // that grants its body the `check_interp_formal` exemption. The body
+        // stands down because the shim is expanded at each call site, where the
+        // argument type survives; the call site (checker.vibe's named-call arm)
+        // is what re-asks the question. Marked in the HOIST rather than when
+        // the declaration is reached, because a shim may be declared below the
+        // call that uses it and the exemption must not depend on which.
+        match hval {
+          EFn(_, _, hparams, _, _, hbody) => if interp_is_shim_body(hparams, hbody) {
+            cur_env = env_bind(cur_env, interp_shim_marker(hname), CtBool)
+          } else {
+            ()
+          },
+          _ => ()
+        }
       },
       _ => ()
     }
