@@ -78,6 +78,7 @@ import @vibe/compiler/codegen/common_base {
 
 import @vibe/compiler/codegen/wasi {
   compile_wasi_module_impl_with_typed_offsets,
+  compile_wasi_module_impl_with_typed_offsets_grants,
   compile_wasi_module_no_dce_impl_with_typed_offsets,
   compile_wasi_module_rc_cached_impl_with_prov,
   compile_wasi_module_rc_cached_impl_with_prov_grants,
@@ -85,6 +86,7 @@ import @vibe/compiler/codegen/wasi {
   compile_wasi_module_rc_cached_impl_with_typed_offsets,
   compile_wasi_module_rc_impl_with_typed_offsets,
   compile_wasi_module_rc_shadow_impl_with_typed_offsets,
+  compile_wasi_module_rc_shadow_impl_with_typed_offsets_grants,
   compile_wasi_module_with_sources_break_impl_with_typed_offsets,
   compile_wasi_module_with_sources_coverage_impl_with_typed_offsets,
   compile_wasi_module_with_sources_trace_impl_with_typed_offsets,
@@ -1395,10 +1397,16 @@ export fn check_file_fs_mode(entry_path: String) -> Int with Exception + Fs {
 /// lifted they would have compiled `dce-root` as `no-dce` and emitted an
 /// UNPRUNED artifact with no error at all. A mode is a three-way fact and now
 /// has one spelling.
+/// Pre-#2828-rung-2 arity: no launcher grants (fail-closed).
 fn compile_merged_for_mode(mode: String, merged_stmts: Array[Stmt], entry_name: String, float_offsets: Array[Int], int_offsets: Array[Int], bool_offsets: Array[Int], eq_offsets: Array[Int], eq_keys: Array[String]) -> Bytes with Exception {
+  compile_merged_for_mode_grants(mode, merged_stmts, entry_name, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys, array_empty())
+}
+
+/// #2828 rung 2: the grant-carrying arity.
+fn compile_merged_for_mode_grants(mode: String, merged_stmts: Array[Stmt], entry_name: String, float_offsets: Array[Int], int_offsets: Array[Int], bool_offsets: Array[Int], eq_offsets: Array[Int], eq_keys: Array[String], grants: Array[(String, String)]) -> Bytes with Exception {
   if mode == "mvp" {
     let pruned_stmts = dce_stmts(merged_stmts, [entry_name])
-    compile_wasi_module_impl_with_typed_offsets(pruned_stmts, entry_name, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
+    compile_wasi_module_impl_with_typed_offsets_grants(pruned_stmts, entry_name, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys, grants)
   } else if mode == "no-dce" {
     compile_wasi_module_no_dce_impl_with_typed_offsets(merged_stmts, entry_name, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
   } else if mode == "dce-root" {
@@ -1452,12 +1460,18 @@ fn persistent_artifact_kind_for_mode(mode: String) -> String with Exception {
   }
 }
 
+/// Pre-#2828-rung-2 arity: no launcher grants (fail-closed).
 export fn compile_file_fs_mode(entry_path: String, entry_name: String, mode: String) -> Bytes with Exception + Fs {
+  compile_file_fs_mode_grants(entry_path, entry_name, mode, array_empty())
+}
+
+/// #2828 rung 2: the grant-carrying arity.
+export fn compile_file_fs_mode_grants(entry_path: String, entry_name: String, mode: String, grants: Array[(String, String)]) -> Bytes with Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let _ = next_db
   let (merged_stmts, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys) = merged_stmts_and_offsets(source_groups)
-  compile_merged_for_mode(mode, merged_stmts, entry_name, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
+  compile_merged_for_mode_grants(mode, merged_stmts, entry_name, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys, grants)
 }
 
 /// Import-resolving wasm-gc compilation. Module discovery, projected import
@@ -2445,12 +2459,18 @@ export fn compile_file_fs_mode_bump_heap_marked(entry_path: String, entry_name: 
 /// compile_file_fs_mode_rc but with shadow-liveness double-free traps, so an
 /// import-resolving test build's "moving target" free-list corruption becomes a
 /// deterministic trap at the first bad dup/drop.
+/// Pre-#2828-rung-2 arity: no launcher grants (fail-closed).
 export fn compile_file_fs_mode_rc_shadow(entry_path: String, entry_name: String) -> Bytes with Exception + Fs {
+  compile_file_fs_mode_rc_shadow_grants(entry_path, entry_name, array_empty())
+}
+
+/// #2828 rung 2: the grant-carrying arity.
+export fn compile_file_fs_mode_rc_shadow_grants(entry_path: String, entry_name: String, grants: Array[(String, String)]) -> Bytes with Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let _ = next_db
   let (merged_stmts, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys) = merged_stmts_and_offsets(source_groups)
-  compile_wasi_module_rc_shadow_impl_with_typed_offsets(merged_stmts, entry_name, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
+  compile_wasi_module_rc_shadow_impl_with_typed_offsets_grants(merged_stmts, entry_name, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys, grants)
 }
 
 /// #634 (ADR-0026): same as compile_file_fs_mode, but ALSO writes the pure-test
