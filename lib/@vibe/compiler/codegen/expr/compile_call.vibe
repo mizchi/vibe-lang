@@ -426,14 +426,24 @@ fn cc_ft_has(ft: FuncTable, name: String) -> Bool {
 /// import, and `sleep(400)` then took ~795ms instead of ~400ms -- the exact
 /// doubling #930 recorded when the shim was missing.
 ///
-/// Only `sleep` is reachable today: for the five `::`-qualified names the
-/// checker demands their capability row at the call site and a plain guest
-/// function does not discharge it (`effect row mismatch for 'main': missing
-/// { Stdin::... }`, measured for all five). `sleep` gets through because for an
-/// UNQUALIFIED name the checker does honour the user's shadowing definition.
-/// The index test covers all seven anyway rather than relying on that.
+/// Only the two UNQUALIFIED names are reachable today: for the `::`-qualified
+/// names the checker demands their capability row at the call site and a plain
+/// guest function does not discharge it (`effect row mismatch for 'main':
+/// missing { Stdin::... }`). `sleep` and `sleep_blocking` get through because
+/// for an unqualified name the checker does honour the user's shadowing
+/// definition. The index test covers every name here anyway rather than
+/// relying on that.
+///
+/// #2903: `sleep_blocking` was missing from this list while `sleep` was in it,
+/// and the module declares `vibe.abi: host_import_abi=raw`, so both shipped
+/// core runners were right to pass the i64 through -- the EMITTER was the one
+/// violating its own declaration. It is not a spelling nobody writes: the
+/// suspend boundary's injected `__entry_settle` pays a sleep debt by calling
+/// `sleep_blocking`, so the ordinary `sleep(ms)` inside `allows Async` reached
+/// the host through it and slept 2x. Adding a name here is INERT unless it is
+/// also in `cc_ladder_names` below, which is binary-searched.
 fn cc_raw_abi_shim_applies(ft: FuncTable, func_offset: Int, fname: String) -> Bool with Exception {
-  if fname == "Stdout::write_char" || fname == "Stderr::write_char" || fname == "Stdin::read_stream" || fname == "sleep" || fname == "Console::write_char" || fname == "Console::write_err_char" || fname == "Console::read_stream" {
+  if fname == "Stdout::write_char" || fname == "Stderr::write_char" || fname == "Stdin::read_stream" || fname == "sleep" || fname == "sleep_blocking" || fname == "Console::write_char" || fname == "Console::write_err_char" || fname == "Console::read_stream" {
     let (idx, _, _) = resolve_func(ft, fname)
     idx < func_offset
   } else {
@@ -581,6 +591,7 @@ fn cc_ladder_names() -> Array[String] {
       "sh_lines",
       "simd_skip_ws",
       "sleep",
+      "sleep_blocking",
       "sub",
       "vibe_fs_stat_token_raw",
       "vibe_http_close_raw",

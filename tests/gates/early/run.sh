@@ -3948,6 +3948,85 @@ echo "[compiler-gate] print primitives ok"
 #     `__to_string` interpolation stringifier are still tolerated, since effect
 #     inference on function values is imprecise). The mismatch must be REJECTED;
 #     a correct call must still compile.
+# 27g. the raw-ABI shim's OTHER sleep spelling (#2903). `cc_raw_abi_shim_applies`
+#      listed `sleep` but not `sleep_blocking`, and both observed paths reach
+#      the host through the latter: a direct call, and the Async entry
+#      boundary, whose settle calls `sleep_blocking` to pay the suspend debt.
+#      So `sleep(1000)` handed the host 2000 and slept twice as long --
+#      runtime/viberun and the node runner both obey the module's OWN
+#      `vibe.abi: host_import_abi=raw` declaration, so the EMITTER was the one
+#      violating it.
+#
+#      Asserted on the VALUE, not on wall-clock. A duration has no output to
+#      diff and a timing band flakes on a shared runner; the contract here is
+#      exact -- the declaration says raw, so the i64 handed to `vibe.sleep`
+#      must BE the millisecond count. The observer decodes nothing, so it
+#      cannot paper over a tag the way the runner's own heuristic did.
+#
+#      Both lanes, like 27f: under VIBE_RC=0 there is no tag to remove and the
+#      generic path already passed 1000, so the RC=0 row is the control that
+#      proves the expectation is not simply "whatever the compiler emits".
+echo "[compiler-gate] 27g/27 raw-ABI shim covers sleep_blocking (#2903)"
+sbdir="_build/_gate_sleep_raw_abi"
+rm -rf "$sbdir"; mkdir -p "$sbdir"
+cat > "$sbdir/sleepb.vibe" <<'EOF'
+fn main() -> Int {
+  sleep_blocking(1000)
+  7
+}
+EOF
+# #2903's own repro: the user-visible spelling. `sleep` was already in the
+# shim list, so this row is NOT redundant with the one above -- it fails for
+# a different reason. Under `allows Async` the call becomes a suspend request
+# and the injected `__entry_settle` pays the debt by calling `sleep_blocking`
+# (linked_compile.vibe:4222/:4255), which resolves to the SAME `vibe.sleep`
+# import (:10996). So a fix that covered only the direct spelling would leave
+# every `sleep(ms)` in async code doubled, and this row is what notices.
+cat > "$sbdir/sleepa.vibe" <<'EOF'
+fn main() -> Int allows Async {
+  sleep(1000)
+  7
+}
+EOF
+cat > "$sbdir/observe.mjs" <<'EOF'
+// Print the raw i64 the guest hands vibe.sleep. No decoding on purpose.
+import { readFileSync } from "node:fs";
+const mod = await WebAssembly.compile(readFileSync(process.argv[2]));
+let seen = null;
+const imports = {
+  vibe: new Proxy({}, { get: (_t, name) => (v) => { if (name === "sleep") seen = v; return 0n; } }),
+  wasi_snapshot_preview1: new Proxy({}, { get: () => () => 0 }),
+};
+const inst = await WebAssembly.instantiate(mod, imports);
+try { inst.exports.main(0n); } catch { try { inst.exports.main(); } catch {} }
+console.log(seen === null ? "NOCALL" : String(BigInt(seen)));
+EOF
+for sb_src in sleepb sleepa; do
+  for sb_rc in 0 1; do
+    rm -f "$sbdir/$sb_src.wasm" "$sbdir/$sb_src.wasm.diag"
+    VIBE_RC="$sb_rc" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+      bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+      "$sbdir/$sb_src.vibe" "$sbdir/$sb_src.wasm" main >/dev/null 2>&1 || true
+    if [ ! -s "$sbdir/$sb_src.wasm" ]; then
+      echo "[compiler-gate] FAIL: $sb_src.vibe did not compile under VIBE_RC=$sb_rc (#2903)" >&2
+      cat "$sbdir/$sb_src.wasm.diag" >&2 2>/dev/null; exit 1
+    fi
+    sb_val="$(node "$sbdir/observe.mjs" "$sbdir/$sb_src.wasm" 2>/dev/null)"
+    if [ "$sb_val" != "1000" ]; then
+      echo "[compiler-gate] FAIL: $sb_src.vibe under VIBE_RC=$sb_rc handed vibe.sleep '$sb_val', want 1000." >&2
+      echo "  The module declares host_import_abi=raw, so the argument must be the" >&2
+      echo "  millisecond count. 2000 means the raw-ABI shim stopped covering" >&2
+      echo "  sleep_blocking (compile_call.vibe cc_raw_abi_shim_applies, and the" >&2
+      echo "  sorted ladder-membership list it is reached through). NOCALL means" >&2
+      echo "  main trapped before reaching the import, which is also a failure." >&2
+      exit 1
+    fi
+  done
+done
+rm -rf "$sbdir"
+echo "[compiler-gate] raw-ABI shim covers sleep_blocking ok (1000 on both lanes, direct and via Async)"
+
+
 echo "[compiler-gate] 28/28 argument type checking"
 adir="_build/_gate_argcheck"
 rm -rf "$adir"; mkdir -p "$adir"

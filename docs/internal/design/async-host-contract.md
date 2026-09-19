@@ -15,7 +15,7 @@ Names and core types are already machine-checked by
 cannot: the meaning of the bits.** Where a claim here is mechanically
 checkable, it has a gate and this file names it; where it is not, it says so.
 
-Measured against `779f1b6`.
+Measured against `779f1b6`; the `vibe.sleep` section re-measured after #2903's fix.
 
 ## Two bands
 
@@ -23,12 +23,14 @@ Measured against `779f1b6`.
 |---|---|---|
 | manifest band | `portableCore` | `componentAdapterOnly` + `componentAdapterPatterns` |
 | implementations | **two** (`runtime/viberun`, `scripts/wasm_vibe_host_runner.js`) | **one** (the adapter the composer emits) |
-| can two backends disagree? | yes, and they do — **#2903** | no |
+| can two backends disagree? | yes — the risk is real, see **#2903** | no |
 
 That asymmetry is the whole of checkbox 4's "no backend may silently
 reinterpret the same import". Seven of the imports have a single implementer
-and cannot diverge. The one import with two implementers has two different
-answers and neither is correct.
+and cannot diverge. The one import with two implementers is the one that
+diverged, and #2903 showed the divergence was not between the hosts: both read
+the module's own `vibe.abi` declaration and both obeyed it. The emitter was
+the party that did not.
 
 ## The import set
 
@@ -88,17 +90,51 @@ the gate working, not a defect in it.
 
 ## What the values mean
 
-### `vibe.sleep` — unsettled, see #2903
+### `vibe.sleep` — the argument is a RAW millisecond count
 
-The guest passes the **RC-tagged** millisecond count `ms << 1`. Observed
-directly with a stub host that records the raw `i64`: `sleep(1000)` passes
-`2000`. No host decodes it as `>> 1`; two decode it as `>> 2` (a tag width the
-RC lane stopped using) and two pass it through raw. Every `sleep(ms)` therefore
-sleeps `2×ms` or `ms/2`, and which one depends on `VIBE_IMPORT_ABI`.
+**The module declares its own answer.** Every emitted core module carries a
+`vibe.abi` custom section reading `host_import_abi=raw`
+(`codegen/wasm_emit/metadata.vibe:45`; every call site passes `"raw"`, and
+nothing in the tree ever emits `tagged`). Under that declaration the `i64` a
+host receives IS the millisecond count, and the **guest** is what untags: the
+RC raw-ABI shim in `codegen/expr/compile_call.vibe`
+(`cc_raw_abi_shim_applies`) removes the `n << 1` tag before the import call,
+gated on `ctx.enable_rc`. That is option 1 of the two #2903 laid out, and it
+was already the design — it just had a hole in it.
 
-This file deliberately does not state a rule for `vibe.sleep`'s argument,
-because there is no rule the implementations agree on. #2903 has the
-measurement and the two candidate fixes.
+The hole was one name. `sleep_blocking` was absent from the shim's name list
+while `sleep` was present, so the argument reached the host still tagged and
+`sleep(1000)` handed it `2000`. It is not an obscure spelling: the injected
+`__entry_settle` pays a suspend sleep debt by calling `sleep_blocking`
+(`linked_compile.vibe:4222`, `:4255`), and both names resolve to the same
+`vibe.sleep` import (`:10996`), so an ordinary `sleep(ms)` inside `allows
+Async` reached the host through the uncovered name. Measured on the same
+program before and after, with `VIBE_RC=0` as the control:
+
+| | `VIBE_RC=0` | `VIBE_RC=1` |
+|---|---:|---:|
+| before | 1000 | **2000** |
+| after | 1000 | 1000 |
+
+So the two shipped core runners were never in disagreement with each other on
+a module this compiler produces: `runtime/viberun` passes the `i64` through,
+and the node runner's `decodeHostInt` returns `Number(value)` unshifted once
+`detectHostImportAbi` reads `raw` off the section (`:708`, `:1313`).
+
+Pinned by `tests/gates/early/run.sh` gate `27g/27`, which asserts the VALUE
+handed to `vibe.sleep` on both RC lanes with an observer that decodes nothing.
+
+**One decoder is still stale, and it is unreachable.**
+`decodeTaggedOrRawInt` (`wasm_vibe_host_runner.js:686`) shifts by **2**, a tag
+width the RC lane stopped using, and it is a heuristic on the low two bits —
+which for `ms << 1` are a function of `ms`'s parity, so it would reinterpret
+the same import per call site. It runs only when the ABI is not `raw`, and the
+only way to get there is `VIBE_IMPORT_ABI=tagged`, an env override that
+**wins over the module's own declaration** (`:2470`). No module in the tree
+declares `tagged` and nothing in the repo sets that variable, so this is a
+dead lane rather than a live divergence — but it is a loaded one, and the
+override silently contradicting a module that says `raw` is the hazard #2903's
+"fifth implementer" paragraph is about. Not fixed here; see the list below.
 
 ### Host futures
 
@@ -252,7 +288,11 @@ and `:1000` and link named root imports from an env spec. The runner reserves
 
 ## What is still not pinned
 
-- `vibe.sleep`'s argument representation — **#2903**, a P0.
+- The `VIBE_IMPORT_ABI=tagged` override, which beats a module's own `vibe.abi`
+  declaration and then decodes through a 2-bit-tag heuristic the RC lane no
+  longer matches. Unreachable by default and unused in the tree; it should
+  either refuse to contradict the declaration or be removed, rather than
+  quietly answering differently.
 - The `stdin_read_char` "async by the host" description, which no host
   implements that way.
 - Cancellation, which has no ABI at all.

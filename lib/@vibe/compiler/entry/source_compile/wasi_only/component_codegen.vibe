@@ -6557,7 +6557,23 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     bytebuf_push(sleep_body, 127)
     // packed = sleep-for(ms, results slot)
     emit_local_get(sleep_body, 0)
-    comp_emit_decode_i64_value(sleep_body, tag_mode)
+    // #2903: NO tag decode here. Every core module declares
+    // `vibe.abi: host_import_abi=raw`, and the RC raw-ABI shim
+    // (compile_call.vibe `cc_raw_abi_shim_applies`) untags an Int argument
+    // before ANY host import call -- for both spellings that reach
+    // `vibe.sleep`, `sleep` and `sleep_blocking`. So the ms arriving here is
+    // already the plain millisecond count in both tag modes, and shifting it
+    // again halved every componentized sleep.
+    //
+    // It read correctly before only because the two spellings disagreed:
+    // `sleep_blocking` was missing from the shim list, so the settle route an
+    // async entry actually takes delivered a TAGGED ms and this `>> 1`
+    // cancelled it -- while a direct `sleep` under the same tag mode arrived
+    // raw and was already being halved on this path. Measured end to end with
+    // viberun on `let run: () -> Int with Async` sleeping 300ms: 318ms with
+    // the two bugs cancelling, 165ms with only the shim fixed, 300ms with
+    // both. `tag_mode` still governs the future/stream values below, whose
+    // core-side producers are not shim-covered.
     emit_i32_wrap_i64(sleep_body)
     emit_i32_const(sleep_body, comp_sleep_results_slot())
     emit_call(sleep_body, sleep_lower_idx)
