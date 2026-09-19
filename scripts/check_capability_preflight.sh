@@ -139,5 +139,126 @@ else
   bad "--allow-nope must be refused; got: $out"
 fi
 
+# 7-10. ADR-0088 L2 (#2828 rung 2): the grants must actually REACH the
+#       optional-capability lowering, not merely travel beside it.
+#
+#       This case exists because of a measured near-miss. The grant table was
+#       threaded through all nine hops from the CLI to the lowering, every hop
+#       type-checked, the build was clean, the control program ran -- and every
+#       `perform?` still answered `NotGranted`, because
+#       `optional_perform_artifact_resolution` has TWO call sites and the
+#       non-split one still passed `array_empty()`. A single-file `vibe run`
+#       takes exactly that fallback. Nothing but RUNNING a `perform?` program
+#       distinguishes "wired" from "wired and read", which is why the property
+#       here is an ANSWER and not the presence of a call.
+OPT="$WORK/opt.vibex"
+DATA="$WORK/data.txt"
+printf 'hello-from-file\n' > "$DATA"
+cat > "$OPT" <<VIBE
+fn main() -> Unit allows Stdout + Fs::read_file? {
+  let a = perform? Fs::read_file("$DATA")
+  match a {
+    Granted(v) => println("GRANTED:" + v),
+    Errored(_) => println("ERRORED"),
+    NotGranted => println("NOTGRANTED")
+  }
+}
+VIBE
+
+opt_case() {
+  VIBE_CLI_WASM="$STAGE2" VIBE_RUNNER="$VIBERUN" \
+    bash "$ROOT_DIR/runtime/vibe" run "$@" "$OPT" 2>&1 || true
+}
+
+out="$(opt_case --allow-fs --allow-stdout)"
+if printf '%s\n' "$out" | grep -q '^GRANTED:hello-from-file$'; then
+  ok "a granted provider resolves perform? to Granted and the call runs"
+else
+  bad "--allow-fs must make perform? Fs::read_file Granted; got: $out"
+  # WHICH COMPILER ANSWERED (AGENTS.md). This case failed once on CI while
+  # passing locally on a stage2 built the same way, and the message above could
+  # not tell the two apart: it reports the ANSWER and not the artifact that
+  # produced it, so there was nothing to diagnose from the log.
+  #
+  # The no-flag probe is the decisive one. With rung 2 present a run with no
+  # capability flag has ambient authority and answers `GRANTED`; without it,
+  # `optional_perform_artifact_resolution` still receives an empty table and
+  # every arm answers `NotGranted`. So NOTGRANTED here means the compiler does
+  # not carry rung 2 at all, and GRANTED means it does and the FLAG path is
+  # what broke -- two different bugs that look identical above.
+  {
+    echo "capability-preflight: diagnosis for the failure above:"
+    echo "  compiler: $STAGE2"
+    if [ -f "$STAGE2" ]; then
+      echo "  size:     $(wc -c < "$STAGE2") bytes"
+      echo "  mtime:    $(date -r "$STAGE2" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo unknown)"
+    else
+      echo "  size:     MISSING"
+    fi
+    echo "  runner:   $VIBERUN"
+    # Which LANE compiled it. `compile_release_lane` branches on VIBE_RC, and
+    # a capability decision must not depend on that branch -- when it did, the
+    # mvp and shadow arms dropped the grant table and produced exactly this
+    # failure. Printed so the log says which arm ran instead of leaving it to
+    # be guessed from an env block.
+    echo "  VIBE_RC:  ${VIBE_RC:-<unset, default rc lane>}"
+    echo "  VIBE_BACKEND: ${VIBE_BACKEND:-<unset>}"
+    echo "  no-flag perform? answer: $(opt_case --allow-stdout --allow-fs 2>&1 | tr '\n' ' ')"
+    echo "  ambient (no flags at all): $(opt_case 2>&1 | tr '\n' ' ')"
+    echo "  -> ambient GRANTED: the compiler carries rung 2 and the --allow-* path is the bug."
+    echo "  -> ambient NOTGRANTED with VIBE_RC unset: the compiler does not carry rung 2."
+    echo "  -> ambient NOTGRANTED with VIBE_RC=0 or shadow: the LANE dropped the grant"
+    echo "     table. compile_release_lane branches on VIBE_RC and each arm must carry"
+    echo "     the grants; an arm that does not makes authority depend on the allocator."
+  } >&2
+fi
+
+out="$(opt_case --deny-fs --allow-stdout)"
+if printf '%s\n' "$out" | grep -q '^NOTGRANTED$'; then
+  ok "a denied provider resolves perform? to NotGranted"
+else
+  bad "--deny-fs must make perform? NotGranted; got: $out"
+fi
+
+# An allow-list is a list here too: Stdout alone does not grant Fs.
+out="$(opt_case --allow-stdout)"
+if printf '%s\n' "$out" | grep -q '^NOTGRANTED$'; then
+  ok "an allow-list omitting the provider leaves perform? NotGranted"
+else
+  bad "--allow-stdout alone must leave perform? NotGranted; got: $out"
+fi
+
+# Deny beats allow for the optional surface too, not just the required one.
+out="$(opt_case --allow-fs --deny-fs --allow-stdout)"
+if printf '%s\n' "$out" | grep -q '^NOTGRANTED$'; then
+  ok "--deny-* beats --allow-* for perform? as well"
+else
+  bad "deny must beat allow for perform?; got: $out"
+fi
+
+# 11. LANE INDEPENDENCE. The invariant is not "the grants reach the lowering on
+#     the lane this gate happens to run on" -- it is that authority does not
+#     depend on the allocator at all. Nothing tested that, and the gap was not
+#     theoretical: rung 2 shipped wiring only `compile_release_lane`'s default
+#     arm, so `VIBE_RC=0` and `VIBE_RC=shadow` answered `NotGranted` for every
+#     optional capability whatever the run was granted.
+#
+#     It hid because of WHERE the gate runs. `tests/gates/lib.sh` pins
+#     `VIBE_RC=0` for every lane, so CI exercised the broken arm; running this
+#     script directly leaves VIBE_RC unset and takes the working one. Same gate,
+#     same compiler, opposite answers -- decided by inherited environment
+#     (#2252). So the lanes are named HERE rather than inherited.
+lane_fail=0
+for rc in 0 shadow 1; do
+  lane_out="$(VIBE_RC="$rc" opt_case --allow-fs --allow-stdout)"
+  if ! printf '%s\n' "$lane_out" | grep -q '^GRANTED:hello-from-file$'; then
+    bad "VIBE_RC=$rc must answer Granted like every other lane; got: $lane_out"
+    lane_fail=1
+  fi
+done
+if [ "$lane_fail" -eq 0 ]; then
+  ok "a granted provider answers Granted on every allocator lane (rc/mvp/shadow)"
+fi
+
 echo "capability-preflight: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

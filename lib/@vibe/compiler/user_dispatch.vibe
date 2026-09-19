@@ -25,8 +25,11 @@ import @vibe/compiler/entry/compiler/file_compile {
   compile_file_fs_mode,
   compile_file_fs_mode_break,
   compile_file_fs_mode_gc,
+  compile_file_fs_mode_grants,
   compile_file_fs_mode_rc,
+  compile_file_fs_mode_rc_grants,
   compile_file_fs_mode_rc_shadow,
+  compile_file_fs_mode_rc_shadow_grants,
   compile_file_fs_mode_testmeta,
   compile_file_fs_mode_trace
 }
@@ -314,7 +317,7 @@ fn unstable_opt_in() -> Bool with Env {
   Env::get("VIBE_UNSTABLE") == "1"
 }
 
-fn compile_user_wasm(input_path: String, entry_name: String, kind: String) -> Bytes with Exception + Fs + Env {
+fn compile_user_wasm(input_path: String, entry_name: String, kind: String, grants: Array[(String, String)]) -> Bytes with Exception + Fs + Env {
   if kind == "trace" {
     compile_file_fs_mode_trace(input_path, entry_name)
   } else if kind == "break" {
@@ -330,7 +333,7 @@ fn compile_user_wasm(input_path: String, entry_name: String, kind: String) -> By
     // through one door and 2.6 MB through the other).
     compile_file_fs_mode(input_path, entry_name, command_component_compile_mode())
   } else {
-    compile_release_lane(input_path, entry_name)
+    compile_release_lane(input_path, entry_name, grants)
   }
 }
 
@@ -341,14 +344,18 @@ fn compile_user_wasm(input_path: String, entry_name: String, kind: String) -> By
 /// `compile_file_fs_mode` alone here was the bump lane for EVERY compile
 /// (Codex review of #2858): a long-running program kept every allocation until
 /// exit, and `VIBE_RC=shadow` silently did nothing.
-fn compile_release_lane(input_path: String, entry_name: String) -> Bytes with Exception + Fs + Env {
+fn compile_release_lane(input_path: String, entry_name: String, grants: Array[(String, String)]) -> Bytes with Exception + Fs + Env {
   let rc_flag = Env::get("VIBE_RC")
   if rc_flag == "0" {
-    compile_file_fs_mode(input_path, entry_name, "mvp")
+    // #2828 rung 2: every arm carries the grants. When only the rc arm did,
+    // `VIBE_RC=0` and `VIBE_RC=shadow` silently answered `NotGranted` for every
+    // optional capability -- authority became a function of which allocator was
+    // selected, which is the "silently wrong" this project ranks worst.
+    compile_file_fs_mode_grants(input_path, entry_name, "mvp", grants)
   } else if rc_flag == "shadow" {
-    compile_file_fs_mode_rc_shadow(input_path, entry_name)
+    compile_file_fs_mode_rc_shadow_grants(input_path, entry_name, grants)
   } else {
-    compile_file_fs_mode_rc(input_path, entry_name)
+    compile_file_fs_mode_rc_grants(input_path, entry_name, grants)
   }
 }
 
@@ -394,10 +401,10 @@ fn reject_unstable_closure_surface() -> Unit with Exception + Fs + Env {
 
 /// Every artifact this dispatcher compiles goes through here: entry gate,
 /// compile, closure gate.
-fn compile_user_artifact(input_path: String, entry_name: String, kind: String) -> Bytes with Exception + Fs + Env {
+fn compile_user_artifact(input_path: String, entry_name: String, kind: String, grants: Array[(String, String)]) -> Bytes with Exception + Fs + Env {
   reject_unstable_entry_surface(input_path)
   unstable_closure_reset()
-  let bytes = compile_user_wasm(input_path, entry_name, kind)
+  let bytes = compile_user_wasm(input_path, entry_name, kind, grants)
   reject_unstable_closure_surface()
   bytes
 }
@@ -1364,7 +1371,7 @@ fn selfhost_cli_user_compile_args(args: Array[String]) -> Int with Exception + F
     // (scripts/test_component_lazy_dispatch_gate.sh asserts both). Other
     // refusals (an unstable import, a type error) keep their own message.
     let core = handle {
-      compile_user_artifact(src, entry, "component")
+      compile_user_artifact(src, entry, "component", no_grants())
     } with { Exception::Throw(message) => {
       if String::contains(message, "no functions found to compile") {
         throw(user_command_component_edit(src, entry, "the module has no `\{entry}` export (\{message})"))
@@ -1384,7 +1391,7 @@ fn selfhost_cli_user_compile_args(args: Array[String]) -> Int with Exception + F
     0
   } else {
     let resolved = resolve_user_build_output(out, out_given)
-    let bytes = compile_user_artifact(src, entry, "mvp")
+    let bytes = compile_user_artifact(src, entry, "mvp", no_grants())
     write_user_executable(resolved, bytes, entry, "mvp")
     println(String::concat("compiled ", String::concat(src, String::concat(" -> ", display_under_root(resolved, default_build_dir())))))
     if minify {
@@ -2285,6 +2292,31 @@ fn split_capability_flags(args: Array[String]) -> (Array[String], Array[String],
 /// which is the point of passing one. A `--deny-*` always subtracts, and wins
 /// over an `--allow-*` of the same provider, because fail-closed is the only
 /// direction in which a mistake in this table is safe.
+/// No launcher grants: every optional capability resolves `NotGranted`.
+/// Spelled as a name rather than a bare `[]` so a reader of a 4-argument
+/// compile call can see WHICH argument is the authority, and what it means.
+fn no_grants() -> Array[(String, String)] {
+  []
+}
+
+/// #2828 rung 2: the L1 flags as an ADR-0088 L2 resolution table.
+///
+/// `opq_resolution` matches an exact operation, then the PROVIDER, then the
+/// `"*"` default (`NotGranted`). A provider the run was granted therefore
+/// needs one row; a denied provider needs none, because absence already means
+/// `NotGranted`. That keeps the table fail-closed by construction -- a
+/// provider nobody thought about cannot be granted by omission.
+fn optional_grants_from_flags(allows: Array[String], denies: Array[String]) -> Array[(String, String)] {
+  let granted = host_granted_from_flags(allows, denies)
+  let out: Array[(String, String)] = []
+  let mut i = 0
+  while i < Array::length(granted) {
+    Array::push(out, (Array::get(granted, i), "Granted"))
+    i = i + 1
+  }
+  out
+}
+
 fn host_granted_from_flags(allows: Array[String], denies: Array[String]) -> Array[String] {
   let base = if Array::length(allows) > 0 {
     allows
@@ -2468,7 +2500,7 @@ export fn selfhost_cli_run_plan_args(args: Array[String], action_path: String) -
     } else {
       "mvp"
     }
-    let bytes = compile_user_artifact(src, "main", kind)
+    let bytes = compile_user_artifact(src, "main", kind, optional_grants_from_flags(allows, denies))
     write_user_run_executable(out, bytes, kind)
     write_user_funcmap(src, out)
     let acc = StringBuilder::new()
@@ -2600,7 +2632,7 @@ export fn selfhost_cli_test_plan_args(args: Array[String], action_path: String) 
           } else {
             ()
           }
-          compile_user_wasm(src, "__no_entry__", backend_kind)
+          compile_user_wasm(src, "__no_entry__", backend_kind, no_grants())
         }
         reject_unstable_closure_surface()
         write_wasm(out, bytes)
@@ -2698,7 +2730,7 @@ fn selfhost_cli_user_bench_args(args: Array[String]) -> Int with Exception + Fs 
     }
     let out = String::concat(default_build_dir(), String::concat("/bench/", String::concat(basename_of(strip_vibe_suffix(src)), ".wasm")))
     let backend_kind = user_backend_kind("VIBE_BENCH_BACKEND")
-    let bytes = compile_user_artifact(src, "__no_entry__", backend_kind)
+    let bytes = compile_user_artifact(src, "__no_entry__", backend_kind, no_grants())
     write_wasm(out, bytes)
     let acc = StringBuilder::new()
     StringBuilder::push(acc, "vibe-host-action-v1\nrun-benches\n")
@@ -2773,7 +2805,7 @@ fn selfhost_cli_user_serve_args(args: Array[String]) -> Int with Exception + Fs 
     }
     let entry_stmts = parse_program(lex(Fs::read_file(src)))
     validate_serve_handler(entry_stmts)
-    let core = compile_user_artifact(src, "__no_entry__", "mvp")
+    let core = compile_user_artifact(src, "__no_entry__", "mvp", no_grants())
     let body_stream = serve_handler_takes_body_stream(entry_stmts)
     let component = if body_stream {
       comp_emit_component_wasm_stream_handler(core, "handler", "handler", serve_handler_param_names())

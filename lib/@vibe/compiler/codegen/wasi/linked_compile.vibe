@@ -4575,7 +4575,11 @@ export fn prelude_split_last_module_count() -> Int {
 /// `@vibe/parser` -- not a dependency of this package, and not one it should
 /// acquire. A production caller has to supply it, which is a real cost of the
 /// split path and is why it is named here rather than hidden behind a default.
-export fn effect_lowering_prelude_split(stmts: Array[Stmt], entry_name: String, linked_imports: Array[(String, String, Int, Int)], iw_names: Array[String], iw_wats: Array[String], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], split: ModuleSplit, render: (Stmt) -> String) -> Array[String] with Exception {
+/// #2828 rung 2: same pass, with the launcher's frozen capability grants.
+/// The un-suffixed name below keeps its arity and passes an empty table, so
+/// every existing caller -- including the ~20 in the split tests -- is
+/// unchanged and still fail-closed.
+export fn effect_lowering_prelude_split_grants(stmts: Array[Stmt], entry_name: String, linked_imports: Array[(String, String, Int, Int)], iw_names: Array[String], iw_wats: Array[String], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], split: ModuleSplit, render: (Stmt) -> String, grants: Array[(String, String)]) -> Array[String] with Exception {
   Array::set(prelude_split_completed_modules, 0, 0)
   if module_split_usable(split, Array::length(stmts)) && !lc_exported_fn_without_return_annotation(stmts) {
     // WHOLE-PROGRAM, and first, exactly as `effect_lowering_prelude` runs it:
@@ -4590,16 +4594,24 @@ export fn effect_lowering_prelude_split(stmts: Array[Stmt], entry_name: String, 
       Array::push(only, za_msg)
       only
     } else {
-      effect_lowering_prelude_split_checked(stmts, entry_name, linked_imports, iw_names, iw_wats, checker_eq_offsets, checker_eq_type_keys, split, render)
+      effect_lowering_prelude_split_checked(stmts, entry_name, linked_imports, iw_names, iw_wats, checker_eq_offsets, checker_eq_type_keys, split, render, grants)
     }
   } else {
-    effect_lowering_prelude(stmts, entry_name, linked_imports, iw_names, iw_wats, checker_eq_offsets, checker_eq_type_keys)
+    effect_lowering_prelude_grants(stmts, entry_name, linked_imports, iw_names, iw_wats, checker_eq_offsets, checker_eq_type_keys, grants)
   }
+}
+
+/// Pre-#2828-rung-2 arity: no launcher grants, so every optional capability
+/// resolves `NotGranted` exactly as before. Kept so the existing callers --
+/// the production `_with_split` path for lanes other than `vibe run`, and the
+/// split tests -- need no edit.
+export fn effect_lowering_prelude_split(stmts: Array[Stmt], entry_name: String, linked_imports: Array[(String, String, Int, Int)], iw_names: Array[String], iw_wats: Array[String], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], split: ModuleSplit, render: (Stmt) -> String) -> Array[String] with Exception {
+  effect_lowering_prelude_split_grants(stmts, entry_name, linked_imports, iw_names, iw_wats, checker_eq_offsets, checker_eq_type_keys, split, render, array_empty())
 }
 
 /// The split prelude past the whole-program zero-allocation check, which its
 /// caller has already run.
-fn effect_lowering_prelude_split_checked(stmts: Array[Stmt], entry_name: String, linked_imports: Array[(String, String, Int, Int)], iw_names: Array[String], iw_wats: Array[String], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], split: ModuleSplit, render: (Stmt) -> String) -> Array[String] with Exception {
+fn effect_lowering_prelude_split_checked(stmts: Array[Stmt], entry_name: String, linked_imports: Array[(String, String, Int, Int)], iw_names: Array[String], iw_wats: Array[String], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], split: ModuleSplit, render: (Stmt) -> String, grants: Array[(String, String)]) -> Array[String] with Exception {
   {
     let link = prelude_link_state_new()
     // THE WHOLE-PROGRAM FACTS, taken here -- before the program is partitioned
@@ -4612,7 +4624,10 @@ fn effect_lowering_prelude_split_checked(stmts: Array[Stmt], entry_name: String,
       iw_names: iw_names,
       iw_wats: iw_wats,
       facts_known: true,
-      optional_resolution: optional_perform_artifact_resolution(stmts, entry_name, false, array_empty()),
+      // ADR-0088 L2 (#2828 rung 2): the launcher's frozen grant table. Empty
+      // is the pre-rung-2 behaviour and stays fail-closed -- every lane but
+      // the one `vibe run` takes still passes `array_empty()`.
+      optional_resolution: optional_perform_artifact_resolution(stmts, entry_name, false, grants),
       optional_source_names: collect_optional_perform_source_names(stmts),
       alias_renames: collect_top_level_fn_alias_renames(stmts),
       calls_host_future: lc_stmts_call_host_future(stmts),
@@ -4662,7 +4677,19 @@ fn effect_lowering_prelude_split_checked(stmts: Array[Stmt], entry_name: String,
   }
 }
 
+/// Pre-#2828-rung-2 arity: no launcher grants (fail-closed). Kept for the
+/// ~20 existing callers, tests included.
 export fn effect_lowering_prelude(stmts: Array[Stmt], entry_name: String, linked_imports: Array[(String, String, Int, Int)], iw_names: Array[String], iw_wats: Array[String], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String]) -> Array[String] with Exception {
+  effect_lowering_prelude_grants(stmts, entry_name, linked_imports, iw_names, iw_wats, checker_eq_offsets, checker_eq_type_keys, array_empty())
+}
+
+/// #2828 rung 2: the grant-carrying arity. THIS is the one a small program
+/// reaches -- `effect_lowering_prelude_split_grants` falls back here whenever
+/// `module_split_usable` says no, which is the common case for a single-file
+/// `vibe run`. Wiring only the split site left every such program resolving
+/// `NotGranted` while the table travelled the whole chain unread; measured,
+/// that is exactly what happened on the first build of this rung.
+export fn effect_lowering_prelude_grants(stmts: Array[Stmt], entry_name: String, linked_imports: Array[(String, String, Int, Int)], iw_names: Array[String], iw_wats: Array[String], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], grants: Array[(String, String)]) -> Array[String] with Exception {
   let errs = lc_fresh_string_array()
   // ADR-0091 Phase 1: enforce `#zero_alloc` markers before any lowering
   // rewrites the marked bodies. No-op when no marker is present.
@@ -4683,7 +4710,7 @@ export fn effect_lowering_prelude(stmts: Array[Stmt], entry_name: String, linked
     // keep ambient full authority across their reachable helpers; every other
     // non-interactive artifact freezes absent build/apply facts to NotGranted.
     // The pass accepts an explicit table for the launcher ladder.
-    let optional_resolution = optional_perform_artifact_resolution(stmts, entry_name, false, array_empty())
+    let optional_resolution = optional_perform_artifact_resolution(stmts, entry_name, false, grants)
     lower_optional_performs(stmts, optional_resolution)
     // #1947: merged FS programs are a fresh parse; check erased its own
     // array. Drop leftover `__try_none` markers before codegen.
@@ -8489,8 +8516,15 @@ fn lc_render_unused(_s: Stmt) -> String {
   ""
 }
 
+/// Pre-#2828-rung-2 arity: no launcher grants (fail-closed).
 export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], linked_imports: Array[(String, String, Int, Int)], library_mode: Bool, enable_rc: Bool, coverage: Bool, debug_trace: Bool, debug_break: Bool, rc_shadow: Bool, enable_late_dce: Bool, prov: DbgProv, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache, slice_lo: Int, slice_hi: Int, checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int], checker_bool_render_offsets: Array[Int], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String]) -> Bytes with Exception {
-  compile_wasi_module_linked_impl_with_split(stmts, entry_name, srcs, linked_imports, library_mode, enable_rc, coverage, debug_trace, debug_break, rc_shadow, enable_late_dce, prov, body_cache_in, body_cache_out, slice_lo, slice_hi, checker_float_call_offsets, checker_int_render_offsets, checker_bool_render_offsets, checker_eq_offsets, checker_eq_type_keys, module_split_none(), lc_render_unused)
+  compile_wasi_module_linked_impl_with_typed_offsets_grants(stmts, entry_name, srcs, linked_imports, library_mode, enable_rc, coverage, debug_trace, debug_break, rc_shadow, enable_late_dce, prov, body_cache_in, body_cache_out, slice_lo, slice_hi, checker_float_call_offsets, checker_int_render_offsets, checker_bool_render_offsets, checker_eq_offsets, checker_eq_type_keys, array_empty())
+}
+
+/// #2828 rung 2: the grant-carrying arity. The mvp and rc-shadow lanes
+/// both converge here, so this is where their grants rejoin the rc lane's.
+export fn compile_wasi_module_linked_impl_with_typed_offsets_grants(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], linked_imports: Array[(String, String, Int, Int)], library_mode: Bool, enable_rc: Bool, coverage: Bool, debug_trace: Bool, debug_break: Bool, rc_shadow: Bool, enable_late_dce: Bool, prov: DbgProv, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache, slice_lo: Int, slice_hi: Int, checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int], checker_bool_render_offsets: Array[Int], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], grants: Array[(String, String)]) -> Bytes with Exception {
+  compile_wasi_module_linked_impl_with_split_grants(stmts, entry_name, srcs, linked_imports, library_mode, enable_rc, coverage, debug_trace, debug_break, rc_shadow, enable_late_dce, prov, body_cache_in, body_cache_out, slice_lo, slice_hi, checker_float_call_offsets, checker_int_render_offsets, checker_bool_render_offsets, checker_eq_offsets, checker_eq_type_keys, module_split_none(), lc_render_unused, grants)
 }
 
 // Build the complete pool outside the module emitter so loop temporaries and
@@ -8614,7 +8648,14 @@ fn lc_build_string_pool(stmts: Array[Stmt], srcs: Array[(String, String)], need_
 /// #2575 item 2 step 3b: the same compile, given a `ModuleSplit`. The prelude
 /// runs per module where the split describes the statements and whole-program
 /// otherwise, and every guard fails open -- see `effect_lowering_prelude_split`.
+/// Pre-#2828-rung-2 arity: no launcher grants, so optional capabilities
+/// resolve `NotGranted`. Both existing callers keep using this.
 export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], linked_imports: Array[(String, String, Int, Int)], library_mode: Bool, enable_rc: Bool, coverage: Bool, debug_trace: Bool, debug_break: Bool, rc_shadow: Bool, enable_late_dce: Bool, prov: DbgProv, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache, slice_lo: Int, slice_hi: Int, checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int], checker_bool_render_offsets: Array[Int], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], split: ModuleSplit, render: (Stmt) -> String) -> Bytes with Exception {
+  compile_wasi_module_linked_impl_with_split_grants(stmts, entry_name, srcs, linked_imports, library_mode, enable_rc, coverage, debug_trace, debug_break, rc_shadow, enable_late_dce, prov, body_cache_in, body_cache_out, slice_lo, slice_hi, checker_float_call_offsets, checker_int_render_offsets, checker_bool_render_offsets, checker_eq_offsets, checker_eq_type_keys, split, render, array_empty())
+}
+
+/// #2828 rung 2: the grant-carrying arity. See the delegate below.
+export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], linked_imports: Array[(String, String, Int, Int)], library_mode: Bool, enable_rc: Bool, coverage: Bool, debug_trace: Bool, debug_break: Bool, rc_shadow: Bool, enable_late_dce: Bool, prov: DbgProv, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache, slice_lo: Int, slice_hi: Int, checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int], checker_bool_render_offsets: Array[Int], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], split: ModuleSplit, render: (Stmt) -> String, grants: Array[(String, String)]) -> Bytes with Exception {
   // #1536(c)/#1511(b): the whole effect-lowering prefix lives in
   // effect_lowering_prelude (shared verbatim with `vibe check`); a first
   // error there is exactly the throw each pass used to raise inline here.
@@ -8731,7 +8772,7 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
   // Prefix limits use the original merged coordinates, before insertion or
   // DCE compaction. A duplicate name cannot identify one source statement.
   let lc_fn_stmt_of = lc_build_name_origin_index(pre_prelude_let_names, pre_prelude_let_stmts)
-  let prelude_errs = effect_lowering_prelude_split(stmts, entry_name, linked_imports, iw_names, iw_wats, checker_eq_offsets, checker_eq_type_keys, split, render)
+  let prelude_errs = effect_lowering_prelude_split_grants(stmts, entry_name, linked_imports, iw_names, iw_wats, checker_eq_offsets, checker_eq_type_keys, split, render, grants)
   if Array::length(prelude_errs) > 0 {
     throw(Array::get(prelude_errs, 0))
   } else {
@@ -14699,8 +14740,14 @@ export fn compile_wasi_module_rc_cached_impl_with_typed_offsets(stmts_in: Array[
 /// pins that compile byte-identical). Non-empty newline tables are #2199's
 /// production trap provenance: the section is emitted without debug-break
 /// probes. A per-module prelude still does not read `file_nls`.
+/// Pre-#2828-rung-2 arity: no launcher grants (fail-closed).
 export fn compile_wasi_module_rc_cached_impl_with_prov(stmts_in: Array[Stmt], entry_name: String, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache, prov: DbgProv, checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int], checker_bool_render_offsets: Array[Int], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String]) -> Bytes with Exception {
-  compile_wasi_module_rc_cached_impl_with_split(stmts_in, entry_name, body_cache_in, body_cache_out, prov, checker_float_call_offsets, checker_int_render_offsets, checker_bool_render_offsets, checker_eq_offsets, checker_eq_type_keys, module_split_none(), lc_render_unused)
+  compile_wasi_module_rc_cached_impl_with_prov_grants(stmts_in, entry_name, body_cache_in, body_cache_out, prov, checker_float_call_offsets, checker_int_render_offsets, checker_bool_render_offsets, checker_eq_offsets, checker_eq_type_keys, array_empty())
+}
+
+/// #2828 rung 2: the grant-carrying arity, on the lane `vibe run` takes.
+export fn compile_wasi_module_rc_cached_impl_with_prov_grants(stmts_in: Array[Stmt], entry_name: String, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache, prov: DbgProv, checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int], checker_bool_render_offsets: Array[Int], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], grants: Array[(String, String)]) -> Bytes with Exception {
+  compile_wasi_module_rc_cached_impl_with_split_grants(stmts_in, entry_name, body_cache_in, body_cache_out, prov, checker_float_call_offsets, checker_int_render_offsets, checker_bool_render_offsets, checker_eq_offsets, checker_eq_type_keys, module_split_none(), lc_render_unused, grants)
 }
 
 /// #2575 item 2 step 3b: the RC production compile with the module split wired
@@ -14713,9 +14760,15 @@ export fn compile_wasi_module_rc_cached_impl_with_prov(stmts_in: Array[Stmt], en
 /// still indexes the array the prelude receives.
 /// `linked_compile_prov_inert_test.vibe` pins that alignment, because an edit
 /// there would silently misattribute every statement rather than fail.
+/// Pre-#2828-rung-2 arity: no launcher grants (fail-closed).
 export fn compile_wasi_module_rc_cached_impl_with_split(stmts_in: Array[Stmt], entry_name: String, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache, prov: DbgProv, checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int], checker_bool_render_offsets: Array[Int], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], split: ModuleSplit, render: (Stmt) -> String) -> Bytes with Exception {
+  compile_wasi_module_rc_cached_impl_with_split_grants(stmts_in, entry_name, body_cache_in, body_cache_out, prov, checker_float_call_offsets, checker_int_render_offsets, checker_bool_render_offsets, checker_eq_offsets, checker_eq_type_keys, split, render, array_empty())
+}
+
+/// #2828 rung 2: the grant-carrying arity.
+export fn compile_wasi_module_rc_cached_impl_with_split_grants(stmts_in: Array[Stmt], entry_name: String, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache, prov: DbgProv, checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int], checker_bool_render_offsets: Array[Int], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], split: ModuleSplit, render: (Stmt) -> String, grants: Array[(String, String)]) -> Bytes with Exception {
   let stmts = elaborate_heap_params(stmts_in)
-  compile_wasi_module_linked_impl_with_split(stmts, entry_name, array_empty(), array_empty(), false, true, false, false, false, false, true, prov, body_cache_in, body_cache_out, 0, 0 - 1, checker_float_call_offsets, checker_int_render_offsets, checker_bool_render_offsets, checker_eq_offsets, checker_eq_type_keys, split, render)
+  compile_wasi_module_linked_impl_with_split_grants(stmts, entry_name, array_empty(), array_empty(), false, true, false, false, false, false, true, prov, body_cache_in, body_cache_out, 0, 0 - 1, checker_float_call_offsets, checker_int_render_offsets, checker_bool_render_offsets, checker_eq_offsets, checker_eq_type_keys, split, render, grants)
 }
 
 /// Preserve the post-lowering AST for the explicit `no-dce` compile mode.
@@ -14739,9 +14792,15 @@ export fn compile_wasi_module_rc_shadow_impl(stmts_in: Array[Stmt], entry_name: 
 /// #2391 (#2425 review round 4): shadow-instrumented RC with the checker's
 /// Double call-result offsets, so VIBE_RC=shadow compiles the same program
 /// the production rc lane does.
+/// Pre-#2828-rung-2 arity: no launcher grants (fail-closed).
 export fn compile_wasi_module_rc_shadow_impl_with_typed_offsets(stmts_in: Array[Stmt], entry_name: String, checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int], checker_bool_render_offsets: Array[Int], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String]) -> Bytes with Exception {
+  compile_wasi_module_rc_shadow_impl_with_typed_offsets_grants(stmts_in, entry_name, checker_float_call_offsets, checker_int_render_offsets, checker_bool_render_offsets, checker_eq_offsets, checker_eq_type_keys, array_empty())
+}
+
+/// #2828 rung 2: the grant-carrying arity (rc-shadow lane).
+export fn compile_wasi_module_rc_shadow_impl_with_typed_offsets_grants(stmts_in: Array[Stmt], entry_name: String, checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int], checker_bool_render_offsets: Array[Int], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], grants: Array[(String, String)]) -> Bytes with Exception {
   let stmts = elaborate_heap_params(stmts_in)
-  compile_wasi_module_linked_impl_with_typed_offsets(stmts, entry_name, array_empty(), array_empty(), false, true, false, false, false, true, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_discard(), 0, 0 - 1, checker_float_call_offsets, checker_int_render_offsets, checker_bool_render_offsets, checker_eq_offsets, checker_eq_type_keys)
+  compile_wasi_module_linked_impl_with_typed_offsets_grants(stmts, entry_name, array_empty(), array_empty(), false, true, false, false, false, true, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_discard(), 0, 0 - 1, checker_float_call_offsets, checker_int_render_offsets, checker_bool_render_offsets, checker_eq_offsets, checker_eq_type_keys, grants)
 }
 
 /// #1259 step 7: compile the module twice -- once compiling every body and
@@ -14852,8 +14911,14 @@ export fn compile_wasi_module_with_sources_impl(stmts: Array[Stmt], entry_name: 
 /// call-result offsets. This is the single-source lane
 /// (`compile_source_wasi_only`, entry/source_compile/wasi_only/preprocess_compile.vibe),
 /// where one text means one offset space with nothing to collide.
+/// Pre-#2828-rung-2 arity: no launcher grants (fail-closed).
 export fn compile_wasi_module_with_sources_impl_with_typed_offsets(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int], checker_bool_render_offsets: Array[Int], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String]) -> Bytes with Exception {
-  compile_wasi_module_linked_impl_with_typed_offsets(stmts, entry_name, srcs, array_empty(), false, false, false, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_discard(), 0, 0 - 1, checker_float_call_offsets, checker_int_render_offsets, checker_bool_render_offsets, checker_eq_offsets, checker_eq_type_keys)
+  compile_wasi_module_with_sources_impl_with_typed_offsets_grants(stmts, entry_name, srcs, checker_float_call_offsets, checker_int_render_offsets, checker_bool_render_offsets, checker_eq_offsets, checker_eq_type_keys, array_empty())
+}
+
+/// #2828 rung 2: the grant-carrying arity (mvp lane).
+export fn compile_wasi_module_with_sources_impl_with_typed_offsets_grants(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int], checker_bool_render_offsets: Array[Int], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], grants: Array[(String, String)]) -> Bytes with Exception {
+  compile_wasi_module_linked_impl_with_typed_offsets_grants(stmts, entry_name, srcs, array_empty(), false, false, false, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_discard(), 0, 0 - 1, checker_float_call_offsets, checker_int_render_offsets, checker_bool_render_offsets, checker_eq_offsets, checker_eq_type_keys, grants)
 }
 
 /// Coverage build (#cov): compile with function-level hit instrumentation +

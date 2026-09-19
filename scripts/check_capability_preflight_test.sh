@@ -75,23 +75,32 @@ fi
 # Green control on the current artifact, so a gate that fails for an unrelated
 # reason (a missing runner, a broken launcher) cannot masquerade as the red
 # case above.
+# The green control is a MEASUREMENT of the compiler under test, so it has no
+# honest fallback (AGENTS.md, "A MEASUREMENT has no honest fallback"). It uses
+# the artifact the lane handed us and nothing else.
+#
+# It used to scan the generations glob when the lane gave it nothing, and that
+# was wrong in a way only rung 2 exposed: `carries_fix` detects RUNG 1's
+# refusal string, so a rung-1-only stage2 looks "post-fix" to it. The glob duly
+# picked one, the four rung-2 cases ran against a compiler that predates them,
+# and the self-test reported a failure that said nothing about the tree. There
+# is no string that distinguishes rung 2 -- it adds behaviour, not text -- so
+# guessing the artifact cannot be made safe. Refuse instead.
 post_fix=""
-if [ -n "$LANE_STAGE2" ] && [ -f "$LANE_STAGE2" ] && carries_fix "$LANE_STAGE2"; then
-  post_fix="$LANE_STAGE2"
-else
-  for w in "$ROOT_DIR"/_build/selfhost/generations/*/stage2.wasm; do
-    [ -f "$w" ] || continue
-    if carries_fix "$w"; then
-      post_fix="$w"
-    fi
-  done
+if [ -n "$LANE_STAGE2" ] && [ -f "$LANE_STAGE2" ]; then
+  if carries_fix "$LANE_STAGE2"; then
+    post_fix="$LANE_STAGE2"
+  else
+    bad "the lane's compiler does not even carry rung 1; it cannot be the green control"
+  fi
 fi
 
 if [ -z "$post_fix" ]; then
-  echo "n/a: no post-#2828 stage2 on disk for the green control" >&2
+  echo "n/a: the green control needs CAPABILITY_PREFLIGHT_STAGE2 pointing at" >&2
+  echo "  the compiler built from this tree; it will not guess one from disk." >&2
 else
   out="$(CAPABILITY_PREFLIGHT_STAGE2="$post_fix" bash "$ROOT_DIR/scripts/check_capability_preflight.sh" 2>&1 || true)"
-  if printf '%s\n' "$out" | grep -q '6 passed, 0 failed'; then
+  if printf '%s\n' "$out" | grep -q '11 passed, 0 failed'; then
     ok "a compiler with the connected ladder PASSES the gate"
   else
     bad "the green control did not pass: $out"

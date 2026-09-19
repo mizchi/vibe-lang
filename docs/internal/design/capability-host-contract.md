@@ -231,15 +231,60 @@ and, since #2828 rung 1, the required-capability preflight, which needed
 neither the section nor the globals because a REQUIRED capability is decided
 before the module is built rather than by the host at instantiate time.
 
-What that rung measured, and what it means for the next one: **an optional
-capability answers `NotGranted` unconditionally today** — with `--allow-fs`,
-with no flags, on a file that exists and on one that does not. `perform?` is a
-constant, so the `Granted` and `Errored` arms are dead code in every program
-that writes them. That is #2236's default, which ADR-0088's amendment
-withdraws; the withdrawal is recorded and not implemented. It also means
-`Errored(E)` is unreachable for a reason that is not its ABI: nothing can
-report a host failure through a branch the program never enters. The lowering
-below is what unblocks it.
+Rung 1 measured that **an optional capability answered `NotGranted`
+unconditionally** — with `--allow-fs`, with no flags, on a file that existed and
+on one that did not. `perform?` was a constant, so the `Granted` and `Errored`
+arms were dead code in every program that wrote them.
+
+**#2828 rung 2 ended that**, and with it #2236's default. `perform?` now
+resolves from the grant the launcher froze, and the `Granted` arm runs the real
+operation. Measured on the same program, reading a file that exists:
+
+| flags | `perform? Fs::read_file(..)` |
+|---|---|
+| *(none)* | `Granted` — ambient authority, matching the preflight |
+| `--allow-stdout` | `NotGranted` — an allow-list is a list |
+| `--allow-fs --allow-stdout` | `Granted`, and the call runs |
+| `--deny-fs --allow-stdout` | `NotGranted` |
+| `--allow-fs --deny-fs` | `NotGranted` — deny beats allow |
+
+### The frozen-grant constant (#1346 criterion 4)
+
+What the launcher freezes is a table of `(name, status)` rows, `status` being
+`Granted` or `NotGranted` and nothing else — any other spelling is a build
+error, not a silent default. `opq_resolution` reads it in three tiers: an exact
+operation (`Fs::read_file`), then the PROVIDER (`Fs`), then the `"*"` row, whose
+absence means `NotGranted`.
+
+That ordering is what makes the table fail-closed **by construction**: a granted
+provider needs a row, a denied one needs none, and a provider nobody thought
+about cannot be granted by omission. `optional_grants_from_flags` therefore
+emits one `(provider, "Granted")` row per granted provider and nothing for the
+rest; with no flags the granted set is every standard provider, which is the
+same ambient authority the L3 preflight already assumes.
+
+**The grant is a property of the run, not of the allocator.** Every arm of
+`compile_release_lane` carries the same table, so `VIBE_RC=0`, `shadow` and the
+default answer alike. This is stated because it was briefly untrue: rung 2 first
+wired only the default arm, and the other two answered `NotGranted` for every
+optional capability whatever the run was granted. `check_capability_preflight.sh`
+case 11 pins it by naming the three lanes rather than inheriting one.
+
+### The denied-operation stub (#1346 criterion 4)
+
+A capability the run did not grant is not linked, not called, and not trapped at
+the optional surface: the lowering replaces the whole `perform?` expression with
+the `NotGranted` constructor, so the artifact never imports the host function on
+that path. The trapping stub described in section 2 is the REQUIRED surface's
+answer — a host withholding something the module declared it needs — and the two
+must not be confused. Optional means the program branches; required means the
+run does not start.
+
+`Errored(E)` is reachable as of this rung, and it did not need an ABI to become
+so. `opq_expr` only builds the `EHandle` whose arm constructs
+`$vibe_attempt_errored` on the `Granted` branch, so while nothing resolved to
+`Granted` that arm was never emitted. A catchable host-failure ABI is still
+outstanding (below); what is fixed here is that the branch now exists.
 
 | | state |
 |---|---|
@@ -249,6 +294,7 @@ below is what unblocks it.
 | the trap is proven to fire | **landed** — `scripts/host_capability_withhold_test.sh` (`pkf run test-host-capability-withhold`, and in `tests/gates/selftests/run.sh`) runs both runners: the granted run reads the file, the withheld run traps by name *after* instantiating (asserted via the wasm frame in the backtrace, so a link failure cannot pass for a stub) and prints no value. The node half also carries a source mutation — with the withhold branch removed, the same run succeeds — which pins the trap to that branch. The viberun half has the env-var control only: rebuilding the Rust runner per case costs ~80 s, so the counterfactual is the same binary and wasm with only the variable differing. Verified once by hand at the rebuild: with the stub never installed, the withheld run prints `read: apple` and the gate fails on it |
 | `vibe.capabilities` section | not done — nothing emits an `optional` row until the lowering does |
 | grant globals | not done — same reason |
+| optional-capability grants reach the lowering | **landed for `vibe run`** (#2828 rung 2) — `optional_grants_from_flags` turns the L1 flags into the frozen-grant table above and threads it to `optional_perform_artifact_resolution` on every allocator lane. Pinned by `check_capability_preflight.sh` cases 7–11, whose red input is a real pre-rung-2 stage2 rather than a mutation |
 | required-capability preflight | **landed for `vibe run`** (#2828 rung 1) — `preflight_instantiate` runs before the artifact is built, and a required authority the host does not grant aborts naming both edits (`--allow-fs`, and the `allows X?` alternative). It takes the REFUSE side of "Open for the owner" item 2 below, as this table already did. Driven by L1 flags (`--allow-*` / `--deny-*`, new in the same rung); it does NOT read the section or the globals, because neither is emitted yet. No flag leaves every provider granted, so an existing program is unaffected. Pinned by `scripts/check_capability_preflight.sh` and its red test |
 
 Withholding is named by the wasm **import field** (`fs_read_file`), not the
@@ -266,9 +312,9 @@ map one to the other; until then the field is the only name both sides have.
 - **Who decides the grant.** The host reads it from somewhere — a CLI flag, a
   manifest, a `BindingLock` (ADR-0075 L2). That is #2332's rung, and the
   contract above is the same whichever way it is answered.
-- **`Errored(E)`.** A catchable host-failure ABI is listed in ADR-0088 as
-  outstanding and is untouched here; the stub traps, it does not produce
-  `Errored`.
+- **`Errored(E)`'s ABI.** The branch is reachable as of rung 2, but a catchable
+  host-failure ABI is listed in ADR-0088 as outstanding and is untouched here:
+  the required-surface stub traps, it does not produce `Errored`.
 
 ## Open for the owner
 
