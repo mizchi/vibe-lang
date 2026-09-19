@@ -16,13 +16,38 @@ fn string2_one_param(a: Type) -> Array[Type] {
   arr
 }
 
-/// Case-conversion helpers remain fallback-only. The other String signatures
-/// formerly in this lane are checker-visible registry rows (#1593).
+/// The other String signatures formerly in this lane are checker-visible
+/// registry rows (#1593).
+///
+/// #2900: `String::to_lower` / `String::to_upper` were typed HERE, and they
+/// are not builtins -- they are ordinary vibe functions in
+/// `lib/@vibe/builtin/string.vibe`, like `String::replace`, `trim_start`,
+/// `trim_end` and `count`. Typing them unconditionally made the name resolve
+/// whether or not anything supplied a body, so the three cases came apart:
+///
+///   no import               checker ok, no body  -> codegen ICE
+///   any import (unnamed)    checker ok, module linked by accident -> worked
+///   named import            worked
+///
+/// The first is the bug -- `reached code generation unresolved`, which tells
+/// the reader their correct-looking program is a compiler bug to report, when
+/// the whole fault is a missing import. The second is why it survived: the
+/// fixtures that call `String::to_upper` import `String::replace` and never
+/// name it, so the accidental linkage kept them green. Measured: the five
+/// siblings do NOT resolve that way -- `String::replace` under an import
+/// naming only `String::count` is `unknown name`.
+///
+/// They are not typed here any more, so all three cases follow the same rule
+/// as the siblings: the name must be imported by name. Only this lookup is
+/// removed; the classifier lists that give an ALREADY-RESOLVED call its arity,
+/// return type and directness still serve the imported case and are untouched.
+///
+/// This exact defect was worked around four separate times rather than fixed
+/// -- #774 (`@vibe/http`), #777 (`@vibex/shell`), #778 (`@vibe/wasi/p3`) and
+/// `@vibe/lsp`, each of which hand-rolled an ASCII fold with a comment
+/// describing this failure.
 export fn lookup_string2(name: String) -> Option[Type] {
-  if name == "String::to_lower" || name == "String::to_upper" {
-    Some(CtFn(string2_one_param(CtString), CtString, None))
-  }
-  else if name == "String::unicode_length" || name == "String::utf16_length" || name == "String::utf8_length" {
+  if name == "String::unicode_length" || name == "String::utf16_length" || name == "String::utf8_length" {
     // #2630: the three length VIEWS of a byte string (ADR-0098) -- code
     // points, UTF-16 code units, bytes. Fallback-typed like `Double::parse`
     // rather than registry rows: they sit in neither lane's func table (a
