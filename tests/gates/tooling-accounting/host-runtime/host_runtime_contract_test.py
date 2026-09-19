@@ -333,5 +333,60 @@ class GcHostListTest(unittest.TestCase):
         self.assertEqual(module.GC_LOWERED_ALIASES, {"Fs::readdir": "vibe_fs_read_dir_raw"})
 
 
+class RustProviderSignatureTest(unittest.TestCase):
+    """#1346: the provider's callable types, not just its names.
+
+    Presence-by-name catches a MISSING provider and says nothing about one that
+    is present with the wrong arity or result type. wasmtime reports that at
+    link time as an opaque signature error, after the emitter and the runner
+    have each been reviewed and each looked right alone.
+
+    Each case mutates the REAL runner source, so a green here is about the tree
+    rather than about a fixture (#2248).
+    """
+
+    RUST = ROOT / "runtime/viberun/src/main.rs"
+
+    def setUp(self):
+        self.text = self.RUST.read_text()
+        self.manifest = json.loads((ROOT / "docs/generated/host-runtime-contract.json").read_text())
+        # One real provider, used as the mutation site by the cases below.
+        self.anchor = "|mut caller: Caller<'_, HostState>, path: i64| -> Result<i64> {"
+        self.assertIn(self.anchor, self.text, "fs_read_file's closure has moved; retarget these cases")
+
+    def assert_mutation_fails(self, mutated):
+        self.assertNotEqual(mutated, self.text, "mutation did not apply")
+        with self.assertRaises(SystemExit):
+            module.validate_rust_signatures(mutated, self.manifest)
+
+    def test_real_runner_agrees_with_the_emitter(self):
+        checked = module.validate_rust_signatures(self.text, self.manifest)
+        # Not merely "did not raise": a parser that silently matched nothing
+        # would also not raise, and would report every future drift as fine.
+        self.assertGreaterEqual(checked, 40, "far fewer providers compared than the runner defines")
+
+    def test_wrong_result_type_fails(self):
+        self.assert_mutation_fails(
+            self.text.replace(self.anchor, self.anchor.replace("-> Result<i64>", "-> Result<()>"), 1)
+        )
+
+    def test_dropped_parameter_fails(self):
+        self.assert_mutation_fails(
+            self.text.replace(self.anchor, self.anchor.replace(", path: i64|", "|"), 1)
+        )
+
+    def test_added_parameter_fails(self):
+        self.assert_mutation_fails(
+            self.text.replace(self.anchor, self.anchor.replace(", path: i64|", ", path: i64, extra: i64|"), 1)
+        )
+
+    def test_unreadable_closure_is_reported_not_skipped(self):
+        # Silence is not safety: a provider this cannot parse is exactly where a
+        # drift would hide, so it must FAIL rather than be passed over.
+        self.assert_mutation_fails(
+            self.text.replace(self.anchor, self.anchor.replace("path: i64", "path: SomeOpaqueType"), 1)
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

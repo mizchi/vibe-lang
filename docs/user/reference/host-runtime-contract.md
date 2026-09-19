@@ -35,8 +35,25 @@ Values use the compiler's raw core ABI:
 
 The manifest maps compiler type indices to core signatures. Two generated type
 indices are named explicitly: `http_request_type_idx` and `dbg_line_type_idx`.
-This first slice checks signatures on the emitter side and provider presence by
-name; it does not yet parse Rust/JavaScript callable types.
+
+Signatures are checked on the emitter side, and **on the viberun provider side**:
+the gate parses each `linker.func_wrap("vibe", ..)` closure, drops the
+`Caller<'_, HostState>` host context, maps `Result<T>` to `T`, and compares the
+result against the emitter's declared core signature. 51 providers agree today.
+Presence-by-name alone caught a provider that was MISSING and said nothing about
+one present with the wrong arity or result type -- which wasmtime reports at link
+time as an opaque signature error, after the emitter and the runner have each
+been reviewed and each looked right on its own.
+
+A closure the parser cannot read FAILS the gate rather than being skipped: an
+unreadable provider is exactly where a drift would hide. (Measured while writing
+it -- splitting the parameter list on `,` shreds `Caller<'_, HostState>`, which
+silently turned 51 readable providers into 49 unreadable ones.)
+
+The Node runner's callable types are still unchecked: its providers are plain
+JavaScript functions with no declared parameter types, so arity is the only
+comparable property and the emitter's `i64`/`i32` distinction has no counterpart
+there.
 
 Two explicit standalone exceptions are contractual rather than omissions:
 
@@ -84,7 +101,10 @@ reports what one artifact actually imports.
 
 #1346 remains open for:
 
-- executable signature comparison against both provider implementations;
+- executable signature comparison against the NODE provider (the viberun half
+  has landed: 51 `func_wrap` closures are compared against the emitter's core
+  signatures, with mutation tests in
+  `tests/gates/tooling-accounting/host-runtime/host_runtime_contract_test.py`);
 - semantic conformance fixtures for failures, path rules, handle lifecycle,
   byte sorting, and packed-value edge cases;
 - a complete WIT/raw projection inventory for async, socket, HTTP, and generated
