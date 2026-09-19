@@ -199,7 +199,7 @@ lib/                      # All vibe source: stdlib + compiler + experimental
 │   │   ├── codegen/      #     WASM code generation (linear + gc lanes)
 │   │   ├── core/         #     AST types and serialization
 │   │   ├── loader/       #     source/lock resolution + module loading
-│   │   ├── contract/     #     .vibei contract grammar + conformance engine
+│   │   ├── contract/     #     index.vpkg contract grammar + conformance engine
 │   │   ├── perceus/ ripple/ #  ownership / reference-counting passes
 │   │   ├── normalize/ fmt/  #  normalization + formatter
 │   │   ├── cache/ runtime/  #  caches, compiler hooks, shell support

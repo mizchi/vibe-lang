@@ -1,12 +1,11 @@
 # vibe Module System v2 — 契約ファースト・パッケージシステム設計
 
 > **現行の規則の正本は [module-system-oracle.md の「現行モデル」節](module-system-oracle.md#現行モデル-canonical--ここが唯一の現行記述)** (#1269)。
-> 本ドキュメントは設計記録であり、`index.vibei` を契約ファイルの主役として
-> 説明する箇所は現行の綴り (`index.vpkg`) より前の世代の記述である。
+> 本ドキュメントは設計記録で、契約ファイルは現行の綴り `index.vpkg` で書く。
 >
 > Status: **implemented (A–G core, 2026-07-04; owner policy updated
 > 2026-07-16)** (ADR-0063 / ADR-0064 / ADR-0070)。
-> 全フェーズの中核が landing 済み: fn / module{} 削除 / .vibei 契約照合 +
+> 全フェーズの中核が landing 済み: fn / module{} 削除 / 契約照合 +
 > facade + 境界強制 + opaque / content-addressed require + store + fmt pin
 > 挿入 + repin / where 契約の常時 runtime check / publish semver 機械検証 /
 > seed bump `module-system-v2-2026-07-04` + compiler source の fn 移行開始。
@@ -92,12 +91,12 @@ fn f(x~: Int, y~: Int) -> Int { x + y }        // labeled args
 
 1. 同一ディレクトリに複数の index spelling があれば**ハードエラー**。
 2. **モード混在禁止**: `index.vibe` 内の body なし `fn` はエラー、
-   `index.vibei` 内の body 付き `fn` はエラー。
+   `index.vpkg` 内の body 付き `fn` はエラー。
 3. `index.vibe` モードの private ヘルパは兄弟ファイルに書いて import する。
    `priv` 修飾子は導入しない (「トップレベル = 公開」を例外なしに保つ)。
-   1 ファイルに私的ヘルパを同居させたくなったら `.vibei` へ移行するサイン。
+   1 ファイルに私的ヘルパを同居させたくなったら `index.vpkg` へ移行するサイン。
 
-契約ファイル (`.vibei`) に書けるもの:
+契約ファイル (`index.vpkg`) に書けるもの:
 
 - 型定義。公開 struct/enum は定義ごと。実装を隠す場合は **`opaque type Ast`**。
 - 関数シグネチャ (body なし `fn`)。**effect row (`with Fs`) は契約の中核
@@ -107,7 +106,7 @@ fn f(x~: Int, y~: Int) -> Int { x + y }        // labeled args
 - パッケージメタデータと依存: `package` / `version` / `require` (§5–6)。
 - `where` 契約節 (§7)。
 
-`.vibei` 内では body のない `fn` がそのまま宣言になる。`declare` 等の新
+`index.vpkg` 内では body のない `fn` がそのまま宣言になる。`declare` 等の新
 キーワードは導入しない (`.vibe` 内の body なし `fn` はエラー、で曖昧さなし)。
 
 帰結:
@@ -115,7 +114,7 @@ fn f(x~: Int, y~: Int) -> Int { x + y }        // labeled args
 - **`export` キーワードは実装ファイルから撤去する** (契約モデル安定後の
   フェーズ)。可視性の唯一の情報源が契約ファイルになる。
 - 契約に書かれていないトップレベル定義は自動的に境界内 private。
-- `.vibei` の集合だけでワークスペース全体の API 面が読める (AI 文脈効率・
+- `index.vpkg` の集合だけでワークスペース全体の API 面が読める (AI 文脈効率・
   人間のコードリーディング・LSP の workspace symbols)。
 - incremental check の境界: 契約が変わらない実装変更は依存側の再チェック不要。
 
@@ -124,11 +123,11 @@ fn f(x~: Int, y~: Int) -> Int { x + y }        // labeled args
 サブ境界の存在 (内部整理) と外部公開は分離する:
 
 - サブ index はデフォルトで **package-private の境界**。
-- 外部に subpath (`@lib/@vibe/compiler/syntax`) として見せるのは、**ルートの
-  index.vibei が明示 re-export したときだけ**:
+- 外部に subpath (`@vibe/compiler/syntax`) として見せるのは、**ルートの
+  `index.vpkg` が明示 re-export したときだけ**:
 
 ```vibe
-// lib/@lib/@vibe/compiler/index.vibei
+// lib/@vibe/compiler/index.vpkg
 export ./syntax as syntax
 ```
 
@@ -157,7 +156,7 @@ export ./syntax as syntax
 ## 6. `require` — one line = manifest + lock
 
 ```vibe
-// Same syntax in an index.vibei and at the top of a one-off script
+// Same syntax in an index.vpkg and at the top of a one-off script
 require @vibe/core 1.2.3 = #ab12cd34      // bare triple = exact match
 require @vibe/http ^1.2.3 = #77aa02ef     // ^ = compatible range (full triple required)
 ```
@@ -285,7 +284,7 @@ fn main() -> Unit allows Stdout + Net { ... }
 
 ## 11. WIT との対応
 
-`index.vibei` は事実上「vibe 語彙で書いた WIT」。effect→WIT mapping (#537,
+`index.vpkg` は事実上「vibe 語彙で書いた WIT」。effect→WIT mapping (#537,
 [effect-wit-mapping.md](effect-wit-mapping.md)) と合わせて、パッケージを
 wasm component として publish する際に WIT を契約から機械導出する。
 
@@ -299,7 +298,7 @@ seed がそれを理解するまでコンパイラ自身のソースで使えな
 |---|---|---|
 | A | `fn` sugar (parser 脱糖のみ)。fixtures + fmt 変換 | なし |
 | B | `module {}` ブロック削除 (examples 移行 + parser から撤去) | なし |
-| C | `.vibei` 契約照合 + index 境界規則 + opaque type + 可視性 (checker/merge 層。#716 rename 機構の拡張) | A |
+| C | 契約照合 + index 境界規則 + opaque type + 可視性 (checker/merge 層。#716 rename 機構の拡張) | A |
 | D | `@scope/name` 解決 + store + `require`/hash + fmt pin 挿入 + dedupe/override | C |
 | E | `where` 契約 Phase 1 (debug assert 脱糖) + fuzz oracle 接続 | A |
 | F | publish + semver 機械検証 (registry は local/git から開始) | D |
@@ -310,7 +309,7 @@ seed がそれを理解するまでコンパイラ自身のソースで使えな
 moonbitlang/core の構成を参考に、旧 `vibe/collection/{list,set}` /
 `vibe/sha1` / `vibe/leb128` を **`lib/@vibe/core/`** に統合した。
 このシステム自身のドッグフーディングであり、契約は
-`lib/@vibe/core/index.vibei`（82 fn 宣言 + `type List[T]` / `type StringSet`）。
+`lib/@vibe/core/index.vpkg`（82 fn 宣言 + `type List[T]` / `type StringSet`）。
 
 - **bodyless `type Name[T]` 宣言**: opaque と同じ機構で impl 側の型を
   透過的に re-export する契約文法（この抽出で必要になり追加）。
