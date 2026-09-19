@@ -3244,7 +3244,12 @@ fn interp_erased_formal_in(types: Array[Type], s: Subst, env: TypeEnv) -> String
 
 // The entire body must be a direct pass-through. Such calls are expanded at
 // their use sites by trait lowering; adding a prefix or binding ends this case.
-fn interp_is_shim_body(params: Array[(String, Option[TypeExpr])], body: Expr) -> Bool {
+//
+// #2773: exported so `check_stmts`'s hoist can mark the top-level shim NAMES
+// with the same rule that grants the body its exemption. A second copy of this
+// predicate is exactly the shape that made #1978 miscompile -- two mirrors that
+// agree until they do not.
+export fn interp_is_shim_body(params: Array[(String, Option[TypeExpr])], body: Expr) -> Bool {
   if Array::length(params) != 1 {
     false
   } else {
@@ -3260,6 +3265,21 @@ fn interp_is_shim_body(params: Array[(String, Option[TypeExpr])], body: Expr) ->
       },
       _ => false
     }
+  }
+}
+
+/// #2773: the env key `check_stmts`'s hoist marks a top-level rendering shim
+/// with. Spelled by this function on both sides, so the writer and the reader
+/// cannot drift apart.
+export fn interp_shim_marker(name: String) -> String {
+  String::concat("#interp.shim.fn.", name)
+}
+
+/// Whether `name` is a top-level rendering shim in this statement list.
+fn interp_name_is_shim(env: TypeEnv, name: String) -> Bool {
+  match env_lookup(env, interp_shim_marker(name)) {
+    Some(CtBool) => true,
+    _ => false
   }
 }
 
@@ -6251,7 +6271,15 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         // restriction as ELet above -- `let rec get = () -> { xs }` returns
         // the same captured array every call, and this site generalized
         // unconditionally.
-        let gen = let_generalize(val, tv, cenv, s2, Some(name))
+        // #2892: generalize the value's RESOLVED type, not the bare recursive
+        // binder variable. `tv` is the fresh var bound for the recursive
+        // occurrence; `let_generalize(val, tv, ..)` produced a scheme whose
+        // body was that variable rather than the lambda's `CtFn`, so
+        // instantiating it at a call site yielded a variable and the call fell
+        // to the unchecked arm. `ELet` above already passes the value's type
+        // (`vt`); after the `unify(tv, vt, ..)` just above the two agree, so
+        // this is the same binding through a type the call path can read.
+        let gen = let_generalize(val, subst_apply(s2, tv), cenv, s2, Some(name))
         // #2848: see the ELet arm.
         refuse_generalized_field_reads(gen, s2, errors)
         cenv = env_bind(cenv, name, gen)
@@ -9451,6 +9479,28 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                     c2 = nc
                     ai = ai + 1
                   }
+                  // #2773: THE CALL SITE THE BODY EXEMPTION DEFERS TO.
+                  //
+                  // `check_interp_formal` stands down inside a top-level
+                  // rendering shim's body (the `#interp.shim.body` marker bound
+                  // in the EFn arm) on the grounds that the shim is expanded at
+                  // each of its call sites, where the argument's type is still
+                  // available. That was half a contract: nothing re-asked the
+                  // question HERE, so the deferral deferred to nobody, and what
+                  // actually caught `shim(if c { a } else { a })` was
+                  // normalize's syntactic walk -- #2773's subject, and a pass
+                  // with no types. Measured with that walk stubbed, the shape
+                  // compiled and printed `v=232` / `v=252`: two allocation
+                  // addresses for two different values.
+                  //
+                  // The name is marked by `check_stmts`'s hoist rather than
+                  // when the declaration is reached, so a shim declared BELOW
+                  // its call site is still recognised.
+                  if Array::length(arg_tys) == 1 && interp_name_is_shim(env, name) {
+                    check_interp_formal(Array::get(arg_tys, 0), s2, env, errors, call_off)
+                  } else {
+                    ()
+                  }
                   let applied_callee_ty = match ct {
                     CtFn(_, _, _) => ct,
                     _ => subst_apply(s2, ct)
@@ -9856,9 +9906,30 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                 c2 = nc
                 ai = ai + 1
               }
-              let applied_callee_ty = match ct {
-                CtFn(_, _, _) => ct,
-                _ => subst_apply(s2, ct)
+              // #2890: a lambda carrying `[U]` checks to a `CtForAll` scheme,
+              // not a `CtFn`. This path matched only `CtFn` / `CtStruct`, so an
+              // IIFE whose lambda was generic fell to the `CtUnknown` arm and
+              // the call was NOT CHECKED AT ALL -- measured, `([U](u: U) -> U {
+              // u })(1, 2)` (one parameter, two arguments), a `String` passed to
+              // a declared `Int` parameter, and a concrete declared return bound
+              // to an unrelated struct were all accepted, and
+              // `let v: Int = ([U](u: U) -> U { u })(Qt::{ w: 5 }); v + 1`
+              // printed 233, the allocation address.
+              //
+              // The same lambda bound to a NAME first is checked, because that
+              // callee is an `EIdent` and takes the named path; only applying it
+              // where it is written reached here. Opening the scheme with fresh
+              // variables is what that named path effectively gets, so the call
+              // is checked exactly as any other.
+              let (opened_callee_ty, c2o) = match ct {
+                CtForAll(_, _, _) => match instantiate(ct, c2) {
+                  (ity, nc, _) => (ity, nc)
+                },
+                _ => (ct, c2)
+              }
+              let applied_callee_ty = match opened_callee_ty {
+                CtFn(_, _, _) => opened_callee_ty,
+                _ => subst_apply(s2, opened_callee_ty)
               }
               match applied_callee_ty {
                 CtFn(param_tys, ret, _) => {
@@ -9871,10 +9942,10 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                   }
                   let s3 = unify_call_args(call_param_tys, arg_tys, args, s2, errors, "<expr>", call_off)
                   let call_ret = call_result_with_provenance(Array::get(ret_box, 0), call_param_tys, arg_tys, s3)
-                  (tab_call_ty(tytab, call_off, call_ret, capture, lane), s3, c2)
+                  (tab_call_ty(tytab, call_off, call_ret, capture, lane), s3, c2o)
                 },
-                CtStruct(sname) => (tab_call_ty(tytab, call_off, CtStruct(sname), capture, lane), s2, c2),
-                _ => (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), s2, c2)
+                CtStruct(sname) => (tab_call_ty(tytab, call_off, CtStruct(sname), capture, lane), s2, c2o),
+                _ => (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), s2, c2o)
               }
             }
           }
@@ -11592,6 +11663,23 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                 CtBool => true,
                 CtString => true,
                 CtChar => true,
+                // #2893: an EMPTY literal first (`[[], [a]]`). #2447 gives it a
+                // real element slot -- `CtArray(<fresh var>)` -- and that var is
+                // what the whole literal's element type becomes. Falling to
+                // `false` here meant no later element was ever unified with it,
+                // so it stayed unconstrained and absorbed anything: measured,
+                //
+                //   let xs = [[], [a]]            // a: T
+                //   let v: Int = Array::get(Array::get(xs, 1), 0)
+                //
+                // compiled clean and printed 233, the allocation address. The
+                // same literal with the empty row SECOND (`[xs, []]`) was
+                // rejected, because then a real type went in first.
+                //
+                // Cross-checking costs one `subst_apply` per element, and a
+                // variable is not the "large struct/tuple" case the comment
+                // above is protecting against.
+                CtVar(_) => true,
                 _ => false
               },
               _ => false

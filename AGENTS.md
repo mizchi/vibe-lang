@@ -161,19 +161,24 @@ overlay leaves only the right dictionary reachable. Pinned by
 merely "did not throw") and `fixtures/lambda_bound_toplevel_witness_test.vibe`
 (the same rungs at a top-level binder).
 
-**One rung still fails closed**: interpolating a formal whose spelling an
-ENCLOSING binder also bound. `dtd_show_witness_dict` declines what
-`dtd_formal_is_shadowed` reports, and nobody has measured the overlay's answer
-for that shape — the pre-#2778 measurements are `Pt!` (a `Qt` rendered through
-`Pt::to_string`) with the enclosing dictionary, and `284`, a tagged pointer,
-with it withheld. Refusing until it is measured is the fail-closed reading of
-"never be silently wrong"; the message LEADS with the edit (move the lambda to
-a top-level declaration — the order is asserted by the gate, not just the
-presence of both clauses). `==` is NOT refused — it falls back to the ladder,
-which is #2523's subject, not this one. Pinned by
-`fixtures/lambda_bound_dispatch_interp_refused.vibe`, message asserted by
-`scripts/check_lambda_bound_refusal.sh`. Dropping that guard is the remaining
-half of #2778.
+**The last rung is measured, and no longer refused** (#2778 complete).
+Interpolating a formal whose spelling an ENCLOSING binder also bound used to be
+declined by `dtd_show_witness_dict`, via `dtd_formal_is_shadowed`, because
+nobody had measured the overlay's answer for that shape. Now measured: an inner
+`[T: Show]` shadowing an outer one renders `Qt!` — its OWN witness — and with
+the outer formal interpolated as well the program prints `Qt!Pt!`, each binder
+through its own witness. The guard was answering a question the overlay stopped
+posing: it dropped the row the inner binder rebinds, so only the right
+dictionary is reachable. The pre-#2778 answers for that same program were `Pt!`
+(a `Qt` rendered through `Pt::to_string`, a lie about the type) and `284`, a
+tagged pointer, with the dictionary withheld instead. Pinned as ANSWERS in
+`fixtures/lambda_bound_nested_witness_test.vibe`, which is where the refusal
+fixture's content went; `scripts/check_lambda_bound_refusal.sh` no longer
+carries a `lambda_bound_dispatch_*` family at all, and its `*)` arm rejects a
+fixture in no family so the family cannot return unchecked. `==` was never
+refused here — it falls back to the ladder, which is #2523's subject, and
+`dtd_eq_witness_dict` keeps its own shadowing check because `Eq` is a marker
+trait with no method to dispatch through.
 
 **Interpolating an erased formal requires a renderer** (#2745, #2840).
 Top-level generic bodies are not specialized, so moving an unbounded lambda to
@@ -187,10 +192,30 @@ own — what still has no renderer is an UNBOUNDED formal at either binder level
 and a formal whose spelling an enclosing binder also bound (above).
 
 A direct top-level one-parameter rendering shim is expanded at each call site,
-where its argument type is still available. Local generic lambdas cannot use
-this exemption. Adding a prefix or a local binding
+where its argument type is still available, so `check_interp_formal` stands
+down inside its body — and **the call site re-asks the question** (#2773).
+That second half was missing: the body deferred and nothing checked the
+argument, so `shim(if c { a } else { a })` over an erased formal compiled and
+printed the pointer. `check_stmts`'s hoist marks a shim's NAME (in the hoist,
+so a shim declared below its call site still counts) and the named-call arm
+checks the argument there. Local generic lambdas cannot use this exemption.
+Adding a prefix or a local binding
 makes the body cease to be a shim. Passing a generic shim as a value is
 refused by lowering; use a lambda with a concrete parameter type instead.
+
+**The erased-formal refusal is the CHECKER's alone now** (#2773 closed).
+`dtd_erased_interp_formal` answered "is this interpolated value an erased
+formal?" from syntax, in `normalize`, which has no types — so it carried an
+ad-hoc environment, and twenty-six review rounds found sixty-three routes past
+it without the rate falling. It is deleted: 57 functions, 1,970 lines. The
+measurement that licensed the deletion, in order, because the first number
+alone would have been wrong: with the walk stubbed, all 65
+`lambda_bound_*_refused.vibe` fixtures still refused and so did all three
+routes the issue listed as open — but the 1315-file unit corpus said 1314, and
+the one shape it found (the shim call above) compiled and printed `v=232` /
+`v=252`, two allocation addresses. **The refusal-fixture corpus alone says
+65/65 and is not sufficient evidence for a deletion**; the pass's own fixtures
+cannot see what it never learned to catch.
 A generated `derive(Show)` array helper also refuses an erased element without
 a renderer; binding its type parameter alone does not make rendering safe.
 `StringSet`'s `*_by` helpers now take an explicit key function, and the imported
@@ -603,14 +628,33 @@ vibe type-at file.vibe <line> <col>
 # offset の half-open 区間。契約は docs/user/reference/source-range-contract.md
 vibe binding-at file.vibe <line> <col>
 
-# 全 diagnostics (parse error 全件 + 型エラー)。**空出力 = clean、診断ありは
-# exit 1**、行は stdout に 1件1行。import は FS から解決するので、これ単体で
-# 「このファイルはコンパイルが通るか」に答えられる
+# **空出力 = clean、診断ありは exit 1**。import は FS から解決するので、これ
+# 単体で「このファイルはコンパイルが通るか」に答えられる。
+#
+# **ただし報告されるのは常に 1 件だけ** (#2831 criterion 4、実測 2026-09-19)。
+# ここにはかつて「parse error 全件 + 型エラー」と書いてあったが、独立した 2
+# つの型エラー・別関数の 2 つの unknown name・2 つの parse error のいずれでも
+# 出力は 1 行だった。原因は recovery が無いことではない — checker は全件を
+# `frozen_errors` に**収集した上で**先頭だけを投げる
+# (`checker_stmt.vibe` の `throw(Array::get(frozen_errors, 0))`)。
+# `unknown name` は push が 3 箇所、throw が 0 箇所。つまり criterion 4 は
+# 「recovery を作る」ではなく「既に集めたものを捨てるのをやめる」。
+# `--json` が配列を返すのもこのため (要素数は常に 1)。
 vibe check file.vibe
 
 # 同じ質問をバッファ単位で (import を辿らない)。未保存バッファを見る
-# エディタ用。`--json` は LSP Diagnostic 配列 (このモードのみ)
+# エディタ用
 vibe check --single-file file.vibe
+# `--json` は LSP Diagnostic 配列。**両モードで使える** — かつてここには
+# 「このモードのみ」と書いてあったが実測 (2026-09-19) では FS lane も受理し、
+# 両者は BYTE-IDENTICAL に答える: 同じ diagnostics、同じ exit code
+# (clean=0/診断あり=1)、clean は空出力ではなく `[]`、位置は 0-based line +
+# UTF-16 code unit (`let a: Int = "日本語ですよ"` は 20 バイトだが
+# `character` は 13-21 の 8 code unit)。#2831 criterion 2。
+# 二つの lane は引数パーサが別 (`parse_check_args_with_profile` /
+# `parse_user_check_args`) なので、どちらも単体では正しく見えたまま drift し
+# うる。`scripts/check_check_json_lane_parity.sh` が一致を固定している。
+vibe check --json file.vibe
 vibe check --single-file --json file.vibe
 
 # closure に捕獲されて escape する `let mut` (NAME START END / 行)。

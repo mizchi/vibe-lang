@@ -660,3 +660,169 @@ done
 cleanup_probe
 
 echo "[vibe-test-smoke] ok (seed notice fires on a compiler source outside lib/@vibe/compiler, suppressed on explicit compiler/quiet)"
+
+# #2886: `vibe test --update` works here, and an unrecognised option does not
+# borrow the MISSING-FILE wording.
+#
+# `--update` used to fall through the flag loop into the positional list and
+# come back as `not found: --update`, which reads as a typo in a filename. The
+# flag is real everywhere else (`runtime/vibe` documents `vibe test --update`),
+# and CLAUDE.md sends a compiler change through THIS wrapper because it is the
+# only lane that honours VIBE_TEST_CLI_WASM -- so the two instructions could
+# not both be followed. It is implemented here now, and the wording defect is
+# fixed for every OTHER flag.
+#
+# The capability is asserted by OUTCOME, not by exit code: a stale snapshot is
+# patched to the value the run printed and the file then passes, a file that is
+# already correct is left byte-identical, and a failure that is not an inspect
+# mismatch still FAILS with the source untouched (a `--update` that "fixes"
+# anything by rewriting a source is worse than one that does not exist).
+assert_update_patches_stale_snapshots() {
+  local out rc d
+  d="$ROOT_DIR/_build/_smoke_2886"
+  rm -rf "$d"; mkdir -p "$d"
+
+  # (1) A stale snapshot is brought to the value the run printed, and the
+  #     unrelated literal with a different spelling is not disturbed.
+  cat > "$d/stale_test.vibe" <<'VEOF'
+let label = "keep"
+
+test "smoke" {
+  inspect(10 + 1, "stale")
+  assert(label == "keep")
+}
+VEOF
+  out="$(VIBE_TEST_QUIET_COMPILER_NOTE=1 bash "$ROOT_DIR/scripts/vibe_test.sh" \
+    --update _build/_smoke_2886/stale_test.vibe 2>&1)" && rc=0 || rc=$?
+  if [ "${rc:-0}" -ne 0 ]; then
+    echo "[vibe-test-smoke] FAIL: --update did not bring a stale snapshot to green (#2886)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+  if ! grep -qF 'inspect(10 + 1, "11")' "$d/stale_test.vibe"; then
+    echo "[vibe-test-smoke] FAIL: --update did not patch the stale literal (#2886)" >&2
+    cat "$d/stale_test.vibe" >&2
+    exit 1
+  fi
+  if ! grep -qF 'let label = "keep"' "$d/stale_test.vibe"; then
+    echo "[vibe-test-smoke] FAIL: --update disturbed an unrelated literal (#2886)" >&2
+    cat "$d/stale_test.vibe" >&2
+    exit 1
+  fi
+  if ! printf '%s\n' "$out" | grep -qF "updated 1 snapshot(s)"; then
+    echo "[vibe-test-smoke] FAIL: --update did not report the patch it made (#2886)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+
+  # (2) Idempotent: a second run has nothing to do and must not rewrite.
+  cp "$d/stale_test.vibe" "$d/stale_test.vibe.was"
+  out="$(VIBE_TEST_QUIET_COMPILER_NOTE=1 bash "$ROOT_DIR/scripts/vibe_test.sh" \
+    --update _build/_smoke_2886/stale_test.vibe 2>&1)" && rc=0 || rc=$?
+  if [ "${rc:-0}" -ne 0 ]; then
+    echo "[vibe-test-smoke] FAIL: --update failed on an already-correct file (#2886)" >&2
+    exit 1
+  fi
+  if ! cmp -s "$d/stale_test.vibe" "$d/stale_test.vibe.was"; then
+    echo "[vibe-test-smoke] FAIL: --update rewrote an already-correct file (#2886)" >&2
+    exit 1
+  fi
+  if printf '%s\n' "$out" | grep -qF "updated"; then
+    echo "[vibe-test-smoke] FAIL: --update claimed a patch it did not make (#2886)" >&2
+    exit 1
+  fi
+
+  # (3) The control. A failure that is NOT an inspect mismatch cannot be
+  #     patched away: it stays a FAIL and the source is untouched.
+  # assert_eq, not a bare assert: it PRINTS on failure, so the patcher is
+  # actually handed a non-empty capture and has to decide that none of it is
+  # an inspect mismatch. A bare assert prints nothing, the patch step never
+  # runs, and this case would assert nothing about it.
+  cat > "$d/hard_test.vibe" <<'VEOF'
+test "hard" {
+  assert_eq(1, 2)
+}
+VEOF
+  cp "$d/hard_test.vibe" "$d/hard_test.vibe.was"
+  out="$(VIBE_TEST_QUIET_COMPILER_NOTE=1 bash "$ROOT_DIR/scripts/vibe_test.sh" \
+    --update _build/_smoke_2886/hard_test.vibe 2>&1)" && rc=0 || rc=$?
+  if [ "${rc:-0}" -eq 0 ]; then
+    echo "[vibe-test-smoke] FAIL: --update turned a genuine failure green (#2886)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+  if ! cmp -s "$d/hard_test.vibe" "$d/hard_test.vibe.was"; then
+    echo "[vibe-test-smoke] FAIL: --update rewrote a source on a non-snapshot failure (#2886)" >&2
+    exit 1
+  fi
+  # ... and it must not have SPUN doing it. A patch that writes the source
+  # back unchanged is not progress; counting it as progress terminates only on
+  # the depth bound, which leaves the file untouched (so the check above stays
+  # green) after 50 recompiles. The patch count on the FAIL line is what makes
+  # that visible.
+  if printf '%s\n' "$out" | grep -qF "snapshot patch(es)"; then
+    echo "[vibe-test-smoke] FAIL: --update retried on a patch that changed nothing (#2886)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+
+  # (4) A run WITHOUT --update never patches, whatever is stale.
+  cat > "$d/nostale_test.vibe" <<'VEOF'
+test "smoke" {
+  inspect(10 + 1, "stale")
+}
+VEOF
+  cp "$d/nostale_test.vibe" "$d/nostale_test.vibe.was"
+  out="$(VIBE_TEST_QUIET_COMPILER_NOTE=1 bash "$ROOT_DIR/scripts/vibe_test.sh" \
+    _build/_smoke_2886/nostale_test.vibe 2>&1)" && rc=0 || rc=$?
+  if [ "${rc:-0}" -eq 0 ]; then
+    echo "[vibe-test-smoke] FAIL: a stale snapshot passed without --update (#2886)" >&2
+    exit 1
+  fi
+  if ! cmp -s "$d/nostale_test.vibe" "$d/nostale_test.vibe.was"; then
+    echo "[vibe-test-smoke] FAIL: a run without --update patched a source (#2886)" >&2
+    exit 1
+  fi
+
+  rm -rf "$d"
+}
+assert_update_patches_stale_snapshots
+
+echo "[vibe-test-smoke] ok (--update patches stale inspect snapshots and nothing else, #2886)"
+
+# The wording half of #2886. Two assertions, because the fix has to be narrow:
+# any other `-flag` says it is unrecognised, and a genuinely missing PATH still
+# gets `not found` -- that last one is what a too-wide fix would break.
+assert_unrecognised_option_is_not_a_missing_file() {
+  local out rc
+
+  out="$(VIBE_TEST_QUIET_COMPILER_NOTE=1 bash "$ROOT_DIR/scripts/vibe_test.sh" \
+    --bogus fixtures/bit_not_test.vibe 2>&1)" && rc=0 || rc=$?
+  if [ "${rc:-0}" -eq 0 ]; then
+    echo "[vibe-test-smoke] FAIL: an unrecognised flag was accepted (#2886)" >&2
+    exit 1
+  fi
+  if printf '%s\n' "$out" | grep -qF "not found: --bogus"; then
+    echo "[vibe-test-smoke] FAIL: an unrecognised flag still reported with the missing-file wording (#2886)" >&2
+    exit 1
+  fi
+  if ! printf '%s\n' "$out" | grep -qF "unrecognised option"; then
+    echo "[vibe-test-smoke] FAIL: an unrecognised flag did not say so (#2886)" >&2
+    exit 1
+  fi
+
+  # The control. A missing PATH is a different fact and keeps its own wording.
+  out="$(VIBE_TEST_QUIET_COMPILER_NOTE=1 bash "$ROOT_DIR/scripts/vibe_test.sh" \
+    no_such_file_2886.vibe 2>&1)" && rc=0 || rc=$?
+  if [ "${rc:-0}" -eq 0 ]; then
+    echo "[vibe-test-smoke] FAIL: a missing path was accepted" >&2
+    exit 1
+  fi
+  if ! printf '%s\n' "$out" | grep -qF "not found: no_such_file_2886.vibe"; then
+    echo "[vibe-test-smoke] FAIL: a missing path lost its own message (#2886 fix is too wide)" >&2
+    exit 1
+  fi
+}
+assert_unrecognised_option_is_not_a_missing_file
+
+echo "[vibe-test-smoke] ok (an unrecognised option is not reported as a missing file, #2886)"
