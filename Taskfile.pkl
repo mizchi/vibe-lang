@@ -1168,6 +1168,31 @@ local testCheckGcHostImportCounts =
     "test-check-gc-host-import-counts",
     "scripts/check_gc_host_import_counts_test.sh",
   )
+// #2905, and the third time this family shipped: #1460 (`Console::write_char`,
+// `Console::write_err_char`), #2903 (`sleep_blocking`), #2905
+// (`Console::read_char`). A builtin name mapped onto a CONDITIONALLY reserved
+// host import, without a reservation of its own, falls back to a stub of
+// another arity -- so the program compiles clean, writes a `.wasm`, reports
+// success, and emits a module wasmtime refuses to validate. Each fix was
+// "remember to add the name in the other place", which is exactly the step
+// that keeps being missed. Reads the two sources, so it needs no generation.
+local checkImportReservation = new Task {
+  name = "check-import-reservation"
+  description =
+    "every user-callable capability spelling reserves the host import it lowers onto (#2905)"
+  cmd = "python3 scripts/check_import_reservation.py"
+  inputs {
+    "lib/@vibe/compiler/codegen/wasi/linked_compile.vibe"
+    "lib/@vibe/compiler/core/builtin_registry.vibe"
+    ...scriptSources
+  }
+}
+local testCheckImportReservation =
+  scriptTask("test-check-import-reservation", "scripts/check_import_reservation_test.sh")
+// The `_test.sh` spelling check_gate_self_tests.sh discovers; it execs the
+// python mutation suite that already runs inside `check-host-runtime-contract`.
+local testCheckHostRuntimeContract =
+  scriptTask("test-check-host-runtime-contract", "scripts/check_host_runtime_contract_test.sh")
 // scripts/profile_compile.sh refuses a name-stripped compiler artifact. Every
 // stage2 is stripped unless built with VIBE_WASM_NAMES=1, so without the guard
 // the profiler's whole output is `wasm-function[N]` rows -- it spent minutes
@@ -2598,6 +2623,9 @@ local releaseCheck = new Task {
     testCheckHostSemanticParity
     checkGcHostImportCounts
     testCheckGcHostImportCounts
+    checkImportReservation
+    testCheckImportReservation
+    testCheckHostRuntimeContract
     testProfileCompile
     checkCompileOnlyLanes
     testCheckCompileOnlyLanes
@@ -2735,6 +2763,9 @@ tasks {
   testCheckHostSemanticParity
   checkGcHostImportCounts
   testCheckGcHostImportCounts
+  checkImportReservation
+  testCheckImportReservation
+  testCheckHostRuntimeContract
   testProfileCompile
   checkCompileOnlyLanes
   testCheckCompileOnlyLanes

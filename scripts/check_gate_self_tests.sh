@@ -116,18 +116,31 @@ missing=""
 # (#2248 review). The existing `*_gate.sh` scripts enter the allowlist as a
 # CORPUS WIDENING, not as exemptions anyone granted; see the second baseline
 # block below.
-for f in scripts/check_*.sh scripts/lint_*.sh scripts/*_gate.sh scripts/*_oracle.mjs; do
+# THIRD CORPUS WIDENING (#2905). Discovery covered `.sh` and `*_oracle.mjs`,
+# so a gate written in Python escaped the rule ENTIRELY -- not exempted, never
+# asked. Both `.py` gates in the tree were invisible here, and
+# check_fixture_snapshots.mjs was reached only because its `.test.mjs`
+# companion happened to exist. `.py` and a non-oracle `.mjs` are now asked like
+# any other gate. Nothing enters the baseline for this widening: the two `.py`
+# gates each have a companion.
+for f in scripts/check_*.sh scripts/lint_*.sh scripts/*_gate.sh scripts/*_oracle.mjs \
+         scripts/check_*.py scripts/lint_*.py scripts/check_*.mjs scripts/lint_*.mjs; do
   # An unmatched glob arrives as its own literal text; skip it rather than
   # reporting `scripts/lint_*.sh` as a gate with no self-test.
   [ -e "$f" ] || continue
-  case "$f" in *_test.sh) continue ;; esac
+  # A COMPANION is not a gate. The `.sh` corpus said so for `*_test.sh` only;
+  # widening to `.py`/`.mjs` brought their companion spellings in with them,
+  # and `check_fixture_snapshots.test.mjs` was briefly reported as a gate with
+  # no self-test -- a companion asked for a companion.
+  case "$f" in *_test.sh|*_test.py|*_test.mjs|*.test.mjs|*.test.py) continue ;; esac
   base="${f%.sh}"
-  case "$f" in *.mjs) base="${f%.mjs}" ;; esac
+  case "$f" in *.mjs) base="${f%.mjs}" ;; *.py) base="${f%.py}" ;; esac
   [ -f "${base}_test.sh" ] && continue
   # `.test.mjs` is the other companion spelling already in this tree
   # (incremental_invalidation_oracle, artifact_input_trace_oracle), so it
   # counts. What does NOT count is having neither.
   [ -f "${base}.test.mjs" ] && continue
+  [ -f "${base}_test.py" ] && continue
   name="${f#scripts/}"
   if ! printf '%s\n' "$allowed" | grep -qxF "$name"; then
     missing="$missing $name"
@@ -140,7 +153,7 @@ stale=""
 while IFS= read -r name; do
   [ -n "$name" ] || continue
   base="${name%.sh}"
-  case "$name" in *.mjs) base="${name%.mjs}" ;; esac
+  case "$name" in *.mjs) base="${name%.mjs}" ;; *.py) base="${name%.py}" ;; esac
   if [ ! -f "scripts/$name" ]; then
     stale="$stale $name(script-gone)"
   elif [ -f "scripts/${base}_test.sh" ] || [ -f "scripts/${base}.test.mjs" ]; then

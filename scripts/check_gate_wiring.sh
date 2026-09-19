@@ -77,9 +77,12 @@ def listdir(d):
 # different thing entirely -- it would exempt this gate from the very property
 # it enforces, and it could then go dark exactly like the three that did.
 # So: in the corpus, out of the edge sources (see SKIP_AS_SOURCE below).
+# `.py` is in scope since #2905. A gate written in Python runs nowhere just as
+# invisibly as a shell one, and both python gates in this tree were outside the
+# corpus entirely -- not exempted, never asked.
 gates = [f for f in listdir("scripts")
-         if (re.match(r"^(check|lint)_.*\.sh$", f) or f.endswith("_gate.sh"))
-         and not f.endswith("_test.sh")]
+         if (re.match(r"^(check|lint)_.*\.(sh|py)$", f) or f.endswith("_gate.sh"))
+         and not re.search(r"_test\.(sh|py)$", f)]
 corpus = list(gates)
 
 # EVERY gate self-test is excluded as an edge source, not just this one's
@@ -89,7 +92,7 @@ corpus = list(gates)
 # from the workflow would leave `check_portable_boundary_test.sh` still naming
 # it, and the gate would report it reached: precisely the dark-gate case this
 # exists to catch, certified by the thing that proves nothing about CI.
-SKIP_AS_SOURCE = {f for f in listdir("scripts") if f.endswith("_test.sh")}
+SKIP_AS_SOURCE = {f for f in listdir("scripts") if f.endswith(("_test.sh", "_test.py"))}
 SKIP_AS_SOURCE.add(SELF)
 
 if not corpus:
@@ -127,9 +130,12 @@ def strip_comments(text):
 # `(?<![.\w])sh\b` so the `sh` in `.sh` is not a runner. Without the
 # lookbehind, a name-list line `compiler_gate.sh minify_gate.sh` in
 # check_gate_self_tests.sh certified minify_gate.sh as invoked (#2592).
+# `python3` is a runner too (#2905). Widening the CORPUS to `.py` without
+# widening this would report every python gate dark, including ones that ARE
+# wired -- a scan that is wrong rather than a finding.
 SH_INVOKE = re.compile(
-    r"""(?:\bbash\b|(?<![.\w])sh\b|\bsource\b|\bexec\b|(?:^|[;&|(])\s*\.)"""
-    r"""[^\n;&|]*?([A-Za-z0-9_.-]+\.sh)\b""", re.M)
+    r"""(?:\bbash\b|(?<![.\w])sh\b|\bsource\b|\bexec\b|\bpython3?\b|(?:^|[;&|(])\s*\.)"""
+    r"""[^\n;&|]*?([A-Za-z0-9_.-]+\.(?:sh|py))\b""", re.M)
 
 # ...and a line whose command EMITS text is not running anything. This is what
 # separates `bash scripts/x.sh` from `echo "... bash scripts/x.sh"`.
@@ -155,7 +161,7 @@ DYNAMIC_INVOKE = re.compile(
     r"""^\s*(?:\bbash\b|\bsh\b|\bexec\b)\s+"?\$\{?[A-Za-z_][A-Za-z0-9_]*\}?"?\s*$""",
     re.M)
 REACHES = re.compile(r"^\s*#\s*gate-wiring:\s*reaches\s+(\S+)\s*$", re.M)
-ANY_SH = re.compile(r"\b([A-Za-z0-9_.-]+\.sh)\b")
+ANY_SH = re.compile(r"\b([A-Za-z0-9_.-]+\.(?:sh|py))\b")
 # Capture the whole token INCLUDING any quotes, then strip them. Excluding the
 # quote characters from the class instead makes `pkf run "$X"` match nothing at
 # all -- so the computed name it exists to catch would be skipped in silence,
@@ -288,7 +294,7 @@ by_basename = {}
 for dirpath, dirnames, filenames in os.walk("."):
     dirnames[:] = [d for d in dirnames if d not in (".git", "node_modules", "_build", "target")]
     for f in filenames:
-        if f.endswith(".sh"):
+        if f.endswith((".sh", ".py")):
             by_basename.setdefault(f, []).append(os.path.join(dirpath, f).lstrip("./"))
 for k in by_basename:
     by_basename[k].sort()
