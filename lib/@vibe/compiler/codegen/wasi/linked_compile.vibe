@@ -9635,7 +9635,14 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
   // until a char is available), so this is the data-consuming analog of `sleep`
   // — the shape of a host async source (HTTP body byte, stdin char). Gated on
   // use (fixpoint-safe).
-  let need_stdin_read_char_builtin = Map::has_key(used_builtin_names, "Stdin::read_char")
+  // #2905: `Console::read_char` lowers onto this very import (the map below
+  // sends it to `stdin_read_char_idx`), so it has to RESERVE it too. Every
+  // other Console spelling ORs both names here; this one did not, so a
+  // program using only `Console::read_char` reserved nothing, the index fell
+  // back to the never-called stub, and the call reached a target of a
+  // different arity -- a module that BUILDS CLEAN and then fails to validate
+  // ("not enough arguments on the stack for call (need 1, got 0)").
+  let need_stdin_read_char_builtin = Map::has_key(used_builtin_names, "Stdin::read_char") || Map::has_key(used_builtin_names, "Console::read_char")
   // ADR-0089 step 4 (#1218): host-future imports -- `vibe.host_future_get
   // () -> i64` (the tagged readable-end handle) and `vibe.host_future_wait
   // (i64) -> i64` (park on the handle via waitable-set.wait, return the
