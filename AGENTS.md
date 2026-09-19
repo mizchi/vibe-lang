@@ -109,11 +109,28 @@ sentence used to say it was ("goes through a witness, so it is correct for … a
 `derive(Eq)` struct"). `Eq` is a **marker trait**:
 `lib/@vibe/builtin/builtin_traits.vibe` declares a bare `export trait Eq` with
 no methods, and its impls are only `Int` / `Double` / `Bool` / `Char` /
-`String`. There is no dictionary to dispatch through, so **`[T: Eq]` can only
-be correct for those five scalar types**.
+`String`. There is no dictionary to dispatch through, so `[T: Eq]` can be
+correct only at a type whose raw comparison IS content equality — and that is
+**four** of those five, not five. This sentence said five until #2895 measured
+it.
 
-**Since #2612 that is enforced rather than trusted**: the bound is REFUSED at a
-non-scalar instantiation, so it is a diagnostic and no longer silently wrong.
+**`Double` is the exception, and it was silently wrong** (#2895). It carries a
+marker impl like the other four, so `marker_cmp_is_by_value` listed it and the
+#2612 guard waved it through — on the one type the guard existed to catch. A
+`Double` is not a tagged immediate the way an `Int` is, so the erased
+comparison reads the box, not the number. Measured on the committed seed and on
+a stage2 built from the same checkout, identical both ways: `bare[T: Eq](1.5,
+1.5)` answered **`false`**, so did `bare(0.0, 0.0)`, while the concrete `1.5 ==
+1.5` answered `true`; under `[T: Ord]` it was wrong in both directions at once
+(`lt(2.5, 1.5)` → `true`, `gt(2.5, 1.5)` → `false`). `Double` is off the
+list now, so the bound is refused there like any other unsound instantiation.
+Pinned by `fixtures/err_type_eq_marker_bound_double.vibe` (the message, via the
+late lane) and by two rows in
+`lib/@vibe/compiler/tests/marker_cmp_bound_test.vibe`.
+
+**Since #2612 the rest is enforced rather than trusted**: the bound is REFUSED
+at a non-scalar instantiation, so it is a diagnostic and no longer silently
+wrong.
 Before it, `derive (Eq)` did not satisfy the bound (``no impl `Eq` for `Pt` ``)
 and adding `impl Eq for Pt` replaced that error with reference identity —
 equal-but-distinct objects answered `false` and the same object answered `true`,
