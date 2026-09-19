@@ -2081,9 +2081,31 @@ prelude wrappers: `add`, `sub`, `mul`, `div`, `eq`, `lt`, `not`, `and`, `or`.
 raw byte, not a code point (ADR-0098); UTF-8-encoding a code point is a
 different, currently nonexistent function.
 
-**Array** (builtin): `length: (Array[T]) -> Int`, `get: (Array[T], Int) -> T`,
-`slice: (Array[T], Int, Int) -> Array[T]`,
-`concat: (Array[T], Array[T]) -> Array[T]`, `reverse: (Array[T]) -> Array[T]`.
+**Array** (builtin — callable bare, no import):
+
+| function | signature |
+|---|---|
+| `Array::length` | `(Array[T]) -> Int` |
+| `Array::get` | `(Array[T], Int) -> T` |
+| `Array::set` | `(Array[T], Int, T) -> Unit` |
+| `Array::push` | `(Array[T], T) -> Unit` |
+| `Array::truncate` | `(Array[T], Int) -> Unit` |
+| `Array::slice` | `(Array[T], Int, Int) -> Array[T]` |
+| `Array::concat` | `(Array[T], Array[T]) -> Array[T]` |
+| `Array::reverse` | `(Array[T]) -> Array[T]` |
+| `Array::with_capacity` | `(Int) -> Array[T]` — see "Reserving array capacity" above |
+
+There is no `Array::pop` and no `Array::is_empty`; both are `unknown name`.
+Test emptiness with `Array::length(xs) == 0`.
+
+This list is MEASURED against the compiler (each name compiled bare in a
+one-line program), not read off a declaration file. It was wrong in the
+direction that file cannot see: `set`, `push`, `truncate` and `with_capacity`
+are implemented but were undocumented, because `check_cheatsheet_signatures.sh`
+checks that a DOCUMENTED signature is real and not that a real builtin is
+documented — and `Array::with_capacity` is handled inline in `checker.vibe`
+rather than through the builtin table that gate reads, so it is invisible to it
+from both directions (#2554).
 
 **Array compatibility operations** (prelude; collection first, function
 last). New generic code should import `trait Iterator` and use the matching
