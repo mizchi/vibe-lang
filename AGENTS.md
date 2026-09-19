@@ -628,9 +628,18 @@ vibe type-at file.vibe <line> <col>
 # offset の half-open 区間。契約は docs/user/reference/source-range-contract.md
 vibe binding-at file.vibe <line> <col>
 
-# 全 diagnostics (parse error 全件 + 型エラー)。**空出力 = clean、診断ありは
-# exit 1**、行は stdout に 1件1行。import は FS から解決するので、これ単体で
-# 「このファイルはコンパイルが通るか」に答えられる
+# **空出力 = clean、診断ありは exit 1**。import は FS から解決するので、これ
+# 単体で「このファイルはコンパイルが通るか」に答えられる。
+#
+# **ただし報告されるのは常に 1 件だけ** (#2831 criterion 4、実測 2026-09-19)。
+# ここにはかつて「parse error 全件 + 型エラー」と書いてあったが、独立した 2
+# つの型エラー・別関数の 2 つの unknown name・2 つの parse error のいずれでも
+# 出力は 1 行だった。原因は recovery が無いことではない — checker は全件を
+# `frozen_errors` に**収集した上で**先頭だけを投げる
+# (`checker_stmt.vibe` の `throw(Array::get(frozen_errors, 0))`)。
+# `unknown name` は push が 3 箇所、throw が 0 箇所。つまり criterion 4 は
+# 「recovery を作る」ではなく「既に集めたものを捨てるのをやめる」。
+# `--json` が配列を返すのもこのため (要素数は常に 1)。
 vibe check file.vibe
 
 # 同じ質問をバッファ単位で (import を辿らない)。未保存バッファを見る
