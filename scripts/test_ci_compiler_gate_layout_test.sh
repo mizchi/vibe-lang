@@ -243,4 +243,54 @@ assert 'LANES' in st['run'], st['run']
 "
 expect_reject "an invocation whose lane arguments are not literal is rejected" "cannot read"
 
-echo "test_ci_compiler_gate_layout_test: ok (control + 14 cases)"
+# --- case 15: the lane runs with no pkf -----------------------------------
+# check_task_env_sanitized_test.sh measures what a pkf TASK inherits (#2877);
+# with no pkf the gate refuses and the lane goes red for a reason that is not
+# its subject -- the #2252 shape, and there is no failing-self-test exemption
+# left to reach for.
+mutate "
+$lanes_slice
+import re
+blk = re.sub(r'^ *pkfire: .*\n', '', blk, count=1, flags=re.M)
+s = s[:i] + blk + s[j:]
+" "pkfire input removed" "
+st = [x for x in doc['jobs']['compiler-gate-lanes']['steps'] if 'setup-vibe' in str(x.get('uses',''))][0]
+assert 'pkfire' not in (st.get('with') or {}), st.get('with')
+"
+expect_reject "the selftests lane running with no pkf is rejected" "never installs pkfire"
+
+# --- case 16: pkfire provisioned for some OTHER lane ----------------------
+# An expression is only an answer if it is true for THIS lane. A condition the
+# scanner cannot evaluate is unreadable, not safe.
+mutate "
+$lanes_slice
+import re
+blk = re.sub(r'^( *)pkfire: .*\n', r'\1pkfire: \${{ matrix.lane == %s }}\n' % repr('late'), blk, count=1, flags=re.M)
+s = s[:i] + blk + s[j:]
+" "pkfire keyed on another lane" "
+st = [x for x in doc['jobs']['compiler-gate-lanes']['steps'] if 'setup-vibe' in str(x.get('uses',''))][0]
+assert 'late' in str((st.get('with') or {}).get('pkfire')), st.get('with')
+"
+expect_reject "pkfire keyed on a lane that is not the selftests lane is rejected" "cannot read"
+
+# --- case 17: pkf installed, but after the lane has already run -----------
+mutate "
+$lanes_slice
+k0 = blk.index('      - uses: ./.github/actions/setup-vibe')
+k1 = blk.index('      - name: Provision PyYAML', k0)
+step = blk[k0:k1]
+blk = blk.replace(step, '', 1)
+marker = '        run: bash scripts/compiler_gate.sh'
+k = blk.index(marker) + len(marker) + 1
+blk = blk[:k] + step + blk[k:]
+s = s[:i] + blk + s[j:]
+" "setup-vibe after the lane" "
+steps = doc['jobs']['compiler-gate-lanes']['steps']
+setup = next(n for n, st in enumerate(steps) if 'setup-vibe' in str(st.get('uses','')))
+lane = next(n for n, st in enumerate(steps)
+            if any(t.endswith('compiler_gate.sh') for t in str(st.get('run','')).split()))
+assert setup > lane, f'not misordered: setup={setup} lane={lane}'
+"
+expect_reject "pkfire installed after the selftests lane is rejected" "before its dependency is installed"
+
+echo "test_ci_compiler_gate_layout_test: ok (control + 17 cases)"

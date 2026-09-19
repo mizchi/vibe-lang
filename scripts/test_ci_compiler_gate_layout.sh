@@ -428,6 +428,50 @@ for job_id, n in runners:
               f"provisions PyYAML at step {provision} -- the gate dies before its "
               "dependency is installed", file=sys.stderr)
         rc = 1
+
+    # ...and it needs `pkf`, because the suite runs
+    # check_task_env_sanitized_test.sh, whose subject is what a pkf TASK
+    # inherits (#2877). With no pkf that gate REFUSES -- correctly, since
+    # there is no substitute for running a task -- and the lane goes red for
+    # a reason unrelated to what it checks, which is how a self-test gets
+    # exempted instead of fixed (#2252). gate_self_test_failing.txt is pinned
+    # EMPTY, so there is no exemption to reach for either.
+    #
+    # `pkfire: ${{ matrix.lane == 'selftests' }}` is accepted because it is
+    # true for exactly this lane; any other expression is UNREADABLE and
+    # fails rather than being assumed to install anything.
+    setup = None
+    for k, st in enumerate(steps):
+        if not isinstance(st, dict):
+            continue
+        if "setup-vibe" not in str(st.get("uses", "")):
+            continue
+        val = str(((st.get("with") or {}).get("pkfire", ""))).strip()
+        if val == "true":
+            setup = (k, val)
+        elif "${{" in val:
+            if "matrix.lane" in val and LANE in val:
+                setup = (k, val)
+            else:
+                print(f"[ci-compiler-gate-layout] {job_id} step {k} sets setup-vibe's "
+                      f"pkfire to {val!r}, which this gate cannot read -- whether the "
+                      f"'{LANE}' lane gets a pkf decides whether "
+                      "check_task_env_sanitized_test.sh can run at all",
+                      file=sys.stderr)
+                rc = 1
+                setup = (k, val)
+        if setup is not None:
+            break
+    if setup is None:
+        print(f"[ci-compiler-gate-layout] {job_id} runs the '{LANE}' lane but never "
+              "installs pkfire -- check_task_env_sanitized_test.sh needs a pkf to "
+              "measure what a pkf task inherits (#2877)", file=sys.stderr)
+        rc = 1
+    elif setup[0] > n:
+        print(f"[ci-compiler-gate-layout] {job_id} runs the '{LANE}' lane at step {n} but "
+              f"installs pkfire at step {setup[0]} -- the gate dies before its "
+              "dependency is installed", file=sys.stderr)
+        rc = 1
 sys.exit(rc)
 PYEOF
 then
