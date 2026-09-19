@@ -126,7 +126,17 @@ export struct GrepHit {
 export struct GrepPattern {
   template: Expr;
   vars: Array[String];
-  origin: String
+  origin: String;
+  /// #2894: the same query READ AS A PATTERN, when it can be and when the
+  /// user asked for it. `None` means pattern positions are not searched.
+  ///
+  /// A query is compiled by the real parser, which only ever produces an
+  /// `Expr`, so a constructor in PATTERN position -- `EInt(n) => n` -- was
+  /// unreachable: `EInt($(p:pat))` walked expression nodes, found no call,
+  /// and answered "no matches", which is indistinguishable from "this
+  /// constructor is never matched on". See grep_expr_as_pat for the
+  /// conversion and grep_template_has_pat_hole for the opt-in.
+  pat_template: Option[Pat]
 }
 
 /// Everything the typed filters need about ONE file. `type_error` is "" when
@@ -323,6 +333,150 @@ fn grep_expand_metavars(pattern: String, vars: Array[String]) -> String with Exc
 /// searched. Resolving `f($(a:args), $(b:args))` would need a rule for where
 /// to split that nobody wrote down, and diagnosing it only when a call happens
 /// to be encountered would make the error depend on which files were scanned.
+/// #2894: does the query contain a `$(x:pat)` hole?
+///
+/// That hole is the OPT-IN for searching pattern positions, and it is the
+/// right switch because `pat` is the one metavariable kind that means nothing
+/// anywhere else: writing one is the user saying "I am asking about a
+/// pattern". Keying on it rather than on "the query happens to convert"
+/// leaves every existing query answering exactly as before -- measured,
+/// `scripts/review_lint.vibex` uses no `pat` hole at all, so no repository
+/// lint changes its answer.
+fn grep_template_has_pat_hole(e: Expr) -> Bool {
+  let found = match source_expr(e) {
+    EIdent(n, _) => {
+      let (kind, _) = grep_meta_of(n)
+      kind == "pat"
+    },
+    _ => false
+  }
+  if found {
+    true
+  } else {
+    let kids = expr_children(e)
+    let mut i = 0
+    let mut any = false
+    while !any && i < Array::length(kids) {
+      any = grep_template_has_pat_hole(Array::get(kids, i))
+      i = i + 1
+    }
+    any
+  }
+}
+
+/// #2894: read a compiled query as a PATTERN, or `None` when it is not one.
+///
+/// A constructor application and a constructor pattern are spelled the same --
+/// `EInt(n)` either way -- so the query the parser handed back as an `ECall`
+/// is also a readable `PCtor`. Only the shapes that HAVE a pattern form
+/// convert; an `if`, a binary operator, a call with a computed callee and
+/// anything else answer `None`, and the walk then leaves patterns alone rather
+/// than inventing a meaning for them.
+///
+/// The metavariable holes need no special case. `grep_match_pat`'s `PBind` arm
+/// already reads a mangled identifier: a `pat` hole binds, an `id` hole binds
+/// a bound NAME, and every other kind (`exp`, `const`, `type`, ...) is
+/// rejected there. So converting them to `PBind` verbatim is what makes an
+/// `exp` hole refuse to match a pattern instead of matching one loosely.
+fn grep_expr_as_pat(e: Expr) -> Option[Pat] {
+  match source_expr(e) {
+    EIdent(n, _) => {
+      let (kind, _) = grep_meta_of(n)
+      if kind != "" {
+        Some(PBind(n))
+      } else if grep_name_is_ctorish(n) {
+        Some(PCtor(n, grep_empty_pats()))
+      } else {
+        Some(PBind(n))
+      }
+    },
+    EInt(v) => Some(PInt(v)),
+    EFloat(v) => Some(PFloat(v)),
+    EString(v, _) => Some(PString(v)),
+    EBool(v) => Some(PBool(v)),
+    ETuple(items) => match grep_exprs_as_pats(items) {
+      Some(ps) => Some(PTuple(ps)),
+      None => None
+    },
+    ECall(callee, args, _) => match source_expr(callee) {
+      EIdent(n, _) => {
+        let (kind, _) = grep_meta_of(n)
+        // A hole in CALLEE position stands for an expression name, not a
+        // constructor head, so it has no pattern reading.
+        if kind != "" {
+          None
+        } else match grep_exprs_as_pats(args) {
+          Some(ps) => Some(PCtor(n, ps)),
+          None => None
+        }
+      },
+      _ => None
+    },
+    ERecord(n, fields, _) => if String::length(n) == 0 {
+      None
+    } else {
+      let out = grep_empty_pat_fields()
+      let mut i = 0
+      let mut ok = true
+      while ok && i < Array::length(fields) {
+        let (fname, fval) = Array::get(fields, i)
+        match grep_expr_as_pat(fval) {
+          Some(fp) => Array::push(out, (fname, fp)),
+          None => ok = false
+        }
+        i = i + 1
+      }
+      if ok {
+        Some(PStruct(n, out))
+      } else {
+        None
+      }
+    },
+    _ => None
+  }
+}
+
+fn grep_exprs_as_pats(items: Array[Expr]) -> Option[Array[Pat]] {
+  let out = grep_empty_pats()
+  let mut i = 0
+  let mut ok = true
+  while ok && i < Array::length(items) {
+    match grep_expr_as_pat(Array::get(items, i)) {
+      Some(pp) => Array::push(out, pp),
+      None => ok = false
+    }
+    i = i + 1
+  }
+  if ok {
+    Some(out)
+  } else {
+    None
+  }
+}
+
+/// A bare name in pattern position is a nullary CONSTRUCTOR when it is
+/// qualified or starts uppercase, and a BINDING otherwise -- the same rule the
+/// parser applies, so `None` and `Foo::Bar` read as constructors and `n` reads
+/// as a binder.
+fn grep_name_is_ctorish(n: String) -> Bool {
+  if String::contains(n, "::") {
+    true
+  } else if String::length(n) == 0 {
+    false
+  } else {
+    let c = String::byte_at(n, 0)
+    c >= 'A' && c <= 'Z'
+  }
+}
+
+fn grep_empty_pats() -> Array[Pat] {
+  array_empty()
+}
+
+fn grep_empty_pat_fields() -> Array[(String, Pat)] {
+  array_empty()
+}
+
 fn grep_validate_holes(e: Expr) -> Unit with Exception {
   match e {
     ECall(_, args, _) => grep_check_holes(args),
@@ -475,10 +629,16 @@ export fn grep_compile_pattern(pattern: String) -> GrepPattern with Exception {
         } else {
           grep_pattern_origin(pattern)
         }
+        let pat_template = if grep_template_has_pat_hole(e) {
+          grep_expr_as_pat(e)
+        } else {
+          None
+        }
         GrepPattern::{
           template: e,
           vars: vars,
-          origin: origin
+          origin: origin,
+          pat_template: pat_template
         }
       },
       _ => throw("grep pattern: must be a single EXPRESSION — declaration patterns (`fn`, top-level `let`, `enum`, ...) are not supported yet; use `vibe symbols` for declarations")
@@ -1538,6 +1698,69 @@ fn grep_try_match(pat: GrepPattern, node: Expr, path: String, out: Array[GrepHit
   }
 }
 
+/// #2894: try the query against ONE pattern node.
+///
+/// Silent on a query with no pattern form, which is the common case -- the
+/// walk below only calls this when `pat_template` is `Some`, so "no pattern
+/// form" and "no match here" never reach the same code path.
+fn grep_try_match_pat(pat: GrepPattern, node: Pat, path: String, out: Array[GrepHit]) -> Unit with Exception {
+  match pat.pat_template {
+    None => (),
+    Some(template) => {
+      let binds = grep_empty_binds()
+      if grep_match_pat(template, node, binds) {
+        let (lo, hi) = source_pat_range(node)
+        Array::push(out, GrepHit::{
+          path: path,
+          offset: lo,
+          end_offset: hi,
+          text: grep_flatten(print_pat(node)),
+          captures: binds
+        })
+      } else {
+        ()
+      }
+    }
+  }
+}
+
+/// Visit every pattern node, outer before inner, the same order the
+/// expression walk uses -- so a constructor pattern that matches also reports
+/// the nested patterns inside it, which are genuinely separate sites.
+fn grep_walk_pat(node: Pat, pat: GrepPattern, path: String, out: Array[GrepHit]) -> Unit with Exception {
+  match pat.pat_template {
+    None => (),
+    Some(_) => {
+      grep_try_match_pat(pat, node, path, out)
+      match source_pat(node) {
+        PCtor(_, args) => grep_walk_pats(args, pat, path, out),
+        PTuple(items) => grep_walk_pats(items, pat, path, out),
+        POr(a, b) => {
+          grep_walk_pat(a, pat, path, out)
+          grep_walk_pat(b, pat, path, out)
+        },
+        PStruct(_, fields) => {
+          let mut i = 0
+          while i < Array::length(fields) {
+            let (_, fv) = Array::get(fields, i)
+            grep_walk_pat(fv, pat, path, out)
+            i = i + 1
+          }
+        },
+        _ => ()
+      }
+    }
+  }
+}
+
+fn grep_walk_pats(items: Array[Pat], pat: GrepPattern, path: String, out: Array[GrepHit]) -> Unit with Exception {
+  let mut i = 0
+  while i < Array::length(items) {
+    grep_walk_pat(Array::get(items, i), pat, path, out)
+    i = i + 1
+  }
+}
+
 fn grep_walk_exprs(items: Array[Expr], pat: GrepPattern, path: String, out: Array[GrepHit]) -> Unit with Exception {
   let mut i = 0
   while i < Array::length(items) {
@@ -1558,7 +1781,12 @@ fn grep_walk_fields(fields: Array[(String, Expr)], pat: GrepPattern, path: Strin
 fn grep_walk_arms(arms: Array[(Pat, Expr)], pat: GrepPattern, path: String, out: Array[GrepHit]) -> Unit with Exception {
   let mut i = 0
   while i < Array::length(arms) {
-    let (_, v) = Array::get(arms, i)
+    let (p, v) = Array::get(arms, i)
+    // #2894: the arm's PATTERN, before its body. This used to be `let (_, v)`
+    // -- the one line that made a constructor in pattern position
+    // unreachable, and made the tool answer "no matches" for a query it could
+    // not express rather than saying so.
+    grep_walk_pat(p, pat, path, out)
     grep_walk_expr(v, pat, path, out)
     i = i + 1
   }
@@ -1659,7 +1887,11 @@ fn grep_walk_stmts(stmts: Array[Stmt], pat: GrepPattern, path: String, out: Arra
     match Array::get(stmts, i) {
       SLet(_, _, _, _, body) => grep_walk_expr(body, pat, path, out),
       SLetMut(_, _, body) => grep_walk_expr(body, pat, path, out),
-      SLetPat(_, body) => grep_walk_expr(body, pat, path, out),
+      SLetPat(p2, body) => {
+        // #2894: a destructuring `let` binds a PATTERN too.
+        grep_walk_pat(p2, pat, path, out)
+        grep_walk_expr(body, pat, path, out)
+      },
       STest(_, body) => grep_walk_expr(body, pat, path, out),
       SBench(_, body) => grep_walk_expr(body, pat, path, out),
       SExample(_, body) => grep_walk_expr(body, pat, path, out),

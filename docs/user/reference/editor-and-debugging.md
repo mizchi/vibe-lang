@@ -261,6 +261,32 @@ vibe grep --pattern '$(r:exp).map($(a:args))'    lib
 …`, `enum …`) are rejected with a message saying so, rather than silently
 matching nothing. Use `vibe symbols` for declarations.
 
+### Pattern positions (#2894)
+
+A query is compiled by the real parser, which only ever hands back an
+expression, so a constructor could only be searched for as one. `EInt(n)`
+written in a **match arm** was unreachable — and the answer was an empty
+result, which does not distinguish "the tool cannot express this query" from
+"this constructor is never matched on".
+
+**A `$(x:pat)` hole is the opt-in.** `pat` is the one kind that means nothing
+outside pattern position, so writing one says *I am asking about a pattern*.
+A query containing one is also read as a pattern and tried against every
+pattern node: match arms, handler arms, and destructuring `let`. A query
+without one answers exactly as it did before.
+
+```bash
+vibe grep --pattern 'EInt($(p:pat))' lib   # the ARM: `EInt(n) => n`
+vibe grep --pattern 'EInt($(p:exp))' lib   # the CALL: `let v = EInt(7)`
+vibe grep --pattern '$(p:pat)' lib         # every pattern node, outer before inner
+```
+
+The two readings are separate on purpose: a hole's kind decides which
+positions can match it, so an `exp` hole never matches a pattern and a `pat`
+hole never matches an expression. A query whose shape has no pattern reading
+at all (an `if`, a binary operator, a call with a computed callee) simply
+leaves pattern nodes alone rather than being given an invented meaning.
+
 ### Type-aware filters
 
 Passing any of these switches the sweep into the **typed tier**, which resolves

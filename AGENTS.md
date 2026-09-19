@@ -708,10 +708,20 @@ vibe deps file.vibe
 vibe deps --direct file.vibe
 
 # AST パターン検索 (#1572)。上の4つが「位置 → 意味」なのに対しこれは逆向きの
-# 「構造 → 位置」。メタ変数は `$(name:kind)` (kind: exp/id/const/arg/args/pat/type)。
+# 「構造 → 位置」。メタ変数は `$(name:kind)`
+# (kind: exp/id/const/arg/args/pat/type/arms — この 8 つだけで、単数形 `arm` は無い)。
 # 出力は 1件1行 `path:line:col: <マッチ本文>` + tab 区切りの `$var=<capture>`。
 # 空出力 = マッチなし (--json では `[]`)
 vibe grep --pattern 'Iterator::map($(a:args))' lib
+# **パターン位置も検索できる** (#2894)。クエリは実パーサが `Expr` として読むので
+# コンストラクタは「式」としてしか探せず、`match` の腕に書かれた `EInt(n)` は
+# 到達不能だった — しかも答えは空出力で、「その構文は表現できない」と
+# 「そのコンストラクタは一度も match されていない」が見分けられなかった。
+# **`$(x:pat)` ホールが opt-in**: `pat` はパターン位置以外で意味を持たない
+# 唯一の kind なので、それを書くこと自体が「パターンについて訊いている」
+# という宣言になる。`pat` ホールを含まないクエリの答えは従来どおり変わらない。
+vibe grep --pattern 'EInt($(p:pat))' lib      # match の腕・handler の腕・分解 let
+vibe grep --pattern 'EInt($(p:exp))' lib      # 呼び出し式だけ (従来どおり)
 # **文法だけで止まらない**のが moongrep / ast-grep との差: filter は checker の
 # 答え (推論型・effect row・解決済み名・型エラー) で書く。これらを付けると
 # `vibe check` と同じ import 解決レーンに乗る (typed tier)
