@@ -4,6 +4,23 @@
 # `vibe grep` without a native runtime/vibe runner.
 set -euo pipefail
 
+# #2252: a gate must not assume the environment it runs in. Every variable the
+# HOOK reads is unset here and set explicitly per case below, because the
+# "local session" case asserts behaviour for CLAUDE_CODE_REMOTE being ABSENT
+# and never established that -- it simply inherited whatever the caller had.
+# Measured: `CLAUDE_CODE_REMOTE=true` is exported in a Claude Code Remote
+# session and in the dev container, so the hook ran past its own guard, wrote
+# the env file, and this test failed on an unmodified tree. It failed
+# identically on main at f3719e343, and passed under `env -u
+# CLAUDE_CODE_REMOTE` -- the variable was the whole difference.
+#
+# This is the third time that section's rule has been paid for: the five
+# self-tests #2252 repaired failed for the same reason, two of them through
+# this very variable's neighbour (VIBE_REVIEW_LINT_GREP_BIN, exported by the
+# hook under test). A gate that only passes on machines that happen to lack a
+# variable is not a gate.
+unset CLAUDE_CODE_REMOTE CLAUDE_PROJECT_DIR CLAUDE_ENV_FILE VIBE_REVIEW_LINT_GREP_BIN || true
+
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 HOOK="$ROOT_DIR/.claude/hooks/session-start.sh"
 GREP_BIN="$ROOT_DIR/scripts/vibe_grep_bin.sh"
