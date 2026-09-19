@@ -175,6 +175,32 @@ if printf '%s\n' "$out" | grep -q '^GRANTED:hello-from-file$'; then
   ok "a granted provider resolves perform? to Granted and the call runs"
 else
   bad "--allow-fs must make perform? Fs::read_file Granted; got: $out"
+  # WHICH COMPILER ANSWERED (AGENTS.md). This case failed once on CI while
+  # passing locally on a stage2 built the same way, and the message above could
+  # not tell the two apart: it reports the ANSWER and not the artifact that
+  # produced it, so there was nothing to diagnose from the log.
+  #
+  # The no-flag probe is the decisive one. With rung 2 present a run with no
+  # capability flag has ambient authority and answers `GRANTED`; without it,
+  # `optional_perform_artifact_resolution` still receives an empty table and
+  # every arm answers `NotGranted`. So NOTGRANTED here means the compiler does
+  # not carry rung 2 at all, and GRANTED means it does and the FLAG path is
+  # what broke -- two different bugs that look identical above.
+  {
+    echo "capability-preflight: diagnosis for the failure above:"
+    echo "  compiler: $STAGE2"
+    if [ -f "$STAGE2" ]; then
+      echo "  size:     $(wc -c < "$STAGE2") bytes"
+      echo "  mtime:    $(date -r "$STAGE2" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo unknown)"
+    else
+      echo "  size:     MISSING"
+    fi
+    echo "  runner:   $VIBERUN"
+    echo "  no-flag perform? answer: $(opt_case --allow-stdout --allow-fs 2>&1 | tr '\n' ' ')"
+    echo "  ambient (no flags at all): $(opt_case 2>&1 | tr '\n' ' ')"
+    echo "  -> ambient NOTGRANTED means this compiler does not carry #2828 rung 2;"
+    echo "     ambient GRANTED means it does and the --allow-fs path is the bug."
+  } >&2
 fi
 
 out="$(opt_case --deny-fs --allow-stdout)"
