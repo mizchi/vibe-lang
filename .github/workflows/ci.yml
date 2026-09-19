@@ -1556,10 +1556,16 @@ jobs:
           git worktree remove --force _build/bench-data || true
 
   # WASI p3 guarantee (#821): vibe-built async components + the wasi:http p3
-  # serve pipeline, plus the optional ratified wasi:cli/stdin availability
-  # probe. Missing tools are FAILURES (no silent skip). This job is not folded
-  # into ci-required; the stdin probe records explicit host unavailability
-  # without turning that expected result into a required CI failure.
+  # serve pipeline, plus the ratified wasi:cli/stdin availability probe.
+  # Missing tools are FAILURES (no silent skip).
+  #
+  # This job IS in ci-required. It was outside it so that the stdin probe could
+  # record explicit host unavailability without that expected result blocking a
+  # merge; the trade was reversed because this is the only lane that runs a
+  # composed component end to end under a real host, and nothing else can see a
+  # componentized regression. The cost is now the other way round: a host
+  # without ratified wasi:cli/stdin@0.3.0, or a wasmtime other than the pinned
+  # one, fails the required check rather than reporting.
   #
   # Single leg, ratified WASI 0.3.0 (#821 cutover, done): the vendored WIT
   # (lib/@vibe/wasi/wit/p3) was refreshed to wasi:http@0.3.0, matching what
@@ -1819,7 +1825,7 @@ jobs:
   # Aggregate required check (branch protection requires "ci-required").
   ci-required:
     name: ci-required
-    needs: [compiler-build, compiler-gate, compiler-gate-preflight, compiler-stage2-oracles, compiler-docs, compiler-contracts, compiler-playground, compiler-examples, review-regressions, compiler-gate-lanes, unit-tests, vibe-fmt-check, gc-gate, structural-lint]
+    needs: [compiler-build, compiler-gate, compiler-gate-preflight, compiler-stage2-oracles, compiler-docs, compiler-contracts, compiler-playground, compiler-examples, review-regressions, compiler-gate-lanes, unit-tests, vibe-fmt-check, gc-gate, structural-lint, wasi-p3-gate]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -1879,6 +1885,22 @@ jobs:
           fi
           if [ "${{ needs.structural-lint.result }}" != "success" ]; then
             echo "::error::structural-lint did not succeed (${{ needs.structural-lint.result }})"
+            exit 1
+          fi
+          # The async component / wasi:http p3 contract. Folded in deliberately:
+          # it is the only lane that runs the composed component end to end
+          # under a real host, so nothing else can catch a componentized
+          # regression. #2903 is the worked example: the shipped bug doubled
+          # every sleep, and a fix to the emitter alone HALVED the componentized
+          # one instead -- 165ms against a 300ms request, which only this job's
+          # >= 0.8xD timing band can see.
+          # It runs with VIBE_P3_GATE_REQUIRE_TOOLS=1, so a missing tool is a
+          # failure rather than a skip -- which is the point, but it also means
+          # a host that stops implementing ratified wasi:cli/stdin@0.3.0, or a
+          # wasmtime other than the pinned one, now blocks a merge instead of
+          # reporting. That is the accepted cost of the guarantee.
+          if [ "${{ needs.wasi-p3-gate.result }}" != "success" ]; then
+            echo "::error::wasi-p3-gate did not succeed (${{ needs.wasi-p3-gate.result }})"
             exit 1
           fi
           echo "all required jobs passed"

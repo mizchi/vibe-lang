@@ -1713,8 +1713,11 @@ It parses, validates, and prints the component, generates deterministic binary
 input, and executes both async-lifted lanes. Required mode requires exactly
 wasmtime 47.0.2; missing tools, an unpinned provider, and
 ABI/type/link/command-export failures fail closed. The default local mode skips
-unavailable tools or an unpinned provider. The aggregate remains outside
-`ci-required`.
+unavailable tools or an unpinned provider. The aggregate is IN `ci-required`:
+it is the only lane that runs a composed component end to end under a real
+host, so a componentized regression has nowhere else to be caught. The cost of
+folding it in is that an unavailable host implementation or an unpinned
+wasmtime blocks a merge rather than reporting.
 
 #### Why the current `HostStream` ABI cannot represent stdin
 
