@@ -77,4 +77,13 @@ bash "$ROOT_DIR/scripts/resolve_stage2_test.sh"
 # capability lie. The companion asserts the withheld run traps by name AFTER
 # instantiating, and that removing the branch lets the same run succeed.
 bash "$ROOT_DIR/scripts/host_capability_withhold_test.sh"
+
+# #2828 rung 1: ADR-0088's L1 flags and L3 preflight, end to end. The unit
+# tests cover the two readers; this covers the thing that was actually wrong --
+# `preflight_instantiate` raised its message from the day it was written and
+# NOTHING reached it. The companion red-tests the gate against a pre-#2828
+# stage2, which is the only input that can prove it detects a disconnected
+# ladder rather than merely a correct function.
+bash "$ROOT_DIR/scripts/check_capability_preflight.sh"
+bash "$ROOT_DIR/scripts/check_capability_preflight_test.sh"
 echo "[compiler-gate] gate self-tests ok (#2248)"
