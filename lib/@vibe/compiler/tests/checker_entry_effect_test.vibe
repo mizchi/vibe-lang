@@ -1,7 +1,7 @@
 //# Entry-boundary effect admission (#1683)
 
 import @vibe/compiler/checker {
-  check_program, freeze_binding_lock, is_instantiate_authority, preflight_instantiate, standard_provider_owns_operation
+  authority_for_capability_flag, check_program, entry_declared_authority, freeze_binding_lock, is_instantiate_authority, preflight_instantiate, standard_provider_owns_operation
 }
 
 import @vibe/compiler/syntax {
@@ -545,4 +545,83 @@ test "ADR-0088 (Codex on #2653): the perform? grade edit names the row owner's k
   assert(!String::contains(callee, "allows"))
   let entry = first_check_error("fn main() -> Int allows Console {\n  let _ = perform? Fs::read_file(\"x\")\n  0\n}\n")
   assert(String::contains(entry, "write `allows Fs::read_file?` on `main`"))
+}
+
+//# #2828 / ADR-0088 Remaining (#2332): the two readers that make L1 and L3
+//# reachable from production. `preflight_instantiate` and
+//# `freeze_binding_lock` were written, unit-tested and called from nothing but
+//# this file -- measured, zero production callers -- because nothing outside
+//# the checker could produce the label list they take, and no flag existed to
+//# produce a host-granted set.
+
+test "#2828: entry_declared_authority reads the entry's granted labels" {
+  let stmts = parse_program(lex("fn main() -> Unit allows Stdout + Fs::read_file { () }\n"))
+  let labels = entry_declared_authority(stmts)
+  assert_eq(Array::length(labels), 2)
+}
+
+test "#2828: a program with no entry grants nothing to preflight" {
+  let stmts = parse_program(lex("fn helper(x: Int) -> Int with Fs { x }\n"))
+  assert_eq(Array::length(entry_declared_authority(stmts)), 0)
+}
+
+test "#2828: a label that is not instantiate authority is dropped, as freeze does" {
+  // `Exception` is runtime-managed, not a host grant, so it must not reach the
+  // ladder -- the same rule freeze_binding_lock applies.
+  let stmts = parse_program(lex("fn main() -> Unit allows Stdout + Exception { () }\n"))
+  let labels = entry_declared_authority(stmts)
+  let mut saw_exception = false
+  let mut i = 0
+  while i < Array::length(labels) {
+    if Array::get(labels, i) == "Exception" {
+      saw_exception = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  assert_eq(saw_exception, false)
+}
+
+test "#2828: an optional grant keeps its grade for the ladder" {
+  let stmts = parse_program(lex("fn main() -> Unit allows Fs::read_file? { () }\n"))
+  let labels = entry_declared_authority(stmts)
+  assert_eq(Array::length(labels), 1)
+  assert_eq(Array::get(labels, 0), "Fs::read_file?")
+}
+
+test "#2828: authority_for_capability_flag inverts allow_flag_for_authority" {
+  // The flag a diagnostic PRINTS and the flag the CLI READS must be one
+  // string; this is the pair that keeps them from drifting.
+  assert_eq(authority_for_capability_flag("--allow-fs"), "Fs")
+  assert_eq(authority_for_capability_flag("--deny-fs"), "Fs")
+  assert_eq(authority_for_capability_flag("--allow-http"), "Http")
+  assert_eq(authority_for_capability_flag("--deny-stdout"), "Stdout")
+}
+
+test "#2828: a non-capability argument is not a capability flag" {
+  assert_eq(authority_for_capability_flag("--allow-nope"), "")
+  assert_eq(authority_for_capability_flag("--allow-yanked"), "")
+  assert_eq(authority_for_capability_flag("--trace"), "")
+  assert_eq(authority_for_capability_flag("--allow-"), "")
+  assert_eq(authority_for_capability_flag("fs"), "")
+}
+
+test "#2828: preflight aborts a required label the host does not grant" {
+  // The end of the ladder: this message is what `vibe run --deny-fs` now
+  // prints, and it names the edit rather than a pass or an ADR number.
+  let msg = handle {
+    let _ = preflight_instantiate(["Fs::read_file"], ["Stdout"])
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(msg, "--allow-fs"))
+  assert(String::contains(msg, "allows Fs::read_file?"))
+}
+
+test "#2828: preflight admits a required label the host does grant" {
+  let lock = preflight_instantiate(["Fs::read_file"], ["Fs"])
+  assert_eq(Array::length(lock), 1)
+  let (name, status) = Array::get(lock, 0)
+  assert_eq(name, "Fs::read_file")
+  assert_eq(status, "Granted")
 }
