@@ -124,6 +124,108 @@ def rust_imports(text: str) -> set[str]:
     return found
 
 
+_RUST_FUNC_WRAP = re.compile(
+    r'func_wrap\(\s*"vibe"\s*,\s*"([A-Za-z0-9_$-]+)"\s*,(.{0,4000}?)\|([^|]*)\|\s*(->\s*[^{]+?)?\s*\{',
+    re.S,
+)
+_RUST_CORE_TYPES = {"i32", "i64", "f32", "f64"}
+
+
+def _split_top_level(text: str) -> list[str]:
+    """Split on commas at bracket depth 0.
+
+    A naive `text.split(",")` shreds `Caller<'_, HostState>` -- measured, it
+    turned 51 parseable providers into 49 unparseable ones, and an
+    "unparseable" provider is one this check silently says nothing about.
+    """
+    out: list[str] = []
+    depth = 0
+    cur = ""
+    for ch in text:
+        if ch in "<([":
+            depth += 1
+        elif ch in ">)]":
+            depth -= 1
+        if ch == "," and depth == 0:
+            out.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    if cur.strip():
+        out.append(cur)
+    return out
+
+
+def _rust_params(params: str) -> list[str] | None:
+    """Core param types of a func_wrap closure, or None if not fully understood.
+
+    `Caller<'_, HostState>` is the host context, not a wasm parameter, so it is
+    dropped rather than mapped.
+    """
+    out: list[str] = []
+    for part in _split_top_level(params):
+        part = part.strip()
+        if not part or "Caller<" in part:
+            continue
+        match = re.search(r":\s*([A-Za-z0-9_]+)\s*$", part)
+        if match is None or match.group(1) not in _RUST_CORE_TYPES:
+            return None
+        out.append(match.group(1))
+    return out
+
+
+def _rust_result(ret: str | None) -> str | None:
+    value = (ret or "").replace("->", "", 1).strip()
+    if not value:
+        return "()"
+    unwrapped = re.fullmatch(r"Result<\s*(.*?)\s*>", value, re.S)
+    if unwrapped is not None:
+        value = unwrapped.group(1).strip()
+    if value in ("()", ""):
+        return "()"
+    return value if value in _RUST_CORE_TYPES else None
+
+
+def validate_rust_signatures(text: str, manifest: dict) -> int:
+    """#1346: compare the PROVIDER's callable types against the emitter's.
+
+    Presence-by-name was the first slice: it catches a provider that is missing
+    and says nothing about one that is present with the wrong arity or the
+    wrong result type -- a mismatch wasmtime reports at link time as an opaque
+    signature error, after the emitter and the runner have each been reviewed
+    and each looked right on its own.
+
+    Anything this cannot read is REPORTED, never skipped: a provider whose
+    closure is not understood is exactly where a drift would hide.
+    """
+    types = manifest.get("importTypes", {})
+    sigs = manifest.get("coreTypeSignatures", {})
+    checked = 0
+    mismatches: list[str] = []
+    unreadable: list[str] = []
+    for match in _RUST_FUNC_WRAP.finditer(text):
+        name, params, ret = match.group(1), match.group(3), match.group(4)
+        parsed = _rust_params(params)
+        result = _rust_result(ret)
+        if parsed is None or result is None:
+            unreadable.append(name)
+            continue
+        expected = sigs.get(str(types.get(name)))
+        if expected is None:
+            continue
+        actual = "({}) -> {}".format(", ".join(parsed), result)
+        if actual != expected:
+            mismatches.append(f"{name}: viberun {actual} vs emitter {expected}")
+        checked += 1
+    if unreadable:
+        die(f"viberun provider signatures not understood: {sorted(unreadable)}")
+    if mismatches:
+        die("viberun provider signatures disagree with the emitter: " + "; ".join(sorted(mismatches)))
+    if checked == 0:
+        die("no viberun provider signature could be compared; the parser has drifted")
+    return checked
+
+
 def gc_lists(text: str) -> tuple[list[str], list[tuple[str, int]], list[str], int, int]:
     """The FOUR parallel lists the wasm-gc backend hand-maintains, plus its import-vec header.
 
@@ -340,7 +442,9 @@ def main() -> None:
     if unknown_types:
         die(f"emitter uses undocumented type indices: {unknown_types}")
 
-    rust = rust_imports(RUST.read_text())
+    rust_text = RUST.read_text()
+    rust = rust_imports(rust_text)
+    rust_sig_count = validate_rust_signatures(rust_text, manifest)
     node = node_imports(NODE.read_text())
     portable = bands["portableCore"]
     if not portable <= rust:
@@ -358,7 +462,7 @@ def main() -> None:
         all_names, GC.read_text(), manifest.get("importTypes", {}), manifest.get("coreTypeSignatures", {})
     )
 
-    print(f"host-runtime-contract: ok ({len(emitted)} static imports; {len(dynamic)} dynamic patterns; {len(portable)} portable; {gc_count} gc host imports)")
+    print(f"host-runtime-contract: ok ({len(emitted)} static imports; {len(dynamic)} dynamic patterns; {len(portable)} portable; {gc_count} gc host imports; {rust_sig_count} viberun signatures match the emitter)")
 
 
 if __name__ == "__main__":
