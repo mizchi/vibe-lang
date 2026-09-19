@@ -13,6 +13,42 @@ amends "package://pkg.pkl-lang.org/github.com/mizchi/pkfire/pkfire@0.14.2#/Taskf
 
 // --- Configuration (env vars, mirroring the former justfile defaults) ---
 
+// #2877: clear the nix wrapper's LD_LIBRARY_PATH for every task.
+//
+// `/root/.nix-profiles/pkfire/bin/pkf` is a nix wrapper that does
+// `export LD_LIBRARY_PATH=/nix/store/...-openssl-3.6.3/lib` before exec'ing
+// the real binary. The export is not scoped to the wrapped binary, so every
+// task inherits it, and a system binary that reaches the dynamic loader then
+// resolves out of the nix closure while linked against the system glibc:
+//
+//   sort: /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_ABI_DT_X86_64_PLT'
+//         not found (required by /nix/store/...-glibc-2.42-67/lib/libdl.so.2)
+//
+// `/usr/bin/sort` then exits non-zero writing nothing, so a `find | sort`
+// expansion comes back EMPTY. Measured: `pkf run test-vibe-test` failed at
+// `vibe_test.sh did not accept a directory` while `bash
+// scripts/vibe_test_smoke.sh` passed on the same tree -- a gate answering
+// differently on two invocations, which is the #2252 shape that gets a gate
+// exempted rather than fixed.
+//
+// Cleared HERE rather than in each script: the issue lists sanitizing ~80
+// entry points as the option where nothing stops the 81st from missing it.
+// `defaults.env` is project-level and overlays every task, so one row covers
+// tasks that do not exist yet. An EMPTY value is what the loader wants --
+// glibc reads it as "no extra directories", measured against `sort --version`
+// -- and pkfire's env is an overlay, so there is no "unset" to ask for.
+//
+// The real fix is upstream: pkfire's nix packaging should scope the variable
+// to the wrapped binary (`makeWrapper --prefix` on the binary, not an exported
+// variable a child inherits). This is the stopgap the issue asks for, and it
+// stops being needed the moment the wrapper is fixed -- harmlessly, since an
+// empty value is what a clean environment already looks like.
+defaults {
+  env {
+    ["LD_LIBRARY_PATH"] = ""
+  }
+}
+
 // selfhost sources: top-level vibe/ was dissolved into lib/ (#766 Phase 2-4).
 // The MoonBit-host globs (moon.mod, src/**/*.mbt, src/**/moon.pkg) were
 // dropped with the rest of the retired host — they matched nothing.
@@ -1955,6 +1991,26 @@ local selfhostPostGenerationGate = new Task {
   deps { selfhostGenerationGate }
 }
 
+// #2877: the canary the LD_LIBRARY_PATH gate reads. Internal, and it must
+// stay a REAL task -- the property being measured is what a pkf task inherits,
+// so asking anything other than pkf would be testing a different environment.
+// `sort` is the binary the original instance broke on; any system binary that
+// reaches the dynamic loader would do.
+local checkTaskEnv = new Task {
+  name = "check-task-env"
+  description = "internal: report the LD_LIBRARY_PATH a task inherits, and run a system binary"
+  cmd =
+    "printf 'task-env: LD_LIBRARY_PATH=%s\\n' \"${LD_LIBRARY_PATH:-}\"; sort --version >/dev/null 2>&1 && echo 'task-env: sort ok' || echo 'task-env: sort FAILED'"
+  cache = false
+  visibility = "internal"
+}
+
+local checkTaskEnvSanitized =
+  scriptTask("check-task-env-sanitized", "scripts/check_task_env_sanitized.sh")
+
+local testCheckTaskEnvSanitized =
+  scriptTask("test-check-task-env-sanitized", "scripts/check_task_env_sanitized_test.sh")
+
 // === HTTP / selfhost gates ===
 
 local testCheckedModuleCacheParity = new Task {
@@ -2412,6 +2468,11 @@ local releaseCheck = new Task {
     // failing on the tree with no one to see it. Same failure mode the
     // `testWasmValidateParity` comment below describes.
     lintTrackedExperimentNames
+    // #2877: the nix wrapper leaks LD_LIBRARY_PATH into every task, and the
+    // `defaults.env` row that clears it fails SILENTLY when removed -- tasks
+    // keep running, some just stop seeing their own inputs. Depended on here
+    // so the row has something watching it.
+    checkTaskEnvSanitized
     checkGateWiring
     testCheckGateWiring
     checkGatePortability
@@ -2657,6 +2718,9 @@ tasks {
   testReleaseInstall
   testUncaughtExceptionExit
   testVibeTest
+  checkTaskEnv
+  checkTaskEnvSanitized
+  testCheckTaskEnvSanitized
   testEnsureSeed
   testVibeFmt
   testEnsureEntryWasm
