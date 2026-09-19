@@ -1,0 +1,262 @@
+# Async host runtime contract
+
+The inventory #2832 checkbox 1 asks for: every async host import, read off the
+emitters rather than off a design document, with what the values mean, who owns
+a handle, what completion looks like, and what is refused.
+
+Checkbox 2's separation — runtime-neutral contract vs Wasmtime configuration —
+is the [Two bands](#two-bands) split below. It is not a stylistic division: the
+two bands differ in how many implementations exist, and therefore in whether
+they can disagree.
+
+Names and core types are already machine-checked by
+`docs/generated/host-runtime-contract.json` +
+`scripts/check_host_runtime_contract.py`. **This file holds what that manifest
+cannot: the meaning of the bits.** Where a claim here is mechanically
+checkable, it has a gate and this file names it; where it is not, it says so.
+
+Measured against `779f1b6`.
+
+## Two bands
+
+| | `vibe.sleep` | the other nine |
+|---|---|---|
+| manifest band | `portableCore` | `componentAdapterOnly` + `componentAdapterPatterns` |
+| implementations | **two** (`runtime/viberun`, `scripts/wasm_vibe_host_runner.js`) | **one** (the adapter the composer emits) |
+| can two backends disagree? | yes, and they do — **#2903** | no |
+
+That asymmetry is the whole of checkbox 4's "no backend may silently
+reinterpret the same import". Seven of the imports have a single implementer
+and cannot diverge. The one import with two implementers has two different
+answers and neither is correct.
+
+## The import set
+
+Emitted by `lib/@vibe/compiler/codegen/wasi/linked_compile.vibe` in one import
+section, in reserved-index order, each demand-gated on a `used_builtin_names`
+lookup (gating at `:9587-9648`, emission at `:13508-13620`).
+
+### portableCore — linked by a core runner
+
+| import | core type | emitted | implemented by |
+|---|---|---|---|
+| `vibe.sleep` | 1 · `(i64) -> ()` | `:13512` | `viberun/src/main.rs:3449`, `wasm_vibe_host_runner.js:2814` |
+| `vibe.stdin_read_char` | 5 · `() -> i64` | `:13522` | both runners, **synchronously** |
+| `vibe.stdin_read_stream` | 3 · `(i64) -> i64` | `:13646` | both runners |
+
+`stdin_read_char` is described at `linked_compile.vibe:9593-9597` as
+"implemented async by the host". Both shipped runners implement it with a
+blocking read. The description is a statement about an intended host, not about
+either host that exists.
+
+### componentAdapterOnly — never linked by a core runner
+
+| import | core type | emitted |
+|---|---|---|
+| `vibe.host_future_get` | 5 · `() -> i64` | `:13535` |
+| `vibe.host_future_wait` | 3 · `(i64) -> i64` | `:13543` |
+| `vibe.host_stream_read` | 3 · `(i64) -> i64` | `:13569` |
+| `vibe.host_stream_close` | 3 · `(i64) -> i64` | `:13581` |
+| `vibe.stdin_provider_acquire` | 5 · `() -> i64` | `:13591` |
+| `vibe.stdin_provider_read` | 3 · `(i64) -> i64` | `:13599` |
+| `vibe.stdin_provider_close` | 3 · `(i64) -> i64` | `:13607` |
+| `vibe.host_future_get$<name>` | 5 · `() -> i64` | `:13556`, one per sorted-deduped name |
+| `vibe.host_stream_get$<name>` | 5 · `() -> i64` | `:13616`, one per sorted-deduped name |
+
+Neither `scripts/wasm_vibe_host_runner.js` nor `runtime/viberun`'s core lane
+registers any of these — verified by absence, and it is by design: they are
+satisfied inside the composed component by the adapter
+`lib/@vibe/compiler/entry/source_compile/wasi_only/component_codegen.vibe`
+emits. A core module importing them and run through either runner fails at
+instantiation, not at the call.
+
+### A third dynamic prefix the manifest does not know
+
+`vibe.wit_future_get$<versioned-interface>#<func>` is parsed and routed by the
+composer (`component_codegen.vibe:5616-5689`, `:5783-5793`, `:7065`) but
+`grep -c wit_future` is **0** in `linked_compile.vibe`,
+`core/builtin_registry.vibe` and `checker/builtins_async.vibe`. Nothing
+produces it from source today; it reaches the composer only from the synthetic
+fixture at `component_codegen.vibe:7411-7419`.
+
+This matters for sequencing #2064: `check_host_runtime_contract.py:115`
+compares the emitter's dynamic prefixes against the manifest's
+`componentAdapterPatterns` by **exact dict equality**, so the first commit that
+makes `linked_compile.vibe` emit `wit_future_get$` turns a green required gate
+red unless the manifest row lands in the same change. That is a consequence of
+the gate working, not a defect in it.
+
+## What the values mean
+
+### `vibe.sleep` — unsettled, see #2903
+
+The guest passes the **RC-tagged** millisecond count `ms << 1`. Observed
+directly with a stub host that records the raw `i64`: `sleep(1000)` passes
+`2000`. No host decodes it as `>> 1`; two decode it as `>> 2` (a tag width the
+RC lane stopped using) and two pass it through raw. Every `sleep(ms)` therefore
+sleeps `2×ms` or `ms/2`, and which one depends on `VIBE_IMPORT_ABI`.
+
+This file deliberately does not state a rule for `vibe.sleep`'s argument,
+because there is no rule the implementations agree on. #2903 has the
+measurement and the two candidate fixes.
+
+### Host futures
+
+- **Getter** (`host_future_get`, `host_future_get$<name>`) issues `future.read`
+  **eagerly** into a per-handle landing slot and records a state: `1` =
+  BLOCKED (`0xffffffff` from the canonical read), `2` = completed inline. A
+  handle in any other state never went through a getter, and the adapter traps.
+- **Wait** (`host_future_wait`) only **settles**. It does not re-read: a second
+  `future.read` on a future that already has one pending is a canonical-ABI
+  error, which is why the read is in the getter and not here.
+- **Drop** is conditional. A call that completed eagerly (status RETURNED, code
+  `2`) created no subtask, so it is neither joined nor dropped
+  (`component_codegen.vibe:2760-2761`). The probe in
+  `tools/wasip3_component_probe/` traps on eager completion and so never
+  exercised this branch; the composer reaches it.
+
+### Host streams
+
+- **Getter** (`host_stream_get$<name>`) does **no** eager read and keeps no
+  per-handle state — the park is per-read, and a read left pending between
+  calls would double-read.
+- **Read** (`host_stream_read`) returns one byte, or `-1` at end of stream.
+  End of stream has **two** shapes and both are handled
+  (`component_codegen.vibe:2096`): a zero-transfer CLOSED code `1` (drop the
+  readable end, return `-1`), or the final byte arriving *with* the CLOSED code
+  (latch `comp_hs_closed_base` so the next call settles to `-1`). Any other
+  zero-transfer code traps loudly rather than being read as EOS.
+- **Close** (`host_stream_close`) clears the CLOSED latch and issues
+  `stream.drop-readable`. No park — dropping is synchronous. The guest cell's
+  state word gates the one call, because a second `stream.drop-readable` on a
+  dropped end traps host-side. The raw ABI is uniformly `(i64) -> i64` even
+  though the surface returns `Unit`.
+
+### Canonical read encodings
+
+Every constant here is a measurement taken against
+`tools/wasip3_component_probe/host_stream_value`, not a choice
+(`component_codegen.vibe:2091-2098`):
+
+| what | encoding |
+|---|---|
+| a blocked read | `0xffffffff` |
+| a completion | `(amount << 4) \| code` |
+| the wake event for a read | `2` |
+| the status in a `waitable-set.wait` payload | the **second** word |
+| end of stream | a zero-transfer code `1`, **or** riding along with the final byte |
+
+Reading again after either terminal shape traps, which is why both end the
+loop rather than one being treated as the normal case and the other as an
+error.
+
+### Guest cell shapes
+
+A `Future[T]` is a two-word cell `[state, payload]`, and the state word is
+what distinguishes the four things that share the representation
+(`checker/builtins_async.vibe:21-23`):
+
+| state | meaning | payload |
+|---|---|---|
+| `0` | ready | the value |
+| `1` | guest pending | guest-side |
+| `2` | host future | the handle |
+| `3` | host stream | the handle |
+
+`HostStream` is the state-3 cell. The states are disjoint on purpose:
+`compile_call.vibe:3372-3373` records that the host-stream state is "distinct
+from every future cell state so a future cell can never be read as a stream or
+vice versa".
+
+A host stream arriving as a **parameter** is the bare handle, not a cell, and
+the parameter is shadowed by a cell built at the top of the body — without
+that, a read would pull state and handle out of a single integer
+(`tests/gates/mid/run.sh:301-304`, the #1540 lane).
+
+## The suspend-request band protocol
+
+The injected `__entry_settle` (`linked_compile.vibe:4190-4260`) dispatches a
+single `Int` request. The bands are documented at `lc_hs_req_base`
+(`linked_compile.vibe:2966-2977`) and are load-bearing magic numbers:
+
+| request | meaning |
+|---|---|
+| `req < 0` | sleep debt of `-req` ms → `sleep_blocking` |
+| `req == 0` | cooperative yield |
+| `req == 1` | poll wait — **deterministically traps** (it would livelock under the tail-resumptive boundary) |
+| `2 ≤ req ≤ 1025` | host-future waitable, handle `req - 2` |
+| `req ≥ 2048` | host-stream read, handle `req - lc_hs_req_base()` |
+
+The future band's top, `1025`, is `2 + comp_hf_max_handles()` — and
+`comp_hf_max_handles() = 1023` lives in `component_codegen.vibe:5778` while
+`lc_hs_req_base() = 2048` lives in `linked_compile.vibe:2975`. The bands are
+disjoint "by construction, not by runtime discipline", as that comment says,
+and the construction spans two files that nothing read together until
+`scripts/check_async_band_contract.sh`.
+
+## The adapter slot bands
+
+`component_codegen.vibe:5738-5781`:
+
+| base | value |
+|---|---|
+| `comp_hf_value_base` | 4096 |
+| `comp_hf_state_base` | 8192 |
+| `comp_hs_value_base` | 12288 |
+| `comp_hs_closed_base` | 16384 |
+| `comp_hf_max_handles` | 1023 |
+
+Every adjacency is **exactly** full — `4096 + 1023×4 + 4 = 8192`, and the same
+to `12288` and to `16384`. Margin zero at three boundaries. Raising the handle
+cap without moving the bases silently overruns into the next band, which is why
+`scripts/check_async_band_contract.sh` asserts the arithmetic rather than the
+constants.
+
+## Cancellation does not exist
+
+No cancellation operation is emitted or implemented anywhere. `subtask.cancel`,
+`future.cancel-read`, `future.cancel-write` and `task.cancel` have zero
+occurrences across both emitters and `runtime/viberun`; the only hit for
+"cancel" in the async surface is a prose comment at
+`checker/builtins_async.vibe:160` recording that `future.cancel-*` remains
+M-conc-2.
+
+ADR-0068 (`concurrency.md`) specifies cooperative cancellation as the public
+model. That specification currently has no ABI under it. #1537 scope item 3
+names these operations; this file records their absence as a fact rather than
+leaving it to be inferred from a design document that describes the intent.
+
+## Runtime-neutral vs Wasmtime-specific
+
+Checkbox 2's split, stated concretely:
+
+**Runtime-neutral** — anything a second implementation would have to match:
+the import names and core types (already in the manifest), the request-band
+protocol, the four cell states `0`/`1`/`2`/`3` and their disjointness, the
+stream `-1` EOS sentinel and its two shapes, the conditional-drop rule.
+
+**Component Model canonical ABI** — not portable, and not something a core
+runner can honour: `future.read`'s `BLOCKED` = `0xffffffff`, the
+`waitable-set.wait` completion-order dispatch, `subtask.drop` /
+`waitable-set.drop` / `stream.drop-readable` opcodes, the `[async-lower]`
+call-to-subtask folding.
+
+**Wasmtime configuration** — the flags `runtime/vibe:929` passes
+(`-Sp3 -Shttp -W exceptions=y -W concurrency-support=y -W
+component-model-async=y -W component-model-async-stackful=y`), and
+`VIBE_ASYNC_FUTURES` / `VIBE_ASYNC_STREAMS`, which are a **test harness**, not
+part of the contract: they exist only in `runtime/viberun/src/main.rs:917`
+and `:1000` and link named root imports from an env spec. The runner reserves
+`get-future`, `get-async`, `get-after` and `sleep-for` against redefinition
+(`:935`, `:1011`).
+
+## What is still not pinned
+
+- `vibe.sleep`'s argument representation — **#2903**, a P0.
+- The `stdin_read_char` "async by the host" description, which no host
+  implements that way.
+- Cancellation, which has no ABI at all.
+- Whether a core module importing a `componentAdapterOnly` name fails with a
+  diagnostic or with a bare instantiation error. Checkbox 4 asks for negative
+  tests here; there are none, and adding them needs a decision about what the
+  failure should say first.

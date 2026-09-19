@@ -913,6 +913,21 @@ python3 scripts/check_host_runtime_contract.py
 python3 tests/gates/tooling-accounting/host-runtime/host_runtime_contract_test.py
 echo "[compiler-gate] host-runtime ABI contract ok"
 
+# 40h-4c. #2832: the async slot and request BANDS, the static half the
+#         contract manifest cannot hold. The manifest pins each async import's
+#         NAME and core type; what it cannot pin is that the four per-handle
+#         slot regions in component_codegen.vibe are packed exactly (margin
+#         zero at three adjacencies today) and that the future request band
+#         `[2, 2 + comp_hf_max_handles]` stays below `lc_hs_req_base` -- a
+#         relation whose two halves live in DIFFERENT files, which is why
+#         linked_compile.vibe's own comment says the bands are disjoint "by
+#         construction, not by runtime discipline". Reads two sources, runs in
+#         milliseconds, touches no stage2. Its red test is
+#         scripts/check_async_band_contract_test.sh, which the gate-self-test
+#         ratchet runs -- not repeated here.
+echo "[compiler-gate] 129/129 async slot and request bands (#2832)"
+bash scripts/check_async_band_contract.sh
+
 # 40h-5. #1262: the gc lane's host-import surface, extended by five builtins
 #        that were "unknown constructor or function" there. Runs with NO
 #        VIBE_IMPORT_ABI for the same reason as 40h-4 -- the module declares
