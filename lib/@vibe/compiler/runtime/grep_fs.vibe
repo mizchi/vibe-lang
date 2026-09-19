@@ -100,10 +100,14 @@ fn grep_fs_empty_pairs() -> Array[(String, String)] {
 /// per module and reusable across entries. That is the same reuse the
 /// incremental build already relies on from this function; grep was the only
 /// caller discarding it.
-fn grep_fs_typed_context(path: String, raw_source: String, cache_in: Array[(String, TypeEnv)]) -> (GrepTyped, Array[(String, TypeEnv)]) with Fs {
+fn grep_fs_typed_context(path: String, raw_source: String, cache_in: Array[(String, TypeEnv)], rdb_in: RippleDb) -> (GrepTyped, Array[(String, TypeEnv)], RippleDb) with Fs {
   handle {
     let groups = collect_source_groups_fs(path)
-    let mut rdb = ripple_new()
+    // #2914 experiment: the db carries fingerprints, so seeding a module whose
+    // source is unchanged lets the walk skip re-checking it. Sources are keyed
+    // by PATH and the walk is driven by the `path` argument, so carrying other
+    // entries' modules cannot change what THIS entry resolves to.
+    let mut rdb = rdb_in
     let mut entry_source = raw_source
     let mut gi = 0
     while gi < Array::length(groups) {
@@ -127,7 +131,7 @@ fn grep_fs_typed_context(path: String, raw_source: String, cache_in: Array[(Stri
       None => grep_empty_strings()
     }
     let import_env = projected_import_env_for_test(entry_source, path, deps, grep_fs_fill_dep_envs(walked, env_cache, deps))
-    (grep_typed_context(raw_source, entry_source, import_env), env_cache)
+    (grep_typed_context(raw_source, entry_source, import_env), env_cache, walked)
   } with {
   // The graph did not check. That is a real answer, not a reason to fall
   // back to single-file typing: doing so would type-check this file against
@@ -136,7 +140,7 @@ fn grep_fs_typed_context(path: String, raw_source: String, cache_in: Array[(Stri
   // `cache_in` and not an empty cache: entries are whole per module, so a
   // file whose own walk threw leaves the ones already recorded valid for the
   // files after it.
-  Exception::Throw(msg) => (grep_typed_context_error(raw_source, msg), cache_in) }
+  Exception::Throw(msg) => (grep_typed_context_error(raw_source, msg), cache_in, rdb_in) }
 }
 
 fn grep_fs_cache_has(cache: Array[(String, TypeEnv)], path: String) -> Bool {
@@ -198,6 +202,7 @@ export fn grep_scan_fs_report(root: String, pattern: String, wheres: Array[Strin
   // the tree-wide typed sweep re-typed the compiler's closure once per
   // matching file and ran past the 8 GB linear-memory cap.
   let mut typed_env_cache = grep_fs_empty_env_cache()
+  let mut typed_rdb = ripple_new()
   let mut i = 0
   while i < Array::length(files) {
     let path = Array::get(files, i)
@@ -214,8 +219,9 @@ export fn grep_scan_fs_report(root: String, pattern: String, wheres: Array[Strin
     } }
     if Array::length(hits) > 0 {
       let ctx = if typed {
-        let (typed_ctx, next_cache) = grep_fs_typed_context(path, source, typed_env_cache)
+        let (typed_ctx, next_cache, next_rdb) = grep_fs_typed_context(path, source, typed_env_cache, typed_rdb)
         typed_env_cache = next_cache
+        typed_rdb = next_rdb
         typed_ctx
       } else {
         grep_untyped_context()
