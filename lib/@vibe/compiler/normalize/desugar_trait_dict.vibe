@@ -3884,6 +3884,168 @@ fn dtd_builtin_witness(name: String) -> Option[Expr] {
   }
 }
 
+/// #2523: whether ANY statement in the merged program declares `trait <name>`.
+///
+/// `dtd_trait_declared_here` stops at `dtd_own_end`, which is the right window
+/// for a question about the module being rewritten. This one is deliberately
+/// wider: it guards an INJECTION, so a `trait Eq` anywhere -- including one an
+/// imported module declares -- must suppress it. Guessing wrong in that
+/// direction would overwrite a program's own marker `Eq` with the prelude's
+/// signature and dispatch its `==` through a witness it never wrote.
+fn dtd_trait_declared_anywhere(stmts: Array[Stmt], trait_name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(stmts) && !found {
+    match Array::get(stmts, i) {
+      STrait(_, n, _, _, _, _) => if n == trait_name {
+        found = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// #2523: the prelude's `Eq` signature, for a program that declares no `Eq` of
+/// its own.
+///
+/// `@vibe/builtin/builtin_traits.vibe` declares `trait Eq { equals(Self, Self)
+/// -> Bool }`, but that file is a MODULE programs import, not statements every
+/// program carries -- `collect_method_traits` walks `stmts`, so the trait is
+/// invisible here and `[T: Eq]` had no signature to build a dictionary from.
+/// Measured before this: `vibe check` was clean and codegen then failed with
+/// ``internal compiler error: `T::equals` (local, @call) reached code
+/// generation unresolved``.
+///
+/// The checker learns the same thing from `register_builtin_traits`; this is
+/// the lowering half of that one registration.
+let dtd_eq_injected: Array[Bool] = [false]
+
+/// #2523: did this run inject the builtin `Eq` into the lowering's trait
+/// table? Module-level because `build_concrete_dict_for_target` has no access
+/// to `stmts` -- the same idiom `dtd_own_limit` and `dtd_ctx_len` already use.
+fn dtd_eq_was_injected() -> Bool {
+  Array::get(dtd_eq_injected, 0)
+}
+
+/// #2523: does any binder in this program carry an `Eq` bound?
+///
+/// Injecting unconditionally perturbs programs that never mention the bound:
+/// measured, `lib/@vibe/core/list_test.vibe` -- no `[T: Eq]` generic anywhere,
+/// it only iterates -- failed with `internal compiler error: Int::next (local,
+/// @call) reached code generation unresolved`. A method-bearing trait nothing
+/// asks for still changes `flatten_traits`, the supertrait map and the
+/// trait-namespace derivation. The pass already holds this principle a few
+/// lines below the injection site: "Witness dict structs are only needed when
+/// method-bearing traits exist."
+fn dtd_program_has_eq_bound(stmts: Array[Stmt]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, v) => found = dtd_expr_has_eq_bound(v),
+      SImpl(_, tbounds, _, _) => found = dtd_bounds_have_eq(tbounds),
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn dtd_bounds_have_eq(tbounds: Array[(String, Array[String])]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(tbounds) {
+    let (_, bs) = Array::get(tbounds, i)
+    let mut j = 0
+    while !found && j < Array::length(bs) {
+      if dtd_bound_entails_eq(Array::get(bs, j)) {
+        found = true
+      } else {
+        ()
+      }
+      j = j + 1
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn dtd_expr_has_eq_bound(e: Expr) -> Bool {
+  let direct = match e {
+    EFn(_, tbounds, _, _, _, _) => dtd_bounds_have_eq(tbounds),
+    _ => false
+  }
+  if direct {
+    true
+  } else {
+    let kids = expr_children(e)
+    let mut i = 0
+    let mut found = false
+    while !found && i < Array::length(kids) {
+      found = dtd_expr_has_eq_bound(Array::get(kids, i))
+      i = i + 1
+    }
+    found
+  }
+}
+
+fn dtd_inject_builtin_eq(stmts: Array[Stmt], traits_raw: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])]) -> Unit {
+  Array::set(dtd_eq_injected, 0, false)
+  if dtd_trait_declared_anywhere(stmts, dtd_eq_witness_trait()) || !dtd_program_has_eq_bound(stmts) {
+    ()
+  } else {
+    match lookup_trait_sigs(traits_raw, dtd_eq_witness_trait()) {
+      Some(_) => (),
+      None => {
+        let sigs: Array[(String, Array[TypeExpr], TypeExpr)] = [
+          (dtd_eq_witness_method(), [TyName("Self"), TyName("Self")], TyName("Bool"))
+        ]
+        Array::push(traits_raw, (dtd_eq_witness_trait(), sigs))
+        Array::set(dtd_eq_injected, 0, true)
+      }
+    }
+  }
+}
+
+/// #2523: the `equals` witness for a bodyless `impl Eq for <scalar>`.
+///
+/// The prelude declares `impl Eq for Int` / `Double` / `Bool` / `Char` /
+/// `String` and gives none of them a body, because a body would bind
+/// `Int::equals` at the top level of every program (the prelude is merged in)
+/// and a program declaring its own `impl <Trait> for Int { equals }` then
+/// fails with `duplicate declaration: Int::equals` -- measured, and several
+/// fixtures write exactly that impl.
+///
+/// `String` needs nothing here: `String::equals` is a real builtin and #2872's
+/// arm above already reaches it. The other four have no `<Type>::equals`
+/// builtin at all, so the witness is synthesized as a two-parameter lambda
+/// whose body is `a == b` with the parameters ANNOTATED at the concrete type.
+///
+/// Annotated is the whole point. `==` lowers by the type it can see (#2128:
+/// without one, `String`'s `<` compares addresses), so an annotated body gets
+/// the same lowering the concrete site `1 == 1` gets, by construction rather
+/// than by a second implementation of equality that could drift from it. It
+/// cannot recurse into itself either: `dtd_eq_witness_dict` fires only when an
+/// operand's type names a type FORMAL in scope, and these are concrete.
+fn dtd_scalar_eq_witness(cname: String, m: String) -> Option[Expr] {
+  if m != dtd_eq_witness_method() {
+    None
+  } else if cname != "Int" && cname != "Double" && cname != "Bool" && cname != "Char" {
+    None
+  } else {
+    let params: Array[(String, Option[TypeExpr])] = [
+      ("__scalar_eq_a", Some(TyName(cname))),
+      ("__scalar_eq_b", Some(TyName(cname)))
+    ]
+    let body = EBinOp("==", EIdent("__scalar_eq_a", -1), EIdent("__scalar_eq_b", -1), -1)
+    Some(EFn(array_empty(), array_empty(), params, Some(TyName("Bool")), None, body))
+  }
+}
+
 fn build_concrete_dict_for_target(actual_target: TypeExpr, trait_name: String, traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)], arg_expr: Option[Expr]) -> Option[Expr] with Exception {
   let cname = impl_target_head(actual_target)
   match lookup_trait_sigs(traits, trait_ref_name(trait_name)) {
@@ -3902,7 +4064,19 @@ fn build_concrete_dict_for_target(actual_target: TypeExpr, trait_name: String, t
           Some(generic_qm) => generic_qm,
           None => plain_qm
         }
-        if not(fn_exists(fn_returns, qm)) {
+        // #2523: for the INJECTED builtin `Eq` at a scalar the witness is the
+        // builtin comparison, NOT whatever top-level function happens to be
+        // named `<Type>::equals`. Measured: with `trait Weird { equals(Self,
+        // Self) -> Bool }` and `impl Weird for Int { equals(a, b) { false } }`
+        // in the program, that impl DEFINES `Int::equals`, so this `fn_exists`
+        // fallback picked it up and `same[T: Eq + Weird](1, 1)` answered
+        // `false`. `fixtures/eq_bound_witness_trait_test.vibe` exists to pin
+        // exactly that hijack from the other direction: the witness is keyed
+        // by `<Type>::<method>`, which any trait with an `equals` for that
+        // type can occupy. Skipping `fn_exists` drops through to the builtin
+        // and scalar arms below, where the right answer is.
+        let injected_eq_scalar = dtd_eq_was_injected() && trait_ref_name(trait_name) == dtd_eq_witness_trait() && (dtd_scalar_eq_witness(cname, m) is Some)
+        if injected_eq_scalar || not(fn_exists(fn_returns, qm)) {
           // #2872: the name may still be a BUILTIN -- `fn_exists` knows only
           // user functions, and `String::equals` is a real builtin that a
           // bodyless `impl Eq for String` should be able to resolve to.
@@ -3915,14 +4089,21 @@ fn build_concrete_dict_for_target(actual_target: TypeExpr, trait_name: String, t
           // (#2840) stays closed.
           match dtd_builtin_witness(qm) {
             Some(closure) => Array::push(recfields, (m, closure)),
-            None => {
-              // #2872 case (1): the impl declares no body for `m` and there
-              // is no `<Type>::<m>` of any kind to stand in. Leaving the
-              // dictionary with a hole emitted the call one argument short,
-              // which the wasm VALIDATOR rejected -- after `vibe check`
-              // certified the program. Refuse here instead, naming the edit
-              // (#2475's shape: a build error, not a bare trap).
-              throw(String::concat("add a body for `", String::concat(m, String::concat("` to `impl ", String::concat(trait_ref_name(trait_name), String::concat(" for ", String::concat(cname, String::concat("`: a method-bearing trait's impl must implement every method, and there is no `", String::concat(qm, "` to fall back to")))))))))
+            None => match dtd_scalar_eq_witness(cname, m) {
+              // #2523: `Int` / `Double` / `Bool` / `Char` have no
+              // `<Type>::equals` builtin the way `String` does, and the
+              // prelude's impls cannot carry a body without colliding with a
+              // program's own. Synthesize the annotated comparison instead.
+              Some(closure) => Array::push(recfields, (m, closure)),
+              None => {
+                // #2872 case (1): the impl declares no body for `m` and there
+                // is no `<Type>::<m>` of any kind to stand in. Leaving the
+                // dictionary with a hole emitted the call one argument short,
+                // which the wasm VALIDATOR rejected -- after `vibe check`
+                // certified the program. Refuse here instead, naming the edit
+                // (#2475's shape: a build error, not a bare trap).
+                throw(String::concat("add a body for `", String::concat(m, String::concat("` to `impl ", String::concat(trait_ref_name(trait_name), String::concat(" for ", String::concat(cname, String::concat("`: a method-bearing trait's impl must implement every method, and there is no `", String::concat(qm, "` to fall back to")))))))))
+              }
             }
           }
         } else {
@@ -21705,7 +21886,14 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
   // spelled-out `to_string(v)` renders like `"\{v}"` does. See dtd_show_shims.
   collect_show_shims(stmts)
   local_show_shim_reset()
+  // #2523: BEFORE the trait table is built, so every downstream collector --
+  // collect_method_traits, collect_trait_supers, build_gens, impl target
+  // resolution -- sees the prelude's `Eq` the same way it sees a program's
+  // own. Injecting only the SIGNATURES left the impls missing and the dict
+  // record was built without its field: `unknown struct field: equals` on
+  // `bare[T: Eq](1, 1)`, measured. The two halves have to arrive together.
   let traits_raw = collect_method_traits(stmts)
+  dtd_inject_builtin_eq(stmts, traits_raw)
   let trait_type_params = collect_trait_type_params(stmts)
   let supers_map = collect_trait_supers(stmts)
   let traits = flatten_traits(traits_raw, supers_map)
@@ -21793,7 +21981,21 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
     let mut ti = 0
     while ti < Array::length(traits) {
       let (trait_name, sigs) = Array::get(traits, ti)
-      if struct_decl_exists(stmts, dict_struct_name(trait_name)) || !dtd_trait_declared_here(stmts, trait_name) {
+      // #2523: the builtin `Eq` is injected as SIGNATURES (dtd_inject_builtin_eq),
+      // never as a statement, so `dtd_trait_declared_here` is false for it and
+      // this guard skipped its dict struct -- which is exactly why a
+      // signatures-only injection produced `unknown struct field: equals` on
+      // `bare[T: Eq](1, 1)`. Declaring it as a statement instead is what made
+      // `Int::next` reach codegen unresolved and the module-split oracles
+      // diverge: a trait DECLARATION feeds collect_method_traits, the supers
+      // map and the trait-namespace machinery, and an injection performed once
+      // per run makes a whole-program run and a per-module run disagree.
+      //
+      // The dict struct is this pass's OWN output -- it appends one for every
+      // method-bearing trait already -- so emitting it for the injected trait
+      // adds nothing the pass does not otherwise produce.
+      let injected_builtin = trait_name == dtd_eq_witness_trait() && !dtd_trait_declared_anywhere(stmts, trait_name)
+      if struct_decl_exists(stmts, dict_struct_name(trait_name)) || (!dtd_trait_declared_here(stmts, trait_name) && !injected_builtin) {
         ()
       } else {
         // #2286: record the provenance at the ONE point a dict struct is
@@ -21808,7 +22010,21 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
           Array::push(dtd_synth_dict_fields, (dict_name, mname, lookup_str_pair(owners, mname, trait_name)))
           si = si + 1
         }
-        Array::push(stmts, make_dict_struct_stmt(trait_name, sigs, lookup_trait_type_params(trait_type_params, trait_name)))
+        // #2523: `make_dict_struct_stmt` keeps `Self` verbatim in the field
+        // types, on the documented reasoning that struct type params are
+        // erased so the field-access typing is structural. That holds for a
+        // DECLARED trait, whose declaration puts `Self` in scope. The injected
+        // builtin has no declaration, so `Self` resolved to nothing:
+        // `unknown type `Self` in field `equals` of struct `EqDict``,
+        // measured. Bind it as an (erased) type parameter of the dict struct
+        // instead, which is the same erasure the comment already relies on.
+        let dict_tparams = if injected_builtin {
+          let tp: Array[String] = ["Self"]
+          tp
+        } else {
+          lookup_trait_type_params(trait_type_params, trait_name)
+        }
+        Array::push(stmts, make_dict_struct_stmt(trait_name, sigs, dict_tparams))
       }
       ti = ti + 1
     }

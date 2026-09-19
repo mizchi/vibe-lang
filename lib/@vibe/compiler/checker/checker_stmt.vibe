@@ -3495,16 +3495,23 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
           ctor_result_type,
           ctor_result_type
         ], CtBool, None))
+        // #2523: the enum half of the `derive (Eq)` registration below the
+        // struct one -- same reason, same shape.
+        let env_eq_impl = if struct_derives_has(enum_derives, "Eq") {
+          EnvTraitImpl("Eq", ctor_result_type, env_eq)
+        } else {
+          env_eq
+        }
         // #638: pre-bind the signatures the enum-derive desugar will generate, so
         // `E::compare` / `E::to_string` / `E::default` resolve at check time (the
         // FS-compile path checks before the codegen-time desugar runs).
         let env_ord = if struct_derives_has(enum_derives, "Ord") {
-          env_bind(env_eq, String::concat(name, "::compare"), CtFn([
+          env_bind(env_eq_impl, String::concat(name, "::compare"), CtFn([
             ctor_result_type,
             ctor_result_type
           ], CtInt, None))
         } else {
-          env_eq
+          env_eq_impl
         }
         let env_show = if struct_derives_has(enum_derives, "Show") || struct_derives_has(enum_derives, "Hash") {
           let env_show_base = if struct_derives_has(enum_derives, "Show") {
@@ -3678,10 +3685,25 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         }
         // #672: every struct gets a generated structural `T::equals` (the `==`
         // dispatch relies on it), so pre-bind its signature unconditionally.
-        let env4 = env_bind(env3, String::concat(name, "::equals"), CtFn([
+        let env4_base = env_bind(env3, String::concat(name, "::equals"), CtFn([
           CtStruct(name),
           CtStruct(name)
         ], CtBool, None))
+        // #2523: register `impl Eq for T` for a `derive (Eq)` struct, so a
+        // `[T: Eq]` bound is satisfied by the derived type -- the same shape
+        // `derive (Hash)` uses below. `Eq` is method-bearing now, and the
+        // witness the bound dispatches through is the `T::equals` bound
+        // immediately above; without this row the bound failed with
+        // ``no impl `Eq` for `Pt` `` while the comparator sat right there.
+        //
+        // Only with the derive, not for every struct: `T::equals` exists
+        // unconditionally (#672), so registering it unconditionally would
+        // make EVERY struct satisfy `[T: Eq]` without anyone asking.
+        let env4 = if struct_derives_has(derives, "Eq") {
+          EnvTraitImpl("Eq", CtStruct(name), env4_base)
+        } else {
+          env4_base
+        }
         // #694: `derive(Hash)` generates `T::hash_key(Self) -> String` (the
         // structural Map key), so pre-bind its signature at check time too, AND
         // register `impl Hash for T` so a `[K: Hash]` bound (e.g. `get_by`) is

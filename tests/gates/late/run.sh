@@ -953,16 +953,18 @@ send_check_reject "err_type_eq_marker_bound_struct.vibe" 'is a marker trait (dec
 send_check_reject "err_type_eq_marker_bound_struct.vibe" 'Give `Eq` at least one method' "eqmarker3"
 send_check_reject "err_type_ord_marker_bound_struct.vibe" 'no impl `Ord` for `Token`' "ordmarker"
 # #2895: `Double` is the instantiation the guard used to wave through, and it
-# was the silent wrong answer the guard exists to prevent -- `bare[T: Eq](1.5,
-# 1.5)` answered FALSE while the concrete `1.5 == 1.5` answered true, on the
-# seed and on a stage2 from this branch alike. This fixture uses the PRELUDE's
-# `Eq` rather than declaring one, so it pins the spelling a program writes.
-send_check_reject "err_type_eq_marker_bound_double.vibe" 'no impl `Eq` for `Double`' "eqdouble"
-send_check_reject "err_type_eq_marker_bound_double.vibe" 'is a marker trait (declared with no methods)' "eqdouble2"
+# was the silent wrong answer the guard exists to prevent -- `lt[T: Ord](2.5,
+# 1.5)` answered TRUE and `gt[T: Ord](2.5, 1.5)` answered FALSE, i.e. reading
+# allocation order. `Eq` is no longer part of it: ADR-0097 gave it a method
+# (#2523), so `[T: Eq]` at `Double` dispatches through a real witness and is
+# pinned as an ANSWER in fixtures/eq_bound_derive_test.vibe. `Ord` is still a
+# marker, so this fixture uses the PRELUDE's `Ord`.
+send_check_reject "err_type_ord_marker_bound_double.vibe" 'no impl `Ord` for `Double`' "orddouble"
+send_check_reject "err_type_ord_marker_bound_double.vibe" 'is a marker trait (declared with no methods)' "orddouble2"
 # The edit, which differs from the struct case: nobody can add a method to the
-# prelude's `Eq` from their own program, so "give it a method" is not advice a
+# prelude's `Ord` from their own program, so "give it a method" is not advice a
 # reader can act on here.
-send_check_reject "err_type_eq_marker_bound_double.vibe" 'Compare at the concrete type' "eqdouble3"
+send_check_reject "err_type_ord_marker_bound_double.vibe" 'Compare at the concrete type' "orddouble3"
 # #2640: `@vibe/core` declares its collections BODYLESS in its contract
 # (`type MutMap[K, V]`, `type MutSet[T]`), so a consumer sees them as
 # `CtNamed` -- indistinguishable, in the type representation, from a rigid

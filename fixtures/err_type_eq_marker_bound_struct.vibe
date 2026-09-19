@@ -1,20 +1,30 @@
-// #2523: `Eq` is a MARKER trait -- `export trait Eq` in
-// lib/@vibe/builtin/builtin_traits.vibe declares no methods -- so `[T: Eq]`'s
-// `==` has no dictionary to dispatch through and lowers to the builtin
-// comparison. That is right for the five scalars the marker registers impls
-// for, and REFERENCE identity for anything else.
+// #2523 / #2612: a MARKER `Eq` -- one declared with no methods -- cannot make a
+// non-scalar compare by content, so the BOUND is refused at that instantiation
+// rather than answering by reference identity.
 //
-// So `impl Eq for Pt` used to turn a clear error into a wrong answer: measured
-// on the production linear/RC lane, `bare(p1, p2)` on two EQUAL, distinct `Pt`
-// answered `false` and `bare(p1, p1)` on the same object answered `true`,
-// while `p1 == p2` at a concrete site answered `true`.
+// This file used to rely on the PRELUDE's `Eq` being a marker. It is not one
+// any more: ADR-0097 gave it `equals(Self, Self) -> Bool`, so a `[T: Eq]` bound
+// at a `derive (Eq)` struct dispatches through a real witness and compares by
+// content (`fixtures/eq_bound_derive_test.vibe`). The guard did not go with it
+// -- a PROGRAM may still declare its own marker `Eq`, and for that one the
+// reasoning is unchanged, so the trait is declared here.
+//
+// Measured before the guard, on the production linear/RC lane: `bare(p1, p2)`
+// on two EQUAL, distinct `Pt` answered `false` and `bare(p1, p1)` on the same
+// object answered `true`, while `p1 == p2` at a concrete site answered `true`.
 //
 // The BOUND is refused at this instantiation, not the impl -- `impl Eq for Pt`
 // stays a legal declaration (a marker impl can be a tag), and a concrete
 // `p1 == p2` still compares structurally
 // (fixtures/derive_struct_eq_marker_impl_test.vibe).
 
-struct Pt { v: Int } derive(Eq)
+trait Eq
+
+impl Eq for Int
+
+struct Pt {
+  v: Int
+}
 
 impl Eq for Pt
 
