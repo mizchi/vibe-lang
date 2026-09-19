@@ -90,6 +90,7 @@ the repo; not the user manual.
 | Path | Notes |
 | --- | --- |
 | [internal/design/adr.md](internal/design/adr.md) | Living ADR log |
+| [internal/design/async-host-contract.md](internal/design/async-host-contract.md) | #2832: every async host import read off the emitters — what the values mean, who owns a handle, what completion looks like, and that cancellation has no ABI. The synchronous sibling is [user/reference/host-runtime-contract.md](user/reference/host-runtime-contract.md) |
 | [internal/design/capability-authorization-surface.md](internal/design/capability-authorization-surface.md) | ADR-0088, proposed |
 | [internal/design/capability-host-contract.md](internal/design/capability-host-contract.md) | ADR-0088's host half (#2825 step 1), proposed: what a host does with a capability import it withholds |
 | [internal/design/component-lazy-dispatch.md](internal/design/component-lazy-dispatch.md) | The `vibe build --component` / `viberun --commands` contract: manifest, result frame, which wrap a command gets |
