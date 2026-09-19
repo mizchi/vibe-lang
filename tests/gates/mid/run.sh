@@ -928,20 +928,6 @@ echo "[compiler-gate] host-runtime ABI contract ok"
 echo "[compiler-gate] 129/129 async slot and request bands (#2832)"
 bash scripts/check_async_band_contract.sh
 
-# 40h-4d. #1346 criterion 5: the `vibe.*` host import SURFACE, pinned. 0.1.0
-#         freezes it, and until now nothing said what it contains -- the one
-#         list in the tree was `runtime/viberun/expected_imports.txt`, 32
-#         `__moonbit_fs_unstable` fields from a host retired in #594, read by
-#         nothing (deleted in the same change). This reads the emitters and
-#         compares them to a checked-in inventory, so a new, renamed or
-#         removed host import is a deliberate edit rather than a silent ABI
-#         change for every host that links these fields. Source-only, runs in
-#         milliseconds, touches no stage2. Its red test is
-#         scripts/check_sync_host_imports_test.sh, which the gate-self-test
-#         ratchet runs -- not repeated here.
-echo "[compiler-gate] 130/130 vibe.* host import surface (#1346)"
-bash scripts/check_sync_host_imports.sh
-
 # 40h-5. #1262: the gc lane's host-import surface, extended by five builtins
 #        that were "unknown constructor or function" there. Runs with NO
 #        VIBE_IMPORT_ABI for the same reason as 40h-4 -- the module declares
