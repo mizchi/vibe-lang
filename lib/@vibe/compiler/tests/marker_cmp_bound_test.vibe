@@ -65,6 +65,29 @@ test "the same bound at a scalar is accepted" {
   inspect(rejects(String::concat(eq_prelude, "let r = bare(\"a\", \"a\")\n")), "false")
 }
 
+// #2895: `Double` is NOT one of them. It carries a marker impl like the other
+// four and so read as safe, while being the exact failure this guard exists to
+// prevent. Measured on the committed seed and on a stage2 from this branch,
+// identical both ways: `bare[T: Eq](1.5, 1.5)` answered FALSE (and so did
+// `bare(0.0, 0.0)`) while the concrete `1.5 == 1.5` answered true, and under
+// `[T: Ord]` both `lt(2.5, 1.5)` and `gt(2.5, 1.5)` answered as if the operands
+// were addresses -- `true` and `false` respectively, which is wrong in both
+// directions at once.
+//
+// A `Double` is not a tagged immediate the way an `Int` is, so the raw
+// comparison the erased bound falls back to reads the box, not the number.
+test "an Eq bound at Double is refused, because it answered FALSE for two equal ones" {
+  inspect(rejects(String::concat("trait Eq\nimpl Eq for Double\nfn bare[T: Eq](x: T, y: T) -> Bool {\n  x == y\n}\n", "let r = bare(1.5, 1.5)\n")), "true")
+}
+
+test "an Ord bound at Double is refused too" {
+  inspect(rejects("trait Ord\nimpl Ord for Double\nfn lt[T: Ord](x: T, y: T) -> Bool {\n  x < y\n}\nlet r = lt(2.5, 1.5)\n"), "true")
+}
+
+test "a concrete Double comparison is untouched" {
+  inspect(rejects("let a = 1.5\nlet b = 1.5\nlet r = a == b\nlet t = a < b\n"), "false")
+}
+
 test "a concrete == on the same struct still checks clean" {
   inspect(rejects(String::concat(eq_prelude, "let a = Pt::{ v: 1 }\nlet b = Pt::{ v: 1 }\nlet r = a == b\n")), "false")
 }

@@ -4093,6 +4093,24 @@ fn unsatisfied_bound_hint(env: TypeEnv, trait_name: String, resolved: Type) -> S
     let cost = " -- honouring the impl would make the comparison silently wrong: two equal values answer `false`, and one value compared with itself answers `true`"
     let edit = String::concat(". Give `", String::concat(display, "` at least one method so the impl dispatches through the witness dictionary, or drop the bound"))
     String::concat(declared, String::concat(why, String::concat(cost, edit)))
+  } else if marker_cmp_bound_is_unsound(env, trait_name, resolved) {
+    // #2895: the branch above can NEVER fire for a primitive.
+    // `trait_impl_declared_for_ctor` keys on `type_constructor_name`, whose
+    // `_ => ""` arm covers `CtDouble`, and an empty head returns false. So
+    // `Double` -- the one primitive the guard now rejects -- got the bare
+    // ``no impl `Eq` for `Double` ``, which is the misleading half on its own:
+    // the prelude DOES declare `impl Eq for Double`.
+    //
+    // The edit differs from the struct case too. Nobody can add a method to
+    // the prelude's `Eq` from their own program, so the actionable advice is
+    // to compare at the concrete type instead of through the bound.
+    let display = trait_reference_display(trait_name)
+    let shown = type_to_string(resolved)
+    let declared = String::concat(": an `impl ", String::concat(display, String::concat(" for ", String::concat(shown, "` IS declared by the prelude, but `"))))
+    let why = String::concat(display, String::concat("` is a marker trait (declared with no methods) so it dispatches to the builtin `==` / `<`, and a `", String::concat(shown, "` is not a tagged immediate -- those read the BOX, not the number")))
+    let cost = " -- honouring the impl would make the comparison silently wrong: two equal values answer `false`, and `<` answers the same way in both directions"
+    let edit = String::concat(". Compare at the concrete type (take a `", String::concat(shown, "` parameter) instead of through the bound, or drop the bound"))
+    String::concat(declared, String::concat(why, String::concat(cost, edit)))
   } else {
     ""
   }
@@ -4100,21 +4118,36 @@ fn unsatisfied_bound_hint(env: TypeEnv, trait_name: String, resolved: Type) -> S
 
 /// #2523: does the builtin `==` / `<` compare a value of this type by VALUE?
 ///
-/// Exactly the scalars `lib/@vibe/builtin/builtin_traits.vibe` registers marker
-/// impls for. Everything else -- `Array`, `Bytes`, a tuple, an `Option`, a
+/// NOT simply "the scalars `lib/@vibe/builtin/builtin_traits.vibe` registers
+/// marker impls for", which is what this used to say and what put `Double` on
+/// the list. Everything else -- `Array`, `Bytes`, a tuple, an `Option`, a
 /// declared struct or enum -- is compared by REFERENCE where the type has been
 /// erased, which is the whole reason this predicate exists.
 ///
+/// **`Double` is NOT on the list** (#2895). It has a marker impl like the other
+/// four, so it read as safe, and it is the one type that guard waved through
+/// while being exactly the failure the guard exists to prevent. Measured on the
+/// committed seed and on a stage2 from this branch, identical both ways:
+///
+///   bare[T: Eq](1.5, 1.5)       FALSE   <- two equal Doubles
+///   bare[T: Eq](0.0, 0.0)       FALSE
+///   1.5 == 1.5  (concrete)      true    <- the contrast
+///   lt[T: Ord](2.5, 1.5)        TRUE    <- and Ord is worse: both
+///   gt[T: Ord](2.5, 1.5)        FALSE      directions answer the same way
+///
+/// A `Double` is not a tagged immediate the way an `Int` is, so the raw
+/// comparison the erased bound falls back to reads the box, not the number.
+///
 /// Erring toward `false` costs a correct program a diagnostic, which the gates
 /// see; erring toward `true` keeps a silently wrong answer, which nothing sees.
+/// `Double` was the standing proof of the second half.
 fn marker_cmp_is_by_value(ty: Type) -> Bool {
   match ty {
     CtInt => true,
-    CtDouble => true,
     CtBool => true,
     CtChar => true,
     CtString => true,
-    CtNamed(name, args) => Array::length(args) == 0 && (name == "Int" || name == "Double" || name == "Bool" || name == "Char" || name == "String"),
+    CtNamed(name, args) => Array::length(args) == 0 && (name == "Int" || name == "Bool" || name == "Char" || name == "String"),
     _ => false
   }
 }

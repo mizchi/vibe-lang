@@ -952,6 +952,17 @@ send_check_reject "err_type_eq_marker_bound_struct.vibe" 'no impl `Eq` for `Pt`'
 send_check_reject "err_type_eq_marker_bound_struct.vibe" 'is a marker trait (declared with no methods)' "eqmarker2"
 send_check_reject "err_type_eq_marker_bound_struct.vibe" 'Give `Eq` at least one method' "eqmarker3"
 send_check_reject "err_type_ord_marker_bound_struct.vibe" 'no impl `Ord` for `Token`' "ordmarker"
+# #2895: `Double` is the instantiation the guard used to wave through, and it
+# was the silent wrong answer the guard exists to prevent -- `bare[T: Eq](1.5,
+# 1.5)` answered FALSE while the concrete `1.5 == 1.5` answered true, on the
+# seed and on a stage2 from this branch alike. This fixture uses the PRELUDE's
+# `Eq` rather than declaring one, so it pins the spelling a program writes.
+send_check_reject "err_type_eq_marker_bound_double.vibe" 'no impl `Eq` for `Double`' "eqdouble"
+send_check_reject "err_type_eq_marker_bound_double.vibe" 'is a marker trait (declared with no methods)' "eqdouble2"
+# The edit, which differs from the struct case: nobody can add a method to the
+# prelude's `Eq` from their own program, so "give it a method" is not advice a
+# reader can act on here.
+send_check_reject "err_type_eq_marker_bound_double.vibe" 'Compare at the concrete type' "eqdouble3"
 # #2640: `@vibe/core` declares its collections BODYLESS in its contract
 # (`type MutMap[K, V]`, `type MutSet[T]`), so a consumer sees them as
 # `CtNamed` -- indistinguishable, in the type representation, from a rigid
