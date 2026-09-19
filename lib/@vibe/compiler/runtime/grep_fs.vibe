@@ -83,7 +83,24 @@ fn grep_fs_empty_pairs() -> Array[(String, String)] {
 /// one broken dependency costs precision on that file instead of killing the
 /// sweep. On a file with imports that fallback reports imported names as
 /// unknown, which makes `--only-ill-typed` over-report rather than miss sites.
-fn grep_fs_typed_context(path: String, raw_source: String) -> GrepTyped with Fs {
+/// #2914: `cache_in` is threaded THROUGH, not reset. Each call used to pass
+/// `grep_fs_empty_env_cache()`, so every matching file re-typed its entire
+/// dependency closure from cold. On a package that is merely slow; on the tree
+/// it exhausted linear memory and the runtime reported `out of bounds memory
+/// access`, which reads like a pointer bug in the query engine and is not one.
+/// Proven by varying only the cap: a corpus that succeeds at the default 8192
+/// MB traps with the identical message at 512 MB.
+///
+/// The dependency `rdb` stays per-call on purpose. It holds SOURCES, and
+/// sharing it across entry files is how one file would resolve a name against
+/// another's entry context -- a typed filter answering from the wrong context
+/// would return a quietly wrong set, which is worse than the crash. The env
+/// cache is keyed by dependency PATH and `ensure_fingerprint_fs_impl` only
+/// records a module once it has actually checked it, so its entries are whole
+/// per module and reusable across entries. That is the same reuse the
+/// incremental build already relies on from this function; grep was the only
+/// caller discarding it.
+fn grep_fs_typed_context(path: String, raw_source: String, cache_in: Array[(String, TypeEnv)]) -> (GrepTyped, Array[(String, TypeEnv)]) with Fs {
   handle {
     let groups = collect_source_groups_fs(path)
     let mut rdb = ripple_new()
@@ -104,19 +121,22 @@ fn grep_fs_typed_context(path: String, raw_source: String) -> GrepTyped with Fs 
       }
       gi = gi + 1
     }
-    let (_, walked, env_cache, _, _) = ensure_fingerprint_fs_impl(rdb, grep_fs_empty_env_cache(), grep_fs_empty_pairs(), 0, path)
+    let (_, walked, env_cache, _, _) = ensure_fingerprint_fs_impl(rdb, cache_in, grep_fs_empty_pairs(), 0, path)
     let deps = match ripple_get_deps(walked, path) {
       Some(d) => d,
       None => grep_empty_strings()
     }
     let import_env = projected_import_env_for_test(entry_source, path, deps, grep_fs_fill_dep_envs(walked, env_cache, deps))
-    grep_typed_context(raw_source, entry_source, import_env)
+    (grep_typed_context(raw_source, entry_source, import_env), env_cache)
   } with {
   // The graph did not check. That is a real answer, not a reason to fall
   // back to single-file typing: doing so would type-check this file against
   // an empty environment, find nothing wrong with it, and report every match
   // in a program that does not compile as `--only-well-typed`.
-  Exception::Throw(msg) => grep_typed_context_error(raw_source, msg) }
+  // `cache_in` and not an empty cache: entries are whole per module, so a
+  // file whose own walk threw leaves the ones already recorded valid for the
+  // files after it.
+  Exception::Throw(msg) => (grep_typed_context_error(raw_source, msg), cache_in) }
 }
 
 fn grep_fs_cache_has(cache: Array[(String, TypeEnv)], path: String) -> Bool {
@@ -174,6 +194,10 @@ export fn grep_scan_fs_report(root: String, pattern: String, wheres: Array[Strin
   let has_typed_filter = Array::length(wheres) > 0 || Array::length(where_rows) > 0
   let out = grep_empty_strings()
   let warnings = grep_empty_strings()
+  // #2914: one cache for the whole sweep. Per-file it was cold every time, so
+  // the tree-wide typed sweep re-typed the compiler's closure once per
+  // matching file and ran past the 8 GB linear-memory cap.
+  let mut typed_env_cache = grep_fs_empty_env_cache()
   let mut i = 0
   while i < Array::length(files) {
     let path = Array::get(files, i)
@@ -190,7 +214,9 @@ export fn grep_scan_fs_report(root: String, pattern: String, wheres: Array[Strin
     } }
     if Array::length(hits) > 0 {
       let ctx = if typed {
-        grep_fs_typed_context(path, source)
+        let (typed_ctx, next_cache) = grep_fs_typed_context(path, source, typed_env_cache)
+        typed_env_cache = next_cache
+        typed_ctx
       } else {
         grep_untyped_context()
       }
