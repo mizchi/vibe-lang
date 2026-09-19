@@ -18,6 +18,10 @@ trap 'rm -rf "$WORK"' EXIT
 
 fail() { echo "[task-env-test] FAIL: $*" >&2; exit 1; }
 
+# RED 4 asks the ambient pkf whether THIS environment leaks at all;
+# the gate under test resolves its pkf the same way.
+PKF_FOR_PROBE="${VIBE_TASK_ENV_PKF:-pkf}"
+
 # GREEN control. Without it a gate that fails for an unrelated reason (no pkf,
 # a broken Taskfile) would make every red case below "pass".
 if ! bash scripts/check_task_env_sanitized.sh >"$WORK/out" 2>&1; then
@@ -74,8 +78,22 @@ grep -qF 'a system binary does not run inside a pkf task' "$WORK/out" \
 # RED 4: the fix itself, removed. This is the one that binds the gate to the
 # thing it guards rather than to a stub -- the real Taskfile, the real pkf,
 # with only the `defaults.env` row taken out.
+#
+# It carries a PRECONDITION the other three do not: the ambient `pkf` must
+# actually leak. The defect is a property of one nix WRAPPER, and an
+# environment whose pkf was installed another way has nothing to leak, so
+# removing the row changes nothing and the gate correctly still passes.
+# Asserting a red verdict there fails for a reason unrelated to the gate --
+# the #2252 shape that gets a self-test exempted rather than fixed. This file
+# had exactly that bug, and CI found it: `pkf: command not found` in a lane
+# that does not install pkfire.
+#
+# So the precondition is MEASURED and the outcome reported either way. A run
+# that could not exercise this case says so in its own line rather than
+# counting it as passed -- silence is "unchecked", not "clean" (#2248).
+red4="not-applicable"
 cp Taskfile.pkl "$WORK/Taskfile.pkl.orig"
-python3 - "$WORK" <<'PY'
+python3 - <<'PYX'
 import re, sys
 p = 'Taskfile.pkl'
 s = open(p).read()
@@ -83,18 +101,32 @@ out = re.sub(r'\ndefaults \{\n  env \{\n    \["LD_LIBRARY_PATH"\] = ""\n  \}\n\}
 if out == s:
     sys.stderr.write('RED 4 mutation matched nothing\n'); sys.exit(2)
 open(p, 'w').write(out)
-PY
+PYX
 if bash scripts/check_task_env_sanitized.sh >"$WORK/out" 2>&1; then
+  # The row is gone and the gate still passes. Either the gate is not watching
+  # the fix, or this environment has no leak for the row to clear. Ask the
+  # ambient pkf directly, which is the only thing that can tell them apart.
+  probe="$("$PKF_FOR_PROBE" run check-task-env 2>&1 || true)"
+  leaked="$(printf '%s\n' "$probe" | sed -n 's/^task-env: LD_LIBRARY_PATH=//p')"
   cp "$WORK/Taskfile.pkl.orig" Taskfile.pkl
-  fail "RED 4: the gate passed with the defaults.env row REMOVED (it is not watching the fix)"
-fi
-cp "$WORK/Taskfile.pkl.orig" Taskfile.pkl
-if ! grep -qE 'does not run inside a pkf task|inherits a nix store path' "$WORK/out"; then
-  cat "$WORK/out" >&2; fail "RED 4 failed for the wrong reason"
+  case "$leaked" in
+    *"/nix/store/"*)
+      fail "RED 4: the row is REMOVED, this environment leaks ($leaked), and the gate still passed -- it is not watching the fix"
+      ;;
+    *)
+      red4="n/a (this pkf does not leak; the row has nothing to clear here)"
+      ;;
+  esac
+else
+  cp "$WORK/Taskfile.pkl.orig" Taskfile.pkl
+  if ! grep -qE 'does not run inside a pkf task|inherits a nix store path' "$WORK/out"; then
+    cat "$WORK/out" >&2; fail "RED 4 failed for the wrong reason"
+  fi
+  red4="red"
 fi
 
 # And the tree is back the way it started.
 bash scripts/check_task_env_sanitized.sh >/dev/null 2>&1 \
   || fail "the gate does not pass after restoring the Taskfile; the self-test left the tree dirty"
 
-echo "[task-env-test] ok (4 red cases, each mutation verified to land)"
+echo "[task-env-test] ok (3 red cases verified to land; RED 4: $red4)"

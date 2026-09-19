@@ -6100,17 +6100,6 @@ bash "$ROOT_DIR/scripts/check_selector_precedence_test.sh"
 # `xt` and the check answers "no match" forever). #2252.
 bash "$ROOT_DIR/scripts/check_gate_portability.sh"
 bash "$ROOT_DIR/scripts/check_gate_portability_test.sh"
-# ...and the fourth: the gate runs, but the ENVIRONMENT it runs in has already
-# broken the tools it uses. #2877 -- the `pkf` nix wrapper exports
-# LD_LIBRARY_PATH unscoped, so every task inherits it and a system binary
-# resolves out of the nix closure against the system glibc. `/usr/bin/sort`
-# exits non-zero writing NOTHING, so a `find | sort` expansion comes back empty
-# and reads as "no files matched". Measured: `pkf run test-vibe-test` failed
-# while `bash scripts/vibe_test_smoke.sh` passed on the same tree. Taskfile.pkl's
-# `defaults.env` clears it for every task; this watches that row, which is one
-# line with nothing else pointing at it and whose absence fails silently.
-bash "$ROOT_DIR/scripts/check_task_env_sanitized.sh"
-bash "$ROOT_DIR/scripts/check_task_env_sanitized_test.sh"
 # ...and the third way a gate stops meaning anything: a DIAGNOSTIC in it aborts
 # the work it explains. `ensure_generated.sh` reports which inputs moved before
 # regenerating, sliced with `printf | head -20`; `head` leaves after its 20th

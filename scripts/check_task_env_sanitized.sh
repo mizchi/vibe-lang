@@ -24,6 +24,23 @@ ROOT_DIR="${VIBE_TASK_ENV_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 cd "$ROOT_DIR"
 
 PKF="${VIBE_TASK_ENV_PKF:-pkf}"
+
+# The subject is "what does a pkf TASK inherit", so pkf has to exist. Say that
+# in its own words rather than letting it read as the leak this gate looks for:
+# wired into a gate lane first, this printed "a system binary does not run
+# inside a pkf task" when the real cause was `pkf: command not found` -- the
+# lanes call setup-vibe without `pkfire: true`. A gate that misreports WHY it
+# failed is how a gate gets exempted instead of fixed (#2252). It lives in the
+# bootstrap preflight now, whose job installs pkfire because it is itself
+# invoked through `pkf run`.
+if ! command -v "$PKF" >/dev/null 2>&1 && [ ! -x "$PKF" ]; then
+  echo "[task-env] FAIL: pkf is not available, so this gate cannot ask its question (#2877)" >&2
+  echo "  It measures what a pkf TASK inherits; there is no substitute for running one." >&2
+  echo "  Run it from a job that installs pkfire (setup-vibe with \`pkfire: true\`)," >&2
+  echo "  or point VIBE_TASK_ENV_PKF at a pkf binary." >&2
+  exit 1
+fi
+
 out="$("$PKF" run check-task-env 2>&1)" || true
 
 # 1. The canary binary must actually run. This is the property; everything
