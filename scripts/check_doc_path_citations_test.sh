@@ -94,6 +94,17 @@ expect 1 "a stale allowlist entry fails" "no longer cites"
 rm "$TMP/docs/bad.md"
 expect 0 "an unscanned document's entry is left alone"
 
+# `.vibei` is a real extension in this repository's history, so a path ending in
+# it has to be a citation. Without it in EXT the regex matched `.vibe` and then
+# wanted the closing backtick, so `index.vibei` paths were invisible: a dead
+# `lib/@vibe/core/index.vibei` sat in docs/ while this check reported ok.
+: > "$allow"
+cat > "$TMP/docs/bad.md" <<'EOF'
+The contract is `lib/@vibe/core/index.vibei`.
+EOF
+expect 1 "a dangling .vibei citation fails" "lib/@vibe/core/index.vibei"
+rm "$TMP/docs/bad.md"
+
 # Generated compiler artifacts are exempt by name -- they are build outputs, so
 # a `git checkout-index` export does not contain them.
 : > "$allow"

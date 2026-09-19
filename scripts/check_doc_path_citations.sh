@@ -87,7 +87,7 @@ PREFIXES = [
 
 # Only extensions that name a file in this repository. Bare words with dots
 # (module.member, a.b) are not paths, so a path must contain a slash.
-EXT = r"vibe|vibex|vpkg|mbt|mbti|sh|mjs|js|cjs|py|pkl|json|lean|toml|tsv|txt|wat|wit|md"
+EXT = r"vibe|vibex|vibei|vpkg|mbt|mbti|sh|mjs|js|cjs|py|pkl|json|lean|toml|tsv|txt|wat|wit|md"
 # Three shapes count as a citation:
 # A citation is a rooted path with a directory component: `a/b.vibe`. A bare
 # dotted word with no known extension (`Array.map`, `record.field`) is not a

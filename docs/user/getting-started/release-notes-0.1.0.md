@@ -74,8 +74,9 @@ read, and every feature below is one the compiler itself depends on.
 ## Packages and distribution
 
 - **`index.vpkg` is the package contract and the public API boundary**
-  (ADR-0070). Importing a file inside a package boundary is a compile error, and
-  the legacy `index.vibei` is gone.
+  (ADR-0070). Importing a file inside a package boundary is a compile error. No
+  `index.vibei` is left in the repository; the compiler still resolves that
+  legacy spelling, but it is not a boundary.
 - `vibe new` / `add <source-spec>` / `fetch` / `pkg publish|install|yank`:
   a dependency is pinned by content hash in the root `index.vpkg`
   (`require @scope/name x.y.z = #pkg:b3:<hex> from <source>@<commit>`) and
