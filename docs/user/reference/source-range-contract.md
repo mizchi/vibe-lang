@@ -151,6 +151,43 @@ the string token, including when a multibyte comment precedes it. `vibe check
 --json` on the FS lane and on `--single-file` emit the same LSP conversion of
 that range; `data` is `null` because the node is real source.
 
+## How MANY diagnostics, and which carry a position
+
+Measured 2026-09-19 against a stage2 built from this checkout, on three files
+that each contain three errors of one kind. This is the `#2831` criterion-4
+limit, recorded rather than implied:
+
+| input | `vibe check` | `--single-file` | `--single-file --json` |
+| --- | --- | --- | --- |
+| three type errors | **1** of 3, with a range | 1 of 3 | 1-element array |
+| three parse errors | **all 3**, each `line:col` | all 3 | 3-element array |
+| one lexer error | 1, **no line, no column, no path** | same | 1 element, WITH a range |
+
+Exit is 1 in every row.
+
+**Only one type error survives**, whatever the recovery below it collected.
+`check_program` accumulates every diagnostic into `frozen_errors` and then ends
+with `throw(Array::get(frozen_errors, 0))` — the exception channel carries one
+string, so the rest are computed and discarded. Parse errors do not go through
+that throw, which is why all three of those are reported. Reporting the rest is
+cheaper than it looks: `scripts/check_typecheck_fixtures.sh` reads `head -1` of
+each `.diag` and substring-matches it, so extra lines AFTER the first leave all
+233 of its rows passing.
+
+**A lexer error's position exists and two of the three lanes drop it.** The
+text lane prints `unexpected character: 日` with no line, no column and not
+even a path, while `--single-file --json` reports `line 1, character 10-11`
+with `data: null` — a real location for a real node. `lex_with_offsets_recovering`
+(#946) is what computes it, and the throwing `lex` the other lanes call does
+not. The **FS lane's JSON is the sharpest form**: on the same file it answers
+
+    {"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":0}},
+     "message":"unexpected character: 日","data":{"synthetic":true}}
+
+— `0:0` with `synthetic: true` for a node the parser did see and whose offset
+the other lane prints. That is an INVENTED location, which the rule at the top
+of this document forbids, and it makes the two `--json` lanes disagree.
+
 `EInt` / `EBool` / `EFloat` still have no offset slot. Those mismatches keep
 the binder-name fallback (`[@fn=NAME]`) rather than inventing `0:0`. A node
 the parser never constructed still reports null bounds and `synthetic: true`.

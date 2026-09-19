@@ -164,7 +164,12 @@ the edit that fixes them rather than an internal pass name.
   string literal's parser offset when that offset is present; a node the
   parser never saw still reports `synthetic: true` with null bounds rather
   than an invented `0:0`. Remaining measured limits of #2831 are recorded in
-  [source-range-contract.md](../reference/source-range-contract.md).
+  [source-range-contract.md](../reference/source-range-contract.md), with the
+  counts: **one** type error is reported however many a file contains (the
+  checker collects them all and the exception channel carries one), **all**
+  parse errors are, and a **lexer** error prints no position in the text lane
+  although `--single-file --json` has one — where the FS lane's JSON instead
+  answers `0:0` with `synthetic: true` for that same real node.
 - Everything in §6 of [spec/stable-surface.md](../reference/stable-surface.md) is
   outside the SemVer promise, most notably async/structured concurrency and the
   capability authorization surface.
