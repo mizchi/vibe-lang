@@ -73,12 +73,19 @@ This is deliberately a first slice. The design that closes it -- a generated
 `vibe:host` WIT whose functions the raw `vibe.*` imports are the lowering of,
 a `vibe.entry` section, and a manifest column for lazy dispatch -- is
 [host-contract-artifact-lazy-cli.md](../../internal/design/host-contract-artifact-lazy-cli.md)
-(ADR-0112, proposed). #1346 remains open for:
+(ADR-0112, proposed). The legacy MoonBit-host import list (`runtime/viberun/expected_imports.txt`,
+32 `__moonbit_fs_unstable` fields) was RETIRED rather than reconciled: the host
+it described went with #594, no code in the tree read the file, and its only
+reference was this page. The emitted surface is `vibe.*`, and the honest
+inventory of it is the emitters themselves -- measured 2026-09-19, 62 fields
+from `codegen/wasi/linked_compile.vibe` and 23 from `codegen/gc/backend_body.vibe`,
+agreeing where both emit. `node scripts/host_capability_probe.mjs <module.wasm>`
+reports what one artifact actually imports.
+
+#1346 remains open for:
 
 - executable signature comparison against both provider implementations;
 - semantic conformance fixtures for failures, path rules, handle lifecycle,
   byte sorting, and packed-value edge cases;
 - a complete WIT/raw projection inventory for async, socket, HTTP, and generated
-  named imports;
-- reconciliation or retirement of legacy MoonBit-host imports in
-  `runtime/viberun/expected_imports.txt`.
+  named imports.
