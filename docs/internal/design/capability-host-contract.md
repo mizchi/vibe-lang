@@ -225,8 +225,21 @@ different implementation.
 
 ## What of this has landed
 
-Design, plus the one piece the measurement justifies on its own — a host has to
-be able to withhold a capability before any of the rest can be tested.
+Design, plus two pieces: the one the measurement justifies on its own — a host
+has to be able to withhold a capability before any of the rest can be tested —
+and, since #2828 rung 1, the required-capability preflight, which needed
+neither the section nor the globals because a REQUIRED capability is decided
+before the module is built rather than by the host at instantiate time.
+
+What that rung measured, and what it means for the next one: **an optional
+capability answers `NotGranted` unconditionally today** — with `--allow-fs`,
+with no flags, on a file that exists and on one that does not. `perform?` is a
+constant, so the `Granted` and `Errored` arms are dead code in every program
+that writes them. That is #2236's default, which ADR-0088's amendment
+withdraws; the withdrawal is recorded and not implemented. It also means
+`Errored(E)` is unreachable for a reason that is not its ABI: nothing can
+report a host failure through a branch the program never enters. The lowering
+below is what unblocks it.
 
 | | state |
 |---|---|
@@ -236,7 +249,7 @@ be able to withhold a capability before any of the rest can be tested.
 | the trap is proven to fire | **landed** — `scripts/host_capability_withhold_test.sh` (`pkf run test-host-capability-withhold`, and in `tests/gates/selftests/run.sh`) runs both runners: the granted run reads the file, the withheld run traps by name *after* instantiating (asserted via the wasm frame in the backtrace, so a link failure cannot pass for a stub) and prints no value. The node half also carries a source mutation — with the withhold branch removed, the same run succeeds — which pins the trap to that branch. The viberun half has the env-var control only: rebuilding the Rust runner per case costs ~80 s, so the counterfactual is the same binary and wasm with only the variable differing. Verified once by hand at the rebuild: with the stub never installed, the withheld run prints `read: apple` and the gate fails on it |
 | `vibe.capabilities` section | not done — nothing emits an `optional` row until the lowering does |
 | grant globals | not done — same reason |
-| required-capability preflight | not done |
+| required-capability preflight | **landed for `vibe run`** (#2828 rung 1) — `preflight_instantiate` runs before the artifact is built, and a required authority the host does not grant aborts naming both edits (`--allow-fs`, and the `allows X?` alternative). It takes the REFUSE side of "Open for the owner" item 2 below, as this table already did. Driven by L1 flags (`--allow-*` / `--deny-*`, new in the same rung); it does NOT read the section or the globals, because neither is emitted yet. No flag leaves every provider granted, so an existing program is unaffected. Pinned by `scripts/check_capability_preflight.sh` and its red test |
 
 Withholding is named by the wasm **import field** (`fs_read_file`), not the
 capability label (`Fs::read_file`), because the field is what the module
