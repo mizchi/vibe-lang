@@ -161,7 +161,7 @@ limit, recorded rather than implied:
 | --- | --- | --- | --- |
 | three type errors | **1** of 3, with a range | 1 of 3 | 1-element array |
 | three parse errors | **all 3**, each `line:col` | all 3 | 3-element array |
-| one lexer error | 1, **no line, no column, no path** | same | 1 element, WITH a range |
+| one lexer error | 1, with `line:col` | same | 1 element, with a range |
 
 Exit is 1 in every row.
 
@@ -174,19 +174,32 @@ cheaper than it looks: `scripts/check_typecheck_fixtures.sh` reads `head -1` of
 each `.diag` and substring-matches it, so extra lines AFTER the first leave all
 233 of its rows passing.
 
-**A lexer error's position exists and two of the three lanes drop it.** The
-text lane prints `unexpected character: 日` with no line, no column and not
-even a path, while `--single-file --json` reports `line 1, character 10-11`
-with `data: null` — a real location for a real node. `lex_with_offsets_recovering`
-(#946) is what computes it, and the throwing `lex` the other lanes call does
-not. The **FS lane's JSON is the sharpest form**: on the same file it answers
+**A lexer error carries its position on every lane** — it did not until
+#2831. `check_linked_file_source_groups` lexed the entry file with the
+THROWING `lex_with_offsets`, beside a comment explaining that the PARSE below
+it is recovering so that errors get an exact `line:col`. So the FS lane lost
+the position the recovering lexer had already recorded: its text output was
+
+    error: unexpected character: 日
+
+with no line, no column and not even a path, and its JSON answered
 
     {"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":0}},
      "message":"unexpected character: 日","data":{"synthetic":true}}
 
-— `0:0` with `synthetic: true` for a node the parser did see and whose offset
-the other lane prints. That is an INVENTED location, which the rule at the top
-of this document forbids, and it makes the two `--json` lanes disagree.
+— `0:0` with `synthetic: true` for a node the parser did see, and whose offset
+`--single-file --json` printed correctly on the same file. Inventing a location
+is what the rule at the top of this document forbids, and the two `--json`
+lanes disagreeing is what criterion 2 of #2831 forbids. Both lanes now answer
+
+    error: line 2:11: unexpected character: 日
+    [{"range":{"start":{"line":1,"character":10},"end":{"line":1,"character":11}},
+      …,"data":null}]
+
+byte-identically. `lex_with_offsets_recovering` (#946) is what computes it, and
+`scripts/check_check_json_lane_parity.sh`'s fourth probe is what keeps the two
+lanes agreeing — it fails on a stage2 from before the fix with exactly the
+three assertions above.
 
 `EInt` / `EBool` / `EFloat` still have no offset slot. Those mismatches keep
 the binder-name fallback (`[@fn=NAME]`) rather than inventing `0:0`. A node

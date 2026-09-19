@@ -167,9 +167,10 @@ the edit that fixes them rather than an internal pass name.
   [source-range-contract.md](../reference/source-range-contract.md), with the
   counts: **one** type error is reported however many a file contains (the
   checker collects them all and the exception channel carries one), **all**
-  parse errors are, and a **lexer** error prints no position in the text lane
-  although `--single-file --json` has one — where the FS lane's JSON instead
-  answers `0:0` with `synthetic: true` for that same real node.
+  parse errors are, and a **lexer** error now carries `line:col` on every lane
+  — the FS lane used to print none at all and its JSON answered `0:0` with
+  `synthetic: true` for that same real node, which the fourth probe of
+  `scripts/check_check_json_lane_parity.sh` now prevents.
 - Everything in §6 of [spec/stable-surface.md](../reference/stable-surface.md) is
   outside the SemVer promise, most notably async/structured concurrency and the
   capability authorization surface.

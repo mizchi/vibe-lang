@@ -596,9 +596,22 @@ The anchor machinery itself (`off_marker` / `railway_expr_off`) works;
 `check_assignable_set_end` supplies an end and `string_token_end` corrects it
 to the lexer's span.
 
-**A separate hole found by the same measurement**: lexer errors still carry no
-location at all -- `unexpected character: 日` comes back with no line, no
-column, and not even a path. That is not a type error, so it is outside #2831.
+**A separate hole found by the same measurement, now CLOSED**: lexer errors
+came back with no line, no column and not even a path -- `unexpected
+character: 日`. This paragraph called it "outside #2831" on the grounds that a
+lex error is not a type error. Measurement showed it was inside after all, and
+for a sharper reason than the missing text: the position was never missing.
+`check_linked_file_source_groups` lexed the entry file with the THROWING
+`lex_with_offsets`, beside a comment explaining that the PARSE below it is
+recovering precisely so errors get an exact `line:col`, and threw the offset
+away -- while `vibe check --single-file --json` printed it correctly for the
+same file and the FS lane's own `--json` answered `0:0` with
+`"data":{"synthetic":true}`. An INVENTED location for a real node is what
+criterion 1 forbids; the two `--json` lanes disagreeing is what criterion 2
+forbids. Both lanes now answer `line 2:11: unexpected character: 日` and its
+LSP conversion byte-identically, and
+`scripts/check_check_json_lane_parity.sh`'s fourth probe fails on a stage2
+from before the fix.
 
 > **解決済み: 「どちらの動詞を使うか」問題 (#1567)。** かつて `vibe check` と
 > `vibe diagnostics` が同じ質問に別の答え方をしていた (import 解決の有無・
