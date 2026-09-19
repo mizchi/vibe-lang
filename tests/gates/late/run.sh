@@ -3619,6 +3619,53 @@ echo "[compiler-gate] ADR-0089 D1 async sleep boundary ok"
 # These are compile-level properties, so they belong here rather than only in
 # the viberun-driven test_named_hostfutures_component_gate.sh (which also
 # covers them, at runtime).
+echo "[compiler-gate] 128/128 evidence pass admits a first-order row-variable callee under an Async boundary (#2065)"
+# #2065 wall 1. The ADR-0076 追記34 V1 guard refuses a program that holds
+# row-E closure VALUES when the migration cannot plan, and a row-VARIABLE
+# callee used to make it fail to plan unconditionally
+# (edp_append_effect_irrelevant_row_fns). edp_callee_first_order ports the
+# suspend pass's rule: a callee whose every parameter is annotated and
+# mentions no function type -- and whose return type does not either -- has
+# a row variable that can only be instantiated to the empty row.
+#
+# The pair is what makes this checkable. The positive alone would also pass
+# if the port admitted EVERYTHING; the negative alone would also pass if the
+# port admitted nothing.
+fo65dir="_build/_gate_first_order_rowvar"
+rm -rf "$fo65dir"; mkdir -p "$fo65dir"
+cp fixtures/async_first_order_rowvar_boundary_test.vibe "$fo65dir/pos.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$fo65dir/pos.vibe" "$fo65dir/pos.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$fo65dir/pos.wasm" ]; then
+  echo "[compiler-gate] FAIL: async_first_order_rowvar_boundary_test.vibe did not compile -- the #2065 first-order row-variable admission regressed" >&2
+  cat "$fo65dir/pos.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+fo65_pos_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$fo65dir/pos.wasm" 2>/dev/null | tail -1)"
+if [ "$fo65_pos_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: async_first_order_rowvar_boundary_test.vibe got '$fo65_pos_out' (want 42)" >&2
+  exit 1
+fi
+# The HIGHER-ORDER twin differs by exactly one function-typed parameter and
+# must stay refused: there an argument really can instantiate the row
+# variable to Async, and the perform would happen where the injected
+# boundary cannot see it.
+cp fixtures/err_async_rowvar_higher_order_refused.vibe "$fo65dir/neg.vibe"
+rm -f "$fo65dir/neg.wasm"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$fo65dir/neg.vibe" "$fo65dir/neg.wasm" main >/dev/null 2>&1 || true
+if [ -s "$fo65dir/neg.wasm" ]; then
+  echo "[compiler-gate] FAIL: err_async_rowvar_higher_order_refused.vibe compiled -- a higher-order row-variable callee must keep the ADR-0076 追記34 V1 rejection" >&2
+  exit 1
+fi
+if ! grep -qF "type-directed evidence" "$fo65dir/neg.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: err_async_rowvar_higher_order_refused.vibe did not produce the V1 guard diagnostic" >&2
+  cat "$fo65dir/neg.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+
 echo "[compiler-gate] 78/78 named host future collector: total + shadow-aware (#1337)"
 nhf37dir="_build/_gate_1337"
 rm -rf "$nhf37dir"; mkdir -p "$nhf37dir"

@@ -1,0 +1,35 @@
+/// #2065 wall 1 (ADR-0076 追記34): a FIRST-ORDER row-variable callee reached
+/// under an injected Async entry boundary.
+///
+/// The ADR-0076 追記34 V1 guard refuses only when three independent
+/// conditions hold at once. This fixture holds all three:
+///   (1) an Async entry boundary is injected -- `sleep` under an
+///       `allows Async` entry (lc_inject_async_sleep_boundary);
+///   (2) a row-variable callee, whose row `edp_row_labels_have_var` sees;
+///   (3) a top-level fn with an Async-row function-typed parameter, which
+///       `edp_any_row_typed_param` finds with NO reachability test -- the
+///       unused `takes_async_fn` declaration below is enough on its own.
+///
+/// Before `edp_callee_first_order`, condition (2) withheld `via` from
+/// `pure_fns` unconditionally, the migration failed to plan, and the whole
+/// program was refused with the "type-directed evidence" hard error.
+///
+/// `via` takes one annotated, non-function parameter and returns a bare type
+/// parameter, so no argument can carry a row and its variable `e` can only
+/// be instantiated to the EMPTY row. The call cannot perform `Async`, the
+/// migration plans, and the program answers 42.
+///
+/// The higher-order twin that must STAY refused is
+/// fixtures/err_async_rowvar_higher_order_refused.vibe.
+fn takes_async_fn[T](f: () -> T with Async) -> Int {
+  0
+}
+
+fn via[T, e](x: T) -> T with e {
+  x
+}
+
+fn main() -> Int allows Async {
+  sleep(1)
+  via(42)
+}
