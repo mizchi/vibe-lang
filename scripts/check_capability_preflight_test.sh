@@ -16,6 +16,10 @@ set -uo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
+# The lane hands this test the compiler it should treat as "current"; keep it
+# before the unset below, which exists so each case sets what it needs rather
+# than inheriting it (#2252).
+LANE_STAGE2="${CAPABILITY_PREFLIGHT_STAGE2:-}"
 unset CAPABILITY_PREFLIGHT_STAGE2 VIBE_CLI_WASM VIBE_STAGE2_WASM || true
 
 # Does this wasm carry the refusal string this rung added?
@@ -72,12 +76,16 @@ fi
 # reason (a missing runner, a broken launcher) cannot masquerade as the red
 # case above.
 post_fix=""
-for w in "$ROOT_DIR"/_build/selfhost/generations/*/stage2.wasm; do
-  [ -f "$w" ] || continue
-  if carries_fix "$w"; then
-    post_fix="$w"
-  fi
-done
+if [ -n "$LANE_STAGE2" ] && [ -f "$LANE_STAGE2" ] && carries_fix "$LANE_STAGE2"; then
+  post_fix="$LANE_STAGE2"
+else
+  for w in "$ROOT_DIR"/_build/selfhost/generations/*/stage2.wasm; do
+    [ -f "$w" ] || continue
+    if carries_fix "$w"; then
+      post_fix="$w"
+    fi
+  done
+fi
 
 if [ -z "$post_fix" ]; then
   echo "n/a: no post-#2828 stage2 on disk for the green control" >&2

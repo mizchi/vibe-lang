@@ -14,8 +14,32 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
+# shellcheck source=scripts/resolve_stage2.sh
 . "$(dirname "$0")/resolve_stage2.sh"
-STAGE2="$(resolve_stage2 capability-preflight "${CAPABILITY_PREFLIGHT_STAGE2:-}")" || exit 1
+# STRICT, and reading the lane's own export. The degrading resolver was the
+# first version of this line and it cost a CI cycle: with no generation on the
+# runner it settled for something else entirely, every one of the six cases
+# failed with a wasm trap, and the gate reported them as PROPERTY failures
+# ("--allow-nope must be refused") about a compiler that could not run a
+# program at all. A gate that cannot say which compiler answered should refuse,
+# not degrade (AGENTS.md, "A MEASUREMENT has no honest fallback").
+STAGE2="$(resolve_stage2_strict capability-preflight "${CAPABILITY_PREFLIGHT_STAGE2:-${VIBE_STAGE2_WASM:-}}")" || exit 1
+
+# The runner is part of the environment this gate assumes, so it is checked
+# rather than assumed (#2252). Built if missing, the way the neighbouring
+# capability gate does, and named if it cannot be.
+VIBERUN="${CAPABILITY_PREFLIGHT_VIBERUN:-$ROOT_DIR/runtime/viberun/target/release/viberun}"
+if [ ! -x "$VIBERUN" ]; then
+  if ! bash "$ROOT_DIR/scripts/ensure_viberun.sh" >&2; then
+    echo "capability-preflight: FAIL: could not build runtime/viberun." >&2
+    echo "  build it with: cargo build --release --manifest-path runtime/viberun/Cargo.toml" >&2
+    exit 1
+  fi
+fi
+if [ ! -x "$VIBERUN" ]; then
+  echo "capability-preflight: FAIL: the Rust runner is missing at '$VIBERUN'." >&2
+  exit 1
+fi
 
 WORK="$ROOT_DIR/_build/_capability_preflight"
 rm -rf "$WORK"; mkdir -p "$WORK"
@@ -36,10 +60,30 @@ bad() { echo "capability-preflight: FAIL: $1" >&2; fail=$((fail + 1)); }
 # streams; `run` exits non-zero on a refusal, so `|| true` keeps `set -e` from
 # ending the gate at the first case that is SUPPOSED to fail.
 run_case() {
-  VIBE_CLI_WASM="$STAGE2" \
-  VIBE_RUNNER="${VIBE_RUNNER:-$ROOT_DIR/runtime/viberun/target/release/viberun}" \
+  VIBE_CLI_WASM="$STAGE2" VIBE_RUNNER="$VIBERUN" \
     bash "$ROOT_DIR/runtime/vibe" run "$@" "$PROG" 2>&1 || true
 }
+
+# CONTROL, before any assertion. If the toolchain cannot run a program that
+# needs no capability at all, then nothing below is a statement about the
+# preflight -- it is a statement about the environment, and reporting it as six
+# property failures is how a gate lies about its subject. Measured: this is
+# exactly what happened on the first CI run of this gate.
+CONTROL="$WORK/control.vibex"
+cat > "$CONTROL" <<'VIBE'
+fn main() -> Unit allows Stdout {
+  println("control")
+}
+VIBE
+control_out="$(VIBE_CLI_WASM="$STAGE2" VIBE_RUNNER="$VIBERUN" \
+  bash "$ROOT_DIR/runtime/vibe" run "$CONTROL" 2>&1 || true)"
+if ! printf '%s\n' "$control_out" | grep -q '^control$'; then
+  echo "capability-preflight: FAIL: the toolchain cannot run a capability-free program," >&2
+  echo "  so this gate can say nothing about the preflight. Compiler: $STAGE2" >&2
+  echo "  runner: $VIBERUN" >&2
+  printf '%s\n' "$control_out" | sed 's/^/  /' >&2
+  exit 1
+fi
 
 # 1. No flag: unchanged. A program that ran before must still run.
 out="$(run_case)"
