@@ -157,22 +157,34 @@ Measured 2026-09-19 against a stage2 built from this checkout, on three files
 that each contain three errors of one kind. This is the `#2831` criterion-4
 limit, recorded rather than implied:
 
-| input | `vibe check` | `--single-file` | `--single-file --json` |
+| input | `vibe check` | `--single-file` | either `--json` |
 | --- | --- | --- | --- |
-| three type errors | **1** of 3, with a range | 1 of 3 | 1-element array |
+| three type errors | **all 3**, each with its own range | all 3 | 3-element array |
 | three parse errors | **all 3**, each `line:col` | all 3 | 3-element array |
 | one lexer error | 1, with `line:col` | same | 1 element, with a range |
 
 Exit is 1 in every row.
 
-**Only one type error survives**, whatever the recovery below it collected.
-`check_program` accumulates every diagnostic into `frozen_errors` and then ends
-with `throw(Array::get(frozen_errors, 0))` — the exception channel carries one
-string, so the rest are computed and discarded. Parse errors do not go through
-that throw, which is why all three of those are reported. Reporting the rest is
-cheaper than it looks: `scripts/check_typecheck_fixtures.sh` reads `head -1` of
-each `.diag` and substring-matches it, so extra lines AFTER the first leave all
-233 of its rows passing.
+**Every collected diagnostic is reported** — it was one until #2831.
+`check_program` accumulates them into `frozen_errors` and used to end with
+`throw(Array::get(frozen_errors, 0))`; the rest were computed and discarded, so
+a file with three broken bindings took three edit-and-rerun cycles. Measured
+before the change, the three were real, distinct and none a cascade of another,
+which is what made reporting them right rather than noisy.
+
+The exception channel still carries one string, so they cross `\n`-joined —
+the shape the parse lane has used since #1567 — and **every site downstream
+maps over the lines**. That is the part that is not free: the `[@off=]` markers
+are per diagnostic, so locating the joined string stamps the FIRST one onto the
+whole report. Measured mid-change, line 1 came back carrying line 2's location
+and lines 2–3 carried none. `locate_each_line` (path-prefixed, FS lane),
+`locate_type_error_lines` (single-file), the driver's `Diagnosed` join and the
+JSON lane's split are the four places that make it per diagnostic instead.
+
+The fixture corpus needed no change: `scripts/check_typecheck_fixtures.sh` reads
+`head -1` of each `.diag` and substring-matches it, so extra lines after the
+first leave all 233 of its rows passing, and the late lane's `send_check_reject`
+rows are substring matches over the whole output.
 
 **A lexer error carries its position on every lane** — it did not until
 #2831. `check_linked_file_source_groups` lexed the entry file with the

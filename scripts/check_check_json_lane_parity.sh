@@ -114,5 +114,25 @@ if grep -qF 'synthetic' "$WORK/lexerr.fs.json" 2>/dev/null; then
   echo "  got: $(cat "$WORK/lexerr.fs.json")" >&2
 fi
 
+# THREE diagnostics in one file (#2831 criterion 4). The checker collects every
+# error and used to throw `frozen_errors[0]`, so a file with three broken
+# bindings took three edit-and-rerun cycles. Reporting the rest is only half
+# the change: the markers are per-diagnostic, so locating the JOINED string
+# stamps the first `[@off=]` onto the whole report -- measured, line 1 came
+# back carrying line 2's location. Each lane locates per line now, and this
+# probe is what keeps them emitting the same THREE objects rather than one
+# with embedded newlines.
+printf 'fn f() -> Unit {\n  let a: Int = "not an int"\n  let b: String = 42\n  let c: Int = true\n  ()\n}\n' > "$WORK/multi.vibe"
+probe multi 1
+count="$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$WORK/multi.fs.json" 2>/dev/null || echo 0)"
+if [ "$count" != "3" ]; then
+  bad "multi: the FS lane emitted $count diagnostics, want 3"
+  echo "  got: $(cat "$WORK/multi.fs.json")" >&2
+fi
+if grep -qF '\n' "$WORK/multi.fs.json" 2>/dev/null; then
+  bad "multi: a diagnostic message carries an embedded newline -- the lines were not split"
+  echo "  got: $(cat "$WORK/multi.fs.json")" >&2
+fi
+
 [ "$fails" -eq 0 ] || exit 1
-echo "[check-json-parity] ok (4 probes: both lanes agree on diagnostics, exit code, and UTF-16 offsets)"
+echo "[check-json-parity] ok (5 probes: both lanes agree on diagnostics, exit code, and UTF-16 offsets)"

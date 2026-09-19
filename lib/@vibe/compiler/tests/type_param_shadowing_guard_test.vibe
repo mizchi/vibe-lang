@@ -25,11 +25,46 @@ import @vibe/compiler/syntax {
 //# Functions
 
 /// The first checker diagnostic for `source`, or "" when it type-checks.
+/// #2831: the FIRST diagnostic of a report that may now carry several.
+///
+/// `check_program` reports every diagnostic it collected, `\n`-joined, so a
+/// helper named for one message has to take one. Continuation lines (`hint: `,
+/// or anything indented) belong to the diagnostic above them and stay with it
+/// -- the same rule `format_check_report` frames by.
+fn first_reported_diagnostic(msg: String) -> String {
+  let lines = String::split(msg, "\n")
+  let out: Array[String] = []
+  let mut i = 0
+  let mut done = false
+  while !done && i < Array::length(lines) {
+    let line = Array::get(lines, i)
+    let is_cont = if String::starts_with(line, "hint: ") {
+      true
+    } else if String::length(line) == 0 {
+      false
+    } else {
+      let c = String::byte_at(line, 0)
+      c == 32 || c == 9
+    }
+    if i == 0 || is_cont {
+      if String::length(line) > 0 || i == 0 {
+        Array::push(out, line)
+      } else {
+        ()
+      }
+    } else {
+      done = true
+    }
+    i = i + 1
+  }
+  String::join(out, "\n")
+}
+
 fn first_check_error(source: String) -> String {
   handle {
     let _ = check_program(parse_program(lex(source)))
     ""
-  } with { Exception::Throw(msg) => msg }
+  } with { Exception::Throw(msg) => first_reported_diagnostic(msg) }
 }
 
 //# Rejected

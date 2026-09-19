@@ -165,12 +165,14 @@ the edit that fixes them rather than an internal pass name.
   parser never saw still reports `synthetic: true` with null bounds rather
   than an invented `0:0`. Remaining measured limits of #2831 are recorded in
   [source-range-contract.md](../reference/source-range-contract.md), with the
-  counts: **one** type error is reported however many a file contains (the
-  checker collects them all and the exception channel carries one), **all**
-  parse errors are, and a **lexer** error now carries `line:col` on every lane
-  — the FS lane used to print none at all and its JSON answered `0:0` with
-  `synthetic: true` for that same real node, which the fourth probe of
-  `scripts/check_check_json_lane_parity.sh` now prevents.
+  counts: **every** collected diagnostic is reported, on both lanes and in
+  `--json`, each with its own range — it was one type error however many a
+  file contained, because the exception channel carries a single string and
+  nothing downstream split it. A **lexer** error now carries `line:col` on
+  every lane too; the FS lane used to print none at all and its JSON answered
+  `0:0` with `synthetic: true` for that same real node. Both are pinned by
+  `scripts/check_check_json_lane_parity.sh`, which fails on a compiler from
+  before either change.
 - Everything in §6 of [spec/stable-surface.md](../reference/stable-surface.md) is
   outside the SemVer promise, most notably async/structured concurrency and the
   capability authorization surface.
