@@ -2110,14 +2110,15 @@ from both directions (#2554).
 **Array compatibility operations** (prelude; collection first, function
 last). New generic code should import `trait Iterator` and use the matching
 `Iterator::*` operation. These direct Array specializations remain available
-for compatibility:
+for compatibility. `Array::foreach` was listed here until #2900 and never
+existed: the checker declared it, nothing lowered it, and a call died in
+codegen. Write `for x in xs { .. }`.
 
 | function | signature |
 |---|---|
 | `Array::map` | `(Array[T], (T) -> U) -> Array[U]` |
 | `Array::filter` | `(Array[T], (T) -> Bool) -> Array[T]` |
 | `Array::fold` | `(Array[T], U, (U, T) -> U) -> U` |
-| `Array::foreach` | `(Array[T], (T) -> Unit) -> Unit` |
 | `Array::any` / `Array::all` | `(Array[T], (T) -> Bool) -> Bool` |
 | `Array::find` | `(Array[T], (T) -> Bool) -> Option[T]` |
 
