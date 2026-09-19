@@ -6100,6 +6100,12 @@ bash "$ROOT_DIR/scripts/check_selector_precedence_test.sh"
 # `xt` and the check answers "no match" forever). #2252.
 bash "$ROOT_DIR/scripts/check_gate_portability.sh"
 bash "$ROOT_DIR/scripts/check_gate_portability_test.sh"
+# #2831 criterion 2: `vibe check --json` answers the same contract on the FS
+# lane and under `--single-file` -- diagnostics, exit code, and the byte -> LSP
+# offset conversion. The two lanes have SEPARATE argument parsers, which is how
+# they could drift without either looking wrong on its own.
+CHECK_JSON_PARITY_STAGE2="$stage2_wasm" bash "$ROOT_DIR/scripts/check_check_json_lane_parity.sh"
+CHECK_JSON_PARITY_STAGE2="$stage2_wasm" bash "$ROOT_DIR/scripts/check_check_json_lane_parity_test.sh"
 # ...and the third way a gate stops meaning anything: a DIAGNOSTIC in it aborts
 # the work it explains. `ensure_generated.sh` reports which inputs moved before
 # regenerating, sliced with `printf | head -20`; `head` leaves after its 20th

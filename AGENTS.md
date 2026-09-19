@@ -634,8 +634,18 @@ vibe binding-at file.vibe <line> <col>
 vibe check file.vibe
 
 # 同じ質問をバッファ単位で (import を辿らない)。未保存バッファを見る
-# エディタ用。`--json` は LSP Diagnostic 配列 (このモードのみ)
+# エディタ用
 vibe check --single-file file.vibe
+# `--json` は LSP Diagnostic 配列。**両モードで使える** — かつてここには
+# 「このモードのみ」と書いてあったが実測 (2026-09-19) では FS lane も受理し、
+# 両者は BYTE-IDENTICAL に答える: 同じ diagnostics、同じ exit code
+# (clean=0/診断あり=1)、clean は空出力ではなく `[]`、位置は 0-based line +
+# UTF-16 code unit (`let a: Int = "日本語ですよ"` は 20 バイトだが
+# `character` は 13-21 の 8 code unit)。#2831 criterion 2。
+# 二つの lane は引数パーサが別 (`parse_check_args_with_profile` /
+# `parse_user_check_args`) なので、どちらも単体では正しく見えたまま drift し
+# うる。`scripts/check_check_json_lane_parity.sh` が一致を固定している。
+vibe check --json file.vibe
 vibe check --single-file --json file.vibe
 
 # closure に捕獲されて escape する `let mut` (NAME START END / 行)。
