@@ -420,7 +420,9 @@ b_err="$WORK/broken.err"
 if "$VIBE" symbols "$cdir/broken.vpkg" >/dev/null 2>"$b_err"; then
   bad "symbols on a broken contract must exit non-zero"
 else
-  if grep -q 'broken.vpkg' "$b_err" && grep -qE 'line [0-9]+:col [0-9]+' "$b_err"; then
+  # `line L:C:` is the ERROR surface's spelling (lexer.vibe, parser.vibe,
+  # `vibe check`); `line L:col C:` is the WARNING path's and is not this one.
+  if grep -q 'broken.vpkg' "$b_err" && grep -qE 'line [0-9]+:[0-9]+:' "$b_err"; then
     ok "a broken contract's outline failure carries the path and a line:col (#2898)"
   else
     bad "broken contract diagnostic should name the file and the position; got: $(cat "$b_err")"
