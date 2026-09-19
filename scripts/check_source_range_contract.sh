@@ -200,6 +200,42 @@ else
   bad "top-level let + literal value: got [$unloc], want it to name 'bad_one'"
 fi
 
+# 10. A NON-STRING literal initializer is anchored at the LITERAL, as a range
+#     (#2831 criterion 1). `EInt` / `EFloat` / `EBool` carry no offset slot the
+#     way `EString` and `EIdent` do, so these three anchored the enclosing
+#     BINDER and reported a point. Measured before the fix, on the same file:
+#
+#       let b: String = 42     line 5:7     the binder name
+#       let c: Int = true      line 5:7     the binder name
+#       let d: Int = 1.5       line 5:7     the binder name
+#
+#     `locate_type_error` derives the range from the SOURCE instead, the way
+#     `string_token_end` already recovers a string token's end -- nothing is
+#     invented, the bytes are read back, and when the initializer is not a bare
+#     literal the binder anchor stands. Each row below asserts the reported
+#     range SLICES the literal, which is what a point could never satisfy.
+#     ONE case per file, because only one type error is reported however many
+#     a file contains (#2831 criterion 4) -- three in one file would test the
+#     first row three times.
+lit_case() { # <tag> <initializer> <want line:range>
+  cat > "$WORK/lit_$1.vibe" <<LITCASE
+fn f() -> Unit {
+  let v: $2
+  ()
+}
+LITCASE
+  local out
+  out="$(run "$WORK/lit_$1.vibe" "lit_$1" VIBE_CHECK_ONLY=1; cat "$WORK/lit_$1.diag" 2>/dev/null || true)"
+  if grep -qF "line $3:" <<<"$out"; then
+    note "a literal initializer is anchored at the literal ($1 -> $3)"
+  else
+    bad "literal initializer $1: got [$out], want a 'line $3:' range"
+  fi
+}
+lit_case int   'String = 42'  '2:19-21'   # "42"
+lit_case bool  'Int = true'   '2:16-20'   # "true"
+lit_case float 'Int = 1.5'    '2:16-19'   # "1.5"
+
 # 11. An UNLOCATED result must not emit a number where an offset goes, and the
 #     two output modes must agree about which results those are.
 #     Source literals and punctuation retain their full token ranges. Generated

@@ -201,10 +201,26 @@ byte-identically. `lex_with_offsets_recovering` (#946) is what computes it, and
 lanes agreeing — it fails on a stage2 from before the fix with exactly the
 three assertions above.
 
-`EInt` / `EBool` / `EFloat` still have no offset slot. Those mismatches keep
-the binder-name fallback (`[@fn=NAME]`) rather than inventing `0:0`. A node
-the parser never constructed still reports null bounds and `synthetic: true`.
-The value's own offset wins wherever it exists — `let a: Int = f()` reports at
-`f()`, because that is where the edit goes. Pinned by
+`EInt` / `EBool` / `EFloat` still have no offset SLOT — widening those three
+constructors is an AST ABI bump across 174 files — but the diagnostic no longer
+needs one. They anchored the enclosing binder and reported a point:
+
+| initializer | before | now |
+| --- | --- | --- |
+| `let v: String = 42` | `2:7` (the binder `v`) | `2:19-21`, slicing `42` |
+| `let v: Int = true` | `2:7` | `2:16-20`, slicing `true` |
+| `let v: Int = 1.5` | `2:7` | `2:16-19`, slicing `1.5` |
+
+`locate_type_error` derives the range from the SOURCE, by the same means
+`string_token_end` above already recovers a string token's end: the AST has no
+offset, this function has the text, so the honest range is read back from it.
+Four conditions narrow it, and none of them can move a range that already
+exists — no end was supplied, the message is a binding mismatch (so a callee or
+argument anchor is never touched), the anchor lands on an identifier, and what
+follows `=` is a bare `Int` / `Double` / `Bool` literal. Anything else, a
+leading `-` included, keeps the binder anchor rather than guessing at an
+extent. A node the parser never constructed still reports null bounds and
+`synthetic: true`. The value's own offset wins wherever it exists — `let a: Int
+= f()` reports at `f()`, because that is where the edit goes. Pinned by
 `lib/@vibe/compiler/tests/source_range_contract_test.vibe` and
-`scripts/check_source_range_contract.sh` checks 9 and 10.
+`scripts/check_source_range_contract.sh` checks 9, 10 and 11.

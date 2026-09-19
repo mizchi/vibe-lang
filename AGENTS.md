@@ -583,10 +583,15 @@ defects rather than one:
 
 1. **Literals other than `String` carry no offset slot** (`EInt(Int)` /
    `EFloat(Double)` / `EBool(Bool)` against `EString(String, Int)` and
-   `EIdent(String, Int)` in `lib/@vibe/ast/index.vpkg`), so the binder anchors
-   them and there is no end. Fixing this means widening those constructors,
-   which is an AST ABI bump (`AST_BINARY_VERSION`, and every snapshot that
-   pins a wire).
+   `EIdent(String, Int)` in `lib/@vibe/ast/index.vpkg`). The slot is still
+   missing -- widening those constructors is an AST ABI bump across 174 files
+   -- but **the diagnostic no longer needs it** (#2831): `locate_type_error`
+   reads the range back from the SOURCE, the way `string_token_end` already
+   recovers a string token's end, so `let v: Int = true` reports `2:16-20`
+   slicing `true` instead of `2:7` at the binder. It fires only when no end was
+   supplied, the message is a binding mismatch, the anchor is an identifier,
+   and what follows `=` is a bare literal; anything else keeps the binder
+   anchor rather than guessing.
 2. **The ARGUMENT path anchors the callee** even when the argument IS a string
    literal that already has an offset -- `takes("nope")` reports `takes`, not
    `"nope"`. That is not a missing slot; it is a call site declining to read
