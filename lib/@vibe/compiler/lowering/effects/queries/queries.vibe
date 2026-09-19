@@ -1391,6 +1391,39 @@ export fn edp_efn_eligible_for_migration(expr: Expr, ename: String, needing: Arr
   }
 }
 
+// --- type-shape queries shared by the suspend and evidence passes -------
+
+/// Does this annotation mention a FUNCTION type anywhere -- directly, or
+/// nested inside a type argument or a tuple?
+///
+/// Shared because both row-variable rules are built on it: the suspend
+/// pass's `scps_callee_first_order` and the evidence pass's
+/// `edp_callee_first_order` (#2065 wall 1) ask the same question of a
+/// callee's annotations, and a second copy would be a second thing to keep
+/// in step.
+export fn scps_ty_has_fn(t: TypeExpr) -> Bool {
+  match t {
+    TyFn(_, _, _) => true,
+    TyApp(_, args) => scps_ty_list_has_fn(args),
+    TyTuple(items) => scps_ty_list_has_fn(items),
+    _ => false
+  }
+}
+
+export fn scps_ty_list_has_fn(ts: Array[TypeExpr]) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(ts) {
+    if scps_ty_has_fn(Array::get(ts, i)) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
 // --- trigger detection: does an arm body reference `resume` as a bare
 // value (not as the immediate callee of a call)? Shadow tracking mirrors
 // checker.vibe's check_arm_resume_tail: any enclosing binder named
