@@ -37,6 +37,7 @@ import @vibe/compiler/core {
   is_exception_label,
   is_exception_throw_operation,
   resolve_type_alias_params,
+  standard_host_provider_names,
   test_bench_default_effects,
   type_name_has_async_iterator_impl
 }
@@ -3047,6 +3048,46 @@ export fn freeze_binding_lock(labels: Array[String]) -> Array[(String, String)] 
   out
 }
 
+/// The instantiate-authority labels a program's ENTRY grants, read from the
+/// entry's own row (ADR-0088: an entry has no caller, so its row is a grant).
+///
+/// #2828 / ADR-0088's Remaining (#2332): `preflight_instantiate` and
+/// `freeze_binding_lock` were written, unit-tested, and reachable from nothing
+/// but their test -- measured, zero production callers. They take the entry's
+/// labels, and nothing outside the checker could produce that list, so this
+/// exposes it. Labels that are not instantiate authority are dropped here, the
+/// same rule `freeze_binding_lock` applies, so callers see exactly the set the
+/// ladder reasons about.
+///
+/// Empty when the program declares no entry, which is the honest answer for a
+/// library: there is no grant to preflight.
+export fn entry_declared_authority(stmts: Array[Stmt]) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, ty, body) => if is_program_entry_name(name) {
+        let labels = fn_binding_effects(ty, body)
+        let mut j = 0
+        while j < Array::length(labels) {
+          let lab = Array::get(labels, j)
+          if is_instantiate_authority(lab) {
+            Array::push(out, lab)
+          } else {
+            ()
+          }
+          j = j + 1
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
 fn host_grant_covers(host_granted: Array[String], core: String) -> Bool {
   let mut i = 0
   let mut found = false
@@ -3066,6 +3107,58 @@ fn host_grant_covers(host_granted: Array[String], core: String) -> Bool {
     i = i + 1
   }
   found
+}
+
+/// The authority PROVIDER a `--allow-<x>` / `--deny-<x>` flag names, or `""`
+/// when the argument is not a capability flag.
+///
+/// Inverse of `allow_flag_for_authority`, and deliberately its neighbour: the
+/// flag a diagnostic PRINTS and the flag the CLI READS must be the same
+/// string, and they drift the moment the two mappings live apart. The
+/// comparison is on the lowercased provider name, so `--allow-fs` and
+/// `--deny-fs` both answer `Fs` (#2828, ADR-0088 L1).
+export fn authority_for_capability_flag(flag: String) -> String {
+  let rest = if String::starts_with(flag, "--allow-") {
+    flag[8: String::length(flag)]
+  } else if String::starts_with(flag, "--deny-") {
+    flag[7: String::length(flag)]
+  } else {
+    ""
+  }
+  if rest == "" {
+    ""
+  } else {
+    let names = standard_host_provider_names()
+    let mut i = 0
+    let mut found = ""
+    while i < Array::length(names) {
+      let n = Array::get(names, i)
+      if lowercase_ascii(n) == rest {
+        found = n
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    found
+  }
+}
+
+/// ASCII lowercase. The provider names are ASCII by construction (they are
+/// vibe identifiers), so this needs no Unicode case table.
+fn lowercase_ascii(s: String) -> String {
+  let acc = StringBuilder::new()
+  let mut i = 0
+  while i < String::length(s) {
+    let c = String::byte_at(s, i)
+    if c >= 65 && c <= 90 {
+      StringBuilder::push(acc, String::from_byte(c + 32))
+    } else {
+      StringBuilder::push(acc, String::from_byte(c))
+    }
+    i = i + 1
+  }
+  StringBuilder::freeze(acc)
 }
 
 fn allow_flag_for_authority(core: String) -> String {

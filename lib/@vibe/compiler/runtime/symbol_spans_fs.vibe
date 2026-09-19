@@ -34,11 +34,11 @@ import @vibe/core {
 }
 
 import ./source_walk.vibe {
-  source_walk_collect_files, source_walk_empty_paths
+  source_walk_collect_files_with_contracts, source_walk_empty_paths
 }
 
 import ./symbol_spans.vibe {
-  symbol_spans_with_docs
+  symbol_spans_locate_failure, symbol_spans_with_docs_for_path
 }
 
 //# Functions
@@ -54,11 +54,12 @@ fn symbols_fs_empty_syms() -> Array[(String, Int, Int, Int, String)] {
 /// Every declaration under `root`, one row per declaration, each carrying the
 /// path it came from: `(path, name, kind, start, end, doc)`, PLUS one message
 /// per file that could not be read. The five span fields are exactly what
-/// `symbol_spans_with_docs` returns for that file, so the batch answer and the
-/// single-file answer cannot drift.
+/// `symbol_spans_with_docs_for_path` returns for that file, so the batch
+/// answer and the single-file answer cannot drift.
 ///
 /// `root` may be a file or a directory; a directory is walked recursively with
-/// source_walk.vibe's shared skip policy. Files come back in byte-sorted
+/// source_walk.vibe's shared skip policy, and a package CONTRACT under it is
+/// swept like any other declaration file (#2898). Files come back in byte-sorted
 /// directory order and declarations in source order, so the whole result is
 /// deterministic for a given tree.
 ///
@@ -66,7 +67,7 @@ fn symbols_fs_empty_syms() -> Array[(String, Int, Int, Int, String)] {
 /// empty silently: see the header note.
 export fn symbol_spans_fs_report(root: String) -> (Array[(String, String, Int, Int, Int, String)], Array[String]) with Exception + Fs {
   let files = source_walk_empty_paths()
-  source_walk_collect_files(root, files)
+  source_walk_collect_files_with_contracts(root, files)
   let out = symbols_fs_empty_rows()
   let failures = source_walk_empty_paths()
   let mut i = 0
@@ -78,10 +79,10 @@ export fn symbol_spans_fs_report(root: String) -> (Array[(String, String, Int, I
     let mut failed = false
     let mut failure = ""
     let syms = handle {
-      symbol_spans_with_docs(source)
+      symbol_spans_with_docs_for_path(path, source)
     } with { Exception::Throw(msg) => {
       failed = true
-      failure = msg
+      failure = symbol_spans_locate_failure(path, source, msg)
       symbols_fs_empty_syms()
     } }
     if failed {

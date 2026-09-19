@@ -73,8 +73,17 @@ import @vibe/compiler/runtime {
   set_incremental_interface_trace_enabled,
   set_incremental_typecheck_telemetry_enabled,
   symbol_spans_fs_report,
-  symbol_spans_with_docs,
+  symbol_spans_locate_failure,
+  symbol_spans_with_docs_for_path,
   type_at_source
+}
+
+import @vibe/compiler/checker {
+  authority_for_capability_flag, entry_declared_authority, preflight_instantiate
+}
+
+import @vibe/compiler/core {
+  standard_host_provider_names
 }
 
 import @vibe/compiler/syntax {
@@ -1830,7 +1839,16 @@ fn selfhost_cli_user_symbols_args(args: Array[String]) -> Int with Exception + F
         if !Fs::exists(src) {
           throw(String::concat("not found: ", src))
         } else {
-          print_text(join_symbol_spans(symbol_spans_with_docs(Fs::read_file(src))))
+          // #2898: the file DECIDES the grammar -- a `.vpkg` is a list of
+          // bodyless declarations, not statement grammar. A failure carries
+          // the path and, where the contract parser can say which token it
+          // stopped on, a `line L:col C:` prefix: `unexpected token: type`
+          // with neither was a non-zero exit the caller could not act on.
+          let text = Fs::read_file(src)
+          let syms = handle {
+            symbol_spans_with_docs_for_path(src, text)
+          } with { Exception::Throw(msg) => throw(String::concat(src, String::concat(": ", symbol_spans_locate_failure(src, text, msg)))) }
+          print_text(join_symbol_spans(syms))
           0
         }
       }
@@ -2220,6 +2238,102 @@ fn selfhost_cli_user_grep_args(args: Array[String]) -> Int with Exception + Fs +
 
 //# run / test / bench / serve / profile
 
+/// ADR-0088 L1: pull `--allow-<cap>` / `--deny-<cap>` out of an argv, leaving
+/// every other argument in its original order for the verb's own parser.
+///
+/// Split rather than threaded through `parse_run_flags` because its result is
+/// already an 11-tuple with two callers destructuring it positionally; adding
+/// two more members there is the kind of edit that silently mis-binds a field.
+///
+/// `--` ENDS the scan: everything after it is the guest program's argv, and a
+/// guest that takes a `--deny-fs` of its own must keep it (#2828).
+fn split_capability_flags(args: Array[String]) -> (Array[String], Array[String], Array[String]) with Exception {
+  let rest: Array[String] = []
+  let allows: Array[String] = []
+  let denies: Array[String] = []
+  let mut after_separator = false
+  let mut i = 0
+  while i < Array::length(args) {
+    let arg = Array::get(args, i)
+    if after_separator {
+      Array::push(rest, arg)
+    } else if arg == "--" {
+      after_separator = true
+      Array::push(rest, arg)
+    } else if String::starts_with(arg, "--allow-") || String::starts_with(arg, "--deny-") {
+      let provider = authority_for_capability_flag(arg)
+      if provider == "" {
+        throw(String::concat(arg, ": not a capability; the providers a grant may name are Fs, Env, Stdin, Stdout, Stderr, Console, Process, Profiler, Http and Socket"))
+      } else if String::starts_with(arg, "--allow-") {
+        Array::push(allows, provider)
+      } else {
+        Array::push(denies, provider)
+      }
+    } else {
+      Array::push(rest, arg)
+    }
+    i = i + 1
+  }
+  (rest, allows, denies)
+}
+
+/// The set of providers the HOST supplies for this run, from the L1 flags.
+///
+/// No flag at all leaves every standard provider granted, which is what a run
+/// does today -- so adding the flags changes no existing program's behaviour.
+/// A `--allow-*` switches to an allow-list: only what is named is granted,
+/// which is the point of passing one. A `--deny-*` always subtracts, and wins
+/// over an `--allow-*` of the same provider, because fail-closed is the only
+/// direction in which a mistake in this table is safe.
+fn host_granted_from_flags(allows: Array[String], denies: Array[String]) -> Array[String] {
+  let base = if Array::length(allows) > 0 {
+    allows
+  } else {
+    standard_host_provider_names()
+  }
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(base) {
+    let p = Array::get(base, i)
+    let mut denied = false
+    let mut j = 0
+    while j < Array::length(denies) {
+      if Array::get(denies, j) == p {
+        denied = true
+      } else {
+        ()
+      }
+      j = j + 1
+    }
+    if denied {
+      ()
+    } else {
+      Array::push(out, p)
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// ADR-0088 L3, production-connected (#2828): one preflight before the entry
+/// runs, against the providers L1 leaves granted.
+///
+/// `preflight_instantiate` already raised the actionable message -- naming the
+/// `--allow-*` that supplies the authority and the `allows X?` alternative --
+/// and was reachable from nothing but its unit test. This is the call site.
+/// The entry's row is read from the entry FILE alone, which is where an entry
+/// declares its grant; no import can add to it.
+fn preflight_entry_authority(src: String, allows: Array[String], denies: Array[String]) -> Unit with Exception + Fs {
+  let stmts = parse_program(lex(Fs::read_file(src)))
+  let labels = entry_declared_authority(stmts)
+  if Array::length(labels) == 0 {
+    ()
+  } else {
+    let _ = preflight_instantiate(labels, host_granted_from_flags(allows, denies))
+    ()
+  }
+}
+
 fn parse_run_flags(args: Array[String]) -> (String, String, Bool, String, Bool, String, Bool, String, String, String, Array[String]) with Exception {
   let mut src = ""
   let mut trace = false
@@ -2332,7 +2446,8 @@ fn args_contain_newline(args: Array[String]) -> Bool {
 }
 
 export fn selfhost_cli_run_plan_args(args: Array[String], action_path: String) -> Int with Exception + Fs + Env {
-  let (src, _, trace, break_spec, mem, mem_sample, allocsite, allocsite_top, guest_profile, guest_interval, guest_args) = parse_run_flags(args)
+  let (run_args, allows, denies) = split_capability_flags(args)
+  let (src, _, trace, break_spec, mem, mem_sample, allocsite, allocsite_top, guest_profile, guest_interval, guest_args) = parse_run_flags(run_args)
   if !Fs::exists(src) {
     throw(String::concat("not found: ", src))
   } else if String::contains(src, "\n") || String::contains(guest_profile, "\n") {
@@ -2340,6 +2455,11 @@ export fn selfhost_cli_run_plan_args(args: Array[String], action_path: String) -
   } else if args_contain_newline(guest_args) {
     throw("run: newlines are not supported in guest arguments")
   } else {
+    // ADR-0088 L3: BEFORE the artifact is built, so a run without the
+    // authority its entry requires costs nothing and says which flag supplies
+    // it. Authorization is settled once, at the earliest phase that can answer
+    // (ADR-0075), and never changes mid-run.
+    preflight_entry_authority(src, allows, denies)
     let out = default_run_wasm(src)
     let kind = if trace {
       "trace"

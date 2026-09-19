@@ -58,7 +58,8 @@ import @vibe/compiler/runtime {
   set_incremental_typecheck_telemetry_enabled,
   set_scheduler_trace_path,
   symbol_spans_fs_report,
-  symbol_spans_with_docs,
+  symbol_spans_locate_failure,
+  symbol_spans_with_docs_for_path,
   type_at_source
 }
 
@@ -2311,8 +2312,14 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
           ()
         }
       } else {
+        // #2898: the EXTENSION picks the grammar. A `.vpkg` is the package
+        // contract -- a list of bodyless declarations, and the one file that
+        // IS a package's public API -- so reading it with statement grammar
+        // answered `unexpected token: type` about a file the build accepts.
         let src = Fs::read_file(input_path)
-        let syms = symbol_spans_with_docs(src)
+        let syms = handle {
+          symbol_spans_with_docs_for_path(input_path, src)
+        } with { Exception::Throw(msg) => throw(symbol_spans_locate_failure(input_path, src, msg)) }
         Fs::write_bytes(output_path, adapter_string_to_bytes(line_terminated(join_symbol_spans(syms))))
       }
       0

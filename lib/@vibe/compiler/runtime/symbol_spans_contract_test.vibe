@@ -1,0 +1,131 @@
+//# Imports
+
+// #2898: `index.vpkg` is a package's public API (ADR-0070) and `vibe symbols`
+// is the documented way to discover an API -- so the one file that IS the API
+// was the one file the outline could not read. Measured against a stage2 built
+// from main at 45d5d05:
+//
+//   vibe check   lib/@vibe/core/index.vpkg   rc=0, clean
+//   vibe symbols lib/@vibe/core/index.vpkg   rc=1, `unexpected token: type`
+//   vibe symbols lib/@vibe/core              793 rows, 0 from any .vpkg
+//
+// A bodyless `type List[T]` is contract grammar; `parse_program_spans` only
+// knows script grammar. The file's EXTENSION decides which one answers, which
+// is why the entry point takes a path.
+
+import ./symbol_spans.vibe {
+  symbol_spans_locate_failure, symbol_spans_with_docs, symbol_spans_with_docs_for_path
+}
+
+//# Functions
+
+/// A contract source with the key=value header a real `.vpkg` carries. The
+/// header is not vibe syntax, so it has to be blanked before lexing -- and
+/// blanked WITHOUT changing byte length, or every span below would shift.
+fn contract_src() -> String {
+  "name = @demo/pkg\nversion = 0.1.0\ndeps = {}\n\ntype List[T]\nopaque type Handle\nfn make(n: Int) -> Int\nfn Handle::close(h: Handle) -> Unit\nlet origin: Int\n"
+}
+
+fn sym_row(syms: Array[(String, Int, Int, Int, String)], name: String) -> (String, Int, Int, Int, String) {
+  let mut found = ("", 0 - 1, 0 - 1, 0 - 1, "")
+  let mut i = 0
+  while i < Array::length(syms) {
+    let (n, k, s, e, d) = Array::get(syms, i)
+    if n == name {
+      found = (n, k, s, e, d)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// `NAME:KIND:<the bytes the span actually cuts out of the source>` -- the
+/// span is asserted by SLICING, so a lane emitting plausible-looking offsets
+/// cannot pass. A name with no row answers `<missing>`.
+fn sym_slice(src: String, syms: Array[(String, Int, Int, Int, String)], name: String) -> String {
+  let (n, k, s, e, _d) = sym_row(syms, name)
+  if n == "" {
+    "<missing>"
+  } else {
+    String::concat(n, String::concat(":", String::concat(__to_string(k), String::concat(":", String::substring(src, s, e)))))
+  }
+}
+
+test "symbols: a contract's fn, val, bodyless type and opaque type are all declarations" {
+  let src = contract_src()
+  let syms = symbol_spans_with_docs_for_path("index.vpkg", src)
+  inspect(Array::length(syms), content = "5")
+}
+
+test "symbols: each contract declaration's span cuts its own name out of the source" {
+  let src = contract_src()
+  let syms = symbol_spans_with_docs_for_path("index.vpkg", src)
+  inspect(sym_slice(src, syms, "List"), content = "List:26:List")
+  inspect(sym_slice(src, syms, "Handle"), content = "Handle:26:Handle")
+  inspect(sym_slice(src, syms, "make"), content = "make:12:make")
+  inspect(sym_slice(src, syms, "Handle::close"), content = "Handle::close:12:Handle::close")
+  inspect(sym_slice(src, syms, "origin"), content = "origin:13:origin")
+}
+
+test "symbols: the EXTENSION picks the grammar, not the content" {
+  // The same bytes under a `.vibe` name stay on the script lane, where a
+  // bodyless `type List[T]` is not a declaration it can read.
+  let src = contract_src()
+  let threw = handle {
+    let _ = symbol_spans_with_docs_for_path("index.vibe", src)
+    false
+  } with { Exception::Throw(_) => true }
+  inspect(threw, content = "true")
+}
+
+test "symbols: a script file's answer is unchanged by the path-aware entry" {
+  let src = "export struct Point { x: Int }\nexport fn twice(n: Int) -> Int { n * 2 }\n"
+  let plain = symbol_spans_with_docs(src)
+  let viapath = symbol_spans_with_docs_for_path("a.vibe", src)
+  inspect(Array::length(plain) == Array::length(viapath), content = "true")
+  inspect(sym_slice(src, viapath, "Point"), content = "Point:23:Point")
+  inspect(sym_slice(src, viapath, "twice"), content = "twice:12:twice")
+}
+
+test "symbols: a declaration anchors on its own name, not an earlier parameter" {
+  // `fn f(origin: Int)` spells `origin` BEFORE the `let origin` that declares
+  // it. A scan resuming where the previous row stopped would report the
+  // parameter; the floor is set to each declaration's own first token instead.
+  let src = "name = @demo/pkg\n\nfn f(origin: Int) -> Int\nlet origin: Int\n"
+  let syms = symbol_spans_with_docs_for_path("index.vpkg", src)
+  let (_n, _k, s, _e, _d) = sym_row(syms, "origin")
+  let decl_at = String::index_of(src, "let origin")
+  inspect(s > decl_at, content = "true")
+}
+
+test "symbols: a contract's doc comments attach the same way" {
+  let src = "name = @demo/pkg\n\n/// The published entry point.\nfn make(n: Int) -> Int\n"
+  let syms = symbol_spans_with_docs_for_path("index.vpkg", src)
+  let (_n, _k, _s, _e, doc) = sym_row(syms, "make")
+  inspect(doc, content = "The published entry point.")
+}
+
+test "symbols: a broken contract's failure says where it stopped" {
+  // `unexpected token: type` with no line and no column is not actionable,
+  // which is the property AGENTS.md asks these queries for.
+  let src = "name = @demo/pkg\n\nfn make(n: Int) -> Int {\n"
+  let msg = handle {
+    let _ = symbol_spans_with_docs_for_path("index.vpkg", src)
+    ""
+  } with { Exception::Throw(m) => m }
+  inspect(msg == "", content = "false")
+  // `line L:C: ` -- the spelling the ERROR surface uses (lexer.vibe,
+  // parser.vibe, `vibe check`). `line L:col C: ` is the WARNING path's
+  // spelling and is not this one; asserting it here is what made the first
+  // version of this test fail against a correct answer.
+  let located = symbol_spans_locate_failure("index.vpkg", src, msg)
+  inspect(String::starts_with(located, "line 3:"), content = "true")
+  inspect(String::index_of(located, "must not have a body") > 0, content = "true")
+}
+
+test "symbols: a non-contract path's failure text is passed through untouched" {
+  let msg = "unexpected token: {"
+  inspect(symbol_spans_locate_failure("a.vibe", "let x = 1\n", msg), content = "unexpected token: {")
+}

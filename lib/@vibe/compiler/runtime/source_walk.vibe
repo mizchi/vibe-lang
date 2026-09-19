@@ -31,6 +31,20 @@ export fn source_walk_is_source_name(name: String) -> Bool {
   String::ends_with(name, ".vibe") || String::ends_with(name, ".vibex")
 }
 
+/// The same, plus package CONTRACTS (`.vpkg` / `.vibei`).
+///
+/// #2898: a sweep that asks about DECLARATIONS has to include the file that
+/// declares a package's public API, or it answers a complete-looking inventory
+/// that omits every published surface in the tree and says nothing --
+/// `vibe symbols lib/@vibe/core` returned 793 rows and not one of them came
+/// from `index.vpkg`. A sweep that asks about EXPRESSIONS (`vibe grep`) must
+/// not: a contract holds no expressions, so every one of them would come back
+/// as a "could not be parsed" warning about a file that is perfectly well
+/// formed.
+export fn source_walk_is_source_or_contract_name(name: String) -> Bool {
+  source_walk_is_source_name(name) || String::ends_with(name, ".vpkg") || String::ends_with(name, ".vibei")
+}
+
 /// Directories a recursive sweep does not descend into: build output and
 /// vendored trees are not the user's source, and walking them dominates the
 /// runtime. `deps` is where `vibe fetch` vendors packages (and, since relative
@@ -61,6 +75,18 @@ export fn source_walk_join(dir: String, name: String) -> String {
 /// that must distinguish "empty" from "not there" check the root themselves;
 /// the CLI launchers do, before reaching here.
 export fn source_walk_collect_files(root: String, out: Array[String]) -> Unit with Fs {
+  source_walk_collect(root, out, false)
+}
+
+/// `source_walk_collect_files`, also taking package contracts (#2898). Same
+/// skip policy, same order: the two sweeps differ only in which extensions
+/// they admit, which is why they share one walk rather than each having their
+/// own (the header's "one policy, one place").
+export fn source_walk_collect_files_with_contracts(root: String, out: Array[String]) -> Unit with Fs {
+  source_walk_collect(root, out, true)
+}
+
+fn source_walk_collect(root: String, out: Array[String], contracts: Bool) -> Unit with Fs {
   if Fs::is_dir(root) {
     let names = Fs::readdir(root)
     let mut i = 0
@@ -69,11 +95,15 @@ export fn source_walk_collect_files(root: String, out: Array[String]) -> Unit wi
       let child = source_walk_join(root, name)
       if Fs::is_dir(child) {
         if !source_walk_skip_dir(name) {
-          source_walk_collect_files(child, out)
+          source_walk_collect(child, out, contracts)
         } else {
           ()
         }
-      } else if source_walk_is_source_name(name) {
+      } else if (if contracts {
+        source_walk_is_source_or_contract_name(name)
+      } else {
+        source_walk_is_source_name(name)
+      }) {
         Array::push(out, child)
       } else {
         ()

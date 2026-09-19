@@ -1,0 +1,27 @@
+// #2895: `Double` was the one instantiation the #2523 marker guard waved
+// through, and it was exactly the failure the guard exists to prevent.
+//
+// `marker_cmp_is_by_value` listed `CtDouble` alongside `Int` / `Bool` / `Char`
+// / `String`, on the reasoning that those are the scalars the prelude
+// registers marker impls for. A `Double` is not a tagged immediate the way an
+// `Int` is, so the raw comparison an erased bound falls back to reads the box
+// rather than the number. Measured on the committed seed and on a stage2 built
+// from this branch, identical both ways:
+//
+//   bare[T: Eq](1.5, 1.5)    FALSE   <- two equal Doubles
+//   lt[T: Ord](2.5, 1.5)     TRUE    <- and Ord is wrong in BOTH directions
+//   gt[T: Ord](2.5, 1.5)     FALSE      at once
+//   1.5 == 1.5  (concrete)   true    <- the contrast
+//
+// `Eq` is no longer part of this: ADR-0097 gave it a method (#2523), so
+// `[T: Eq]` at `Double` dispatches through a real witness and answers `true`
+// (fixtures/eq_bound_derive_test.vibe). `Ord` is still a MARKER, so the guard
+// still fires for it -- and this file pins the MESSAGE, not just the refusal.
+
+fn smaller[T: Ord](x: T, y: T) -> Bool {
+  x < y
+}
+
+fn main() -> Unit allows Stdout {
+  println(__to_string(smaller(2.5, 1.5)))
+}

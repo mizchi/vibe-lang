@@ -128,8 +128,22 @@ Pinned by `fixtures/err_type_eq_marker_bound_double.vibe` (the message, via the
 late lane) and by two rows in
 `lib/@vibe/compiler/tests/marker_cmp_bound_test.vibe`.
 
-**Since #2612 the rest is enforced rather than trusted**: the bound is REFUSED
-at a non-scalar instantiation, so it is a diagnostic and no longer silently
+**Since #2523 `Eq` carries a method, so the bound DISPATCHES rather than being
+refused.** `equals(Self, Self) -> Bool` is registered method-bearing by the
+checker, the lowering injects the same signature when a program actually
+carries an `Eq` bound, and `derive (Eq)` registers `impl Eq for T` the way
+`derive (Hash)` already did. `[T: Eq]` at a `derive (Eq)` struct compares by
+CONTENT, and `Double` — the one scalar #2895 caught answering by reference —
+answers `true` for two equal values. Writing `derive (Eq)` AND `impl Eq for T`
+is now an overlap, which is the right answer: the derive supplies the one impl
+there is. #2612's guard did NOT go with it — a program may still declare its
+own marker `Eq`, and `Ord` is still a marker, so `marker_cmp_bound_is_unsound`
+keeps firing for both. Pinned by `fixtures/eq_bound_derive_test.vibe` (the
+answers) and `fixtures/err_type_{eq,ord}_marker_bound_*.vibe` (the refusals
+that remain).
+
+**Before #2523, the guard was all there was**: the bound was REFUSED
+at a non-scalar instantiation, so it was a diagnostic rather than silently
 wrong.
 Before it, `derive (Eq)` did not satisfy the bound (``no impl `Eq` for `Pt` ``)
 and adding `impl Eq for Pt` replaced that error with reference identity —
@@ -652,7 +666,18 @@ vibe symbols file.vibe
 # fields (#2723). DOC is exempt -- it is last, and nothing is parsed after it.
 # Split on ASCII: a NBSP inside a label is NOT escaped (the separators are
 # ascii spaces), so a Unicode-aware class drops the row instead of reading it.
+# A package CONTRACT (`index.vpkg`) is read with CONTRACT grammar -- bodyless
+# `fn` / `let` declarations and `type` / `opaque type`, plus the key=value
+# header, which is blanked first (#2898). That file IS the package's public
+# API (ADR-0070), so it is also swept as part of a directory. Before this it
+# was the one file `vibe symbols` refused (`unexpected token: type`, with no
+# path and no position) while `vibe check` on the same file was clean, and a
+# directory sweep omitted every contract in the tree WITHOUT SAYING SO --
+# measured, `vibe symbols lib/@vibe/core` answered 793 rows and not one came
+# from `index.vpkg`. `vibe grep`'s sweep is deliberately unchanged: a contract
+# holds no expressions.
 vibe symbols lib
+vibe symbols lib/@vibe/core/index.vpkg
 vibe symbols --with-path file.vibe
 
 # カーソル位置 (1-based line,col) の識別子の推論型。hover の基盤

@@ -1,0 +1,60 @@
+// #2523 / ADR-0097: a `[T: Eq]` bound compares a `derive (Eq)` struct by
+// CONTENT, and every scalar too.
+//
+// Both routes used to end badly. `derive (Eq)` alone did not satisfy the bound
+// (``no impl `Eq` for `Pt` ``), and adding `impl Eq for Pt` replaced that error
+// with reference identity -- measured on the production linear/RC lane, two
+// EQUAL distinct `Pt` answered `false` and the same object answered `true`,
+// while `p1 == p2` at a concrete site and `Pt::equals(p1, p2)` both answered
+// `true`. The comparator existed; the bound never reached it, because the
+// prelude's `Eq` was a MARKER trait with no method to dispatch through.
+//
+// It carries `equals(Self, Self) -> Bool` now: the checker registers it
+// method-bearing, the lowering injects the same signature when a program
+// actually carries an `Eq` bound, and `derive (Eq)` registers `impl Eq for T`
+// the way `derive (Hash)` already did.
+//
+// `Double` is here deliberately. It carries a marker impl like the other four
+// scalars, so #2612's guard admitted it while the erased comparison read the
+// BOX rather than the number: `bare(1.5, 1.5)` answered `false` (#2895).
+// Through a real witness it answers `true`.
+
+struct Pt {
+  v: Int
+} derive (Eq)
+
+fn bare[T: Eq](x: T, y: T) -> Bool {
+  x == y
+}
+
+fn b2s(b: Bool) -> String {
+  if b {
+    "t"
+  } else {
+    "f"
+  }
+}
+
+test "a bounded == at a derived struct compares by content" {
+  let p1 = Pt::{ v: 1 }
+  let p2 = Pt::{ v: 1 }
+  let p3 = Pt::{ v: 2 }
+  inspect(String::concat(b2s(bare(p1, p2)), String::concat(b2s(bare(p1, p1)), b2s(bare(p1, p3)))), "ttf")
+}
+
+test "a bounded == at each scalar is right, Double included" {
+  let rows = [
+    b2s(bare(1, 1)),
+    b2s(bare(1, 2)),
+    b2s(bare("a", "a")),
+    b2s(bare("a", "b")),
+    b2s(bare(true, true)),
+    b2s(bare(true, false)),
+    b2s(bare(1.5, 1.5)),
+    b2s(bare(1.5, 2.5)),
+    b2s(bare(0.0, 0.0)),
+    b2s(bare('x', 'x')),
+    b2s(bare('x', 'y'))
+  ]
+  inspect(String::join(rows, ""), "tftftftfttf")
+}
