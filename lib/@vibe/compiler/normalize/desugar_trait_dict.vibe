@@ -5600,6 +5600,50 @@ fn dtd_elem_preserving_shape(fname: String, cargs: Array[Expr], struct_sets: Arr
   }
 }
 
+/// #2912: `Array::map(xs, (v: T) -> U { .. })` -> `[<shape of U>]`, read from
+/// the callback's DECLARED return type.
+///
+/// The sibling `dtd_elem_preserving_shape` excludes `Array::map` on purpose:
+/// its element type is the callback's return, so reusing the argument's shape
+/// would render confidently and wrongly. That reasoning is right, and the
+/// comment there tells the reader "an annotation covers it" -- but it did not.
+/// Only annotating the BINDING worked (`let ys: Array[Int] = ..`, which
+/// `infer_shape` reads through `dtd_ascribed_type`); annotating the LAMBDA was
+/// never consulted anywhere, so `__to_string(Array::map(xs, (v: Int) -> Int {
+/// v * 2 }))` printed a heap address. The code disagreed with its own comment,
+/// and this closes that gap rather than widening the exclusion.
+///
+/// Only a DECLARED return type is read. An inferred one would mean running
+/// inference from a normalize pass that has no types, which is the decision
+/// AGENTS.md records against for the structural-`==` scan: a classification
+/// that can be absent but never wrong. An unannotated callback still resolves
+/// to nothing here.
+///
+/// The result goes through `interp_shape` for the same reason `infer_shape`
+/// does: `ty_to_eq_shape` speaks equality's grammar, a strict superset of the
+/// renderer's, and letting an Option/Result encoding through would emit
+/// `Array::length` against a non-array.
+fn dtd_map_callback_shape(fname: String, cargs: Array[Expr]) -> String {
+  if fname == "Array::map" && Array::length(cargs) >= 2 {
+    match Array::get(cargs, 1) {
+      EFn(_, _, _, ret, _, _) => match ret {
+        Some(rt) => {
+          let elem = ty_to_eq_shape(rt)
+          if String::length(elem) == 0 {
+            ""
+          } else {
+            interp_shape(String::concat(String::concat("[", elem), "]"))
+          }
+        },
+        None => ""
+      },
+      _ => ""
+    }
+  } else {
+    ""
+  }
+}
+
 /// #2128: `Array::get(xs, i)` / `xs[i]` -> the shape of the array's ELEMENT.
 ///
 /// The sibling of `dtd_elem_preserving_shape`: that one answers for calls whose
@@ -5839,10 +5883,22 @@ fn infer_shape_by_syntax(e: Expr, struct_sets: Array[(String, Array[String])], v
             } else {
               dtd_elem_projecting_shape(fname, cargs, struct_sets, var_types, fn_returns)
             }
+            // #2912: the third source, after the two that read an argument's
+            // shape. `Array::map` is deliberately absent from both -- its
+            // element type comes from the callback -- so without this the call
+            // resolved to nothing and `__to_string` fell through to the
+            // string-pointer heuristic, printing a heap address.
+            let mapped = if String::length(preserved) > 0 || String::length(projected) > 0 {
+              ""
+            } else {
+              dtd_map_callback_shape(fname, cargs)
+            }
             if String::length(preserved) > 0 {
               preserved
             } else if String::length(projected) > 0 {
               projected
+            } else if String::length(mapped) > 0 {
+              mapped
             } else {
               match infer_arg_type_name(e, struct_sets, var_types, fn_returns) {
                 Some(t) => t,

@@ -1115,6 +1115,38 @@ local testCheckHostRemoveParity = new Task {
   }
   deps { selfhostGeneration }
 }
+// #1346: names and signatures agree and the two runners can still disagree
+// about what a call MEANS. `check_host_remove_parity.sh` caught that for
+// `Fs::remove`; this is the same shape for the rows #1346 lists as semantic
+// conformance -- a missing file, an empty file, and a multibyte read whose
+// length is asserted in BYTES (ADR-0098), not merely asserted to match.
+local checkHostSemanticParity = new Task {
+  name = "check-host-semantic-parity"
+  description =
+    "the JS and Rust runners agree on a missing read, an empty read, and a multibyte read's byte length"
+  cmd = "bash scripts/check_host_semantic_parity.sh"
+  inputs {
+    ...compilerProbeInputs
+    ...scriptSources
+    "runtime/viberun/src/main.rs"
+  }
+  deps { selfhostGeneration }
+}
+// Same dependency and artifact channel as the gate it tests, for the reason
+// spelled out above `testCheckHostRemoveParity`: this companion COMPILES a
+// program in both phases, so a `scriptTask` without `deps` would fall back to
+// the committed seed or certify an unrelated generation.
+local testCheckHostSemanticParity = new Task {
+  name = "test-check-host-semantic-parity"
+  description = "red test: the semantic gate FAILS when the JS runner returns '' for a missing file"
+  cmd = "bash scripts/check_host_semantic_parity_test.sh"
+  inputs {
+    ...compilerProbeInputs
+    ...scriptSources
+    "runtime/viberun/src/main.rs"
+  }
+  deps { selfhostGeneration }
+}
 // #2758: the gc backend's host-import list is encoded in FIVE places (use_host,
 // host_defs, host_imports, the import vector-header literal, and hbo). They must
 // agree, and nothing checked that they did -- adding ONE import produced two
@@ -1136,6 +1168,31 @@ local testCheckGcHostImportCounts =
     "test-check-gc-host-import-counts",
     "scripts/check_gc_host_import_counts_test.sh",
   )
+// #2905, and the third time this family shipped: #1460 (`Console::write_char`,
+// `Console::write_err_char`), #2903 (`sleep_blocking`), #2905
+// (`Console::read_char`). A builtin name mapped onto a CONDITIONALLY reserved
+// host import, without a reservation of its own, falls back to a stub of
+// another arity -- so the program compiles clean, writes a `.wasm`, reports
+// success, and emits a module wasmtime refuses to validate. Each fix was
+// "remember to add the name in the other place", which is exactly the step
+// that keeps being missed. Reads the two sources, so it needs no generation.
+local checkImportReservation = new Task {
+  name = "check-import-reservation"
+  description =
+    "every user-callable capability spelling reserves the host import it lowers onto (#2905)"
+  cmd = "python3 scripts/check_import_reservation.py"
+  inputs {
+    "lib/@vibe/compiler/codegen/wasi/linked_compile.vibe"
+    "lib/@vibe/compiler/core/builtin_registry.vibe"
+    ...scriptSources
+  }
+}
+local testCheckImportReservation =
+  scriptTask("test-check-import-reservation", "scripts/check_import_reservation_test.sh")
+// The `_test.sh` spelling check_gate_self_tests.sh discovers; it execs the
+// python mutation suite that already runs inside `check-host-runtime-contract`.
+local testCheckHostRuntimeContract =
+  scriptTask("test-check-host-runtime-contract", "scripts/check_host_runtime_contract_test.sh")
 // scripts/profile_compile.sh refuses a name-stripped compiler artifact. Every
 // stage2 is stripped unless built with VIBE_WASM_NAMES=1, so without the guard
 // the profiler's whole output is `wasm-function[N]` rows -- it spent minutes
@@ -2561,9 +2618,14 @@ local releaseCheck = new Task {
     checkTelemetrySidecarGuards
     testCheckTelemetrySidecarGuards
     checkHostRemoveParity
+    checkHostSemanticParity
     testCheckHostRemoveParity
+    testCheckHostSemanticParity
     checkGcHostImportCounts
     testCheckGcHostImportCounts
+    checkImportReservation
+    testCheckImportReservation
+    testCheckHostRuntimeContract
     testProfileCompile
     checkCompileOnlyLanes
     testCheckCompileOnlyLanes
@@ -2696,9 +2758,14 @@ tasks {
   checkTelemetrySidecarGuards
   testCheckTelemetrySidecarGuards
   checkHostRemoveParity
+  checkHostSemanticParity
   testCheckHostRemoveParity
+  testCheckHostSemanticParity
   checkGcHostImportCounts
   testCheckGcHostImportCounts
+  checkImportReservation
+  testCheckImportReservation
+  testCheckHostRuntimeContract
   testProfileCompile
   checkCompileOnlyLanes
   testCheckCompileOnlyLanes

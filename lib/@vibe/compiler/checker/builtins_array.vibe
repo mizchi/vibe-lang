@@ -56,13 +56,6 @@ fn lookup_array_filter(name: String) -> Option[Type] {
   else None
 }
 
-fn lookup_array_foreach(name: String) -> Option[Type] {
-  if name == "Array::foreach" {
-    Some(CtFn(array_two_params(CtArray(CtUnknown), CtFn(array_one_param(CtUnknown), CtUnit, None)), CtUnit, None))
-  }
-  else None
-}
-
 fn lookup_array_reverse(name: String) -> Option[Type] {
   if name == "Array::reverse" {
     Some(CtFn(array_one_param(CtArray(CtUnknown)), CtArray(CtUnknown), None))
@@ -84,27 +77,16 @@ fn lookup_array_find(name: String) -> Option[Type] {
   else None
 }
 
-fn lookup_array_sort(name: String) -> Option[Type] {
-  if name == "Array::sort" {
-    Some(CtFn(array_one_param(CtArray(CtUnknown)), CtArray(CtUnknown), None))
-  }
-  else None
-}
-
-fn lookup_array_contains(name: String) -> Option[Type] {
-  if name == "Array::contains" {
-    Some(CtFn(array_two_params(CtArray(CtUnknown), CtUnknown), CtBool, None))
-  }
-  else None
-}
-
-fn lookup_array_join(name: String) -> Option[Type] {
-  if name == "Array::join" {
-    Some(CtFn(array_two_params(CtArray(CtUnknown), CtString), CtString, None))
-  }
-  else None
-}
-
+/// #2900: `Array::contains`, `Array::join`, `Array::foreach` and `Array::sort`
+/// were declared here and implemented NOWHERE -- not in the registry, not in
+/// either backend's call ladder, not exported by `@vibe/builtin`. The checker
+/// typed them, `direct_builtin_return` gave them a return type, and both
+/// backends classified their result kind, so a call type-checked clean and
+/// then died in codegen with `reached code generation unresolved`, a message
+/// that tells the reader it is a compiler bug and asks them to report it.
+/// Measured: zero uses in `lib/`, `examples/`, `fixtures/` or `book/`, so
+/// nothing regresses. They are admitted no longer; `builtin_no_lowering_hint`
+/// answers a call to one with the edit that works instead.
 export fn lookup_array(name: String) -> Option[Type] {
   match lookup_array_map(name) {
     Some(t) => Some(t),
@@ -112,23 +94,11 @@ export fn lookup_array(name: String) -> Option[Type] {
       Some(t) => Some(t),
       None => match lookup_array_filter(name) {
         Some(t) => Some(t),
-        None => match lookup_array_foreach(name) {
+        None => match lookup_array_reverse(name) {
           Some(t) => Some(t),
-          None => match lookup_array_reverse(name) {
+          None => match lookup_array_any(name) {
             Some(t) => Some(t),
-            None => match lookup_array_any(name) {
-              Some(t) => Some(t),
-              None => match lookup_array_find(name) {
-                Some(t) => Some(t),
-                None => match lookup_array_sort(name) {
-                  Some(t) => Some(t),
-                  None => match lookup_array_contains(name) {
-                    Some(t) => Some(t),
-                    None => lookup_array_join(name)
-                  }
-                }
-              }
-            }
+            None => lookup_array_find(name)
           }
         }
       }

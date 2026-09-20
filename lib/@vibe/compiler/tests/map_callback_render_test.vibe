@@ -1,0 +1,64 @@
+//# #2912: `__to_string(Array::map(..))` rendered a heap address.
+//#
+//# `dtd_elem_preserving_shape` excludes `Array::map` on purpose -- its element
+//# type is the callback's return, not the argument's, so reusing the argument's
+//# shape would render confidently and wrongly. That exclusion is right. What
+//# was wrong is what happened next: nothing else answered, so the call fell
+//# through to `compile_call.vibe`'s general `__to_string` arm, a heuristic that
+//# guesses string-pointer vs integer from the bit pattern. An array pointer
+//# takes the integer branch and prints as a decimal address, which is the
+//# silent-wrong case the design policy ranks above a crash.
+//#
+//# `dtd_map_callback_shape` reads the callback's DECLARED return type. An
+//# inferred one is deliberately not read: that would mean running inference
+//# from a normalize pass that has no types, the decision AGENTS.md records
+//# against for the structural-`==` scan. Absent-but-never-wrong.
+
+test "map with an annotated callback renders by content" {
+  let xs = [1, 2, 3]
+  inspect(__to_string(Array::map(xs, (v: Int) -> Int {
+    v * 2
+  })), content = "[2, 4, 6]")
+}
+
+test "the callback's return type is what decides, not the argument's" {
+  let xs = [1, 2]
+  inspect(__to_string(Array::map(xs, (v: Int) -> String {
+    __to_string(v)
+  })), content = "[1, 2]")
+}
+
+test "map over strings" {
+  let ss = ["a", "b"]
+  inspect(__to_string(Array::map(ss, (v: String) -> String {
+    String::concat(v, "!")
+  })), content = "[a!, b!]")
+}
+
+test "an annotated binding still works" {
+  let xs = [1, 2, 3]
+  let ys: Array[Int] = Array::map(xs, (v: Int) -> Int {
+    v * 2
+  })
+  inspect(__to_string(ys), content = "[2, 4, 6]")
+}
+
+test "the element-preserving builtins are untouched" {
+  let xs = [1, 2, 3]
+  inspect(__to_string(Array::filter(xs, (v) -> {
+    v > 1
+  })), content = "[2, 3]")
+  inspect(__to_string(Array::reverse(xs)), content = "[3, 2, 1]")
+  inspect(__to_string(Array::concat(xs, [4])), content = "[1, 2, 3, 4]")
+  inspect(__to_string(Array::slice(xs, 0, 2)), content = "[1, 2]")
+}
+
+test "reading through a map result is untouched" {
+  let xs = [1, 2, 3]
+  inspect(__to_string(Array::get(Array::map(xs, (v: Int) -> Int {
+    v * 2
+  }), 1)), content = "4")
+  inspect(__to_string(Array::length(Array::map(xs, (v: Int) -> Int {
+    v * 2
+  }))), content = "3")
+}
