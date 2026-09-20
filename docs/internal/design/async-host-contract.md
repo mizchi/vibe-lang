@@ -91,10 +91,22 @@ sentinel instead trapped with a bare `RuntimeError: unreachable`.
 Since #2928 the node runner refuses these names on CALL, with a message naming
 the import and the viberun lane that implements it. Not on instantiation: a
 program that links one and never reaches it does not need the capability.
-`runtime/viberun`'s core lane is the one that really does fail at
-instantiation, because an import it does not register makes the whole module
-fail before user code runs. The two lanes therefore still fail at different
-MOMENTS, and that is stated rather than averaged.
+
+`runtime/viberun`'s core lane is the one that fails at instantiation, and that
+is measured rather than inherited from the design — the same module, the same
+question:
+
+```
+viberun: unknown import: `vibe::host_stream_read` has not been defined
+   2: wasmtime::runtime::linker::Linker<T>::instantiate
+```
+
+exit 1, and the program's own output is absent, which is what separates
+"refused before user code" from "ran and then failed".
+
+So the two lanes fail at different MOMENTS, and that is stated rather than
+averaged. `scripts/host_async_import_unsupported_test.sh` asks both, so neither
+half of this paragraph can go stale without a gate noticing.
 
 ### A third dynamic prefix the manifest does not know
 
