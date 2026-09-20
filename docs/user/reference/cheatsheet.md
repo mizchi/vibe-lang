@@ -1891,13 +1891,19 @@ real builtins, which is why they are listed here.
 
 From `@vibe/builtin` (`import @vibe/builtin { ... }`):
 `String::replace`, `String::replace_all`, `String::trim_start`,
-`String::trim_end`, `String::count`, `String::to_lower`, `String::to_upper`.
+`String::trim_end`, `String::count`, `String::to_lower`, `String::to_upper`,
+`Lines::parse`, `Lines::stringify`.
 
 `String::to_lower` and `String::to_upper` joined that list in #2900. They were
 typed as builtins unconditionally, so the name resolved whether or not anything
 supplied a body: with no import the call passed `vibe check` and died in codegen,
 and with any *other* name imported from `@vibe/builtin` it worked by accident of
 linkage. They must be imported by name now, like the five above.
+
+`Lines::parse` and `Lines::stringify` joined it in #2913, with the same defect
+and found the same way -- by compiling a probe for every declared name and
+counting the ones that reach codegen unresolved. Two places in the tree had
+already met it and imported around it by hand rather than reporting it.
 
 From `@vibe/json` (`import @vibe/json { ... }`):
 `Json::parse`, `Json::stringify`, `Json::type_of`, `Json::get`, `Json::index`,

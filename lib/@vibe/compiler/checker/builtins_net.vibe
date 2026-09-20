@@ -49,14 +49,6 @@ fn net_two_params(a: Type, b: Type) -> Array[Type] {
   arr
 }
 
-fn net_three_params(a: Type, b: Type, c: Type) -> Array[Type] {
-  let arr = net_no_params()
-  Array::push(arr, a)
-  Array::push(arr, b)
-  Array::push(arr, c)
-  arr
-}
-
 fn net_four_params(a: Type, b: Type, c: Type, d: Type) -> Array[Type] {
   let arr = net_no_params()
   Array::push(arr, a)
@@ -69,20 +61,6 @@ fn net_four_params(a: Type, b: Type, c: Type, d: Type) -> Array[Type] {
 fn lookup_http_close(name: String) -> Option[Type] {
   if name == "Http::close" {
     Some(CtFn(net_one_param(CtUnknown), CtUnit, Some("Http")))
-  }
-  else None
-}
-
-fn lookup_http_accept(name: String) -> Option[Type] {
-  if name == "Http::accept" {
-    Some(CtFn(net_one_param(CtUnknown), CtUnknown, Some("Http")))
-  }
-  else None
-}
-
-fn lookup_http_listen(name: String) -> Option[Type] {
-  if name == "Http::listen" {
-    Some(CtFn(net_two_params(CtString, CtInt), CtUnknown, Some("Http")))
   }
   else None
 }
@@ -111,13 +89,6 @@ fn lookup_http_request(name: String) -> Option[Type] {
   else None
 }
 
-fn lookup_http_respond(name: String) -> Option[Type] {
-  if name == "Http::respond" {
-    Some(CtFn(net_three_params(CtUnknown, CtInt, CtString), CtUnit, Some("Http")))
-  }
-  else None
-}
-
 fn lookup_http_response_body(name: String) -> Option[Type] {
   if name == "Http::response_body" {
     Some(CtFn(net_one_param(CtUnknown), CtString, Some("Http")))
@@ -125,38 +96,26 @@ fn lookup_http_response_body(name: String) -> Option[Type] {
   else None
 }
 
-fn lookup_http_request_header(name: String) -> Option[Type] {
-  if name == "Http::request_header" {
-    Some(CtFn(net_two_params(CtUnknown, CtString), CtString, Some("Http")))
-  }
-  else None
-}
-
-fn lookup_net_group_d(name: String) -> Option[Type] {
-  match lookup_http_request_header(name) {
-    Some(t) => Some(t),
-    None => lookup_http_respond(name)
-  }
-}
-
-fn lookup_http_request_method(name: String) -> Option[Type] {
-  if name == "Http::request_method" {
-    Some(CtFn(net_one_param(CtUnknown), CtString, Some("Http")))
-  }
-  else None
-}
-
+/// #2913: `listen` / `accept` / `request_method` stood beside `close` here,
+/// and `request_header` / `respond` in a `lookup_net_group_d` that held
+/// nothing else. All five are ordinary functions in `lib/@vibe/http`, declared
+/// in its `index.vpkg` -- not host-import builtins -- so typing them here made
+/// a call without the import check clean and then reach codegen unresolved.
+///
+/// The split is measured, name by name, not assumed: probed with `with Http`
+/// and no import, `close`, `request`, `response_body`, `response_header` and
+/// `response_status` COMPILE (they are real host imports and stay), while
+/// those five ICE.
+///
+/// Two of them carried a second defect that goes with the first. The
+/// signatures here disagreed with both `builtins/declarations.vibe` and the
+/// package contract -- `listen` was `(String, Int)` against the contract's
+/// `(port: Int)`, `respond` was 3 params against 4 -- the same class the
+/// `#1505` note below records for `Http::request`. Removing the fallback
+/// leaves the contract as the only signature, so there is nothing left to
+/// disagree with.
 fn lookup_net_group_c(name: String) -> Option[Type] {
-  match lookup_http_close(name) {
-    Some(t) => Some(t),
-    None => match lookup_http_listen(name) {
-      Some(t) => Some(t),
-      None => match lookup_http_accept(name) {
-        Some(t) => Some(t),
-        None => lookup_http_request_method(name)
-      }
-    }
-  }
+  lookup_http_close(name)
 }
 
 fn lookup_http_response_header(name: String) -> Option[Type] {
@@ -193,9 +152,6 @@ fn lookup_net_group_b(name: String) -> Option[Type] {
 export fn lookup_net(name: String) -> Option[Type] {
   match lookup_net_group_b(name) {
     Some(t) => Some(t),
-    None => match lookup_net_group_c(name) {
-      Some(t) => Some(t),
-      None => lookup_net_group_d(name)
-    }
+    None => lookup_net_group_c(name)
   }
 }
