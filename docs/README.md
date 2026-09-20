@@ -2,7 +2,11 @@
 
 Audience index for [#2002](https://github.com/mizchi/vibe-lang/issues/2002).
 Paths are relative to this file. The tree is laid out by primary reader:
-`user/`, `internal/`, `generated/`, `archive/` (#2565, #2566).
+`user/`, `internal/`, `generated/`, `archive/` (#2565, #2566), plus `spec/`
+for the version-pinned release specifications — those are classified by reader
+like everything else (`spec/0-1.md` is user documentation), but they do not
+live under `user/` because they do not track `main`: one file describes one
+released version and stops changing at its tag.
 
 **Every document under `docs/` must appear in exactly one class table below**,
 and `scripts/check_doc_classification.sh` (`pkf run check-doc-classification`)
@@ -55,7 +59,8 @@ Install, learn, write, build, test, package, debug, deploy.
 | [user/reference/http_server_contract.md](user/reference/http_server_contract.md) | Public `Http::*` contract |
 | [user/reference/feature-levels.md](user/reference/feature-levels.md) | Generated-wasm feature levels |
 | [user/reference/host-runtime-contract.md](user/reference/host-runtime-contract.md) | The `vibe.*` core imports a generated program needs from its runner. The compiler's own host boundary is [internal/design/compiler-host-boundary.md](internal/design/compiler-host-boundary.md) |
-| [user/getting-started/release-notes-0.1.0.md](user/getting-started/release-notes-0.1.0.md) | |
+| [user/getting-started/release-notes-0.1.0.md](user/getting-started/release-notes-0.1.0.md) | What changed since `v0.0.1` and why you would care |
+| [spec/0-1.md](spec/0-1.md) | The `0.1.0` release specification: identity, artifacts, conformance, boundaries. **Pinned** — it describes one version and does not track `main`. Restates no definition a living document owns |
 
 ## 2. Maintainer / internal
 
