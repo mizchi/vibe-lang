@@ -22282,6 +22282,103 @@ fn dhhc_expr(expr: Expr, ops: Array[String]) -> Expr {
   }
 }
 
+/// Cheap, ALLOCATION-FREE pre-scan: does this expression contain a `handle`
+/// whose arms name a host operation?
+///
+/// The rewrite below rebuilds every node it visits, so running it over a
+/// program with no such handler -- which is every module of the compiler's own
+/// sources -- costs a full `Expr` clone for nothing. Measured on the PR that
+/// introduced the pass, against `10b621879`: prelude-cold allocation +2.01%
+/// and selfcompile memory +1.96%, on programs the pass never changes. Same
+/// guard, and the same reason, as `dinsp_stmt_census`.
+///
+/// `EHandle` and `EMatch` are matched explicitly rather than left to the
+/// generic child walk, because that walk does not descend into ARM bodies --
+/// the reason `collect_push_elem_shapes` above spells them out too.
+fn dhhc_expr_has_host_handler(e: Expr) -> Bool {
+  match e {
+    EHandle(hbody, arms) => {
+      let ops = empty_str_array()
+      dhhc_arm_ops(arms, ops)
+      Array::length(ops) > 0 || dhhc_expr_has_host_handler(hbody) || dhhc_arms_have_host_handler(arms)
+    },
+    EMatch(scrut, arms) => dhhc_expr_has_host_handler(scrut) || dhhc_arms_have_host_handler(arms),
+    _ => dhhc_children_have_host_handler(e)
+  }
+}
+
+fn dhhc_arms_have_host_handler(arms: Array[(Pat, Expr)]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arms) {
+    if !found && dhhc_expr_has_host_handler(Array::get(arms, i).1) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn dhhc_children_have_host_handler(e: Expr) -> Bool {
+  let mark = expr_children_push(e)
+  let end = expr_children_top()
+  let mut i = mark
+  let mut found = false
+  while i < end {
+    if !found && dhhc_expr_has_host_handler(expr_child_at(i)) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  expr_children_pop(mark)
+  found
+}
+
+fn dhhc_stmt_has_host_handler(stmt: Stmt) -> Bool {
+  match stmt {
+    SLet(_, _, _, _, body) => dhhc_expr_has_host_handler(body),
+    SLetMut(_, _, body) => dhhc_expr_has_host_handler(body),
+    SLetPat(_, body) => dhhc_expr_has_host_handler(body),
+    STest(_, body) => dhhc_expr_has_host_handler(body),
+    SBench(_, body) => dhhc_expr_has_host_handler(body),
+    SExample(_, body) => dhhc_expr_has_host_handler(body),
+    SExpr(body) => dhhc_expr_has_host_handler(body),
+    SFnDecl(_, _, body, _, _) => dhhc_expr_has_host_handler(body),
+    SModule(_, _, body) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(body) {
+        if !found && dhhc_stmt_has_host_handler(Array::get(body, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+/// In place, and only over the statements the scan above says can change.
+fn dhhc_rewrite_stmts(stmts: Array[Stmt]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let stmt = Array::get(stmts, i)
+    if dhhc_stmt_has_host_handler(stmt) {
+      Array::set(stmts, i, dhhc_stmt(stmt))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
 fn dhhc_stmt(stmt: Stmt) -> Stmt {
   let none = empty_str_array()
   match stmt {
@@ -22293,14 +22390,11 @@ fn dhhc_stmt(stmt: Stmt) -> Stmt {
     SExample(n, body) => SExample(n, dhhc_expr(body, none)),
     SExpr(body) => SExpr(dhhc_expr(body, none)),
     SFnDecl(e, n, body, req, ens) => SFnDecl(e, n, dhhc_expr(body, none), req, ens),
-    SModule(e, n, body) => SModule(e, n, dhhc_stmts_copy(body)),
+    SModule(e, n, body) => {
+      dhhc_rewrite_stmts(body)
+      SModule(e, n, body)
+    },
     _ => stmt
-  }
-}
-
-fn dhhc_stmts_copy(stmts: Array[Stmt]) -> Array[Stmt] {
-  for s in stmts {
-    dhhc_stmt(s)
   }
 }
 
@@ -22314,11 +22408,7 @@ fn dhhc_stmts_copy(stmts: Array[Stmt]) -> Array[Stmt] {
 /// (ADR-0076), so the two spellings agree on scope as well as on effect.
 export fn desugar_handled_host_calls_reporting_change(stmts: Array[Stmt]) -> Bool {
   Array::set(dhhc_changed_cell, 0, 0)
-  let mut i = 0
-  while i < Array::length(stmts) {
-    Array::set(stmts, i, dhhc_stmt(Array::get(stmts, i)))
-    i = i + 1
-  }
+  dhhc_rewrite_stmts(stmts)
   Array::get(dhhc_changed_cell, 0) != 0
 }
 
