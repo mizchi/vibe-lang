@@ -124,9 +124,12 @@ a stage2 built from the same checkout, identical both ways: `bare[T: Eq](1.5,
 1.5` answered `true`; under `[T: Ord]` it was wrong in both directions at once
 (`lt(2.5, 1.5)` → `true`, `gt(2.5, 1.5)` → `false`). `Double` is off the
 list now, so the bound is refused there like any other unsound instantiation.
-Pinned by `fixtures/err_type_eq_marker_bound_double.vibe` (the message, via the
-late lane) and by two rows in
-`lib/@vibe/compiler/tests/marker_cmp_bound_test.vibe`.
+That refusal has since been RETIRED by #2523 below, and its fixture
+(`err_type_eq_marker_bound_double.vibe`) was deleted with it — what pins
+`Double` today is `fixtures/eq_bound_derive_test.vibe`, where it answers
+`true` through a real witness. `Ord` is still a marker, so
+`fixtures/err_type_ord_marker_bound_double.vibe` keeps the refusal side, and
+`lib/@vibe/compiler/tests/marker_cmp_bound_test.vibe` still carries two rows.
 
 **Since #2523 `Eq` carries a method, so the bound DISPATCHES rather than being
 refused.** `equals(Self, Self) -> Bool` is registered method-bearing by the

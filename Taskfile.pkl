@@ -1630,6 +1630,28 @@ local testReleaseInstall = new Task {
     "scripts/parallel_warm_pool.sh"
   }
 }
+// #2834: the seed-release workflow's Adopt step inherits `seed.name` from
+// whichever source_ref was dispatched -- `generations.sh adopt` rewrites it
+// only when given --name. A dispatch whose source_ref predates the bump
+// commit therefore publishes a manifest naming the PREVIOUS seed under the new
+// tag. Nothing in-tree reads that field, so only a guard can catch it; this is
+// the red/green that proves the guard fires. Inputs are just the guard and its
+// test -- it runs against a scratch tree and never touches the compiler.
+local testSeedAssetIdentity = new Task {
+  name = "test-seed-asset-identity"
+  description =
+    "red/green for the seed-manifest identity guard: a manifest naming another seed must not ship under this tag"
+  cmd = "bash scripts/build_compiler_seed_assets_test.sh"
+  // The scratch tree holds a fake artifact and no generate_bundle.sh, so this
+  // verdict does not actually depend on compiler identity -- but the guard it
+  // copies does reach the compiler lexically, and check-task-inputs refuses to
+  // guess. Over-approximate rather than assert the exemption: the run is 0.1s.
+  inputs {
+    ...compilerProbeInputs
+    "scripts/build_compiler_seed_assets_test.sh"
+    "scripts/build_compiler_seed_assets.sh"
+  }
+}
 local testEnsureSeed = scriptTask("test-ensure-seed", "scripts/ensure_seed_test.sh")
 local testVibeFmt = scriptTask("test-vibe-fmt", "scripts/vibe_fmt_smoke.sh")
 // #2271: `vibe fmt` reported a file as unformatted when the FORMATTER ENTRY
@@ -2535,6 +2557,7 @@ local releaseCheck = new Task {
     checkVibeFmt
     testEnsureEntryWasm
     testEnsureSeed
+    testSeedAssetIdentity
     checkTaskfileFmt
     // These ran ONLY from the local pre-commit hook -- CI never invoked them.
     // That made the hook the single enforcement point, so #1729 (a stale
@@ -2818,6 +2841,7 @@ tasks {
   checkTaskEnvSanitized
   testCheckTaskEnvSanitized
   testEnsureSeed
+  testSeedAssetIdentity
   testVibeFmt
   testEnsureEntryWasm
   testVibeNormalizeSmoke

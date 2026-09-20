@@ -9,7 +9,22 @@
 # this check was written.
 #
 # Scope: `docs/**/*.md`, excluding `docs/archive/` -- an archived document is a
-# record of a moment, and rewriting its paths would falsify it.
+# record of a moment, and rewriting its paths would falsify it -- plus the
+# markdown files at the REPOSITORY ROOT.
+#
+# The root was outside the scan until #2834. That left AGENTS.md unchecked,
+# which is the most-read document in the tree (CLAUDE.md is a symlink to it)
+# and the one that cites fixtures and compiler files by path most densely: 64
+# citations, against 1 in README.md and 8 in CONTRIBUTION.md. It had gone stale
+# exactly the way this check exists to catch -- it pinned a claim about
+# `[T: Eq]` at `Double` to `fixtures/err_type_eq_marker_bound_double.vibe`,
+# which #2523 had deleted along with the refusal it recorded, in a paragraph
+# whose own next sentence says the refusal was retired. Adding the root cost
+# one repoint and no allowlist entry.
+#
+# A SYMLINK at the root is skipped: CLAUDE.md and AGENTS.md are the same bytes,
+# so scanning both would report every finding twice, at the same line, in two
+# names for one file.
 #
 # A citation passes if any of these hold:
 #
@@ -137,36 +152,43 @@ def resolves(target, doc_dir):
             return True
     return False
 
+def doc_paths():
+    # Root-level markdown first, then docs/. A symlink is skipped -- see header.
+    for name in sorted(os.listdir(docs_root)):
+        full = os.path.join(docs_root, name)
+        if name.endswith(".md") and os.path.isfile(full) and not os.path.islink(full):
+            yield name
+    for root, dirs, files in os.walk(os.path.join(docs_root, "docs")):
+        dirs[:] = [d for d in dirs if d != "archive"]
+        for name in sorted(files):
+            if name.endswith(".md"):
+                yield os.path.relpath(os.path.join(root, name), docs_root)
+
 findings = []
 scanned = set()
-for root, dirs, files in os.walk(os.path.join(docs_root, "docs")):
-    dirs[:] = [d for d in dirs if d != "archive"]
-    for name in sorted(files):
-        if not name.endswith(".md"):
-            continue
-        path = os.path.relpath(os.path.join(root, name), docs_root)
-        doc_dir = os.path.join(repo_root, os.path.dirname(path))
-        scanned.add(path)
-        lines = io.open(os.path.join(docs_root, path), encoding="utf-8").read().split("\n")
-        for lineno, line in enumerate(lines, 1):
-            # Prose wraps, so "... was removed" often lands on the next line.
-            window = "\n".join(lines[max(0, lineno - 3):lineno + 2])
-            for match in CITE.finditer(line):
-                target = match.group(1)
-                # A glob stands for a set, not a file.
-                if "*" in target:
-                    continue
-                # Build outputs are not tracked; a doc may name one it produced.
-                if target.startswith("_build/") or target.startswith("dist/"):
-                    continue
-                if resolves(target, doc_dir):
-                    continue
-                # Retired MoonBit host: historical record, not navigation.
-                if target.startswith("src/") or target.endswith((".mbt", ".mbti")):
-                    continue
-                if GONE.search(window):
-                    continue
-                findings.append((path, lineno, target, (path, target) in allowed))
+for path in doc_paths():
+    doc_dir = os.path.join(repo_root, os.path.dirname(path))
+    scanned.add(path)
+    lines = io.open(os.path.join(docs_root, path), encoding="utf-8").read().split("\n")
+    for lineno, line in enumerate(lines, 1):
+        # Prose wraps, so "... was removed" often lands on the next line.
+        window = "\n".join(lines[max(0, lineno - 3):lineno + 2])
+        for match in CITE.finditer(line):
+            target = match.group(1)
+            # A glob stands for a set, not a file.
+            if "*" in target:
+                continue
+            # Build outputs are not tracked; a doc may name one it produced.
+            if target.startswith("_build/") or target.startswith("dist/"):
+                continue
+            if resolves(target, doc_dir):
+                continue
+            # Retired MoonBit host: historical record, not navigation.
+            if target.startswith("src/") or target.endswith((".mbt", ".mbti")):
+                continue
+            if GONE.search(window):
+                continue
+            findings.append((path, lineno, target, (path, target) in allowed))
 
 unresolved = [f for f in findings if not f[3]]
 
