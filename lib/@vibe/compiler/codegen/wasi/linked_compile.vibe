@@ -48,6 +48,7 @@ import @vibe/compiler/normalize {
   ModuleTraitFacts,
   collect_explicit_derived_op_names,
   collect_trivial_wrapper_names,
+  desugar_handled_host_calls,
   desugar_inspect_calls,
   desugar_trait_dicts_module,
   desugar_trait_dicts_module_with_facts,
@@ -4705,6 +4706,15 @@ export fn effect_lowering_prelude_grants(stmts: Array[Stmt], entry_name: String,
     // (nothing named `inspect` survives it), same as desugar_labeled_args's
     // check-then-codegen double run.
     desugar_inspect_calls(stmts)
+    // #1962 (Option 1): a direct host-builtin call inside a `handle` whose arms
+    // name the same operation becomes `perform <Op>(..)`, so the handler
+    // intercepts it. Runs HERE as well as in the checker for the reason the
+    // comment above gives: codegen compiles a fresh parse, which has never
+    // seen the checker's array. Wiring it only into the checker left the pass
+    // fully inert end to end while its own unit tests passed -- measured.
+    // Before `lower_optional_performs`, so the performs it introduces are
+    // part of the surface every later effect pass sees.
+    desugar_handled_host_calls(stmts)
     // ADR-0088 / #2236: resolve the optional-capability surface before any
     // effect or builtin analysis sees the `perform?` marker. Test artifacts
     // keep ambient full authority across their reachable helpers; every other

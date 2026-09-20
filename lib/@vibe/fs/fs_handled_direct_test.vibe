@@ -1,0 +1,39 @@
+// #1962 (Option 1): the DIRECT builtin spelling and the `perform` spelling of
+// the same host operation must answer the same under the same handler.
+//
+// Measured before the fix, on a stage2 at 3260d45f: the handler was installed,
+// its `Fs::ReadFile` arm matched nothing, and the program read the real file.
+// A mock handler that does not mock is the silent-wrong shape this repo's
+// triage ranks above a crash, and nothing in the program text said which
+// spelling a callee used.
+//
+// `Fs::Exists` on a path that does not exist is the assertion: the real
+// filesystem answers `false` and the handler answers `true`, so a row that
+// passes cannot be passing because the host happened to agree.
+
+import ./fs_effect.vibe {
+  Fs
+}
+
+test "a direct host builtin inside the handled body is intercepted (#1962)" {
+  let answered = handle {
+    Fs::exists("_build/vibe_fs_nonexistent_1962")
+  } with { Fs::ReadFile(_p) => resume(""); Fs::WriteFile(_p, _c) => resume(0); Fs::Exists(_p) => resume(true); Fs::Mkdir(_p) => resume(0) }
+  inspect(answered, "true")
+}
+
+test "the perform spelling answers the same, as it always did (#1962 control)" {
+  let answered = handle {
+    perform Fs::Exists("_build/vibe_fs_nonexistent_1962")
+  } with { Fs::ReadFile(_p) => resume(""); Fs::WriteFile(_p, _c) => resume(0); Fs::Exists(_p) => resume(true); Fs::Mkdir(_p) => resume(0) }
+  inspect(answered, "true")
+}
+
+/// The other control, and the one that makes the two rows above mean
+/// something: with NO handler in scope the direct spelling still reaches the
+/// host, so the rewrite is scoped to a handler rather than redirecting every
+/// host call. The path does not exist, so the host answers `false` -- the
+/// opposite of what the arm above resumes.
+test "with no handler in scope the direct spelling still reaches the host (#1962 control)"allows Fs::exists {
+  inspect(Fs::exists("_build/vibe_fs_nonexistent_1962"), "false")
+}
