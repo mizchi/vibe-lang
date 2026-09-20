@@ -479,6 +479,7 @@ fn cc_ladder_names() -> Array[String] {
       "Bytes::new",
       "Char::from_int",
       "Char::to_int",
+      "Console::read_char",
       "Console::read_stream",
       "Console::write_char",
       "Console::write_err_char",
@@ -6626,7 +6627,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_i64_shr_s(buf)
       nl
     }
-    else if ctx.enable_rc && (fname == "Env::args_len" || fname == "Env::args_get" || fname == "Fs::exists" || fname == "Fs::is_dir" || fname == "Fs::is_file" || fname == "Fs::stat_token" || fname == "vibe_fs_stat_token_raw" || fname == "Profiler::now_us" || fname == "Profiler::NowUs" || fname == "Profiler::heap_bytes" || fname == "Profiler::HeapBytes" || fname == "Stdin::read_char") {
+    else if ctx.enable_rc && (fname == "Env::args_len" || fname == "Env::args_get" || fname == "Fs::exists" || fname == "Fs::is_dir" || fname == "Fs::is_file" || fname == "Fs::stat_token" || fname == "vibe_fs_stat_token_raw" || fname == "Profiler::now_us" || fname == "Profiler::NowUs" || fname == "Profiler::heap_bytes" || fname == "Profiler::HeapBytes" || fname == "Stdin::read_char" || fname == "Console::read_char") {
       // #705: the raw-ABI host imports speak UNTAGGED integers, but RC values
       // are tagged (n<<1). These builtins alias their import function
       // directly, so the generic call path handed the import a TAGGED index
@@ -6641,6 +6642,19 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       // raw `1` (true) is ODD, so a later guarded rc_dup/rc_drop on a binding
       // holding it mistook it for an RC pointer 0x0 and trapped OOB at
       // address -4 (lib/@vibe/shell's find() BFS crash).
+      // #2905 (second half): `Console::read_char` ALIASES the same
+      // `vibe.stdin_read_char` import (linked_compile.vibe:11052 maps it to
+      // `stdin_read_char_idx`), so it needs the same result tag. #2911 gave it
+      // the import RESERVATION, which turned "builds clean, fails to validate"
+      // into a module that loads -- and then returned `host >> 1`, because
+      // nothing tagged the raw byte: 'A' (65) read back as 32, 200 as 100,
+      // 1 as 0. A loud failure became a silent wrong answer, which this
+      // repo's triage ranks WORSE, so the reservation fix was only half of it.
+      // Measured on a stage2 at 3260d45, RC lane, host stub returning a fixed
+      // byte; `Stdin::read_char` answered correctly at every value.
+      // The name must ALSO be in `cc_ladder_names` above: `cc_ladder_tests_name`
+      // is an early-out to the resolved-call fallback, so an arm here is
+      // UNREACHABLE for a name the ladder does not list (the #2903 trap).
       let (hi_idx, _, _) = resolve_func(ctx.func_table, fname)
       let mut nl = next_local
       if Array::length(args) > 0 {
