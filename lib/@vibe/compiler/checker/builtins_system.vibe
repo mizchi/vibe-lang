@@ -19,8 +19,6 @@ fn lookup_io_a(name: String) -> Option[Type] {
     Some(CtFn([CtUnknown], CtString, None))
   } else if name == "Path::is_absolute" {
     Some(CtFn([CtString], CtBool, None))
-  } else if name == "PromptText::new" {
-    Some(CtFn([CtString], CtString, None))
   } else if name == "Path::resolve" {
     Some(CtFn([CtString], CtString, None))
   } else {
@@ -28,27 +26,31 @@ fn lookup_io_a(name: String) -> Option[Type] {
   }
 }
 
-/// Lines remains a fallback-only checker declaration; it is implemented in
-/// `@vibe/builtin`'s string.vibe, so a direct call still reaches code.
+/// #2913: `Lines::parse`, `Lines::stringify` and `PromptText::new` used to be
+/// typed here (the first two in a `lookup_io_b` that held nothing else). The
+/// comment above them said "it is implemented in `@vibe/builtin`'s string.vibe,
+/// so a direct call still reaches code". Measured, it does not: with no import
+/// the call types clean and codegen answers
+///
+///   internal compiler error: `Lines::parse` (local, @call) reached code
+///   generation unresolved
+///
+/// while the same program with `import @vibe/builtin { Lines::parse }` compiles.
+/// They are ordinary exported vibe functions (`lib/@vibe/builtin/string.vibe`,
+/// declared in that package's `index.vpkg`), so they follow the same rule as
+/// `String::replace` and the rest of #2900's family: the name must be imported
+/// by name. `builtin_no_lowering_hint` says so at the `unknown name`.
+///
+/// This is the rule the #2110 paragraph below already stated and these three
+/// broke -- nothing may be declared in this lane that has no lowering. It was
+/// found by sweeping every `declare` in `builtins/declarations.vibe` through a
+/// compile probe, which is #2913's second half.
 ///
 /// #2110: nothing may be declared here that has no lowering. `Llm::complete` /
 /// `Rlm::run` / `Rlm::finalize` were, and a two-line program calling one passed
 /// the checker and died in codegen with "internal compiler error ... a bug in
 /// the compiler and not in your program". An absent name gets `unknown name`
 /// with a position, which is the honest answer for a never-implemented feature.
-fn lookup_io_b(name: String) -> Option[Type] {
-  if name == "Lines::parse" {
-    Some(CtFn([CtString], CtArray(CtString), None))
-  } else if name == "Lines::stringify" {
-    Some(CtFn([CtArray(CtString)], CtString, None))
-  } else {
-    None
-  }
-}
-
 export fn lookup_io(name: String) -> Option[Type] {
-  match lookup_io_a(name) {
-    Some(t) => Some(t),
-    None => lookup_io_b(name)
-  }
+  lookup_io_a(name)
 }
