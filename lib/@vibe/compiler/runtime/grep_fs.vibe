@@ -185,50 +185,7 @@ fn grep_fs_fill_dep_envs(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep
 
 /// `vibe grep <root>` proper. Typing runs only for files that already have a
 /// structural match: typing a file the pattern never hits would be pure cost.
-/// #2914: the ceiling the typed tier dies at, in bytes, with margin.
-///
-/// The failure is NOT the `MOONRUN_WT_MEMORY_MB` soft cap -- the full trap
-/// reads `memory fault at wasm address 0xffff0000 in linear memory of size
-/// 0xffff0000`, which is the **wasm32 address-space limit** (~4 GiB). Raising
-/// the soft cap therefore cannot help, and a budget expressed against it would
-/// be measuring the wrong thing. 3 GiB leaves room for the allocation that
-/// would have crossed the line, plus whatever the emit path still needs after
-/// the sweep stops.
-fn grep_typed_heap_limit_bytes() -> Int {
-  3221225472
-}
-
-/// Whether the typed tier should stop before the next file rather than walk
-/// into the address-space ceiling. Split out so the decision is one named
-/// predicate rather than an inline comparison, and so the limit can be driven
-/// from a test.
-fn grep_typed_heap_exhausted(heap_bytes: Int, limit_bytes: Int) -> Bool {
-  heap_bytes >= limit_bytes
-}
-
-/// #2914: what the tier says instead of trapping.
-///
-/// `wasm trap: out of bounds memory access` plus a bare backtrace names
-/// neither the file nor the stage, and the runtime genuinely cannot tell this
-/// from a real out-of-bounds access -- so the guest has to say it. Naming the
-/// file it stopped on and how far it got is what turns a bisect into a
-/// one-liner, and it is the contract AGENTS.md already sets for `vibe deps`:
-/// an error is fatal and says so, rather than a degraded answer returned
-/// silently.
-fn grep_typed_heap_msg(path: String, typed_count: Int, heap_bytes: Int, limit_bytes: Int) -> String {
-  String::concat("grep: the typed tier ran out of address space after typing ", String::concat(Int::to_string(typed_count), String::concat(" file(s); stopped before `", String::concat(path, String::concat("` (heap ", String::concat(Int::to_string(heap_bytes), String::concat(" bytes, limit ", String::concat(Int::to_string(limit_bytes), " bytes). Each matching file re-types its whole dependency closure, so a tree-wide `--where` sweep does not fit in wasm32's 4 GiB. Re-run on a narrower path, or drop `--where` for the untyped tier, which walks the same corpus (#2914)."))))))))
-}
-
-export fn grep_scan_fs_report(root: String, pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool) -> (String, String) with Exception + Fs + Profiler {
-  grep_scan_fs_report_limited(root, pattern, wheres, where_rows, only, json, grep_typed_heap_limit_bytes())
-}
-
-/// The sweep, with the address-space budget passed in so a test can drive it
-/// at a size it can actually reach. A constant-only guard would leave the
-/// firing path testable solely through its predicate -- the kind of proxy
-/// AGENTS.md's gate rules single out, since a predicate that is right and a
-/// loop that never consults it look identical from the outside.
-export fn grep_scan_fs_report_limited(root: String, pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool, heap_limit_bytes: Int) -> (String, String) with Exception + Fs + Profiler {
+export fn grep_scan_fs_report(root: String, pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool) -> (String, String) with Exception + Fs {
   let pat = grep_compile_pattern(pattern)
   grep_check_filters(pat, wheres, where_rows)
   let files = grep_empty_strings()
@@ -241,9 +198,6 @@ export fn grep_scan_fs_report_limited(root: String, pattern: String, wheres: Arr
   // the tree-wide typed sweep re-typed the compiler's closure once per
   // matching file and ran past the 8 GB linear-memory cap.
   let mut typed_env_cache = grep_fs_empty_env_cache()
-  // #2914: how many files the typed tier got through, so the refusal can say
-  // how far it is from fitting rather than only that it did not.
-  let mut typed_files = 0
   let mut i = 0
   while i < Array::length(files) {
     let path = Array::get(files, i)
@@ -260,15 +214,6 @@ export fn grep_scan_fs_report_limited(root: String, pattern: String, wheres: Arr
     } }
     if Array::length(hits) > 0 {
       let ctx = if typed {
-        // #2914: check BEFORE typing this file, not after. The allocation that
-        // crosses the ceiling is the one inside `grep_fs_typed_context`, and
-        // once it traps there is nothing left to report with.
-        if grep_typed_heap_exhausted(Profiler::heap_bytes(), heap_limit_bytes) {
-          throw(grep_typed_heap_msg(path, typed_files, Profiler::heap_bytes(), heap_limit_bytes))
-        } else {
-          ()
-        }
-        typed_files = typed_files + 1
         let (typed_ctx, next_cache) = grep_fs_typed_context(path, source, typed_env_cache)
         typed_env_cache = next_cache
         typed_ctx
@@ -292,7 +237,7 @@ export fn grep_scan_fs_report_limited(root: String, pattern: String, wheres: Arr
 
 /// Library-compatible result-only wrapper. The public CLI uses
 /// `grep_scan_fs_report` so it can route per-file skips to stderr.
-export fn grep_scan_fs(root: String, pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool) -> String with Exception + Fs + Profiler {
+export fn grep_scan_fs(root: String, pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool) -> String with Exception + Fs {
   let (result, _) = grep_scan_fs_report(root, pattern, wheres, where_rows, only, json)
   result
 }
