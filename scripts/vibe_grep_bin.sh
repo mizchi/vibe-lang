@@ -151,14 +151,21 @@ run_grep() {
 
   for g_path in "${g_paths[@]}"; do
     [ -e "$g_path" ] || die "not found: $g_path"
-    : >"$out"
-    : >"$out.diag"
-    : >"$out.warn"
-    : >"$err"
+    # rm, not truncate. `mktemp` pre-creates the file, so `[ -s "$out" ]` can
+    # never distinguish "the runner wrote nothing" from "the runner never ran"
+    # while the file is guaranteed to exist -- a guard that cannot fail (#2248).
+    rm -f "$out" "$out.diag" "$out.warn" "$err"
     status=0
     # Same adapter-mode contract as runtime/vibe's `grep)` case: VIBE_GREP=1
     # plus the pattern/filter env vars, then cli_main(input, output).
-    if ! env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_TYPE_AT -u VIBE_DOC_AT \
+    # `cmd || status=$?`, NOT `if ! cmd; then status=$?; fi`. Inside `if !`,
+    # `$?` is the status of the INVERTED pipeline -- 0 exactly when the command
+    # failed -- so the branch whose only job was to record a failure recorded
+    # success, and a wasm trap left this script with status=0 and no output:
+    # byte-for-byte what a legitimate no-match sweep looks like (#2914).
+    #   status=0; if ! (exit 42); then status=$?; fi   -> 0
+    #   status=0; (exit 42) || status=$?               -> 42
+    env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_TYPE_AT -u VIBE_DOC_AT \
         -u VIBE_BINDING_AT -u VIBE_SYMBOLS -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT -u VIBE_ALLOCS -u VIBE_DEPS \
         -u VIBE_RC_CLASSIFY -u VIBE_RC_PLAN -u VIBE_RC_PLAN_FN \
         -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK -u VIBE_EMIT_MODULE_SOURCE \
@@ -170,18 +177,29 @@ run_grep() {
         VIBE_GREP_JSON="$g_json" \
         VIBE_IMPORT_ABI=raw \
         VIBE_PREOPEN_DIR="${VIBE_PREOPEN_DIR:-$ROOT_DIR}" \
-        bash "$runner" --invoke cli_main "$cli" "$g_path" "$out" >/dev/null 2>"$err"; then
-      status=$?
-    fi
+        bash "$runner" --invoke cli_main "$cli" "$g_path" "$out" >/dev/null 2>"$err" || status=$?
     if [ -s "$out.diag" ]; then
       echo "error: $(cat "$out.diag")" >&2
       die "grep failed"
     fi
-    if [ "$status" -ne 0 ] && [ ! -s "$out" ]; then
+    # A non-zero status is fatal WHETHER OR NOT `$out` holds anything. The old
+    # guard also required empty output, so a sweep that trapped part-way
+    # printed the files it had reached as though it had finished -- a partial
+    # answer presented as a complete one.
+    if [ "$status" -ne 0 ]; then
       if [ -s "$err" ]; then
         cat "$err" >&2
       fi
       die "grep could not run (cli=$cli status=$status)"
+    fi
+    # The runner exited 0 but wrote no result file at all. Reachable now that
+    # the file is removed rather than truncated above; `[ -s ]` below would
+    # read it as an honest no-match.
+    if [ ! -e "$out" ]; then
+      if [ -s "$err" ]; then
+        cat "$err" >&2
+      fi
+      die "grep produced no result file (cli=$cli)"
     fi
     if [ -s "$out.warn" ]; then
       cat "$out.warn" >&2
