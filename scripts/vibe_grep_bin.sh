@@ -155,6 +155,12 @@ run_grep() {
     : >"$out.diag"
     : >"$out.warn"
     : >"$err"
+    # REMOVED, not truncated: `mktemp` created it, and while it exists its
+    # absence carries no information -- an adapter that returned 0 without
+    # producing a result leaves exactly what "no matches" leaves. Deleting it
+    # first makes the adapter's own write the only thing that creates it, so
+    # the check below has something real to test (#2914).
+    rm -f "$out"
     status=0
     # Same adapter-mode contract as runtime/vibe's `grep)` case: VIBE_GREP=1
     # plus the pattern/filter env vars, then cli_main(input, output).
@@ -171,17 +177,43 @@ run_grep() {
         VIBE_IMPORT_ABI=raw \
         VIBE_PREOPEN_DIR="${VIBE_PREOPEN_DIR:-$ROOT_DIR}" \
         bash "$runner" --invoke cli_main "$cli" "$g_path" "$out" >/dev/null 2>"$err"; then
-      status=$?
+      # #2914: `status=$?` here reads the status of the `!`-INVERTED pipeline,
+      # which is 0 whenever the command failed -- so this branch, whose only
+      # job is to record a failure, recorded success. The guard below then
+      # never fired, and a sweep that died mid-corpus was reported as
+      # `exit 0` with no output: indistinguishable from "no matches".
+      #
+      #   $ if ! (exit 42); then echo $?; fi   -> 0
+      #   $ (exit 42) || status=$?; echo $?    -> 42
+      #
+      # Measured on a tree-wide typed sweep: the runner really does still trap
+      # (`RuntimeError: memory access out of bounds`, status 1, no output files
+      # written at all), and this line is what turned that into silence.
+      status=1
     fi
     if [ -s "$out.diag" ]; then
       echo "error: $(cat "$out.diag")" >&2
       die "grep failed"
     fi
-    if [ "$status" -ne 0 ] && [ ! -s "$out" ]; then
+    # A non-zero status is fatal whether or not `$out` has something in it.
+    # The old `&& [ ! -s "$out" ]` let a sweep that died partway print the
+    # files it had reached as if that were the answer -- a truncated result
+    # presented as a complete one, which is the failure this tool is least
+    # able to have: `vibe grep` exists to answer questions ABOUT the corpus.
+    if [ "$status" -ne 0 ]; then
       if [ -s "$err" ]; then
         cat "$err" >&2
       fi
       die "grep could not run (cli=$cli status=$status)"
+    fi
+    # The adapter writes `$out` on every successful run, empty for no matches.
+    # Its ABSENCE means cli_main returned 0 without producing a result, which
+    # empty output would otherwise report as a clean zero.
+    if [ ! -e "$out" ]; then
+      if [ -s "$err" ]; then
+        cat "$err" >&2
+      fi
+      die "grep produced no result file (cli=$cli); the sweep did not complete"
     fi
     if [ -s "$out.warn" ]; then
       cat "$out.warn" >&2

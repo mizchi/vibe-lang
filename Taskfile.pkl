@@ -1669,6 +1669,28 @@ local testReleaseBody = new Task {
     "scripts/build_release_body.sh"
   }
 }
+// #2914: `vibe grep` answered `exit 0` with no output for a tree-wide typed
+// sweep that was in fact TRAPPING (`RuntimeError: memory access out of
+// bounds`). The runner recorded the failure with `status=$?` inside
+// `if ! cmd; then`, where `$?` is the status of the `!`-inverted pipeline --
+// 0 exactly when the command failed. "It broke" and "the answer is none"
+// therefore shared a spelling, in a tool whose whole job is answering
+// questions about a corpus. Stub-runner cases, so no compiler is needed.
+local testVibeGrepBin = new Task {
+  name = "test-vibe-grep-bin"
+  description =
+    "red/green for the vibe grep runner: a failing sweep is loud, a partial one is refused, no-matches stays a clean zero"
+  cmd = "bash scripts/vibe_grep_bin_test.sh"
+  inputs {
+    // The cases run against a STUB runner, so no compiler is consulted -- but
+    // the script under test is the one that invokes it, and an exemption
+    // asserted here would be the gate's own failure mode. Replaying a 128ms
+    // test after a compiler identity change costs less than being wrong.
+    ...compilerProbeInputs
+    "scripts/vibe_grep_bin_test.sh"
+    "scripts/vibe_grep_bin.sh"
+  }
+}
 local testEnsureSeed = scriptTask("test-ensure-seed", "scripts/ensure_seed_test.sh")
 local testVibeFmt = scriptTask("test-vibe-fmt", "scripts/vibe_fmt_smoke.sh")
 // #2271: `vibe fmt` reported a file as unformatted when the FORMATTER ENTRY
@@ -2576,6 +2598,7 @@ local releaseCheck = new Task {
     testEnsureSeed
     testSeedAssetIdentity
     testReleaseBody
+    testVibeGrepBin
     checkTaskfileFmt
     // These ran ONLY from the local pre-commit hook -- CI never invoked them.
     // That made the hook the single enforcement point, so #1729 (a stale
@@ -2861,6 +2884,7 @@ tasks {
   testEnsureSeed
   testSeedAssetIdentity
   testReleaseBody
+  testVibeGrepBin
   testVibeFmt
   testEnsureEntryWasm
   testVibeNormalizeSmoke
