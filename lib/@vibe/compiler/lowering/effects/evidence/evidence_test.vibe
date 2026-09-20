@@ -2,7 +2,7 @@ import @vibe/compiler/core {
   Expr, Pat, Stmt, TypeExpr
 }
 import @vibe/compiler/lowering/effects/evidence {
-  edp_bind_census, evidence_dict_pass
+  edp_bind_census, edp_collect_fn_defs, edp_drop_self_discharging_needing, evidence_dict_pass
 }
 
 test "the evidence census distinguishes a binding from a reference" {
@@ -94,4 +94,83 @@ test "a first-order row-variable callee is admitted, a higher-order one stays op
     Array::length(evidence_dict_pass(inert_row_program("e"), "main")) == 0,
     Array::length(evidence_dict_pass(ho_row_program("e"), "main")) > 0
   ], content = "[true, true]")
+}
+
+//# #2500: the self-discharge spine
+
+/// A row-`Emit` function whose body is `body`. `edp_drop_self_discharging_
+/// needing` keeps such a function OUT of the evidence migration's `needing`
+/// set when its body discharges `Emit` itself: it never needs a dict passed
+/// TO it, and leaving it in is not merely a missed optimization -- its own
+/// handle then reads as an unsafe nested handle and sinks the migration for
+/// the WHOLE effect.
+///
+/// The shape matters because of how these functions arise. A hand-written
+/// `fn` that handles what it performs carries no row at all, so it is never
+/// a candidate; but `dlh_hoist_expr` hoists a local closure to top level and
+/// backfills its row from the performs in its body INCLUDING the ones its own
+/// handle discharges, so the hoisted form arrives here declared `with Emit`.
+/// Before #2500 only a body that WAS the handle qualified, which is why
+/// `let r = handle {..}; r` behaved differently from the same code written as
+/// a named `fn`.
+fn sd_drops(body: Expr) -> Bool {
+  let stmts = [
+    SEffectDef(false, "Emit", [], [("Emit", [TyName("Int")], TyName("Unit"))]),
+    SLet(false, false, "selfd", None, EFn([], [], [], Some(TyName("Int")), Some("Emit"), body))
+  ]
+  let fn_defs = edp_collect_fn_defs(stmts)
+  Array::length(edp_drop_self_discharging_needing(["selfd"], stmts, fn_defs, "Emit", [
+  ])) == 0
+}
+
+fn sd_perform(op: String, arg: Expr) -> Expr {
+  ECall(EIdent("perform", 0), [ECall(EIdent(op, 0), [arg], 0)], 0)
+}
+
+fn sd_emit_handle() -> Expr {
+  EHandle(sd_perform("Emit::Emit", EInt(10)), [
+    (PCtor("Emit::Emit", [PBind("_v")]), ECall(EIdent("resume", 0), [EInt(0)], 0))
+  ])
+}
+
+test "#2500: a body that IS the handle is self-discharging" {
+  inspect(sd_drops(sd_emit_handle()), content = "true")
+}
+
+test "#2500: a binding or a sequence before the handle does not hide it" {
+  inspect(sd_drops(ELet("n", EInt(0), sd_emit_handle(), 0)), content = "true")
+  inspect(sd_drops(ELetMut("n", EInt(0), sd_emit_handle(), 0)), content = "true")
+  inspect(sd_drops(ESeq(EInt(1), sd_emit_handle())), content = "true")
+}
+
+test "#2500: the handle may be the bound VALUE rather than the body" {
+  inspect(sd_drops(ELet("r", sd_emit_handle(), EIdent("r", 0), 0)), content = "true")
+}
+
+test "#2500: a handle for another effect is transparent to this one" {
+  let outer = EHandle(sd_emit_handle(), [
+    (PCtor("Other::Op", []), ECall(EIdent("resume", 0), [EInt(1)], 0))
+  ])
+  inspect(sd_drops(outer), content = "true")
+}
+
+/// The conservative boundary, and what makes the rows above able to fail: a
+/// perform of `Emit` OUTSIDE the handle really does need the dict, and an
+/// arm of a foreign handle runs outside its own handle's coverage, so a
+/// perform there escapes the same way. Both keep the function in `needing`.
+test "#2500: a perform outside the handle keeps the function needing" {
+  inspect(sd_drops(ELet("x", sd_perform("Emit::Emit", EInt(1)), sd_emit_handle(), 0)), content = "false")
+  inspect(sd_drops(ESeq(sd_perform("Emit::Emit", EInt(1)), sd_emit_handle())), content = "false")
+  let leaky = EHandle(sd_emit_handle(), [
+    (PCtor("Other::Op", []), sd_perform("Emit::Emit", EInt(2)))
+  ])
+  inspect(sd_drops(leaky), content = "false")
+}
+
+/// At least one handle must be reached: a body that merely never performs
+/// `Emit` is not self-discharging, it is perform-free, which is a different
+/// predicate (edp_fn_is_perform_free) with a different consequence.
+test "#2500: a body with no handle at all is not self-discharging" {
+  inspect(sd_drops(EInt(0)), content = "false")
+  inspect(sd_drops(ELet("n", EInt(0), EIdent("n", 0), 0)), content = "false")
 }
