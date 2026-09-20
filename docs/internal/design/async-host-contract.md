@@ -23,14 +23,20 @@ Measured against `779f1b6`; the `vibe.sleep` section re-measured after #2903's f
 |---|---|---|
 | manifest band | `portableCore` | `componentAdapterOnly` + `componentAdapterPatterns` |
 | implementations | **two** (`runtime/viberun`, `scripts/wasm_vibe_host_runner.js`) | **one** (the adapter the composer emits) |
-| can two backends disagree? | yes — the risk is real, see **#2903** | no |
+| can two backends disagree? | yes — the risk is real, see **#2903** | they did, see below |
 
 That asymmetry is the whole of checkbox 4's "no backend may silently
-reinterpret the same import". Seven of the imports have a single implementer
-and cannot diverge. The one import with two implementers is the one that
-diverged, and #2903 showed the divergence was not between the hosts: both read
-the module's own `vibe.abi` declaration and both obeyed it. The emitter was
-the party that did not.
+reinterpret the same import". The one import with two declared implementers is
+the one that diverged, and #2903 showed the divergence was not between the
+hosts: both read the module's own `vibe.abi` declaration and both obeyed it.
+The emitter was the party that did not.
+
+The other nine were counted as safe because each has a single implementer. That
+count was wrong: a runner does not have to register an import to answer it.
+`wasm_vibe_host_runner.js`'s fallthrough supplied every one of them as `0`, so
+they had two implementations — the adapter's, and a zero — and nothing said so.
+See the `componentAdapterOnly` section for the measurement and for what #2928
+changed.
 
 ## The import set
 
@@ -66,11 +72,29 @@ either host that exists.
 | `vibe.host_stream_get$<name>` | 5 · `() -> i64` | `:13616`, one per sorted-deduped name |
 
 Neither `scripts/wasm_vibe_host_runner.js` nor `runtime/viberun`'s core lane
-registers any of these — verified by absence, and it is by design: they are
-satisfied inside the composed component by the adapter
+registers any of these, and that is by design: they are satisfied inside the
+composed component by the adapter
 `lib/@vibe/compiler/entry/source_compile/wasi_only/component_codegen.vibe`
-emits. A core module importing them and run through either runner fails at
-instantiation, not at the call.
+emits.
+
+This paragraph used to end "A core module importing them and run through either
+runner fails at instantiation, not at the call", verified by ABSENCE from each
+runner's member list. That was the wrong thing to verify, and the claim was
+false for one of the two runners. `wasm_vibe_host_runner.js` builds its `vibe`
+import object as a Proxy whose fallthrough answers an unknown field with
+`() => 0n`, so absence from the member list does not refuse the import — it
+supplies a function that returns zero. Measured before #2928, a core module
+importing `vibe.host_stream_get$body` and `vibe.host_stream_read` instantiated,
+ran, printed `sum=0` and exited 0; the loop shapes that test for the `-1` EOS
+sentinel instead trapped with a bare `RuntimeError: unreachable`.
+
+Since #2928 the node runner refuses these names on CALL, with a message naming
+the import and the viberun lane that implements it. Not on instantiation: a
+program that links one and never reaches it does not need the capability.
+`runtime/viberun`'s core lane is the one that really does fail at
+instantiation, because an import it does not register makes the whole module
+fail before user code runs. The two lanes therefore still fail at different
+MOMENTS, and that is stated rather than averaged.
 
 ### A third dynamic prefix the manifest does not know
 
@@ -295,8 +319,5 @@ and `:1000` and link named root imports from an env spec. The runner reserves
   quietly answering differently.
 - The `stdin_read_char` "async by the host" description, which no host
   implements that way.
-- Cancellation, which has no ABI at all.
-- Whether a core module importing a `componentAdapterOnly` name fails with a
-  diagnostic or with a bare instantiation error. Checkbox 4 asks for negative
-  tests here; there are none, and adding them needs a decision about what the
-  failure should say first.
+- Cancellation, restated: there is no ABI for it, so nothing here says what a
+  dropped or abandoned future or stream does to the host side.
