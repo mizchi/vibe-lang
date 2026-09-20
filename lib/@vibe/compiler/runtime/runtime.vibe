@@ -42,7 +42,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/checker {
-  check_program_with_env_typed_lowering_located_observation, typing_semantics_seed
+  check_program_with_projected_import_env_typed_lowering_located_observation, typing_semantics_seed
 }
 
 import @vibe/compiler/runtime/eval_loader {
@@ -492,15 +492,27 @@ fn resolve_deps_for_source_fs(rdb: RippleDb, dep_source_cache: Array[(String, St
 /// TypeEnv, so every module of the "sources passed in memory" family recorded
 /// NO table -- and the inline merge downstream therefore compiled with each
 /// typed-lowering channel empty, on the linked lane included. The observation
-/// entry runs the same check with the same `imports_already_projected = false`
-/// this lane has always used; the only addition is the capture.
+/// entry runs the same check; the only addition is the capture.
 ///
 /// A module whose parse carried no offsets publishes the empty table, which
 /// classifies nothing and leaves the syntactic classifiers in charge -- the
 /// same degradation `module_typed_lowering_offsets_for_path` answering `None`
 /// produces, and never a wrong classification.
+///
+/// #2915: the PROJECTED entry, matching the FS lane (`check_module_impl`).
+/// `import_env` is `build_import_envs`' projection of THIS module's import
+/// statements, so replaying those statements over it (the
+/// `imports_already_projected = false` this lane used until #2915) rebound
+/// each alias to whatever its ORIGINAL name resolved to -- which is the local
+/// declaration the alias exists to avoid naming. Measured on a stage2 at
+/// 3260d45f: `import ./dep.vibe { f as nf }` beside a local two-parameter
+/// `fn f` made `db_typecheck` throw `function arity mismatch for nf: expected
+/// 2 args, got 3` on a three-argument call to the three-parameter import,
+/// while `vibe check` on the same pair was clean. `db_typecheck` is published
+/// from `@vibe/compiler/type_db`, so that divergence was part of the public
+/// surface.
 fn check_module_publishing_typed_lowering_offsets(path: String, fingerprint: String, stmts: Array[Stmt], import_env: TypeEnv) -> TypeEnv with Exception {
-  let (checked, offsets, eq_offs, eq_keys) = check_program_with_env_typed_lowering_located_observation(stmts, import_env)
+  let (checked, offsets, eq_offs, eq_keys) = check_program_with_projected_import_env_typed_lowering_located_observation(stmts, import_env)
   publish_module_typed_lowering_offsets(path, fingerprint, offsets, eq_offs, eq_keys)
   checked.final_env
 }

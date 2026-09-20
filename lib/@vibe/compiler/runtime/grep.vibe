@@ -84,7 +84,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/checker {
-  check_program_with_env_result, lookup_builtin, resolve_type_expr
+  check_program_with_projected_import_env_result, lookup_builtin, resolve_type_expr
 }
 
 import @vibe/compiler/syntax {
@@ -2003,7 +2003,21 @@ export fn grep_typed_context(source: String, typed_source: String, import_env: T
       let stmts = parse_program_located(tokens, starts, typed_source)
       let aliases = collect_import_aliases(stmts)
       handle {
-        let checked = check_program_with_env_result(stmts, import_env)
+        // #2915: the PROJECTED entry, the one `vibe check`'s FS lane takes
+        // (typecheck_fs.vibe's check_program_with_projected_import_env_*).
+        // `import_env` here already IS the projection of this file's own
+        // import statements -- projected_import_env_for_test -> build_import_env
+        // bound every selected name, alias included. The generic entry then
+        // REPLAYS each `SImport` over that environment (bind_stmt_imports),
+        // rebinding the alias to whatever the ORIGINAL name resolves to at
+        // that point -- which is the local declaration the alias exists to
+        // avoid naming. `import ./dep.vibe { f as nf }` beside a local `fn f`
+        // made `nf` the LOCAL `f`, so a correct 3-argument call through the
+        // import was reported "expected 2 args" and the file was dropped from
+        // the sweep, while `vibe check` typed it clean. The replay is
+        // deliberate for the generic API (type_db_cross_module_test pins it),
+        // so the fix belongs at this call site, not in the checker.
+        let checked = check_program_with_projected_import_env_result(stmts, import_env)
         GrepTyped::{
           tytab: checked.typed_occurrences,
           offset_delta: delta,
