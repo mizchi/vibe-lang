@@ -3161,27 +3161,39 @@ fn lowercase_ascii(s: String) -> String {
   StringBuilder::freeze(acc)
 }
 
-fn allow_flag_for_authority(core: String) -> String {
+/// The `--allow-*` spelling a diagnostic tells the reader to pass.
+///
+/// #1963: this was a six-arm chain over provider NAMES -- `Fs` -> `--allow-fs`
+/// and five more -- with `String::concat("--allow-", provider)` underneath. The
+/// chain was doing one thing, lowercasing, one name at a time, and the fall-
+/// through did not do it at all. `standard_host_provider_names()` has TEN
+/// entries, so `Stderr`, `Process`, `Profiler` and `Socket` reached that
+/// fallthrough and printed a capitalised flag.
+///
+/// Measured, the printed flag was one the CLI REJECTS:
+///
+///   instantiate preflight: required `Profiler::now_us` is not granted;
+///   pass `--allow-Profiler` before main starts, ...
+///
+///   authority_for_capability_flag("--allow-Profiler") == ""     <- rejected
+///   authority_for_capability_flag("--allow-profiler") == "Profiler"
+///
+/// and a rejected flag is reported as `--allow-Profiler: not a capability`.
+/// AGENTS.md requires a diagnostic to lead with the edit that fixes it; on the
+/// authority path this one led with an edit the next command refuses.
+///
+/// `authority_for_capability_flag` below is the reader, and it has always
+/// derived the spelling with `lowercase_ascii` over the same provider list.
+/// Deriving it here too is what makes the pair one rule instead of two, which
+/// is this issue's criterion: no semantic decision left that is keyed on an
+/// effect NAME.
+export fn allow_flag_for_authority(core: String) -> String {
   let provider = if String::index_of(core, "::") < 0 {
     core
   } else {
     effect_name_of_op(core)
   }
-  if provider == "Fs" {
-    "--allow-fs"
-  } else if provider == "Console" {
-    "--allow-console"
-  } else if provider == "Env" {
-    "--allow-env"
-  } else if provider == "Stdout" {
-    "--allow-stdout"
-  } else if provider == "Stdin" {
-    "--allow-stdin"
-  } else if provider == "Http" {
-    "--allow-http"
-  } else {
-    String::concat("--allow-", provider)
-  }
+  String::concat("--allow-", lowercase_ascii(provider))
 }
 
 /// #1961 / ADR-0088 L3: non-TTY instantiate preflight.
