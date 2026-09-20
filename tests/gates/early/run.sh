@@ -2251,6 +2251,62 @@ for eqrefuse_src in fixtures/structural_eq_untyped_empty_*_refused.vibe; do
     exit 1
   fi
 done
+# #2912: rendering an array whose element type does not resolve is REFUSED at
+# build time. It used to fall through to `compile_call`'s general `__to_string`
+# arm -- a runtime heuristic that guesses string-pointer vs integer from the
+# bit pattern -- so an array pointer took the integer branch and printed a heap
+# address: `__to_string(Array::map(xs, (v) -> v * 2))` printed `296`, moving
+# with whatever allocated before it, while `vibe check` stayed silent.
+#
+# Asserted on the MESSAGE and on the EDIT it names, not merely on the refusal,
+# for the same reason the #2475 loop above does: a refusal with no actionable
+# text is a different (and worse) product than the one this contract promises.
+#
+# The GREEN controls are what keep the refusal honest -- they are the three
+# spellings that DO resolve, so a predicate that over-refused would fail here
+# rather than passing quietly by rejecting everything.
+echo "[compiler-gate] an unrenderable array is refused, not printed as an address (#2912)"
+amrdir="_build/_gate_array_map_render"
+rm -rf "$amrdir"; mkdir -p "$amrdir"
+amr_src="fixtures/err_array_map_render_refused.vibe"
+amr_wasm="$amrdir/refused.wasm"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$amr_src" "$amr_wasm" _start >/dev/null 2>&1 || true
+if [ -s "$amr_wasm" ]; then
+  echo "[compiler-gate] FAIL: $amr_src compiled; expected a compile-time refusal (#2912)" >&2
+  exit 1
+fi
+if ! grep -qF 'cannot render the result of' "$amr_wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: $amr_src was refused without the #2912 message" >&2
+  cat "$amr_wasm.diag" >&2 2>/dev/null; exit 1
+fi
+if ! grep -qE 'Annotate the binding|declared return type' "$amr_wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: $amr_src refusal does not name an edit" >&2
+  cat "$amr_wasm.diag" >&2 2>/dev/null; exit 1
+fi
+# The three spellings that resolve must still COMPILE and still RENDER. A
+# predicate that refused these would pass the rows above while breaking every
+# correct program, which is the failure a refusal-only assertion cannot see.
+amr_i=0
+for amr_ok in \
+  'let xs = [1, 2, 3]; __to_string(Array::map(xs, (v: Int) -> Int { v * 2 }))' \
+  'let xs = [1, 2, 3]; __to_string(Array::filter(xs, (v) -> v > 1))' \
+  'let xs: Array[Int] = [1, 2, 3]; let ys: Array[Int] = Array::map(xs, (v) -> v * 2); __to_string(ys)'; do
+  amr_i=$((amr_i + 1))
+  printf 'export let _start: () -> Int = () -> {\n  %s\n  0\n}\n' "$amr_ok" > "$amrdir/ok$amr_i.vibe"
+  rm -f "$amrdir/ok$amr_i.wasm"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$amrdir/ok$amr_i.vibe" "$amrdir/ok$amr_i.wasm" _start >/dev/null 2>&1 || true
+  if [ ! -s "$amrdir/ok$amr_i.wasm" ]; then
+    echo "[compiler-gate] FAIL: a RESOLVABLE array render was refused (#2912 over-refuses): $amr_ok" >&2
+    cat "$amrdir/ok$amr_i.wasm.diag" >&2 2>/dev/null; exit 1
+  fi
+done
+rm -rf "$amrdir"
+echo "[compiler-gate] unrenderable array refusal ok (message names the edit; 3 resolvable spellings still compile)"
+
 # #2737: a witness dispatch on a bound declared by a LAMBDA binder is refused,
 # with a message that names the edit. The checks, the measurements behind them,
 # and the red test that proves they can fail live in the gate script and its
