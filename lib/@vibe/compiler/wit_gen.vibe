@@ -1,7 +1,15 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, ImportItem, ImportKind, Stmt, TypeExpr, has_standard_host_provider, is_entry_runtime_managed_effect, is_exception_effect_name
+  Expr,
+  ImportItem,
+  ImportKind,
+  Stmt,
+  TypeExpr,
+  has_standard_host_provider,
+  is_entry_runtime_managed_effect,
+  is_exception_effect_name,
+  is_runtime_scheduled_effect
 }
 
 import @vibe/ast {
@@ -442,7 +450,14 @@ export fn validate_serve_handler(entry_stmts: Array[Stmt]) -> Unit with Exceptio
           // #1540 scope 4 the async lane IS selected by the CLI -- but only
           // for the shape it exists for, a handler reading the request body as
           // a stream. So the answer names that shape.
-          if ename == "Async" {
+          // #1963: the POLICY predicate, not a bare `== "Async"`. The
+          // checker accepts an operation-qualified row label and carries
+          // it through verbatim (`with Async::Suspend` reaches a
+          // diagnostic as `missing { Async::Suspend }`), so a literal
+          // comparison sent that handler to the generic arm below and
+          // told it to `handle` an effect with no operations -- the
+          // exact advice the comment above exists to avoid giving.
+          if is_runtime_scheduled_effect(ename) {
             // #1540 scope 4: `Async` is what reading the body REQUIRES -- the
             // read suspends -- so it is allowed exactly when the handler takes
             // the body as a stream. Without that param there is nothing to
@@ -477,7 +492,7 @@ fn serve_effects_have_async(effects: Array[String]) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(effects) {
-    if Array::get(effects, i) == "Async" {
+    if is_runtime_scheduled_effect(Array::get(effects, i)) {
       found = true
     } else {
       ()
