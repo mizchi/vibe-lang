@@ -1032,11 +1032,16 @@ fn edp_has_unsafe_construct_sc(expr: Expr, needing: Array[String], ename: String
       Array::truncate(ls_flags, base)
       r
     },
-    EHandle(body, arms) => if edp_handle_matches_effect(arms, ename) {
-      true
-    } else {
-      edp_has_unsafe_construct_sc(body, needing, ename, pure_fns, ls_names, ls_flags) || edp_arms_have_unsafe_construct(arms, needing, ename, pure_fns, ls_names, ls_flags)
-    },
+    // #2500 item 2: a nested handle for `ename` ITSELF is no longer an
+    // automatic rejection. The constructs that make a region unsafe are the
+    // same either way -- what differs is only WHICH arms the rewrite splices
+    // into it, and both rewriters now make that distinction (the inner body
+    // takes the inner arms, which shadow the outer for exactly that region;
+    // the inner ARMS take the outer ones, because an arm runs outside its own
+    // handle's coverage). Scanning body and arms the same way as a foreign
+    // handle is therefore the honest question here too. The two rewriters and
+    // this scan must keep agreeing -- 追記 10.
+    EHandle(body, arms) => edp_has_unsafe_construct_sc(body, needing, ename, pure_fns, ls_names, ls_flags) || edp_arms_have_unsafe_construct(arms, needing, ename, pure_fns, ls_names, ls_flags),
     EIf(c, t, e) => edp_has_unsafe_construct_sc(c, needing, ename, pure_fns, ls_names, ls_flags) || edp_has_unsafe_construct_sc(t, needing, ename, pure_fns, ls_names, ls_flags) || edp_has_unsafe_construct_sc(e, needing, ename, pure_fns, ls_names, ls_flags),
     EMatch(s, arms) => edp_has_unsafe_construct_sc(s, needing, ename, pure_fns, ls_names, ls_flags) || edp_arms_have_unsafe_construct(arms, needing, ename, pure_fns, ls_names, ls_flags),
     EWhile(c, b) => edp_has_unsafe_construct_sc(c, needing, ename, pure_fns, ls_names, ls_flags) || edp_has_unsafe_construct_sc(b, needing, ename, pure_fns, ls_names, ls_flags),

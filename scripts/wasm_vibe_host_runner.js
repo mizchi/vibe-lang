@@ -1398,6 +1398,63 @@ const withheldCapabilities = parseWithheldCapabilities(process.env.VIBE_HOST_WIT
 // in the contract -- a grant the host forgot to clear, a lowering that picked
 // the granted arm -- surfaces as a trap naming the capability instead of as a
 // zero flowing into user data.
+// #2832 item 4: the async host imports this runner does not implement.
+//
+// The `vibe` import object is a Proxy whose fallthrough answers an unknown
+// field with `() => 0n` (see the withheld-capability note above for why that
+// default exists and what it costs). For the ADR-0089 futures and streams that
+// default is not a missing capability, it is a wrong answer. Measured on this
+// tree, one source per row, each built with `vibe build` and run here:
+//
+//   while n < 5 { sum = sum + host_stream_next(s) }  -> prints `sum=0`, exit 0
+//   for b in s { sum = sum + b }                     -> RuntimeError: unreachable
+//   let mut b = ...; while 0 <= b { ... }            -> RuntimeError: unreachable
+//
+// The first row is the one that matters: a host stream that was never provided
+// reads as five zero bytes and the program SUCCEEDS. The same source under
+// runtime/viberun with VIBE_ASYNC_STREAMS reads the bytes the host supplied.
+//
+// `vibe.sleep` is the control that shows this is about the missing members and
+// not about this lane: it IS implemented here, and works (76 ms baseline vs
+// 381 ms for `sleep_blocking(300)`).
+//
+// So these names fail on CALL, with a message naming the import and where the
+// lane that implements them is. Failing on call rather than on link is
+// deliberate: a program that merely links one of these and never reaches it
+// does not need the capability, and refusing to instantiate would be a
+// different claim than the one measured here.
+const UNIMPLEMENTED_ASYNC_IMPORT_NAMES = new Set([
+  "host_future_get",
+  "host_future_wait",
+  "host_stream_read",
+  "host_stream_close",
+]);
+
+// The named forms carry the component import name after `$`, fixed at compile
+// time (`host_future_named` / `host_stream_named` require a string literal).
+const UNIMPLEMENTED_ASYNC_IMPORT_PREFIXES = [
+  "host_future_get$",
+  "wit_future_get$",
+  "host_stream_get$",
+];
+
+function isUnimplementedAsyncImport(name) {
+  if (UNIMPLEMENTED_ASYNC_IMPORT_NAMES.has(name)) return true;
+  return UNIMPLEMENTED_ASYNC_IMPORT_PREFIXES.some((prefix) => name.startsWith(prefix));
+}
+
+function unimplementedAsyncImportStub(name) {
+  return () => {
+    throw new Error(
+      `vibe.${name} is not implemented by this runner. The ADR-0089 host futures ` +
+        `and streams are served by runtime/viberun on the component lane, linked ` +
+        `from VIBE_ASYNC_FUTURES / VIBE_ASYNC_STREAMS -- build a component and run ` +
+        `it there, or drop the host future/stream call from this program. This ` +
+        `used to answer 0, which read as real data (#2832).`,
+    );
+  };
+}
+
 function capabilityWithheldStub(name) {
   return () => {
     throw new Error(`vibe capability withheld: ${name}`);
@@ -3272,6 +3329,9 @@ async function main() {
         }
         if (policyRawFsConfig && (name === "sh" || name.startsWith("sh_") || name.startsWith("tcp_") || name.startsWith("http_"))) {
           return () => { throw new Error(`policy raw import denied: ${name}`); };
+        }
+        if (isUnimplementedAsyncImport(name)) {
+          return unimplementedAsyncImportStub(name);
         }
         return () => 0n;
       },
