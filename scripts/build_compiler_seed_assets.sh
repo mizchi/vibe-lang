@@ -70,29 +70,32 @@ if [ -n "$pinned_seed_sha" ] && [ "$pinned_seed_sha" != "$actual_seed_sha" ]; th
   echo "build-compiler-seed-assets: seed sha256 mismatch (manifest=$pinned_seed_sha actual=$actual_seed_sha)" >&2
   exit 1
 fi
-# Guard: the manifest must NAME the seed being published. `seed.name` is not
-# derived from anything here -- it is whatever bootstrap/seed.json holds, and
-# `generations.sh adopt` only rewrites it when given an explicit `--name`.
-# Measured on seed/array-capacity-2026-09-20: dispatching seed-release with a
-# `source_ref` that predates the bump commit made the Adopt step restore THAT
-# commit's manifest, whose `name` still said the PREVIOUS seed. The wasm was
-# correct and verified, but the published `vibe-compiler-seed-*.json` asset
-# went out reading `name: bytes-capacity-2026-09-15` under
-# `tag: seed/array-capacity-2026-09-20` -- a manifest disagreeing with its own
-# tag, on a published artifact. Nothing in-tree reads that field, which is
-# exactly why nothing caught it. The tag is the identity the assets are named
-# after ($TAG is already the `seed/` prefix stripped), so require the manifest
-# to agree with it rather than trusting whichever ref was dispatched.
+# Guard: the manifest must be internally consistent -- `seed.tag` is
+# `seed/` + `seed.name`, which holds for all 7 revisions of bootstrap/seed.json
+# in this repository's history.
+#
+# `generations.sh adopt` rewrites `seed.name` only when given an explicit
+# `--name`, so a seed-release dispatch whose `source_ref` predates the bump
+# commit restored THAT commit's manifest and published a `name` still saying
+# the PREVIOUS seed under the new tag (measured on
+# seed/array-capacity-2026-09-20: the wasm was correct and verified, but the
+# published manifest read `name: bytes-capacity-2026-09-15` under
+# `tag: seed/array-capacity-2026-09-20`). Nothing in-tree reads that field,
+# which is why nothing caught it.
+#
+# This deliberately does NOT compare against $TAG. This script has two callers
+# and $TAG means a different thing in each: build_seed_release_assets.sh passes
+# the seed name, build_release_assets.sh passes the PRODUCT tag (`v0.1.0`).
+# A $TAG comparison here is correct for the first and always false for the
+# second -- measured, it failed the product release build with
+# "seed.json names a different seed than the tag being published
+# (seed.name=array-capacity-2026-09-20, publishing=v0.1.0)".
+# The caller that knows it is publishing a seed checks that half itself.
 seed_name="$(json_string_field "$seed_json" name)"
 seed_tag="$(json_string_field "$seed_json" tag)"
-if [ "$seed_name" != "$TAG" ]; then
-  echo "build-compiler-seed-assets: seed.json names a different seed than the tag being published (seed.name=$seed_name, publishing=$TAG)" >&2
-  echo "build-compiler-seed-assets: re-run \`generations.sh adopt\` with --name $TAG, or dispatch seed-release with a source_ref whose bootstrap/seed.json already names it" >&2
-  exit 1
-fi
-if [ "$seed_tag" != "seed/$TAG" ]; then
-  echo "build-compiler-seed-assets: seed.json tags a different release than the one being published (seed.tag=$seed_tag, publishing=seed/$TAG)" >&2
-  echo "build-compiler-seed-assets: re-run \`generations.sh adopt\` with --tag seed/$TAG" >&2
+if [ "$seed_tag" != "seed/$seed_name" ]; then
+  echo "build-compiler-seed-assets: bootstrap/seed.json is internally inconsistent: seed.name=$seed_name but seed.tag=$seed_tag (expected seed/$seed_name)" >&2
+  echo "build-compiler-seed-assets: re-run \`generations.sh adopt\` with a matching --name and --tag" >&2
   exit 1
 fi
 

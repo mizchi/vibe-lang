@@ -38,6 +38,22 @@ esac
 # namespacing device, not part of the artifact's identity.
 ASSET_TAG="${TAG#seed/}"
 
+# Guard: this caller knows it is publishing a SEED, so the manifest on disk
+# must name that seed. build_compiler_seed_assets.sh checks only that the
+# manifest is self-consistent, because its other caller
+# (build_release_assets.sh) passes a PRODUCT tag and has no business comparing
+# it to a seed name. Fails before the expensive bundle generation below.
+seed_manifest_json="$PROJECT_ROOT/bootstrap/seed.json"
+if [ -f "$seed_manifest_json" ]; then
+  manifest_seed_name="$(grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' "$seed_manifest_json" \
+    | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/')"
+  if [ "$manifest_seed_name" != "$ASSET_TAG" ]; then
+    echo "build-seed-release-assets: bootstrap/seed.json names a different seed than the tag being published (seed.name=$manifest_seed_name, publishing=$TAG)" >&2
+    echo "build-seed-release-assets: re-run \`generations.sh adopt\` with --name $ASSET_TAG, or dispatch seed-release with a source_ref whose bootstrap/seed.json already names it" >&2
+    exit 1
+  fi
+fi
+
 OUT_DIR="$PROJECT_ROOT/dist/release/$TAG"
 MANIFEST_NAME="release-manifest.json"
 CHECKSUM_NAME="SHA256SUMS.txt"
