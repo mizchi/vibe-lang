@@ -116,4 +116,41 @@ EOF
 # a machine where the artifact has been built. CI found the second the hard way.
 expect 0 "generated artifacts are exempt by name, prefix-relative spelling too"
 
+# The REPOSITORY ROOT is in scope (#2834). AGENTS.md is the densest citer of
+# fixtures and compiler files in the tree and was scanned by nothing; the stale
+# citation that found this is the one written here.
+: > "$allow"
+cat > "$TMP/AGENTS.md" <<'EOF'
+Pinned by `fixtures/err_type_eq_marker_bound_double.vibe`.
+EOF
+expect 1 "a dangling citation in a ROOT document fails" "AGENTS.md:1"
+
+# A resolving root citation passes, so the case above is about the path and not
+# about the root being scanned at all.
+cat > "$TMP/AGENTS.md" <<'EOF'
+See `lib/@vibe/compiler/checker/checker.vibe`.
+EOF
+expect 0 "a resolving citation in a ROOT document passes"
+
+# CLAUDE.md is a symlink to AGENTS.md. Following both would report every
+# finding twice -- same line, two names for one file -- so a root symlink is
+# skipped. Asserted by COUNTING: "the output mentions it" is true either way.
+cat > "$TMP/AGENTS.md" <<'EOF'
+Pinned by `fixtures/err_type_eq_marker_bound_double.vibe`.
+EOF
+ln -sf AGENTS.md "$TMP/CLAUDE.md"
+set +e; sym_out="$(run)"; set -e
+sym_hits="$(grep -cF "err_type_eq_marker_bound_double.vibe" <<<"$sym_out" || true)"
+if [ "$sym_hits" != 1 ]; then
+  echo "doc-citation self-test: FAIL: a root symlink is scanned as a second document -- $sym_hits finding(s), wanted 1" >&2
+  echo "$sym_out" >&2
+  exit 1
+fi
+if grep -qF "CLAUDE.md" <<<"$sym_out"; then
+  echo "doc-citation self-test: FAIL: the finding was reported under the symlink's name" >&2
+  echo "$sym_out" >&2
+  exit 1
+fi
+rm -f "$TMP/CLAUDE.md" "$TMP/AGENTS.md"
+
 echo "doc-citation self-test: ok"

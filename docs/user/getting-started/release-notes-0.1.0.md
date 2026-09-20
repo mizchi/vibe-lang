@@ -38,10 +38,15 @@ read, and every feature below is one the compiler itself depends on.
   with `with`; `allows` on a called function is a compile error naming the
   edit. The optional grade `?` (on a grant or on a requirement) and the
   `Attempt[T, E]` that `perform?` returns are on the unstable surface and can
-  still change. Non-interactive compilation lowers an unresolved optional
-  operation to `NotGranted` on both backends; production grant/preflight
-  wiring and the proposed instantiate-time contract are tracked in #2828.
-  That proposal is not the behavior described by this release draft.
+  still change. **A launcher grant now reaches `perform?`** (#2828 rung 2,
+  #2909): until it did, `--allow-fs` and `--deny-fs` were indistinguishable
+  because every optional capability resolved `NotGranted` whatever the run was
+  granted. An unresolved optional operation still lowers to `NotGranted` on
+  both backends under non-interactive compilation. The persisted
+  `BindingLock` (rung 3) waits on an `apply` phase that does not exist yet, so
+  the capability authorization surface stays in §6 of
+  [spec/stable-surface.md](../reference/stable-surface.md), outside the SemVer
+  promise.
 - **`Result` was removed** (#1324). Errors are the `Exception` effect, and
   `Error` is deprecated at the freeze in favour of it (ADR-0085).
 - **`String` is a byte string** with byte-offset indexing (ADR-0098), which is
@@ -188,9 +193,14 @@ until that candidate is verified.
       including public contract decisions, and update these notes accordingly.
 - [ ] Verify clean-machine installation and package publication/fetch/install
       against the release candidate, using only shipped artifacts.
-- [ ] Confirm the final candidate's pinned seed has published, verified assets.
-      The current `seed/bytes-capacity-2026-09-15` release already exists;
-      entry `allows` syntax and its compiler-source migration have landed.
+- [x] Confirm the final candidate's pinned seed has published, verified
+      assets. The candidate pins `seed/array-capacity-2026-09-20` (#2554),
+      published 2026-09-20 and verified: `sha256sum -c SHA256SUMS.txt` clean on
+      all four files, the served wasm hashing to the manifest's pin, and a
+      `bootstrap/seed/compiler.wasm`-deleted `ensure_seed.sh` run with
+      rebuilding forbidden fetching it from the release. The manifest asset's
+      `name` field named the previous seed; corrected for future bumps in
+      #2924.
 - [ ] Set `VIBE_VERSION` to `0.1.0` for the separately authorized release tag;
       the release asset build requires the version and tag to agree.
 - [ ] Verify Apache-2.0 license, book parity, stable surface and
