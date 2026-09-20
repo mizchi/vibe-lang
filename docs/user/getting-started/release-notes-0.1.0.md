@@ -204,10 +204,21 @@ release scope and [#2834](https://github.com/mizchi/vibe-lang/issues/2834)
 holds the detailed candidate acceptance checklist. These notes remain a draft
 until that candidate is verified.
 
-- [ ] Complete or explicitly reschedule every open 0.1.0 milestone item,
+- [x] Complete or explicitly reschedule every open 0.1.0 milestone item,
       including public contract decisions, and update these notes accordingly.
+      The milestone is 37 closed and one open — #2834, the acceptance
+      checklist itself. #1962 was rescheduled to 0.2.0 with a written scope
+      reason after its first rung landed.
 - [ ] Verify clean-machine installation and package publication/fetch/install
-      against the release candidate, using only shipped artifacts.
+      against the release candidate, using only shipped artifacts. The package
+      half is verified (`tests/integration/install/install_test.sh`: add /
+      fetch / publish against an isolated `git:file://` registry, content
+      hashes pinned, a tampered store copy and a source that does not hash to
+      the pin both refused, and a refused fetch installing nothing). The
+      clean-machine half needs a published release, so it rides the tag: the
+      `release-install` job in `.github/workflows/release.yml` installs it on
+      fresh `ubuntu-latest` and `macos-latest` with nothing but bash, curl and
+      tar, then compiles and runs a program.
 - [x] Confirm the final candidate's pinned seed has published, verified
       assets. The candidate pins `seed/array-capacity-2026-09-20` (#2554),
       published 2026-09-20 and verified: `sha256sum -c SHA256SUMS.txt` clean on
@@ -217,7 +228,25 @@ until that candidate is verified.
       `name` field named the previous seed; corrected for future bumps in
       #2924.
 - [ ] Set `VIBE_VERSION` to `0.1.0` for the separately authorized release tag;
-      the release asset build requires the version and tag to agree.
-- [ ] Verify Apache-2.0 license, book parity, stable surface and
-      `pkf run release-check` in CI on the release candidate.
+      the release asset build requires the version and tag to agree, and the
+      bump has to be IN the tagged commit. `check_version_ladder.sh` strips the
+      prerelease, so `0.1.0-dev` and `0.1.0` both resolve to this file — the
+      bump does not move that gate.
+- [x] Verify Apache-2.0 license, book parity, stable surface and
+      `pkf run release-check` on the release candidate. `LICENSE` is
+      Apache-2.0 and both published integration packages declare it;
+      `check-tutorial-translation-parity`, `check-book-{links,order,
+      skip-blocks,console}` and `check-freeze-surface` pass;
+      `pkf run release-check` is green (94 tasks, 45m23s, zero failures,
+      with `test-wasm-validate-parity` actually running rather than skipping
+      for a missing `wasm-tools`). In CI, `ci-required` (38 jobs) and
+      `cli-install` (7 jobs) are green on the same tree.
 - [ ] Publish the `0.1.0` tag/assets and verify installation from that release.
+      `.github/workflows/release.yml` triggers on the `v*` tag push alone —
+      there is no `workflow_dispatch` — and builds the per-target runners,
+      publishes, and runs the clean-machine install above. So the whole step is
+      `git tag v0.1.0 && git push origin v0.1.0` on the commit carrying the
+      version bump. One decision to make BEFORE tagging, because an immutable
+      release cannot be re-bodied afterwards: that workflow publishes with
+      `generate_release_notes: true`, so the release body is generated from
+      commits rather than being this document.
