@@ -610,3 +610,42 @@ test "wit_from_program: future-returning async export round-trips both D5 mappin
   let wit = wit_from_program(stmts, stmts, "prices")
   assert(String::contains(wit, "export fetch-price: async func() -> future<s64>;"))
 }
+
+/// #1963: the serve validator asked `ename == "Async"`, but the checker accepts
+/// an operation-qualified row label and carries it through verbatim -- measured
+/// on a stage2 from this tree, `fn f() -> Int with Async::Suspend` checks clean
+/// and a caller missing it is told `missing { Async::Suspend }`. So this
+/// handler went to the GENERIC arm and was told to "discharge the effect with
+/// `handle`", the one piece of advice the Async arm exists to avoid giving:
+/// Async has no operations to handle. It now gets the same answer the bare
+/// spelling gets.
+test "validate_serve_handler: an operation-qualified Async row gets the Async answer (#1963)" {
+  let ann = TyFn([string_ty(), string_ty(), string_ty(), string_ty()], string_ty(), Some("Async::Suspend"))
+  let stmts = [
+    SLet(true, false, "handler", Some(ann), efn_of_string_params(serve_handler_param_names()))
+  ]
+  let msg = handle {
+    validate_serve_handler(stmts)
+    "<accepted>"
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(msg, "needs a `body: HostStream` parameter"))
+  assert(!String::contains(msg, "discharge the effect with `handle`"))
+  assert(!String::contains(msg, "must be a pure function"))
+}
+
+/// The other half, and the worse one: this is the stream serve lane's own
+/// contract written with the qualified spelling, and it was REJECTED outright
+/// -- `serve_effects_have_async` scanned for the literal `"Async"`, found none,
+/// and reported a row that does carry Async as one that does not. A valid
+/// program refused, with advice pointing away from the fix.
+test "validate_serve_handler: a HostStream body with an operation-qualified Async row is accepted (#1963)" {
+  let ann = TyFn([string_ty(), string_ty(), string_ty(), TyName("HostStream")], string_ty(), Some("Async::Suspend"))
+  let stmts = [
+    SLet(true, false, "handler", Some(ann), efn_of_string_params(serve_handler_param_names()))
+  ]
+  let msg = handle {
+    validate_serve_handler(stmts)
+    "<accepted>"
+  } with { Exception::Throw(m) => m }
+  inspect(msg, "<accepted>")
+}

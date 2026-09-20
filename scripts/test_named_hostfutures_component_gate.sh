@@ -26,6 +26,10 @@
 #            wall clock must be >= 0.8 x P (the task really parked) and
 #            < 1.4 x P (the two waits OVERLAPPED -- back-to-back waits would
 #            take P + Q = 1.67 x P). A non-parking run would take ~0.
+#   latch    (#2832) awaiting the SAME future twice returns the settled value
+#            without a second host read. The value cannot tell the two worlds
+#            apart -- the host would hand back the same number -- so the wall
+#            clock does it: one read costs LONG, two cost 2 x LONG.
 #   control  a single-name program imports only that name -- the per-name
 #            wiring must not drag the whole name set into every component.
 #
@@ -261,6 +265,106 @@ if grep -q "host_future_get\$price" "$SHADOW_OUT"; then
   exit 1
 fi
 echo "[named-hostfutures-component-gate] shadowed builtin: no 'price' import reserved"
+
+# --- #2832: awaiting the SAME host future twice ------------------------------
+# The future-side analogue of the stream lifecycle the hoststreams gate pins
+# (its partial-consume fixture closes twice and reads after close). Nothing
+# awaited one host future twice, so the latch that makes the second await
+# cheap was documented and never run.
+#
+# The mechanism: `__aw_settle` (lowering/effects/await/await.vibe) writes the
+# resumed value into the cell's payload word and then sets the state word to
+# `0`, so `__aw_poll`'s `while 0 < state` loop does not run a second time and
+# the second `await` reads the cached payload. It must NOT go back to the
+# host: `host_future_wait` only settles, and a second `future.read` on a
+# future that already has one pending is a canonical-ABI error.
+#
+# `a * 2 + b` with price = 14 is 42. The VALUE cannot separate a cached read
+# from a correct re-read (the host would hand back the same 14), so it is here
+# only to catch a second await that settles to garbage -- a payload word left
+# holding the handle, or a zero. **The wall clock is the load-bearing
+# assertion**: one host read costs LONG_MS, two cost 2 x LONG_MS, and the same
+# [0.8x, 1.4x] window the overlap check uses separates them. Measured at
+# LONG_MS=300 on this tree: 318ms for the double await, 619ms for the
+# two-name sequential shape that really does read twice.
+DOUBLE_SRC="$OUT_DIR/double_await.vibe"
+cat >"$DOUBLE_SRC" <<'EOF'
+let run: () -> Int with Async = () -> {
+  let f = host_future_named("price")
+  let a = await(f)
+  let b = await(f)
+  a * 2 + b
+}
+EOF
+DOUBLE_OUT="$OUT_DIR/double_await.component.wasm"
+compile_fixture "$DOUBLE_SRC" "$DOUBLE_OUT"
+
+DOUBLE_WARM_LOG="$OUT_DIR/run.double.warmup.log"
+if ! VIBE_ASYNC_FUTURES="price=14:1" timeout 60 "$RUNNER" "$DOUBLE_OUT" >"$DOUBLE_WARM_LOG" 2>&1; then
+  echo "named hostfutures component gate FAILED: double-await warmup did not exit 0 (a second future.read on the same future is a canonical-ABI error)" >&2
+  cat "$DOUBLE_WARM_LOG" >&2
+  exit 1
+fi
+[ "$(cat "$DOUBLE_WARM_LOG")" = "42" ] \
+  || { echo "named hostfutures component gate FAILED: double-await warmup expected 42 (14 * 2 + 14), got: $(cat "$DOUBLE_WARM_LOG")" >&2; exit 1; }
+
+DOUBLE_LOG="$OUT_DIR/run.double.log"
+DOUBLE_START_NS=$(date +%s%N)
+if ! VIBE_ASYNC_FUTURES="price=14:$LONG_MS" timeout 60 "$RUNNER" "$DOUBLE_OUT" >"$DOUBLE_LOG" 2>&1; then
+  echo "named hostfutures component gate FAILED: double-await run did not exit 0 (a second future.read on the same future is a canonical-ABI error)" >&2
+  cat "$DOUBLE_LOG" >&2
+  exit 1
+fi
+DOUBLE_ELAPSED_MS=$(( ( $(date +%s%N) - DOUBLE_START_NS ) / 1000000 ))
+DOUBLE_GOT="$(cat "$DOUBLE_LOG")"
+[ "$DOUBLE_GOT" = "42" ] \
+  || { echo "named hostfutures component gate FAILED: double-await expected 42 (14 * 2 + 14), got: $DOUBLE_GOT" >&2; exit 1; }
+if [ "$DOUBLE_ELAPSED_MS" -lt "$MIN_MS" ]; then
+  echo "named hostfutures component gate FAILED: double-await returned in ${DOUBLE_ELAPSED_MS}ms with a ${LONG_MS}ms producer delay -- the first await cannot have genuinely parked" >&2
+  exit 1
+fi
+if [ "$DOUBLE_ELAPSED_MS" -ge "$MAX_MS" ]; then
+  echo "named hostfutures component gate FAILED: double-await took ${DOUBLE_ELAPSED_MS}ms, at or beyond the ${MAX_MS}ms bound -- the settled cell did not latch, so the second await went back to the host for a second ${LONG_MS}ms read" >&2
+  exit 1
+fi
+echo "[named-hostfutures-component-gate] double await: 42 in ${DOUBLE_ELAPSED_MS}ms (>= ${MIN_MS}, < ${MAX_MS}: exactly ONE host read -- the settled cell latched)"
+
+# The window above only means something if the two-read world actually lands
+# outside it, so the gate measures that world too rather than asserting it.
+# Same program with the second future created AFTER the first await settles --
+# the reads cannot overlap, so this is what "the second await went back to the
+# host" costs. It must sit at or beyond MAX_MS; a loaded machine only pushes
+# it further out, so this control cannot go flaky in the direction that would
+# matter. (Creating both futures up front instead would OVERLAP the reads and
+# land back inside the window -- which is what the overlap check above
+# measures, and why this control is written sequentially.)
+SEQ_SRC="$OUT_DIR/sequential_two_reads.vibe"
+cat >"$SEQ_SRC" <<'EOF'
+let run: () -> Int with Async = () -> {
+  let f = host_future_named("price")
+  let a = await(f)
+  let g = host_future_named("qty")
+  let b = await(g)
+  a * 2 + b
+}
+EOF
+SEQ_OUT="$OUT_DIR/sequential_two_reads.component.wasm"
+compile_fixture "$SEQ_SRC" "$SEQ_OUT"
+SEQ_LOG="$OUT_DIR/run.sequential.log"
+SEQ_START_NS=$(date +%s%N)
+if ! VIBE_ASYNC_FUTURES="price=14:$LONG_MS,qty=14:$LONG_MS" timeout 60 "$RUNNER" "$SEQ_OUT" >"$SEQ_LOG" 2>&1; then
+  echo "named hostfutures component gate FAILED: sequential two-read control did not exit 0" >&2
+  cat "$SEQ_LOG" >&2
+  exit 1
+fi
+SEQ_ELAPSED_MS=$(( ( $(date +%s%N) - SEQ_START_NS ) / 1000000 ))
+[ "$(cat "$SEQ_LOG")" = "42" ] \
+  || { echo "named hostfutures component gate FAILED: sequential two-read control expected 42, got: $(cat "$SEQ_LOG")" >&2; exit 1; }
+if [ "$SEQ_ELAPSED_MS" -lt "$MAX_MS" ]; then
+  echo "named hostfutures component gate FAILED: two SEQUENTIAL host reads took ${SEQ_ELAPSED_MS}ms, inside the ${MAX_MS}ms bound the double-await check uses -- that check can no longer tell one host read from two, so its pass above proves nothing" >&2
+  exit 1
+fi
+echo "[named-hostfutures-component-gate] two-read control: ${SEQ_ELAPSED_MS}ms (>= ${MAX_MS}: the window above really does separate one host read from two)"
 
 # --- control: one name imports only that name --------------------------------
 CTRL_SRC="$OUT_DIR/single_named_await.vibe"

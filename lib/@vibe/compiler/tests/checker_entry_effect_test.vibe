@@ -1,6 +1,10 @@
 //# Entry-boundary effect admission (#1683)
 
+import @vibe/compiler/core {
+  standard_host_provider_names
+}
 import @vibe/compiler/checker {
+  allow_flag_for_authority,
   authority_for_capability_flag,
   check_program,
   entry_declared_authority,
@@ -603,6 +607,38 @@ test "#2828: authority_for_capability_flag inverts allow_flag_for_authority" {
   assert_eq(authority_for_capability_flag("--deny-fs"), "Fs")
   assert_eq(authority_for_capability_flag("--allow-http"), "Http")
   assert_eq(authority_for_capability_flag("--deny-stdout"), "Stdout")
+}
+
+/// #1963: the row above states the property -- "the flag a diagnostic PRINTS
+/// and the flag the CLI READS must be one string" -- and then tests only the
+/// READER, on four hand-written lowercase strings. It never calls the printer,
+/// so it could not see the four providers that drifted: `allow_flag_for_
+/// authority` lowercased six names by hand and fell through for `Stderr`,
+/// `Process`, `Profiler` and `Socket`, printing `--allow-Profiler`, which the
+/// reader rejects as "not a capability" -- measured through the real
+/// `preflight_instantiate` message before the fix.
+///
+/// This row runs the pair over EVERY provider rather than four chosen ones, so
+/// adding a provider cannot reintroduce the drift: the list is the one the
+/// reader already derives from.
+test "#1963: every provider's printed flag is one the reader accepts" {
+  let providers = standard_host_provider_names()
+  let mut i = 0
+  let mut bad = ""
+  while i < Array::length(providers) {
+    let p = Array::get(providers, i)
+    let printed = allow_flag_for_authority(p)
+    if authority_for_capability_flag(printed) == p {
+      ()
+    } else {
+      bad = bad + p + " printed " + printed + "; "
+    }
+    i = i + 1
+  }
+  // Before #1963: "Stderr printed --allow-Stderr; Process printed
+  // --allow-Process; Profiler printed --allow-Profiler; Socket printed
+  // --allow-Socket; ".
+  assert_eq(bad, "")
 }
 
 test "#2828: a non-capability argument is not a capability flag" {

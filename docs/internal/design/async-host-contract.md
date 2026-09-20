@@ -181,11 +181,30 @@ override silently contradicting a module that says `raw` is the hazard #2903's
 - **Wait** (`host_future_wait`) only **settles**. It does not re-read: a second
   `future.read` on a future that already has one pending is a canonical-ABI
   error, which is why the read is in the getter and not here.
-- **Drop** is conditional. A call that completed eagerly (status RETURNED, code
-  `2`) created no subtask, so it is neither joined nor dropped
+- **Drop** is conditional -- this is *the conditional-drop rule* the
+  runtime-neutral list below names. A call that completed eagerly (status
+  RETURNED, code `2`) created no subtask, so it is neither joined nor dropped
   (`component_codegen.vibe:2760-2761`). The probe in
   `tools/wasip3_component_probe/` traps on eager completion and so never
   exercised this branch; the composer reaches it.
+- **A settled cell latches**, so awaiting the same `Future[T]` twice costs one
+  host read. `__aw_settle` (`lowering/effects/await/await.vibe`) writes the
+  resumed value into the cell's payload word and then sets the state word to
+  `0`, so `__aw_poll`'s `while 0 < state` loop does not run again and the
+  second `await` reads the cached payload -- the future-side counterpart of
+  the stream's post-close `-1` latch below. It must not re-read: per the Wait
+  bullet, a second `future.read` on a future that already has one pending is a
+  canonical-ABI error. Measured, not inferred (#2832), on both spellings: with
+  a 300ms producer delay `host_future_named` returns `42` in ~317ms and
+  `host_future_get` returns `84` in ~316ms, while two sequential reads of two
+  futures take ~618ms. The value cannot separate the two worlds -- the host
+  hands back the same number either way -- so the wall clock is what decides.
+  `scripts/test_named_hostfutures_component_gate.sh` asserts the named row AND
+  the ~618ms two-read control, because a window that no longer separated one
+  host read from two would let the first row pass while proving nothing;
+  `scripts/test_hostfuture_source_component_gate.sh` asserts the anonymous
+  row, since the anonymous routing is a different path through the wrap even
+  though `__aw_settle` is shared.
 
 ### Host streams
 
@@ -305,7 +324,8 @@ Checkbox 2's split, stated concretely:
 **Runtime-neutral** — anything a second implementation would have to match:
 the import names and core types (already in the manifest), the request-band
 protocol, the four cell states `0`/`1`/`2`/`3` and their disjointness, the
-stream `-1` EOS sentinel and its two shapes, the conditional-drop rule.
+stream `-1` EOS sentinel and its two shapes, the conditional-drop rule
+(`### Host futures`), and the settled-future latch.
 
 **Component Model canonical ABI** — not portable, and not something a core
 runner can honour: `future.read`'s `BLOCKED` = `0xffffffff`, the

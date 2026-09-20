@@ -1,107 +1,146 @@
 #!/usr/bin/env bash
-# Red/green for the failure reporting in scripts/vibe_grep_bin.sh (#2914).
+# Red test for scripts/vibe_grep_bin.sh's failure reporting (#2914).
 #
-# The runner used to turn a LOUD failure into silence. `status=$?` sat inside
-# `if ! cmd; then`, where `$?` is the status of the `!`-INVERTED pipeline -- 0
-# whenever the command failed -- so the branch whose only job was to record a
-# failure recorded success:
+# The defect this pins: a wasm trap inside the grep invocation reached the
+# caller as `exit 0` with empty stdout -- byte-for-byte what a legitimate
+# no-match sweep looks like. Two independent causes, both here:
 #
-#   $ status=0; if ! (exit 42); then status=$?; fi; echo $status   -> 0
-#   $ status=0; (exit 42) || status=$?; echo $status               -> 42
+#   1. `if ! cmd; then status=$?; fi` records the status of the INVERTED
+#      pipeline, which is 0 exactly when the command failed. The variable was
+#      dead: 0 on success (branch skipped) and 0 on failure (inverted).
+#   2. the fatal guard additionally required `[ ! -s "$out" ]`, so a sweep that
+#      trapped part-way printed what it had reached as though it had finished.
 #
-# Measured before the fix: a tree-wide typed sweep really does still trap
-# (`RuntimeError: memory access out of bounds`, status 1, no output files
-# written), and `vibe grep` reported `exit 0` with no output for it -- which is
-# what `--where` over a corpus with no matches also looks like. A tool whose
-# whole purpose is answering questions ABOUT a corpus cannot have "it broke"
-# and "the answer is none" share a spelling.
+# No compiler is needed. The script's ROOT_DIR comes from its own location, so
+# each case runs a COPY of it in a scratch tree beside a stub host runner whose
+# behaviour is the variable under test. ~0.1s total.
 #
-# The stub runner is the point: these cases need no compiler, so they stay
-# runnable and fast, and each one is a shape the real runner produced.
-set -uo pipefail
+# The five cases are three failures, one success, and -- the control that keeps
+# the failures honest -- a legitimate no-match run that must stay silent and
+# exit 0. Without that control, "always fail" would pass the other four.
+set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/vibe-grep-bin-test.XXXXXX")"
+SUBJECT="${VIBE_GREP_BIN_TEST_SUBJECT:-$ROOT_DIR/scripts/vibe_grep_bin.sh}"
+[ -f "$SUBJECT" ] || { echo "vibe-grep-bin-test: subject not found: $SUBJECT" >&2; exit 1; }
+
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/vibe_grep_bin_test.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
-fail=0
-note() { printf '%s\n' "$*"; }
-check() { # check <label> <actual> <expected>
-  if [ "$2" = "$3" ]; then note "  ok   $1: $2"
-  else note "  FAIL $1: got '$2' want '$3'"; fail=1; fi
-}
-says() {
-  if printf '%s' "$1" | grep -qF "$2"; then note "  ok   says: $2"
-  else note "  FAIL did not say: $2"; printf '%s\n' "$1" | sed 's/^/      /'; fail=1; fi
-}
-silent_about() {
-  if printf '%s' "$1" | grep -qF "$2"; then note "  FAIL unexpectedly said: $2"; fail=1
-  else note "  ok   free of: $2"; fi
+fails=0
+report() {
+  echo "vibe-grep-bin-test FAIL: $*" >&2
+  fails=$((fails + 1))
 }
 
-# A scratch tree holding the script under test and a STUB runner whose
-# behaviour each case chooses. `$4` is the output path cli_main would write.
-setup() { # setup <behaviour>
-  rm -rf "$WORK/t"
-  mkdir -p "$WORK/t/scripts" "$WORK/t/corpus"
-  cp "$ROOT_DIR/scripts/vibe_grep_bin.sh" "$WORK/t/scripts/"
-  : > "$WORK/t/fake-compiler.wasm"
-  printf 'fn f() -> Int {\n  1\n}\n' > "$WORK/t/corpus/a.vibe"
-  cat > "$WORK/t/scripts/run_wasm_vibe_host_runner.sh" <<STUB
+# Build a scratch tree: scripts/vibe_grep_bin.sh (the subject) + a stub runner.
+# `$5` is the output path the subject hands the runner; STUB_MODE picks the
+# behaviour. The stub never touches the real compiler.
+setup_tree() {
+  local dir="$1"
+  mkdir -p "$dir/scripts" "$dir/corpus"
+  cp "$SUBJECT" "$dir/scripts/vibe_grep_bin.sh"
+  : >"$dir/corpus/a.vibe"
+  cat >"$dir/scripts/run_wasm_vibe_host_runner.sh" <<'STUB'
 #!/usr/bin/env bash
-# args: --invoke cli_main <cli> <input> <output>
-out="\${5:-}"
-case "$1" in
-  fail-silent)   echo "RuntimeError: memory access out of bounds" >&2; exit 1 ;;
-  ok-no-file)    exit 0 ;;
-  fail-partial)  printf 'corpus/a.vibe:1:1: f()\n' > "\$out"; exit 1 ;;
-  ok-match)      printf 'corpus/a.vibe:1:1: f()\n' > "\$out"; exit 0 ;;
-  ok-empty)      : > "\$out"; exit 0 ;;
+# args: --invoke cli_main <cli> <path> <out>
+out="$5"
+case "${STUB_MODE:-}" in
+  trap)
+    echo "RuntimeError: memory access out of bounds" >&2
+    exit 1
+    ;;
+  silent_zero)
+    exit 0
+    ;;
+  partial_then_fail)
+    printf 'corpus/a.vibe:1:1: reached\n' >"$out"
+    echo "RuntimeError: memory access out of bounds" >&2
+    exit 1
+    ;;
+  match)
+    printf 'corpus/a.vibe:1:1: hit\n' >"$out"
+    exit 0
+    ;;
+  no_match)
+    : >"$out"
+    exit 0
+    ;;
+  *)
+    echo "stub: unknown STUB_MODE" >&2
+    exit 3
+    ;;
 esac
 STUB
-  chmod +x "$WORK/t/scripts/run_wasm_vibe_host_runner.sh"
+  chmod +x "$dir/scripts/run_wasm_vibe_host_runner.sh"
+  # pick_cli_wasm only checks that the path exists.
+  : >"$dir/fake-cli.wasm"
 }
 
-run() { # run -> echoes combined output; sets RC
-  set +e
-  OUT="$( cd "$WORK/t" && VIBE_CLI_WASM="$WORK/t/fake-compiler.wasm" \
-    bash scripts/vibe_grep_bin.sh --pattern '$(f:id)($(a:args))' corpus 2>&1 )"
-  RC=$?
-  set -e
+# Run the subject copy in its scratch tree. Echoes "<status>" and leaves
+# stdout/stderr in $WORK/<name>.out / .err.
+run_case() {
+  # Separate statements: `local a=$1 b=$WORK/$a` declares every name first and
+  # then assigns, so `$a` is an unset local when `b` is evaluated -- unbound
+  # under `set -u`.
+  local name="$1" mode="$2" st=0
+  local dir="$WORK/$name"
+  setup_tree "$dir"
+  ( cd "$dir" \
+    && STUB_MODE="$mode" VIBE_CLI_WASM="$dir/fake-cli.wasm" VIBE_PREOPEN_DIR="$dir" \
+       bash "$dir/scripts/vibe_grep_bin.sh" grep --pattern 'f($(x:exp))' corpus \
+       >"$WORK/$name.out" 2>"$WORK/$name.err" ) || st=$?
+  printf '%s' "$st"
 }
 
-note "=== red 1: the runner fails and writes nothing (the measured shape) ==="
-setup fail-silent; run
-check "exit" "$RC" "1"
-says "$OUT" "grep could not run"
-says "$OUT" "memory access out of bounds"
+# --- 1. the measured trap: non-zero status, nothing written ------------------
+st="$(run_case trap trap)"
+if [ "$st" = "0" ]; then
+  report "a trapping runner was reported as success (exit 0) -- this is the #2914 defect"
+elif [ -s "$WORK/trap.out" ]; then
+  report "a trapping runner produced stdout: $(cat "$WORK/trap.out")"
+elif ! grep -q 'could not run' "$WORK/trap.err"; then
+  report "a trapping runner did not say so on stderr: $(cat "$WORK/trap.err")"
+fi
 
-note "=== red 2: the runner exits 0 but produces no result file ==="
-setup ok-no-file; run
-check "exit" "$RC" "1"
-says "$OUT" "the sweep did not complete"
+# --- 2. exit 0 but no result file at all -------------------------------------
+# Only reachable because the subject REMOVES the mktemp file before invoking.
+# With the file merely truncated, this is indistinguishable from case 5.
+st="$(run_case silent_zero silent_zero)"
+if [ "$st" = "0" ]; then
+  report "a runner that exited 0 without writing a result file was reported as a no-match sweep"
+elif ! grep -q 'no result file' "$WORK/silent_zero.err"; then
+  report "missing result file was not named on stderr: $(cat "$WORK/silent_zero.err")"
+fi
 
-note "=== red 3: the runner fails but left PARTIAL output ==="
-# The old guard was `status != 0 AND output empty`, so this case printed the
-# files it had reached as though the sweep had finished.
-setup fail-partial; run
-check "exit" "$RC" "1"
-says "$OUT" "grep could not run"
-silent_about "$OUT" "corpus/a.vibe:1:1"
+# --- 3. failure AFTER partial output -----------------------------------------
+st="$(run_case partial partial_then_fail)"
+if [ "$st" = "0" ]; then
+  report "a sweep that trapped part-way was reported as a complete answer (exit 0)"
+elif [ -s "$WORK/partial.out" ]; then
+  report "a sweep that trapped part-way printed its partial answer: $(cat "$WORK/partial.out")"
+fi
 
-note "=== green 1: a successful run with a match still prints it ==="
-setup ok-match; run
-check "exit" "$RC" "0"
-says "$OUT" "corpus/a.vibe:1:1: f()"
-silent_about "$OUT" "grep could not run"
+# --- 4. a real match still gets through --------------------------------------
+st="$(run_case match match)"
+if [ "$st" != "0" ]; then
+  report "a successful match run exited $st: $(cat "$WORK/match.err")"
+elif ! grep -q 'corpus/a.vibe:1:1: hit' "$WORK/match.out"; then
+  report "a successful match run did not print its match: $(cat "$WORK/match.out")"
+fi
 
-note "=== green 2: a successful run with NO matches is silent and exits 0 ==="
-# The control that keeps the three reds honest: a guard that refused
-# everything would fail here, and "no matches" must stay a clean answer.
-setup ok-empty; run
-check "exit" "$RC" "0"
-check "no output" "$(printf '%s' "$OUT" | wc -c | tr -d ' ')" "0"
+# --- 5. CONTROL: a legitimate no-match run stays silent and exits 0 ----------
+# Without this, a subject that failed unconditionally would pass 1-3 while
+# destroying the tool. Empty output is a report, not an error.
+st="$(run_case nomatch no_match)"
+if [ "$st" != "0" ]; then
+  report "a legitimate no-match run exited $st: $(cat "$WORK/nomatch.err")"
+elif [ -s "$WORK/nomatch.out" ]; then
+  report "a legitimate no-match run printed something: $(cat "$WORK/nomatch.out")"
+fi
 
-note
-if [ "$fail" = 0 ]; then note "[vibe-grep-bin-test] ok"; else note "[vibe-grep-bin-test] FAIL"; fi
-exit "$fail"
+if [ "$fails" -ne 0 ]; then
+  echo "vibe-grep-bin-test: $fails case(s) failed" >&2
+  exit 1
+fi
+echo "vibe-grep-bin-test ok (trap, silent-zero, partial-then-fail, match, no-match control)"
