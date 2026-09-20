@@ -72,7 +72,12 @@ test "1682: a generic function result resolved to String remains sliceable" {
 }
 
 test "1682 review: unknown receiver is rejected unless its expression already failed" {
-  let unknown_receiver = check_source_error_message("fn main() -> Unit { let x = iter_get([1], 0)[:] }")
+  // #2913: this was `iter_get([1], 0)`, chosen because it typed as Unknown
+  // without the expression itself failing. That spelling is refused now, which
+  // would make this row assert the OTHER branch by accident. `Array::fold` is
+  // the honest replacement: a real, lowered builtin whose signature returns
+  // Unknown, so the receiver is unknown while the expression is fine.
+  let unknown_receiver = check_source_error_message("fn main() -> Unit { let x = Array::fold([1], 0, (a: Int, b: Int) -> Int { a + b })[:] }")
   let already_failed = check_source_error_message("fn main() -> Unit { let x = missing()[:] }")
   assert(String::contains(unknown_receiver, "slice receiver must be String, Bytes, or Array"))
   assert(String::contains(already_failed, "unknown name: missing"))
@@ -95,12 +100,19 @@ test "parity builtin: Array::slice" {
   assert(check_source_ok("let arr = [1, 2, 3, 4]\nlet s = Array::slice(arr, 1, 3)\nlet _adr69 = () -> { Array::length(s) }"))
 }
 
-test "parity builtin: iter_length" {
-  assert(check_source_ok("let xs = [1, 2, 3]\nlet _adr69 = () -> { iter_length(xs) }"))
-}
-
-test "parity builtin: iter_get" {
-  assert(check_source_ok("let xs = [1, 2, 3]\nlet _adr69 = () -> { iter_get(xs, 1) }"))
+test "#2913: the bare iterator spellings are refused, with the edit" {
+  // These two were `parity builtin:` rows asserting the checker ACCEPTS a bare
+  // `iter_length` / `iter_get`. It did -- and no lowering emitted either, so
+  // the accepted program died in codegen with `reached code generation
+  // unresolved`. The rows pinned the bug: parity with the retired MoonBit host,
+  // which rewrote the bare spelling in monoify, outlived the pass that consumed
+  // it. Inverted rather than deleted, so re-admitting a name fails here too.
+  let len_msg = check_source_error_message("let xs = [1, 2, 3]\nlet _adr69 = () -> { iter_length(xs) }")
+  let get_msg = check_source_error_message("let xs = [1, 2, 3]\nlet _adr69 = () -> { iter_get(xs, 1) }")
+  assert(String::contains(len_msg, "unknown name: iter_length"))
+  assert(String::contains(get_msg, "unknown name: iter_get"))
+  assert(String::contains(len_msg, "the iteration protocol is spelled qualified"))
+  assert(String::contains(get_msg, "C::iter_get(xs, i)"))
 }
 
 test "parity builtin: Array::concat" {
