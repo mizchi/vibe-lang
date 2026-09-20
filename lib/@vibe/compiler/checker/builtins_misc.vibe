@@ -20,13 +20,6 @@ fn misc_one_param(a: Type) -> Array[Type] {
   arr
 }
 
-fn lookup_neg(name: String) -> Option[Type] {
-  if name == "__neg" {
-    Some(CtFn(misc_one_param(CtUnknown), CtUnknown, None))
-  }
-  else None
-}
-
 fn misc_two_params(a: Type, b: Type) -> Array[Type] {
   let arr = misc_no_params()
   Array::push(arr, a)
@@ -146,18 +139,23 @@ fn lookup_iter_intrinsic(name: String) -> Option[Type] {
 }
 
 fn lookup_misc_group_a(name: String) -> Option[Type] {
+  // #2913: `lookup_neg` used to sit between these two. `__neg` is a PHANTOM --
+  // it is typed nowhere else, lowered nowhere at all (no occurrence outside
+  // the checker, its own `declare` and one test), and it ICEs in every form:
+  // `Int`, `Double`, and the literal `__neg(3.5f)`.
+  //
+  // What kept it alive is the #2248 shape. Its only test asserts
+  // `check_source_ok("... __neg(3.5f) ...")` -- the CHECKER, which is exactly
+  // the half that works. The half that does not was never asked.
   match lookup_arithmetic_helper(name) {
     Some(t) => Some(t),
-    None => match lookup_neg(name) {
+    None => match lookup_exn_kind(name) {
       Some(t) => Some(t),
-      None => match lookup_exn_kind(name) {
-        Some(t) => Some(t),
-        // `__slice` / `__len` are deliberately NOT first-class builtins.
-        // Their direct parser-generated calls are type-directed in checker.vibe;
-        // exposing an all-Unknown function signature here would let an alias
-        // bypass those receiver and same-result-type checks (#1682).
-        None => lookup_index(name)
-      }
+      // `__slice` / `__len` are deliberately NOT first-class builtins.
+      // Their direct parser-generated calls are type-directed in checker.vibe;
+      // exposing an all-Unknown function signature here would let an alias
+      // bypass those receiver and same-result-type checks (#1682).
+      None => lookup_index(name)
     }
   }
 }
