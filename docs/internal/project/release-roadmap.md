@@ -24,7 +24,7 @@ architecture experiments, repository tooling, stdlib additions — lives in the
 [Backlog (unscheduled) milestone](https://github.com/mizchi/vibe-lang/milestone/4)
 rather than in a version above. It is not a fourth rung of the ladder.
 
-Until the `0.1.0` tag is cut, `runtime/vibe` reports `0.1.0-dev`.
+`runtime/vibe` reports `0.1.0`.
 `scripts/build_release_assets.sh` requires `VIBE_VERSION` to equal the tag being
 built, so a release cannot ship carrying `-dev`, and
 `scripts/check_version_ladder.sh` keeps this table, the launcher, and the
