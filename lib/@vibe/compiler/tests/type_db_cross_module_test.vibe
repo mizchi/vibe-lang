@@ -1046,6 +1046,35 @@ test "projected checker rejects two imports binding the same local" {
   assert(String::contains(message, "duplicate declaration: chosen"))
 }
 
+/// #2915, the in-memory half. The walk builds `import_env` by projecting this
+/// module's own import statements (`build_import_envs`) and then handed it to
+/// the GENERIC checker entry, which replays those same statements over it
+/// (`bind_stmt_imports`) -- rebinding each alias to whatever its ORIGINAL name
+/// resolves to at that point, which is the local declaration the alias exists
+/// to avoid naming. `vibe check`'s FS lane has always taken the projected
+/// entry and typed the same pair clean, so the two disagreed on a public API:
+/// `db_typecheck` is published from `@vibe/compiler/type_db`.
+///
+/// The three-parameter import and the two-parameter local are what make the
+/// disagreement legible -- a wrong binding shows up as an arity, not as a
+/// quietly substituted function of the same shape.
+test "typedb walk resolves an aliased import to the import, not the local name it shadows (#2915)" {
+  let dep_src = "export fn f(a: Int, b: Int, c: Int) -> Int {\n  a + b + c\n}"
+  let main_src = "import ./dep.vibe { f as nf }\nfn f(a: Int, b: Int) -> Int {\n  a + b\n}\nexport fn use_it(a: Int) -> Int {\n  nf(a, a, a)\n}"
+  // Before the fix: "function arity mismatch for nf: expected 2 args, got 3".
+  inspect(typecheck_db_pair_error(dep_src, main_src), "")
+}
+
+/// The control: the SAME alias with the colliding local renamed `f` -> `g`.
+/// This typed clean on both entries all along, so a green row above means the
+/// collision is handled -- not that `typecheck_db_pair_error` stopped seeing
+/// errors.
+test "typedb walk: a non-colliding local was never affected (#2915 control)" {
+  let dep_src = "export fn f(a: Int, b: Int, c: Int) -> Int {\n  a + b + c\n}"
+  let main_src = "import ./dep.vibe { f as nf }\nfn g(a: Int, b: Int) -> Int {\n  a + b\n}\nexport fn use_it(a: Int) -> Int {\n  nf(a, a, a)\n}"
+  inspect(typecheck_db_pair_error(dep_src, main_src), "")
+}
+
 test "projected checker root local hoist shadows imports while generic replay stays legacy" {
   let dep_path = "workspace/dep.vibe"
   let dep_env = checked_test_env("export let value = 1\nexport let source = \"text\"")

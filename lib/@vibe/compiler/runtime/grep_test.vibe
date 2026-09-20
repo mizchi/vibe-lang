@@ -6,7 +6,18 @@
 // covered without touching the filesystem.
 
 import ./grep.vibe {
-  grep_compile_pattern, grep_emit_hits, grep_empty_strings, grep_file_hits, grep_join_lines, grep_scan_source, grep_typed_context_error
+  grep_compile_pattern,
+  grep_emit_hits,
+  grep_empty_strings,
+  grep_file_hits,
+  grep_join_lines,
+  grep_scan_source,
+  grep_typed_context,
+  grep_typed_context_error
+}
+
+import @vibe/compiler/core {
+  Type, TypeEnv, env_bind
 }
 
 import @vibe/core {
@@ -77,6 +88,22 @@ fn grep_error_scan_where_err(source: String, pattern: String, wheres: Array[Stri
     let _ = grep_error_scan_where(source, pattern, wheres, "")
     ""
   } with { Exception::Throw(msg) => msg }
+}
+
+/// The typed tier with a REAL projected import environment -- the shape the
+/// FS lane hands `grep_typed_context`, which the no-Fs `grep_scan_source`
+/// seam (import_env = EnvEmpty) cannot produce. `source` doubles as the
+/// ingested source, so the offset delta is 0.
+fn typed_scan_where(source: String, pattern: String, import_env: TypeEnv, where_clause: String) -> String with Exception {
+  let hits = grep_file_hits("a.vibe", source, grep_compile_pattern(pattern))
+  let out = grep_empty_strings()
+  grep_emit_hits(source, hits, grep_typed_context(source, source, import_env), true, one_string(where_clause), no_strings(), "", false, out)
+  grep_join_lines(out, false)
+}
+
+/// `(Int, Int, Int) -> Int`, the three-parameter import an alias selects.
+fn int3_to_int() -> Type {
+  CtFn([CtInt, CtInt, CtInt], CtInt, None)
 }
 
 fn count_lines(text: String) -> Int {
@@ -537,4 +564,37 @@ test "grep: a destructuring let binds a pattern too" {
 test "grep: a handler arm's pattern is reachable" {
   let src = "fn f() -> Int {\n  handle {\n    1\n  } with {\n    Exception::Throw(m) => 0\n  }\n}\n"
   inspect(scan(src, "Exception::Throw($(m:pat))"), "a.vibe:5:5: Exception::Throw(m)\t$m=m\n")
+}
+
+/// #2915: the typed tier took the GENERIC checker entry, which replays each
+/// `SImport` over the environment it was handed (`bind_stmt_imports`) and so
+/// rebinds an alias to whatever the ORIGINAL name resolves to at that point.
+/// With `import ./dep.vibe { f as nf }` beside a local `fn f`, that is the
+/// local declaration the alias exists to avoid naming: a correct 3-argument
+/// call through the 3-parameter import was reported "expected 2 args", the
+/// file was dropped from the sweep on the warning sidecar, and stdout still
+/// read as a complete answer -- while `vibe check`, which takes the PROJECTED
+/// entry, typed the same file clean. Aliasing to dodge a collision is a
+/// normal pattern in this tree, so every file using it sat outside every
+/// typed sweep.
+test "grep typed tier: an aliased import keeps the imported type, not the local name it shadows (#2915)" {
+  let src = "import ./dep.vibe { f as nf }\nfn f(a: Int, b: Int) -> Int {\n  a + b\n}\nfn use_it(a: Int) -> Int {\n  nf(a, a, a)\n}\n"
+  let import_env = env_bind(EnvEmpty, "nf", int3_to_int())
+  // The diagnosis: nothing failed to type. Before the fix this carried
+  // `function arity mismatch for nf: expected 2 args, got 3`.
+  inspect(grep_typed_context(src, src, import_env).type_error, "")
+  // The user-visible half: the `--where` filter answers about the call
+  // instead of the file being skipped.
+  inspect(typed_scan_where(src, "nf($(a:args))", import_env, "$a : Int"), "a.vibe:6:3: nf(a, a, a)\t$a=a, a, a\n")
+}
+
+/// The control for the case above: the SAME alias, with the colliding local
+/// renamed `f` -> `g`. This typed clean on both entries all along, so a green
+/// row above means the collision is handled -- not that the typed tier
+/// stopped typing, or that `typed_scan_where` reports whatever it is given.
+test "grep typed tier: a non-colliding import was never affected (#2915 control)" {
+  let src = "import ./dep.vibe { f as nf }\nfn g(a: Int, b: Int) -> Int {\n  a + b\n}\nfn use_it(a: Int) -> Int {\n  nf(a, a, a)\n}\n"
+  let import_env = env_bind(EnvEmpty, "nf", int3_to_int())
+  inspect(grep_typed_context(src, src, import_env).type_error, "")
+  inspect(typed_scan_where(src, "nf($(a:args))", import_env, "$a : Int"), "a.vibe:6:3: nf(a, a, a)\t$a=a, a, a\n")
 }
