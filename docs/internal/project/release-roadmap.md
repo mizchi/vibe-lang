@@ -15,7 +15,8 @@ ships.
 | --- | --- | --- |
 | `v0.0.1` | The one historical release (MoonBit host era) | tagged 2026-04-14 |
 | `0.0.x` | Everything since: the selfhost cutover and all development, including the content once prepared as "0.3.0 GA" ([archive/release-notes-0.3.0.md](../../archive/release-notes-0.3.0.md)) | never released |
-| **`0.1.0`** | **The first release usable by anyone but the author** | target; see [release-notes-0.1.0.md](../../user/getting-started/release-notes-0.1.0.md) |
+| **`0.1.0-rc.0`** | **The candidate.** Everything 0.1.0 promises is implemented and its acceptance evidence is recorded; what has not happened yet is the bug hunt below | current target |
+| `0.1.0` | **The first release usable by anyone but the author** | after the rc clears §"What promotes an rc to the release"; see [release-notes-0.1.0.md](../../user/getting-started/release-notes-0.1.0.md) |
 | `0.2.0` | Structured concurrency, a type system aimed at formalization, a dedicated agent harness | after 0.1.0 |
 | `1.0.0` | Maturity. Not a synonym for the first public release | unscheduled |
 
@@ -24,11 +25,44 @@ architecture experiments, repository tooling, stdlib additions — lives in the
 [Backlog (unscheduled) milestone](https://github.com/mizchi/vibe-lang/milestone/4)
 rather than in a version above. It is not a fourth rung of the ladder.
 
-`runtime/vibe` reports `0.1.0`.
+`runtime/vibe` reports `0.1.0-rc.0`.
 `scripts/build_release_assets.sh` requires `VIBE_VERSION` to equal the tag being
-built, so a release cannot ship carrying `-dev`, and
+built, so a candidate cannot be published under the release's own number, and
 `scripts/check_version_ladder.sh` keeps this table, the launcher, and the
-release notes from drifting apart.
+release notes from drifting apart (a pre-release is reduced to the release it
+documents, so `0.1.0-rc.0` is checked against the 0.1.0 notes). `release.yml`
+marks any tag carrying a SemVer pre-release suffix as a GitHub **pre-release**,
+so a candidate never becomes the "Latest release" the README's installer
+resolves to.
+
+### What promotes an rc to the release
+
+The rc exists because "every checklist item is ticked" and "we have looked for
+bugs" are different claims, and only the first one was true. A feature-complete
+candidate whose failure modes nobody went hunting for is not a release; the
+project's own priority order says the worst way to break is to be **silently
+wrong**, and a checklist cannot find those — it can only confirm the things
+someone already thought to write down.
+
+So the rc is promoted by a **bug hunt**, not by more features:
+
+1. **Differential fuzzing finds nothing new.** `tests/fuzz/run_fuzz.sh`
+   compiles one generated program four ways (bump, RC, wasm-gc, FS-linked) and
+   requires all four to agree; the generator is trap-free by construction, so
+   any runtime trap is a compiler bug. Run the generative mode and the
+   `--mutate` parser-robustness mode against the **candidate's own stage2** —
+   not the committed seed, which is a different compiler (see the
+   "Which compiler answered?" rule in AGENTS.md).
+2. **Every finding is triaged, not merely counted.** Reduce it
+   (`tests/fuzz/reduce.py`), classify it, and either fix it or file it with the
+   three triage axes. A finding parked without a decision is the checklist
+   failure this rung exists to prevent.
+3. **The suspicious places are examined directly**, since fuzzing only reaches
+   what the generator emits. What is known to be thin gets looked at on
+   purpose rather than waited on.
+
+A finding that turns out to be a pre-existing limitation with a written reason
+does not block promotion; an unexplained divergence between two lanes does.
 
 The stable surface that the `0.1.0` tag freezes is
 [spec/stable-surface.md](../../user/reference/stable-surface.md) (ADR-0057). While the toolchain

@@ -23,7 +23,13 @@ else
   VERSION="$raw_tag"
 fi
 
-if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+# Full SemVer, pre-release and build metadata included. The bare
+# `MAJOR.MINOR.PATCH` form used to be the whole grammar here, which meant a
+# candidate tag (`v0.1.0-rc.0`) died on the FIRST job of release.yml with
+# `invalid semver` -- at the tag, the one moment the workflow cannot be
+# rehearsed. `scripts/check_version_ladder.sh` accepted the same spelling all
+# along, so the two disagreed about what a version is.
+if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
   echo "release-assets: invalid semver: $VERSION" >&2
   exit 1
 fi

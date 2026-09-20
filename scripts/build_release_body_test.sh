@@ -81,6 +81,29 @@ rc="$(run "$WORK/g3" v0.1.0-rc1 "$WORK/g3/out.md")"
 check "exit" "$rc" "0"
 contains "$WORK/g3/out.md" "blob/v0.1.0-rc1/docs/user/reference/cheatsheet.md"
 
+note "=== 3b. green: a pre-release says so, and a release does NOT ==="
+# The pre-release reads the RELEASE's notes, so without a banner the
+# candidate's page is word for word the release announcement. The GitHub
+# pre-release badge sits next to the title; the body is what a link lands on.
+tree "$WORK/g4"
+cat > "$WORK/g4/docs/user/getting-started/release-notes-0.1.0.md" <<'MD'
+# vibe 0.1.0
+[c](../reference/cheatsheet.md)
+MD
+rc="$(run "$WORK/g4" v0.1.0-rc.0 "$WORK/g4/rc.md")"
+check "exit" "$rc" "0"
+contains "$WORK/g4/rc.md" "release candidate (rc.0), not 0.1.0"
+# The banner must lead: a reader who stops after the first line still knows.
+check "banner is first" "$(head -1 "$WORK/g4/rc.md" | cut -c1-2)" "> "
+rc="$(run "$WORK/g4" v0.1.0 "$WORK/g4/rel.md")"
+check "exit" "$rc" "0"
+absent   "$WORK/g4/rel.md" "release candidate"
+check "release starts with the notes" "$(head -1 "$WORK/g4/rel.md")" "# vibe 0.1.0"
+# Build metadata is not a pre-release: `1.0.0+build7` ships as the release.
+rc="$(run "$WORK/g4" v0.1.0+build7 "$WORK/g4/meta.md")"
+check "exit" "$rc" "0"
+absent   "$WORK/g4/meta.md" "release candidate"
+
 note "=== 4. red: no notes file for the version ==="
 tree "$WORK/r1"
 rc="$(run "$WORK/r1" v9.9.9 "$WORK/r1/out.md")"

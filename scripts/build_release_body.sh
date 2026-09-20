@@ -56,7 +56,13 @@ esac
 VERSION="${TAG#v}"
 # A pre-release documents the release it is heading for, the same reduction
 # scripts/check_version_ladder.sh makes, so `0.1.0-rc1` reads the 0.1.0 notes.
-BASE_VERSION="${VERSION%%-*}"
+# Build metadata goes first, because SemVer orders it last (`1.0.0-rc.1+b7`)
+# and stripping only `-*` would leave `0.1.0+b7` looking for notes of its own.
+# check_version_ladder.sh already reduced both; this one did not, so the two
+# disagreed about which file a `+meta` tag reads -- found by the red/green
+# case in scripts/build_release_body_test.sh, not at the tag.
+BASE_VERSION="${VERSION%%+*}"
+BASE_VERSION="${BASE_VERSION%%-*}"
 NOTES_REL="docs/user/getting-started/release-notes-${BASE_VERSION}.md"
 
 repo="${GITHUB_REPOSITORY:-}"
@@ -113,6 +119,24 @@ def rewrite(m):
     return f"{prefix}{url}{suffix}"
 
 body = LINK.sub(rewrite, text)
+
+# A pre-release publishes the RELEASE's notes (0.1.0-rc.0 reads the 0.1.0
+# ones), so without this the candidate's page reads word for word like the
+# release announcement. The GitHub pre-release flag is not enough on its own:
+# it is a badge next to the title, while the body is what someone lands on
+# from a link, and the two must not disagree about what this is.
+version = tag[1:] if tag.startswith("v") else tag
+pre = version.partition("+")[0].partition("-")[2]
+if pre:
+    release = version.partition("-")[0]
+    body = (
+        f"> **This is a release candidate ({pre}), not {release}.**\n"
+        f"> The notes below describe {release}. A candidate carries that content "
+        f"under a number saying the bug hunt that promotes it is not finished, "
+        f"so it is published as a pre-release and is not what the installer's "
+        f"\"latest\" resolves to. Use it to find problems; use {release} to depend on.\n"
+        "\n"
+    ) + body
 
 if problems:
     print("build-release-body: FAIL: the notes carry links that cannot be published:", file=sys.stderr)
