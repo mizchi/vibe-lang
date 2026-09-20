@@ -34,6 +34,7 @@ import @vibe/compiler/core {
   builtin_iterator_namespace_markers,
   builtin_iterator_serialized_boundary_markers,
   builtin_value_form_arity,
+  canonical_builtin_name,
   compiler_owned_type_arity,
   expr_child_at,
   expr_children,
@@ -84,7 +85,8 @@ import @vibe/parser {
   detach_stmts,
   located_program_binder_authority_nodes,
   located_program_binder_authority_program,
-  resolve_interp_expr
+  resolve_interp_expr,
+  source_pat
 }
 
 //# Functions
@@ -22122,4 +22124,205 @@ fn eq_refusals_report() -> Unit with Exception {
     }
     throw(out)
   }
+}
+
+//# #1962 (Option 1): direct host builtins handled by a lexical `handle`
+
+let dhhc_changed_cell = [0]
+
+/// The operation names an arm set NAMES, restricted to host operations --
+/// i.e. those `canonical_builtin_name` rewrites, which is exactly the
+/// CamelCase/snake_case pairs of the `Fs::*` / `Env::*` / `Profiler::*`
+/// capability family. An arm naming a user effect's operation is not one of
+/// these and is left alone.
+fn dhhc_arm_ops(arms: Array[(Pat, Expr)], out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(arms) {
+    let arm = Array::get(arms, i)
+    // The parser wraps a handler arm's pattern for source locations
+    // (parse_qualified_handle_arm), so a bare `PCtor` match here never fires --
+    // measured: the first build of this pass was completely inert.
+    match source_pat(arm.0) {
+      PCtor(name, _) => if canonical_builtin_name(name) != name && !str_array_contains(out, name) {
+        Array::push(out, name)
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+/// The arm-named operation whose builtin spelling is `name`, if any.
+fn dhhc_op_for_call(ops: Array[String], name: String) -> Option[String] {
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(ops) {
+    let op = Array::get(ops, i)
+    if canonical_builtin_name(op) == name {
+      found = Some(op)
+      i = Array::length(ops)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+fn dhhc_union(outer: Array[String], inner: Array[String]) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(outer) {
+    Array::push(out, Array::get(outer, i))
+    i = i + 1
+  }
+  let mut j = 0
+  while j < Array::length(inner) {
+    let name = Array::get(inner, j)
+    if !str_array_contains(out, name) {
+      Array::push(out, name)
+    } else {
+      ()
+    }
+    j = j + 1
+  }
+  out
+}
+
+fn dhhc_exprs(items: Array[Expr], ops: Array[String]) -> Array[Expr] {
+  for item in items {
+    dhhc_expr(item, ops)
+  }
+}
+
+fn dhhc_fields(fields: Array[(String, Expr)], ops: Array[String]) -> Array[(String, Expr)] {
+  for f in fields {
+    (f.0, dhhc_expr(f.1, ops))
+  }
+}
+
+fn dhhc_arms(arms: Array[(Pat, Expr)], ops: Array[String]) -> Array[(Pat, Expr)] {
+  for arm in arms {
+    (arm.0, dhhc_expr(arm.1, ops))
+  }
+}
+
+fn dhhc_opt(opt: Option[Expr], ops: Array[String]) -> Option[Expr] {
+  match opt {
+    Some(v) => Some(dhhc_expr(v, ops)),
+    None => None
+  }
+}
+
+/// `ops` is the set of host operations named by the ENCLOSING handlers, so a
+/// call is rewritten only where a handler that would intercept it is lexically
+/// in scope.
+///
+/// A handler's own ARMS are checked against the enclosing set, not against its
+/// own: an arm body runs outside the handler it belongs to, so rewriting a
+/// direct call there against its own arms would make the handler intercept
+/// itself.
+fn dhhc_expr(expr: Expr, ops: Array[String]) -> Expr {
+  match expr {
+    ECall(callee, args, off) => {
+      let rewritten = dhhc_exprs(args, ops)
+      match callee {
+        EIdent(name, ident_off) => match dhhc_op_for_call(ops, name) {
+          Some(op) => {
+            // `perform <Op>(args)` is what the parser produces for the explicit
+            // spelling (parser_expr_primary.vibe): ECall(EIdent("perform"),
+            // [ECall(EIdent("<Op>"), args)]).
+            Array::set(dhhc_changed_cell, 0, 1)
+            ECall(EIdent("perform", ident_off), [
+              ECall(EIdent(op, ident_off), rewritten, off)
+            ], off)
+          },
+          None => ECall(dhhc_expr(callee, ops), rewritten, off)
+        },
+        _ => ECall(dhhc_expr(callee, ops), rewritten, off)
+      }
+    },
+    EHandle(body, arms) => {
+      let own = empty_str_array()
+      dhhc_arm_ops(arms, own)
+      EHandle(dhhc_expr(body, dhhc_union(ops, own)), dhhc_arms(arms, ops))
+    },
+    EInt(_) => expr,
+    EFloat(_) => expr,
+    EString(_, _) => expr,
+    EBool(_) => expr,
+    EUnit => expr,
+    EIdent(_, _) => expr,
+    EStringInterp(_) => expr,
+    ETuple(items) => ETuple(dhhc_exprs(items, ops)),
+    EArray(items) => EArray(dhhc_exprs(items, ops)),
+    EMap(entries) => EMap(dhhc_fields(entries, ops)),
+    ERecord(name, fields, targs) => ERecord(name, dhhc_fields(fields, ops), targs),
+    EIf(c, t, e) => EIf(dhhc_expr(c, ops), dhhc_expr(t, ops), dhhc_expr(e, ops)),
+    ELet(n, v, b, off) => ELet(n, dhhc_expr(v, ops), dhhc_expr(b, ops), off),
+    ELetRec(n, v, b) => ELetRec(n, dhhc_expr(v, ops), dhhc_expr(b, ops)),
+    ELetMut(n, v, b, off) => ELetMut(n, dhhc_expr(v, ops), dhhc_expr(b, ops), off),
+    EAssign(n, v, b) => EAssign(n, dhhc_expr(v, ops), dhhc_expr(b, ops)),
+    EAssignOp(n, op, v, b) => EAssignOp(n, op, dhhc_expr(v, ops), dhhc_expr(b, ops)),
+    ESeq(a, b) => ESeq(dhhc_expr(a, ops), dhhc_expr(b, ops)),
+    EMatch(scrut, arms) => EMatch(dhhc_expr(scrut, ops), dhhc_arms(arms, ops)),
+    EWhile(c, b) => EWhile(dhhc_expr(c, ops), dhhc_expr(b, ops)),
+    ELoop(binds, b) => ELoop(dhhc_fields(binds, ops), dhhc_expr(b, ops)),
+    EForIn(n, idx, src, b) => EForIn(n, idx, dhhc_expr(src, ops), dhhc_expr(b, ops)),
+    EBinOp(op, l, r, off) => EBinOp(op, dhhc_expr(l, ops), dhhc_expr(r, ops), off),
+    EUnaryOp(op, v) => EUnaryOp(op, dhhc_expr(v, ops)),
+    EFn(gens, bounds, params, ret, eff, body) => EFn(gens, bounds, params, ret, eff, dhhc_expr(body, ops)),
+    EDot(v, f, a, b) => EDot(dhhc_expr(v, ops), f, a, b),
+    ELabeledArg(l, s, v) => ELabeledArg(l, s, dhhc_expr(v, ops)),
+    EReturn(v) => EReturn(dhhc_expr(v, ops)),
+    EBreak(v) => EBreak(dhhc_opt(v, ops)),
+    ESpread(v) => ESpread(dhhc_expr(v, ops)),
+    EContinue(items) => EContinue(dhhc_exprs(items, ops))
+  }
+}
+
+fn dhhc_stmt(stmt: Stmt) -> Stmt {
+  let none = empty_str_array()
+  match stmt {
+    SLet(e, r, n, t, body) => SLet(e, r, n, t, dhhc_expr(body, none)),
+    SLetMut(n, t, body) => SLetMut(n, t, dhhc_expr(body, none)),
+    SLetPat(p, body) => SLetPat(p, dhhc_expr(body, none)),
+    STest(n, body) => STest(n, dhhc_expr(body, none)),
+    SBench(n, body) => SBench(n, dhhc_expr(body, none)),
+    SExample(n, body) => SExample(n, dhhc_expr(body, none)),
+    SExpr(body) => SExpr(dhhc_expr(body, none)),
+    SFnDecl(e, n, body, req, ens) => SFnDecl(e, n, dhhc_expr(body, none), req, ens),
+    SModule(e, n, body) => SModule(e, n, dhhc_stmts_copy(body)),
+    _ => stmt
+  }
+}
+
+fn dhhc_stmts_copy(stmts: Array[Stmt]) -> Array[Stmt] {
+  for s in stmts {
+    dhhc_stmt(s)
+  }
+}
+
+/// In-place over the whole program, like the other desugars in this file:
+/// `check_program` hands the SAME array to the checker and then on to codegen,
+/// so a fresh array would be dropped on the floor.
+///
+/// A top-level declaration starts with an EMPTY enclosing-handler set. A
+/// handler in a CALLER cannot intercept a direct call in a callee's body --
+/// that is the same evidence-passing rule `perform` itself follows
+/// (ADR-0076), so the two spellings agree on scope as well as on effect.
+export fn desugar_handled_host_calls_reporting_change(stmts: Array[Stmt]) -> Bool {
+  Array::set(dhhc_changed_cell, 0, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    Array::set(stmts, i, dhhc_stmt(Array::get(stmts, i)))
+    i = i + 1
+  }
+  Array::get(dhhc_changed_cell, 0) != 0
+}
+
+export fn desugar_handled_host_calls(stmts: Array[Stmt]) -> Unit {
+  let _changed = desugar_handled_host_calls_reporting_change(stmts)
+  ()
 }

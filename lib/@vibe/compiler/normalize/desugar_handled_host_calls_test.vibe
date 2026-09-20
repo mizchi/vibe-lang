@@ -1,0 +1,48 @@
+// #1962 (Option 1): a DIRECT host-builtin call inside a `handle` whose arms
+// name the same operation must become `perform <Op>(..)`, so the lexical
+// handler intercepts it instead of the program silently reaching the host.
+//
+// These drive the pass directly rather than through a compiled program: the
+// first build of it was completely INERT end to end, and a pass-level test
+// says whether the rewrite fired at all, which an end-to-end answer does not.
+
+import @vibe/parser {
+  lex, parse_program
+}
+
+import ./desugar_trait_dict.vibe {
+  desugar_handled_host_calls_reporting_change
+}
+
+fn rewrote(source: String) -> Bool with Exception {
+  let stmts = parse_program(lex(source))
+  desugar_handled_host_calls_reporting_change(stmts)
+}
+
+test "a direct host builtin inside a handler naming that operation is rewritten" {
+  assert(rewrote("fn f() -> String {\n  handle {\n    Fs::read_file(\"p\")\n  } with {\n    Fs::ReadFile(_p) => resume(\"m\")\n  }\n}\n"))
+}
+
+test "the same call with no handler around it is left alone" {
+  assert(!rewrote("fn f() -> String {\n  Fs::read_file(\"p\")\n}\n"))
+}
+
+test "a handler naming a DIFFERENT operation does not capture the call" {
+  assert(!rewrote("fn f() -> String {\n  handle {\n    Fs::read_file(\"p\")\n  } with {\n    Fs::Exists(_p) => resume(true)\n  }\n}\n"))
+}
+
+test "a user effect's handler arm is not a host operation" {
+  assert(!rewrote("fn f() -> Int {\n  handle {\n    Log::emit(1)\n  } with {\n    Log::Emit(_m) => resume(0)\n  }\n}\n"))
+}
+
+test "the call is rewritten wherever it sits inside the handled body" {
+  assert(rewrote("fn f() -> String {\n  handle {\n    let a = 1\n    if a == 1 {\n      Fs::read_file(\"p\")\n    } else {\n      \"\"\n    }\n  } with {\n    Fs::ReadFile(_p) => resume(\"m\")\n  }\n}\n"))
+}
+
+test "an arm body is outside its own handler, so its direct call is left alone" {
+  assert(!rewrote("fn f() -> String {\n  handle {\n    \"x\"\n  } with {\n    Fs::ReadFile(_p) => resume(Fs::read_file(\"q\"))\n  }\n}\n"))
+}
+
+test "an Env operation is covered by the same rule" {
+  assert(rewrote("fn f() -> String {\n  handle {\n    Env::get(\"HOME\")\n  } with {\n    Env::Get(_k) => resume(\"m\")\n  }\n}\n"))
+}
