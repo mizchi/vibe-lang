@@ -49,6 +49,21 @@ read, and every feature below is one the compiler itself depends on.
   promise.
 - **`Result` was removed** (#1324). Errors are the `Exception` effect, and
   `Error` is deprecated at the freeze in favour of it (ADR-0085).
+- **`==` compares by content, and what cannot be compared soundly is a compile
+  error rather than a guess** (ADR-0097, #1526, #2474, #2523). At a concrete
+  type, arrays, tuples, structs and their nestings compare structurally —
+  including through a name, a function's return value, a parameterized type
+  alias, and a generic struct or enum at each concrete instantiation. A generic
+  `[T: Eq]` bound compares by content too: `Eq` carries
+  `equals(Self, Self) -> Bool` and `derive (Eq)` registers the impl, so a
+  bounded `==` answers exactly like the concrete one. `Ord` is still a marker
+  trait, so a `[T: Ord]` bound at an aggregate is refused — it would dispatch
+  to a builtin `<` that reads the box rather than the value, which is wrong in
+  both directions at once. A formal with no `Eq` bound is refused the same way.
+  Both diagnostics name the edit ("compare at the concrete type … or drop the
+  bound"; "declare the bound (`[T: Eq]`)"). What this replaced was silent
+  reference equality, where two equal values answered `false` and nothing said
+  so.
 - **`String` is a byte string** with byte-offset indexing (ADR-0098), which is
   what the memory actually holds. Source positions follow: every position the
   CLI reports or accepts is a byte position (ADR-0108,
