@@ -7,7 +7,7 @@
 // keep driving the pattern language as a plain sibling leaf import.
 
 import ./grep_fs.vibe {
-  grep_scan_fs_report
+  grep_scan_fs_report, grep_scan_fs_report_limited
 }
 
 import @vibe/core {
@@ -35,4 +35,45 @@ test "grep_scan_fs_report: unparseable file is skipped with a warning, not an ab
   let (hits, warn) = grep_scan_fs_report(dir, "Array::length($(x:exp))", no_strings(), no_strings(), "", false)
   inspect(hits, String::concat(good, ":1:9: Array::length([1])\t$x=[1]\n"))
   inspect(warn, String::concat("warning: grep: skipped `", String::concat(bad, "` because it could not be parsed\n")))
+}
+
+test "grep_scan_fs_report: the typed tier refuses with a diagnostic instead of trapping (#2914)" {
+  // A tree-wide `--where` sweep dies at wasm32's 4 GiB ceiling, because every
+  // matching file re-types its whole dependency closure. It used to surface as
+  // `wasm trap: out of bounds memory access` plus a bare backtrace -- naming
+  // neither the file nor the stage, and indistinguishable to the runtime from
+  // a real pointer bug.
+  //
+  // Driven through the budget parameter rather than by actually exhausting
+  // 3 GiB: a limit of 1 byte is always already exceeded, so the guard fires on
+  // the first typed file. That exercises the REAL loop, not just the
+  // predicate -- a predicate that is right and a loop that never consults it
+  // look the same from outside, which is the proxy AGENTS.md's gate rules
+  // warn about.
+  let dir = "_build/vibe_grep_heap_guard"
+  let f = String::concat(dir, "/a.vibe")
+  Fs::mkdir_p(dir)
+  Fs::write_file(f, "let n = Array::length([1])\n")
+  let wheres = [String::concat("$x", " : Int")]
+  let msg = handle {
+    let (hits, _) = grep_scan_fs_report_limited(dir, "Array::length($(x:exp))", wheres, no_strings(), "", false, 1)
+    String::concat("NO REFUSAL, got: ", hits)
+  } with { Exception::Throw(e) => e }
+  inspect(String::contains(msg, "ran out of address space"), "true")
+  inspect(String::contains(msg, f), "true")
+  inspect(String::contains(msg, "#2914"), "true")
+}
+
+test "grep_scan_fs_report: a reachable budget does not disturb the answer (#2914)" {
+  // The control the refusal needs: with a budget the sweep never approaches,
+  // the typed tier answers exactly as before. A guard that fired always would
+  // satisfy the test above and break every real query.
+  let dir = "_build/vibe_grep_heap_guard_ok"
+  let f = String::concat(dir, "/a.vibe")
+  Fs::mkdir_p(dir)
+  Fs::write_file(f, "let n = Array::length([1])\n")
+  let wheres = [String::concat("$x", " : Array[_]")]
+  let (hits, warn) = grep_scan_fs_report_limited(dir, "Array::length($(x:exp))", wheres, no_strings(), "", false, 3221225472)
+  inspect(hits, String::concat(f, ":1:9: Array::length([1])\t$x=[1]\n"))
+  inspect(warn, "")
 }
