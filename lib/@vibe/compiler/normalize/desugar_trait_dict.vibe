@@ -9339,6 +9339,57 @@ fn interp_missing_show_msg(tn: String) -> String {
   }
 }
 
+/// #2912: an array-returning builtin call whose ELEMENT SHAPE did not resolve,
+/// or "" when this is not that shape.
+///
+/// The two shape functions above are the whole vocabulary the renderer has for
+/// an array-returning call: `dtd_elem_preserving_shape` for the four builtins
+/// that reuse their argument's element type, and `dtd_map_callback_shape` for
+/// `Array::map`'s declared callback return. A call to one of those five whose
+/// shape comes back empty is an array the renderer CANNOT render -- and the
+/// fall-through below lowers it into `compile_call`'s general `__to_string`
+/// arm, a runtime heuristic that guesses string-pointer vs integer from the
+/// bit pattern. An array pointer takes the integer branch and prints as a
+/// decimal address: `__to_string(Array::map(xs, (v) -> v * 2))` printed `296`,
+/// varying with what allocated before it, while `vibe check` said nothing.
+///
+/// This reuses those two lists rather than adding a third naming the
+/// array-returning builtins. That family has already diverged four times from
+/// exactly such hand-maintained lists (#1460, #2903, and both halves of
+/// #2905), and a name missing from a NEW list here would silently reopen the
+/// pointer path. Missing from these two, the call never had a shape to begin
+/// with, so there is nothing to refuse and behaviour is unchanged.
+fn interp_unresolved_array_call(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
+  match arg {
+    ECall(callee, cargs, _) => match callee {
+      EIdent(fname, _) => if String::length(dtd_elem_preserving_shape(fname, cargs, struct_sets, var_types, fn_returns)) == 0 && String::length(dtd_map_callback_shape(fname, cargs)) == 0 && dtd_names_an_array_builtin(fname) {
+        fname
+      } else {
+        ""
+      },
+      _ => ""
+    },
+    _ => ""
+  }
+}
+
+/// The five names the two shape functions above understand, and nothing else.
+/// Kept beside them so a name added to either is added here in the same edit.
+fn dtd_names_an_array_builtin(fname: String) -> Bool {
+  fname == "Array::map" || fname == "Array::filter" || fname == "Array::slice" || fname == "Array::reverse" || fname == "Array::concat"
+}
+
+/// #2912: the refusal message, naming the edit rather than the pass.
+fn interp_unresolved_array_msg(fname: String) -> String {
+  let base = String::concat("cannot render the result of `", String::concat(fname, "` -- its element type is not known here, and rendering it would print a heap address instead of the array. Annotate the binding (`let xs: Array[Int] = ...`) or, for `Array::map`, give the callback a declared return type (`(v: Int) -> Int { .. }`) (#2912)"))
+  let self_fn = Array::get(dtd_show_self_fn, 0)
+  if String::length(self_fn) > 0 {
+    String::concat(base, String::concat(" [@fn=", String::concat(self_fn, "]")))
+  } else {
+    base
+  }
+}
+
 // ---- #1392: structural interpolation ----
 // Literals render from syntax; names and annotated function calls render from
 // the recursive shape environment. Option/Result use their inferred head.
@@ -10243,8 +10294,14 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
             expanded
           } else {
             let missing = interp_missing_show_type(Array::get(args, 0), struct_sets, var_types, fn_returns)
+            let unresolved_array = interp_unresolved_array_call(Array::get(args, 0), struct_sets, var_types, fn_returns)
             if missing != "" {
               throw(interp_missing_show_msg(missing))
+            } else if String::length(unresolved_array) > 0 {
+              // #2912: the same reasoning as #1445 one line up, for an array
+              // instead of a declared aggregate. Both reach here having failed
+              // to render, and both would otherwise print a pointer decimal.
+              throw(interp_unresolved_array_msg(unresolved_array))
             } else if is_show_shim_call(callee, args) {
               // #2468: nothing HERE resolved it, and for a shim call leaving
               // the call standing is not the same as leaving a `__to_string`
