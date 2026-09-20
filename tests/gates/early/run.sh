@@ -4026,6 +4026,82 @@ done
 rm -rf "$sbdir"
 echo "[compiler-gate] raw-ABI shim covers sleep_blocking ok (1000 on both lanes, direct and via Async)"
 
+# 27h. the RETURN side of the same shim (#2905). `Console::read_char` aliases
+#      the `vibe.stdin_read_char` import that `Stdin::read_char` uses
+#      (linked_compile.vibe maps both to `stdin_read_char_idx`), so the raw
+#      byte the host returns needs the same RC tag. It had neither half:
+#      #2911 gave it the import RESERVATION -- before that the module BUILT
+#      CLEAN and failed to validate -- and the result tag was still missing,
+#      so it loaded and answered `host >> 1`. 'A' (65) came back as 32.
+#
+#      A loud failure became a silent wrong answer, which this repo's triage
+#      ranks WORSE than the crash it replaced, and no gate saw either.
+#
+#      Asserted as a VALUE against a host stub that returns a fixed byte and
+#      decodes nothing, with TWO controls that make a passing row mean
+#      something: `Stdin::read_char` (the sibling that was always right) must
+#      agree, and VIBE_RC=0 (no tag to add) must already agree -- so the
+#      expectation is not "whatever the compiler emits".
+echo "[compiler-gate] 27h/27 Console::read_char returns the host byte (#2905)"
+crdir="_build/_gate_console_read_char"
+rm -rf "$crdir"; mkdir -p "$crdir"
+cat > "$crdir/console.vibe" <<'EOF'
+fn main() -> Int allows Console {
+  Console::read_char()
+}
+EOF
+cat > "$crdir/stdin.vibe" <<'EOF'
+fn main() -> Int allows Stdin {
+  Stdin::read_char()
+}
+EOF
+cat > "$crdir/stub.mjs" <<'EOF'
+// Return a fixed raw byte from every vibe import and print what main gives
+// back. Decodes nothing, so it cannot paper over a missing tag.
+import { readFileSync } from "node:fs";
+const val = BigInt(process.argv[3]);
+const mod = await WebAssembly.compile(readFileSync(process.argv[2]));
+const imports = {
+  vibe: new Proxy({}, { get: () => () => val }),
+  wasi_snapshot_preview1: new Proxy({}, { get: () => () => 0 }),
+};
+const inst = await WebAssembly.instantiate(mod, imports);
+let r;
+try { r = inst.exports.main(0n); } catch { try { r = inst.exports.main(); } catch { console.log("TRAP"); process.exit(0); } }
+console.log(String(BigInt(r)));
+EOF
+for cr_rc in 0 1; do
+  for cr_src in console stdin; do
+    rm -f "$crdir/$cr_src.wasm" "$crdir/$cr_src.wasm.diag"
+    VIBE_RC="$cr_rc" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+      bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+      "$crdir/$cr_src.vibe" "$crdir/$cr_src.wasm" main >/dev/null 2>&1 || true
+    if [ ! -s "$crdir/$cr_src.wasm" ]; then
+      echo "[compiler-gate] FAIL: $cr_src.vibe did not compile under VIBE_RC=$cr_rc (#2905)" >&2
+      cat "$crdir/$cr_src.wasm.diag" >&2 2>/dev/null; exit 1
+    fi
+    # A module that builds but does not validate is the shape #2905 opened on,
+    # so check that separately from the value -- otherwise it reads as "TRAP".
+    if ! node -e "new WebAssembly.Module(require('fs').readFileSync('$crdir/$cr_src.wasm'))" >/dev/null 2>&1; then
+      echo "[compiler-gate] FAIL: $cr_src.vibe under VIBE_RC=$cr_rc built a module that does not validate (#2905)" >&2
+      exit 1
+    fi
+    for cr_byte in 65 200 1; do
+      cr_got="$(node "$crdir/stub.mjs" "$crdir/$cr_src.wasm" "$cr_byte" 2>/dev/null)"
+      if [ "$cr_got" != "$cr_byte" ]; then
+        echo "[compiler-gate] FAIL: $cr_src.vibe under VIBE_RC=$cr_rc returned '$cr_got' for host byte $cr_byte (#2905)." >&2
+        echo "  The import speaks UNTAGGED integers, so the RC lane must tag the" >&2
+        echo "  result. Half the byte means the tag is missing: add the name to" >&2
+        echo "  the RC result-shim arm in compile_call.vibe AND to cc_ladder_names," >&2
+        echo "  which gates whether that arm is reached at all." >&2
+        exit 1
+      fi
+    done
+  done
+done
+rm -rf "$crdir"
+echo "[compiler-gate] Console::read_char ok (host byte returned intact on both lanes, matching Stdin::read_char)"
+
 
 echo "[compiler-gate] 28/28 argument type checking"
 adir="_build/_gate_argcheck"
