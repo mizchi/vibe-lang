@@ -272,7 +272,6 @@ import @vibe/compiler/codegen/common_base {
   get_slet_expr,
   get_slet_name,
   get_slet_type,
-  inline_direct_performs,
   is_efn,
   is_eident,
   is_etuple,
@@ -4806,7 +4805,6 @@ export fn effect_lowering_prelude_grants(stmts: Array[Stmt], entry_name: String,
       if Array::length(scps_errs) > 0 {
         Array::push(errs, Array::get(scps_errs, 0))
       } else {
-        inline_direct_performs(stmts)
         // ADR-0076 (#817) Phase 3, first slice: evidence-dict threading for the
         // narrow case Phase 2 above cannot reach on its own -- a handle body that
         // calls a named top-level function which itself performs the handled
@@ -4990,8 +4988,7 @@ fn oracle_pass_name(k: Int) -> String {
     11 => "wrap_entry_exception_boundary",
     12 => "lc_inject_async_sleep_boundary",
     13 => "suspend_cps_pass",
-    14 => "inline_direct_performs",
-    15 => "evidence_dict_pass",
+    14 => "evidence_dict_pass",
     _ => "forin_discard_pass"
   }
 }
@@ -5071,8 +5068,7 @@ fn oracle_apply_pass(k: Int, stmts: Array[Stmt], entry_name: String, checker_eq_
         ()
       }
     },
-    14 => inline_direct_performs(stmts),
-    15 => {
+    14 => {
       let edp_errs = evidence_dict_pass(stmts, entry_name)
       if Array::length(edp_errs) > 0 {
         Array::push(errs, Array::get(edp_errs, 0))
@@ -6183,10 +6179,12 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
   // what a module deferring rather than guessing buys: the need travels upward
   // instead of vanishing.
   let minted = eq_mint_deferred_into(trial)
-  // The whole-program phases, run once on the linked program: 12 and 15 read
-  // facts no module has, and 13, 14 and 16 follow them to keep the order.
+  // The whole-program phases, run once on the linked program: 12 and 14 read
+  // facts no module has, and 13 and 15 follow them to keep the order.
+  // (#2500 deleted pass 14, `inline_direct_performs`; the three that
+  // outlived it kept their order and closed the gap.)
   let mut lj = 12
-  while lj < 17 {
+  while lj < 16 {
     oracle_apply_pass(lj, trial, entry_name, checker_eq_offsets, checker_eq_type_keys, link.diags, env)
     lj = lj + 1
   }
