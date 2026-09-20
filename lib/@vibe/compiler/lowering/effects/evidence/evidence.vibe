@@ -6382,7 +6382,15 @@ fn edp_rewrite_needing_body(expr: Expr, ename: String, dict_pname: String, needi
     // never reaches this rewrite (eligibility already rejected it), so
     // leave it structurally unchanged if somehow encountered defensively.
     EHandle(body, arms) => if edp_handle_matches_effect(arms, ename) {
-      expr
+      // #2500 item 2, mirroring edp_rewrite_handle_body (追記 10 requires the
+      // two to agree): inside a needing function, a handle for `ename`
+      // discharges its own body, so that body is rewritten as a site against
+      // the inner arms rather than through this function's dict parameter.
+      // The arms themselves run outside it and keep using the dict.
+      edp_rewrite_handle_site(body, for a in arms {
+        let (p, ex) = a
+        (p, edp_rewrite_needing_body(ex, ename, dict_pname, needing))
+      }, ename, needing)
     } else {
       EHandle(edp_rewrite_needing_body(body, ename, dict_pname, needing), for a in arms {
         let (p, ex) = a
@@ -6592,7 +6600,19 @@ fn edp_rewrite_handle_body(expr: Expr, ename: String, op_names: Array[String], b
     // handle's own body); one matching `ename` itself never reaches here
     // (eligibility already rejected it as unconditionally unsafe).
     EHandle(body, arms) => if edp_handle_matches_effect(arms, ename) {
-      expr
+      // #2500 item 2: an inner handle for `ename` shadows this one for its
+      // own BODY, so that body must not see this handle's arms -- it is
+      // rewritten as its own site, against its own arms. The inner ARMS run
+      // outside the inner handle's coverage, so a `perform ename::Op` there
+      // still belongs to THIS handle and is rewritten here first.
+      // Splicing the outer arm into the inner body instead would be a wrong
+      // ANSWER rather than a refusal (fixtures/effect_handle_nested_test.vibe
+      // would give 2 where it must give 101), which is why the order is
+      // spelled out rather than left to the traversal.
+      edp_rewrite_handle_site(body, for a in arms {
+        let (p, ex) = a
+        (p, edp_rewrite_handle_body(ex, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing))
+      }, ename, needing)
     } else {
       EHandle(edp_rewrite_handle_body(body, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), for a in arms {
         let (p, ex) = a
