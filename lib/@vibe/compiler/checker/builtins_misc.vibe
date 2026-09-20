@@ -117,20 +117,26 @@ fn lookup_exn_kind(name: String) -> Option[Type] {
   else None
 }
 
+/// #2913: only `Map::iter_get` remains. The six names that stood beside it --
+/// bare `iter_require` / `iter_length` / `iter_get`, and `String::iter_length`
+/// / `String::iter_get` / `Map::iter_length` -- were admitted here and emitted
+/// NOWHERE, so writing one gave a clean `vibe check` and then
+/// `internal compiler error: ... reached code generation unresolved`.
+///
+/// Measured before removing, because deleting a name the lowering generates
+/// would be worse than leaving it: every occurrence of the six across
+/// `lib/@vibe/compiler` is a `name == "..."` test in the checker, and none is
+/// an emission. `Map::iter_get` is the opposite -- the lowering builds calls to
+/// it in ten places -- which is why it stays.
+///
+/// The iterator protocol itself is untouched and does not run through these.
+/// `desugar_trait_dict.vibe:7665` emits `ECall(EIdent(<ctype>::iter_get))`
+/// gated on `fn_exists(fn_returns, tn ++ "::iter_length")`, which reads
+/// USER-declared functions: a struct that declares its own `T::iter_length` /
+/// `T::iter_get` is iterable, and that path never consulted the rows below.
+/// Verified end to end with a `for v in bag` over such a struct.
 fn lookup_iter_intrinsic(name: String) -> Option[Type] {
-  if name == "iter_require" {
-    Some(CtFn(misc_one_param(CtUnknown), CtUnknown, None))
-  } else if name == "iter_length" {
-    Some(CtFn(misc_one_param(CtUnknown), CtInt, None))
-  } else if name == "iter_get" {
-    Some(CtFn(misc_two_params(CtUnknown, CtInt), CtUnknown, None))
-  } else if name == "String::iter_length" {
-    Some(CtFn(misc_one_param(CtString), CtInt, None))
-  } else if name == "String::iter_get" {
-    Some(CtFn(misc_two_params(CtString, CtInt), CtInt, None))
-  } else if name == "Map::iter_length" {
-    Some(CtFn(misc_one_param(CtUnknown), CtInt, None))
-  } else if name == "Map::iter_get" {
+  if name == "Map::iter_get" {
     // Map iteration yields keys. Keep the value parameter erased, but retain
     // the nominal receiver so arbitrary integers cannot reach raw key loads.
     Some(CtFn(misc_two_params(CtNamed("Map", [CtUnknown, CtUnknown]), CtInt), CtString, None))
