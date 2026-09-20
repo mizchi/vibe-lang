@@ -158,6 +158,58 @@ if [ "$ELAPSED_MS" -lt "$MIN_MS" ]; then
 fi
 echo "[hostfuture-source-component-gate] blocked path: 42 in ${ELAPSED_MS}ms (real-source await through waitable-set.wait confirmed)"
 
+# --- #2832: the same latch on the ANONYMOUS spelling -------------------------
+# `test_named_hostfutures_component_gate.sh` pins the settled-future latch for
+# `host_future_named`. The latch itself is in `__aw_settle`, which both
+# spellings share, but "shared code" is a claim about the tree rather than a
+# measurement -- and this gate's whole reason to exist is that the anonymous
+# routing is a different path through the wrap. So it is measured here too.
+#
+# 84 = 42 + 42 says both awaits settled; the WALL CLOCK says only one of them
+# went to the host, since the anonymous getter's value is fixed and a second
+# read would hand back the same 42 at the cost of another DELAY_MS.
+DOUBLE_SRC="$OUT_DIR/hostfuture_double_await.vibe"
+cat >"$DOUBLE_SRC" <<'EOF'
+let run: () -> Int with Async = () -> {
+  let f = host_future_get()
+  let a = await(f)
+  let b = await(f)
+  a + b
+}
+EOF
+DOUBLE_OUT="$OUT_DIR/hostfuture_double_await.component.wasm"
+rm -f "$DOUBLE_OUT" "$DOUBLE_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" "$DOUBLE_SRC" "$DOUBLE_OUT" run >/dev/null \
+  || { echo "hostfuture source component gate FAILED: double-await fixture did not compile: $(cat "$DOUBLE_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+DOUBLE_WARM_LOG="$OUT_DIR/run.double.warmup.log"
+if ! VIBE_ASYNC_GET_DELAY_MS=1 timeout 60 "$RUNNER" "$DOUBLE_OUT" >"$DOUBLE_WARM_LOG" 2>&1; then
+  echo "hostfuture source component gate FAILED: double-await warmup did not exit 0 (a second future.read on the same future is a canonical-ABI error)" >&2
+  cat "$DOUBLE_WARM_LOG" >&2
+  exit 1
+fi
+DOUBLE_LOG="$OUT_DIR/run.double.log"
+DOUBLE_START_NS=$(date +%s%N)
+if ! VIBE_ASYNC_GET_DELAY_MS="$DELAY_MS" timeout 60 "$RUNNER" "$DOUBLE_OUT" >"$DOUBLE_LOG" 2>&1; then
+  echo "hostfuture source component gate FAILED: double-await run did not exit 0 (a second future.read on the same future is a canonical-ABI error)" >&2
+  cat "$DOUBLE_LOG" >&2
+  exit 1
+fi
+DOUBLE_ELAPSED_MS=$(( ( $(date +%s%N) - DOUBLE_START_NS ) / 1000000 ))
+[ "$(cat "$DOUBLE_LOG")" = "84" ] \
+  || { echo "hostfuture source component gate FAILED: double-await expected 84 (42 + 42), got: $(cat "$DOUBLE_LOG")" >&2; exit 1; }
+if [ "$DOUBLE_ELAPSED_MS" -lt "$MIN_MS" ]; then
+  echo "hostfuture source component gate FAILED: double-await returned in ${DOUBLE_ELAPSED_MS}ms with a ${DELAY_MS}ms producer delay -- the first await cannot have genuinely parked" >&2
+  exit 1
+fi
+DOUBLE_MAX_MS=$(( DELAY_MS * 14 / 10 ))
+if [ "$DOUBLE_ELAPSED_MS" -ge "$DOUBLE_MAX_MS" ]; then
+  echo "hostfuture source component gate FAILED: double-await took ${DOUBLE_ELAPSED_MS}ms, at or beyond the ${DOUBLE_MAX_MS}ms bound -- the settled cell did not latch, so the second await went back to the host for a second ${DELAY_MS}ms read" >&2
+  exit 1
+fi
+echo "[hostfuture-source-component-gate] double await: 84 in ${DOUBLE_ELAPSED_MS}ms (>= ${MIN_MS}, < ${DOUBLE_MAX_MS}: exactly ONE host read -- the settled cell latched)"
+
 # --- control: an ordinary async entry keeps the p1 wrap ----------------------
 CTRL_SRC="$OUT_DIR/ready_await.vibe"
 cat >"$CTRL_SRC" <<'EOF'
