@@ -2530,13 +2530,13 @@ export fn edp_drop_shadowed_needing(needing: Array[String], stmts: Array[Stmt]) 
 /// appended into `pure_fns` at every safety-scan construction site) --
 /// with the extra arm condition documented on
 /// edp_fn_is_self_discharging_inert.
-fn edp_drop_self_discharging_needing(needing: Array[String], stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], ename: String) -> Array[String] {
+export fn edp_drop_self_discharging_needing(needing: Array[String], stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], ename: String, base_inert: Array[String]) -> Array[String] {
   let out = array_empty()
   let mut ni = 0
   while ni < Array::length(needing) {
     let nm = Array::get(needing, ni)
     let drop = match edp_find_fn_body(stmts, fn_defs, nm) {
-      Some(body) => edp_body_is_bare_self_discharge(body, ename),
+      Some(body) => edp_body_is_self_discharge(body, ename, base_inert, array_empty()),
       None => false
     }
     if drop {
@@ -2549,10 +2549,77 @@ fn edp_drop_self_discharging_needing(needing: Array[String], stmts: Array[Stmt],
   out
 }
 
-fn edp_body_is_bare_self_discharge(body: Expr, ename: String) -> Bool {
+/// #2500: the `EHandle`-as-whole-body shape above is what the doc comment
+/// on edp_drop_self_discharging_needing calls "deliberately narrow", and
+/// measuring the direct-inline pass's removal is what showed the cost: a
+/// body of `let r = handle {..} with E {..}; r` -- or `let n = 0; handle
+/// {..}` -- discharges E exactly as completely, and every such function
+/// stayed in `needing`, where its own handle then read as an unsafe nested
+/// handle and sank the WHOLE effect's migration. It is not a rare spelling:
+/// `dlh_hoist_expr` backfills a hoisted local closure's row from the
+/// performs in its body (including ones its own handle discharges), so a
+/// lambda that a hand-written `fn` would carry no row for arrives here
+/// declared `with E`. fixtures/effect_stateful_collect_test.vibe and
+/// fixtures/effect_rewrite_comparison_test.vibe are both that shape.
+///
+/// The spine walked here is ELet / ELetMut / ESeq only, and every part that
+/// is NOT itself such a handle must be provably irrelevant to `ename` by
+/// the same two predicates the rest of this pass uses -- no direct perform
+/// and nothing edp_has_unsafe_construct rejects. `let x = perform E::Op(1);
+/// handle {..}` therefore stays in `needing`, conservatively, exactly as
+/// before. At least one handle must be reached, so a body that merely never
+/// performs E is not mistaken for one that discharges it (that case is
+/// edp_fn_is_perform_free's).
+///
+/// `out` collects the handles reached, for edp_fn_is_self_discharging_inert
+/// to apply its arm conditions to; the drop side passes a throwaway array.
+fn edp_body_is_self_discharge(body: Expr, ename: String, base_inert: Array[String], out: Array[(Expr, Array[(Pat, Expr)])]) -> Bool {
+  edp_sd_spine(body, ename, base_inert, out) && Array::length(out) > 0
+}
+
+fn edp_sd_spine(body: Expr, ename: String, base_inert: Array[String], out: Array[(Expr, Array[(Pat, Expr)])]) -> Bool {
   match body {
-    EHandle(_, arms) => edp_handle_matches_effect(arms, ename),
+    EHandle(hbody, arms) => if edp_handle_matches_effect(arms, ename) {
+      Array::push(out, (hbody, arms))
+      true
+    } else {
+      // A handle for a DIFFERENT effect is transparent to `ename`: it
+      // neither discharges nor performs it, so the spine continues through
+      // its body. Its ARMS are not -- they run outside their own handle's
+      // coverage, so a `perform ename` there escapes to the caller and the
+      // function really does need the dict. fixtures/
+      // effect_rewrite_comparison_test.vibe is this shape: `handle { handle
+      // {..} with UserDb {..} } with Validate {..}`, self-discharging for
+      // both names but, before this arm, for neither.
+      edp_sd_part(hbody, ename, base_inert, out) && edp_sd_arms(arms, ename, base_inert, out)
+    },
+    ELet(_, v, b, _) => edp_sd_part(v, ename, base_inert, out) && edp_sd_part(b, ename, base_inert, out),
+    ELetMut(_, v, b, _) => edp_sd_part(v, ename, base_inert, out) && edp_sd_part(b, ename, base_inert, out),
+    ESeq(a, b) => edp_sd_part(a, ename, base_inert, out) && edp_sd_part(b, ename, base_inert, out),
     _ => false
+  }
+}
+
+fn edp_sd_arms(arms: Array[(Pat, Expr)], ename: String, base_inert: Array[String], out: Array[(Expr, Array[(Pat, Expr)])]) -> Bool {
+  let mut ok = true
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (_, ab) = Array::get(arms, i)
+    if edp_sd_part(ab, ename, base_inert, out) {
+      ()
+    } else {
+      ok = false
+    }
+    i = i + 1
+  }
+  ok
+}
+
+fn edp_sd_part(e: Expr, ename: String, base_inert: Array[String], out: Array[(Expr, Array[(Pat, Expr)])]) -> Bool {
+  if edp_sd_spine(e, ename, base_inert, out) {
+    true
+  } else {
+    !edp_performs_user_effect_expr(e, ename) && !edp_has_unsafe_construct(e, empty_str_array(), ename, base_inert)
   }
 }
 
@@ -2647,7 +2714,7 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
       // function never needs the dict for itself, dead or not -- see
       // edp_drop_self_discharging_needing's doc comment), so it applies to
       // the FULL set before either eligibility attempt below.
-      let needing_sd = edp_drop_self_discharging_needing(needing_unshadowed, stmts, fn_defs, ename)
+      let needing_sd = edp_drop_self_discharging_needing(needing_unshadowed, stmts, fn_defs, ename, plan_base_inert)
       // ADR-0076 追記34 V2: perform-free exclusion -- a row-E fn that cannot
       // perform E needs no dict and must NOT get one (its call sites may sit
       // outside any handle; see edp_fn_is_perform_free's doc comment). The
@@ -3455,24 +3522,34 @@ fn edp_append_perform_free_row_fns(stmts: Array[Stmt], fn_defs: Array[(Int, Bool
 /// re-enters the handled body, which the fn's own handle still covers.
 fn edp_fn_is_self_discharging_inert(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], nm: String, ename: String, base_inert: Array[String]) -> Bool {
   match edp_find_fn_body(stmts, fn_defs, nm) {
-    Some(body) => match body {
-      EHandle(_, arms) => if edp_handle_matches_effect(arms, ename) {
+    // #2500: same spine as edp_body_is_self_discharge, so the drop and this
+    // call-inertness verdict stay the pair #1595 requires -- widening one
+    // alone is what that issue's repro already showed to be self-defeating.
+    // The arm conditions below are unchanged and now run over EVERY handle
+    // the spine reached, not just a whole-body one.
+    Some(body) => {
+      let sd_handles = array_empty()
+      if edp_body_is_self_discharge(body, ename, base_inert, sd_handles) {
         let mut ok = true
-        let mut ai = 0
-        while ai < Array::length(arms) {
-          let (_, ab) = Array::get(arms, ai)
-          if edp_performs_user_effect_expr(ab, ename) || edp_has_unsafe_construct(ab, empty_str_array(), ename, base_inert) {
-            ok = false
-          } else {
-            ()
+        let mut hi = 0
+        while hi < Array::length(sd_handles) {
+          let (_, arms) = Array::get(sd_handles, hi)
+          let mut ai = 0
+          while ai < Array::length(arms) {
+            let (_, ab) = Array::get(arms, ai)
+            if edp_performs_user_effect_expr(ab, ename) || edp_has_unsafe_construct(ab, empty_str_array(), ename, base_inert) {
+              ok = false
+            } else {
+              ()
+            }
+            ai = ai + 1
           }
-          ai = ai + 1
+          hi = hi + 1
         }
         ok
       } else {
         false
-      },
-      _ => false
+      }
     },
     None => false
   }
