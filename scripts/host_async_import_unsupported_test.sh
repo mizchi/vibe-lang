@@ -25,6 +25,15 @@
 #   3. RED: the same program against a copy of the runner with the guard branch
 #      removed prints `sum=0` and exits 0, which pins the refusal to that branch
 #      rather than to anything else about the program or the runner
+#   4. runtime/viberun, asked the SAME question about the SAME module, refuses
+#      at INSTANTIATION -- an import it does not register fails the module
+#      before user code runs
+#
+# Row 4 is why this gate asks both runners rather than only the one that was
+# wrong. The two lanes fail at different MOMENTS, and
+# docs/internal/design/async-host-contract.md states that difference rather
+# than averaging it; a gate that measured only the node side would let the
+# document's claim about viberun go on being inherited instead of checked.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -37,6 +46,25 @@ unset VIBE_HOST_WITHHOLD VIBE_ASYNC_FUTURES VIBE_ASYNC_STREAMS || true
 # shellcheck source=scripts/resolve_stage2.sh
 . scripts/resolve_stage2.sh
 stage2="$(resolve_stage2 host-async-import-unsupported "${VIBE_STAGE2_WASM:-}")"
+
+# This gate asks the question of BOTH host runners, so one runner cannot answer
+# it. `ensure_viberun.sh` is content-hashed, so on a tree whose runner sources
+# have not changed it is a no-op.
+if [ -z "${HOST_ASYNC_IMPORT_VIBERUN:-}" ]; then
+  if ! bash "$ROOT_DIR/scripts/ensure_viberun.sh" >&2; then
+    echo "host-async-import-unsupported: FAIL: could not build runtime/viberun." >&2
+    echo "host-async-import-unsupported: this gate asks BOTH host runners what they do with an async import they do not implement." >&2
+    echo "host-async-import-unsupported: build it with: cargo build --release --manifest-path runtime/viberun/Cargo.toml" >&2
+    echo "host-async-import-unsupported: or point HOST_ASYNC_IMPORT_VIBERUN at an existing binary." >&2
+    exit 1
+  fi
+fi
+viberun="${HOST_ASYNC_IMPORT_VIBERUN:-runtime/viberun/target/release/viberun}"
+if [ ! -x "$viberun" ]; then
+  echo "host-async-import-unsupported: FAIL: the Rust runner is missing at '$viberun'." >&2
+  echo "host-async-import-unsupported: build it with: cargo build --release --manifest-path runtime/viberun/Cargo.toml" >&2
+  exit 1
+fi
 
 work="$ROOT_DIR/_build/host_async_import_unsupported"
 rm -rf "$work"
@@ -146,6 +174,33 @@ grep -q '^sum=0$' "$work/red.txt" || {
   exit 1
 }
 echo "ok: removing the guard restores the silent sum=0, so the refusal is that branch"
+
+# 4. the other runner, asked the same question about the same module: viberun's
+#    core lane does not register these imports either, and there the failure is
+#    at INSTANTIATION -- measured, not inherited from the design.
+if "$viberun" "$work/stream.wasm" > "$work/viberun.txt" 2>&1; then
+  echo "host-async-import-unsupported: FAIL viberun ran a module whose host stream imports it does not define" >&2
+  cat "$work/viberun.txt" >&2
+  exit 1
+fi
+grep -q 'has not been defined' "$work/viberun.txt" || {
+  echo "host-async-import-unsupported: FAIL viberun did not refuse at instantiation; the contract's claim about this lane no longer holds" >&2
+  cat "$work/viberun.txt" >&2
+  exit 1
+}
+grep -q 'vibe::host_stream_read' "$work/viberun.txt" || {
+  echo "host-async-import-unsupported: FAIL viberun's refusal does not name the import" >&2
+  cat "$work/viberun.txt" >&2
+  exit 1
+}
+# The program never ran, so its output cannot be there. Asserting the absence
+# is what separates "refused before user code" from "ran and then failed".
+if grep -q '^sum=' "$work/viberun.txt"; then
+  echo "host-async-import-unsupported: FAIL viberun produced the program's output, so it did not refuse before user code ran" >&2
+  cat "$work/viberun.txt" >&2
+  exit 1
+fi
+echo "ok: viberun refuses the same module at instantiation, naming the import"
 
 echo "----"
 echo "host-async-import-unsupported: ok"
