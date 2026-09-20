@@ -70,6 +70,32 @@ if [ -n "$pinned_seed_sha" ] && [ "$pinned_seed_sha" != "$actual_seed_sha" ]; th
   echo "build-compiler-seed-assets: seed sha256 mismatch (manifest=$pinned_seed_sha actual=$actual_seed_sha)" >&2
   exit 1
 fi
+# Guard: the manifest must NAME the seed being published. `seed.name` is not
+# derived from anything here -- it is whatever bootstrap/seed.json holds, and
+# `generations.sh adopt` only rewrites it when given an explicit `--name`.
+# Measured on seed/array-capacity-2026-09-20: dispatching seed-release with a
+# `source_ref` that predates the bump commit made the Adopt step restore THAT
+# commit's manifest, whose `name` still said the PREVIOUS seed. The wasm was
+# correct and verified, but the published `vibe-compiler-seed-*.json` asset
+# went out reading `name: bytes-capacity-2026-09-15` under
+# `tag: seed/array-capacity-2026-09-20` -- a manifest disagreeing with its own
+# tag, on a published artifact. Nothing in-tree reads that field, which is
+# exactly why nothing caught it. The tag is the identity the assets are named
+# after ($TAG is already the `seed/` prefix stripped), so require the manifest
+# to agree with it rather than trusting whichever ref was dispatched.
+seed_name="$(json_string_field "$seed_json" name)"
+seed_tag="$(json_string_field "$seed_json" tag)"
+if [ "$seed_name" != "$TAG" ]; then
+  echo "build-compiler-seed-assets: seed.json names a different seed than the tag being published (seed.name=$seed_name, publishing=$TAG)" >&2
+  echo "build-compiler-seed-assets: re-run \`generations.sh adopt\` with --name $TAG, or dispatch seed-release with a source_ref whose bootstrap/seed.json already names it" >&2
+  exit 1
+fi
+if [ "$seed_tag" != "seed/$TAG" ]; then
+  echo "build-compiler-seed-assets: seed.json tags a different release than the one being published (seed.tag=$seed_tag, publishing=seed/$TAG)" >&2
+  echo "build-compiler-seed-assets: re-run \`generations.sh adopt\` with --tag seed/$TAG" >&2
+  exit 1
+fi
+
 seed_source_commit="$(json_string_field "$seed_json" source_commit)"
 seed_entry="$(json_string_field "$seed_json" entry)"
 seed_entry_name="$(json_string_field "$seed_json" entry_name)"
