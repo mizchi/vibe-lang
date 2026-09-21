@@ -591,6 +591,14 @@ case "$2" in
     rc=0
     [ "$r1" = "124" ] && rc=124
     [ "$r2" = "124" ] && rc=124 ;;
+  # The shape that showed the watcher must not be cancelled early: the group
+  # LEADER exits on SIGTERM while a descendant ignores it (SIG_IGN survives
+  # exec). `wait` returns on the leader, and the descendant keeps the command
+  # substitution's pipe open until the watchdog's SIGKILL -- which never came
+  # while the watcher was killed the moment `wait` returned. Answered 124
+  # after the descendant's full 8s, which is not a bound.
+  term_ignoring_child)
+    out=$(watchdog_run 1 sh -c 'sh -c "trap \"\" TERM; sleep 8" & wait' 2>/dev/null); rc=$? ;;
   late_self_term)
     rc=0
     n=0
@@ -637,6 +645,7 @@ if grep -q "$(basename "$tlib")" "$tprobe" && grep -q 'vibe_absent_gtimeout' "$t
   wd_expect self_term_nomarker 125 8 "and refuses the same way rather than passing the signal off as its own"
   wd_expect late_self_term 143 40 "a late self-kill under the bound is never relabelled (8 runs, none 124)"
   wd_expect concurrent 0 20 "overlapping calls do not share a marker"
+  wd_expect term_ignoring_child 124 5 "a TERM-ignoring descendant is KILLed, so the bound holds (was the child's full 8s)"
   # Paired: a marker name that is NOT unique per call. `$$` is shared by every
   # background seed, and a bash 3.2 subshell inherits the parent's RANDOM
   # sequence, so this is what composing the name instead of allocating it

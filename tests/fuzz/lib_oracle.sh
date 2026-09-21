@@ -157,15 +157,26 @@ watchdog_run() { # <seconds> <cmd...>
   local watch_pid=$!
   wait "$cmd_pid" 2>/dev/null
   local rc=$?
-  kill "$watch_pid" 2>/dev/null
-  wait "$watch_pid" 2>/dev/null
-  if [ ! -e "$marker" ]; then
-    # The watchdog removed it, and nothing else can: the name carries this
-    # process's pid and a random suffix.
-    return 124
+  # WHICH of the two ended first decides what to do with the watcher, and the
+  # marker answers that: it is still there only if the watchdog never fired.
+  if [ -e "$marker" ]; then
+    # Never fired -- the command finished on its own. Cancel the poll.
+    kill "$watch_pid" 2>/dev/null
+    wait "$watch_pid" 2>/dev/null
+    rm -f "$marker" 2>/dev/null
+    return "$rc"
   fi
-  rm -f "$marker" 2>/dev/null
-  return "$rc"
+  # It fired. Let it FINISH its TERM -> KILL escalation instead of cancelling
+  # it: `wait` returns as soon as the group LEADER dies, and a descendant that
+  # ignores SIGTERM outlives it while still holding the command
+  # substitution's stdout pipe. Killing the watcher here left nothing to send
+  # the SIGKILL, so the call waited for that descendant -- measured, a 1s
+  # bound around a leader that exits on TERM with a TERM-ignoring child took
+  # the child's full 8 seconds. A bound that answers 124 after eight seconds
+  # is not a bound (#2955 review). The escalation is capped at ~2s by the
+  # watchdog itself, and only runs when the bound has already been reached.
+  wait "$watch_pid" 2>/dev/null
+  return 124
 }
 
 # One spelling for the three call sites below, so which mechanism bounds them
