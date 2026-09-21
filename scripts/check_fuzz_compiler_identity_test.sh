@@ -7,6 +7,13 @@
 # matches nothing passes the gate while proving nothing, which is how a red
 # test certifies a hole instead of closing it.
 set -uo pipefail
+# A gate must not assume the environment it runs in (#2252). `FUZZ_JOBS` is
+# read by run_fuzz.sh and validated before anything this file tests: exported
+# as `0` or a non-number by a developer or a runner, every probe would exit at
+# job-count validation and the gate would fail for ambient configuration
+# rather than for its subject. Cleared here, and each probe passes `--jobs 1`
+# explicitly so the value is this file's choice rather than an inheritance.
+unset FUZZ_JOBS
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
 GATE="scripts/check_fuzz_compiler_identity.sh"

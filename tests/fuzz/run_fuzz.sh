@@ -52,7 +52,25 @@ while [ $# -gt 0 ]; do
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
+# The seed range is validated HERE, beside `--jobs`, and not left to the first
+# arithmetic use far below. `--seeds typo` used to reach the resets before
+# `total=$((B - A + 1))` ever evaluated it: the previous campaign's findings
+# were deleted and its ledger truncated, and only THEN did `set -u` abort on
+# the unbound expansion. A command-line typo irreversibly destroyed the last
+# campaign while running none (#2955 review). Nothing destructive happens
+# above this point.
 A="${SEEDS%%..*}"; B="${SEEDS##*..}"
+case "$SEEDS" in
+  *..*) ;;
+  *) echo "[fuzz] --seeds must be A..B (got: $SEEDS)" >&2; exit 2 ;;
+esac
+case "${A:-}" in
+  ''|*[!0-9]*) echo "[fuzz] --seeds start must be a non-negative integer (got: ${A:-empty} from $SEEDS)" >&2; exit 2 ;;
+esac
+case "${B:-}" in
+  ''|*[!0-9]*) echo "[fuzz] --seeds end must be a non-negative integer (got: ${B:-empty} from $SEEDS)" >&2; exit 2 ;;
+esac
+[ "$A" -le "$B" ] || { echo "[fuzz] --seeds start must not exceed end (got: $SEEDS)" >&2; exit 2; }
 if [ -z "$JOBS" ]; then
   JOBS="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)"
   [ "$JOBS" -le 8 ] || JOBS=8

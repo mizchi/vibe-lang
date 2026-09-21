@@ -10,6 +10,13 @@
 # asserting the stale directory survives there -- a test that only exercises
 # the fixed code proves the fix is present, not that it was needed.
 set -uo pipefail
+# A gate must not assume the environment it runs in (#2252). `FUZZ_JOBS` is
+# read by run_fuzz.sh and validated before anything this file tests: exported
+# as `0` or a non-number by a developer or a runner, every probe would exit at
+# job-count validation and the gate would fail for ambient configuration
+# rather than for its subject. Cleared here, and each probe passes `--jobs 1`
+# explicitly so the value is this file's choice rather than an inheritance.
+unset FUZZ_JOBS
 cd "$(dirname "$0")/../.."
 ROOT="$PWD"
 
@@ -74,7 +81,7 @@ plant() {
 
 say "=== green: a clean run clears a stale finding ==="
 if plant; then
-  out="$(bash tests/fuzz/run_fuzz.sh --seeds 1..1 --cli "$STAGE2" 2>&1)"
+  out="$(bash tests/fuzz/run_fuzz.sh --seeds 1..1 --jobs 1 --cli "$STAGE2" 2>&1)"
   if [ -e "$STALE" ]; then
     bad "the stale finding SURVIVED a run: $STALE"
   else
@@ -106,7 +113,7 @@ exit 1
 SHIM
 chmod +x "$SHIMDIR/rm"
 if plant; then
-  out="$(PATH="$SHIMDIR:$PATH" bash tests/fuzz/run_fuzz.sh --seeds 1..1 --cli "$STAGE2" 2>&1)"; arc=$?
+  out="$(PATH="$SHIMDIR:$PATH" bash tests/fuzz/run_fuzz.sh --seeds 1..1 --jobs 1 --cli "$STAGE2" 2>&1)"; arc=$?
   # The precondition must be real before anything the run says is believed.
   if [ ! -e "$STALE" ]; then
     bad "the shim did NOT block removal -- this case proves nothing"
@@ -143,7 +150,7 @@ else
   # this run exited 2 with the evidence already gone (#2955 review).
   mkdir -p "$FIND/seed_9_REAL_EVIDENCE"
   printf 'repro\n' > "$FIND/seed_9_REAL_EVIDENCE/single.vibe"
-  out="$(bash tests/fuzz/run_fuzz.sh --seeds 1..1 --cli "$STAGE2" 2>&1)"; lrc=$?
+  out="$(bash tests/fuzz/run_fuzz.sh --seeds 1..1 --jobs 1 --cli "$STAGE2" 2>&1)"; lrc=$?
   if [ -f "$FIND/seed_9_REAL_EVIDENCE/single.vibe" ]; then
     say "  ok   the refusal preserved the previous campaign's evidence"
   else
@@ -211,7 +218,7 @@ say "=== red: the ledger guard CONSULTS the truncation status (fault-injected) =
 inj_keep="$(inject keep "")"
 if grep -q 'seeds_reset_ok=0' "$inj_keep" && grep -q '\[ "\$seeds_reset_ok" -eq 0 \]' "$inj_keep"; then
   say "  ok   fault injected, predicate still present"
-  out="$(bash "$inj_keep" --seeds 1..1 --cli "$STAGE2" 2>&1)"; irc=$?
+  out="$(bash "$inj_keep" --seeds 1..1 --jobs 1 --cli "$STAGE2" 2>&1)"; irc=$?
   case "$out" in
     *"could not reset"*"failing_seeds"*) say "  ok   with the predicate, a failed truncation REFUSES" ;;
     *) bad "with the predicate present the run did not refuse: $(printf '%s' "$out" | tail -1)" ;;
@@ -227,7 +234,7 @@ rm -f "$inj_keep"
 inj_drop="$(inject drop 's@if \[ "\$seeds_reset_ok" -eq 0 \] || @if @')"
 if grep -q 'seeds_reset_ok=0' "$inj_drop" && ! grep -q '\[ "\$seeds_reset_ok" -eq 0 \]' "$inj_drop"; then
   say "  ok   control staged: same fault, predicate removed"
-  out="$(bash "$inj_drop" --seeds 1..1 --cli "$STAGE2" 2>&1)"; crc=$?
+  out="$(bash "$inj_drop" --seeds 1..1 --jobs 1 --cli "$STAGE2" 2>&1)"; crc=$?
   case "$out" in
     *"0 findings"*) say "  ok   without the predicate it runs and reports 0 -- the silently-wrong outcome" ;;
     *) bad "control did not complete a campaign: $(printf '%s' "$out" | tail -1)" ;;
@@ -256,7 +263,7 @@ inject_ws() { # <name> <extra-sed> -> path
 ws_keep="$(inject_ws keep "")"
 if grep -q '\[ ! -d "\$WORK" \] || \[ ! -d "\$FIND" \]' "$ws_keep"; then
   say "  ok   fault injected, workspace guard still present"
-  out="$(bash "$ws_keep" --seeds 1..1 --cli "$STAGE2" 2>&1)"; wrc=$?
+  out="$(bash "$ws_keep" --seeds 1..1 --jobs 1 --cli "$STAGE2" 2>&1)"; wrc=$?
   case "$out" in
     *"could not create the workspace"*) say "  ok   with the guard, a failed mkdir REFUSES" ;;
     *) bad "with the guard present the run did not refuse: $(printf '%s' "$out" | tail -1)" ;;
@@ -276,7 +283,7 @@ if grep -q 'if false; then' "$ws_drop"; then
   # execution crossed the guard and nothing about a clean `0 findings` result
   # (#2955 review). The ledger and pre-fix controls already required both;
   # this one did not.
-  out="$(bash "$ws_drop" --seeds 1..1 --cli "$STAGE2" 2>&1)"; wcrc=$?
+  out="$(bash "$ws_drop" --seeds 1..1 --jobs 1 --cli "$STAGE2" 2>&1)"; wcrc=$?
   case "$out" in
     *"[fuzz] mode="*) say "  ok   without the guard it announces a campaign" ;;
     *) bad "control did not announce a campaign: $(printf '%s' "$out" | tail -1)" ;;
@@ -317,7 +324,7 @@ elif grep -q "findings left there would be read as this run" "$probe"; then
 else
   say "  ok   the mutant carries neither the reset nor its guard"
   if plant; then
-    out="$(bash "$probe" --seeds 1..1 --cli "$STAGE2" 2>&1)"
+    out="$(bash "$probe" --seeds 1..1 --jobs 1 --cli "$STAGE2" 2>&1)"
     case "$out" in
       *"[fuzz] mode="*) say "  ok   pre-fix: the mutant announced a campaign" ;;
       *) bad "pre-fix: no campaign announced -- survival would prove nothing: $(printf '%s' "$out" | tail -1)" ;;
