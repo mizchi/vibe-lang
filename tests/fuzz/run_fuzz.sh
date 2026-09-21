@@ -77,6 +77,22 @@ echo "[fuzz] mode=$MODE gen=${GENMODE:-liveness} seeds=$A..$B cli=$CLI jobs=$JOB
 
 WORK=_build/fuzz/work
 FIND=_build/fuzz/findings
+# Reset BOTH records of what this run found, so they always describe the same
+# run. `failing_seeds.txt` was truncated here and `findings/` was not, which
+# meant a finding directory from an earlier invocation sat there looking
+# current -- and `findings/` is what a person reads to learn WHAT was found,
+# since the summary line says only how many.
+#
+# Hit for real while certifying the 0.1.0 candidate (#2954): both campaigns
+# printed `0 findings` while `findings/` held `seed_1_COMPILE_CRASH`, left by
+# a deliberately bogus compiler in check_fuzz_compiler_identity_test.sh's red
+# case an hour earlier. That one was survivable only because the two records
+# CONTRADICTED each other; a stale finding from a real earlier campaign would
+# have agreed with nothing and simply been read as this run's result.
+#
+# Anyone who needs a finding kept across runs copies it out, which is a
+# deliberate act -- the right shape for evidence.
+rm -rf "$FIND"
 mkdir -p "$WORK" "$FIND"
 : > _build/fuzz/failing_seeds.txt
 
