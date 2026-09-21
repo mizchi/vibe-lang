@@ -852,6 +852,26 @@ local checkRcDefault = new Task {
 // that file. The SWEEP case is deliberately unchanged (#1943), and the test
 // carries that as a control alongside a no-match control -- without them,
 // "refuse whenever stdout is empty" would pass the red case.
+// #2936: the `Array::` builtins check their receiver AND their callback.
+// `Array::map(xs, 0)` -- forgetting the closure -- type-checked clean and
+// emitted a module that would not load, with no source location. Two holes:
+// six names have a dedicated checker arm ahead of the general one that owns
+// the receiver check, and the non-receiver head table deliberately skipped
+// higher-order arguments. Carries controls both ways: the names that were
+// never broken must still refuse, and real higher-order code must still
+// compile AND run with the right answers -- otherwise "refuse everything"
+// passes the red rows.
+local checkArrayArgHead = new Task {
+  name = "check-array-arg-head"
+  description =
+    "Array builtins refuse a non-array receiver and a non-function callback, while real higher-order code still runs"
+  cmd = "bash scripts/array_builtin_arg_head_test.sh"
+  inputs {
+    ...compilerProbeInputs
+    "scripts/array_builtin_arg_head_test.sh"
+  }
+  deps { selfhostGeneration }
+}
 local checkGrepNamedUnparseable = new Task {
   name = "check-grep-named-unparseable"
   description =
@@ -2657,6 +2677,7 @@ local releaseCheck = new Task {
     testReleaseAssetsArgs
     checkBuiltinSpelling
     checkGrepNamedUnparseable
+    checkArrayArgHead
     checkTaskfileFmt
     // These ran ONLY from the local pre-commit hook -- CI never invoked them.
     // That made the hook the single enforcement point, so #1729 (a stale
@@ -2951,6 +2972,7 @@ tasks {
   testReleaseAssetsArgs
   checkBuiltinSpelling
   checkGrepNamedUnparseable
+  checkArrayArgHead
   testVibeFmt
   testEnsureEntryWasm
   testVibeNormalizeSmoke
