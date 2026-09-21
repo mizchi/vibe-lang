@@ -270,7 +270,15 @@ run_grep() {
     # as `EISDIR`. Falling back to the single call is not a regression: it is
     # exactly today's behaviour, trap and all, and the budget diagnostic still
     # says so when it stops.
-    if ! try_cli "$g_path" VIBE_GREP_LIST_FILES=1 || [ -s "$out.diag" ] || [ ! -s "$out" ]; then
+    # The banner is the POSITIVE half of the probe. "It printed something" is
+    # not evidence of support: a compiler that ignored the mode and swept
+    # instead also prints something, and `path:line:col: text` chunks just
+    # fine -- into a list of things that are not files. Here that shape is
+    # ruled out twice over (an older compiler sees no mode at all and tries to
+    # COMPILE a directory, which fails as EISDIR), but the argv driver in
+    # runtime/vibe has only the banner, and one format means one check.
+    if ! try_cli "$g_path" VIBE_GREP_LIST_FILES=1 || [ -s "$out.diag" ] || [ ! -s "$out" ] ||
+       [ "$(sed -n '1p' "$out")" != "vibe-grep-file-list-v1" ]; then
       invoke_cli "$g_path" VIBE_GREP=1
       if [ -s "$out.warn" ]; then
         cat "$out.warn" >&2
@@ -284,7 +292,7 @@ run_grep() {
       fi
       continue
     fi
-    cp "$out" "$listf"
+    sed '1d' "$out" > "$listf"
 
     local total done_n
     total="$(grep -c . "$listf" 2>/dev/null || echo 0)"
