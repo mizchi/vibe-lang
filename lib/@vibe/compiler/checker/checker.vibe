@@ -5026,7 +5026,7 @@ fn lookup_builtin_in_env(env: TypeEnv, name: String) -> Option[Type] {
 /// seed-heap OOM constraint). Only entries whose first-arg head is certain are
 /// listed; anything else returns 0 (tolerated).
 fn builtin_first_arg_head(name: String) -> Int {
-  if name == "Array::length" || name == "Array::get" || name == "Array::set" || name == "Array::push" || name == "Array::push_all" || name == "Array::slice" || name == "Array::concat" || name == "Array::reverse" || name == "Array::truncate" || name == "Array::any" || name == "Array::all" || name == "Array::find" || name == "Array::filter" {
+  if name == "Array::length" || name == "Array::get" || name == "Array::set" || name == "Array::push" || name == "Array::push_all" || name == "Array::slice" || name == "Array::concat" || name == "Array::reverse" || name == "Array::truncate" || name == "Array::any" || name == "Array::all" || name == "Array::find" || name == "Array::filter" || name == "Array::map" || name == "Array::fold" {
     9
   } else if name == "String::length" || name == "String::unicode_length" || name == "String::utf16_length" || name == "String::utf8_length" || name == "String::substring" || name == "String::trim" || name == "String::to_lower" || name == "String::to_upper" || name == "String::index_of" || name == "String::last_index_of" || name == "String::char_code_at" || name == "String::contains" || name == "String::starts_with" || name == "String::ends_with" || name == "String::split" || name == "String::concat" {
     4
@@ -5052,8 +5052,31 @@ fn builtin_first_arg_head(name: String) -> Int {
 /// monomorphic, non-callback positions are listed (so HOF args like Array::map's
 /// function stay untouched — those need real signature inference, not a head).
 fn builtin_arg_head_rest(name: String, i: Int) -> Int {
-  // String head = 4, Int head = 1, Bytes head = 7 (see head_kind).
-  if name == "String::concat" {
+  // String head = 4, Int head = 1, Bytes head = 7, FUNCTION head = 13
+  // (see head_kind).
+  //
+  // #2936: the callback slot of the higher-order Array family. The note below
+  // used to exclude these on the grounds that a HOF argument "needs real
+  // signature inference, not a head" -- true for checking the callback's
+  // PARAMETER types, which `check_hof_param_vs_elem` does, and beside the
+  // point for the case that actually bites: `Array::map(xs, 0)`, a plain Int
+  // where the function goes, type-checked clean and emitted a module that
+  // would not load. A head is exactly enough to reject that, and a callback
+  // whose type is still unresolved has head 0 and stays tolerated.
+  if name == "Array::map" || name == "Array::filter" || name == "Array::any" || name == "Array::all" || name == "Array::find" {
+    if i == 1 {
+      13
+    } else {
+      0
+    }
+  } else if name == "Array::fold" {
+    // `Array::fold(xs, init, f)` -- the seed is arg 1 and may be any type.
+    if i == 2 {
+      13
+    } else {
+      0
+    }
+  } else if name == "String::concat" {
     if i == 1 {
       4
     } else {
@@ -5141,17 +5164,28 @@ fn builtin_arg_head_rest(name: String, i: Int) -> Int {
 /// `Bytes::new` is handled separately (0 or 1 capacity arg).
 fn builtin_fixed_arity(name: String) -> Int {
   let name = canonical_builtin_name(name)
-  if name == "Array::length" || name == "Array::reverse" || name == "String::length" || name == "String::unicode_length" || name == "String::utf16_length" || name == "String::utf8_length" || name == "String::trim" || name == "String::to_lower" || name == "String::to_upper" || name == "String::from_char_code" || name == "String::iter_length" || name == "Bytes::length" || name == "Bytes::to_array" || name == "Bytes::from_array" || name == "Map::keys" || name == "Map::iter_length" || name == "Char::to_int" || name == "Char::from_int" || name == "Double::to_int" || name == "Double::from_i64_bits" || name == "Int::to_double" || name == "not" || name == "print" || name == "println" || name == "assert" || name == "assert_true" || name == "__to_string" || name == "FixedArray::length" || name == "Int64Array::length" {
+  if name == "Array::length" || name == "Array::reverse" || name == "String::length" || name == "String::unicode_length" || name == "String::utf16_length" || name == "String::utf8_length" || name == "String::trim" || name == "String::to_lower" || name == "String::to_upper" || name == "String::from_char_code" || name == "String::iter_length" || name == "Bytes::length" || name == "Bytes::to_array" || name == "Bytes::from_array" || name == "Map::keys" || name == "Map::iter_length" || name == "Char::to_int" || name == "Char::from_int" || name == "Double::to_int" || name == "Double::from_i64_bits" || name == "Int::to_double" || name == "Double::to_float" || name == "Float::to_double" || name == "Double::to_i64_bits_lo" || name == "Double::to_i64_bits_hi" || name == "Path::is_absolute" || name == "Path::resolve" || name == "Path::to_string" || name == "__len" || name == "not" || name == "print" || name == "println" || name == "assert" || name == "assert_true" || name == "__to_string" || name == "FixedArray::length" || name == "Int64Array::length" {
     1
-  } else if name == "Array::get" || name == "Array::push" || name == "Array::push_all" || name == "Array::truncate" || name == "Array::concat" || name == "Array::any" || name == "Array::all" || name == "Array::find" || name == "Array::filter" || name == "String::equals" || name == "String::concat" || name == "String::char_code_at" || name == "String::index_of" || name == "String::last_index_of" || name == "String::contains" || name == "String::starts_with" || name == "String::ends_with" || name == "String::split" || name == "String::join" || name == "String::iter_get" || name == "Bytes::get" || name == "Bytes::push" || name == "Bytes::append" || name == "Bytes::concat" || name == "Map::has_key" || name == "Map::iter_get" || name == "map_has" || name == "MapBuilder::has_key" || name == "MapBuilder::get" || name == "eq" || name == "assert_eq" || name == "FixedArray::get" || name == "FixedArray::make" || name == "Int64Array::get" || name == "Int64Array::make" {
+  } else if name == "Array::get" || name == "Array::push" || name == "Array::push_all" || name == "Array::truncate" || name == "Array::concat" || name == "Array::any" || name == "Array::all" || name == "Array::find" || name == "Array::filter" || name == "String::equals" || name == "String::concat" || name == "String::char_code_at" || name == "String::index_of" || name == "String::last_index_of" || name == "String::contains" || name == "String::starts_with" || name == "String::ends_with" || name == "String::split" || name == "String::join" || name == "String::iter_get" || name == "Bytes::get" || name == "Bytes::push" || name == "Bytes::append" || name == "Bytes::concat" || name == "Map::has_key" || name == "Map::iter_get" || name == "map_has" || name == "MapBuilder::has_key" || name == "MapBuilder::get" || name == "eq" || name == "assert_eq" || name == "FixedArray::get" || name == "FixedArray::make" || name == "Int64Array::get" || name == "Int64Array::make" || name == "Double::from_i64_bits_lohi" || name == "MutList::truncate" {
     2
-  } else if name == "Array::set" || name == "Array::slice" || name == "String::substring" || name == "Bytes::set" || name == "Bytes::slice" || name == "Bytes::fill" || name == "MapBuilder::set" || name == "FixedArray::set" || name == "FixedArray::unsafe_set" || name == "Int64Array::set" {
+  } else if name == "Array::set" || name == "Array::slice" || name == "String::substring" || name == "Bytes::set" || name == "Bytes::slice" || name == "Bytes::fill" || name == "MapBuilder::set" || name == "FixedArray::set" || name == "FixedArray::unsafe_set" || name == "Int64Array::set" || name == "__set_field" {
     3
   } else if name == "Bytes::blit" {
     4
   } else if name == "FixedArray::blit" {
     5
   } else {
+    // #2941: eleven names reached here and got -1, so ANY argument count was
+    // accepted and codegen took the call -- `Path::resolve("/a", "b")` was
+    // clean at `vibe check` and then `reached code generation unresolved`,
+    // telling the reader to report a compiler bug for their own typo, while
+    // `Path::resolve("/a")` lowered fine. Measured by probing every name
+    // `direct_builtin_return` admits with a 7-argument call: 96 of 109
+    // answered `function arity mismatch`, and the eleven above did not. Their
+    // arities are read from the declaration or the checker row, not guessed
+    // (`__set_field` from its inline 3-param list, `MutList::truncate` from
+    // its own arm's `Array::length(args) == 2` guard).
+    //
     // #1513: fall back to the central registry rather than growing this list.
     // The chain above predates the registry and covers the pure container /
     // string builtins; every HOST builtin (`Stdout::*`, `Env::*`, `Stdin::*`,
@@ -5205,6 +5239,50 @@ fn builtin_param_head(name: String, i: Int) -> Int {
 /// row (declared `CtChar`) rejects `Char::to_int('A')`, and a `CtChar`-typed
 /// value (e.g. `Char::from_int(65)`) is rejected by every builtin whose
 /// registry row spells the slot `CtInt` (`Stdout::write_char`, ...).
+/// #2936: the receiver head check, callable from a builtin's DEDICATED arm.
+///
+/// The check itself lives in the general builtin-call arm (the `else` branch
+/// below `direct_call_return`), and it was reached only by names that have no
+/// arm of their own. Measured on `c4d075f9c`: of the names
+/// `builtin_first_arg_head` maps to head 9, `length` / `truncate` / `set` /
+/// `any` / `all` / `find` / `filter` refused an `Int` receiver and `push`
+/// (8942) / `reverse` (9022) / `concat` (9030) / `slice` (9049) / `fold`
+/// (9062) / `map` (9082) accepted it -- exactly the six with a dedicated arm
+/// ahead of the general one. `Array::map(xs, 0)` then type-checked clean and
+/// emitted a module that would not load.
+///
+/// The arms exist for reasons the general arm cannot serve -- `Array::map`'s
+/// says so: the mapped element type is `CtUnknown` in the builtin table and
+/// has to be recovered from `f`. So the rule is shared rather than the
+/// dispatch rewritten: hoisting the check ahead of the chain would mean
+/// type-checking argument 0 before dispatch, and `check_expr_capture` threads
+/// the substitution and appends to `errors`, so the same expression would be
+/// checked twice.
+///
+/// Call it with the receiver type ALREADY substituted, right after the arm
+/// binds it.
+fn check_builtin_arg_head(name: String, i: Int, arg_ty: Type, errors: Array[String], callee_off: Int) -> Unit {
+  let want_head = builtin_param_head(name, i)
+  if want_head != 0 {
+    let got_head = head_fold_char(head_kind(arg_ty))
+    if got_head != 0 && got_head != want_head {
+      // Same two wordings the general arm produces, so a diagnostic does not
+      // depend on which path happened to check the call.
+      if i == 0 {
+        Array::push(errors, String::concat(String::concat("argument type mismatch for ", String::concat(name, ": receiver type ")), String::concat(type_to_string(arg_ty), off_marker_len(callee_off, String::length(name)))))
+      } else {
+        Array::push(errors, String::concat(String::concat("argument type mismatch for ", String::concat(name, String::concat(" (arg ", String::concat(__to_string(i), "): ")))), String::concat(type_to_string(arg_ty), off_marker_len(callee_off, String::length(name)))))
+      }
+    } else if i == 0 && want_head == 9 && is_bytestream_named_type(arg_ty) {
+      Array::push(errors, String::concat(String::concat("argument type mismatch for ", String::concat(name, ": receiver type ")), String::concat(type_to_string(arg_ty), String::concat(" is a ByteStream, not an Array", off_marker_len(callee_off, String::length(name))))))
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+}
+
 fn head_fold_char(k: Int) -> Int {
   if k == 5 {
     1
@@ -8946,6 +9024,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           // generic / var element types stay tolerant (check_assignable is ground-
           // gated).
           let (obj_ty, s1, c1) = check_expr_capture(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          check_builtin_arg_head(name, 0, subst_apply(s1, obj_ty), errors, callee_off)
           let (val_ty, s2, c2) = check_expr_capture(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
           let s3 = match subst_apply(s2, obj_ty) {
             CtArray(elem) => check_assignable(subst_apply(s2, elem), subst_apply(s2, val_ty), s2, errors, "Array::push value type mismatch", tail_expr_off(Array::get(args, 1))),
@@ -9022,6 +9101,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         } else if name == "Array::reverse" && Array::length(args) == 1 {
           // Returns an array of the same element type (was CtUnknown).
           let (obj_ty, s1, c1) = check_expr_capture(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          check_builtin_arg_head(name, 0, subst_apply(s1, obj_ty), errors, callee_off)
           let result = match subst_apply(s1, obj_ty) {
             CtArray(elem) => CtArray(elem),
             _ => CtUnknown
@@ -9034,6 +9114,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           // `Array[Int]` with `Array[String]` and slipped through (the result was
           // refined to the first operand but the second was never checked).
           let (a_ty, s1, c1) = check_expr_capture(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          check_builtin_arg_head(name, 0, subst_apply(s1, a_ty), errors, callee_off)
           let (b_ty, s2, c2) = check_expr_capture(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
           let a_app = subst_apply(s2, a_ty)
           let b_app = subst_apply(s2, b_ty)
@@ -9052,6 +9133,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           // Array::get(Array::slice(ints, 0, 1), 0)` slipped through). Refine to
           // `CtArray(elem)` from a concrete receiver.
           let (obj_ty, s1, c1) = check_expr_capture(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          check_builtin_arg_head(name, 0, subst_apply(s1, obj_ty), errors, callee_off)
           let (_, s2, c2) = check_expr_capture(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
           let (_, s3, c3) = check_expr_capture(Array::get(args, 2), env, defs, s2, c2, errors, tytab, capture, lane)
           let result = match subst_apply(s3, obj_ty) {
@@ -9067,8 +9149,10 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           // and `x` against the array element type (`Array::fold([1,2], 0, (acc:
           // String, x) -> ...)` slipped through). Ground-gated.
           let (recv_ty, s1, c1) = check_expr_capture(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          check_builtin_arg_head(name, 0, subst_apply(s1, recv_ty), errors, callee_off)
           let (init_ty, s2, c2) = check_expr_capture(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
           let (fn_ty, s3, c3) = check_expr_capture(Array::get(args, 2), env, defs, s2, c2, errors, tytab, capture, lane)
+          check_builtin_arg_head(name, 2, subst_apply(s3, fn_ty), errors, callee_off)
           let s4 = match subst_apply(s3, fn_ty) {
             CtFn(ptys, _, _) => if Array::length(ptys) >= 1 {
               check_assignable(subst_apply(s3, Array::get(ptys, 0)), subst_apply(s3, init_ty), s3, errors, "Array::fold accumulator type mismatch", tail_expr_off(Array::get(args, 1)))
@@ -9090,7 +9174,9 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           // slipped through. Ground-gated, so an unannotated `(x) -> ...` param
           // (CtVar) stays tolerant.
           let (recv_ty, s1, c1) = check_expr_capture(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          check_builtin_arg_head(name, 0, subst_apply(s1, recv_ty), errors, callee_off)
           let (fn_ty, s2, c2) = check_expr_capture(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
+          check_builtin_arg_head(name, 1, subst_apply(s2, fn_ty), errors, callee_off)
           let s3 = check_hof_param_vs_elem(subst_apply(s2, recv_ty), subst_apply(s2, fn_ty), 0, s2, errors, "Array::map function parameter type mismatch")
           let result = match subst_apply(s3, fn_ty) {
             CtFn(_, ret, _) => CtArray(ret),

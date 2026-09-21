@@ -314,6 +314,14 @@ export fn grep_scan_files_report(files: Array[String], pattern: String, wheres: 
   let has_typed_filter = Array::length(wheres) > 0 || Array::length(where_rows) > 0
   let out = grep_empty_strings()
   let warnings = grep_empty_strings()
+  // #2940: naming a file is asking about THAT file, so "it could not be
+  // parsed" must not answer as "no matches". A sweep is the opposite case and
+  // keeps #1943's behaviour below: one work-in-progress file must not stop a
+  // repo-wide answer. `root` is exactly the path the caller named -- the
+  // runner invokes this once per argument -- so the two cases are
+  // distinguishable here and nowhere downstream.
+  let root_is_dir = Fs::is_dir(root)
+  let mut named_unparseable = ""
   // #2914: three caches for the whole sweep, not one per file. Cold every
   // time, the tree-wide typed sweep re-typed the compiler's closure once per
   // matching file and ran past the 8 GB linear-memory cap. The env cache alone
@@ -349,6 +357,11 @@ export fn grep_scan_files_report(files: Array[String], pattern: String, wheres: 
       grep_file_hits(path, source, pat)
     } with { Exception::Throw(_) => {
       Array::push(warnings, String::concat("warning: grep: skipped `", String::concat(path, "` because it could not be parsed")))
+      if !root_is_dir {
+        named_unparseable = path
+      } else {
+        ()
+      }
       grep_empty_hits()
     } }
     if Array::length(hits) > 0 {
@@ -389,6 +402,14 @@ export fn grep_scan_files_report(files: Array[String], pattern: String, wheres: 
       ()
     }
     i = i + 1
+  }
+  if named_unparseable != "" {
+    // Throwing rather than returning: the caller turns a diagnostic into a
+    // non-zero exit, and the whole point is that the exit code stops agreeing
+    // with "no matches". The message names the file and says what to do.
+    throw(String::concat("grep: `", String::concat(named_unparseable, "` could not be parsed, so it was not searched; run `vibe check` on it, or sweep its directory to skip unparseable files")))
+  } else {
+    ()
   }
   (grep_join_lines(out, json), grep_join_lines(warnings, false))
 }
