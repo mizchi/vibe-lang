@@ -224,8 +224,17 @@ echo "grep-driver-parity: runtime/vibe answers at a budget the no-loop control r
 # and exit 0, having skipped every file the sweep did not reach (Codex on
 # #2956, P2). The loop now stands aside for these flags.
 #
+# `--where` IS LOAD-BEARING TOO, and leaving it out made this case certify
+# nothing for the SECOND time. `grep_sweep` short-circuits to a direct call
+# twice: once for the driver flags this property is about, and once for an
+# untyped sweep, which cannot hand off and so gains nothing from the loop. An
+# untyped probe is caught by the second bypass even when the mutation removes
+# the first, so the banner count stayed 1 and the mutation passed. Both times
+# the cause was the same shape -- something else short-circuits before the
+# property can be observed -- and both times only the mutation showed it.
+#
 # VIBE_GREP_CHUNK_FILES=1 IS LOAD-BEARING, and leaving it out made this case
-# certify nothing. The corpus is 4 files and the default cap is 8, so the sweep
+# certify nothing the first time. The corpus is 4 files and the default cap is 8, so the sweep
 # takes ONE chunk -- and "each chunk re-answers the listing" cannot be seen
 # when there is only one chunk. Measured: with the bypass removed the banner
 # count stayed 1 and this property passed, which the self-test caught by the
@@ -235,7 +244,7 @@ listing_out="$WORK/listing"
 status=0
 env VIBE_CLI_WASM="$STAGE2" VIBE_RUNNER="$RUNNER" VIBE_BUILD_CACHE_DIR="$WORK/cache_listing" \
     VIBE_GREP_CHUNK_FILES=1 \
-    "$LAUNCHER" grep --list-files --pattern "$PATTERN" "$CORPUS" \
+    "$LAUNCHER" grep --list-files --pattern "$PATTERN" --where "$WHERE" "$CORPUS" \
     >"$listing_out" 2>"$listing_out.err" || status=$?
 [ "$status" = "0" ] || fail "runtime/vibe grep --list-files failed (exit $status)
 $(cat "$listing_out.err")"
@@ -260,7 +269,7 @@ one_file="$(cat "$one_list")"
 [ -n "$one_file" ] || fail "could not take a single file from the listing"
 status=0
 env VIBE_CLI_WASM="$STAGE2" VIBE_RUNNER="$RUNNER" VIBE_BUILD_CACHE_DIR="$WORK/cache_filelist" \
-    "$LAUNCHER" grep --file-list "$one_list" --pattern "$PATTERN" "$CORPUS" \
+    "$LAUNCHER" grep --file-list "$one_list" --pattern "$PATTERN" --where "$WHERE" "$CORPUS" \
     >"$WORK/one.out" 2>"$WORK/one.err" || status=$?
 [ "$status" = "0" ] || fail "runtime/vibe grep --file-list failed (exit $status)
 $(cat "$WORK/one.err")"
