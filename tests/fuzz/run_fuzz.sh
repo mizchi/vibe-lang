@@ -120,7 +120,20 @@ if [ -e "$FIND" ]; then
 fi
 mkdir -p "$WORK" "$FIND"
 mkdir -p "$FUZZ_ROOT"
-: > "$SEEDS_FILE"
+# The seed ledger is the OTHER half of the same reset, and it needs the same
+# check: `set -uo pipefail` carries no `-e`, so a redirection that cannot
+# truncate -- a root-owned or immutable file, or a directory in its place --
+# leaves the script running. Every later `record` append then fails too, and
+# the final `wc -l` reads 0 while `findings/` holds a real finding: the
+# campaign reports success having found something (#2955 review). Asking
+# whether the file is now an empty regular file answers that; asking whether
+# the redirect returned 0 is a proxy for it.
+: > "$SEEDS_FILE" 2>/dev/null || true
+if [ ! -f "$SEEDS_FILE" ] || [ -s "$SEEDS_FILE" ]; then
+  echo "[fuzz] could not reset $SEEDS_FILE -- findings could not be recorded and the run would report 0" >&2
+  echo "[fuzz] remove it by hand and re-run; refusing to measure with an unresettable seed ledger" >&2
+  exit 2
+fi
 
 echo "[fuzz] mode=$MODE gen=${GENMODE:-liveness} seeds=$A..$B cli=$CLI jobs=$JOBS"
 

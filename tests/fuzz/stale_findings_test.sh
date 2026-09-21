@@ -126,6 +126,31 @@ fi
 rm -rf "$SHIMDIR"; SHIMDIR=""
 rm -rf "$STALE"
 
+say "=== red: an unresettable SEED LEDGER aborts the run ==="
+# The other half of the reset. If `: > "$SEEDS_FILE"` cannot truncate, every
+# later append fails too and the final `wc -l` reads 0 while findings/ holds a
+# real finding -- the campaign reports success having found something.
+# A DIRECTORY in the ledger's place makes the redirection fail on every
+# platform, with no chattr and no root-owned fixture needed.
+rm -rf "$VIBE_FUZZ_ROOT/failing_seeds.txt"
+mkdir -p "$VIBE_FUZZ_ROOT/failing_seeds.txt"
+if [ ! -d "$VIBE_FUZZ_ROOT/failing_seeds.txt" ]; then
+  bad "the ledger fixture was not created -- this case proves nothing"
+else
+  say "  ok   the ledger path is a directory, so truncation must fail"
+  out="$(bash tests/fuzz/run_fuzz.sh --seeds 1..1 --cli "$STAGE2" 2>&1)"; lrc=$?
+  case "$out" in
+    *"could not reset"*"failing_seeds"*) say "  ok   the run refused, naming the ledger" ;;
+    *) bad "no ledger refusal: $(printf '%s' "$out" | tail -1)" ;;
+  esac
+  [ "$lrc" -ne 0 ] && say "  ok   nonzero exit ($lrc)" || bad "the run exited 0 with an unresettable ledger"
+  case "$out" in
+    *"[fuzz] mode="*) bad "the run ANNOUNCED itself and fuzzed anyway" ;;
+    *) say "  ok   no campaign was started" ;;
+  esac
+fi
+rm -rf "$VIBE_FUZZ_ROOT/failing_seeds.txt"
+
 say "=== red: the PRE-FIX harness runs a campaign and leaves it behind ==="
 # Reconstruct the old behaviour so the case proves the fix was load-bearing
 # rather than merely present.
@@ -144,8 +169,11 @@ cp tests/fuzz/run_fuzz.sh "$probe"
 sed -i.bak '/^rm -rf "\$FIND"$/,/^fi$/d' "$probe" && rm -f "$probe.bak"
 if cmp -s tests/fuzz/run_fuzz.sh "$probe"; then
   bad "the mutation changed nothing -- this case would pass while proving nothing"
-elif grep -q "could not reset" "$probe"; then
-  bad "the mutation left the guard behind -- the mutant would refuse, not fuzz"
+elif grep -q "findings left there would be read as this run" "$probe"; then
+  # Matched against the FINDINGS guard's own wording, not a shared prefix:
+  # the seed-ledger guard added later also says "could not reset", so the
+  # broader match reported the findings guard as surviving when it had gone.
+  bad "the mutation left the findings guard behind -- the mutant would refuse, not fuzz"
 else
   say "  ok   the mutant carries neither the reset nor its guard"
   if plant; then
