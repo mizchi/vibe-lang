@@ -1184,6 +1184,30 @@ grep_sweep() {
         ;;
     esac
   done
+
+  # ONLY A TYPED SWEEP NEEDS THIS. The accumulating cost #2914 is about is the
+  # CHECKER's: the memory guard that stops a sweep lives inside the typed
+  # branch, so a parse-only sweep can never hand off and gains exactly nothing
+  # from being split. What it loses is large -- at the default cap of 8, a
+  # 1224-file tree becomes ~153 fresh runner + compiler starts in place of one
+  # process, which is the ordinary `vibe grep --pattern ... lib` made
+  # dramatically slower for no benefit at all (Codex on #2956, P2).
+  #
+  # The switches that turn on typing are the ones `grep_needs_typing` reads:
+  # --where, --where-row, --only-ill-typed, --only-well-typed. Anything else
+  # goes straight through, which is exactly the behaviour that existed before
+  # this loop did.
+  local typed=0
+  for arg in "$@"; do
+    case "$arg" in
+      --) break ;;
+      --where|--where=*|--where-row|--where-row=*|--only-ill-typed|--only-well-typed) typed=1 ;;
+    esac
+  done
+  if [ "$typed" = 0 ]; then
+    invoke_cli grep "$@"
+    return $?
+  fi
   for arg in "$@"; do
     case "$arg" in
       --) break ;;

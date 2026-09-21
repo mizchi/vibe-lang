@@ -299,6 +299,21 @@ export fn grep_scan_fs_report(root: String, pattern: String, wheres: Array[Strin
 /// place -- a driver that globbed for `*.vibe` itself would disagree with the
 /// sweep about `deps/`, `_build/` and dotted directories, and nothing would
 /// say so. Asking the sweep is what keeps one policy.
+/// The files a sweep would visit, as PATHS.
+///
+/// The in-process callers used to take `grep_split_file_list(grep_list_files
+/// (root))` -- serialise to text, parse it straight back. Harmless until the
+/// text form gained an encoding, at which point that round trip had to be
+/// decoded too, and the decode had to be conditional (see
+/// `grep_read_file_list`). The serialisation was never wanted; this is the
+/// list without it, and the text form is left to the CLI boundary that
+/// actually needs one.
+export fn grep_collect_files(root: String) -> Array[String] with Fs {
+  let files = grep_empty_strings()
+  source_walk_collect_files(root, files)
+  files
+}
+
 export fn grep_list_files(root: String) -> String with Fs {
   let files = grep_empty_strings()
   source_walk_collect_files(root, files)
@@ -440,7 +455,7 @@ export fn grep_split_file_list(text: String) -> Array[String] {
         raw
       }
       if String::length(line) > 0 {
-        Array::push(out, grep_unescape_list_path(line))
+        Array::push(out, line)
       } else {
         ()
       }
@@ -470,8 +485,21 @@ export fn grep_split_file_list(text: String) -> Array[String] {
 /// it stays correct, since there is then no banner line to find.
 export fn grep_read_file_list(path: String) -> Array[String] with Exception + Fs {
   let lines = grep_split_file_list(Fs::read_file(path))
+  // DECODED ONLY WHEN THE BANNER SAYS SO. A hand-written list is still
+  // supported and is not in the encoded format, so unescaping it
+  // unconditionally rewrites real paths: a literal `src\new/file.vibe`
+  // becomes a path holding a NEWLINE and is rejected as missing, where the
+  // reader before the escaping read it fine (Codex on #2956, P2). The banner
+  // is what establishes which format this file is in, so it has to be read
+  // BEFORE anything is decoded.
   if Array::length(lines) > 0 && Array::get(lines, 0) == grep_file_list_banner() {
-    Array::slice(lines, 1, Array::length(lines))
+    let out = grep_empty_strings()
+    let mut i = 1
+    while i < Array::length(lines) {
+      Array::push(out, grep_unescape_list_path(Array::get(lines, i)))
+      i = i + 1
+    }
+    out
   } else {
     lines
   }

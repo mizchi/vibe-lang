@@ -2256,6 +2256,19 @@ fn selfhost_cli_user_grep_args(args: Array[String]) -> Int with Env + Exception 
   }
   if pattern == "" {
     throw("vibe grep: --pattern needs an argument")
+  } else if resume_out != "" && Array::length(paths) > 1 {
+    // The resume index is an offset into ONE file list, so with several roots
+    // there is no list for it to index. Left unrefused, a hand-off in an early
+    // root returned partial output and wrote its index, the loop moved on, and
+    // THAT root's sweep deleted the index as stale -- exit 0, the first root
+    // partly searched, nothing left saying so (Codex on #2956, P1; the delete
+    // was my own fix for a stale index, one round earlier).
+    //
+    // Refused rather than stopped after the first hand-off, because stopping
+    // still hands back an index the caller cannot attribute to a root.
+    // `--json` below refuses several paths for the same kind of reason: one
+    // answer, one input.
+    throw("vibe grep --resume-out: one path at a time (the resume index is an offset into a single file list)")
   } else if json && Array::length(paths) > 1 {
     // Each sweep returns one complete JSON array; concatenating two is not
     // JSON. The launcher refused this before the verbs moved (Codex review).
