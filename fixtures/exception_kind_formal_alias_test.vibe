@@ -1,0 +1,32 @@
+// #2985 review (Codex P0): a kinded arm's kind is resolved with the enclosing
+// FORMALS shadowing `defs`. With `import ./dep { Hue as T }` in scope,
+// `Exception[Array[T]]` inside `fn f[T]` used to resolve its `T` to the
+// imported enum before the env mapping could see it (#1510's shape), so the
+// payload was typed `Array[Hue]`, `hue_code(Array::get(e, 0))` was accepted,
+// and the instantiation at Int trapped inside `hue_code`.
+import ./exception_kind_formal_alias_dep.vibe {
+  Hue as T, hue_code
+}
+
+fn catch_via[U](x: U, g: (U) -> Int) -> Int {
+  handle {
+    throw([x])
+  } with { Exception[Array[U]]::Throw(e) => g(Array::get(e, 0)) }
+}
+
+fn catch_shadowed[T](x: T, g: (T) -> Int) -> Int {
+  handle {
+    throw([x])
+  } with { Exception[Array[T]]::Throw(e) => g(Array::get(e, 0)) }
+}
+
+test "the formal wins over the same-named import alias" {
+  assert_eq(catch_shadowed(41, (n) -> n + 1), 42)
+  assert_eq(catch_shadowed("abc", (s) -> String::length(s)), 3)
+}
+
+test "the alias is still the enum where no formal shadows it" {
+  let h: T = Crimson
+  assert_eq(hue_code(h), 1)
+  assert_eq(catch_via(Teal, hue_code), 2)
+}

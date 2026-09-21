@@ -78,3 +78,34 @@ test "an explicit tail resume next to a capturing sibling still resumes" {
   } }
   assert_eq(r, 5)
 }
+
+effect Named {
+  Get(resume: String) -> String;
+  Other() -> Int
+}
+
+test "a payload binder named resume still resumes next to a capturing sibling" {
+  // The arm's `resume` is its PAYLOAD; the implicit resume goes through the
+  // driver's own continuation, not through that name (Codex P0 on #2985:
+  // `344`, the string's pointer, was the answer before).
+  let r = handle {
+    String::length(perform Named::Get("abcd")) + 1
+  } with { Named::Get(resume) => resume; Named::Other() => {
+    let k = resume
+    k(1)
+  } }
+  assert_eq(r, 5)
+}
+
+test "a local let named resume still resumes next to a capturing sibling" {
+  let r = handle {
+    String::length(perform Ask::Get()) + 1
+  } with { Ask::Get() => {
+    let resume = (s: String) -> String::concat(s, "!")
+    resume("abcd")
+  }; Ask::Other() => {
+    let k = resume
+    k(1)
+  } }
+  assert_eq(r, 6)
+}

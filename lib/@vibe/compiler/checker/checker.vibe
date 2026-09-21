@@ -6912,6 +6912,57 @@ fn resume_walk_param_base(pn: String) -> String {
   }
 }
 
+/// The names in a kinded exception arm's kind (`Exception[Array[T]]`) that
+/// the env binds as a type FORMAL of an enclosing declaration -- a plain
+/// formal is a `CtVar`, a kinded one the `#hktformal.` marker (the EFn arm's
+/// `tp_env`). They are handed to `resolve_type_expr_shadowed` so a
+/// same-named import alias in `defs` cannot capture them (#1510).
+fn exception_kind_formals_in_env(te: TypeExpr, env: TypeEnv, acc: Array[String]) -> Array[String] {
+  let note = (name: String) -> Unit {
+    let is_formal = match env_lookup(env, name) {
+      Some(t) => match t {
+        CtVar(_) => true,
+        CtNamed(n, _) => String::starts_with(n, "#hktformal."),
+        _ => false
+      },
+      None => false
+    }
+    if is_formal && !string_array_has(acc, name) {
+      Array::push(acc, name)
+    } else {
+      ()
+    }
+  }
+  match te {
+    TyName(name) => note(name),
+    TyApp(name, args) => {
+      note(name)
+      let mut i = 0
+      while i < Array::length(args) {
+        exception_kind_formals_in_env(Array::get(args, i), env, acc)
+        i = i + 1
+      }
+    },
+    TyTuple(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        exception_kind_formals_in_env(Array::get(items, i), env, acc)
+        i = i + 1
+      }
+    },
+    TyFn(params, ret, _) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        exception_kind_formals_in_env(Array::get(params, i), env, acc)
+        i = i + 1
+      }
+      exception_kind_formals_in_env(ret, env, acc)
+    },
+    TyUnit => ()
+  }
+  acc
+}
+
 fn check_resume_values(e: Expr, ret_ty: Type, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture]) -> Subst {
   match e {
     ECall(callee, args, _) => {
@@ -10750,7 +10801,15 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                     let eaty = if String::length(eakind) > 0 {
                       handle {
                         let (kind_te, _) = parse_type(lex(eakind), 0)
-                        resolve_tparams_in(resolve_type_expr(kind_te, defs), eaenv)
+                        // A formal is a BINDER, so it wins over `defs`: with
+                        // `import ./m { Hue as T }` in scope, plain resolution
+                        // turned the kind's `T` into `Hue` before the env
+                        // mapping could see it, and `e` was typed at the
+                        // imported enum while the instantiation threw an Int
+                        // (Codex P0 on #2985, the #1510 shape). The names the
+                        // env binds as type variables are shadowed first.
+                        let kind_shadow = exception_kind_formals_in_env(kind_te, eaenv, array_empty())
+                        resolve_tparams_in(resolve_type_expr_shadowed(kind_te, defs, kind_shadow), eaenv)
                       } with { Exception::Throw(_unreadable) => CtUnknown }
                     } else {
                       CtUnknown

@@ -3656,7 +3656,7 @@ fn scps_split_while_ctl(c: Expr, body: Expr, rest: Expr, sctx: (String, Array[St
 // failure (a value-referencing arm can never compile on the replay path,
 // so silence is not an option).
 
-fn scps_transform_handle(body: Expr, arms: Array[(Pat, Expr)], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), st: (Array[Int], Array[String], Array[String], Array[String], Array[String], Array[Stmt], Array[String]), scope: Array[(String, String)]) -> Option[Expr] {
+fn scps_transform_handle(body: Expr, arms: Array[(Pat, Expr)], ik: String, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), st: (Array[Int], Array[String], Array[String], Array[String], Array[String], Array[Stmt], Array[String]), scope: Array[(String, String)]) -> Option[Expr] {
   let errs = scps_st_errs(st)
   // effect identity: every arm must be `Eff::Op` for one shared DECLARED
   // effect, and Error (non-resumable) arms may not appear.
@@ -3796,7 +3796,16 @@ fn scps_transform_handle(body: Expr, arms: Array[(Pat, Expr)], ctx: (Array[Stmt]
             ECall(EIdent(kname, -1), [EIdent(rv, -1)], -1)
           ], -1)
           let rfn = scps_mk_fn1(rv, EIf(once_get, trap, ESeq(set_true, drive_call)))
-          let lowered = ELet(once, EArray([EBool(false)]), ELet("resume", rfn, ab, -1), -1)
+          // `ik` is the hygienic spelling the implicit-resume wrap calls
+          // (scps_wrap_tail_resume). When the arm's own payload binder is
+          // named `resume`, that binder stays visible: rebinding `resume` to
+          // the continuation here would hide the payload the arm reads.
+          let ab_bound = if scps_pat_binds_resume(p) {
+            ab
+          } else {
+            ELet("resume", rfn, ab, -1)
+          }
+          let lowered = ELet(once, EArray([EBool(false)]), ELet(ik, rfn, ab_bound, -1), -1)
           Array::push(dmarms, (PCtor(scps_y_name(eff, scps_op_suffix(aq)), ypats), lowered))
           di = di + 1
         }
@@ -4968,37 +4977,43 @@ fn scps_let_bind_row(v: Expr, cps_effs: Array[String]) -> String {
   row
 }
 
-/// #2962: wrap every tail value of a non-capturing handler arm in
-/// `resume(..)`, so that inside a suspend-transformed handle (one of its
-/// sibling arms captures `resume` as a value) the arm resumes the way it
-/// does under the tail-resumptive lowering, instead of delivering its value
-/// as the driver's final result. The walk is `edp_strip_tail_resume`'s
-/// inverse and covers the same tail shapes; a tail that already is a
-/// `resume(..)` call is kept, and a `return` leaves the enclosing function
-/// so it is not a value to resume with.
-fn scps_wrap_tail_resume(expr: Expr) -> Expr {
+/// #2962: wrap every tail value of a non-capturing handler arm in a call of
+/// the driver's continuation, so that inside a suspend-transformed handle
+/// (one of its sibling arms captures `resume` as a value) the arm resumes
+/// the way it does under the tail-resumptive lowering, instead of
+/// delivering its value as the driver's final result. The walk is
+/// `edp_strip_tail_resume`'s inverse and covers the same tail shapes; a tail
+/// that already is a `resume(..)` call of the CONTINUATION is kept, and a
+/// `return` leaves the enclosing function so it is not a value to resume
+/// with. The call is spelled with `ik`, a name minted fresh for the handle
+/// and bound to the same continuation as `resume` by the driver, rather
+/// than `resume` itself: an arm whose payload binder or local `let` is named
+/// `resume` (`sh`) would otherwise call the user's binding (Codex P0 on
+/// #2985), and under such a shadow a tail `resume(x)` IS a user call whose
+/// value is the implicit resume value, so it is wrapped like any other.
+fn scps_wrap_tail_resume(expr: Expr, ik: String, sh: Bool) -> Expr {
   match expr {
-    EIf(c, t, e) => EIf(c, scps_wrap_tail_resume(t), scps_wrap_tail_resume(e)),
+    EIf(c, t, e) => EIf(c, scps_wrap_tail_resume(t, ik, sh), scps_wrap_tail_resume(e, ik, sh)),
     EMatch(s, arms) => EMatch(s, for a in arms {
       let (p, ex) = a
-      (p, scps_wrap_tail_resume(ex))
+      (p, scps_wrap_tail_resume(ex, ik, sh || scps_pat_binds_resume(p)))
     }),
-    ELet(n, v, b, off) => ELet(n, v, scps_wrap_tail_resume(b), off),
-    ELetMut(n, v, b, off) => ELetMut(n, v, scps_wrap_tail_resume(b), off),
-    ELetRec(n, v, b) => ELetRec(n, v, scps_wrap_tail_resume(b)),
-    ESeq(a, b) => ESeq(a, scps_wrap_tail_resume(b)),
-    EAssign(n, v, c) => EAssign(n, v, scps_wrap_tail_resume(c)),
-    EAssignOp(n, op, v, c) => EAssignOp(n, op, v, scps_wrap_tail_resume(c)),
+    ELet(n, v, b, off) => ELet(n, v, scps_wrap_tail_resume(b, ik, sh || n == "resume"), off),
+    ELetMut(n, v, b, off) => ELetMut(n, v, scps_wrap_tail_resume(b, ik, sh || n == "resume"), off),
+    ELetRec(n, v, b) => ELetRec(n, v, scps_wrap_tail_resume(b, ik, sh || n == "resume")),
+    ESeq(a, b) => ESeq(a, scps_wrap_tail_resume(b, ik, sh)),
+    EAssign(n, v, c) => EAssign(n, v, scps_wrap_tail_resume(c, ik, sh)),
+    EAssignOp(n, op, v, c) => EAssignOp(n, op, v, scps_wrap_tail_resume(c, ik, sh)),
     EReturn(_) => expr,
     ECall(callee, _, _) => match callee {
-      EIdent(nm, _) => if nm == "resume" {
+      EIdent(nm, _) => if nm == "resume" && !sh {
         expr
       } else {
-        ECall(EIdent("resume", -1), [expr], -1)
+        ECall(EIdent(ik, -1), [expr], -1)
       },
-      _ => ECall(EIdent("resume", -1), [expr], -1)
+      _ => ECall(EIdent(ik, -1), [expr], -1)
     },
-    _ => ECall(EIdent("resume", -1), [expr], -1)
+    _ => ECall(EIdent(ik, -1), [expr], -1)
   }
 }
 
@@ -5036,16 +5051,19 @@ fn scps_rewrite(e: Expr, ctx: (Array[Stmt], Array[(String, Array[(String, Array[
         // answered `296352743426`, the string delivered as the Int. The tail
         // values of every non-capturing arm are wrapped in `resume(..)` here,
         // so the driver runs the continuation for them exactly as the
-        // non-suspend lowering does. An arm whose payload binder is named
-        // `resume` is left alone: its `resume` is the payload, not the
-        // continuation, and the checker treats it the same way.
+        // non-suspend lowering does. The continuation is called through
+        // `ik`, a fresh name the driver binds beside `resume`, so an arm
+        // whose payload binder or local `let` is named `resume` resumes too
+        // (Codex P0 on #2985) instead of calling the user's binding.
+        let iksite = scps_next_site(st)
+        let ik = scps_seq_float_fresh("iresume", EHandle(rbody, rarms), EUnit, iksite)
         let sarms = for a in rarms {
           let (ap, ab) = a
           let ashadow = scps_pat_binds_resume(ap)
-          if ashadow || scps_arm_refs_resume_value(ab, ashadow) {
+          if scps_arm_refs_resume_value(ab, ashadow) {
             (ap, ab)
           } else {
-            (ap, scps_wrap_tail_resume(ab))
+            (ap, scps_wrap_tail_resume(ab, ik, ashadow))
           }
         }
         // #1536: a `return` in a HANDLE body means "leave the enclosing
@@ -5072,14 +5090,14 @@ fn scps_rewrite(e: Expr, ctx: (Array[Stmt], Array[(String, Array[(String, Array[
             Array::push(scps_st_errs(st), scps_return_in_split_msg("a handler arm captures `resume` as a value, so this handle body"))
             EHandle(rbody, rarms)
           } else {
-            let inner = match scps_transform_handle(captured, sarms, ctx, st, scope) {
+            let inner = match scps_transform_handle(captured, sarms, ik, ctx, st, scope) {
               Some(t) => t,
               None => EHandle(captured, sarms)
             }
             ELetMut(flag, EBool(false), ELetMut(slot, EInt(0), ELet(hv, inner, EIf(EIdent(flag, -1), EReturn(EIdent(slot, -1)), EIdent(hv, -1)), -1), -1), -1)
           }
         } else {
-          match scps_transform_handle(rbody, sarms, ctx, st, scope) {
+          match scps_transform_handle(rbody, sarms, ik, ctx, st, scope) {
             Some(t) => t,
             None => EHandle(rbody, sarms)
           }
