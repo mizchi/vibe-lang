@@ -73,8 +73,12 @@ esac
 # rather than degrading to the newest one or the committed seed.
 . "$ROOT/scripts/resolve_stage2.sh"
 CLI="$(resolve_stage2_strict fuzz "$CLI")" || exit 2
-echo "[fuzz] mode=$MODE gen=${GENMODE:-liveness} seeds=$A..$B cli=$CLI jobs=$JOBS"
 
+# The `[fuzz] mode=... cli=...` banner is emitted BELOW, after the workspace
+# reset, so that printing it means a campaign is actually starting. It used to
+# print here, between the two refusals, which made it possible to announce a
+# run and then exit -- and scripts/check_fuzz_compiler_identity.sh reads the
+# banner's ABSENCE as proof no run began.
 WORK=_build/fuzz/work
 FIND=_build/fuzz/findings
 # Reset BOTH records of what this run found, so they always describe the same
@@ -92,9 +96,25 @@ FIND=_build/fuzz/findings
 #
 # Anyone who needs a finding kept across runs copies it out, which is a
 # deliberate act -- the right shape for evidence.
+#
+# The reset is CHECKED, and checked by its postcondition rather than by `rm`'s
+# exit status. This script runs under `set -uo pipefail` with no `-e`, so a
+# failed `rm -rf` -- root-owned or immutable contents, a busy mount -- would
+# otherwise pass unnoticed, `mkdir -p` would succeed against the surviving
+# directory, and the campaign would report `0 findings` with the stale ones
+# still sitting there: exactly the silently-wrong measurement this reset
+# exists to prevent (#2955 review). Asking whether the directory is GONE
+# answers that directly; asking whether `rm` returned 0 is a proxy for it.
 rm -rf "$FIND"
+if [ -e "$FIND" ]; then
+  echo "[fuzz] could not reset $FIND -- findings left there would be read as this run's" >&2
+  echo "[fuzz] remove it by hand and re-run; refusing to measure with an unreset findings dir" >&2
+  exit 2
+fi
 mkdir -p "$WORK" "$FIND"
 : > _build/fuzz/failing_seeds.txt
+
+echo "[fuzz] mode=$MODE gen=${GENMODE:-liveness} seeds=$A..$B cli=$CLI jobs=$JOBS"
 
 RUNNER="bash scripts/run_wasm_vibe_host_runner.sh"
 CTIMEOUT=90
