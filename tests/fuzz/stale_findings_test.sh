@@ -176,10 +176,43 @@ say "=== red: an EMPTY ledger whose truncation fails is still rejected ==="
 # deterministically, so nothing is left unchecked by the skip.
 lfile="$VIBE_FUZZ_ROOT/failing_seeds.txt"
 rm -rf "$lfile"; : > "$lfile"
-if ! command -v chattr >/dev/null 2>&1 || ! chattr +i "$lfile" 2>/dev/null; then
-  say "  SKIP chattr +i unavailable here; the directory case above covers this branch"
+
+# Make an existing EMPTY REGULAR file untruncatable, by whatever this platform
+# offers. Portability matters here more than realism: where this case cannot
+# run, the status predicate has NO red test at all -- and the directory case
+# does not substitute for it. Measured: with `seeds_reset_ok` deleted, the
+# directory fixture still refuses (exit 2) via `[ ! -f ]`, so it proves the
+# postcondition and says nothing about the status (#2955 review, refuting an
+# earlier claim of mine that it covered this branch).
+lock_file() { # <path> -> 0 if now untruncatable
+  if command -v chattr >/dev/null 2>&1 && chattr +i "$1" 2>/dev/null; then
+    LOCK_KIND=chattr; return 0
+  fi
+  if command -v chflags >/dev/null 2>&1 && chflags uchg "$1" 2>/dev/null; then
+    LOCK_KIND=chflags; return 0
+  fi
+  # Mode bits bind only a non-root user; root bypasses them (measured: as root
+  # a 0444 file still truncates, `[ -w ]` says writable, and appends succeed).
+  if [ "$(id -u)" != "0" ] && chmod 0444 "$1" 2>/dev/null; then
+    LOCK_KIND=chmod; return 0
+  fi
+  LOCK_KIND=""; return 1
+}
+unlock_file() {
+  case "${LOCK_KIND:-}" in
+    chattr) chattr -i "$1" 2>/dev/null ;;
+    chflags) chflags nouchg "$1" 2>/dev/null ;;
+    chmod) chmod 0644 "$1" 2>/dev/null ;;
+  esac
+}
+
+if ! lock_file "$lfile"; then
+  # Not a skip: with no way to lock the file this predicate is unverified, and
+  # an unverified guard is the thing this file exists to prevent.
+  bad "no way to make an empty file untruncatable here (tried chattr, chflags, chmod-as-non-root) -- the status predicate is UNTESTED"
   rm -f "$lfile"
 else
+  say "  ok   locked the empty ledger via $LOCK_KIND"
   if ( : > "$lfile" ) 2>/dev/null; then
     bad "the fixture did NOT block truncation -- this case proves nothing"
   elif [ -s "$lfile" ]; then
@@ -197,7 +230,7 @@ else
       *) say "  ok   no campaign was started" ;;
     esac
   fi
-  chattr -i "$lfile" 2>/dev/null
+  unlock_file "$lfile"
   rm -f "$lfile"
 fi
 
