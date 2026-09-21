@@ -20,7 +20,17 @@ WORK="$(mktemp -d)"
 # a planted `seed_88_USER` finding did not survive the run (#2955 review named
 # the sibling test; the same hole was here).
 export VIBE_FUZZ_ROOT="$(mktemp -d)"
-trap 'rm -rf "$WORK" "$VIBE_FUZZ_ROOT" tests/fuzz/.probe_*.sh' EXIT
+# Probes are PID-scoped and the cleanup names only its own. The trap used to
+# glob `tests/fuzz/.probe_*.sh`, which also matched the probe
+# tests/fuzz/stale_findings_test.sh stages -- under `release-check` the two
+# run as sibling deps, so this cleanup could delete that file between its `cp`
+# and its `bash`, failing a required gate for an unrelated missing file
+# (#2955 review). They must live beside run_fuzz.sh, which derives the repo
+# root from its own dirname, so uniqueness is by name rather than by
+# directory.
+PROBE_PREFIX="tests/fuzz/.probe_id$$_"
+cleanup_probes() { rm -rf "$WORK" "$VIBE_FUZZ_ROOT" "$PROBE_PREFIX"*.sh; }
+trap cleanup_probes EXIT
 rc_total=0
 say() { printf '%s\n' "$*"; }
 bad() { say "  FAIL $*"; rc_total=1; }
@@ -37,7 +47,7 @@ bad() { say "  FAIL $*"; rc_total=1; }
 stage() { # <name> <sed-script>
   local name="$1"
   local script="$2"
-  local dst="tests/fuzz/.probe_$name.sh"
+  local dst="$PROBE_PREFIX$name.sh"
   cp "$REAL" "$dst"
   sed -i.bak "$script" "$dst" && rm -f "$dst.bak"
   if cmp -s "$REAL" "$dst"; then
@@ -119,7 +129,7 @@ else
 fi
 
 say "=== red 5: the gate refuses a harness that is not there at all ==="
-out="$(FUZZ_HARNESS="tests/fuzz/.probe_absent.sh" bash "$GATE" 2>&1)"; rc=$?
+out="$(FUZZ_HARNESS="${PROBE_PREFIX}absent.sh" bash "$GATE" 2>&1)"; rc=$?
 [ "$rc" -ne 0 ] && say "  ok   absent: rejected -- $(printf '%s' "$out" | head -1)" || bad "absent: gate ACCEPTED a missing harness"
 
 if [ "$rc_total" -eq 0 ]; then

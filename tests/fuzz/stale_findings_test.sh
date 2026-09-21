@@ -20,7 +20,11 @@ ROOT="$PWD"
 export VIBE_FUZZ_ROOT="$(mktemp -d)"
 FIND="$VIBE_FUZZ_ROOT/findings"
 STALE="$FIND/seed_999_STALE_FIXTURE"
-cleanup() { chattr -i "$STALE/immutable" 2>/dev/null; rm -rf "$VIBE_FUZZ_ROOT" tests/fuzz/.probe_prefix.sh "$SHIMDIR" 2>/dev/null; }
+# PID-scoped so a concurrent sibling gate cannot collide with or delete it
+# (#2955 review). The probe must sit beside run_fuzz.sh, which derives the
+# repo root from its own dirname.
+PROBE="tests/fuzz/.probe_stale$$.sh"
+cleanup() { rm -rf "$VIBE_FUZZ_ROOT" "$PROBE" "$SHIMDIR" 2>/dev/null; }
 SHIMDIR=""
 trap cleanup EXIT
 rc=0
@@ -112,7 +116,7 @@ say "=== red: the PRE-FIX harness runs a campaign and leaves it behind ==="
 #
 # So survival is accepted only from a mutant that announced a campaign and
 # completed it with zero findings -- i.e. a run that genuinely did not care.
-probe=tests/fuzz/.probe_prefix.sh
+probe="$PROBE"
 cp tests/fuzz/run_fuzz.sh "$probe"
 sed -i.bak '/^rm -rf "\$FIND"$/,/^fi$/d' "$probe" && rm -f "$probe.bak"
 if cmp -s tests/fuzz/run_fuzz.sh "$probe"; then
