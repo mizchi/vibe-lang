@@ -287,6 +287,135 @@ fn fn_params_bind_resume(params: Array[(String, Option[TypeExpr])]) -> Bool {
   found
 }
 
+/// #2962: does a handler arm mention `resume` at all -- as a direct call
+/// (`resume(v)`, #942's tail form) or as a VALUE (`Array::push(conts, resume)`,
+/// ADR-0076 Phase 3a)? An arm that mentions neither is an IMPLICIT tail
+/// resume: both backends deliver its value to the `perform` and the body
+/// continues, so the checker types such an arm against the OPERATION's return
+/// type. An arm that mentions `resume` keeps the #938 rule: its own value is
+/// the handle's result (it is what a stored-resume arm "suspends" with).
+/// `sh` = `resume` is shadowed by an enclosing binder, the same discipline as
+/// reject_resume_outside_handler; the shadow tracking mirrors the lowering's
+/// scps_arm_refs_resume_value so the checker and the codegen classify an arm
+/// the same way by construction.
+export fn arm_mentions_resume(e: Expr, sh: Bool) -> Bool {
+  match e {
+    EIdent(nm, _) => nm == "resume" && !sh,
+    ECall(callee, args, _) => arm_mentions_resume(callee, sh) || exprs_mention_resume(args, sh),
+    ELet(n, v, b, _) => arm_mentions_resume(v, sh) || arm_mentions_resume(b, sh || n == "resume"),
+    ELetMut(n, v, b, _) => arm_mentions_resume(v, sh) || arm_mentions_resume(b, sh || n == "resume"),
+    ELetRec(n, v, b) => arm_mentions_resume(v, sh || n == "resume") || arm_mentions_resume(b, sh || n == "resume"),
+    ESeq(a, b) => arm_mentions_resume(a, sh) || arm_mentions_resume(b, sh),
+    EIf(c, t, el) => arm_mentions_resume(c, sh) || arm_mentions_resume(t, sh) || arm_mentions_resume(el, sh),
+    EMatch(s, arms) => {
+      let mut hit = arm_mentions_resume(s, sh)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, ex) = Array::get(arms, i)
+        if arm_mentions_resume(ex, sh || pat_binds_resume(p)) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    EHandle(b, arms) => {
+      // A nested handle's arms rebind `resume` for THEMSELVES; only its
+      // handled body can still reach this arm's continuation.
+      let mut hit = arm_mentions_resume(b, sh)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, ex) = Array::get(arms, i)
+        if arm_mentions_resume(ex, true) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    EFn(_, _, params, _, _, b) => arm_mentions_resume(b, sh || fn_params_bind_resume(params)),
+    EWhile(c, b) => arm_mentions_resume(c, sh) || arm_mentions_resume(b, sh),
+    EForIn(v1, v2, it, b) => {
+      let for_sh = v1 == "resume" || (match v2 {
+        Some(v2n) => v2n == "resume",
+        None => false
+      })
+      arm_mentions_resume(it, sh) || arm_mentions_resume(b, sh || for_sh)
+    },
+    ELoop(pairs, b) => {
+      let mut hit = false
+      let mut loop_sh = sh
+      let mut i = 0
+      while i < Array::length(pairs) {
+        let (n, v) = Array::get(pairs, i)
+        if n == "resume" {
+          loop_sh = true
+        } else {
+          ()
+        }
+        if arm_mentions_resume(v, sh) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit || arm_mentions_resume(b, loop_sh)
+    },
+    EBinOp(_, l, r, _) => arm_mentions_resume(l, sh) || arm_mentions_resume(r, sh),
+    EUnaryOp(_, e2) => arm_mentions_resume(e2, sh),
+    EAssign(_, v, c) => arm_mentions_resume(v, sh) || arm_mentions_resume(c, sh),
+    EAssignOp(_, _, v, c) => arm_mentions_resume(v, sh) || arm_mentions_resume(c, sh),
+    EReturn(e2) => arm_mentions_resume(e2, sh),
+    EDot(o, _, _, _) => arm_mentions_resume(o, sh),
+    ELabeledArg(_, _, v) => arm_mentions_resume(v, sh),
+    EBreak(opt) => match opt {
+      Some(e2) => arm_mentions_resume(e2, sh),
+      None => false
+    },
+    EContinue(args) => exprs_mention_resume(args, sh),
+    ETuple(elems) => exprs_mention_resume(elems, sh),
+    EArray(elems) => exprs_mention_resume(elems, sh),
+    ERecord(_, fields, _) => fields_mention_resume(fields, sh),
+    EMap(fields) => fields_mention_resume(fields, sh),
+    ESpread(e2) => arm_mentions_resume(e2, sh),
+    _ => false
+  }
+}
+
+fn exprs_mention_resume(es: Array[Expr], sh: Bool) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(es) {
+    if arm_mentions_resume(Array::get(es, i), sh) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+fn fields_mention_resume(fields: Array[(String, Expr)], sh: Bool) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(fields) {
+    let (_, v) = Array::get(fields, i)
+    if arm_mentions_resume(v, sh) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
 /// #942 (ADR-0050): inside a handler arm, `resume(...)` is one-shot and must be
 /// the LAST thing the arm does. Codegen compiles resume as a continuation
 /// throw, so any code after it silently never runs — `let a = resume(1);

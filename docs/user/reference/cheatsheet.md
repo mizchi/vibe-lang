@@ -1546,6 +1546,11 @@ let n = handle { read_cfg() } with { Exception[IoError]::Throw(_e) => 0 }
   検出漏れはあるが誤検出はしない。
 - runtime は kind を区別しない — すべて単一の abortive Wasm tag。exact-kind
   の保証は checker 側の性質。
+- A kinded arm binds its payload at the kind's type (#2963):
+  `Exception[IoError]::Throw(e)` gives `e : IoError`, so `e` can be matched or
+  passed on directly, and returning it where the handle produces an `Int` is a
+  type error. The erased `Exception::Throw(m)` binder is still untyped (it can
+  receive any kind).
 
 詳細と v1 の限界: [exception-effect.md](../../internal/design/exception-effect.md)。
 
@@ -1598,6 +1603,16 @@ fn main allows Stdout {
 ```
 
 継続呼び出しは `resume(v)` が canonical (one-shot tail-resumptive, ADR-0050)。
+
+**An arm that never mentions `resume` is an implicit tail resume** (#2962).
+Its value is delivered to the `perform` and the body continues, so the checker
+types that value against the OPERATION's return type: for `Get() -> Int`, an
+arm `Get() => 5` makes the perform evaluate to `5`, and an arm `Get() => "x"`
+is `handler arm value type mismatch with the operation's return type`. An arm
+that calls `resume(v)` in tail position, or stores `resume` as a value, keeps
+the other rule: its own value is the handle's result. Only `Exception` arms
+abort; a declared effect has no abortive operations (#2969 tracks declaring
+one).
 
 Effect row の呼び出し解決も通常の値解決と同じ lexical scope に従う。局所
 closure・関数 parameter・pattern/loop binder が top-level `fn` と同名なら、

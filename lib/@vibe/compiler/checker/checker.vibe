@@ -28,6 +28,7 @@ import @vibe/compiler/checker/type_relations {
 }
 
 import @vibe/compiler/checker/resume {
+  arm_mentions_resume,
   pat_binds_resume as resume_pat_binds_resume,
   reject_resume_in_error_arm,
   reject_resume_outside_handler as resume_reject_resume_outside_handler,
@@ -10639,17 +10640,30 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                   let (harm_ty, hns, hnc) = check_expr_capture(hbody, henv_arm, defs, hs1, hc1, errors, tytab, capture, lane)
                   hs1 = hns
                   hc1 = hnc
-                  // #938: a non-resuming arm's value IS the handle result, so
-                  // it must unify with the body's type. Resume-tailed arms
-                  // type as CtUnknown (builtin resume), which the ground gate
-                  // in check_assignable waves through, so only arms returning
-                  // a concrete mismatching value are rejected.
-                  let hres_now = subst_apply(hs1, hres)
+                  // #2962: an arm that never mentions `resume` is an IMPLICIT
+                  // tail resume -- both backends deliver its value to the
+                  // `perform` and the body continues (measured: `Get() => 5`
+                  // under `let a = perform Get(); a + 100` answers 105). So
+                  // its value is checked against the OPERATION's return type.
+                  // #938's rule stayed for arms that mention `resume`: a tail
+                  // `resume(v)` types as the handle result through the binding
+                  // above, and an arm that STORES `resume` "suspends" with its
+                  // own value as the handle result (ADR-0076 Phase 3a). The
+                  // #938 rule used to apply to every arm, which rejected a
+                  // correct `Unit` arm inside an `Int` body and accepted an
+                  // `Int` arm for a `String`-returning operation that the body
+                  // then read as a string.
                   let harm_now = subst_apply(hs1, harm_ty)
-                  if hres_now is CtUnknown {
-                    hres = harm_now
+                  if arm_mentions_resume(hbody, hbinds_shadow_resume) {
+                    let hres_now = subst_apply(hs1, hres)
+                    if hres_now is CtUnknown {
+                      hres = harm_now
+                    } else {
+                      hs1 = check_assignable(hres_now, harm_now, hs1, errors, "handler arm value type mismatch with the handle body's type", tail_expr_off(hbody))
+                    }
                   } else {
-                    hs1 = check_assignable(hres_now, harm_now, hs1, errors, "handler arm value type mismatch with the handle body's type", tail_expr_off(hbody))
+                    let hret_now = subst_apply(hs1, hret)
+                    hs1 = check_assignable(hret_now, harm_now, hs1, errors, "handler arm value type mismatch with the operation's return type (an arm that never calls resume is an implicit resume, so its value is what the perform receives; call resume(v) to resume explicitly)", tail_expr_off(hbody))
                   }
                   // resume(x): x must be assignable to the op's declared
                   // return type (ground-gated). Throwaway walk — nested
@@ -10673,11 +10687,24 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               if Array::length(hbinds) == 1 {
                 match Array::get(hbinds, 0) {
                   PBind(eabname) => {
-                    // The payload stays CtUnknown: `throw` accepts any value
-                    // (#786 — suberror payloads like `throw(AppError("x"))`
+                    // #2963: a KINDED arm (`Exception[IoErr]::Throw(e)`) binds
+                    // its payload at the kind's type -- that is the one thing
+                    // the kinded spelling exists to say, and an untyped `e`
+                    // unified with the handle's Int result and printed a
+                    // pointer. Only a bare head is resolved here (the kind is
+                    // a static type NAME per ADR-0085); an applied kind such
+                    // as `Box[Int]` keeps the erased behaviour below.
+                    // The ERASED payload stays CtUnknown: `throw` accepts any
+                    // value (#786 — suberror payloads like `throw(AppError("x"))`
                     // are legal), so pinning String would newly reject valid
                     // `Throw(e) => inspect(e)` handlers (Codex P1 on #954).
-                    eaenv = env_bind(eaenv, eabname, CtUnknown)
+                    let eakind = exception_effect_kind(String::substring(hqname, 0, hci))
+                    let eaty = if String::length(eakind) > 0 && String::index_of(eakind, "[") < 0 {
+                      resolve_type_expr(TyName(eakind), defs)
+                    } else {
+                      CtUnknown
+                    }
+                    eaenv = env_bind(eaenv, eabname, eaty)
                   },
                   _ => ()
                 }
