@@ -3569,6 +3569,34 @@ async function main() {
   instanceRefGlobal = instance;
   hostAllocPtrGlobal = null;
   preGrowWasmMemory(instance);
+  // #2914: the same `VIBE_MEM=1` contract viberun has had since `vibe run
+  // --mem`, on this runner too. It is the same measurement -- `__heap_ptr` is
+  // the bump frontier and the linear backend never frees, so peak == total
+  // allocated (docs/internal/design/profiling.md, tier 1) -- but until now it
+  // existed only in the Rust runtime.
+  //
+  // That gap is why #2914 went three rounds on guesses. The CLI modes this
+  // runner serves (`vibe grep`, `vibe check`, `vibe symbols`, ...) never go
+  // through viberun, so "how much does a repo-wide typed sweep allocate" had
+  // no answer short of watching it trap -- a BINARY oracle, at the wasm32
+  // ceiling, which is why two candidate fixes read as noise.
+  //
+  // Same line shape as viberun's, so scripts/bench_metrics.sh parses either.
+  // `grow_events` is deliberately absent rather than reported as 0: this
+  // runner does not record the tier-2 timeline, and a zero would be a claim.
+  const memProfile = process.env.VIBE_MEM === "1";
+  const memHeapBase = memProfile ? currentGuestHeapBytes() : 0;
+  if (memProfile) {
+    process.on("exit", () => {
+      const mem = instance.exports.memory;
+      const committed = mem instanceof WebAssembly.Memory ? mem.buffer.byteLength : 0;
+      const peak = currentGuestHeapBytes();
+      const allocated = peak >= memHeapBase ? peak - memHeapBase : 0;
+      console.error(
+        `vibe::mem heap_base=${memHeapBase} heap_peak=${peak} allocated=${allocated} committed=${committed}`,
+      );
+    });
+  }
   let didInitStart = false;
   let initHeapBeforeStart = 0;
   const resolvedEnvCache = new Map();

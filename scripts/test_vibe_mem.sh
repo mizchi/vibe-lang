@@ -146,5 +146,52 @@ else
   ok "plain run emits no heap samples"
 fi
 
+# --- the NODE host runner speaks the same contract (#2914) ------------------
+# `VIBE_MEM=1` existed only in viberun, so the CLI modes this runner serves --
+# `vibe grep`, `vibe check`, `vibe symbols` -- had no way to report what they
+# allocated. That is why #2914's memory half went three rounds on guesses: the
+# only available oracle was "did it trap", a binary read taken at the wasm32
+# ceiling, where two candidate fixes were indistinguishable from noise.
+#
+# A cheap, real CLI mode: `vibe symbols` over one small file. No compile.
+node_probe="$proj/sym.vibe"
+cat > "$node_probe" <<'EOF'
+fn probe(a: Int) -> Int {
+  a + 1
+}
+EOF
+node_out="$WORK/sym.out"
+run_node_runner() { # <extra env assignments...>
+  rm -f "$node_out" "$node_out.diag"
+  env "$@" VIBE_SYMBOLS=1 VIBE_IMPORT_ABI=raw VIBE_PREOPEN_DIR="$WORK"     bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" --invoke cli_main     "$cli" "$node_probe" "$node_out" >/dev/null 2>"$WORK/sym.err" || true
+  cat "$WORK/sym.err"
+}
+
+node_mem_err="$(run_node_runner VIBE_MEM=1)"
+# Same field order viberun uses, so scripts/bench_metrics.sh parses either.
+if printf '%s\n' "$node_mem_err" | grep -qE "^vibe::mem heap_base=[0-9]+ heap_peak=[0-9]+ allocated=[0-9]+ committed=[0-9]+"; then
+  ok "node host runner emits the vibe::mem line under VIBE_MEM=1"
+else
+  bad "node host runner emitted no vibe::mem line (got: $(printf '%s\n' "$node_mem_err" | tail -1))"
+fi
+
+# Not a constant: a run that does real work must report real allocation. A
+# report that always said 0 would satisfy the regex above and measure nothing.
+node_alloc="$(printf '%s\n' "$node_mem_err" | sed -n 's/^vibe::mem .*allocated=\([0-9]*\).*/\1/p' | tail -1)"
+if [ "${node_alloc:-0}" -gt 0 ]; then
+  ok "node host runner reports non-zero allocation ($node_alloc B)"
+else
+  bad "node host runner reported allocated=${node_alloc:-<none>} for a run that read and parsed a file"
+fi
+
+# The control: silent unless asked. Without it, "always print" would pass both
+# cases above while making every other run noisier.
+node_plain_err="$(run_node_runner VIBE_MEM=0)"
+if printf '%s\n' "$node_plain_err" | grep -q "vibe::mem"; then
+  bad "node host runner leaked a memory report without VIBE_MEM=1"
+else
+  ok "node host runner emits no memory report unless asked"
+fi
+
 echo "[test_vibe_mem] $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1
