@@ -484,6 +484,23 @@ export fn grep_split_file_list(text: String) -> Array[String] {
 /// there is no banner to confuse with a path. A driver that already stripped
 /// it stays correct, since there is then no banner line to find.
 export fn grep_read_file_list(path: String) -> Array[String] with Exception + Fs {
+  // THE LIST FILE ITSELF IS AN ENTRY TOO. The guard on the entries below was
+  // added because `Fs::read_file` on a bad path leaves a bare wasm backtrace,
+  // and it was written one level too deep: `--file-list` is a path the user
+  // types, so a typo in it -- or a directory -- reached the SAME unguarded
+  // read and produced the SAME unactionable trap, on the flag's most
+  // immediate invalid input (Codex on #2956, P2). The entry messages name the
+  // project root because that is what entries resolve against; this one names
+  // the invoking directory, because that is what the list file's own path
+  // resolves against, and saying it wrong here is what sends a reader looking
+  // in the other place.
+  if !Fs::exists(path) {
+    throw(String::concat("grep: --file-list not found: `", String::concat(path, "` -- the list FILE's own path is relative to where you stand (its ENTRIES resolve against the project root)")))
+  } else if Fs::is_dir(path) {
+    throw(String::concat("grep: --file-list is a directory: `", String::concat(path, "` -- pass the FILE holding the list (`vibe grep --list-files <dir> > files` writes one); to sweep a directory, pass it as a root instead")))
+  } else {
+    ()
+  }
   let lines = grep_split_file_list(Fs::read_file(path))
   // DECODED ONLY WHEN THE BANNER SAYS SO. A hand-written list is still
   // supported and is not in the encoded format, so unescaping it

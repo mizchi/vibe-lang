@@ -236,6 +236,40 @@ case "$got" in
   *"wasm backtrace"*) fail "a missing file-list entry still trapped: $got" ;;
   *) ;;
 esac
+# THE LIST FILE ITSELF, mistyped and pointed at a directory. The two cases
+# above guard the ENTRIES; the guard was written one level too deep, so the
+# path the user actually types on the command line still reached the same
+# unguarded `Fs::read_file` and produced the same bare trap -- the flag's most
+# immediate invalid input was its least actionable one (Codex on #2956, P2).
+# Both assert WHICH diagnostic appears: "not found" and "is a directory" are
+# different mistakes, and a guard that collapses them sends the reader to the
+# wrong fix.
+got="$(cd "$app/sub" && vibe grep --file-list=./no_such_list.txt --pattern 'Array::length($(x:exp))' . 2>&1)" \
+  && fail "vibe grep with a missing --file-list must fail, got exit 0: $got"
+case "$got" in
+  *"--file-list not found"*) ;;
+  *) fail "a missing list FILE must say so, got: $got" ;;
+esac
+case "$got" in
+  *"no_such_list.txt"*) ;;
+  *) fail "a missing list FILE must name the file, got: $got" ;;
+esac
+case "$got" in
+  *"wasm backtrace"*) fail "a missing list FILE still trapped: $got" ;;
+  *) ;;
+esac
+# A DIRECTORY passes the existence check and fails inside the read as EISDIR.
+mkdir -p "$app/sub/alistdir"
+got="$(cd "$app/sub" && vibe grep --file-list=./alistdir --pattern 'Array::length($(x:exp))' . 2>&1)" \
+  && fail "vibe grep with a directory as --file-list must fail, got exit 0: $got"
+case "$got" in
+  *"--file-list is a directory"*) ;;
+  *) fail "a directory as the list FILE must say so, got: $got" ;;
+esac
+case "$got" in
+  *"wasm backtrace"*|*EISDIR*) fail "a directory as the list FILE still reached the host read: $got" ;;
+  *) ;;
+esac
 # CRLF. A list written by an editor that ends lines with \r\n must work: the
 # splitter this one replaced trimmed every entry, so dropping the trim while
 # consolidating rejected every valid path as missing -- a regression on the
@@ -299,7 +333,7 @@ missing entry for the undecoded literal path, got: $got" ;; esac
 else
   note "  skip: this filesystem rejected a newline in a filename"
 fi
-pass "vibe grep --file-list=/--resume-out resolve against the invoking directory; a missing entry is named; CRLF lists work; --list-files round-trips into --file-list"
+pass "vibe grep --file-list=/--resume-out resolve against the invoking directory; a missing entry AND a missing list file are named; CRLF lists work; --list-files round-trips into --file-list"
 
 # --- 5. vibe clean ----------------------------------------------------------
 mkdir -p "$app/.vibe/store/@x/y"
