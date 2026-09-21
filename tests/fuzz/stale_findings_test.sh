@@ -564,14 +564,29 @@ case "$2" in
   # (#2955 review).
   grandchild) out=$(watchdog_run 2 bash -c 'bash -c "sleep 12" & wait' 2>/dev/null); rc=$? ;;
   # The marker directory is gone, as it would be if the filesystem filled
-  # after the fallback was selected. The elapsed cross-check has to carry
-  # these two on its own -- and it must not answer 124 for the second.
+  # after the fallback was selected. There is no evidence left to decide with,
+  # so the call must say so (125) rather than guess either way.
   hang_nomarker)
     WATCHDOG_DIR="/nonexistent-wd-$$"
-    watchdog_run 2 sleep 12 >/dev/null 2>&1; rc=$? ;;
+    ( watchdog_run 2 sleep 12 ) >/dev/null 2>&1; rc=$? ;;
   self_term_nomarker)
     WATCHDOG_DIR="/nonexistent-wd-$$"
-    watchdog_run 5 sh -c 'kill -TERM $$' >/dev/null 2>&1; rc=$? ;;
+    ( watchdog_run 5 sh -c 'kill -TERM $$' ) >/dev/null 2>&1; rc=$? ;;
+  # The rounded-clock case. An earlier version cross-checked elapsed time
+  # against the bound, and `date +%s` resolution made a program that kills
+  # itself at 1.2s under a 2s bound answer 124 -- measured, 2 runs in 8. Run
+  # repeatedly, because the wrong answer was INTERMITTENT: a single sample
+  # passed most of the time while the defect was present (#2955 review).
+  late_self_term)
+    rc=0
+    n=0
+    while [ "$n" -lt 8 ]; do
+      watchdog_run 2 sh -c 'sleep 1.2; kill -TERM $$' >/dev/null 2>&1
+      one=$?
+      [ "$one" = "124" ] && rc=124
+      n=$((n + 1))
+    done
+    [ "$rc" = "124" ] || rc=143 ;;
   *) echo "unknown case: $2" >&2; exit 2 ;;
 esac
 t1=$(date +%s)
@@ -604,8 +619,62 @@ if grep -q "$(basename "$tlib")" "$tprobe" && grep -q 'vibe_absent_gtimeout' "$t
   wd_expect status 7 8 "a command's own status passes through untouched"
   wd_expect self_term 143 8 "a program the OOM killer TERMs is not relabelled a hang"
   wd_expect grandchild 124 8 "the whole process group is signalled, so the bound binds"
-  wd_expect hang_nomarker 124 8 "with the marker dir gone, elapsed-and-signalled still answers 124"
-  wd_expect self_term_nomarker 143 8 "and an early signal death is still not relabelled without it"
+  wd_expect hang_nomarker 125 8 "with no marker there is no evidence, so it refuses rather than guessing"
+  wd_expect self_term_nomarker 125 8 "and refuses the same way rather than passing the signal off as its own"
+  wd_expect late_self_term 143 40 "a late self-kill under the bound is never relabelled (8 runs, none 124)"
+  # The behavioural case above is INTERMITTENT by nature -- the defect it
+  # guards showed up in 2 runs of 8 -- so the rule is also asserted
+  # lexically, where it is decidable: ownership of a kill comes from state the
+  # watchdog wrote, never from reading the clock.
+  # Comments are stripped first. Written without that, this matched the
+  # sentence in lib_oracle.sh that EXPLAINS why the clock is not consulted --
+  # a checker reading its own documentation as evidence, which is the trap
+  # AGENTS.md records being walked into twice in #2138.
+  if sed 's/#.*$//' "$tlib" | grep -q 'date +%s'; then
+    bad "the oracle consults wall-clock time again; rounded seconds cannot decide who killed the child"
+  else
+    say "  ok   the classification reads no clock (comments stripped first)"
+  fi
+  # And the directory it allocates is cleaned up by the process that made it:
+  # reduce.py starts a fresh classify.sh per oracle call, 4000 by default.
+  tmphome="$(mktemp -d 2>/dev/null || true)"
+  if [ -z "$tmphome" ] || [ ! -d "$tmphome" ]; then
+    bad "could not allocate a TMPDIR for the cleanup case"
+  else
+    # DIRECTORIES only. Counting every entry also counted the node runner's
+    # flag cache -- a file it writes into TMPDIR by design -- so the case
+    # failed for something that is not a leak.
+    count_dirs() { find "$1" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' '; }
+    rm -rf "$FIND"
+    TMPDIR="$tmphome" bash "$tprobe" --seeds 1..1 --jobs 1 --cli "$STAGE2" >/dev/null 2>&1
+    left="$(count_dirs "$tmphome")"
+    if [ "$left" = "0" ]; then
+      say "  ok   the fallback left no watchdog directory behind"
+    else
+      bad "the fallback leaked $left director(ies) into TMPDIR"
+    fi
+    # Proven able to fail: the same probe with the cleanup trap removed must
+    # leave one behind, or this case is checking nothing.
+    leaklib="tests/fuzz/.probe_leaklib$$.sh"
+    cp "$tlib" "$leaklib"
+    sed -i.bak "s@^  trap 'rm -rf \"\$WATCHDOG_DIR\"' EXIT\$@  :@" "$leaklib" && rm -f "$leaklib.bak"
+    leakprobe="tests/fuzz/.probe_leak$$.sh"
+    cp "$tprobe" "$leakprobe"
+    sed -i.bak "s@$(basename "$tlib")\"@$(basename "$leaklib")\"@" "$leakprobe" && rm -f "$leakprobe.bak"
+    if grep -q "trap 'rm -rf" "$leaklib"; then
+      bad "the cleanup-trap mutation did not apply -- the case above is unattributed"
+    else
+      rm -rf "$FIND"
+      TMPDIR="$tmphome" bash "$leakprobe" --seeds 1..1 --jobs 1 --cli "$STAGE2" >/dev/null 2>&1
+      if [ "$(count_dirs "$tmphome")" = "0" ]; then
+        bad "without the trap nothing was left either -- the case above proves nothing"
+      else
+        say "  ok   without the trap one IS left, so the cleanup is the trap's doing"
+      fi
+    fi
+    rm -f "$leaklib" "$leakprobe"
+    rm -rf "$tmphome"
+  fi
   # The pairing for that one: signal only the direct child, as the first
   # version of this watchdog did. It still ANSWERS 124 -- the marker says the
   # bound was reached -- while the grandchild runs to completion, so only the

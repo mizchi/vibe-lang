@@ -48,6 +48,12 @@ else
   # invalid or unwritable TMPDIR is refused before any campaign begins rather
   # than per seed in the middle of one.
   WATCHDOG_DIR="$(mktemp -d 2>/dev/null || true)"
+  # Removed by the process that made it. tests/fuzz/reduce.py starts a fresh
+  # classify.sh per oracle call and allows 4000 of them by default, so one
+  # reduction would otherwise leave thousands of empty directories behind
+  # (#2955 review). Neither consumer sets an EXIT trap of its own; if one ever
+  # does, this line has to become part of it rather than replace it.
+  trap 'rm -rf "$WATCHDOG_DIR"' EXIT
   if [ -z "$WATCHDOG_DIR" ] || [ ! -d "$WATCHDOG_DIR" ]; then
     echo "[fuzz] no 'timeout' or 'gtimeout', and no writable temporary directory for the fallback" >&2
     echo "[fuzz] set TMPDIR to a writable directory, or install GNU coreutils (macOS: 'brew install coreutils')" >&2
@@ -61,11 +67,26 @@ fi
 # callers read: **124 means the bound was reached**, any other status is the
 # command's own.
 #
-# The killed-vs-died distinction is taken from a MARKER the watchdog writes
-# before signalling, not from the exit status. A child killed by SIGTERM
-# reports 143 either way, so mapping 143 to 124 would report a program the OOM
-# killer took as a HANG -- the wrong finding class, which is worse than none.
-# With the marker, only a kill this function performed answers 124.
+# The killed-vs-died distinction is taken from a MARKER, not from the exit
+# status: a child killed by SIGTERM reports 143 either way, so mapping 143 to
+# 124 would report a program the OOM killer took as a HANG -- the wrong finding
+# class, which is worse than none.
+#
+# The marker is created HERE and REMOVED by the watchdog, which is the reverse
+# of the obvious direction and is the point. Creating it is the operation that
+# can fail (no directory, no space), and here a failure can be seen and said;
+# unlinking cannot fail for lack of space, so the deadline path has nothing
+# left to go wrong in. Written the other way round, a marker the watchdog
+# could not create left the function reporting the signal status, so a hang
+# was recorded as a crash (#2955 review).
+#
+# Wall-clock time is NOT consulted. An earlier version cross-checked "died of
+# a signal AND ran at least `secs`", which sounds conservative and is not:
+# `date +%s` has one-second resolution, so a program that kills itself at 1.2s
+# under a 2s bound satisfies it whenever the boundary falls between the two
+# reads. Measured, 2 runs in 8 of `watchdog_run 2 sh -c 'sleep 1.2; kill -TERM
+# $$'` answered 124 -- a late crash recorded as a hang, intermittently, which
+# is the worst possible shape for a differential oracle (#2955 review).
 watchdog_run() { # <seconds> <cmd...>
   local secs="$1"; shift
   # The marker lives in the directory allocated when this fallback was
@@ -73,8 +94,18 @@ watchdog_run() { # <seconds> <cmd...>
   # yet: only the kill below creates it.
   local marker="${WATCHDOG_DIR:-}/wd.$$.$RANDOM"
   rm -f "$marker" 2>/dev/null
-  local started
-  started="$(date +%s)"
+  ( : > "$marker" ) 2>/dev/null
+  if [ ! -f "$marker" ]; then
+    # Loud, not silent: without a marker this function cannot tell a bound
+    # from a crash, and guessing is what the whole mechanism exists to avoid.
+    # 125 is timeout(1)'s own "the timeout itself failed" status. In `compile`
+    # it ends the seed's subshell, so no completion stamp is written and the
+    # campaign refuses; in the run lanes it surfaces as a finding to triage.
+    # Over-reporting is the safe side here, under-reporting is not.
+    echo "[fuzz] watchdog could not create its marker in ${WATCHDOG_DIR:-<unset>}" >&2
+    echo "[fuzz] refusing to bound this command: a hang could not be told from a crash" >&2
+    exit 125
+  fi
   # Job control is enabled around the launch so the child becomes a PROCESS
   # GROUP LEADER, and the signals below go to `-$cmd_pid` -- the whole group.
   # This is what timeout(1) does, and without it the bound does not bound:
@@ -97,7 +128,9 @@ watchdog_run() { # <seconds> <cmd...>
       kill -0 "$cmd_pid" 2>/dev/null || exit 0
       i=$((i + 1))
     done
-    [ -n "$marker" ] && : > "$marker"
+    # Remove, do not create: unlinking needs no free space, so the bound is
+    # recorded even on a filesystem that has filled since the marker was made.
+    rm -f "$marker" 2>/dev/null
     kill -TERM "-$cmd_pid" 2>/dev/null || kill -TERM "$cmd_pid" 2>/dev/null
     sleep 2
     kill -KILL "-$cmd_pid" 2>/dev/null || kill -KILL "$cmd_pid" 2>/dev/null
@@ -107,22 +140,12 @@ watchdog_run() { # <seconds> <cmd...>
   local rc=$?
   kill "$watch_pid" 2>/dev/null
   wait "$watch_pid" 2>/dev/null
-  if [ -e "$marker" ]; then
-    rm -f "$marker"
+  if [ ! -e "$marker" ]; then
+    # The watchdog removed it, and nothing else can: the name carries this
+    # process's pid and a random suffix.
     return 124
   fi
   rm -f "$marker" 2>/dev/null
-  # Second line of defence, for the one case the marker cannot cover: the
-  # filesystem filling mid-run, so the kill happened but writing the marker
-  # did not. A status above 128 means the child died of a signal, and having
-  # ALSO reached the bound is what separates that from a program the OOM
-  # killer took early -- the case the marker exists to protect. Both
-  # conditions, never either alone.
-  local ended
-  ended="$(date +%s)"
-  if [ "$rc" -gt 128 ] && [ "$((ended - started))" -ge "$secs" ]; then
-    return 124
-  fi
   return "$rc"
 }
 
