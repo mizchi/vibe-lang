@@ -337,14 +337,23 @@ export fn grep_split_file_list(text: String) -> Array[String] {
   let mut i = 0
   while i <= String::length(text) {
     if i == String::length(text) || String::byte_at(text, i) == 10 {
-      // TRIMMED, and this is a restoration rather than a nicety. The splitter
-      // this one replaced (`adapter_split_nonempty_lines`) called
-      // `String::trim` on every entry, so consolidating without it REGRESSED
-      // the env-mode path: a list written by an editor that ends lines with
-      // CRLF leaves `\r` on each path, the existence check then looks for
-      // `foo.vibe\r`, and every valid entry is rejected as missing (Codex on
-      // #2956, P2). Splitting on `\n` alone is not reading lines.
-      let line = String::trim(String::substring(text, start, i))
+      // A trailing CR only -- NOT a trim. Splitting on `\n` alone is not
+      // reading lines: a list written by an editor that ends lines with CRLF
+      // leaves `\r` on every path, the existence check looks for `foo.vibe\r`
+      // and rejects each valid entry as missing.
+      //
+      // The first fix for that trimmed the whole line, which broke a
+      // different case: a filename may legally begin or end with a space,
+      // `--list-files` prints it exactly, and trimming would then reject a
+      // file an ordinary directory sweep used to search. One regression
+      // traded for another (Codex on #2956, P2, twice). `\r` is the only
+      // character here that is line FRAMING rather than part of the path.
+      let raw = String::substring(text, start, i)
+      let line = if String::length(raw) > 0 && String::byte_at(raw, String::length(raw) - 1) == 13 {
+        String::substring(raw, 0, String::length(raw) - 1)
+      } else {
+        raw
+      }
       if String::length(line) > 0 {
         Array::push(out, line)
       } else {
@@ -360,8 +369,27 @@ export fn grep_split_file_list(text: String) -> Array[String] {
 }
 
 /// The chunk a driver wrote, read back as paths.
+///
+/// A LEADING BANNER IS SKIPPED, because `grep --help` promises the round trip
+/// `vibe grep --list-files ... > files && vibe grep --file-list files ...` and
+/// that promise was false: `--list-files` prints the banner as line 1, so the
+/// read treated `vibe-grep-file-list-v1` as a source path and the sweep
+/// stopped at `file-list entry not found` (Codex on #2956, P2). The two shell
+/// drivers never saw it only because each strips line 1 by hand before writing
+/// its chunk -- the contract worked for the code that knew the trick and not
+/// for the one the documentation described.
+///
+/// Stripping in the reader rather than the splitter is deliberate: the
+/// splitter also reads `grep_list_files` output directly, in-process, where
+/// there is no banner to confuse with a path. A driver that already stripped
+/// it stays correct, since there is then no banner line to find.
 export fn grep_read_file_list(path: String) -> Array[String] with Exception + Fs {
-  grep_split_file_list(Fs::read_file(path))
+  let lines = grep_split_file_list(Fs::read_file(path))
+  if Array::length(lines) > 0 && Array::get(lines, 0) == grep_file_list_banner() {
+    Array::slice(lines, 1, Array::length(lines))
+  } else {
+    lines
+  }
 }
 
 fn grep_one_string(v: String) -> Array[String] {

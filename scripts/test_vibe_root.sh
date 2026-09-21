@@ -224,7 +224,21 @@ printf 'sub/greppable.vibe\r\nsub/greppable2.vibe\r\n' > "$app/sub/crlflist.txt"
 got="$(cd "$app/sub" && vibe grep --file-list=./crlflist.txt --pattern 'Array::length($(x:exp))' . 2>&1)" \
   || fail "vibe grep with a CRLF file-list failed: $got"
 case "$got" in *"greppable.vibe:2:3"*) ;; *) fail "a CRLF file-list must sweep the same files a LF one does, got: $got" ;; esac
-pass "vibe grep --file-list=/--resume-out resolve against the invoking directory; a missing entry is named; CRLF lists work"
+# THE DOCUMENTED ROUND TRIP, run as documented. `grep --help` says the output
+# of --list-files is the input of --file-list; it was not, because --list-files
+# leads with the format banner and the reader took it for a source path. The
+# two shell drivers hid that by stripping line 1 themselves, so the contract
+# held for the code that knew the trick and not for the one the help described
+# (Codex on #2956, P2). No `sed` here on purpose: this is the user's spelling.
+( cd "$app/sub" && vibe grep --list-files --pattern 'Array::length($(x:exp))' . > ./roundtrip.txt 2>&1 ) \
+  || fail "vibe grep --list-files from a subdirectory failed: $(cat "$app/sub/roundtrip.txt")"
+head -1 "$app/sub/roundtrip.txt" | grep -q '^vibe-grep-file-list-v1$' \
+  || fail "--list-files no longer leads with the banner, so this round trip tests nothing: $(head -1 "$app/sub/roundtrip.txt")"
+got="$(cd "$app/sub" && vibe grep --file-list=./roundtrip.txt --pattern 'Array::length($(x:exp))' . 2>&1)" \
+  || fail "the documented --list-files | --file-list round trip failed: $got"
+case "$got" in *"greppable.vibe:2:3"*) ;; *) fail "the round trip found no match, got: $got" ;; esac
+case "$got" in *"vibe-grep-file-list-v1"*) fail "the banner reached the sweep as a path: $got" ;; *) ;; esac
+pass "vibe grep --file-list=/--resume-out resolve against the invoking directory; a missing entry is named; CRLF lists work; --list-files round-trips into --file-list"
 
 # --- 5. vibe clean ----------------------------------------------------------
 mkdir -p "$app/.vibe/store/@x/y"
