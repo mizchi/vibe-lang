@@ -577,11 +577,28 @@ fn cc_ladder_names() -> Array[String] {
       "eq",
       "host_future_get",
       "host_future_named",
+      // #2934: the namespaced spelling of `host_stream_close`, same signature
+      // (`(HostStream) -> Unit`). The checker admits both, this ladder and the
+      // dispatch below carried only the bare one, so `HostStream::close(s)`
+      // passed `vibe check` clean and then died with
+      // `internal compiler error: ... reached code generation unresolved`,
+      // while the bare twin explained itself. Found by sweeping every
+      // checker-admitted builtin with no registry row (0.1.0-rc.0 bug hunt).
+      "HostStream::close",
       "host_stream_close",
       "host_stream_named",
       "host_stream_next",
       "lt",
       "map",
+      // #2913: the bare deprecated alias for `Map::has_key`. It was in
+      // `cc_builtin_call_ret_kind`'s boolean list and in all three gc tables,
+      // but in neither the ladder nor `compile_call_core` -- so the checker
+      // typed it, the classifier called it boolean, and the linear lowering
+      // had nothing, which is `internal compiler error: map_has (local,
+      // @call) reached code generation unresolved`. Its qualified sibling
+      // `Map::has`, deprecated by the same row in `builtin_name.vibe`,
+      // compiled on both lanes the whole time.
+      "map_has",
       "mul",
       "not",
       "path",
@@ -3416,14 +3433,17 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       // "undefined variable" later.
       throw("host_stream_next: requires an Async-row entry (the entry boundary performs the stream read via the component adapter, spec §3.18); a row-free or library-mode program has no read source")
     }
-    else if !prefer_bound_call && fname == "host_stream_close" {
+    else if !prefer_bound_call && (fname == "host_stream_close" || fname == "HostStream::close") {
       // ADR-0089 Decision 3 follow-up (#1218): closes are retargeted to the
       // injected `__hs_close` by the same entry-row-keyed machinery that
       // installs the read path. The close itself performs nothing, but it
       // is only MEANINGFUL alongside that machinery -- a program with no
       // Async-row entry has no adapter to drop the readable end through, so
       // a surviving surface call here means there is no stream to close.
-      throw("host_stream_close: requires an Async-row entry (the readable end is dropped through the component adapter, spec §3.18); a row-free or library-mode program has no stream to close")
+      // The message names the spelling the program actually wrote: a
+      // diagnostic that renames the call is one more thing for the reader to
+      // reconcile before they can act on it.
+      throw(String::concat(fname, ": requires an Async-row entry (the readable end is dropped through the component adapter, spec §3.18); a row-free or library-mode program has no stream to close"))
     }
     else if !prefer_bound_call && fname == "Future::resolve" {
       // #1230: complete a pending future IN PLACE -- payload first, then clear
@@ -5506,7 +5526,11 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
         nl + 4
       }
     }
-    else if fname == "Map::has_key" || fname == "Map::has" {
+    // `map_has` is the bare deprecated alias of `Map::has_key` (#2913): same
+    // arity, same result, same `builtin_deprecated_message` row as
+    // `Map::has`, which this arm already served. The gc lane lowered all
+    // three; linear served two.
+    else if fname == "Map::has_key" || fname == "Map::has" || fname == "map_has" {
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
       let (eq_fi, _, _) = resolve_func(ctx.func_table, "eq")

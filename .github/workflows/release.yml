@@ -87,13 +87,37 @@ jobs:
           path: dist/release/${{ github.ref_name }}/*
           if-no-files-found: error
 
+      # The body is the release notes that ship in the repository, not the
+      # list of merged pull requests `generate_release_notes` produces: that
+      # was 72 entries for 0.1.0 against a `v0.0.1` five months earlier, and
+      # 0.1.0 is the first release usable by anyone but the author, so the
+      # page a newcomer lands on should be the written account.
+      #
+      # The notes are written to be read inside `docs/`, so their links are
+      # relative and a release body resolves none of them.
+      # build_release_body.sh absolutizes those AT THE TAG and REFUSES a link
+      # that does not resolve -- a body cannot be corrected after publishing
+      # here (immutable releases), so a dead link would be permanent.
+      - name: Build release body
+        run: bash scripts/build_release_body.sh "${GITHUB_REF_NAME}" "$RUNNER_TEMP/release-body.md"
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/release/${{ github.ref_name }}/*
           fail_on_unmatched_files: true
-          generate_release_notes: true
+          body_path: ${{ runner.temp }}/release-body.md
+          generate_release_notes: false
+          # A pre-release tag (`v0.1.0-rc.0`) must NOT become the repository's
+          # "Latest release": the README's installer and every "download the
+          # latest" instruction resolve to that pointer, so publishing a
+          # candidate as latest hands it to everyone who follows the front
+          # page. The tag's own spelling decides -- a hyphen is SemVer's
+          # pre-release marker, the same reduction check_version_ladder.sh and
+          # build_release_body.sh make -- so nothing has to be remembered at
+          # tag time.
+          prerelease: ${{ contains(github.ref_name, '-') }}
 
   # The published release installs the way a user installs it
   # (docs/user/getting-started/install.md "Installer options", #2678): the curl entry point in

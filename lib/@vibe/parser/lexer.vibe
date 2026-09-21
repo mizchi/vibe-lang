@@ -1459,3 +1459,36 @@ export fn lex_ok(source: String) -> Bool {
     true
   } with { Exception::Throw(_) => false }
 }
+
+/// Give a bare LEXER message the position it was thrown from (#2946, #2938).
+///
+/// `lex` and `lex_with_offsets` throw from inside the scan, so a caller's
+/// handler receives text with no position -- `unexpected character: \`. Every
+/// lane that reports one has to put the position back, and each was doing it,
+/// or not doing it, on its own: the FS check lane located it, the
+/// imported-module lane prefixed only the path, and the `.vibex` entry lane
+/// dropped both.
+///
+/// A message that already starts with `line ` is returned untouched, so this is
+/// idempotent and a PARSE error -- which carries its own position -- passes
+/// through. Anything else is re-scanned with the recovering lexer, which
+/// collects offsets instead of throwing. If that finds no lexer error the
+/// message is returned exactly as it was: a throw from somewhere other than the
+/// lexer must not acquire an invented position, since an invented location for
+/// a real node is worse than no location at all.
+///
+/// The re-scan costs a second pass, and only on a path that is about to throw.
+export fn located_lex_message(source: String, msg: String) -> String {
+  if String::starts_with(msg, "line ") {
+    msg
+  } else {
+    let (_tokens, _starts, _ends, err_offsets, _err_msgs) = lex_with_offsets_recovering(source)
+    if Array::length(err_offsets) == 0 {
+      msg
+    } else {
+      match offset_to_line_col(source, Array::get(err_offsets, 0)) {
+        (line, col) => String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), String::concat(": ", msg)))))
+      }
+    }
+  }
+}

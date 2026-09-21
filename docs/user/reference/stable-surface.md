@@ -92,23 +92,37 @@ of each item is [spec/syntax.md](syntax.md) and the
   bare, through a name, inside tuples/structs/nested arrays, through a function
   result, and for an unannotated `let xs = []` whose pushed values describe
   themselves — `==` is **structural**. A comparison the compiler cannot
-  classify **traps at the comparison** once both sides are non-empty rather
+  classify is **refused at build time** once both sides are non-empty, with a
+  message naming the edit (``structural `==` cannot be decided here``), rather
   than answering by length or identity; adding a type annotation resolves it.
-  An erased type variable (`[T: Eq]`) dispatches through its witness and is
-  rejected at check time for a container with no `Eq` impl; an UNBOUNDED
-  formal comparing containers (`fn f[T](x: Array[T], y: Array[T])`) is the
-  trap side of the same contract — measured 2026-08-24, an
-  equal-but-separately-allocated pair traps rather than answering, and a
-  difference answers `false`. There is **no silent reference equality**
-  anywhere on this surface — every lane answers correctly or traps. SemVer
-  reading: a
-  currently-trapping comparison later becoming a structural answer is a
+  This paragraph said "traps at the comparison" until #2475 moved the refusal
+  ahead of execution — a bare `trap: RuntimeError: unreachable` on a program
+  that had compiled clean carried no message and no position, and a message
+  cannot be attached at run time because `assert_eq` lowers to `println` and so
+  demands `Stdout` on the containing function (#2107). The refusal lands on
+  `vibe build` / `vibe run` / `vibe test`; `vibe check` does not run that pass.
+  The accepted cost: a comparison that is written but never executed no longer
+  compiles.
+  An erased type variable (`[T: Eq]`) dispatches through its witness since
+  #2523 and is rejected at check time for a container with no `Eq` impl; an
+  UNBOUNDED formal is **rejected by the checker** (#2474), not trapped. This
+  sentence said it traps until that landed; re-measured 2026-09-20,
+  `fn f[T](x: Array[T], y: Array[T]) { x == y }` is a compile error at the
+  comparison — ``` `==` compares two values of type `Array[T]`, but the type
+  parameter `T` has no `Eq` bound … declare the bound (`[T: Eq]`) or compare at
+  a concrete type ``` — and the same holds for a bare `T`, `Option[T]` and
+  `(T, Int)`. There is **no silent reference equality** anywhere on this
+  surface — every lane answers correctly or refuses. SemVer reading: a
+  currently-refused comparison later becoming a structural answer is a
   compatible change (the typed lane, #2158); an existing answer changing is
   breaking. The full contract is the cheatsheet's "`==` on `Array` / `Bytes`
   (#1526)" section, pinned by `fixtures/structural_eq_contexts_test.vibe`, the
   `structural_eq_untyped_empty_*_typed` fixtures (answers the checker's typed
   `==` rows supply on the `vibe test` / `vibe run` lane, #2391) and the
-  `structural_eq_untyped_empty_*_trap` fixtures (the fail-closed side).
+  `structural_eq_untyped_empty_*_refused` fixtures (the fail-closed side).
+  `tests/gates/early/run.sh` asserts the refused side on its MESSAGE and on the
+  edit that message names, not merely on the refusal: "did not compile" is
+  satisfied by any unrelated breakage.
 
 ### 2.2 Bindings and mutability
 - `let` (immutable), `let rec` (recursive), `let mut` (block-scoped mutable,

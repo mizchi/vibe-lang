@@ -1,0 +1,31 @@
+//# #2913: `map_has` is the bare deprecated alias of `Map::has_key`, and it
+//# reached CODE GENERATION UNRESOLVED on the linear lane while compiling fine
+//# on gc.
+//#
+//# The name was in `cc_builtin_call_ret_kind`'s boolean list and in all three
+//# gc tables, but in neither `cc_ladder_names` nor `compile_call_core`. So the
+//# checker typed it `CtBool`, the classifier agreed it was boolean, and the
+//# lowering had no arm -- which is an ICE that tells the user "this is a bug
+//# in the compiler and not in your program -- please report this", on a name
+//# `vibe check` accepted without a word.
+//#
+//# `Map::has`, deprecated by the SAME `builtin_deprecated_message` row, was
+//# served by that arm the whole time. That asymmetry is what this fixture
+//# pins: all three spellings are one operation and must answer alike.
+//#
+//# Both the true and the false answer, because an arm that returned a constant
+//# would satisfy a one-sided assertion.
+
+//# `Map::set` is PERSISTENT -- `declare Map::set(Map[T, U], T, U) -> Map[T, U]`,
+//# measured: `Map::size` of the argument stays 0 and of the result is 1 -- so
+//# the key has to be looked up in the RETURNED map.
+
+test "map_has agrees with Map::has_key and Map::has, present" {
+  let m = Map::set(Map::new(), "k", 1)
+  inspect(String::concat(__to_string(Map::has_key(m, "k")), String::concat(__to_string(Map::has(m, "k")), __to_string(map_has(m, "k")))), "truetruetrue")
+}
+
+test "map_has agrees with Map::has_key and Map::has, absent" {
+  let m = Map::set(Map::new(), "k", 1)
+  inspect(String::concat(__to_string(Map::has_key(m, "zz")), String::concat(__to_string(Map::has(m, "zz")), __to_string(map_has(m, "zz")))), "falsefalsefalse")
+}

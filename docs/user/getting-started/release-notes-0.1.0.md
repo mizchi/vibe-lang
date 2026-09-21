@@ -1,9 +1,9 @@
 # vibe 0.1.0 release notes
 
-> **Status: in preparation.** The tag has not been cut; `vibe version` reports
-> `0.1.0-dev` until it is. The version ladder is ADR-0109 — 0.1.0 is the first
-> release usable by anyone but the author, and everything before it was 0.0.x
-> development.
+> The version ladder is ADR-0109 — 0.1.0 is the first release usable by anyone
+> but the author, and everything before it was 0.0.x development. What the
+> release *is*, as opposed to what changed in it, is
+> [spec/0-1.md](../../spec/0-1.md).
 
 The previous and only published release is `v0.0.1` (2026-04-14). Between it and
 0.1.0 the language was rewritten in itself, so these notes describe a different

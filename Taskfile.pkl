@@ -839,6 +839,114 @@ local checkRcDefault = new Task {
 // fallthrough was not a worse answer but undefined behaviour (an unresolved name
 // lowered to a table call on a bogus index; the erased representation printed for
 // an interpolation). Asked of the running compiler, message included.
+// #2934 (0.1.0-rc.0 bug hunt): a builtin the CHECKER admits must be lowered
+// under the SPELLING it was admitted under. `HostStream::close` and
+// `host_stream_close` share a signature and both type-check clean; only the
+// bare one was in the default lane's dispatch, so the namespaced one died with
+// `reached code generation unresolved` -- a message telling the reader to
+// report a compiler bug for an operation that simply was not wired up. Same
+// shape as #2913 (`map_has`) and #2900 (four `Array::` names).
+// #2940: `vibe grep` answered "no matches" (exit 0, empty stdout) for a file
+// named on the command line that it could not parse, where `vibe check` on the
+// same file exits 1 with a located diagnostic. Naming a file is asking about
+// that file. The SWEEP case is deliberately unchanged (#1943), and the test
+// carries that as a control alongside a no-match control -- without them,
+// "refuse whenever stdout is empty" would pass the red case.
+// #2936: the `Array::` builtins check their receiver AND their callback.
+// `Array::map(xs, 0)` -- forgetting the closure -- type-checked clean and
+// emitted a module that would not load, with no source location. Two holes:
+// six names have a dedicated checker arm ahead of the general one that owns
+// the receiver check, and the non-receiver head table deliberately skipped
+// higher-order arguments. Carries controls both ways: the names that were
+// never broken must still refuse, and real higher-order code must still
+// compile AND run with the right answers -- otherwise "refuse everything"
+// passes the red rows.
+// #2941: `builtin_fixed_arity` falls back to the registry, which answers -1
+// for a name with no row -- "no certain arity, tolerate". Eleven names landed
+// there, so any argument count reached codegen: `Path::resolve("/a", "b")`
+// was clean at `vibe check` and then `reached code generation unresolved`,
+// telling the reader to report a compiler bug for one argument too many.
+// Carries the other half as a control: each name at its DECLARED arity must
+// still be accepted and still run, since a wrong arity in the table would
+// reject correct code while every red row still passed.
+local checkBuiltinArity = new Task {
+  name = "check-builtin-arity"
+  description =
+    "builtins enforce their argument count, and the declared arity still compiles and runs"
+  cmd = "bash scripts/builtin_arity_test.sh"
+  inputs {
+    ...compilerProbeInputs
+    "scripts/builtin_arity_test.sh"
+  }
+  deps { selfhostGeneration }
+}
+local checkArrayArgHead = new Task {
+  name = "check-array-arg-head"
+  description =
+    "Array builtins refuse a non-array receiver and a non-function callback, while real higher-order code still runs"
+  cmd = "bash scripts/array_builtin_arg_head_test.sh"
+  inputs {
+    ...compilerProbeInputs
+    "scripts/array_builtin_arg_head_test.sh"
+  }
+  deps { selfhostGeneration }
+}
+local checkSingleSourceLexDiag = new Task {
+  name = "check-single-source-lex-diag"
+  description =
+    "the low-level cli_main lane reports a lexer error as a .diag rather than an uncaught throw, while the type-error, unstable-import and valid-program answers are unchanged"
+  cmd = "bash scripts/single_source_lex_diag_test.sh"
+  inputs {
+    ...compilerProbeInputs
+    "scripts/single_source_lex_diag_test.sh"
+  }
+  deps { selfhostGeneration }
+}
+local checkVibexEntryLex = new Task {
+  name = "check-vibex-entry-lex"
+  description =
+    "a .vibex entry's lexer error names its file and position, the shape diagnostics stay single-prefixed, and a parse error gains no invented position"
+  cmd = "bash scripts/vibex_entry_lex_error_located_test.sh"
+  inputs {
+    ...compilerProbeInputs
+    "scripts/vibex_entry_lex_error_located_test.sh"
+  }
+  deps { selfhostGeneration }
+}
+local checkImportedLexLocated = new Task {
+  name = "check-imported-lex-located"
+  description =
+    "an imported file's lexer error carries a line:col, a parse error is not double-located, and a clean import still runs"
+  cmd = "bash scripts/imported_lex_error_located_test.sh"
+  inputs {
+    ...compilerProbeInputs
+    "scripts/imported_lex_error_located_test.sh"
+  }
+  deps { selfhostGeneration }
+}
+local checkGrepNamedUnparseable = new Task {
+  name = "check-grep-named-unparseable"
+  description =
+    "vibe grep refuses a named file it cannot parse, still sweeps a directory past one, and still answers no-matches with a clean zero"
+  cmd = "bash scripts/grep_named_unparseable_test.sh"
+  inputs {
+    ...compilerProbeInputs
+    "scripts/grep_named_unparseable_test.sh"
+    "scripts/vibe_grep_bin.sh"
+  }
+  deps { selfhostGeneration }
+}
+local checkBuiltinSpelling = new Task {
+  name = "check-builtin-spelling"
+  description =
+    "every spelling of a checker-admitted builtin reaches the same lowering and explains itself under its own name"
+  cmd = "bash scripts/builtin_spelling_lowering_test.sh"
+  inputs {
+    ...compilerProbeInputs
+    "scripts/builtin_spelling_lowering_test.sh"
+  }
+  deps { selfhostGeneration }
+}
 local checkLambdaBoundRefusal = new Task {
   name = "check-lambda-bound-refusal"
   description =
@@ -1684,6 +1792,49 @@ local testSeedAssetIdentity = new Task {
     ...compilerProbeInputs
     "scripts/build_compiler_seed_assets_test.sh"
     "scripts/build_compiler_seed_assets.sh"
+  }
+}
+// The release BODY is built from the shipped release notes rather than from
+// `generate_release_notes` (72 merged PRs for 0.1.0). Its links are relative
+// -- written to be read inside docs/ -- so they are absolutized at the tag,
+// and a link that does not resolve is refused: this repository publishes
+// immutable releases, so a dead link in a body is permanent. Nothing else
+// runs build_release_body.sh; release.yml invokes it only on a `v*` tag push,
+// which is the one moment it must not be the first execution.
+local testReleaseBody = new Task {
+  name = "test-release-body"
+  description =
+    "red/green for the release-body builder: relative links absolutized at the tag, an unresolvable or escaping link refused"
+  cmd = "bash scripts/build_release_body_test.sh"
+  inputs {
+    "scripts/build_release_body_test.sh"
+    "scripts/build_release_body.sh"
+  }
+}
+// #2914: `vibe grep` answered `exit 0` with no output for a tree-wide typed
+// sweep that was in fact TRAPPING (`RuntimeError: memory access out of
+// bounds`). The runner recorded the failure with `status=$?` inside
+// `if ! cmd; then`, where `$?` is the status of the `!`-inverted pipeline --
+// 0 exactly when the command failed. "It broke" and "the answer is none"
+// therefore shared a spelling, in a tool whose whole job is answering
+// questions about a corpus. Stub-runner cases, so no compiler is needed.
+// The asset builder's TAG GRAMMAR. `^[0-9]+\.[0-9]+\.[0-9]+$` rejected every
+// pre-release, so `v0.1.0-rc.0` died on release.yml's FIRST job -- at the tag,
+// which is the one moment the workflow cannot be rehearsed, while
+// check_version_ladder.sh had accepted that spelling all along. Argument
+// handling only: the build itself is ~4 minutes and needs a compiler.
+local testReleaseAssetsArgs = new Task {
+  name = "test-release-assets-args"
+  description =
+    "red/green for the release asset builder's tag validation: a pre-release tag is accepted, junk and a launcher/tag disagreement are refused"
+  cmd = "bash scripts/build_release_assets_test.sh"
+  inputs {
+    // The cases stop at argument handling and never reach a compiler, but the
+    // script under test does; an exemption asserted here is the gate's own
+    // failure mode, and replaying a 0.4s test costs less than being wrong.
+    ...compilerProbeInputs
+    "scripts/build_release_assets_test.sh"
+    "scripts/build_release_assets.sh"
   }
 }
 local testEnsureSeed = scriptTask("test-ensure-seed", "scripts/ensure_seed_test.sh")
@@ -2592,6 +2743,15 @@ local releaseCheck = new Task {
     testEnsureEntryWasm
     testEnsureSeed
     testSeedAssetIdentity
+    testReleaseBody
+    testReleaseAssetsArgs
+    checkBuiltinSpelling
+    checkGrepNamedUnparseable
+    checkArrayArgHead
+    checkBuiltinArity
+    checkImportedLexLocated
+    checkVibexEntryLex
+    checkSingleSourceLexDiag
     checkTaskfileFmt
     // These ran ONLY from the local pre-commit hook -- CI never invoked them.
     // That made the hook the single enforcement point, so #1729 (a stale
@@ -2886,6 +3046,15 @@ tasks {
   testCheckTaskEnvSanitized
   testEnsureSeed
   testSeedAssetIdentity
+  testReleaseBody
+  testReleaseAssetsArgs
+  checkBuiltinSpelling
+  checkGrepNamedUnparseable
+  checkArrayArgHead
+  checkBuiltinArity
+  checkImportedLexLocated
+  checkVibexEntryLex
+  checkSingleSourceLexDiag
   testVibeFmt
   testEnsureEntryWasm
   testVibeNormalizeSmoke
