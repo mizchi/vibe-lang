@@ -203,7 +203,13 @@ proves nothing about where the file lands."
 # A DIRECTORY entry gets its own diagnostic: it passes the existence check and
 # would then fail inside Fs::read_file as a host-level EISDIR, which is the
 # bare trap the guard above exists to replace.
-printf 'sub/nl\n' > "$app/sub/dirlist.txt"
+# Its OWN directory, created here. The first version pointed at `sub/nl`,
+# which this file does not create until the newline case further down, so the
+# entry did not exist and the guard answered "not found" -- the right refusal
+# for the wrong reason, and the case caught it only because it asserts WHICH
+# diagnostic appears rather than merely that one did.
+mkdir -p "$app/sub/adirentry"
+printf 'sub/adirentry\n' > "$app/sub/dirlist.txt"
 got="$(cd "$app/sub" && vibe grep --file-list=./dirlist.txt --pattern 'Array::length($(x:exp))' . 2>&1)" \
   && fail "a directory in a file list must fail, got exit 0: $got"
 case "$got" in
