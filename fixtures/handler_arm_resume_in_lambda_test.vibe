@@ -1,0 +1,74 @@
+// #3005 / #2985 review: `resume(..)` called from a lambda INSIDE a handler
+// arm. The lambda keeps the continuation and may run it after the arm has
+// returned, so the arm is a suspend arm (the same class as `let k = resume`),
+// not a tail-resumptive one -- both classifiers (`arm_refs_resume_value`
+// in the checker, `scps_arm_refs_resume_value` in the lowering) now count
+// the direct call form as a capture when it sits inside a lambda literal.
+// Before: the arm was classified tail-resumptive, the lowering left the
+// lambda's `resume(..)` unbound, and the module failed to INSTANTIATE
+// (`not enough arguments on the stack for call_indirect`); with a lambda
+// parameter as the argument the checker answered `unknown name: v`.
+
+effect Ask {
+  Get() -> Int
+}
+
+effect Named {
+  Name() -> String
+}
+
+test "a lambda that resumes with a literal, called from the arm" {
+  let r = handle {
+    perform Ask::Get() + 1
+  } with { Ask::Get() => {
+    let k = () -> resume(41)
+    k()
+  } }
+  assert_eq(r, 42)
+}
+
+test "a lambda that resumes with its own parameter" {
+  let r = handle {
+    perform Ask::Get() + 1
+  } with { Ask::Get() => {
+    let k = (v: Int) -> resume(v)
+    k(41)
+  } }
+  assert_eq(r, 42)
+}
+
+test "an unannotated lambda parameter" {
+  let r = handle {
+    perform Ask::Get() + 1
+  } with { Ask::Get() => {
+    let k = (v) -> resume(v)
+    k(41)
+  } }
+  assert_eq(r, 42)
+}
+
+test "a typed lambda resuming a String operation inside an Int handle" {
+  // `resume` is `(String) -> Int` here: the operation's value goes in, the
+  // HANDLE's value comes back (the arm is a suspend arm, its value is the
+  // handle result), so the lambda is typed `-> Int`.
+  let r = handle {
+    String::length(perform Named::Name()) + 1
+  } with { Named::Name() => {
+    let f = () -> Int {
+      resume("xyz")
+    }
+    f()
+  } }
+  assert_eq(r, 4)
+}
+
+test "the arm's own value is the handle result once a lambda captured resume" {
+  let r = handle {
+    perform Ask::Get() + 1
+  } with { Ask::Get() => {
+    let k = () -> resume(41)
+    let inner = k()
+    inner * 10
+  } }
+  assert_eq(r, 420)
+}

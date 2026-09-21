@@ -6901,6 +6901,17 @@ export fn reject_resume_outside_handler(e: Expr, sh: Bool, errors: Array[String]
   resume_reject_resume_outside_handler(e, sh, errors)
 }
 
+/// A lambda parameter's binder name without its `~` (labeled) / `?`
+/// (optional) suffix, for the resume-value walk above.
+fn resume_walk_param_base(pn: String) -> String {
+  let ln = String::length(pn)
+  if ln > 0 && (pn[ln - 1: ln] == "~" || pn[ln - 1: ln] == "?") {
+    pn[0: ln - 1]
+  } else {
+    pn
+  }
+}
+
 fn check_resume_values(e: Expr, ret_ty: Type, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture]) -> Subst {
   match e {
     ECall(callee, args, _) => {
@@ -6969,7 +6980,19 @@ fn check_resume_values(e: Expr, ret_ty: Type, env: TypeEnv, defs: Array[TypeDef]
     EUnaryOp(_, inner) => check_resume_values(inner, ret_ty, env, defs, s, c, errors, tytab, capture),
     EAssign(_, v, b) => check_resume_values(b, ret_ty, env, defs, check_resume_values(v, ret_ty, env, defs, s, c, errors, tytab, capture), c, errors, tytab, capture),
     EAssignOp(_, _, v, b) => check_resume_values(b, ret_ty, env, defs, check_resume_values(v, ret_ty, env, defs, s, c, errors, tytab, capture), c, errors, tytab, capture),
-    EFn(_, _, _, _, _, fb) => check_resume_values(fb, ret_ty, env, defs, s, c, errors, tytab, capture),
+    EFn(_, _, fparams, _, _, fb) => {
+      // The lambda's own parameters are binders for its body (#3005: a
+      // `resume(v)` whose `v` is the lambda's parameter answered "unknown
+      // name: v" because the walk carried the ARM's env into the body).
+      let mut fenv = env
+      let mut fpi = 0
+      while fpi < Array::length(fparams) {
+        let (fpn, _) = Array::get(fparams, fpi)
+        fenv = env_bind(fenv, resume_walk_param_base(fpn), CtUnknown)
+        fpi = fpi + 1
+      }
+      check_resume_values(fb, ret_ty, fenv, defs, s, c, errors, tytab, capture)
+    },
     EReturn(inner) => check_resume_values(inner, ret_ty, env, defs, s, c, errors, tytab, capture),
     EDot(obj, _, _, _) => check_resume_values(obj, ret_ty, env, defs, s, c, errors, tytab, capture),
     ETuple(items) => {
