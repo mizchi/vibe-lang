@@ -279,10 +279,37 @@ fn grep_memory_refusal(path: String, done: Int, total: Int, headroom: Int, need:
 /// `vibe grep <root>` proper. Typing runs only for files that already have a
 /// structural match: typing a file the pattern never hits would be pure cost.
 export fn grep_scan_fs_report(root: String, pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool) -> (String, String) with Env + Exception + Fs + Profiler {
-  let pat = grep_compile_pattern(pattern)
-  grep_check_filters(pat, wheres, where_rows)
   let files = grep_empty_strings()
   source_walk_collect_files(root, files)
+  grep_scan_files_report(files, pattern, wheres, where_rows, only, json)
+}
+
+/// The files a sweep of `root` would visit, one per line, in sweep order.
+///
+/// #2914: this exists so a DRIVER can partition the sweep across processes
+/// without re-deriving which files are in it. The skip policy is a
+/// user-visible answer and `source_walk.vibe` says it lives in exactly one
+/// place -- a driver that globbed for `*.vibe` itself would disagree with the
+/// sweep about `deps/`, `_build/` and dotted directories, and nothing would
+/// say so. Asking the sweep is what keeps one policy.
+export fn grep_list_files(root: String) -> String with Fs {
+  let files = grep_empty_strings()
+  source_walk_collect_files(root, files)
+  grep_join_lines(files, false)
+}
+
+/// The sweep proper, over an EXPLICIT file list.
+///
+/// #2914: a single wasm32 process tops out at 4 GiB and the sweep's cost
+/// accumulates across files, so a tree-wide typed sweep cannot finish in one
+/// process however cheap each file is made -- measured, neither dropping the
+/// 46 MB of generated bundles (file 70 -> 118 of 1224) nor building the
+/// compiler on the RC lane, which frees (file 70 -> 71), changes that shape.
+/// The driver runs this once per chunk in a FRESH process, which is the one
+/// thing that does reset the frontier.
+export fn grep_scan_files_report(files: Array[String], pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool) -> (String, String) with Env + Exception + Fs + Profiler {
+  let pat = grep_compile_pattern(pattern)
+  grep_check_filters(pat, wheres, where_rows)
   let typed = grep_needs_typing(wheres, where_rows, only)
   let has_typed_filter = Array::length(wheres) > 0 || Array::length(where_rows) > 0
   let out = grep_empty_strings()

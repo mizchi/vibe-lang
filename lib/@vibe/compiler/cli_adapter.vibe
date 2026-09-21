@@ -42,6 +42,8 @@ import @vibe/compiler/runtime {
   doc_at_source,
   escape_spans,
   escape_spans_strict,
+  grep_list_files,
+  grep_scan_files_report,
   grep_scan_fs_report,
   incremental_invalidation_trace_json,
   incremental_typecheck_telemetry_json,
@@ -2430,9 +2432,26 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
   // a bad PATTERN or filter is an error -- routed to the `.diag` sidecar, the
   // same convention VIBE_SYMBOLS uses, so `output_path` never carries a
   // plausible-but-wrong result list.
+  // #2914: the file list the sweep WOULD visit, so a driver can partition it
+  // across processes without re-deriving the skip policy (see grep_list_files).
+  // Checked before the sweep itself so it never runs one.
+  if Env::get("VIBE_GREP_LIST_FILES") == "1" {
+    return handle {
+      Fs::write_bytes(output_path, adapter_string_to_bytes(line_terminated(grep_list_files(input_path))))
+      0
+    } with { Exception::Throw(msg) => emit_compile_diag(output_path, msg) }
+  }
   if Env::get("VIBE_GREP") == "1" {
     return handle {
-      let (text, warnings) = grep_scan_fs_report(input_path, Env::get("VIBE_GREP_PATTERN"), adapter_split_nonempty_lines(Env::get("VIBE_GREP_WHERE")), adapter_split_nonempty_lines(Env::get("VIBE_GREP_WHERE_ROW")), Env::get("VIBE_GREP_ONLY"), Env::get("VIBE_GREP_JSON") == "1")
+      // `VIBE_GREP_FILE_LIST` names a file of newline-separated paths: ONE
+      // chunk of a partitioned sweep. Absent, `input_path` is a root to walk,
+      // which is the unchanged single-process behaviour.
+      let chunk_list = Env::get("VIBE_GREP_FILE_LIST")
+      let (text, warnings) = if chunk_list != "" {
+        grep_scan_files_report(adapter_split_nonempty_lines(Fs::read_file(chunk_list)), Env::get("VIBE_GREP_PATTERN"), adapter_split_nonempty_lines(Env::get("VIBE_GREP_WHERE")), adapter_split_nonempty_lines(Env::get("VIBE_GREP_WHERE_ROW")), Env::get("VIBE_GREP_ONLY"), Env::get("VIBE_GREP_JSON") == "1")
+      } else {
+        grep_scan_fs_report(input_path, Env::get("VIBE_GREP_PATTERN"), adapter_split_nonempty_lines(Env::get("VIBE_GREP_WHERE")), adapter_split_nonempty_lines(Env::get("VIBE_GREP_WHERE_ROW")), Env::get("VIBE_GREP_ONLY"), Env::get("VIBE_GREP_JSON") == "1")
+      }
       // #2133: both are line-oriented (`path:line:col: <match>` one per line,
       // and one warning per line), so both terminate their last record. JSON
       // mode gets the trailing newline too, which is conventional and which no
