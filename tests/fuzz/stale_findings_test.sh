@@ -89,19 +89,40 @@ else
   fi
 fi
 
-say "=== red: the PRE-FIX harness leaves it behind ==="
-# Reconstruct the old behaviour by removing the reset line, so the case proves
-# the fix was load-bearing rather than merely present.
+say "=== red: the PRE-FIX harness runs a campaign and leaves it behind ==="
+# Reconstruct the old behaviour so the case proves the fix was load-bearing
+# rather than merely present.
+#
+# The mutant must drop the WHOLE reset block -- `rm -rf` AND the guard above.
+# Deleting only the `rm -rf` line left the guard in place, so with a stale
+# directory planted the mutant hit the guard and exited 2 BEFORE fuzzing: the
+# fixture survived because the run was REFUSED, not because a pre-fix harness
+# ignored it (#2955 review). The case passed while demonstrating nothing,
+# which is the failure this whole file is about.
+#
+# So survival is accepted only from a mutant that announced a campaign and
+# completed it with zero findings -- i.e. a run that genuinely did not care.
 probe=tests/fuzz/.probe_prefix.sh
 cp tests/fuzz/run_fuzz.sh "$probe"
-sed -i.bak '/^rm -rf "\$FIND"$/d' "$probe" && rm -f "$probe.bak"
+sed -i.bak '/^rm -rf "\$FIND"$/,/^fi$/d' "$probe" && rm -f "$probe.bak"
 if cmp -s tests/fuzz/run_fuzz.sh "$probe"; then
   bad "the mutation changed nothing -- this case would pass while proving nothing"
+elif grep -q "could not reset" "$probe"; then
+  bad "the mutation left the guard behind -- the mutant would refuse, not fuzz"
 else
+  say "  ok   the mutant carries neither the reset nor its guard"
   if plant; then
-    bash "$probe" --seeds 1..1 --cli "$STAGE2" >/dev/null 2>&1
+    out="$(bash "$probe" --seeds 1..1 --cli "$STAGE2" 2>&1)"
+    case "$out" in
+      *"[fuzz] mode="*) say "  ok   pre-fix: the mutant announced a campaign" ;;
+      *) bad "pre-fix: no campaign announced -- survival would prove nothing: $(printf '%s' "$out" | tail -1)" ;;
+    esac
+    case "$out" in
+      *"0 findings"*) say "  ok   pre-fix: the campaign completed with 0 findings" ;;
+      *) bad "pre-fix: the campaign did not complete cleanly: $(printf '%s' "$out" | tail -1)" ;;
+    esac
     if [ -e "$STALE" ]; then
-      say "  ok   pre-fix: the stale finding survives, as it did before #2954"
+      say "  ok   pre-fix: and the stale finding SURVIVED that clean run"
     else
       bad "pre-fix harness ALSO cleared it -- the green case proves nothing"
     fi
