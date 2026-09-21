@@ -1542,11 +1542,20 @@ Rules:
 - **The bare `Exception` is the erased spelling, compatible with every kind.**
   `with Exception` keeps allowing any throw, and an erased
   `handle .. with Exception` also catches kinded throws.
-- A throw whose payload kind cannot be resolved (for example `throw(e)` where
-  `e` is a local binding) is treated as erased and passes under any
-  `Exception[K]` (gradual): it can miss a violation, never invent one.
+- A throw whose payload kind cannot be resolved (for example `throw(r.cause)`)
+  is treated as erased and passes under a function ROW of any `Exception[K]`
+  (gradual): it can miss a violation, never invent one.
 - The runtime does not distinguish kinds: every spelling is one abortive Wasm
-  tag. The exact-kind guarantee is a property of the checker.
+  tag. The exact-kind guarantee is a property of the checker -- which is why a
+  **kinded handler arm is strict** (#2985): `handle { .. } with {
+  Exception[K]::Throw(e) => .. }` catches EVERY exception its body raises, so
+  the body may raise only `Exception[K]`. An erased or unresolved throw, an
+  erased callee (`with Exception`), and a throw of another kind that the
+  enclosing row would have let propagate are all refused there; the erased
+  `Exception::Throw(m)` arm still catches everything, with an untyped payload.
+  A closure LITERAL written in the body keeps the gradual rule: its throws
+  belong to whoever calls it (a `TaskGroup::spawn` child's `throw` becomes a
+  `TaskError`), so they are not counted against the handler's kind.
 - A kinded arm binds its payload at the kind's type (#2963):
   `Exception[IoError]::Throw(e)` gives `e : IoError`, so `e` can be matched or
   passed on directly, and returning it where the handle produces an `Int` is a
