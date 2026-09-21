@@ -907,10 +907,18 @@ local checkFuzzStaleFindings = new Task {
   description =
     "run_fuzz.sh clears _build/fuzz/findings/ so it describes the current run, not an earlier one"
   cmd = "bash tests/fuzz/stale_findings_test.sh"
+  // run_fuzz.sh is EXECUTED here, so its transitive dependencies belong in the
+  // key too: it reads gen_program.py, sources lib_oracle.sh and invokes the
+  // wasm runner. Without them pkfire can replay a previous pass after one of
+  // them changes, and the gate would miss a newly failing seed-1 probe
+  // (#2955 review).
   inputs {
     ...compilerProbeInputs
     "tests/fuzz/run_fuzz.sh"
     "tests/fuzz/stale_findings_test.sh"
+    "tests/fuzz/gen_program.py"
+    "tests/fuzz/lib_oracle.sh"
+    "scripts/run_wasm_vibe_host_runner.sh"
     "scripts/resolve_stage2.sh"
   }
   deps { selfhostGeneration }
@@ -926,9 +934,15 @@ local checkFuzzCompilerIdentity = new Task {
   // defaults rather than replace them: a hand-written `new Task` inherits
   // nothing, so an inputs list without this spread is a NARROWER cache key
   // than no list at all, and a compiler change would replay a stale pass.
+  // Same reasoning as check-fuzz-stale-findings: one of this gate's probes
+  // mutates run_fuzz.sh so that it PROCEEDS, so the fuzzer's own dependencies
+  // are reachable from this task and belong in its key.
   inputs {
     ...compilerProbeInputs
     "tests/fuzz/run_fuzz.sh"
+    "tests/fuzz/gen_program.py"
+    "tests/fuzz/lib_oracle.sh"
+    "scripts/run_wasm_vibe_host_runner.sh"
     "scripts/resolve_stage2.sh"
     "scripts/check_fuzz_compiler_identity.sh"
     "scripts/check_fuzz_compiler_identity_test.sh"

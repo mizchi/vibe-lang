@@ -13,8 +13,16 @@ set -uo pipefail
 cd "$(dirname "$0")/../.."
 ROOT="$PWD"
 
-FIND=_build/fuzz/findings
+# Isolated workspace. These probes run the REAL harness, whose startup now
+# deletes the findings directory -- pointing them at the shared
+# `_build/fuzz/findings` would destroy a developer's campaign inputs and logs
+# whenever `release-check` ran (#2955 review).
+export VIBE_FUZZ_ROOT="$(mktemp -d)"
+FIND="$VIBE_FUZZ_ROOT/findings"
 STALE="$FIND/seed_999_STALE_FIXTURE"
+cleanup() { chattr -i "$STALE/immutable" 2>/dev/null; rm -rf "$VIBE_FUZZ_ROOT" tests/fuzz/.probe_prefix.sh "$SHIMDIR" 2>/dev/null; }
+SHIMDIR=""
+trap cleanup EXIT
 rc=0
 say() { printf '%s\n' "$*"; }
 bad() { say "  FAIL $*"; rc=1; }
@@ -56,38 +64,40 @@ say "=== red: an unresettable findings dir ABORTS the run ==="
 # The #2955 review case. `set -uo pipefail` carries no `-e`, so a failed
 # `rm -rf` would pass unnoticed and `mkdir -p` would succeed against the
 # surviving directory -- a clean campaign reporting 0 findings with stale ones
-# still present. Made real here with an immutable file, which blocks unlink
-# even for root, so the guard is SHOWN to fire rather than asserted.
-if ! command -v chattr >/dev/null 2>&1; then
-  say "  SKIP chattr unavailable -- cannot make the reset fail for real here"
-else
-  rm -rf "$STALE"; mkdir -p "$STALE"; : > "$STALE/immutable"
-  if ! chattr +i "$STALE/immutable" 2>/dev/null; then
-    rm -rf "$STALE" 2>/dev/null
-    say "  SKIP chattr +i not permitted on this filesystem"
+# still present.
+#
+# Driven by a PATH shim whose `rm` removes nothing and exits nonzero, which
+# works on every filesystem and in every container. A `chattr +i` fixture was
+# tried first and is the more realistic cause, but it SKIPPED wherever the
+# flag is unsupported -- and a skip that leaves `rc` untouched is a gate
+# waiving the property it exists to hold, which is this file's own subject.
+SHIMDIR="$(mktemp -d)"
+cat > "$SHIMDIR/rm" <<'SHIM'
+#!/bin/sh
+# Refuse to remove anything, the way a busy mount or an immutable entry does.
+exit 1
+SHIM
+chmod +x "$SHIMDIR/rm"
+if plant; then
+  out="$(PATH="$SHIMDIR:$PATH" bash tests/fuzz/run_fuzz.sh --seeds 1..1 --cli "$STAGE2" 2>&1)"; arc=$?
+  # The precondition must be real before anything the run says is believed.
+  if [ ! -e "$STALE" ]; then
+    bad "the shim did NOT block removal -- this case proves nothing"
   else
-    # Confirm the block is real before believing anything the run reports.
-    rm -rf "$FIND" 2>/dev/null
-    if [ ! -e "$STALE" ]; then
-      bad "the immutable fixture did NOT block removal -- this case proves nothing"
-      chattr -i "$STALE/immutable" 2>/dev/null
-    else
-      say "  ok   the fixture genuinely blocks rm -rf"
-      out="$(bash tests/fuzz/run_fuzz.sh --seeds 1..1 --cli "$STAGE2" 2>&1)"; arc=$?
-      case "$out" in
-        *"could not reset"*) say "  ok   the run refused, naming the reset" ;;
-        *) bad "no refusal message: $(printf '%s' "$out" | tail -1)" ;;
-      esac
-      [ "$arc" -ne 0 ] && say "  ok   nonzero exit ($arc)" || bad "the run exited 0 with an unreset findings dir"
-      case "$out" in
-        *"[fuzz] mode="*) bad "the run ANNOUNCED itself and fuzzed anyway" ;;
-        *) say "  ok   no campaign was started" ;;
-      esac
-    fi
-    chattr -i "$STALE/immutable" 2>/dev/null
-    rm -rf "$STALE"
+    say "  ok   the shim genuinely blocks the reset"
+    case "$out" in
+      *"could not reset"*) say "  ok   the run refused, naming the reset" ;;
+      *) bad "no refusal message: $(printf '%s' "$out" | tail -1)" ;;
+    esac
+    [ "$arc" -ne 0 ] && say "  ok   nonzero exit ($arc)" || bad "the run exited 0 with an unreset findings dir"
+    case "$out" in
+      *"[fuzz] mode="*) bad "the run ANNOUNCED itself and fuzzed anyway" ;;
+      *) say "  ok   no campaign was started" ;;
+    esac
   fi
 fi
+rm -rf "$SHIMDIR"; SHIMDIR=""
+rm -rf "$STALE"
 
 say "=== red: the PRE-FIX harness runs a campaign and leaves it behind ==="
 # Reconstruct the old behaviour so the case proves the fix was load-bearing

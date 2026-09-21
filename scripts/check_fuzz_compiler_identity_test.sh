@@ -13,7 +13,14 @@ GATE="scripts/check_fuzz_compiler_identity.sh"
 REAL="tests/fuzz/run_fuzz.sh"
 
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK" tests/fuzz/.probe_*.sh' EXIT
+# Isolated fuzz workspace. Two of the cases below mutate the harness so that it
+# PROCEEDS past resolution, and a proceeding harness resets its findings
+# directory -- against the shared `_build/fuzz/findings` that would delete a
+# developer's campaign output whenever this gate ran. Measured: before this,
+# a planted `seed_88_USER` finding did not survive the run (#2955 review named
+# the sibling test; the same hole was here).
+export VIBE_FUZZ_ROOT="$(mktemp -d)"
+trap 'rm -rf "$WORK" "$VIBE_FUZZ_ROOT" tests/fuzz/.probe_*.sh' EXIT
 rc_total=0
 say() { printf '%s\n' "$*"; }
 bad() { say "  FAIL $*"; rc_total=1; }

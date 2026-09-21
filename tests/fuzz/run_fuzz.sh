@@ -79,8 +79,15 @@ CLI="$(resolve_stage2_strict fuzz "$CLI")" || exit 2
 # print here, between the two refusals, which made it possible to announce a
 # run and then exit -- and scripts/check_fuzz_compiler_identity.sh reads the
 # banner's ABSENCE as proof no run began.
-WORK=_build/fuzz/work
-FIND=_build/fuzz/findings
+# `VIBE_FUZZ_ROOT` relocates the whole workspace. The reset below DELETES
+# `$FIND`, and a developer who ran a campaign has inputs and logs there worth
+# reducing, so a gate must not exercise the shared user-facing directory just
+# because it happens to be the default (#2955 review). Tests point this at a
+# temporary root; a real campaign leaves it unset.
+FUZZ_ROOT="${VIBE_FUZZ_ROOT:-_build/fuzz}"
+WORK="$FUZZ_ROOT/work"
+FIND="$FUZZ_ROOT/findings"
+SEEDS_FILE="$FUZZ_ROOT/failing_seeds.txt"
 # Reset BOTH records of what this run found, so they always describe the same
 # run. `failing_seeds.txt` was truncated here and `findings/` was not, which
 # meant a finding directory from an earlier invocation sat there looking
@@ -112,7 +119,8 @@ if [ -e "$FIND" ]; then
   exit 2
 fi
 mkdir -p "$WORK" "$FIND"
-: > _build/fuzz/failing_seeds.txt
+mkdir -p "$FUZZ_ROOT"
+: > "$SEEDS_FILE"
 
 echo "[fuzz] mode=$MODE gen=${GENMODE:-liveness} seeds=$A..$B cli=$CLI jobs=$JOBS"
 
@@ -136,7 +144,7 @@ record() { # seed class dir note
   cp -f "$dir"/*.vibe "$dst"/ 2>/dev/null
   cp -f "$dir"/*.log "$dir"/*.diag "$dst"/ 2>/dev/null || true
   echo "$note" > "$dst/note.txt"
-  echo "$seed $class $note" >> _build/fuzz/failing_seeds.txt
+  echo "$seed $class $note" >> "$SEEDS_FILE"
   echo "[fuzz] seed $seed: $class ($note)"
 }
 
@@ -196,6 +204,6 @@ for seed in $(seq "$A" "$B"); do
 done
 wait
 
-fail=$(wc -l < _build/fuzz/failing_seeds.txt | tr -d '[:space:]')
+fail=$(wc -l < "$SEEDS_FILE" | tr -d '[:space:]')
 echo "[fuzz] done: $total seeds, $fail findings"
 [ "$fail" -eq 0 ]
