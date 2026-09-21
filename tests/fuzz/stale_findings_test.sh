@@ -17,7 +17,29 @@ ROOT="$PWD"
 # deletes the findings directory -- pointing them at the shared
 # `_build/fuzz/findings` would destroy a developer's campaign inputs and logs
 # whenever `release-check` ran (#2955 review).
-export VIBE_FUZZ_ROOT="$(mktemp -d)"
+# Every temporary allocation is CHECKED, and checked IN THIS SHELL. `set -uo
+# pipefail` carries no `-e`, so a failed `mktemp -d` -- an inherited TMPDIR
+# that is unwritable or missing -- leaves the variable EMPTY and the script
+# running; `${VIBE_FUZZ_ROOT:-...}` in run_fuzz.sh triggers on empty as well as
+# unset, so the probes would fall back to the shared `_build/fuzz` this
+# isolation exists to protect (#2955 review).
+#
+# The first attempt put the abort in a function called as `V="$(f)"`, where
+# `exit 1` ends the SUBSHELL and the parent carries on with V empty -- the
+# guard printed its refusal and changed nothing, and a planted finding in the
+# shared directory was still destroyed. So the check is inline at each site.
+need_dir() { # <var-value> <what>
+  if [ -z "${1:-}" ] || [ ! -d "${1:-}" ]; then
+    printf '%s: could not allocate a temporary %s (TMPDIR=%s)
+' "$(basename "$0")" "$2" "${TMPDIR:-unset}" >&2
+    printf '%s: refusing to run -- the probes would fall back to the shared _build/fuzz
+' "$(basename "$0")" >&2
+    return 1
+  fi
+}
+
+export VIBE_FUZZ_ROOT="$(mktemp -d 2>/dev/null || true)"
+need_dir "${VIBE_FUZZ_ROOT:-}" "fuzz root" || exit 1
 FIND="$VIBE_FUZZ_ROOT/findings"
 STALE="$FIND/seed_999_STALE_FIXTURE"
 # PID-scoped so a concurrent sibling gate cannot collide with or delete it
@@ -75,7 +97,8 @@ say "=== red: an unresettable findings dir ABORTS the run ==="
 # tried first and is the more realistic cause, but it SKIPPED wherever the
 # flag is unsupported -- and a skip that leaves `rc` untouched is a gate
 # waiving the property it exists to hold, which is this file's own subject.
-SHIMDIR="$(mktemp -d)"
+SHIMDIR="$(mktemp -d 2>/dev/null || true)"
+need_dir "${SHIMDIR:-}" "rm shim dir" || exit 1
 cat > "$SHIMDIR/rm" <<'SHIM'
 #!/bin/sh
 # Refuse to remove anything, the way a busy mount or an immutable entry does.

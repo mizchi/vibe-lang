@@ -12,14 +12,37 @@ ROOT="$PWD"
 GATE="scripts/check_fuzz_compiler_identity.sh"
 REAL="tests/fuzz/run_fuzz.sh"
 
-WORK="$(mktemp -d)"
+# Every temporary allocation is CHECKED, and checked IN THIS SHELL. `set -uo
+# pipefail` carries no `-e`, so a failed `mktemp -d` -- an inherited TMPDIR
+# that is unwritable or missing -- leaves the variable EMPTY and the script
+# running; `${VIBE_FUZZ_ROOT:-...}` in run_fuzz.sh triggers on empty as well as
+# unset, so the probes would fall back to the shared `_build/fuzz` this
+# isolation exists to protect (#2955 review).
+#
+# The first attempt put the abort in a function called as `V="$(f)"`, where
+# `exit 1` ends the SUBSHELL and the parent carries on with V empty -- the
+# guard printed its refusal and changed nothing, and a planted finding in the
+# shared directory was still destroyed. So the check is inline at each site.
+need_dir() { # <var-value> <what>
+  if [ -z "${1:-}" ] || [ ! -d "${1:-}" ]; then
+    printf '%s: could not allocate a temporary %s (TMPDIR=%s)
+' "$(basename "$0")" "$2" "${TMPDIR:-unset}" >&2
+    printf '%s: refusing to run -- the probes would fall back to the shared _build/fuzz
+' "$(basename "$0")" >&2
+    return 1
+  fi
+}
+
+WORK="$(mktemp -d 2>/dev/null || true)"
+need_dir "${WORK:-}" "work dir" || exit 1
 # Isolated fuzz workspace. Two of the cases below mutate the harness so that it
 # PROCEEDS past resolution, and a proceeding harness resets its findings
 # directory -- against the shared `_build/fuzz/findings` that would delete a
 # developer's campaign output whenever this gate ran. Measured: before this,
 # a planted `seed_88_USER` finding did not survive the run (#2955 review named
 # the sibling test; the same hole was here).
-export VIBE_FUZZ_ROOT="$(mktemp -d)"
+export VIBE_FUZZ_ROOT="$(mktemp -d 2>/dev/null || true)"
+need_dir "${VIBE_FUZZ_ROOT:-}" "fuzz root" || exit 1
 # Probes are PID-scoped and the cleanup names only its own. The trap used to
 # glob `tests/fuzz/.probe_*.sh`, which also matched the probe
 # tests/fuzz/stale_findings_test.sh stages -- under `release-check` the two
