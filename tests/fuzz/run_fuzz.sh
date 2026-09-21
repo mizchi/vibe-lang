@@ -76,6 +76,23 @@ esac
 # zero-padded range used to clear the findings and the ledger, and only then
 # die at `total=$((B - A + 1))` with `total: unbound variable` -- the campaign
 # never ran and the previous one was gone (#2955 review).
+# Bound the endpoints TEXTUALLY first. `$((10#$A))` silently wraps anything
+# wider than bash's signed integer, so `--seeds 18446744073709551616..<same>`
+# became `0..0`: the previous campaign was cleared and a run for seed 0 was
+# reported under a range nobody asked for (#2955 review). Strip leading zeroes
+# by text, then reject more than 18 digits, which is the widest that cannot
+# overflow -- so the conversion below is lossless by the time it happens.
+seed_digits() { # <endpoint> -> value with leading zeroes removed
+  local v="${1#"${1%%[!0]*}"}"
+  printf '%s' "${v:-0}"
+}
+for _ep in "$A" "$B"; do
+  _n="$(seed_digits "$_ep")"
+  if [ "${#_n}" -gt 18 ]; then
+    echo "[fuzz] --seeds endpoint is too large: $_ep (more than 18 digits)" >&2
+    exit 2
+  fi
+done
 A=$((10#$A)); B=$((10#$B))
 [ "$A" -le "$B" ] || { echo "[fuzz] --seeds start must not exceed end (got: $SEEDS)" >&2; exit 2; }
 if [ -z "$JOBS" ]; then

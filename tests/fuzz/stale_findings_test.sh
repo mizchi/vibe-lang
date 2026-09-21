@@ -303,7 +303,11 @@ say "=== red: a malformed or zero-padded range must not touch the findings ==="
 # known good. `typo` has no `..`; `08..09` is digit-only and passes `[ -le ]`
 # but is an invalid octal literal to `$(( ))`, so it used to clear both
 # records and then die at `total=$((B - A + 1))` (#2955 review).
-for rng in typo 9..1; do
+# 18446744073709551616 overflows bash's signed integer: `$((10#...))` wrapped
+# it to 0, so the harness cleared the findings and ran seed 0 under a range
+# nobody asked for. Endpoints are bounded by digit count before any arithmetic
+# now (#2955 review).
+for rng in typo 9..1 18446744073709551616..18446744073709551616; do
   rm -rf "$FIND/seed_9_RANGE"; mkdir -p "$FIND/seed_9_RANGE"
   printf 'repro\n' > "$FIND/seed_9_RANGE/single.vibe"
   out="$(bash tests/fuzz/run_fuzz.sh --seeds "$rng" --jobs 1 --cli "$STAGE2" 2>&1)"; rrc=$?
