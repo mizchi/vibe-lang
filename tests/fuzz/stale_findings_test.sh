@@ -162,7 +162,6 @@ else
 fi
 rm -rf "$VIBE_FUZZ_ROOT/failing_seeds.txt"
 
-say "=== red: an EMPTY ledger whose truncation fails is still rejected ==="
 # The shape the directory case cannot produce: the ledger is already an empty
 # regular file, so the postcondition alone reads as success, while truncation
 # fails and every later append will too -- a real finding reported as
@@ -174,65 +173,70 @@ say "=== red: an EMPTY ledger whose truncation fails is still rejected ==="
 # fixture. Where the flag is unsupported this case cannot run, but the BRANCH
 # it exercises is the same one the directory case above covers
 # deterministically, so nothing is left unchecked by the skip.
-lfile="$VIBE_FUZZ_ROOT/failing_seeds.txt"
-rm -rf "$lfile"; : > "$lfile"
-
-# Make an existing EMPTY REGULAR file untruncatable, by whatever this platform
-# offers. Portability matters here more than realism: where this case cannot
-# run, the status predicate has NO red test at all -- and the directory case
-# does not substitute for it. Measured: with `seeds_reset_ok` deleted, the
-# directory fixture still refuses (exit 2) via `[ ! -f ]`, so it proves the
-# postcondition and says nothing about the status (#2955 review, refuting an
-# earlier claim of mine that it covered this branch).
-lock_file() { # <path> -> 0 if now untruncatable
-  if command -v chattr >/dev/null 2>&1 && chattr +i "$1" 2>/dev/null; then
-    LOCK_KIND=chattr; return 0
+# Deterministic fault injection, so no host filesystem feature is required.
+#
+# The property: the harness CONSULTS `seeds_reset_ok`. A real untruncatable
+# file is the faithful fixture, but it needs `chattr +i` / `chflags uchg`, and
+# neither exists on every filesystem -- on overlayfs as root, `chattr` can
+# return EPERM. Making the case FAIL there would break the gate for a reason
+# having nothing to do with what it checks; making it SKIP would leave the
+# predicate unverified. Injecting the fault instead tests the same branch
+# everywhere.
+#
+# Two copies, differing only in the predicate, each with the truncation forced
+# to report failure. The first must refuse; the second must proceed -- which is
+# what proves the assertion is the predicate's doing and not something else in
+# the script.
+inject() { # <name> <extra-sed> -> path
+  # Split, not one `local`: a single `local a=$1 b="$a"` expands every word
+  # before assigning, so `$b` sees an unbound `$a`. Same slip as earlier in
+  # this PR.
+  local name="$1"
+  local extra="$2"
+  local dst="tests/fuzz/.probe_inj${name}$$.sh"
+  cp tests/fuzz/run_fuzz.sh "$dst"
+  # Force the reset to report failure while STILL leaving an empty regular
+  # file, which is exactly the shape an already-empty untruncatable ledger
+  # has. Replacing the truncation outright instead would leave no file at all,
+  # and `[ ! -f ]` would refuse for that reason -- the control would then look
+  # right while proving nothing about the status.
+  sed -i.bak 's|^( : > "\$SEEDS_FILE" ) 2>/dev/null .*$|: > "$SEEDS_FILE"; seeds_reset_ok=0|' "$dst" && rm -f "$dst.bak"
+  if [ -n "$extra" ]; then
+    sed -i.bak "$extra" "$dst" && rm -f "$dst.bak"
   fi
-  if command -v chflags >/dev/null 2>&1 && chflags uchg "$1" 2>/dev/null; then
-    LOCK_KIND=chflags; return 0
-  fi
-  # Mode bits bind only a non-root user; root bypasses them (measured: as root
-  # a 0444 file still truncates, `[ -w ]` says writable, and appends succeed).
-  if [ "$(id -u)" != "0" ] && chmod 0444 "$1" 2>/dev/null; then
-    LOCK_KIND=chmod; return 0
-  fi
-  LOCK_KIND=""; return 1
+  printf '%s\n' "$dst"
 }
-unlock_file() {
-  case "${LOCK_KIND:-}" in
-    chattr) chattr -i "$1" 2>/dev/null ;;
-    chflags) chflags nouchg "$1" 2>/dev/null ;;
-    chmod) chmod 0644 "$1" 2>/dev/null ;;
+
+say "=== red: the ledger guard CONSULTS the truncation status (fault-injected) ==="
+inj_keep="$(inject keep "")"
+if grep -q 'seeds_reset_ok=0' "$inj_keep" && grep -q '\[ "\$seeds_reset_ok" -eq 0 \]' "$inj_keep"; then
+  say "  ok   fault injected, predicate still present"
+  out="$(bash "$inj_keep" --seeds 1..1 --cli "$STAGE2" 2>&1)"; irc=$?
+  case "$out" in
+    *"could not reset"*"failing_seeds"*) say "  ok   with the predicate, a failed truncation REFUSES" ;;
+    *) bad "with the predicate present the run did not refuse: $(printf '%s' "$out" | tail -1)" ;;
   esac
-}
-
-if ! lock_file "$lfile"; then
-  # Not a skip: with no way to lock the file this predicate is unverified, and
-  # an unverified guard is the thing this file exists to prevent.
-  bad "no way to make an empty file untruncatable here (tried chattr, chflags, chmod-as-non-root) -- the status predicate is UNTESTED"
-  rm -f "$lfile"
+  [ "$irc" -ne 0 ] && say "  ok   nonzero exit ($irc)" || bad "exited 0 despite a failed truncation"
 else
-  say "  ok   locked the empty ledger via $LOCK_KIND"
-  if ( : > "$lfile" ) 2>/dev/null; then
-    bad "the fixture did NOT block truncation -- this case proves nothing"
-  elif [ -s "$lfile" ]; then
-    bad "the fixture is not empty -- it would be caught by the postcondition, not the status"
-  else
-    say "  ok   the ledger is empty AND untruncatable, so only the status can tell"
-    out="$(bash tests/fuzz/run_fuzz.sh --seeds 1..1 --cli "$STAGE2" 2>&1)"; erc=$?
-    case "$out" in
-      *"could not reset"*"failing_seeds"*) say "  ok   the run refused, naming the ledger" ;;
-      *) bad "no ledger refusal: $(printf '%s' "$out" | tail -1)" ;;
-    esac
-    [ "$erc" -ne 0 ] && say "  ok   nonzero exit ($erc)" || bad "the run exited 0 with an untruncatable ledger"
-    case "$out" in
-      *"[fuzz] mode="*) bad "the run ANNOUNCED itself and fuzzed anyway" ;;
-      *) say "  ok   no campaign was started" ;;
-    esac
-  fi
-  unlock_file "$lfile"
-  rm -f "$lfile"
+  bad "the injection did not apply -- this case would prove nothing"
 fi
+rm -f "$inj_keep"
+
+# The control: same injected fault, predicate deleted. It must PROCEED, which
+# is what makes the case above attributable to the predicate.
+inj_drop="$(inject drop 's@if \[ "\$seeds_reset_ok" -eq 0 \] || @if @')"
+if grep -q 'seeds_reset_ok=0' "$inj_drop" && ! grep -q '\[ "\$seeds_reset_ok" -eq 0 \]' "$inj_drop"; then
+  say "  ok   control staged: same fault, predicate removed"
+  out="$(bash "$inj_drop" --seeds 1..1 --cli "$STAGE2" 2>&1)"; crc=$?
+  case "$out" in
+    *"0 findings"*) say "  ok   without the predicate it runs and reports 0 -- the silently-wrong outcome" ;;
+    *) bad "control did not complete a campaign: $(printf '%s' "$out" | tail -1)" ;;
+  esac
+  [ "$crc" -eq 0 ] && say "  ok   control exits 0, so the refusal above is the predicate's doing" || bad "control exited $crc"
+else
+  bad "the control mutation did not apply -- the case above is unattributed"
+fi
+rm -f "$inj_drop"
 
 say "=== red: the PRE-FIX harness runs a campaign and leaves it behind ==="
 # Reconstruct the old behaviour so the case proves the fix was load-bearing
