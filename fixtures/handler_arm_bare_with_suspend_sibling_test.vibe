@@ -1,0 +1,80 @@
+// #2962 (Codex P0 on #2985): a bare arm next to a sibling that captures
+// `resume` as a value. The capturing sibling sends the whole handle through
+// the suspend driver, where an arm's value used to be the driver's FINAL
+// result -- so `Get() => "abcd"` aborted the handle with the string, and an
+// Int-valued handle answered `296352743426` (the string read as an Int).
+// The checker, and the same arm with no capturing sibling, read a bare
+// tail value as an implicit resume; the driver now does too.
+
+effect Ask {
+  Get() -> String;
+  Other() -> Int
+}
+
+effect Log {
+  Note(msg: String) -> Unit;
+  Tick() -> Int
+}
+
+test "a bare arm resumes when a sibling captures resume (capture unused)" {
+  let r = handle {
+    String::length(perform Ask::Get()) + 1
+  } with { Ask::Get() => "abcd"; Ask::Other() => {
+    let k = resume
+    k(1)
+  } }
+  assert_eq(r, 5)
+}
+
+test "a bare arm resumes when the capturing sibling is performed too" {
+  let r = handle {
+    let n = perform Ask::Other()
+    String::length(perform Ask::Get()) + n
+  } with { Ask::Get() => "abcd"; Ask::Other() => {
+    let k = resume
+    k(10)
+  } }
+  assert_eq(r, 14)
+}
+
+test "a bare arm's branch tails all resume" {
+  let seen = [0]
+  let r = handle {
+    let a = String::length(perform Ask::Get())
+    Array::set(seen, 0, 1)
+    let b = String::length(perform Ask::Get())
+    a * 10 + b
+  } with { Ask::Get() => if Array::get(seen, 0) == 1 {
+    "xy"
+  } else {
+    "abc"
+  }; Ask::Other() => {
+    let k = resume
+    k(0)
+  } }
+  assert_eq(r, 32)
+}
+
+test "a bare Unit arm resumes and the body continues" {
+  let seen = []
+  let r = handle {
+    perform Log::Note("one")
+    perform Log::Note("two")
+    Array::length(seen)
+  } with { Log::Note(m) => Array::push(seen, m); Log::Tick() => {
+    let k = resume
+    k(0)
+  } }
+  assert_eq(r, 2)
+}
+
+test "an explicit tail resume next to a capturing sibling still resumes" {
+  let r = handle {
+    let n = perform Ask::Other()
+    String::length(perform Ask::Get()) + n
+  } with { Ask::Get() => resume("ab"); Ask::Other() => {
+    let k = resume
+    k(3)
+  } }
+  assert_eq(r, 5)
+}

@@ -4968,6 +4968,40 @@ fn scps_let_bind_row(v: Expr, cps_effs: Array[String]) -> String {
   row
 }
 
+/// #2962: wrap every tail value of a non-capturing handler arm in
+/// `resume(..)`, so that inside a suspend-transformed handle (one of its
+/// sibling arms captures `resume` as a value) the arm resumes the way it
+/// does under the tail-resumptive lowering, instead of delivering its value
+/// as the driver's final result. The walk is `edp_strip_tail_resume`'s
+/// inverse and covers the same tail shapes; a tail that already is a
+/// `resume(..)` call is kept, and a `return` leaves the enclosing function
+/// so it is not a value to resume with.
+fn scps_wrap_tail_resume(expr: Expr) -> Expr {
+  match expr {
+    EIf(c, t, e) => EIf(c, scps_wrap_tail_resume(t), scps_wrap_tail_resume(e)),
+    EMatch(s, arms) => EMatch(s, for a in arms {
+      let (p, ex) = a
+      (p, scps_wrap_tail_resume(ex))
+    }),
+    ELet(n, v, b, off) => ELet(n, v, scps_wrap_tail_resume(b), off),
+    ELetMut(n, v, b, off) => ELetMut(n, v, scps_wrap_tail_resume(b), off),
+    ELetRec(n, v, b) => ELetRec(n, v, scps_wrap_tail_resume(b)),
+    ESeq(a, b) => ESeq(a, scps_wrap_tail_resume(b)),
+    EAssign(n, v, c) => EAssign(n, v, scps_wrap_tail_resume(c)),
+    EAssignOp(n, op, v, c) => EAssignOp(n, op, v, scps_wrap_tail_resume(c)),
+    EReturn(_) => expr,
+    ECall(callee, _, _) => match callee {
+      EIdent(nm, _) => if nm == "resume" {
+        expr
+      } else {
+        ECall(EIdent("resume", -1), [expr], -1)
+      },
+      _ => ECall(EIdent("resume", -1), [expr], -1)
+    },
+    _ => ECall(EIdent("resume", -1), [expr], -1)
+  }
+}
+
 fn scps_rewrite(e: Expr, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), st: (Array[Int], Array[String], Array[String], Array[String], Array[String], Array[Stmt], Array[String]), cps_effs: Array[String], scope: Array[(String, String)]) -> Expr {
   match e {
     EHandle(body, arms) => {
@@ -4992,6 +5026,28 @@ fn scps_rewrite(e: Expr, ctx: (Array[Stmt], Array[(String, Array[(String, Array[
         ai = ai + 1
       }
       if triggered {
+        // #2962 (Codex P0 on #2985): a sibling arm that captures `resume`
+        // sends the WHOLE handle through the driver below, where an arm's
+        // value is the driver's final result -- so a bare arm (`Get() =>
+        // "abcd"`) next to a capturing one ABORTED the handle with its value,
+        // while the checker (and the tail-resumptive lowering the same arm
+        // takes with no such sibling) reads a bare tail value as an implicit
+        // `resume`. Measured: an Int-valued handle over `Get() -> String`
+        // answered `296352743426`, the string delivered as the Int. The tail
+        // values of every non-capturing arm are wrapped in `resume(..)` here,
+        // so the driver runs the continuation for them exactly as the
+        // non-suspend lowering does. An arm whose payload binder is named
+        // `resume` is left alone: its `resume` is the payload, not the
+        // continuation, and the checker treats it the same way.
+        let sarms = for a in rarms {
+          let (ap, ab) = a
+          let ashadow = scps_pat_binds_resume(ap)
+          if ashadow || scps_arm_refs_resume_value(ab, ashadow) {
+            (ap, ab)
+          } else {
+            (ap, scps_wrap_tail_resume(ab))
+          }
+        }
         // #1536: a `return` in a HANDLE body means "leave the enclosing
         // function", not "the handle's value", so it cannot be hoisted to the
         // body's tail the way a function's own return is. The value is
@@ -5016,16 +5072,16 @@ fn scps_rewrite(e: Expr, ctx: (Array[Stmt], Array[(String, Array[(String, Array[
             Array::push(scps_st_errs(st), scps_return_in_split_msg("a handler arm captures `resume` as a value, so this handle body"))
             EHandle(rbody, rarms)
           } else {
-            let inner = match scps_transform_handle(captured, rarms, ctx, st, scope) {
+            let inner = match scps_transform_handle(captured, sarms, ctx, st, scope) {
               Some(t) => t,
-              None => EHandle(captured, rarms)
+              None => EHandle(captured, sarms)
             }
             ELetMut(flag, EBool(false), ELetMut(slot, EInt(0), ELet(hv, inner, EIf(EIdent(flag, -1), EReturn(EIdent(slot, -1)), EIdent(hv, -1)), -1), -1), -1)
           }
         } else {
-          match scps_transform_handle(rbody, rarms, ctx, st, scope) {
+          match scps_transform_handle(rbody, sarms, ctx, st, scope) {
             Some(t) => t,
-            None => EHandle(rbody, rarms)
+            None => EHandle(rbody, sarms)
           }
         }
       } else {
