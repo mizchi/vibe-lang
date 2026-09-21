@@ -1606,12 +1606,14 @@ fn main allows Stdout {
 `resume(v)` is the canonical way to call the continuation (one-shot,
 tail-resumptive, ADR-0050).
 
-**An arm that never mentions `resume` is an implicit tail resume** (#2962).
-Its value is delivered to the `perform` and the body continues, so the checker
-types that value against the OPERATION's return type: for `Get() -> Int`, an
-arm `Get() => 5` makes the perform evaluate to `5`, and an arm `Get() => "x"`
-is `handler arm value type mismatch with the operation's return type`. An arm
-that calls `resume(v)` in tail position, or stores `resume` as a value, keeps
+**A tail value that is not wrapped in `resume(...)` is an implicit resume**
+(#2962). Every tail value of an arm that does not store `resume` as a value is
+delivered to the `perform` and the body continues, whether it is written
+`resume(v)` or a bare `v`, so the checker types each such value against the
+OPERATION's return type: for `Get() -> Int`, an arm `Get() => 5` makes the
+perform evaluate to `5`, and `Get() => "x"` or `Get() => if c { resume(1) }
+else { "x" }` is `handler arm value type mismatch with the operation's return
+type`. An arm that stores `resume` as a value (the suspend shape below) keeps
 the other rule: its own value is the handle's result. Only `Exception` arms
 abort; a declared effect has no abortive operations (#2969 tracks declaring
 one).

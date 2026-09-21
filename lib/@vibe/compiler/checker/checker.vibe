@@ -28,7 +28,7 @@ import @vibe/compiler/checker/type_relations {
 }
 
 import @vibe/compiler/checker/resume {
-  arm_mentions_resume,
+  arm_refs_resume_value,
   pat_binds_resume as resume_pat_binds_resume,
   reject_resume_in_error_arm,
   reject_resume_outside_handler as resume_reject_resume_outside_handler,
@@ -10632,29 +10632,41 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                   // only looks at call sites — a bare value reference never
                   // trips it). A payload binder literally named `resume`
                   // keeps shadowing (no extra binding on top of it).
+                  // #2962: a SUSPEND arm (one that references `resume` as a
+                  // value) resumes later and its own value is the handle's
+                  // result, so `resume : (ret) -> handle result`. Every other
+                  // arm is tail-resumptive: the lowering strips each tail
+                  // `resume(v)` to `v` and delivers every tail value to the
+                  // `perform`, so `resume : (ret) -> ret` and the arm's value
+                  // is checked against the OPERATION's return type below --
+                  // which is what catches `if c { resume("ok") } else { 7 }`
+                  // for a String operation (Codex P0 on #2985).
+                  let harm_suspends = arm_refs_resume_value(hbody, hbinds_shadow_resume)
                   let henv_arm = if hbinds_shadow_resume {
                     henv
-                  } else {
+                  } else if harm_suspends {
                     env_bind(henv, "resume", CtFn([hret], subst_apply(hs1, hres), None))
+                  } else {
+                    env_bind(henv, "resume", CtFn([hret], hret, None))
                   }
                   let (harm_ty, hns, hnc) = check_expr_capture(hbody, henv_arm, defs, hs1, hc1, errors, tytab, capture, lane)
                   hs1 = hns
                   hc1 = hnc
-                  // #2962: an arm that never mentions `resume` is an IMPLICIT
-                  // tail resume -- both backends deliver its value to the
-                  // `perform` and the body continues (measured: `Get() => 5`
-                  // under `let a = perform Get(); a + 100` answers 105). So
-                  // its value is checked against the OPERATION's return type.
-                  // #938's rule stayed for arms that mention `resume`: a tail
-                  // `resume(v)` types as the handle result through the binding
-                  // above, and an arm that STORES `resume` "suspends" with its
-                  // own value as the handle result (ADR-0076 Phase 3a). The
-                  // #938 rule used to apply to every arm, which rejected a
-                  // correct `Unit` arm inside an `Int` body and accepted an
-                  // `Int` arm for a `String`-returning operation that the body
-                  // then read as a string.
+                  // #2962: a tail-resumptive arm (no value reference to
+                  // `resume`) delivers every tail value to the `perform` --
+                  // both backends do (measured: `Get() => 5` under `let a =
+                  // perform Get(); a + 100` answers 105) -- so its value is
+                  // checked against the OPERATION's return type, with the
+                  // `resume : (ret) -> ret` binding above making a written
+                  // `resume(v)` and a bare `v` type the same. #938's rule
+                  // stays for a SUSPEND arm, whose own value is the handle's
+                  // result (ADR-0076 Phase 3a). The #938 rule used to apply
+                  // to every arm, which rejected a correct `Unit` arm inside
+                  // an `Int` body and accepted an `Int` arm for a
+                  // `String`-returning operation that the body then read as a
+                  // string.
                   let harm_now = subst_apply(hs1, harm_ty)
-                  if arm_mentions_resume(hbody, hbinds_shadow_resume) {
+                  if harm_suspends {
                     let hres_now = subst_apply(hs1, hres)
                     if hres_now is CtUnknown {
                       hres = harm_now
@@ -10663,7 +10675,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                     }
                   } else {
                     let hret_now = subst_apply(hs1, hret)
-                    hs1 = check_assignable(hret_now, harm_now, hs1, errors, "handler arm value type mismatch with the operation's return type (an arm that never calls resume is an implicit resume, so its value is what the perform receives; call resume(v) to resume explicitly)", tail_expr_off(hbody))
+                    hs1 = check_assignable(hret_now, harm_now, hs1, errors, "handler arm value type mismatch with the operation's return type (a tail value that is not wrapped in resume(...) is an implicit resume, so it is what the perform receives)", tail_expr_off(hbody))
                   }
                   // resume(x): x must be assignable to the op's declared
                   // return type (ground-gated). Throwaway walk — nested
