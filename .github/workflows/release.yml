@@ -109,6 +109,28 @@ jobs:
           fail_on_unmatched_files: true
           body_path: ${{ runner.temp }}/release-body.md
           generate_release_notes: false
+          # This repository has IMMUTABLE RELEASES enabled, so assets can only
+          # be attached BEFORE the release is published. Publishing directly --
+          # which is what this step did until v0.1.0-rc.0 -- creates the
+          # release, then loses every asset upload to:
+          #
+          #   Cannot upload asset vibe-toolchain-v0.1.0-rc.0.tar.gz to an
+          #   immutable release. GitHub only allows asset uploads before a
+          #   release is published
+          #
+          # and the result is a PUBLISHED release carrying zero downloads,
+          # which cannot be corrected in place for the same reason. The
+          # workflow already knew this rule for the BODY (see
+          # build_release_body.sh's link absolutization, which refuses a dead
+          # link because "a body cannot be corrected after publishing here");
+          # nobody had connected it to the assets.
+          #
+          # So stage as a draft, upload into the draft, and promote below.
+          # `release-install` is `needs: github-release`, a job dependency
+          # rather than an event subscription, so the action's own caveat
+          # about `release.published` vs `release.prereleased` does not reach
+          # anything here.
+          draft: true
           # A pre-release tag (`v0.1.0-rc.0`) must NOT become the repository's
           # "Latest release": the README's installer and every "download the
           # latest" instruction resolve to that pointer, so publishing a
@@ -118,6 +140,36 @@ jobs:
           # build_release_body.sh make -- so nothing has to be remembered at
           # tag time.
           prerelease: ${{ contains(github.ref_name, '-') }}
+
+      # Flip the staged draft to published, with its assets already attached.
+      # `--draft=false` changes only that field, so the `prerelease` decision
+      # made above survives -- verified below rather than assumed, because a
+      # candidate silently promoted to a full release is the failure the
+      # `prerelease` line exists to prevent.
+      - name: Promote the staged draft to a published release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release edit "${GITHUB_REF_NAME}" --draft=false
+          # Expected asset count comes from what was actually staged, not a
+          # literal: a hardcoded number silently stops checking the moment the
+          # asset set changes.
+          want_assets="$(find "dist/release/${GITHUB_REF_NAME}" -maxdepth 1 -type f | wc -l | tr -d ' ')"
+          [ "$want_assets" -gt 0 ] || { echo "no staged assets to compare against" >&2; exit 1; }
+          case "${GITHUB_REF_NAME}" in
+            *-*) want_pre=true ;;
+            *)   want_pre=false ;;
+          esac
+          state="$(gh release view "${GITHUB_REF_NAME}" --json isDraft,isPrerelease,assets \
+            --jq '"draft=\(.isDraft) prerelease=\(.isPrerelease) assets=\(.assets | length)"')"
+          echo "published: $state (expected assets=$want_assets)"
+          [ "$state" = "draft=false prerelease=$want_pre assets=$want_assets" ] || {
+            echo "release did not publish as expected" >&2
+            echo "  want: draft=false prerelease=$want_pre assets=$want_assets" >&2
+            echo "  got:  $state" >&2
+            exit 1
+          }
 
   # The published release installs the way a user installs it
   # (docs/user/getting-started/install.md "Installer options", #2678): the curl entry point in
