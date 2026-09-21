@@ -200,6 +200,21 @@ proves nothing about where the file lands."
 # when the entries in this very test resolved against the wrong root. A
 # mistyped list is the most likely way to meet this flag wrongly, so it gets
 # the message that names the rule.
+# A DIRECTORY entry gets its own diagnostic: it passes the existence check and
+# would then fail inside Fs::read_file as a host-level EISDIR, which is the
+# bare trap the guard above exists to replace.
+printf 'sub/nl\n' > "$app/sub/dirlist.txt"
+got="$(cd "$app/sub" && vibe grep --file-list=./dirlist.txt --pattern 'Array::length($(x:exp))' . 2>&1)" \
+  && fail "a directory in a file list must fail, got exit 0: $got"
+case "$got" in
+  *"file-list entry is a directory"*) ;;
+  *) fail "a directory entry must say so, got: $got" ;;
+esac
+case "$got" in
+  *"wasm backtrace"*|*EISDIR*) fail "a directory entry still reached the host read: $got" ;;
+  *) ;;
+esac
+
 printf 'no_such_file_here.vibe\n' > "$app/sub/badlist.txt"
 got="$(cd "$app/sub" && vibe grep --file-list=./badlist.txt --pattern 'Array::length($(x:exp))' . 2>&1)" \
   && fail "vibe grep with a missing file-list entry must fail, got exit 0: $got"
