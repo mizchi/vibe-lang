@@ -114,7 +114,7 @@ import @vibe/ast {
 }
 
 import @vibe/parser {
-  print_type_expr
+  lex, parse_type, print_type_expr
 }
 
 import ./builtins.vibe {
@@ -10691,16 +10691,23 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                     // its payload at the kind's type -- that is the one thing
                     // the kinded spelling exists to say, and an untyped `e`
                     // unified with the handle's Int result and printed a
-                    // pointer. Only a bare head is resolved here (the kind is
-                    // a static type NAME per ADR-0085); an applied kind such
-                    // as `Box[Int]` keeps the erased behaviour below.
+                    // pointer. The kind is the label's bracketed text, so it
+                    // is re-read with the real type parser: a bare name and an
+                    // applied kind (`Array[Int]`, `Option[String]`) both bind
+                    // at their type (Codex P1 on #2985 -- erasing the applied
+                    // ones re-opened the same hole for `Exception[Array[Int]]`).
+                    // A kind the parser cannot read falls back to the erased
+                    // binder rather than failing the arm.
                     // The ERASED payload stays CtUnknown: `throw` accepts any
                     // value (#786 — suberror payloads like `throw(AppError("x"))`
                     // are legal), so pinning String would newly reject valid
                     // `Throw(e) => inspect(e)` handlers (Codex P1 on #954).
                     let eakind = exception_effect_kind(String::substring(hqname, 0, hci))
-                    let eaty = if String::length(eakind) > 0 && String::index_of(eakind, "[") < 0 {
-                      resolve_type_expr(TyName(eakind), defs)
+                    let eaty = if String::length(eakind) > 0 {
+                      handle {
+                        let (kind_te, _) = parse_type(lex(eakind), 0)
+                        resolve_type_expr(kind_te, defs)
+                      } with { Exception::Throw(_unreadable) => CtUnknown }
                     } else {
                       CtUnknown
                     }
