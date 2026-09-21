@@ -238,6 +238,28 @@ got="$(cd "$app/sub" && vibe grep --file-list=./roundtrip.txt --pattern 'Array::
   || fail "the documented --list-files | --file-list round trip failed: $got"
 case "$got" in *"greppable.vibe:2:3"*) ;; *) fail "the round trip found no match, got: $got" ;; esac
 case "$got" in *"vibe-grep-file-list-v1"*) fail "the banner reached the sweep as a path: $got" ;; *) ;; esac
+# A FILENAME CONTAINING A NEWLINE still round-trips. POSIX allows it; before
+# chunking, a directory sweep read such a file in-process and never framed its
+# path as text. The listing now escapes it (`\n`), so one path stays one line
+# and the reader puts it back -- the same answer #2723 gave for `vibe symbols`
+# NAME fields, after the same defect: one record split across two lines
+# (Codex on #2956, P2).
+nl_dir="$app/sub/nl"
+mkdir -p "$nl_dir"
+printf 'export fn nlfn(zs: Array[String]) -> Int {\n  Array::length(zs)\n}\n' > "$nl_dir/we$(printf '\n')ird.vibe" 2>/dev/null || true
+if [ -e "$nl_dir/we$(printf '\n')ird.vibe" ]; then
+  ( cd "$app/sub" && vibe grep --list-files --pattern 'Array::length($(x:exp))' ./nl > ./nl_list.txt 2>&1 ) \
+    || fail "--list-files failed on a directory holding a newline filename: $(cat "$app/sub/nl_list.txt")"
+  [ "$(grep -c . "$app/sub/nl_list.txt")" = "2" ] \
+    || fail "a newline filename must stay ONE line (banner + 1 path = 2 lines), got $(grep -c . "$app/sub/nl_list.txt"):
+$(cat "$app/sub/nl_list.txt")"
+  got="$(cd "$app/sub" && vibe grep --file-list=./nl_list.txt --pattern 'Array::length($(x:exp))' ./nl 2>&1)" \
+    || fail "the round trip failed on a newline filename: $got"
+  case "$got" in *"ird.vibe:2:3"*) ;; *) fail "no match from the newline-named file: $got" ;; esac
+  pass "a filename containing a newline survives the list round trip"
+else
+  note "  skip: this filesystem rejected a newline in a filename"
+fi
 pass "vibe grep --file-list=/--resume-out resolve against the invoking directory; a missing entry is named; CRLF lists work; --list-files round-trips into --file-list"
 
 # --- 5. vibe clean ----------------------------------------------------------

@@ -302,7 +302,16 @@ export fn grep_scan_fs_report(root: String, pattern: String, wheres: Array[Strin
 export fn grep_list_files(root: String) -> String with Fs {
   let files = grep_empty_strings()
   source_walk_collect_files(root, files)
-  grep_join_lines(files, false)
+  // Escaped so one path is always one LINE (see grep_escape_list_path). The
+  // in-process caller splits this straight back, so writer and reader stay a
+  // pair whichever way the listing travels.
+  let escaped = grep_empty_strings()
+  let mut i = 0
+  while i < Array::length(files) {
+    Array::push(escaped, grep_escape_list_path(Array::get(files, i)))
+    i = i + 1
+  }
+  grep_join_lines(escaped, false)
 }
 
 /// The first line of a `VIBE_GREP_LIST_FILES` listing, so a driver can tell a
@@ -322,6 +331,82 @@ export fn grep_list_files(root: String) -> String with Fs {
 /// diagnostic and all.
 export fn grep_file_list_banner() -> String {
   "vibe-grep-file-list-v1"
+}
+
+/// One listed path, with the record separator escaped out of it.
+///
+/// A POSIX filename may contain a newline. Unescaped, `--list-files` emits it
+/// and the splitter turns one path into two fragments, both of which fail the
+/// existence check -- so a directory sweep that read the file perfectly well
+/// before chunking existed now fails on it (Codex on #2956, P2).
+///
+/// Escaped rather than reframed, because this repo already answered this
+/// question: `escape_name_field` (#2723, after Codex on #2718) does exactly
+/// this for `vibe symbols`' NAME field, for exactly this defect -- one record
+/// split across two lines, so a reader counting rows sees a symbol that does
+/// not exist. Line-oriented output is the house style (AGENTS.md: one record
+/// per line, greppable); the fix is to make a record survive it, not to
+/// abandon it.
+///
+/// Backslash FIRST, which is what makes it reversible. `\r` is escaped too:
+/// the reader strips one trailing raw CR as line framing, so a path genuinely
+/// ending in CR has to arrive as an escape or that strip would eat it.
+///
+/// The banner is NOT bumped for this. A sweep resolves ONE compiler wasm
+/// (`pick_cli`) and uses it for both the listing and the read, so a v1 writer
+/// can never meet a v2 reader inside one sweep; the only way to mix them is to
+/// save a listing and feed it to a different compiler later, where the failure
+/// is a `file-list entry not found` naming the path -- loud, not silent.
+fn grep_escape_list_path(path: String) -> String {
+  let n = String::length(path)
+  let acc = StringBuilder::new()
+  let mut i = 0
+  while i < n {
+    let c = String::byte_at(path, i)
+    if c == 92 {
+      StringBuilder::push(acc, "\\\\")
+    } else if c == 10 {
+      StringBuilder::push(acc, "\\n")
+    } else if c == 13 {
+      StringBuilder::push(acc, "\\r")
+    } else {
+      StringBuilder::push(acc, String::from_byte(c))
+    }
+    i = i + 1
+  }
+  StringBuilder::freeze(acc)
+}
+
+/// The inverse of `grep_escape_list_path`. An unknown escape keeps both bytes,
+/// so a hand-written list holding a literal backslash still names a real file
+/// rather than silently becoming a different one.
+fn grep_unescape_list_path(line: String) -> String {
+  let n = String::length(line)
+  let acc = StringBuilder::new()
+  let mut i = 0
+  while i < n {
+    let c = String::byte_at(line, i)
+    if c == 92 && i + 1 < n {
+      let d = String::byte_at(line, i + 1)
+      if d == 92 {
+        StringBuilder::push(acc, "\\")
+        i = i + 2
+      } else if d == 110 {
+        StringBuilder::push(acc, "\n")
+        i = i + 2
+      } else if d == 114 {
+        StringBuilder::push(acc, "\r")
+        i = i + 2
+      } else {
+        StringBuilder::push(acc, String::from_byte(c))
+        i = i + 1
+      }
+    } else {
+      StringBuilder::push(acc, String::from_byte(c))
+      i = i + 1
+    }
+  }
+  StringBuilder::freeze(acc)
 }
 
 /// Split a listing produced by `grep_list_files` back into paths.
@@ -355,7 +440,7 @@ export fn grep_split_file_list(text: String) -> Array[String] {
         raw
       }
       if String::length(line) > 0 {
-        Array::push(out, line)
+        Array::push(out, grep_unescape_list_path(line))
       } else {
         ()
       }
@@ -496,6 +581,20 @@ export fn grep_scan_files_report(files: Array[String], pattern: String, wheres: 
   // (24 MB to 1303 MB, measured). A file whose closure dwarfs everything
   // before it can still overrun the reserve. What the guard removes is the
   // silent case; it does not make the trap impossible.
+  // The resume file is the sweep's to own, so a stale one is removed before
+  // anything is written. Without this, "the file exists" means "SOME call
+  // handed off", not "this one did: a driver reusing one path across slices
+  // reads an index from an earlier hand-off after a slice that finished
+  // normally, and then silently rescans or skips files on a successful exit
+  // (Codex on #2956, P2). Both drivers here `rm -f` it themselves, which is
+  // why nothing caught it -- but the flag is advertised in `grep --help` for
+  // drivers this repo does not own, and a contract that only works for
+  // callers who know an unwritten rule is not a contract.
+  if resume_out != "" && Fs::exists(resume_out) {
+    Fs::remove(resume_out)
+  } else {
+    ()
+  }
   let memory_ceiling = grep_memory_ceiling_bytes()
   let mut max_typed_cost = 0
   let mut typed_env_cache = grep_fs_empty_env_cache()
