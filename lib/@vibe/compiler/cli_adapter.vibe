@@ -2446,16 +2446,28 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
       // `VIBE_GREP_FILE_LIST` names a file of newline-separated paths: ONE
       // chunk of a partitioned sweep. Absent, `input_path` is a root to walk,
       // which is the unchanged single-process behaviour.
+      // `VIBE_GREP_FILE_LIST` names a file of newline-separated paths: ONE
+      // chunk of a partitioned sweep. Absent, the list is the whole walk of
+      // `input_path`, which is the unchanged single-process behaviour.
+      //
+      // ONE call site for both, because two of them let `VIBE_GREP_RESUME` be
+      // honoured on one path and SILENTLY IGNORED on the other -- which is
+      // what the first version did, and what the budget gate's self-test
+      // caught by mutating the flag on and seeing nothing change. A switch
+      // that does nothing in one mode and everything in the other is the
+      // shape this repo ranks above crashing.
       let chunk_list = Env::get("VIBE_GREP_FILE_LIST")
-      let (text, warnings) = if chunk_list != "" {
-        grep_scan_files_report(adapter_split_nonempty_lines(Fs::read_file(chunk_list)), Env::get("VIBE_GREP_PATTERN"), adapter_split_nonempty_lines(Env::get("VIBE_GREP_WHERE")), adapter_split_nonempty_lines(Env::get("VIBE_GREP_WHERE_ROW")), Env::get("VIBE_GREP_ONLY"), Env::get("VIBE_GREP_JSON") == "1", Fs::is_dir(input_path), if Env::get("VIBE_GREP_RESUME") == "1" {
-          String::concat(output_path, ".resume")
-        } else {
-          ""
-        })
+      let sweep_files = if chunk_list != "" {
+        adapter_split_nonempty_lines(Fs::read_file(chunk_list))
       } else {
-        grep_scan_fs_report(input_path, Env::get("VIBE_GREP_PATTERN"), adapter_split_nonempty_lines(Env::get("VIBE_GREP_WHERE")), adapter_split_nonempty_lines(Env::get("VIBE_GREP_WHERE_ROW")), Env::get("VIBE_GREP_ONLY"), Env::get("VIBE_GREP_JSON") == "1")
+        adapter_split_nonempty_lines(grep_list_files(input_path))
       }
+      let resume_out = if Env::get("VIBE_GREP_RESUME") == "1" {
+        String::concat(output_path, ".resume")
+      } else {
+        ""
+      }
+      let (text, warnings) = grep_scan_files_report(sweep_files, Env::get("VIBE_GREP_PATTERN"), adapter_split_nonempty_lines(Env::get("VIBE_GREP_WHERE")), adapter_split_nonempty_lines(Env::get("VIBE_GREP_WHERE_ROW")), Env::get("VIBE_GREP_ONLY"), Env::get("VIBE_GREP_JSON") == "1", Fs::is_dir(input_path), resume_out)
       // #2133: both are line-oriented (`path:line:col: <match>` one per line,
       // and one warning per line), so both terminate their last record. JSON
       // mode gets the trailing newline too, which is conventional and which no

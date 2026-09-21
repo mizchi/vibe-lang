@@ -160,18 +160,25 @@ run_grep() {
   # compiler on the RC lane -- which frees -- moved it from 70 to 71. Only a
   # fresh process resets the frontier. Same shape lint_review_regressions.sh
   # already uses in a shell loop for this exact defect.
-  # No default cap: the sweep's own memory guard decides where each process
-  # stops and hands back the index to resume from, so there is no constant to
-  # tune. Measured on this repo before the adaptive lane existed, a fixed size
-  # gave the same answer at 2/4/8 (15 matches, 291/246/242s) and FAILED at 40,
-  # refusing at file 30 OF 40 because one file cost 1227 MB -- the cliff is
-  # sharp because per-file cost spans ~50x, which is exactly why a constant was
-  # the wrong shape for it.
+  # 8 is a PERFORMANCE hint, not a correctness constant -- that is the whole
+  # point of the resume hand-off. The sweep stops on its own memory guard and
+  # says where to continue, so a cap that is too large for a corpus costs time
+  # and nothing else. Measured on `lib`, every row byte-identical at 15
+  # matches:
   #
-  # Setting it caps the slice anyway. The chunked-sweep gate needs that to
-  # force boundaries at chosen places (chunk=1 puts one between every pair of
-  # files), and a caller wanting a smaller blast radius per process can use it.
-  local chunk_cap="${VIBE_GREP_CHUNK_FILES:-}"
+  #   cap      before resume            with resume
+  #   8        ok,  246s                ok,  262s
+  #   16       (untried)                ok,  252s
+  #   40       FAILED at file 30 of 40  ok,  446s
+  #   none     (not selectable)         ok,  455s
+  #
+  # Two things that reading only the last column would miss. The cap used to
+  # decide whether the sweep finished AT ALL; now it does not. And dropping it
+  # entirely -- the obvious "no constant" design -- is the SLOWEST option, 74%
+  # over cap=8, because each process then runs until the guard fires near the
+  # ceiling. So the constant stays, demoted: it buys speed, and being wrong
+  # about it is no longer fatal.
+  local chunk_cap="${VIBE_GREP_CHUNK_FILES:-8}"
   if [ -n "$chunk_cap" ]; then
     case "$chunk_cap" in
       *[!0-9]*) die "VIBE_GREP_CHUNK_FILES must be a positive whole number: $chunk_cap" ;;
