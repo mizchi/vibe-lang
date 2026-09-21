@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/syntax {
-  cfg_ambient_flags_csv, lex, lex_with_offsets, parse_program, parse_program_preserving
+  cfg_ambient_flags_csv, lex, lex_with_offsets, located_lex_message, parse_program, parse_program_preserving
 }
 
 import @vibe/core {
@@ -516,7 +516,20 @@ fn validate_vibex_entry_source(path: String, source: String) -> Unit with Except
     // pin's `#pkg` as a `#` directive and rejects a file the loader
     // otherwise accepts.
     let (_, pin_blanked) = extract_require_pins(source)
-    let stmts = parse_program_preserving(lex(pin_blanked))
+    // #2938: this is the only parse a `.vibex` ENTRY reaches before the module
+    // walk, and it threw bare -- no path and no position -- while the SAME
+    // lexer error reached the reader three different ways depending on how it
+    // was asked. Measured on stage2 `25a3b9f96`:
+    //
+    //   vibe check e.vibex   error: line 2:13: unexpected character: \
+    //   vibe build e.vibex   error: unexpected character: \
+    //   vibe build e2.vibe   error: <path>: unexpected character: \
+    //
+    // The third is `located_parse_uncached`, which a `.vibe` entry reaches and
+    // a `.vibex` entry does not, because this runs first and throws.
+    let stmts = handle {
+      parse_program_preserving(lex(pin_blanked))
+    } with { Exception::Throw(msg) => throw(String::concat(String::concat(path, ": "), located_lex_message(pin_blanked, msg))) }
     let mut main_count = 0
     let mut saw_value_main = false
     let mut invalid_shape = false

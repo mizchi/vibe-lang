@@ -86,11 +86,11 @@ import @vibe/compiler/checker {
 }
 
 import @vibe/compiler/core {
-  standard_host_provider_names
+  Stmt, standard_host_provider_names
 }
 
 import @vibe/compiler/syntax {
-  lex, parse_program
+  lex, located_lex_message, parse_program
 }
 
 import ./cli_support.vibe {
@@ -1384,7 +1384,7 @@ fn selfhost_cli_user_compile_args(args: Array[String]) -> Int with Exception + F
     0
   } else if wit {
     let resolved = resolve_user_build_output(out, out_given)
-    let stmts = parse_program(lex(Fs::read_file(src)))
+    let stmts = parse_user_entry_file(src)
     ensure_parent_dir(resolved)
     Fs::write_file(resolved, wit_from_program(stmts, stmts, basename_of(strip_vibe_suffix(src))))
     println(String::concat("wit ", String::concat(src, String::concat(" -> ", display_under_root(resolved, default_build_dir())))))
@@ -2355,8 +2355,30 @@ fn host_granted_from_flags(allows: Array[String], denies: Array[String]) -> Arra
 /// and was reachable from nothing but its unit test. This is the call site.
 /// The entry's row is read from the entry FILE alone, which is where an entry
 /// declares its grant; no import can add to it.
+/// Parse a file the USER named, so a failure says which file and where.
+///
+/// These three call sites -- the run preflight, `build --wit` and `serve` --
+/// each read an entry and lex it, and each threw the lexer's bare text while
+/// holding the path all along (#2938). Measured on stage2 `fe3056dda`, one
+/// stray backslash:
+///
+///   vibe run e.vibex           error: unexpected character: \
+///   vibe serve e.vibex         error: unexpected character: \
+///   vibe build --wit w.vibe    error: unexpected character: \
+///
+/// while `vibe check` on the same file answered `line 2:13:`. A PARSE error is
+/// unchanged apart from the path: `located_lex_message` returns anything
+/// already carrying `line ` untouched, and declines to invent a position for a
+/// throw the recovering lexer cannot place.
+fn parse_user_entry_file(src: String) -> Array[Stmt] with Exception + Fs {
+  let source = Fs::read_file(src)
+  handle {
+    parse_program(lex(source))
+  } with { Exception::Throw(msg) => throw(String::concat(String::concat(src, ": "), located_lex_message(source, msg))) }
+}
+
 fn preflight_entry_authority(src: String, allows: Array[String], denies: Array[String]) -> Unit with Exception + Fs {
-  let stmts = parse_program(lex(Fs::read_file(src)))
+  let stmts = parse_user_entry_file(src)
   let labels = entry_declared_authority(stmts)
   if Array::length(labels) == 0 {
     ()
@@ -2803,7 +2825,7 @@ fn selfhost_cli_user_serve_args(args: Array[String]) -> Int with Exception + Fs 
     } else {
       out
     }
-    let entry_stmts = parse_program(lex(Fs::read_file(src)))
+    let entry_stmts = parse_user_entry_file(src)
     validate_serve_handler(entry_stmts)
     let core = compile_user_artifact(src, "__no_entry__", "mvp", no_grants())
     let body_stream = serve_handler_takes_body_stream(entry_stmts)
