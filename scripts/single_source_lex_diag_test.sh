@@ -75,6 +75,9 @@ elif [ -z "$DIAG" ]; then
   printf '%s\n' "$OUT" | head -2 | sed 's/^/        /'; fail=1
 elif ! printf '%s' "$DIAG" | grep -qF "unexpected character"; then
   note "  FAIL a .diag was written but not about the lexer error: $DIAG"; fail=1
+elif ! printf '%s' "$DIAG" | grep -qF "line 2:13:"; then
+  note "  FAIL the .diag carries no position -- vibe check answers line 2:13 for this file"
+  note "        $DIAG"; fail=1
 else
   note "  ok   diag: $(printf '%s' "$DIAG" | head -1 | cut -c1-70)"
 fi
