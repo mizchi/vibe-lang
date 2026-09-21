@@ -2292,16 +2292,31 @@ fn selfhost_cli_user_grep_args(args: Array[String]) -> Int with Env + Exception 
       } else {
         grep_split_file_list(grep_list_files(sweep_root))
       }
-      // `root_is_dir` decides whether an unparseable file is fatal: naming ONE
-      // file and getting silence back is the case that must throw. Several
-      // paths is a set however the files arrived, so the chunked reading keeps
-      // the single-named-file case exactly and widens nothing else.
-      let sweep_is_dir = if chunk_list != "" && Array::length(paths) > 1 {
-        true
+      // Which files this sweep was asked about BY NAME, so an unparseable one
+      // throws rather than warning (#2940). When a chunk spans several roots
+      // it is EVERY named non-directory among them -- a chunk cut from the
+      // combined listing has no single root, and answering "directory" for it
+      // downgraded a named `bad.vibe` to exit 0 (Codex on #2956, P1).
+      let named_files: Array[String] = []
+      let mut ni = 0
+      while ni < (if chunk_list != "" {
+        Array::length(paths)
       } else {
-        Fs::is_dir(sweep_root)
+        1
+      }) {
+        let cand = if chunk_list != "" {
+          Array::get(paths, ni)
+        } else {
+          sweep_root
+        }
+        if Fs::is_dir(cand) {
+          ()
+        } else {
+          Array::push(named_files, cand)
+        }
+        ni = ni + 1
       }
-      let (text, warnings) = grep_scan_files_report(sweep_files, pattern, wheres, where_rows, only, json, sweep_is_dir, resume_out)
+      let (text, warnings) = grep_scan_files_report(sweep_files, pattern, wheres, where_rows, only, json, named_files, resume_out)
       // A file the sweep could not parse is reported, not searched: the
       // warning is what tells "no match" from "not searched" apart, so it
       // reaches stderr the way the launcher used to relay `<out>.warn`.

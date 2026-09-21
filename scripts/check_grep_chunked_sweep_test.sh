@@ -82,7 +82,14 @@ expect_red "a dropped chunk" 's|^          cat "\$out"$|          head -n -1 "$o
 
 # Every chunk loses its last line: a boundary-shaped loss rather than a whole
 # chunk, so a gate comparing only match COUNTS on one chunk size could miss it.
-expect_red "each chunk loses its last line" 's|^          cat "\$out"$|          sed "$d" "$out"|'
+# `'$d'` in SINGLE quotes, and the reason is the whole point of this file.
+# Written `sed "$d"`, the mutated launcher runs under `set -u` with `d` unset
+# and dies on the first line it reaches -- so the gate reddens because the
+# launcher CRASHED, not because a chunk lost its last line, and the case
+# certifies nothing while looking like proof. `bash -n` does not catch it: an
+# unbound variable is a RUNTIME error. Found by Codex review on #2956, in all
+# three of these files at once.
+expect_red "each chunk loses its last line" 's|^          cat "\$out"$|          sed '"'"'$d'"'"' "$out"|'
 
 # JSON emitted per chunk instead of reassembled: several arrays in one answer.
 # `#` as the delimiter: the target line contains a `|` pipe, which would end

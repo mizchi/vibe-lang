@@ -47,6 +47,29 @@ unset VIBE_GREP_MEMORY_BUDGET_MB
 unset VIBE_GREP_MEMORY_SAFETY_FACTOR
 unset VIBE_CLI_WASM
 unset VIBE_REVIEW_LINT_GREP_BIN
+# The GATE's own knobs too, which the first version left alone. An inherited
+# GREP_PARITY_CORPUS steers every case at once: a corpus with too few matches
+# fails the unmutated prerequisite, and one whose closure is cheap to type
+# stops the 400 MB control refusing, which silently removes property 4 -- the
+# only property that can see a driver that never loops. An inherited
+# VIBE_RUNNER points the cases at a runner the resolved stage2 was not built
+# for. GREP_PARITY_LAUNCHER is cleared because this file SETS it below, and
+# an inherited one would aim the baseline run at someone else's launcher.
+unset GREP_PARITY_CORPUS
+unset GREP_PARITY_LAUNCHER
+unset VIBE_RUNNER
+
+# Resolved here and exported, so every case runs against the same one and a
+# missing runner is one clear refusal rather than four mutations that look
+# like failures. The gate's own default, named explicitly (#2252: unset what
+# you inherit, then SET what you depend on).
+RUNNER="$ROOT_DIR/runtime/viberun/target/release/viberun"
+[ -x "$RUNNER" ] || {
+  echo "grep-driver-parity-test: no viberun at $RUNNER" >&2
+  echo "  Build it with scripts/ensure_viberun.sh; the gate drives runtime/vibe." >&2
+  exit 1
+}
+export VIBE_RUNNER="$RUNNER"
 
 # Resolve ONCE and hand it down. The gate refuses without a compiler that has
 # the chunk mode, and a refusal would redden every mutation for a reason that
@@ -108,8 +131,15 @@ echo "grep-driver-parity-test: ok -- the unmutated gate passes"
 
 # Every chunk loses its last line. A boundary-shaped loss, not a whole chunk,
 # so a check that compared only totals at one chunk size could miss it.
+# `'$d'` in SINGLE quotes, and the reason is the whole point of this file.
+# Written `sed "$d"`, the mutated launcher runs under `set -u` with `d` unset
+# and dies on the first line it reaches -- so the gate reddens because the
+# launcher CRASHED, not because a chunk lost its last line, and the case
+# certifies nothing while looking like proof. `bash -n` does not catch it: an
+# unbound variable is a RUNTIME error. Found by Codex review on #2956, in all
+# three of these files at once.
 expect_red "each chunk loses its last line" \
-  's|^        cat "\$chunkout"$|        sed "$d" "$chunkout"|'
+  's|^        cat "\$chunkout"$|        sed '"'"'$d'"'"' "$chunkout"|'
 
 # JSON emitted per chunk instead of reassembled: several arrays in one answer.
 # `#` as the delimiter because the target line contains a `|` pipe.

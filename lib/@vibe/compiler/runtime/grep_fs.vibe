@@ -281,7 +281,14 @@ fn grep_memory_refusal(path: String, done: Int, total: Int, headroom: Int, need:
 export fn grep_scan_fs_report(root: String, pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool) -> (String, String) with Env + Exception + Fs + Profiler {
   let files = grep_empty_strings()
   source_walk_collect_files(root, files)
-  grep_scan_files_report(files, pattern, wheres, where_rows, only, json, Fs::is_dir(root), "")
+  // Naming a directory names no FILE, so nothing in it is fatal-if-unparseable
+  // (#1943). Naming a file names exactly that one.
+  let named_files = if Fs::is_dir(root) {
+    grep_empty_strings()
+  } else {
+    grep_one_string(root)
+  }
+  grep_scan_files_report(files, pattern, wheres, where_rows, only, json, named_files, "")
 }
 
 /// The files a sweep of `root` would visit, one per line, in sweep order.
@@ -350,6 +357,47 @@ export fn grep_read_file_list(path: String) -> Array[String] with Exception + Fs
   grep_split_file_list(Fs::read_file(path))
 }
 
+fn grep_one_string(v: String) -> Array[String] {
+  let out = grep_empty_strings()
+  Array::push(out, v)
+  out
+}
+
+/// #2940's refusal, in one place: two sites throw it now (the end of the
+/// sweep, and the budget hand-off that would otherwise return before reaching
+/// it), and two spellings of the same diagnostic is how they come to differ.
+fn grep_named_unparseable_message(path: String) -> String {
+  String::concat("grep: `", String::concat(path, "` could not be parsed, so it was not searched; run `vibe check` on it, or sweep its directory to skip unparseable files"))
+}
+
+/// Was `path` named on the command line, rather than reached by walking?
+///
+/// #2940's distinction, as a SET rather than the boolean it used to be.
+/// `root_is_dir: Bool` answered "is this whole sweep a directory walk", which
+/// is only equivalent while a chunk belongs to exactly one root. The argv
+/// driver breaks that: it cuts chunks from the COMBINED listing of every path,
+/// so `vibe grep --pattern p dir/ bad.vibe` produced one chunk covering both
+/// and the boolean had to pick a single answer for it. Picking "directory"
+/// downgraded the named `bad.vibe` to a warning and exit 0 -- #2940's defect,
+/// back again (Codex on #2956, P1). Picking "file" would make an unparseable
+/// file INSIDE `dir/` fatal, breaking #1943 the other way.
+///
+/// There is no right boolean, so the question changes: a file is fatal when
+/// IT was named. That is exact for the mix, and identical to the old answer
+/// for the two cases that existed before.
+fn grep_path_is_named(path: String, named: Array[String]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(named) {
+    if Array::get(named, i) == path {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
 /// The sweep proper, over an EXPLICIT file list.
 ///
 /// #2914: a single wasm32 process tops out at 4 GiB and the sweep's cost
@@ -359,12 +407,12 @@ export fn grep_read_file_list(path: String) -> Array[String] with Exception + Fs
 /// compiler on the RC lane, which frees (file 70 -> 71), changes that shape.
 /// The driver runs this once per chunk in a FRESH process, which is the one
 /// thing that does reset the frontier.
-/// `root_is_dir` is #2940's distinction, threaded EXPLICITLY because this
-/// function no longer sees the root. Naming a file is asking about that file,
-/// so "it could not be parsed" must not answer as "no matches"; a sweep of a
-/// directory is the opposite case and keeps #1943's skip. The chunked lane
-/// gets it right because the adapter still receives the original root and
-/// computes the flag from it -- a chunk is a subset of one root, never a mix.
+/// `named_files` is #2940's distinction, threaded EXPLICITLY because this
+/// function no longer sees the roots. Naming a file is asking about that file,
+/// so "it could not be parsed" must not answer as "no matches"; a file reached
+/// by WALKING a directory is the opposite case and keeps #1943's skip. See
+/// `grep_path_is_named` for why this is a set and not the boolean it was: a
+/// chunk cut from several roots at once has no single right answer.
 ///
 /// This parameter exists because a MERGE, not a conflict, removed it: #2940
 /// added `let root_is_dir = Fs::is_dir(root)` to the body that this commit had
@@ -387,7 +435,7 @@ export fn grep_read_file_list(path: String) -> Array[String] with Exception + Fs
 /// supplies -- so every hand-off advances by at least one file. The driver
 /// asserts that anyway, because a resume loop that does not advance would
 /// print results forever, which is worse than the trap this replaces.
-export fn grep_scan_files_report(files: Array[String], pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool, root_is_dir: Bool, resume_out: String) -> (String, String) with Env + Exception + Fs + Profiler {
+export fn grep_scan_files_report(files: Array[String], pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool, named_files: Array[String], resume_out: String) -> (String, String) with Env + Exception + Fs + Profiler {
   let pat = grep_compile_pattern(pattern)
   grep_check_filters(pat, wheres, where_rows)
   let typed = grep_needs_typing(wheres, where_rows, only)
@@ -430,7 +478,7 @@ export fn grep_scan_files_report(files: Array[String], pattern: String, wheres: 
       grep_file_hits(path, source, pat)
     } with { Exception::Throw(_) => {
       Array::push(warnings, String::concat("warning: grep: skipped `", String::concat(path, "` because it could not be parsed")))
-      if !root_is_dir {
+      if grep_path_is_named(path, named_files) {
         named_unparseable = path
       } else {
         ()
@@ -452,10 +500,20 @@ export fn grep_scan_files_report(files: Array[String], pattern: String, wheres: 
             // keeps everything found so far -- it is a complete answer for
             // files[0..i), and the driver concatenates the rest.
             //
-            // The `named_unparseable` throw below is unreachable from here by
-            // construction: it needs `root_is_dir == false`, which means the
-            // caller named ONE file, and the guard needs a previously typed
-            // file to have a cost at all. One file cannot be both.
+            // A named file that could not be parsed OUTRANKS the hand-off.
+            // The early return below skips the throw at the end of this
+            // function, and the driver resumes at `i` -- so files before it
+            // are never swept again and the diagnostic would be lost, leaving
+            // exit 0 for a file the compiler could not read. That is #2940's
+            // defect resurfacing through #2914's hand-off, and the two only
+            // meet once `named_files` is a SET: while it was `root_is_dir`,
+            // naming a file meant naming exactly ONE, and one file cannot also
+            // give the guard a previous file's cost to fire on.
+            if named_unparseable != "" {
+              throw(grep_named_unparseable_message(named_unparseable))
+            } else {
+              ()
+            }
             Fs::write_file(resume_out, __to_string(i))
             return (grep_join_lines(out, json), grep_join_lines(warnings, false))
           } else {
@@ -494,7 +552,7 @@ export fn grep_scan_files_report(files: Array[String], pattern: String, wheres: 
     // Throwing rather than returning: the caller turns a diagnostic into a
     // non-zero exit, and the whole point is that the exit code stops agreeing
     // with "no matches". The message names the file and says what to do.
-    throw(String::concat("grep: `", String::concat(named_unparseable, "` could not be parsed, so it was not searched; run `vibe check` on it, or sweep its directory to skip unparseable files")))
+    throw(grep_named_unparseable_message(named_unparseable))
   } else {
     ()
   }

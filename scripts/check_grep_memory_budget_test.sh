@@ -129,7 +129,7 @@ expect_red "$MUTANT" "$GATE" "$MUTANT" "a refusal message that never appears" \
 # alone would not: the default budget takes one process and would lose only its
 # final line, which the comparison is not against.
 expect_red "$DRIVER" "$DRIVER_BACKUP" "$GATE" "each resumed process loses its last line" \
-  's|^          cat "$out"$|          sed "$d" "$out"|'
+  's|^          cat "$out"$|          sed '"'"'$d'"'"' "$out"|'
 
 # The resume index is ignored and the driver advances by the whole slice
 # instead. Files the sweep never reached would be skipped silently -- the sweep
