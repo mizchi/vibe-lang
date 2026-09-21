@@ -60,10 +60,19 @@ done
 # campaign while running none (#2955 review). Nothing destructive happens
 # above this point.
 A="${SEEDS%%..*}"; B="${SEEDS##*..}"
-case "$SEEDS" in
-  *..*) ;;
-  *) echo "[fuzz] --seeds must be A..B (got: $SEEDS)" >&2; exit 2 ;;
-esac
+# TOTAL check, not a list of rejected shapes. The endpoints are extracted with
+# `%%..*` and `##*..`, so `1..oops..2` yields A=1 and B=2 and a `*..*` pattern
+# sees nothing wrong: the harness cleared the findings and measured 1..2, a
+# range the caller never asked for (#2955 review). Requiring the input to be
+# EXACTLY the two endpoints rejoined closes that and every other arrangement,
+# including ones nobody has thought of -- which matters, because this is the
+# fourth input shape to get past an enumerated check here.
+#
+# Before normalization, so `08..09` still compares equal to its own endpoints.
+if [ "$SEEDS" != "$A..$B" ]; then
+  echo "[fuzz] --seeds must be exactly A..B (got: $SEEDS)" >&2
+  exit 2
+fi
 case "${A:-}" in
   ''|*[!0-9]*) echo "[fuzz] --seeds start must be a non-negative integer (got: ${A:-empty} from $SEEDS)" >&2; exit 2 ;;
 esac
