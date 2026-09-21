@@ -7,13 +7,60 @@
 # matches nothing passes the gate while proving nothing, which is how a red
 # test certifies a hole instead of closing it.
 set -uo pipefail
+# A gate must not assume the environment it runs in (#2252). `FUZZ_JOBS` is
+# read by run_fuzz.sh and validated before anything this file tests: exported
+# as `0` or a non-number by a developer or a runner, every probe would exit at
+# job-count validation and the gate would fail for ambient configuration
+# rather than for its subject. Cleared here, and each probe passes `--jobs 1`
+# explicitly so the value is this file's choice rather than an inheritance.
+unset FUZZ_JOBS
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
 GATE="scripts/check_fuzz_compiler_identity.sh"
 REAL="tests/fuzz/run_fuzz.sh"
 
-WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK" tests/fuzz/.probe_*.sh' EXIT
+# Every temporary allocation is CHECKED, and checked IN THIS SHELL. `set -uo
+# pipefail` carries no `-e`, so a failed `mktemp -d` -- an inherited TMPDIR
+# that is unwritable or missing -- leaves the variable EMPTY and the script
+# running; `${VIBE_FUZZ_ROOT:-...}` in run_fuzz.sh triggers on empty as well as
+# unset, so the probes would fall back to the shared `_build/fuzz` this
+# isolation exists to protect (#2955 review).
+#
+# The first attempt put the abort in a function called as `V="$(f)"`, where
+# `exit 1` ends the SUBSHELL and the parent carries on with V empty -- the
+# guard printed its refusal and changed nothing, and a planted finding in the
+# shared directory was still destroyed. So the check is inline at each site.
+need_dir() { # <var-value> <what>
+  if [ -z "${1:-}" ] || [ ! -d "${1:-}" ]; then
+    printf '%s: could not allocate a temporary %s (TMPDIR=%s)
+' "$(basename "$0")" "$2" "${TMPDIR:-unset}" >&2
+    printf '%s: refusing to run -- the probes would fall back to the shared _build/fuzz
+' "$(basename "$0")" >&2
+    return 1
+  fi
+}
+
+WORK="$(mktemp -d 2>/dev/null || true)"
+need_dir "${WORK:-}" "work dir" || exit 1
+# Isolated fuzz workspace. Two of the cases below mutate the harness so that it
+# PROCEEDS past resolution, and a proceeding harness resets its findings
+# directory -- against the shared `_build/fuzz/findings` that would delete a
+# developer's campaign output whenever this gate ran. Measured: before this,
+# a planted `seed_88_USER` finding did not survive the run (#2955 review named
+# the sibling test; the same hole was here).
+export VIBE_FUZZ_ROOT="$(mktemp -d 2>/dev/null || true)"
+need_dir "${VIBE_FUZZ_ROOT:-}" "fuzz root" || exit 1
+# Probes are PID-scoped and the cleanup names only its own. The trap used to
+# glob `tests/fuzz/.probe_*.sh`, which also matched the probe
+# tests/fuzz/stale_findings_test.sh stages -- under `release-check` the two
+# run as sibling deps, so this cleanup could delete that file between its `cp`
+# and its `bash`, failing a required gate for an unrelated missing file
+# (#2955 review). They must live beside run_fuzz.sh, which derives the repo
+# root from its own dirname, so uniqueness is by name rather than by
+# directory.
+PROBE_PREFIX="tests/fuzz/.probe_id$$_"
+cleanup_probes() { rm -rf "$WORK" "$VIBE_FUZZ_ROOT" "$PROBE_PREFIX"*.sh; }
+trap cleanup_probes EXIT
 rc_total=0
 say() { printf '%s\n' "$*"; }
 bad() { say "  FAIL $*"; rc_total=1; }
@@ -30,7 +77,7 @@ bad() { say "  FAIL $*"; rc_total=1; }
 stage() { # <name> <sed-script>
   local name="$1"
   local script="$2"
-  local dst="tests/fuzz/.probe_$name.sh"
+  local dst="$PROBE_PREFIX$name.sh"
   cp "$REAL" "$dst"
   sed -i.bak "$script" "$dst" && rm -f "$dst.bak"
   if cmp -s "$REAL" "$dst"; then
@@ -112,7 +159,7 @@ else
 fi
 
 say "=== red 5: the gate refuses a harness that is not there at all ==="
-out="$(FUZZ_HARNESS="tests/fuzz/.probe_absent.sh" bash "$GATE" 2>&1)"; rc=$?
+out="$(FUZZ_HARNESS="${PROBE_PREFIX}absent.sh" bash "$GATE" 2>&1)"; rc=$?
 [ "$rc" -ne 0 ] && say "  ok   absent: rejected -- $(printf '%s' "$out" | head -1)" || bad "absent: gate ACCEPTED a missing harness"
 
 if [ "$rc_total" -eq 0 ]; then
