@@ -125,6 +125,23 @@ esac
 . "$ROOT/scripts/resolve_stage2.sh"
 CLI="$(resolve_stage2_strict fuzz "$CLI")" || exit 2
 
+# The oracle is sourced HERE, above the workspace reset and above the banner,
+# because sourcing it can REFUSE: it resolves the `timeout` binary its
+# hang-classification depends on, and a refusal must land before anything is
+# moved and before the banner claims a campaign has started (#2955 review).
+RUNNER="bash scripts/run_wasm_vibe_host_runner.sh"
+CTIMEOUT=90
+RTIMEOUT=20
+
+# compile/run_linear/run_gc/classify are shared with tests/fuzz/classify.sh
+# (used by tests/fuzz/reduce.py) via tests/fuzz/lib_oracle.sh -- see that
+# file for the single source of truth on what counts as a finding. The FS
+# lane also receives a per-seed VIBE_BUILD_CACHE_DIR from lib_oracle.sh, so
+# its persistent compiler cache is not shared between these concurrent
+# workers. Generated work/findings stay in _build/fuzz/.
+# shellcheck source=tests/fuzz/lib_oracle.sh
+source "$ROOT/tests/fuzz/lib_oracle.sh"
+
 # The `[fuzz] mode=... cli=...` banner is emitted BELOW, after the workspace
 # reset, so that printing it means a campaign is actually starting. It used to
 # print here, between the two refusals, which made it possible to announce a
@@ -213,20 +230,31 @@ fi
 # same rule as the ledger ordering above, one step later: nothing irreversible
 # happens until the run is committed to.
 #
-# The block between the markers is excised as a unit by the pre-fix case in
-# tests/fuzz/stale_findings_test.sh, which is why the markers are here. The
-# name is bound ABOVE them: the excision reconstructs a harness with no reset
-# at all, and the steps below still read it, so leaving the binding inside the
-# markers made the mutant die on an unbound variable instead of running the
-# campaign the case needs it to run.
-FIND_PREV="$FIND.prev.$$"
-# >>> findings reset
-rm -rf "$FIND_PREV" 2>/dev/null || true
-if [ -e "$FIND_PREV" ]; then
-  echo "[fuzz] could not clear the holding directory $FIND_PREV" >&2
-  echo "[fuzz] remove it by hand and re-run; refusing to measure without somewhere to keep the previous findings" >&2
+# The holding name is chosen FREE, never cleared. `$$` is not unique across
+# containers -- a fresh one restarts PIDs low -- so a run whose holding copy
+# survived (killed mid-reset, or a restoration that failed and SAID the
+# evidence was left there) hands its name to a later run. Clearing it first
+# would destroy exactly what that message had just promised was kept (#2955
+# review). An existing holding copy is therefore never touched: this takes the
+# next free suffix and refuses if there is none.
+#
+# The name is bound ABOVE the markers below: the pre-fix case in
+# tests/fuzz/stale_findings_test.sh excises the marked block to reconstruct a
+# harness with no reset at all, and the steps after it still read the name, so
+# binding it inside made that mutant die on an unbound variable instead of
+# running the campaign the case needs it to run.
+FIND_PREV=""
+prev_n=0
+while [ "$prev_n" -lt 64 ]; do
+  if [ ! -e "$FIND.prev.$$.$prev_n" ]; then FIND_PREV="$FIND.prev.$$.$prev_n"; break; fi
+  prev_n=$((prev_n + 1))
+done
+if [ -z "$FIND_PREV" ]; then
+  echo "[fuzz] 64 holding directories already exist beside $FIND" >&2
+  echo "[fuzz] each holds an earlier campaign's findings; move or remove them and re-run" >&2
   exit 2
 fi
+# >>> findings reset
 if [ -e "$FIND" ]; then
   mv "$FIND" "$FIND_PREV" 2>/dev/null || true
   if [ -e "$FIND" ]; then
@@ -273,19 +301,6 @@ if [ -e "$FIND_PREV" ]; then
 fi
 
 echo "[fuzz] mode=$MODE gen=${GENMODE:-liveness} seeds=$A..$B cli=$CLI jobs=$JOBS"
-
-RUNNER="bash scripts/run_wasm_vibe_host_runner.sh"
-CTIMEOUT=90
-RTIMEOUT=20
-
-# compile/run_linear/run_gc/classify are shared with tests/fuzz/classify.sh
-# (used by tests/fuzz/reduce.py) via tests/fuzz/lib_oracle.sh -- see that
-# file for the single source of truth on what counts as a finding. The FS
-# lane also receives a per-seed VIBE_BUILD_CACHE_DIR from lib_oracle.sh, so
-# its persistent compiler cache is not shared between these concurrent
-# workers. Generated work/findings stay in _build/fuzz/.
-# shellcheck source=tests/fuzz/lib_oracle.sh
-source "$ROOT/tests/fuzz/lib_oracle.sh"
 
 record() { # seed class dir note
   local seed="$1" class="$2" dir="$3" note="$4"

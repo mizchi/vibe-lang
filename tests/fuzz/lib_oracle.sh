@@ -16,10 +16,42 @@ RUNNER="${RUNNER:-bash scripts/run_wasm_vibe_host_runner.sh}"
 CTIMEOUT="${CTIMEOUT:-90}"
 RTIMEOUT="${RTIMEOUT:-20}"
 
+# GNU `timeout` is not on a stock macOS -- the BSD userland has no such
+# command, and coreutils installs it as `gtimeout`. Resolved once here rather
+# than assumed at each of the three call sites below.
+#
+# What it replaces, measured: with neither binary present every
+# `timeout "$CTIMEOUT" ...` was a command-not-found -- 127, no wasm, no diag --
+# so `compile` answered COMPILE_CRASH for every lane of every seed. A campaign
+# on such a machine reports a compiler bug per generated program, and the
+# stale-findings gate that runs this harness fails for a reason having nothing
+# to do with what it checks (#2955 review).
+#
+# The fallback is a REFUSAL rather than "run it without a timeout", which is
+# the pattern scripts/test_vibe_library.sh uses for a test runner. Exit 124 is
+# load-bearing HERE: it is the only thing separating COMPILE_HANG / RUN_HANG
+# from a crash, so running unbounded would delete two finding classes from a
+# differential oracle -- and an actual hang would never end, leaving the
+# campaign stuck instead of recording it. A measurement refuses rather than
+# degrading.
+#
+# `exit` from a sourced file ends the SOURCING shell, which is what both
+# consumers want; it is also what the `:?` guards above already do.
+if command -v timeout >/dev/null 2>&1; then
+  TIMEOUT_BIN="timeout"
+elif command -v gtimeout >/dev/null 2>&1; then
+  TIMEOUT_BIN="gtimeout"
+else
+  echo "[fuzz] neither 'timeout' nor 'gtimeout' is on PATH" >&2
+  echo "[fuzz] install GNU coreutils -- on macOS 'brew install coreutils' provides gtimeout" >&2
+  echo "[fuzz] refusing to measure: without one, every compile reads as COMPILE_CRASH and a hang never ends" >&2
+  exit 2
+fi
+
 compile() { # src out extra-env...
   local src="$1" out="$2"; shift 2
   rm -f "$out" "$out.diag"
-  timeout "$CTIMEOUT" env VIBE_PREOPEN_DIR="$ROOT" VIBE_IMPORT_ABI=raw "$@" \
+  "$TIMEOUT_BIN" "$CTIMEOUT" env VIBE_PREOPEN_DIR="$ROOT" VIBE_IMPORT_ABI=raw "$@" \
     $RUNNER --invoke cli_main "$CLI" "$src" "$out" _start \
     > "$out.log" 2>&1
   local rc=$?
@@ -32,7 +64,7 @@ compile() { # src out extra-env...
 run_linear() { # wasm -> prints result or RUN_TRAP/RUN_HANG
   local wasm="$1"
   local out
-  out=$(timeout "$RTIMEOUT" env VIBE_PREOPEN_DIR="$ROOT" \
+  out=$("$TIMEOUT_BIN" "$RTIMEOUT" env VIBE_PREOPEN_DIR="$ROOT" \
     $RUNNER --invoke _start "$wasm" 2>/dev/null)
   local rc=$?
   if [ $rc -eq 124 ]; then echo "RUN_HANG"; return; fi
@@ -43,7 +75,7 @@ run_linear() { # wasm -> prints result or RUN_TRAP/RUN_HANG
 run_gc() {
   local wasm="$1"
   local out
-  out=$(timeout "$RTIMEOUT" wasmtime run -W gc=y,function-references=y,exceptions=y \
+  out=$("$TIMEOUT_BIN" "$RTIMEOUT" wasmtime run -W gc=y,function-references=y,exceptions=y \
     --invoke _start "$wasm" 2>/dev/null)
   local rc=$?
   if [ $rc -eq 124 ]; then echo "RUN_HANG"; return; fi

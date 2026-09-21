@@ -385,6 +385,138 @@ fi
 rm -f "$wsdel"
 rm -rf "$FIND" "$VIBE_FUZZ_ROOT/work"
 
+say "=== red: an existing holding copy is NEVER destroyed ==="
+# The reset moves the findings to `findings.prev.<pid>.<n>`. `$$` is not unique
+# across containers -- a fresh one restarts PIDs low -- so a run whose holding
+# copy survived (killed mid-reset, or a failed restoration that SAID the
+# evidence was left there) can hand its name to a later run. Clearing that name
+# first would destroy exactly what the message promised was kept.
+#
+# The pid is pinned to a fixed token in the probe, because a test cannot know
+# the harness's own `$$` in advance; the code path under test -- picking the
+# next FREE suffix -- is unchanged by that substitution.
+hold="tests/fuzz/.probe_hold$$.sh"
+cp tests/fuzz/run_fuzz.sh "$hold"
+sed -i.bak 's@\$FIND\.prev\.\$\$\.\$prev_n@$FIND.prev.FIXEDPID.$prev_n@g' "$hold" && rm -f "$hold.bak"
+HOLD0="$FIND.prev.FIXEDPID.0"
+plant_holding() {
+  rm -rf "$FIND" "$HOLD0" "$FIND.prev.FIXEDPID.1"
+  mkdir -p "$HOLD0/seed_7_HELD" "$FIND/seed_8_STALE"
+  printf 'held\n' > "$HOLD0/seed_7_HELD/single.vibe"
+  printf 'stale\n' > "$FIND/seed_8_STALE/single.vibe"
+  if [ ! -f "$HOLD0/seed_7_HELD/single.vibe" ] || [ ! -f "$FIND/seed_8_STALE/single.vibe" ]; then
+    bad "the holding fixture was not staged -- this case proves nothing"
+    return 1
+  fi
+}
+if grep -q 'FIND.prev.FIXEDPID' "$hold"; then
+  say "  ok   probe staged with a fixed holding pid"
+  if plant_holding; then
+    out="$(bash "$hold" --seeds 1..1 --jobs 1 --cli "$STAGE2" 2>&1)"
+    case "$out" in
+      *"0 findings"*) say "  ok   the run completed" ;;
+      *) bad "the probe run did not complete: $(printf '%s' "$out" | tail -1)" ;;
+    esac
+    if [ -f "$HOLD0/seed_7_HELD/single.vibe" ]; then
+      say "  ok   the earlier run's holding copy is untouched"
+    else
+      bad "the run DESTROYED an earlier run's holding copy at $HOLD0"
+    fi
+    if [ -e "$FIND/seed_8_STALE" ]; then
+      bad "the stale finding survived -- the run did not reset at all"
+    else
+      say "  ok   and this run's findings dir was still reset"
+    fi
+  fi
+else
+  bad "the holding-pid substitution did not apply -- this case would prove nothing"
+fi
+
+# The pairing: clear the name instead of choosing a free one, which is what the
+# first version of this fix did.
+sed -i.bak 's@^  if \[ ! -e "\$FIND.prev.FIXEDPID.\$prev_n" \]; then FIND_PREV=.*$@  rm -rf "$FIND.prev.FIXEDPID.$prev_n"; FIND_PREV="$FIND.prev.FIXEDPID.$prev_n"; break@' "$hold" && rm -f "$hold.bak"
+if grep -q '^  rm -rf "\$FIND.prev.FIXEDPID.\$prev_n"' "$hold"; then
+  say "  ok   pre-fix mutant staged: the holding name is cleared, not chosen free"
+  if plant_holding; then
+    out="$(bash "$hold" --seeds 1..1 --jobs 1 --cli "$STAGE2" 2>&1)"
+    case "$out" in
+      *"0 findings"*) say "  ok   pre-fix: it completes the same campaign" ;;
+      *) bad "pre-fix: the mutant did not complete: $(printf '%s' "$out" | tail -1)" ;;
+    esac
+    if [ -f "$HOLD0/seed_7_HELD/single.vibe" ]; then
+      bad "pre-fix: the holding copy survived too -- the case above proves nothing"
+    else
+      say "  ok   pre-fix: the holding copy is gone, so keeping it is the fix's doing"
+    fi
+  fi
+else
+  bad "the pre-fix holding mutation did not apply -- the case above is unattributed"
+fi
+rm -f "$hold"
+rm -rf "$FIND" "$HOLD0" "$FIND.prev.FIXEDPID.1"
+
+say "=== red: no GNU timeout REFUSES instead of reporting every seed as a finding ==="
+# `timeout` is absent from a stock macOS (BSD userland; coreutils installs it
+# as `gtimeout`), and this gate runs the real harness from `release-check`.
+# With neither binary present every lane of every seed was a command-not-found
+# -- 127, no wasm, no diag -- which `compile` reads as COMPILE_CRASH, so the
+# campaign reported a compiler bug per generated program (#2955 review).
+#
+# The probe removes both candidates by NAME rather than by emptying PATH, so
+# everything else the harness needs still resolves.
+tprobe="tests/fuzz/.probe_to$$.sh"
+tlib="tests/fuzz/.probe_tolib$$.sh"
+cp tests/fuzz/run_fuzz.sh "$tprobe"
+cp tests/fuzz/lib_oracle.sh "$tlib"
+sed -i.bak "s@lib_oracle.sh\"@$(basename "$tlib")\"@" "$tprobe" && rm -f "$tprobe.bak"
+sed -i.bak 's@command -v timeout @command -v vibe_absent_timeout @; s@command -v gtimeout @command -v vibe_absent_gtimeout @' "$tlib" && rm -f "$tlib.bak"
+if grep -q "$(basename "$tlib")" "$tprobe" && grep -q 'vibe_absent_gtimeout' "$tlib"; then
+  say "  ok   probe staged: neither timeout binary resolves"
+  rm -rf "$FIND"; mkdir -p "$FIND/seed_9_REAL_EVIDENCE"
+  printf 'repro\n' > "$FIND/seed_9_REAL_EVIDENCE/single.vibe"
+  out="$(bash "$tprobe" --seeds 1..1 --jobs 1 --cli "$STAGE2" 2>&1)"; trc=$?
+  case "$out" in
+    *"gtimeout"*) say "  ok   the refusal names the binary to install" ;;
+    *) bad "no timeout refusal: $(printf '%s' "$out" | tail -1)" ;;
+  esac
+  [ "$trc" -ne 0 ] && say "  ok   nonzero exit ($trc)" || bad "the run exited 0 with no timeout binary"
+  case "$out" in
+    *"[fuzz] mode="*) bad "the run ANNOUNCED itself and fuzzed anyway" ;;
+    *) say "  ok   no campaign was started" ;;
+  esac
+  if [ -f "$FIND/seed_9_REAL_EVIDENCE/single.vibe" ]; then
+    say "  ok   and the refusal landed before the reset, so the findings survive"
+  else
+    bad "the refusal DESTROYED the previous findings"
+  fi
+else
+  bad "the timeout probe was not staged -- this case would prove nothing"
+fi
+
+# The pairing: the unconditional call this replaced, with the binary absent.
+# It must reach the silently-wrong outcome -- a campaign that announces itself
+# and reports a finding for every seed.
+sed -i.bak '/^if command -v vibe_absent_timeout /,/^fi$/d' "$tlib" && rm -f "$tlib.bak"
+sed -i.bak 's@"\$TIMEOUT_BIN"@vibe_absent_timeout@g' "$tlib" && rm -f "$tlib.bak"
+if ! grep -q 'TIMEOUT_BIN' "$tlib" && grep -q 'vibe_absent_timeout "\$CTIMEOUT"' "$tlib"; then
+  say "  ok   pre-fix mutant staged: the timeout command is called unconditionally"
+  rm -rf "$FIND"
+  out="$(bash "$tprobe" --seeds 1..2 --jobs 1 --cli "$STAGE2" 2>&1)"
+  case "$out" in
+    *"[fuzz] mode="*) say "  ok   pre-fix: it announces a campaign" ;;
+    *) bad "pre-fix: no campaign announced: $(printf '%s' "$out" | tail -1)" ;;
+  esac
+  case "$out" in
+    *", 0 findings"*) bad "pre-fix: it reported 0 findings -- the case above proves nothing" ;;
+    *"findings"*) say "  ok   pre-fix: and reports a finding per seed -- $(printf '%s' "$out" | tail -1)" ;;
+    *) bad "pre-fix: the campaign did not complete: $(printf '%s' "$out" | tail -1)" ;;
+  esac
+else
+  bad "the pre-fix timeout mutation did not apply -- the case above is unattributed"
+fi
+rm -f "$tprobe" "$tlib"
+rm -rf "$FIND"
+
 say "=== red: a malformed or zero-padded range must not touch the findings ==="
 # Two shapes, one property: nothing destructive happens before the range is
 # known good. `typo` has no `..`; `08..09` is digit-only and passes `[ -le ]`
