@@ -549,8 +549,17 @@ export fn root_rel_from_invoke(invoke_rel: String, path: String) -> String {
   }
 }
 
+/// `--file-list` and `--resume-out` are here rather than left to the generic
+/// path branch below, and the difference is `--resume-out` (#2956, Codex P2).
+/// That branch only rewrites an argument that ALREADY EXISTS, which a resume
+/// file by definition does not -- so from a subdirectory the guest wrote it
+/// relative to the project root while the driver looked for it relative to the
+/// invocation directory, and a path the caller chose silently became a
+/// different path. `--file-list` happened to work through that branch, because
+/// a caller's list does exist; naming both keeps the pair from depending on
+/// that coincidence.
 fn flag_takes_output_path(flag: String) -> Bool {
-  flag == "-o" || flag == "--output" || flag == "--out" || flag == "--guest-profile" || flag == "--adapter" || flag == "--cli-wasm" || flag == "--changed" || flag == "--profile-tsv" || flag == "--profile-callstack"
+  flag == "-o" || flag == "--output" || flag == "--out" || flag == "--guest-profile" || flag == "--adapter" || flag == "--cli-wasm" || flag == "--changed" || flag == "--profile-tsv" || flag == "--profile-callstack" || flag == "--file-list" || flag == "--resume-out"
 }
 
 /// Flags whose verb parser reads the NEXT argv entry as a non-path value
@@ -607,6 +616,18 @@ export fn rewrite_user_argv(args: Array[String], invoke_dir: String, project_roo
       } else if String::starts_with(a, "--guest-profile=") {
         Array::push(out, String::concat("--guest-profile=", root_rel_from_invoke(invoke_rel, a[16: String::length(a)])))
         prev = ""
+      } else if String::starts_with(a, "--file-list=") {
+        // The equals spellings need their own arms for the same reason
+        // `--guest-profile=` and `--out=` do: an argument beginning with `-`
+        // never reaches the generic path branch, so the value rides through
+        // untouched and resolves against the wrong directory.
+        Array::push(out, String::concat("--file-list=", root_rel_from_invoke(invoke_rel, a[12: String::length(a)])))
+        prev = ""
+        ()
+      } else if String::starts_with(a, "--resume-out=") {
+        Array::push(out, String::concat("--resume-out=", root_rel_from_invoke(invoke_rel, a[13: String::length(a)])))
+        prev = ""
+        ()
       } else if String::starts_with(a, "--out=") {
         // The equals spelling `vibe profile --out=prof.json` names an output
         // path the same way the split one does (Codex review of #2858).

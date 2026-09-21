@@ -159,6 +159,32 @@ got="$(cd "$app/sub" && vibe test cwd_test.vibe --jobs 2>&1)" && fail "vibe test
 case "$got" in *"missing value after --jobs"*) ;; *) fail "vibe test <file> --jobs: expected 'missing value after --jobs' in: $got" ;; esac
 pass "vibe run --alloc-site <src> rewrites the source; a trailing --jobs is refused"
 
+# --- 4c. the grep driver flags carry PATHS, so they are rewritten too -------
+# `--file-list` and `--resume-out` (#2914) name files the caller chose. From a
+# subdirectory the compiler runs at the ROOT, so an unrewritten value resolves
+# against the wrong directory -- silently, because the equals spellings begin
+# with `-` and never reach the generic path branch at all, and `--resume-out`
+# names a file that does not exist yet, which that branch skips by design
+# (Codex on #2956, P2). Both spellings, because they failed for different
+# reasons.
+printf 'export fn gtarget(xs: Array[String]) -> Int {\n  Array::length(xs)\n}\n' > "$app/sub/greppable.vibe"
+printf 'greppable.vibe\n' > "$app/sub/mylist.txt"
+got="$(cd "$app/sub" && vibe grep --file-list=./mylist.txt --pattern 'Array::length($(x:exp))' . 2>&1)" \
+  || fail "vibe grep --file-list=<rel> from a subdirectory failed: $got"
+case "$got" in *"greppable.vibe:2:3"*) ;; *) fail "vibe grep --file-list=<rel> from sub/: expected a match in greppable.vibe, got: $got" ;; esac
+[ ! -e "$app/mylist.txt" ] || fail "vibe grep --file-list=<rel> looked for the list at the ROOT"
+# The split spelling of a file that does NOT exist yet: a 1 MB budget forces
+# the sweep to hand off, and the index must land where the user stood.
+( cd "$app/sub" && VIBE_GREP_MEMORY_BUDGET_MB=1 vibe grep --resume-out ./r.idx \
+    --pattern 'Array::length($(x:exp))' --where '$x : Array[String]' . >/dev/null 2>&1 ) || true
+if [ -e "$app/r.idx" ]; then
+  fail "vibe grep --resume-out <rel> wrote the index to the ROOT ($app/r.idx), not to sub/"
+fi
+[ -e "$app/sub/r.idx" ] || fail "vibe grep --resume-out <rel> wrote no index at all under sub/.
+A 1 MB budget must force a hand-off, or this case proves nothing about where
+the file lands. Raise the corpus or lower the budget until it does."
+pass "vibe grep --file-list=/--resume-out resolve against the invoking directory"
+
 # --- 5. vibe clean ----------------------------------------------------------
 mkdir -p "$app/.vibe/store/@x/y"
 got="$(cd "$app/sub" && vibe clean)"
