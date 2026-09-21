@@ -36,29 +36,35 @@ fn greet_len() -> Int with Name {
 }
 
 test "an arm without resume delivers its value to the perform and the body continues" {
-  let r = handle { add_hundred() } with { Cfg::Get() => 5 }
+  let r = handle {
+    add_hundred()
+  } with { Cfg::Get() => 5 }
   assert_eq(r, 105)
 }
 
 test "an explicit tail resume answers the same" {
-  let r = handle { add_hundred() } with { Cfg::Get() => resume(5) }
+  let r = handle {
+    add_hundred()
+  } with { Cfg::Get() => resume(5) }
   assert_eq(r, 105)
 }
 
 test "a Unit-returning operation's arm is accepted inside an Int body" {
   let sink: Array[String] = []
-  let r = handle { work() } with {
-    Log::Emit(msg) => {
-      Array::push(sink, msg)
-    }
-  }
+  let r = handle {
+    work()
+  } with { Log::Emit(msg) => {
+    Array::push(sink, msg)
+  } }
   assert_eq(r, 42)
   assert_eq(Array::length(sink), 2)
   assert_eq(Array::get(sink, 1), "second")
 }
 
 test "the arm's value is checked against the operation's return type, not the body's" {
-  let r = handle { greet_len() } with { Name::Get() => "abcd" }
+  let r = handle {
+    greet_len()
+  } with { Name::Get() => "abcd" }
   assert_eq(r, 4)
 }
 
@@ -67,27 +73,63 @@ test "a lambda parameter named resume? shadows the continuation for the checker 
   // arm was classified as an implicit resume by the checker and as a
   // suspend (captured `resume`) by the lowering, and the string became the
   // handle's Int result (measured 296352743426).
-  let r = handle { greet_len() } with {
-    Name::Get() => {
-      let h = (resume?: Int) -> Int {
-        match resume {
-          Some(v) => v
-          None => 0
-        }
+  let r = handle {
+    greet_len()
+  } with { Name::Get() => {
+    let h = (resume?: Int) -> Int {
+      match resume {
+        Some(v) => v
+        None => 0
       }
-      let _ = h()
-      "abcd"
     }
-  }
+    let _ = h()
+    "abcd"
+  } }
   assert_eq(r, 4)
 }
 
 test "a tail branch without resume next to a branch with resume is the same implicit resume" {
   // Codex P0 on #2985: `if c { resume("ok") } else { "no" }` -- the lowering
   // strips the tail resume, so both branches are what the perform receives.
-  let a = handle { greet_len() } with { Name::Get() => if true { resume("ok") } else { "no" } }
-  let b = handle { greet_len() } with { Name::Get() => if false { resume("ok") } else { "three" } }
+  let a = handle {
+    greet_len()
+  } with { Name::Get() => if true {
+    resume("ok")
+  } else {
+    "no"
+  } }
+  let b = handle {
+    greet_len()
+  } with { Name::Get() => if false {
+    resume("ok")
+  } else {
+    "three"
+  } }
   assert_eq(a, 2)
   assert_eq(b, 5)
+}
+
+effect Word {
+  Get() -> String
+}
+
+fn pick_or_leave(flag: Bool) -> Int {
+  // #2985 review (Codex P2): an arm whose every tail is `return` has no
+  // value to resume with -- the return leaves the function -- so it is not
+  // checked against the operation's String. It used to be refused as
+  // `expected String, got Int`.
+  let r = handle {
+    String::length(perform Word::Get()) + 1
+  } with { Word::Get() => if flag {
+    return 42
+  } else {
+    return 7
+  } }
+  r * 10
+}
+
+test "an arm that only returns is not an implicit resume" {
+  assert_eq(pick_or_leave(true), 42)
+  assert_eq(pick_or_leave(false), 7)
 }
 

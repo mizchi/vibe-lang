@@ -435,6 +435,42 @@ fn fields_ref_resume_value(fields: Array[(String, Expr)], sh: Bool, in_fn: Bool)
   hit
 }
 
+/// #2985 review (Codex P2): does EVERY tail of a handler arm leave the
+/// enclosing function with `return`? Such an arm has no tail VALUE to
+/// resume with -- the `return` exits before the perform could receive
+/// anything -- so the implicit-resume check against the operation's return
+/// type does not apply to it (`Get() => return 42` in an Int function
+/// handling `Get() -> String` is legal). A `return` inside one branch next
+/// to a value in another is not "all return": the value branch is checked,
+/// and the branch types are unified by the ordinary `if` / `match` rule.
+export fn arm_tail_all_return(e: Expr) -> Bool {
+  match e {
+    EReturn(_) => true,
+    ELet(_, _, b, _) => arm_tail_all_return(b),
+    ELetMut(_, _, b, _) => arm_tail_all_return(b),
+    ELetRec(_, _, b) => arm_tail_all_return(b),
+    ESeq(_, b) => arm_tail_all_return(b),
+    EAssign(_, _, c) => arm_tail_all_return(c),
+    EAssignOp(_, _, _, c) => arm_tail_all_return(c),
+    EIf(_, t, el) => arm_tail_all_return(t) && arm_tail_all_return(el),
+    EMatch(_, arms) => {
+      let mut all = Array::length(arms) > 0
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, ex) = Array::get(arms, i)
+        if !arm_tail_all_return(ex) {
+          all = false
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      all
+    },
+    _ => false
+  }
+}
+
 /// #942 (ADR-0050): inside a handler arm, `resume(...)` is one-shot and must be
 /// the LAST thing the arm does. Codegen compiles resume as a continuation
 /// throw, so any code after it silently never runs — `let a = resume(1);

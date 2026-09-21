@@ -5073,9 +5073,17 @@ fn scps_rewrite(e: Expr, ctx: (Array[Stmt], Array[(String, Array[(String, Array[
         // with a placeholder, and the real return happens after the handle --
         // where it is an ordinary spine return the hoist handles if this whole
         // thing is itself inside a body being split.
-        if scps_body_has_return(rbody) {
+        // A `return` inside an ARM has the same problem as one inside the
+        // body: the arm runs inside the driver's step closure, so a bare
+        // `return v` handed `v` to the driver as the handle's value (measured
+        // `420` for `Get() => return 42` followed by `r * 10`, Codex P2 on
+        // #2985). The arms go through the same cell rewrite as the body, AFTER
+        // the implicit-resume wrap, so the recorded placeholder stays an
+        // unwrapped tail (an abort of the driver) and the real return happens
+        // after the handle.
+        if scps_body_has_return(rbody) || scps_body_arms_have_return(sarms) {
           let hsite = scps_next_site(st)
-          let probe = EHandle(rbody, rarms)
+          let probe = EHandle(rbody, sarms)
           let flag = scps_seq_float_fresh("hreturned", probe, EUnit, hsite)
           let slot = scps_seq_float_fresh("hretslot", probe, EUnit, hsite)
           let hv = scps_seq_float_fresh("hvalue", probe, EUnit, hsite)
@@ -5086,13 +5094,20 @@ fn scps_rewrite(e: Expr, ctx: (Array[Stmt], Array[(String, Array[(String, Array[
             Some(lifted) => lifted,
             None => rbody
           }, hsite, flag, slot)
-          if scps_body_has_return(captured) {
-            Array::push(scps_st_errs(st), scps_return_in_split_msg("a handler arm captures `resume` as a value, so this handle body"))
+          let sarms_ret = for a in sarms {
+            let (ap, ab) = a
+            (ap, scps_elim_returns_to(match scps_elim_loop_returns(ab, hsite) {
+              Some(lifted) => lifted,
+              None => ab
+            }, hsite, flag, slot))
+          }
+          if scps_body_has_return(captured) || scps_body_arms_have_return(sarms_ret) {
+            Array::push(scps_st_errs(st), scps_return_in_split_msg("a handler arm captures `resume` as a value, so this handle's body and its arms"))
             EHandle(rbody, rarms)
           } else {
-            let inner = match scps_transform_handle(captured, sarms, ik, ctx, st, scope) {
+            let inner = match scps_transform_handle(captured, sarms_ret, ik, ctx, st, scope) {
               Some(t) => t,
-              None => EHandle(captured, sarms)
+              None => EHandle(captured, sarms_ret)
             }
             ELetMut(flag, EBool(false), ELetMut(slot, EInt(0), ELet(hv, inner, EIf(EIdent(flag, -1), EReturn(EIdent(slot, -1)), EIdent(hv, -1)), -1), -1), -1)
           }
