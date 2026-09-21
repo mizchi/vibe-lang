@@ -22,13 +22,23 @@ while [ $# -gt 0 ]; do
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
-if [ -z "$CLI" ]; then
-  CLI="$(ls -t _build/selfhost/generations/*/stage2.wasm 2>/dev/null | head -1)"
-fi
-if [ -z "$CLI" ] || [ ! -f "$CLI" ]; then
-  echo "[classify] no stage2 CLI found; build one first (scripts/generations.sh build)" >&2
-  exit 2
-fi
+# WHICH compiler answered (AGENTS.md, "Which compiler answered?"). This used
+# to default to `ls -t .../stage2.wasm | head -1` -- newest by MTIME, a
+# different question from "the compiler built from this checkout", answered
+# wrong on a reused workspace and while a build is touching directories.
+#
+# It matters here as much as in run_fuzz.sh, because this is where a finding
+# gets its NAME: tests/fuzz/reduce.py shells out once per reduction candidate,
+# and `MISMATCH bump=... rc=...` is pasted into an issue with no stderr
+# attached. A reducer silently running a different generation can also reduce
+# a finding to nothing and have that read as "not reproducible".
+#
+# Measured before this change, with HEAD at 632bb067b and no generation for
+# it: classify.sh answered from a `f5002ebd9` build without a word, while the
+# strict resolver refused (#2959).
+# shellcheck source=scripts/resolve_stage2.sh
+. "$ROOT/scripts/resolve_stage2.sh"
+CLI="$(resolve_stage2_strict classify "$CLI")" || exit 2
 
 # shellcheck source=tests/fuzz/lib_oracle.sh
 source "$ROOT/tests/fuzz/lib_oracle.sh"
