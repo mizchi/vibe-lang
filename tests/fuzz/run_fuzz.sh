@@ -153,6 +153,10 @@ source "$ROOT/tests/fuzz/lib_oracle.sh"
 # because it happens to be the default (#2955 review). Tests point this at a
 # temporary root; a real campaign leaves it unset.
 FUZZ_ROOT="${VIBE_FUZZ_ROOT:-_build/fuzz}"
+# Identifies THIS run in the per-seed completion stamps counted at the end.
+# `$$` alone is not enough: PIDs repeat across containers, and `$WORK` is not
+# reset between runs.
+RUN_ID="$$-$(date +%s)-$RANDOM"
 WORK="$FUZZ_ROOT/work"
 FIND="$FUZZ_ROOT/findings"
 SEEDS_FILE="$FUZZ_ROOT/failing_seeds.txt"
@@ -354,16 +358,20 @@ EOF
       OK|COMPILE_DIAG) : ;;
       *) record "$seed" "MUT_$st" "$dir" "mutated input: $st" ;;
     esac
-    return
+  else
+    # --- generative differential mode ---
+    result=$(classify "$dir")
+    cls="${result%% *}"
+    detail="${result#* }"
+    if [ "$cls" != "OK" ]; then
+      record "$seed" "$cls" "$dir" "$detail"
+    fi
   fi
-
-  # --- generative differential mode ---
-  result=$(classify "$dir")
-  cls="${result%% *}"
-  detail="${result#* }"
-  if [ "$cls" != "OK" ]; then
-    record "$seed" "$cls" "$dir" "$detail"
-  fi
+  # This seed finished. The summary counts these stamps rather than trusting
+  # arithmetic on the endpoints (below), so it is written LAST, on the way out
+  # of both modes -- an early `return` from the mutate branch is why this is an
+  # if/else rather than the guard clause it used to be.
+  printf '%s\n' "$RUN_ID" > "$dir/.seed_done"
 }
 
 # Bounded job-slot pool: launch each seed as its own background process,
@@ -373,16 +381,50 @@ EOF
 # the line count of failing_seeds.txt after every job has been waited on.
 total=$((B - A + 1))
 running=0
-for seed in $(seq "$A" "$B"); do
+# A shell arithmetic loop, not `seq`: one less external dependency, and the
+# reason is not tidiness. `seq` is not in POSIX, and when the loop produced
+# nothing the campaign still printed the ENDPOINT-DERIVED total and exited 0
+# -- measured with the name made unresolvable, `[fuzz] done: 750 seeds, 0
+# findings` in under a second, having compiled nothing (#2955 review). That
+# line is what gets pasted into an issue as acceptance evidence.
+seed="$A"
+while [ "$seed" -le "$B" ]; do
   run_seed "$seed" &
   running=$((running + 1))
   if [ "$running" -ge "$JOBS" ]; then
     wait -n
     running=$((running - 1))
   fi
+  seed=$((seed + 1))
 done
 wait
 
+# The total is now OBSERVED, not computed: every seed stamps `.seed_done` with
+# this run's id on its way out, and the range is walked again to count them.
+# Removing `seq` alone would have fixed one way to produce an empty loop; this
+# closes the shape -- whatever stops the seeds from running, the campaign says
+# so instead of reporting a clean sweep. The id is compared because `$WORK` is
+# not reset between runs, so a stale stamp from an earlier campaign over the
+# same range would otherwise count as this one's.
+ran=0
+missing=""
+missing_n=0
+seed="$A"
+while [ "$seed" -le "$B" ]; do
+  if [ "$(cat "$WORK/s$seed/.seed_done" 2>/dev/null)" = "$RUN_ID" ]; then
+    ran=$((ran + 1))
+  else
+    missing_n=$((missing_n + 1))
+    [ "$missing_n" -le 5 ] && missing="$missing $seed"
+  fi
+  seed=$((seed + 1))
+done
+if [ "$ran" -ne "$total" ]; then
+  echo "[fuzz] only $ran of $total seeds ran (first missing:$missing)" >&2
+  echo "[fuzz] refusing to report a campaign that did not run" >&2
+  exit 2
+fi
+
 fail=$(wc -l < "$SEEDS_FILE" | tr -d '[:space:]')
-echo "[fuzz] done: $total seeds, $fail findings"
+echo "[fuzz] done: $ran seeds, $fail findings"
 [ "$fail" -eq 0 ]

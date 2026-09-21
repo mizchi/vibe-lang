@@ -638,6 +638,87 @@ case "$out" in
 esac
 [ "$zrc" -eq 0 ] && say "  ok   exits 0" || bad "'08..09' exited $zrc"
 
+say "=== red: a campaign that did not run must not report a clean sweep ==="
+# `[fuzz] done: 750 seeds, 0 findings` is what gets pasted into an issue as
+# acceptance evidence, and it was arithmetic on the endpoints -- `total=$((B -
+# A + 1))` -- not a count of anything that happened. Measured with `seq` made
+# unresolvable (it is not POSIX): the loop produced nothing, and the harness
+# printed exactly that line, exit 0, in under a second, having compiled
+# nothing (#2955 review).
+#
+# Two fixes, and the second is the one that closes the shape: the loop is
+# shell arithmetic so there is no external command to lose, AND the total is
+# counted from per-seed completion stamps, so whatever else empties the loop,
+# the campaign says so instead of reporting a sweep.
+if grep -qE '(^|[^_a-zA-Z])seq ' tests/fuzz/run_fuzz.sh; then
+  bad "run_fuzz.sh calls seq again -- the seed loop must not need a non-POSIX command"
+else
+  say "  ok   the seed loop needs no external command"
+fi
+
+seedcase() { # <name> <sed-expr>... -> path
+  local nm="$1"
+  shift
+  local dst="tests/fuzz/.probe_seed${nm}$$.sh"
+  cp tests/fuzz/run_fuzz.sh "$dst"
+  while [ $# -gt 0 ]; do
+    sed -i.bak "$1" "$dst" && rm -f "$dst.bak"
+    shift
+  done
+  printf '%s\n' "$dst"
+}
+
+# (a) nothing iterates at all.
+empty="$(seedcase empty 's@^while \[ "\$seed" -le "\$B" \]; do$@while false; do@')"
+if grep -q '^while false; do' "$empty"; then
+  say "  ok   mutant staged: the seed loop iterates nothing"
+  out="$(bash "$empty" --seeds 1..750 --jobs 4 --cli "$STAGE2" 2>&1)"; erc=$?
+  case "$out" in
+    *"refusing to report a campaign that did not run"*) say "  ok   it refuses instead of summarising" ;;
+    *) bad "no refusal for an empty campaign: $(printf '%s' "$out" | tail -1)" ;;
+  esac
+  case "$out" in
+    *"0 findings"*) bad "it still printed a findings summary: $(printf '%s' "$out" | tail -1)" ;;
+    *) say "  ok   and prints no findings summary at all" ;;
+  esac
+  [ "$erc" -ne 0 ] && say "  ok   nonzero exit ($erc)" || bad "exited 0 having run no seeds"
+else
+  bad "the empty-loop mutation did not apply -- this case would prove nothing"
+fi
+rm -f "$empty"
+
+# The pairing: same empty loop, count check removed. This is the pre-fix
+# harness, and it must produce the silently-wrong line verbatim.
+empty_drop="$(seedcase emptydrop 's@^while \[ "\$seed" -le "\$B" \]; do$@while false; do@' 's@^if \[ "\$ran" -ne "\$total" \]; then$@if false; then@' 's@^echo "\[fuzz\] done: \$ran seeds, \$fail findings"$@echo "[fuzz] done: $total seeds, $fail findings"@')"
+if grep -q '^if false; then' "$empty_drop" && grep -q 'done: \$total seeds' "$empty_drop"; then
+  say "  ok   control staged: endpoint arithmetic, no count check"
+  out="$(bash "$empty_drop" --seeds 1..750 --jobs 4 --cli "$STAGE2" 2>&1)"; crc=$?
+  case "$out" in
+    *"done: 750 seeds, 0 findings"*) say "  ok   pre-fix: '$(printf '%s' "$out" | tail -1)' -- a clean sweep of nothing" ;;
+    *) bad "control did not reproduce the summary: $(printf '%s' "$out" | tail -1)" ;;
+  esac
+  [ "$crc" -eq 0 ] && say "  ok   control exits 0, so the refusal above is the count check's doing" || bad "control exited $crc"
+else
+  bad "the control mutation did not apply -- the case above is unattributed"
+fi
+rm -f "$empty_drop"
+
+# (b) the subtler half: the loop runs, but one seed's process never finishes
+# (killed, OOM). The endpoint total cannot see it; a count can.
+lost="$(seedcase lost 's@^  printf .%s\\n. "\$RUN_ID" > "\$dir/.seed_done"$@  [ "$seed" = "2" ] || printf "%s\\n" "$RUN_ID" > "$dir/.seed_done"@')"
+if grep -q '\[ "\$seed" = "2" \] ||' "$lost"; then
+  say "  ok   mutant staged: seed 2 never completes"
+  out="$(bash "$lost" --seeds 1..3 --jobs 2 --cli "$STAGE2" 2>&1)"; lrc=$?
+  case "$out" in
+    *"only 2 of 3 seeds ran"*) say "  ok   the refusal names how many ran, and which is missing" ;;
+    *) bad "a lost seed was not noticed: $(printf '%s' "$out" | tail -1)" ;;
+  esac
+  [ "$lrc" -ne 0 ] && say "  ok   nonzero exit ($lrc)" || bad "exited 0 with a seed unaccounted for"
+else
+  bad "the lost-seed mutation did not apply -- this case would prove nothing"
+fi
+rm -f "$lost"
+
 say "=== red: the PRE-FIX harness runs a campaign and leaves it behind ==="
 # Reconstruct the old behaviour so the case proves the fix was load-bearing
 # rather than merely present.
