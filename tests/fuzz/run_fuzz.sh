@@ -62,13 +62,17 @@ case "$JOBS" in
 esac
 [ "$JOBS" -ge 1 ] || { echo "[fuzz] --jobs must be a positive integer, got: $JOBS" >&2; exit 2; }
 
-if [ -z "$CLI" ]; then
-  CLI="$(ls -t _build/selfhost/generations/*/stage2.wasm 2>/dev/null | head -1)"
-fi
-if [ -z "$CLI" ] || [ ! -f "$CLI" ]; then
-  echo "[fuzz] no stage2 CLI found; build one first (scripts/generations.sh build)" >&2
-  exit 2
-fi
+# WHICH compiler answered (AGENTS.md, "Which compiler answered?"). This used to
+# be `ls -t .../stage2.wasm | head -1` -- newest by MTIME, which is a different
+# question from "the compiler built from this checkout" and answers it wrong on
+# a reused workspace or while a build is touching directories. A fuzz campaign
+# is a MEASUREMENT: "seeds 1..750, 0 findings" is pasted into an issue with no
+# stderr attached, so a run against the wrong compiler produces a number nobody
+# can tell apart from a right one. Hence the strict resolver, which takes the
+# artifact you named or HEAD's own generation and refuses everything else
+# rather than degrading to the newest one or the committed seed.
+. "$ROOT/scripts/resolve_stage2.sh"
+CLI="$(resolve_stage2_strict fuzz "$CLI")" || exit 2
 echo "[fuzz] mode=$MODE gen=${GENMODE:-liveness} seeds=$A..$B cli=$CLI jobs=$JOBS"
 
 WORK=_build/fuzz/work
