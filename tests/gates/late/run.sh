@@ -4299,8 +4299,12 @@ if [ -s "$excdir/handle.wasm" ]; then
   echo "[compiler-gate] FAIL: handle with Exception[ParseError] discharged an IoError throw (#1344)" >&2
   exit 1
 fi
-if ! grep -q "missing { Exception\[IoError\] }" "$excdir/handle.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: a kinded handle must leave the foreign kind in the row (#1344)" >&2
+# #2985: a kinded arm is a catch-all at run time, so the checker now refuses
+# the foreign kind AT THE HANDLE ("it also raises { Exception[IoError] }")
+# instead of leaving it in the row ("missing { Exception[IoError] }"); either
+# spelling proves the kind was not discharged.
+if ! grep -qE "missing \{ Exception\[IoError\] \}|it also raises \{ Exception\[IoError\] \}" "$excdir/handle.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: a kinded handle must not discharge the foreign kind (#1344, #2985)" >&2
   cat "$excdir/handle.wasm.diag" >&2 2>/dev/null || true
   exit 1
 fi

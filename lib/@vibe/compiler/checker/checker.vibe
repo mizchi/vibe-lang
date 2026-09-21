@@ -1078,19 +1078,6 @@ fn expr_ident_name_or_empty(expr: Expr) -> String {
 /// both to restrict record struct-identity recovery to MONOMORPHIC structs (a
 /// bare `CtStruct(LazyIter)` would erase the element type that `for x in it`
 /// relies on) and to gate structural-mismatch reporting to concrete types.
-/// #635: does a match-arm body DIVERGE (early-`return`), yielding no value to the
-/// match? The `?`-operator desugar lowers `val?` to
-///   match val { Some(v) => v, None => return None }
-/// whose `None` arm is `return None` — it must not force the match's result type
-/// (else `T` vs `Option[T]` clashes). A diverging arm is a bare `return`, or a
-/// block (`ESeq`) whose final expr diverges.
-fn arm_body_diverges(body: Expr) -> Bool {
-  match body {
-    EReturn(_) => true,
-    ESeq(_, rest) => arm_body_diverges(rest),
-    _ => false
-  }
-}
 
 // #1324 removed the #941 `railway_head` / `railway_heads_conflict` pair,
 // which reported an Option-vs-Result head conflict on one railway. `Result`
@@ -8158,33 +8145,46 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       // rejected (it returns Unit when c is false) while a statement-position
       // `if` is harmless (its value is discarded). Only when BOTH branches yield
       // a real (non-Unit) value must they agree, and the result is that type.
-      let (s3b, if_ty) = match rtt {
-        CtUnit => (s3, CtUnit),
-        _ => match ret {
+      // #3012 / #2985 review (Codex P2): a branch whose every tail is a
+      // `return` leaves the function and yields nothing to the `if`, so the
+      // OTHER branch's type is the expression's -- `if flag { return 42 }
+      // else { "abcd" }` is a String, the way a diverging match arm already
+      // does not force the match's type (#635). Before, the return's operand
+      // type was taken as the branch type and `let s: String = ..` and the
+      // implicit-resume arm check both refused it as `got Int`.
+      let (s3b, if_ty) = if arm_tail_all_return(then_e) {
+        (s3, et)
+      } else if arm_tail_all_return(else_e) {
+        (s3, tt)
+      } else {
+        match rtt {
           CtUnit => (s3, CtUnit),
-          _ => {
-            // #2198: a literal else-branch carries no offset, which left this
-            // diagnostic file-only. Keep the else anchor when it exists (pinned
-            // by diagnostic_anchor_test), else fall back to the then-branch
-            // tail, else to the condition -- coarser, but still on the `if`.
-            let else_off = railway_expr_off(else_e)
-            let branch_off = if else_off >= 0 {
-              else_off
-            } else {
-              let then_off = tail_expr_off(then_e)
-              if then_off >= 0 {
-                then_off
+          _ => match ret {
+            CtUnit => (s3, CtUnit),
+            _ => {
+              // #2198: a literal else-branch carries no offset, which left this
+              // diagnostic file-only. Keep the else anchor when it exists (pinned
+              // by diagnostic_anchor_test), else fall back to the then-branch
+              // tail, else to the condition -- coarser, but still on the `if`.
+              let else_off = railway_expr_off(else_e)
+              let branch_off = if else_off >= 0 {
+                else_off
               } else {
-                railway_expr_off(cond)
+                let then_off = tail_expr_off(then_e)
+                if then_off >= 0 {
+                  then_off
+                } else {
+                  railway_expr_off(cond)
+                }
               }
+              let else_end = string_lit_end(else_e)
+              if else_end > 0 {
+                check_assignable_set_end(else_end)
+              } else {
+                check_assignable_set_end(string_lit_end(then_e))
+              }
+              (check_assignable(rtt, ret, s3, errors, "if branches have incompatible types", branch_off), tt)
             }
-            let else_end = string_lit_end(else_e)
-            if else_end > 0 {
-              check_assignable_set_end(else_end)
-            } else {
-              check_assignable_set_end(string_lit_end(then_e))
-            }
-            (check_assignable(rtt, ret, s3, errors, "if branches have incompatible types", branch_off), tt)
           }
         }
       }
@@ -10308,6 +10308,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           ()
         }
         let mut result_ty = CtUnknown
+        let mut result_anchored = false
         // Whether to cross-check arm types. Enabled only when the first arm's
         // type resolves to a SIMPLE scalar (Int/Double/Bool/String/Char) — that
         // covers the real bug (`match x { 0 => 1, _ => "s" }`) while skipping
@@ -10352,7 +10353,12 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           let (arm_ty, ns, nc) = check_expr_capture(body, arm_env, defs, si, ci, errors, tytab, capture, lane)
           si = ns
           ci = nc
-          if ai == 0 {
+          // #3012 / #2985 review (Codex P2): the match's type is anchored on
+          // the first arm that YIELDS a value. A first arm whose every tail
+          // is a `return` leaves the function (the #635 tolerance below only
+          // covered such an arm when it came later), so it is skipped here.
+          if !result_anchored && !arm_tail_all_return(body) {
+            result_anchored = true
             result_ty = arm_ty
             let r0 = subst_apply(si, arm_ty)
             check_arms = match r0 {
@@ -10363,6 +10369,8 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               CtChar => true,
               _ => false
             }
+          } else if !result_anchored {
+            ()
           } else {
             if check_arms {
               // Tolerate a `CtUnit` arm (statement-position match); rely on
@@ -10372,7 +10380,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               // `return` arm yields no value to the match, so it must not force
               // the match's result type (it would clash `T` vs `Option[T]`).
               let r2 = subst_apply(si, arm_ty)
-              si = if arm_body_diverges(body) {
+              si = if arm_tail_all_return(body) {
                 si
               } else {
                 match r2 {

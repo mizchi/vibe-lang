@@ -1,0 +1,68 @@
+// #3012 / #2985 review (Codex P2): a branch whose every tail is a `return`
+// leaves the function and yields nothing to the `if` / `match` around it, so
+// the OTHER branch's type is the expression's. Before, the return's operand
+// type was taken as the branch type: `let s: String = if flag { return 42 }
+// else { "abcd" }` was refused as `expected String, got Int`, and a `match`
+// whose FIRST arm returned anchored the match's type on that operand.
+
+fn pick(flag: Bool) -> Int {
+  let s: String = if flag {
+    return 42
+  } else {
+    "abcd"
+  }
+  String::length(s)
+}
+
+fn pick_else(flag: Bool) -> Int {
+  let s: String = if flag {
+    "ab"
+  } else {
+    return 7
+  }
+  String::length(s)
+}
+
+fn pick_match(k: Int) -> Int {
+  let s: String = match k {
+    0 => return 42
+    1 => "ab"
+    _ => "abcd"
+  }
+  String::length(s)
+}
+
+fn pick_nested(flag: Bool) -> Int {
+  let s: String = if flag {
+    let why = "early"
+    if String::length(why) > 3 {
+      return 42
+    } else {
+      return 43
+    }
+  } else {
+    "abcd"
+  }
+  String::length(s)
+}
+
+test "a returning then-branch yields nothing; the else-branch types the if" {
+  assert_eq(pick(false), 4)
+  assert_eq(pick(true), 42)
+}
+
+test "a returning else-branch yields nothing; the then-branch types the if" {
+  assert_eq(pick_else(true), 2)
+  assert_eq(pick_else(false), 7)
+}
+
+test "a returning first match arm does not anchor the match's type" {
+  assert_eq(pick_match(0), 42)
+  assert_eq(pick_match(1), 2)
+  assert_eq(pick_match(2), 4)
+}
+
+test "a branch that returns on every nested tail yields nothing" {
+  assert_eq(pick_nested(false), 4)
+  assert_eq(pick_nested(true), 42)
+}
