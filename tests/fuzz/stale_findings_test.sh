@@ -238,6 +238,48 @@ else
 fi
 rm -f "$inj_drop"
 
+say "=== red: the workspace guard is CONSULTED (fault-injected) ==="
+# Same paired shape as the ledger case, for the other unchecked step: if the
+# workspace mkdir fails, a campaign could announce itself and finish with
+# `0 findings` and no findings directory to read.
+inject_ws() { # <name> <extra-sed> -> path
+  local name="$1"
+  local extra="$2"
+  local dst="tests/fuzz/.probe_ws${name}$$.sh"
+  cp tests/fuzz/run_fuzz.sh "$dst"
+  # Make the recreation a no-op, as a full disk would.
+  sed -i.bak 's@^mkdir -p "\$WORK" "\$FIND" 2>/dev/null .*$@:@' "$dst" && rm -f "$dst.bak"
+  if [ -n "$extra" ]; then sed -i.bak "$extra" "$dst" && rm -f "$dst.bak"; fi
+  printf '%s\n' "$dst"
+}
+
+ws_keep="$(inject_ws keep "")"
+if grep -q '\[ ! -d "\$WORK" \] || \[ ! -d "\$FIND" \]' "$ws_keep"; then
+  say "  ok   fault injected, workspace guard still present"
+  out="$(bash "$ws_keep" --seeds 1..1 --cli "$STAGE2" 2>&1)"; wrc=$?
+  case "$out" in
+    *"could not create the workspace"*) say "  ok   with the guard, a failed mkdir REFUSES" ;;
+    *) bad "with the guard present the run did not refuse: $(printf '%s' "$out" | tail -1)" ;;
+  esac
+  [ "$wrc" -ne 0 ] && say "  ok   nonzero exit ($wrc)" || bad "exited 0 with no findings directory"
+else
+  bad "the workspace injection did not apply -- this case would prove nothing"
+fi
+rm -f "$ws_keep"
+
+ws_drop="$(inject_ws drop 's@^if \[ ! -d "\$WORK" \] || \[ ! -d "\$FIND" \]; then@if false; then@')"
+if grep -q 'if false; then' "$ws_drop"; then
+  say "  ok   control staged: same fault, guard disabled"
+  out="$(bash "$ws_drop" --seeds 1..1 --cli "$STAGE2" 2>&1)"
+  case "$out" in
+    *"[fuzz] mode="*) say "  ok   without the guard it announces a campaign -- the silently-wrong outcome" ;;
+    *) bad "control did not announce a campaign: $(printf '%s' "$out" | tail -1)" ;;
+  esac
+else
+  bad "the control mutation did not apply -- the case above is unattributed"
+fi
+rm -f "$ws_drop"
+
 say "=== red: the PRE-FIX harness runs a campaign and leaves it behind ==="
 # Reconstruct the old behaviour so the case proves the fix was load-bearing
 # rather than merely present.

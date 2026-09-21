@@ -158,7 +158,17 @@ if [ -e "$FIND" ]; then
   echo "[fuzz] remove it by hand and re-run; refusing to measure with an unreset findings dir" >&2
   exit 2
 fi
-mkdir -p "$WORK" "$FIND"
+# Recreating the workspace is checked like every other step here: without
+# `-e`, a failed `mkdir` (no space, no inodes, a permission change between the
+# removal and now) would let the campaign announce itself and finish with
+# `0 findings` and no findings directory at all -- nothing to read, and no
+# error (#2955 review).
+mkdir -p "$WORK" "$FIND" 2>/dev/null || true
+if [ ! -d "$WORK" ] || [ ! -d "$FIND" ]; then
+  echo "[fuzz] could not create the workspace ($WORK, $FIND)" >&2
+  echo "[fuzz] refusing to measure without somewhere to record findings" >&2
+  exit 2
+fi
 
 echo "[fuzz] mode=$MODE gen=${GENMODE:-liveness} seeds=$A..$B cli=$CLI jobs=$JOBS"
 
@@ -178,8 +188,22 @@ source "$ROOT/tests/fuzz/lib_oracle.sh"
 record() { # seed class dir note
   local seed="$1" class="$2" dir="$3" note="$4"
   local dst="$FIND/seed_${seed}_${class}"
-  mkdir -p "$dst"
-  cp -f "$dir"/*.vibe "$dst"/ 2>/dev/null
+  # A finding whose inputs silently failed to save is worse than a loud one:
+  # the count stays right while the repro is gone, and `findings/` is exactly
+  # what a person opens to reduce it. So both the directory and the source
+  # copy are checked, and a failure is announced AND recorded in the artifact
+  # itself rather than inferred later from an empty directory (#2955 review).
+  if ! mkdir -p "$dst" 2>/dev/null || [ ! -d "$dst" ]; then
+    echo "[fuzz] seed $seed: $class ($note) -- COULD NOT CREATE $dst; inputs NOT saved" >&2
+    echo "$seed $class $note [inputs-not-saved]" >> "$SEEDS_FILE"
+    echo "[fuzz] seed $seed: $class ($note)"
+    return
+  fi
+  if ! cp -f "$dir"/*.vibe "$dst"/ 2>/dev/null; then
+    echo "[fuzz] seed $seed: $class -- inputs could NOT be copied into $dst" >&2
+    printf 'inputs could not be copied from %s -- this finding has no repro\n' "$dir" \
+      > "$dst/INPUTS_MISSING.txt" 2>/dev/null || true
+  fi
   cp -f "$dir"/*.log "$dir"/*.diag "$dst"/ 2>/dev/null || true
   echo "$note" > "$dst/note.txt"
   echo "$seed $class $note" >> "$SEEDS_FILE"
