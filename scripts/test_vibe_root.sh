@@ -167,22 +167,33 @@ pass "vibe run --alloc-site <src> rewrites the source; a trailing --jobs is refu
 # names a file that does not exist yet, which that branch skips by design
 # (Codex on #2956, P2). Both spellings, because they failed for different
 # reasons.
+# TWO matching files, and that is not padding. The memory guard runs only
+# inside `if Array::length(hits) > 0` and needs `max_typed_cost > 0`, which is
+# set only AFTER a matching file is typed -- so with one match it cannot fire
+# at all, and the resume assertion below would fail unconditionally rather than
+# testing anything (Codex on #2956, P1). The second match is where it fires.
 printf 'export fn gtarget(xs: Array[String]) -> Int {\n  Array::length(xs)\n}\n' > "$app/sub/greppable.vibe"
-printf 'greppable.vibe\n' > "$app/sub/mylist.txt"
+printf 'export fn gtarget2(ys: Array[String]) -> Int {\n  Array::length(ys)\n}\n' > "$app/sub/greppable2.vibe"
+# LIST ENTRIES RESOLVE AGAINST THE PROJECT ROOT, exactly as `--list-files`
+# prints them -- the output of one flag is the input of the other, and that
+# round trip is the whole point of the pair. Only the list FILE's own path is
+# rewritten from where the user stood.
+printf 'sub/greppable.vibe\nsub/greppable2.vibe\n' > "$app/sub/mylist.txt"
 got="$(cd "$app/sub" && vibe grep --file-list=./mylist.txt --pattern 'Array::length($(x:exp))' . 2>&1)" \
   || fail "vibe grep --file-list=<rel> from a subdirectory failed: $got"
 case "$got" in *"greppable.vibe:2:3"*) ;; *) fail "vibe grep --file-list=<rel> from sub/: expected a match in greppable.vibe, got: $got" ;; esac
 [ ! -e "$app/mylist.txt" ] || fail "vibe grep --file-list=<rel> looked for the list at the ROOT"
 # The split spelling of a file that does NOT exist yet: a 1 MB budget forces
-# the sweep to hand off, and the index must land where the user stood.
+# the sweep to hand off at the SECOND match, and the index must land where the
+# user stood.
 ( cd "$app/sub" && VIBE_GREP_MEMORY_BUDGET_MB=1 vibe grep --resume-out ./r.idx \
     --pattern 'Array::length($(x:exp))' --where '$x : Array[String]' . >/dev/null 2>&1 ) || true
 if [ -e "$app/r.idx" ]; then
   fail "vibe grep --resume-out <rel> wrote the index to the ROOT ($app/r.idx), not to sub/"
 fi
 [ -e "$app/sub/r.idx" ] || fail "vibe grep --resume-out <rel> wrote no index at all under sub/.
-A 1 MB budget must force a hand-off, or this case proves nothing about where
-the file lands. Raise the corpus or lower the budget until it does."
+A 1 MB budget must force a hand-off at the second matching file, or this case
+proves nothing about where the file lands."
 pass "vibe grep --file-list=/--resume-out resolve against the invoking directory"
 
 # --- 5. vibe clean ----------------------------------------------------------

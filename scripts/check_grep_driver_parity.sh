@@ -233,7 +233,7 @@ echo "grep-driver-parity: runtime/vibe answers at a budget the no-loop control r
 # listing per file instead.
 listing_out="$WORK/listing"
 status=0
-env VIBE_CLI_WASM="$STAGE2" VIBE_RUNNER="$RUNNER" VIBE_BUILD_CACHE_DIR="$(mktemp -d)" \
+env VIBE_CLI_WASM="$STAGE2" VIBE_RUNNER="$RUNNER" VIBE_BUILD_CACHE_DIR="$WORK/cache_listing" \
     VIBE_GREP_CHUNK_FILES=1 \
     "$LAUNCHER" grep --list-files --pattern "$PATTERN" "$CORPUS" \
     >"$listing_out" 2>"$listing_out.err" || status=$?
@@ -259,7 +259,7 @@ head -2 "$listing_out" | tail -1 > "$one_list"
 one_file="$(cat "$one_list")"
 [ -n "$one_file" ] || fail "could not take a single file from the listing"
 status=0
-env VIBE_CLI_WASM="$STAGE2" VIBE_RUNNER="$RUNNER" VIBE_BUILD_CACHE_DIR="$(mktemp -d)" \
+env VIBE_CLI_WASM="$STAGE2" VIBE_RUNNER="$RUNNER" VIBE_BUILD_CACHE_DIR="$WORK/cache_filelist" \
     "$LAUNCHER" grep --file-list "$one_list" --pattern "$PATTERN" "$CORPUS" \
     >"$WORK/one.out" 2>"$WORK/one.err" || status=$?
 [ "$status" = "0" ] || fail "runtime/vibe grep --file-list failed (exit $status)
