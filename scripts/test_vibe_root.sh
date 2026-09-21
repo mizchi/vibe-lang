@@ -194,7 +194,28 @@ fi
 [ -e "$app/sub/r.idx" ] || fail "vibe grep --resume-out <rel> wrote no index at all under sub/.
 A 1 MB budget must force a hand-off at the second matching file, or this case
 proves nothing about where the file lands."
-pass "vibe grep --file-list=/--resume-out resolve against the invoking directory"
+# A LIST ENTRY THAT DOES NOT EXIST MUST SAY SO. Unguarded this was a bare wasm
+# trap -- `viberun: error while executing at wasm backtrace: <wasm function
+# 6411>`, no file, no reason -- which is what the CLI-install smoke reported
+# when the entries in this very test resolved against the wrong root. A
+# mistyped list is the most likely way to meet this flag wrongly, so it gets
+# the message that names the rule.
+printf 'no_such_file_here.vibe\n' > "$app/sub/badlist.txt"
+got="$(cd "$app/sub" && vibe grep --file-list=./badlist.txt --pattern 'Array::length($(x:exp))' . 2>&1)" \
+  && fail "vibe grep with a missing file-list entry must fail, got exit 0: $got"
+case "$got" in
+  *"file-list entry not found"*) ;;
+  *) fail "a missing file-list entry must name itself and the rule, got: $got" ;;
+esac
+case "$got" in
+  *"no_such_file_here.vibe"*) ;;
+  *) fail "a missing file-list entry must name the FILE, got: $got" ;;
+esac
+case "$got" in
+  *"wasm backtrace"*) fail "a missing file-list entry still trapped: $got" ;;
+  *) ;;
+esac
+pass "vibe grep --file-list=/--resume-out resolve against the invoking directory; a missing entry is named"
 
 # --- 5. vibe clean ----------------------------------------------------------
 mkdir -p "$app/.vibe/store/@x/y"

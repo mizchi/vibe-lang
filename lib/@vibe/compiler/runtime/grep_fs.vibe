@@ -469,6 +469,20 @@ export fn grep_scan_files_report(files: Array[String], pattern: String, wheres: 
   let mut i = 0
   while i < Array::length(files) {
     let path = Array::get(files, i)
+    // A file-list entry that does not exist is a MISTAKE IN THE LIST, and it
+    // has to say so. Unguarded, `Fs::read_file` on a missing path leaves the
+    // guest with an unhandled wasm trap -- `viberun: error while executing at
+    // wasm backtrace: 0x2b39c8 <wasm function 6411>` and not one word about
+    // which file or why, which is the exact shape #2914 exists to remove.
+    // Measured on the CLI-install smoke, from a list holding one bad entry.
+    //
+    // The walk cannot produce this: it lists what it found. Only `--file-list`
+    // can, so the message names the rule a hand-written list gets wrong.
+    if !Fs::exists(path) {
+      throw(String::concat("grep: file-list entry not found: `", String::concat(path, "` -- entries resolve against the PROJECT ROOT, exactly as `--list-files` prints them; the list FILE's own path is relative to where you stand")))
+    } else {
+      ()
+    }
     let source = Fs::read_file(path)
     // A file that does not parse is not a match and not a failure: a repo
     // sweep must not stop at the first work-in-progress file. Report the
