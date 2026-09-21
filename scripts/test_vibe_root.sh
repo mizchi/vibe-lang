@@ -244,15 +244,30 @@ case "$got" in *"vibe-grep-file-list-v1"*) fail "the banner reached the sweep as
 # and the reader puts it back -- the same answer #2723 gave for `vibe symbols`
 # NAME fields, after the same defect: one record split across two lines
 # (Codex on #2956, P2).
+#
+# `$'\n'`, NOT `$(printf '\n')`. Command substitution STRIPS trailing
+# newlines, so the second spells the filename `weird.vibe` -- no newline in it
+# at all. Written that way this case passed against a compiler with no
+# escaping whatsoever, which is how it was caught: the red test did not go
+# red. A vacuous case in the very commit about records surviving their
+# framing.
 nl_dir="$app/sub/nl"
+nl_name="$nl_dir/we"$'\n'"ird.vibe"
 mkdir -p "$nl_dir"
-printf 'export fn nlfn(zs: Array[String]) -> Int {\n  Array::length(zs)\n}\n' > "$nl_dir/we$(printf '\n')ird.vibe" 2>/dev/null || true
-if [ -e "$nl_dir/we$(printf '\n')ird.vibe" ]; then
+printf 'export fn nlfn(zs: Array[String]) -> Int {\n  Array::length(zs)\n}\n' > "$nl_name" 2>/dev/null || true
+# Assert the NAME really holds a newline before trusting anything below: on a
+# filesystem that silently rewrote it, every assertion would hold for the
+# wrong reason.
+if [ -e "$nl_name" ] && [ "$(printf '%s' "$nl_name" | wc -l | tr -d ' ')" = "1" ]; then
   ( cd "$app/sub" && vibe grep --list-files --pattern 'Array::length($(x:exp))' ./nl > ./nl_list.txt 2>&1 ) \
     || fail "--list-files failed on a directory holding a newline filename: $(cat "$app/sub/nl_list.txt")"
   [ "$(grep -c . "$app/sub/nl_list.txt")" = "2" ] \
     || fail "a newline filename must stay ONE line (banner + 1 path = 2 lines), got $(grep -c . "$app/sub/nl_list.txt"):
 $(cat "$app/sub/nl_list.txt")"
+  grep -q '\\n' "$app/sub/nl_list.txt" \
+    || fail "the listing did not ESCAPE the newline, so this case cannot tell
+an escaping compiler from one without it:
+$(cat -A "$app/sub/nl_list.txt")"
   got="$(cd "$app/sub" && vibe grep --file-list=./nl_list.txt --pattern 'Array::length($(x:exp))' ./nl 2>&1)" \
     || fail "the round trip failed on a newline filename: $got"
   case "$got" in *"ird.vibe:2:3"*) ;; *) fail "no match from the newline-named file: $got" ;; esac
