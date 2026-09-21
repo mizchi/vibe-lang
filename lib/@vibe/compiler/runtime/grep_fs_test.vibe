@@ -36,3 +36,49 @@ test "grep_scan_fs_report: unparseable file is skipped with a warning, not an ab
   inspect(hits, String::concat(good, ":1:9: Array::length([1])\t$x=[1]\n"))
   inspect(warn, String::concat("warning: grep: skipped `", String::concat(bad, "` because it could not be parsed\n")))
 }
+
+/// #2914: each file in a sweep is answered from its OWN types, with the walk
+/// state (env cache, ripple db, dep-source cache) SHARED across the sweep.
+///
+/// Both entries import the SAME dependency and bind the same name `v` to a
+/// DIFFERENT type through it, so the sweep hits the reuse path the shared
+/// state opens: `a`'s walk validates `dep.vibe`, and `b`'s walk reuses it
+/// instead of re-checking. Each filter must still name exactly its own entry.
+///
+/// This pins a property rather than killing a live bug. Isolation here is
+/// structural: every shared row is keyed by dependency PATH, and a module's
+/// environment is a function of the module and its dependencies, never of the
+/// entry that reached it.
+///
+/// Measured red, so the test is known to be able to fail: typing every file
+/// after the first against the FIRST file's entry path turns this test red.
+/// It goes red on the refusal rather than on a wrong type -- `grep: refusing
+/// to type this file -- its ingested source is not the file plus a prefix` --
+/// so a leak of that shape already fails closed on its own. The cheaper
+/// mutations do NOT work and should not be mistaken for evidence: storing
+/// every source under the entry path is a NO-OP when the entries have no
+/// imports (the group holds one row), and `entry_source` cannot leak because
+/// its fallback is the file's own `raw_source`. That is why the entries here
+/// carry a shared dependency -- without one the test cannot reach the reuse
+/// path the shared walk state opens, where `a`'s walk validates `dep.vibe`
+/// and `b`'s walk reuses it.
+test "grep_scan_fs_report: shared walk state still answers each file from its own types (#2914)" {
+  let dir = "_build/vibe_grep_shared_db_isolation"
+  let dep = String::concat(dir, "/dep.vibe")
+  let a = String::concat(dir, "/a_int.vibe")
+  let b = String::concat(dir, "/b_string.vibe")
+  Fs::mkdir_p(dir)
+  Fs::write_file(dep, "export fn wrap_int(n: Int) -> Int {\n  n\n}\n\nexport fn wrap_str(s: String) -> String {\n  s\n}\n")
+  Fs::write_file(a, "import ./dep.vibe {\n  wrap_int\n}\n\nfn a() -> String {\n  let v = wrap_int(1)\n  __to_string(v)\n}\n")
+  Fs::write_file(b, "import ./dep.vibe {\n  wrap_str\n}\n\nfn b() -> String {\n  let v = wrap_str(\"s\")\n  __to_string(v)\n}\n")
+  let int_where = no_strings()
+  Array::push(int_where, "$x : Int")
+  let (int_hits, int_warn) = grep_scan_fs_report(dir, "__to_string($(x:exp))", int_where, no_strings(), "", false)
+  inspect(int_hits, String::concat(a, ":7:3: __to_string(v)\t$x=v\n"))
+  inspect(int_warn, "")
+  let str_where = no_strings()
+  Array::push(str_where, "$x : String")
+  let (str_hits, str_warn) = grep_scan_fs_report(dir, "__to_string($(x:exp))", str_where, no_strings(), "", false)
+  inspect(str_hits, String::concat(b, ":7:3: __to_string(v)\t$x=v\n"))
+  inspect(str_warn, "")
+}
