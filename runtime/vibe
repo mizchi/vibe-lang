@@ -1279,11 +1279,19 @@ grep_sweep() {
     # `grep` with SIGPIPE and the run exits 141 with no output and no message
     # -- byte-for-byte what a clean no-match sweep looks like.
     if [ -n "$chunk_cap" ]; then
-      sed -n "$((done_n + 1)),$((done_n + chunk_cap))p" "$blanks" > "$chunkf"
+      sed -n "$((done_n + 1)),$((done_n + chunk_cap))p" "$blanks" > "$chunkf.paths"
     else
-      sed -n "$((done_n + 1)),\$p" "$blanks" > "$chunkf"
+      sed -n "$((done_n + 1)),\$p" "$blanks" > "$chunkf.paths"
     fi
-    [ -s "$chunkf" ] || break
+    [ -s "$chunkf.paths" ] || break
+    # THE CHUNK KEEPS THE BANNER. `grep_read_file_list` decodes escapes only
+    # when the banner says the file is in the encoded format -- so a chunk
+    # built by stripping it is read literally, and a path the listing escaped
+    # (a backslash or a newline in a filename) names a file that does not
+    # exist (Codex on #2956, P2). The paths are cut into their own file so the
+    # slice count below stays a count of PATHS, not of lines.
+    printf 'vibe-grep-file-list-v1\n' > "$chunkf"
+    cat "$chunkf.paths" >> "$chunkf"
     rm -f "$resumef"
     status=0
     invoke_cli grep --file-list "$chunkf" --resume-out "$resumef" "$@" > "$chunkout" || status=$?
@@ -1307,7 +1315,7 @@ grep_sweep() {
       fi
     fi
     local slice advance
-    slice="$(grep -c . "$chunkf" 2>/dev/null || true)"
+    slice="$(grep -c . "$chunkf.paths" 2>/dev/null || true)"
     [ -n "$slice" ] || slice=0
     if [ -s "$resumef" ]; then
       # The sweep stopped on its own budget and says where: that index is how

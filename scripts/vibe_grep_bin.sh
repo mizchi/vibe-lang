@@ -151,7 +151,7 @@ run_grep() {
   listf="$(mktemp -t vibe-grep-list-XXXXXX)"
   chunkf="$(mktemp -t vibe-grep-chunk-XXXXXX)"
   jsonbody="$(mktemp -t vibe-grep-json-XXXXXX)"
-  trap 'rm -f "$out" "$out.diag" "$out.warn" "$err" "$listf" "$listf.nonblank" "$chunkf" "$jsonbody" "$out.resume"' RETURN
+  trap 'rm -f "$out" "$out.diag" "$out.warn" "$err" "$listf" "$listf.nonblank" "$chunkf" "$chunkf.paths" "$jsonbody" "$out.resume"' RETURN
 
   # #2914: a single wasm32 process tops out at 4 GiB and the sweep's cost
   # ACCUMULATES across files, so a tree-wide typed sweep cannot finish in one
@@ -323,11 +323,19 @@ run_grep() {
       # of `vibe grep`. `VIBE_GREP_CHUNK_FILES` still caps the slice, because
       # the chunked-sweep gate needs to force boundaries at chosen places.
       if [ -n "$chunk_cap" ]; then
-        sed -n "$((done_n + 1)),$((done_n + chunk_cap))p" "$blanks" > "$chunkf"
+        sed -n "$((done_n + 1)),$((done_n + chunk_cap))p" "$blanks" > "$chunkf.paths"
       else
-        sed -n "$((done_n + 1)),$ p" "$blanks" > "$chunkf"
+        sed -n "$((done_n + 1)),$ p" "$blanks" > "$chunkf.paths"
       fi
-      [ -s "$chunkf" ] || break
+      [ -s "$chunkf.paths" ] || break
+      # THE CHUNK KEEPS THE BANNER. `grep_read_file_list` decodes escapes only
+      # when the banner says the file is in the encoded format -- so a chunk
+      # built by stripping it is read literally, and a path the listing escaped
+      # (a backslash or a newline in a filename) names a file that does not
+      # exist (Codex on #2956, P2). The paths are cut into their own file so the
+      # slice count below stays a count of PATHS, not of lines.
+      printf 'vibe-grep-file-list-v1\n' > "$chunkf"
+      cat "$chunkf.paths" >> "$chunkf"
       rm -f "$out.resume"
       invoke_cli "$g_path" VIBE_GREP=1 VIBE_GREP_FILE_LIST="$chunkf" VIBE_GREP_RESUME=1
       if [ -s "$out.warn" ]; then
@@ -344,7 +352,7 @@ run_grep() {
         fi
       fi
       local slice advance
-      slice="$(grep -c . "$chunkf" || true)"
+      slice="$(grep -c . "$chunkf.paths" || true)"
       if [ -s "$out.resume" ]; then
         # The sweep stopped on its own budget and says where. That index is
         # how many of THIS slice it swept.

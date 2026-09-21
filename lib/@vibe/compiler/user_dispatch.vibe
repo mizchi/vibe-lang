@@ -67,6 +67,7 @@ import @vibe/compiler/runtime {
   doc_at_source,
   escape_spans,
   escape_spans_strict,
+  grep_collect_files,
   grep_file_list_banner,
   grep_list_files,
   grep_read_file_list,
@@ -2256,9 +2257,15 @@ fn selfhost_cli_user_grep_args(args: Array[String]) -> Int with Env + Exception 
   }
   if pattern == "" {
     throw("vibe grep: --pattern needs an argument")
-  } else if resume_out != "" && Array::length(paths) > 1 {
-    // The resume index is an offset into ONE file list, so with several roots
-    // there is no list for it to index. Left unrefused, a hand-off in an early
+  } else if resume_out != "" && file_list == "" && Array::length(paths) > 1 {
+    // `file_list == ""` is half the condition and the important half: WITH an
+    // explicit list the index is well defined against it, and the launcher's
+    // own chunk calls pass one alongside every original root -- so refusing on
+    // the root count alone rejected every chunk of a multi-root typed sweep
+    // before it scanned anything (Codex on #2956, P2, against the refusal I
+    // added one commit earlier). Without a list the roots are walked
+    // separately, and there is no single sequence for an index to mean
+    // anything against. Left unrefused, a hand-off in an early
     // root returned partial output and wrote its index, the loop moved on, and
     // THAT root's sweep deleted the index as stale -- exit 0, the first root
     // partly searched, nothing left saying so (Codex on #2956, P1; the delete
@@ -2324,7 +2331,7 @@ fn selfhost_cli_user_grep_args(args: Array[String]) -> Int with Env + Exception 
       let sweep_files = if chunk_list != "" {
         grep_read_file_list(chunk_list)
       } else {
-        grep_split_file_list(grep_list_files(sweep_root))
+        grep_collect_files(sweep_root)
       }
       // Which files this sweep was asked about BY NAME, so an unparseable one
       // throws rather than warning (#2940). When a chunk spans several roots
