@@ -1,0 +1,43 @@
+// #2985 review: what a kinded handle's strictness does NOT reach.
+//
+// An ERASED handle nested inside a kinded one is a new catch-all boundary:
+// everything its body raises ends in it, so the outer kind is not imposed
+// on it. A closure literal passed straight to a callee is discharged by
+// whoever receives it, so its throws are not counted against the enclosing
+// kinded arm either (a closure created and called in the body IS counted --
+// fixtures/typecheck/exception_kinded_handle_local_closure_reject.vibe).
+
+fn boom() -> Int with Exception[String] {
+  throw("abc")
+}
+
+fn run_child(f: () -> Int with Exception) -> Int {
+  handle {
+    f()
+  } with { Exception::Throw(_e) => -1 }
+}
+
+test "an erased handle inside a kinded one is its own boundary" {
+  let r = handle {
+    let inner = handle {
+      throw(7)
+    } with { Exception::Throw(_e) => 100 }
+    inner + boom()
+  } with { Exception[String]::Throw(s) => String::length(s) }
+  assert_eq(r, 3)
+}
+
+test "a closure literal handed to a callee is discharged by the callee" {
+  let r = handle {
+    run_child(() -> {
+      throw(7)
+    }) + boom()
+  } with { Exception[String]::Throw(s) => String::length(s) }
+  assert_eq(r, 3)
+  let ok = handle {
+    run_child(() -> {
+      throw(7)
+    }) + 10
+  } with { Exception[String]::Throw(s) => String::length(s) }
+  assert_eq(ok, 9)
+}

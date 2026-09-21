@@ -90,6 +90,9 @@ export enum EffectError {
   // is read at the wrong type. Fields: enclosing function, the handler's
   // kinded labels, the offending required labels, offset.
   EEKindedHandleCatchesAll(String, String, String, Int);
+  // #2985 review (Codex P0): a handle with more than one exception arm.
+  // Fields: enclosing function, the exception labels of its arms.
+  EEMultipleExceptionArms(String, String);
   // #1683: a source effect with no host/runtime owner reached a program entry.
   // Fields: entry name, sorted offending row, sorted bare handler names, offset.
   EEUndischargedEntryEffect(String, String, String, Int);
@@ -179,6 +182,15 @@ export fn effect_error_to_string(err: EffectError) -> String {
     // #639: expected-vs-actual effect rows as a set difference, then ONE
     // deterministic fix-it hint line targeting the enclosing declaration
     // (for a call-site leak that is the CALLER, not the callee).
+    EEMultipleExceptionArms(fname, arms) => {
+      let block = entry_block_display_name(fname)
+      let where_ = if String::length(block) > 0 {
+        block
+      } else {
+        String::concat("'", String::concat(fname, "'"))
+      }
+      String::concat("a handle may have only ONE exception arm, in ", String::concat(where_, String::concat(" it has { ", String::concat(arms, " }: the exception channel carries no kind and only the first exception arm is compiled, so the others can never run\nhint: keep one arm -- an erased `Exception::Throw(m)` arm catches every kind, and the payload can be matched inside it -- or nest one handle inside another"))))
+    },
     EEKindedHandleCatchesAll(fname, handler, offending, off) => {
       let block = entry_block_display_name(fname)
       let where_ = if String::length(block) > 0 {
@@ -2313,6 +2325,44 @@ fn kinded_handle_marker() -> String {
 /// exception exemption of the direct and transitive disciplines is off.
 fn under_kinded_handle(labels: Array[String]) -> Bool {
   effect_row_has_label(Some(labels), kinded_handle_marker())
+}
+
+/// The exception EFFECT labels (`Exception`, `Exception[K]`; not the `::Throw`
+/// operation spellings) among a handle's discharged effect names.
+fn exception_effect_labels(labels: Array[String]) -> Array[String] {
+  let out = no_str_labels()
+  let mut i = 0
+  while i < Array::length(labels) {
+    let l = Array::get(labels, i)
+    if is_exception_label(l) && String::index_of(l, "::") < 0 {
+      Array::push(out, l)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// The declared row a call ARGUMENT is walked under. A closure literal
+/// passed straight to a callee is discharged by whoever receives it
+/// (`TaskGroup::spawn`'s parameter row `() -> T with Exception + e`; the
+/// runtime turns a child's throw into a `TaskError`), and #761 charges its
+/// throws to the enclosing row only as an approximation -- so under a
+/// kinded handle the literal is checked the ordinary gradual way (marker
+/// dropped, erased exception label restored). Anything else keeps the
+/// enclosing row as is.
+fn closure_arg_declared(arg: Expr, declared: Array[String]) -> Array[String] {
+  match arg {
+    EFn(_, _, _, _, _, _) => if under_kinded_handle(declared) {
+      labels_union(labels_without_exception_family_marker(declared), [
+        "Exception"
+      ])
+    } else {
+      declared
+    },
+    _ => declared
+  }
 }
 
 /// The kinded exception labels (`Exception[K]`, kind non-empty) among a
@@ -4528,7 +4578,8 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
             Array::push(stack, (callee, declared, in_handle, ov_names, ov_effs, kinds))
             let mut ai = 0
             while ai < Array::length(args) {
-              Array::push(stack, (Array::get(args, ai), declared, in_handle, ov_names, ov_effs, kinds))
+              let arg = Array::get(args, ai)
+              Array::push(stack, (arg, closure_arg_declared(arg, declared), in_handle, ov_names, ov_effs, kinds))
               ai = ai + 1
             }
           },
@@ -4536,7 +4587,8 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
             Array::push(stack, (callee, declared, in_handle, ov_names, ov_effs, kinds))
             let mut bi = 0
             while bi < Array::length(args) {
-              Array::push(stack, (Array::get(args, bi), declared, in_handle, ov_names, ov_effs, kinds))
+              let arg = Array::get(args, bi)
+              Array::push(stack, (arg, closure_arg_declared(arg, declared), in_handle, ov_names, ov_effs, kinds))
               bi = bi + 1
             }
           }
@@ -4563,22 +4615,13 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
         // { (s) -> { perform E::Op(s) } }` charged the perform to `make`, whose
         // own row is (correctly) empty -- the row belongs to the RETURNED value.
         // Only literals get it; the enclosing body's own direct performs do not.
-        // #2985 review (Codex P0): the kinded-handle strictness stops at a
-        // closure LITERAL. Its throws are charged to the enclosing row only
-        // as an approximation (#761): who actually discharges them is
-        // whoever calls the closure -- `TaskGroup::spawn`'s parameter row
-        // `() -> T with Exception + e`, and the task runtime converts a
-        // child's throw into a `TaskError` -- so under a kinded handle the
-        // literal's body is checked the ordinary gradual way (the marker is
-        // dropped and the erased exception label restored).
-        let outer_declared = if under_kinded_handle(declared) {
-          labels_union(labels_without_exception_family_marker(declared), [
-            "Exception"
-          ])
-        } else {
-          declared
-        }
-        let body_declared = effect_row_inherit(effect_row_parse(effect), labels_union(outer_declared, current_ret_fn_rows()))
+        // #2985 review (Codex P0): a closure literal created and CALLED
+        // inside a kinded handle keeps the handle's strictness (its throws
+        // reach that arm: `let f = () -> Int { throw(7) }; f()` under
+        // `Exception[String]` read `7` as a String). Only a literal passed
+        // directly as a call ARGUMENT is relaxed, at the call site
+        // (closure_arg_declared): whoever receives it discharges its throws.
+        let body_declared = effect_row_inherit(effect_row_parse(effect), labels_union(declared, current_ret_fn_rows()))
         // #885: extend the callback-parameter overlay with THIS function's own
         // function-typed parameters (if any carry a declared effect), scoped to
         // its body. New entries are appended AHEAD of the inherited overlay so
@@ -4629,16 +4672,31 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
           ()
         }
         let discharged = collect_handle_effects(arms)
+        // #2985 review (Codex P0): the exception channel carries no kind and
+        // codegen compiles only the FIRST exception arm, so a second one can
+        // never run -- `Exception[String]::Throw` + `Exception[Int]::Throw`
+        // routed an Int throw into the String arm (`14`). One exception arm
+        // per handle.
+        let exc_arms = exception_effect_labels(discharged)
+        if Array::length(exc_arms) > 1 {
+          Array::push(errors, EEMultipleExceptionArms(fn_name, join_labels(exc_arms)))
+        } else {
+          ()
+        }
         // #2985 review (Codex P0): a kinded arm is a catch-all at run time,
         // so the body must not raise any exception this handle does not
         // name -- neither one the OUTER row would have let propagate (it
         // would be caught here instead, and read at the wrong type) nor one
         // of unresolved kind. The outer row's exception labels are dropped
-        // for the body and the marker makes the exception check exact.
+        // for the body and the marker makes the exception check exact. An
+        // ERASED arm is a new catch-all boundary: everything its body raises
+        // ends in it, so an enclosing kinded handle's marker is cleared.
         let body_declared = if Array::length(kinded_exception_labels(discharged)) > 0 {
           labels_union(labels_union(labels_without_exception_family(declared), discharged), [
             kinded_handle_marker()
           ])
+        } else if Array::length(exc_arms) > 0 {
+          labels_union(labels_without_exception_family_marker(declared), discharged)
         } else {
           labels_union(declared, discharged)
         }
