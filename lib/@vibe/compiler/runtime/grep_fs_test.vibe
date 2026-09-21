@@ -36,3 +36,29 @@ test "grep_scan_fs_report: unparseable file is skipped with a warning, not an ab
   inspect(hits, String::concat(good, ":1:9: Array::length([1])\t$x=[1]\n"))
   inspect(warn, String::concat("warning: grep: skipped `", String::concat(bad, "` because it could not be parsed\n")))
 }
+
+/// #2914: the sweep shares ONE ripple db across files now, and this is the
+/// hazard that kept it per-call -- the db holds sources, so the worry was that
+/// one file could be answered from another's context.
+///
+/// Both files bind the SAME name `v` to a DIFFERENT type, and both are swept
+/// together, so a shared db that leaked context would classify them alike.
+/// Each filter must name exactly its own file.
+test "grep_scan_fs_report: a shared ripple db still answers each file from its own types (#2914)" {
+  let dir = "_build/vibe_grep_shared_db_isolation"
+  let a = String::concat(dir, "/a_int.vibe")
+  let b = String::concat(dir, "/b_string.vibe")
+  Fs::mkdir_p(dir)
+  Fs::write_file(a, "fn a() -> String {\n  let v = 1\n  __to_string(v)\n}\n")
+  Fs::write_file(b, "fn b() -> String {\n  let v = \"s\"\n  __to_string(v)\n}\n")
+  let int_where = no_strings()
+  Array::push(int_where, "$x : Int")
+  let (int_hits, int_warn) = grep_scan_fs_report(dir, "__to_string($(x:exp))", int_where, no_strings(), "", false)
+  inspect(int_hits, String::concat(a, ":3:3: __to_string(v)\t$x=v\n"))
+  inspect(int_warn, "")
+  let str_where = no_strings()
+  Array::push(str_where, "$x : String")
+  let (str_hits, str_warn) = grep_scan_fs_report(dir, "__to_string($(x:exp))", str_where, no_strings(), "", false)
+  inspect(str_hits, String::concat(b, ":3:3: __to_string(v)\t$x=v\n"))
+  inspect(str_warn, "")
+}
