@@ -28,24 +28,39 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 HARNESS="${FUZZ_HARNESS:-tests/fuzz/run_fuzz.sh}"
+# The OTHER entry point to the same oracle. tests/fuzz/reduce.py starts one
+# per reduction candidate, and a reduction is where a finding gets its NAME,
+# so it needs the same rule -- it had the mtime default until #2959, and this
+# gate's green said nothing about it because the gate read one file.
+# Overridable for the red test; empty means "only the harness".
+CLASSIFY="${FUZZ_CLASSIFY-tests/fuzz/classify.sh}"
 fail() { echo "check-fuzz-compiler-identity: $*" >&2; exit 1; }
 
 [ -f "$HARNESS" ] || fail "no such harness: $HARNESS"
 
-# 1. lexical.
-grep -q 'resolve_stage2\.sh' "$HARNESS" \
-  || fail "$HARNESS does not source scripts/resolve_stage2.sh"
-grep -q 'resolve_stage2_strict' "$HARNESS" \
-  || fail "$HARNESS does not call resolve_stage2_strict -- a measurement must refuse, not degrade"
-# The lenient resolver would answer from the newest generation, then the seed,
-# announcing each step on a stderr the issue thread never sees.
-grep -q 'resolve_stage2 ' "$HARNESS" \
-  && fail "$HARNESS calls the LENIENT resolve_stage2; a measurement needs resolve_stage2_strict"
-# The shape the strict resolver replaced. Checked outside comments so the
-# explanation above may quote it (the gate must not be able to see itself, and
-# the harness must not be tripped by its own rationale).
-if sed 's/#.*$//' "$HARNESS" | grep -q 'ls -t.*generations'; then
-  fail "$HARNESS still picks a generation by MTIME (ls -t); that answers a different question than HEAD's build"
+# 1. lexical -- applied to EVERY entry point, not just the sweeping one.
+lexical() { # <path>
+  local f="$1"
+  grep -q 'resolve_stage2\.sh' "$f" \
+    || fail "$f does not source scripts/resolve_stage2.sh"
+  grep -q 'resolve_stage2_strict' "$f" \
+    || fail "$f does not call resolve_stage2_strict -- a measurement must refuse, not degrade"
+  # The lenient resolver would answer from the newest generation, then the
+  # seed, announcing each step on a stderr the issue thread never sees.
+  grep -q 'resolve_stage2 ' "$f" \
+    && fail "$f calls the LENIENT resolve_stage2; a measurement needs resolve_stage2_strict"
+  # The shape the strict resolver replaced. Checked outside comments so the
+  # explanation above may quote it (the gate must not be able to see itself,
+  # and the file must not be tripped by its own rationale).
+  if sed 's/#.*$//' "$f" | grep -q 'ls -t.*generations'; then
+    fail "$f still picks a generation by MTIME (ls -t); that answers a different question than HEAD's build"
+  fi
+}
+
+lexical "$HARNESS"
+if [ -n "$CLASSIFY" ]; then
+  [ -f "$CLASSIFY" ] || fail "no such classifier: $CLASSIFY"
+  lexical "$CLASSIFY"
 fi
 
 # 2. behavioural. Neither probe compiles anything: both must die AT resolution.
@@ -94,4 +109,23 @@ case "$out2" in
   *) fail "the refusal did not say what it declined to measure" ;;
 esac
 
-echo "check-fuzz-compiler-identity: ok ($HARNESS resolves strictly; both refusals fire)"
+# 3. behavioural, for the classifier: it takes a DIR rather than --seeds, so
+# it gets its own probe rather than sharing the harness's. Same property --
+# a named artifact that does not exist must stop it, not be shrugged off.
+if [ -n "$CLASSIFY" ]; then
+  cdir="$(mktemp -d)"
+  printf 'fn main {\n  println("x")\n}\n' > "$cdir/single.vibe"
+  cout="$(bash "$CLASSIFY" "$cdir" --cli /nonexistent/stage2.wasm 2>&1)"; crc=$?
+  rm -rf "$cdir"
+  [ "$crc" -ne 0 ] || fail "$CLASSIFY accepted a named artifact that does not exist (exit 0)"
+  case "$cout" in
+    *"does not exist"*) ;;
+    *) fail "$CLASSIFY did not refuse a missing named artifact: $(printf '%s' "$cout" | head -1)" ;;
+  esac
+  # A class would be a verdict from a compiler that was never loaded.
+  case "$cout" in
+    *COMPILE_*|*RUN_*|*MISMATCH*|*OK\ *) fail "$CLASSIFY printed a CLASS after failing to resolve a compiler: $(printf '%s' "$cout" | head -1)" ;;
+  esac
+fi
+
+echo "check-fuzz-compiler-identity: ok ($HARNESS and ${CLASSIFY:-<no classifier>} resolve strictly; refusals fire)"

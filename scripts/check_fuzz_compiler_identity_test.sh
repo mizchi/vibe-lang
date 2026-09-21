@@ -158,6 +158,70 @@ else
   bad "proceeds_nonzero: could not be staged, so the case did not run"
 fi
 
+say "=== red 8: the CLASSIFIER back to picking by mtime ==="
+# tests/fuzz/classify.sh is the other entry point to the same oracle --
+# reduce.py starts one per reduction candidate -- and it carried the mtime
+# default until #2959 while this gate read only run_fuzz.sh. A gate that
+# examines one of two doors is green about the door it did not open.
+stage_classifier() { # <name> <sed-script>
+  local name="$1"
+  local script="$2"
+  local dst="$PROBE_PREFIX$name.sh"
+  cp tests/fuzz/classify.sh "$dst"
+  sed -i.bak "$script" "$dst" && rm -f "$dst.bak"
+  if cmp -s tests/fuzz/classify.sh "$dst"; then
+    bad "$name: the mutation changed nothing -- it would pass while proving nothing"
+    return 1
+  fi
+  printf '%s\n' "$dst"
+}
+expect_fail_classifier() { # <name> <staged path>
+  local name="$1"
+  local path="$2"
+  local out rc
+  out="$(FUZZ_CLASSIFY="$path" bash "$GATE" 2>&1)"; rc=$?
+  if [ "$rc" -eq 0 ]; then
+    bad "$name: gate ACCEPTED the mutated classifier"
+    return
+  fi
+  case "$out" in
+    *check-fuzz-compiler-identity:*) say "  ok   $name: rejected -- $(printf '%s' "$out" | head -1)" ;;
+    *) bad "$name: nonzero exit but no gate message: $(printf '%s' "$out" | head -1)" ;;
+  esac
+}
+if p="$(stage_classifier cls_mtime 's|^CLI="$(resolve_stage2_strict classify "$CLI")" .*$|CLI="$(ls -t _build/selfhost/generations/*/stage2.wasm 2>/dev/null \| head -1)"|')"; then
+  expect_fail_classifier cls_mtime "$p"
+else
+  bad "cls_mtime: could not be staged, so the case did not run"
+fi
+
+say "=== red 8b: strict resolution present on the classifier, mtime pick beside it ==="
+# red 8 is caught by the "does not call resolve_stage2_strict" rule, because
+# its mutation removes that call. This one leaves the strict call in place and
+# adds the mtime pick next to it, so the MTIME rule is the only thing that can
+# reject it -- otherwise that rule is untested on this file.
+if p="$(stage_classifier cls_mtime_beside 's|^\. "\$ROOT/scripts/resolve_stage2.sh"$|. "$ROOT/scripts/resolve_stage2.sh"\nNEWEST="$(ls -t _build/selfhost/generations/*/stage2.wasm 2>/dev/null \| head -1)"|')"; then
+  expect_fail_classifier cls_mtime_beside "$p"
+else
+  bad "cls_mtime_beside: could not be staged, so the case did not run"
+fi
+
+say "=== red 9: the classifier resolves, but LENIENTLY ==="
+if p="$(stage_classifier cls_lenient 's|resolve_stage2_strict classify|resolve_stage2 classify|')"; then
+  expect_fail_classifier cls_lenient "$p"
+else
+  bad "cls_lenient: could not be staged, so the case did not run"
+fi
+
+say "=== red 10: the classifier PRINTS A CLASS after failing to resolve ==="
+# The behavioural half. A verdict from a compiler that was never loaded is
+# exactly what the reducer would paste into an issue.
+if p="$(stage_classifier cls_proceeds 's|^CLI="$(resolve_stage2_strict classify "$CLI")" .*$|CLI="$(resolve_stage2_strict classify "$CLI")" \|\| echo "MISMATCH bump=1 rc=2 gc=1 fs=1"|')"; then
+  expect_fail_classifier cls_proceeds "$p"
+else
+  bad "cls_proceeds: could not be staged, so the case did not run"
+fi
+
 say "=== red 5: the gate refuses a harness that is not there at all ==="
 out="$(FUZZ_HARNESS="${PROBE_PREFIX}absent.sh" bash "$GATE" 2>&1)"; rc=$?
 [ "$rc" -ne 0 ] && say "  ok   absent: rejected -- $(printf '%s' "$out" | head -1)" || bad "absent: gate ACCEPTED a missing harness"
