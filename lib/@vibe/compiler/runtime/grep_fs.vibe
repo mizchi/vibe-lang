@@ -198,9 +198,87 @@ fn grep_fs_fill_dep_envs(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep
   env_cache
 }
 
+/// The linear-memory ceiling this sweep must stay under, in bytes.
+///
+/// wasm32 tops out at 4 GiB (`0xFFFF0000`), and that -- not the runner's
+/// `MOONRUN_WT_MEMORY_MB` soft cap -- is the binding constraint: raising the
+/// soft cap from 8192 to 16384 was measured to change nothing (#2914, recorded
+/// in scripts/lint_review_regressions.sh).
+///
+/// `VIBE_GREP_MEMORY_BUDGET_MB` overrides it, which is also how the budget is
+/// tested: a corpus that sweeps clean at the default must refuse at a small
+/// budget, varying only the cap.
+fn grep_memory_ceiling_bytes() -> Int with Env + Exception {
+  let raw = Env::get("VIBE_GREP_MEMORY_BUDGET_MB")
+  if raw == "" {
+    4294901760
+  } else {
+    let mb = grep_parse_positive_int(raw)
+    if mb <= 0 {
+      throw("VIBE_GREP_MEMORY_BUDGET_MB must be a positive whole number of megabytes")
+    } else {
+      mb * 1048576
+    }
+  }
+}
+
+/// `text` as a positive Int, or 0 when it is not all ASCII digits. Rejecting
+/// rather than saturating: a budget read as a wrong number is a budget that
+/// silently does not hold.
+fn grep_parse_positive_int(text: String) -> Int {
+  let n = String::length(text)
+  if n == 0 {
+    return 0
+  }
+  let mut acc = 0
+  let mut i = 0
+  while i < n {
+    let c = String::byte_at(text, i)
+    if c < 48 || c > 57 {
+      return 0
+    }
+    acc = acc * 10 + (c - 48)
+    i = i + 1
+  }
+  acc
+}
+
+/// How many times the largest observed per-file cost must still fit before the
+/// sweep types another file.
+///
+/// 2 is a compromise with no clean answer, and the number is here rather than
+/// inline so it is arguable. Per-file cost spans ~50x, so a factor that made
+/// the guard sound against the worst case would stop nearly every sweep
+/// immediately; a factor of 1 would let a file only slightly larger than the
+/// previous maximum overrun. `VIBE_GREP_MEMORY_SAFETY_FACTOR` exists for the
+/// caller who would rather stop early than retry.
+fn grep_memory_safety_factor() -> Int with Env + Exception {
+  let raw = Env::get("VIBE_GREP_MEMORY_SAFETY_FACTOR")
+  if raw == "" {
+    2
+  } else {
+    let n = grep_parse_positive_int(raw)
+    if n <= 0 {
+      throw("VIBE_GREP_MEMORY_SAFETY_FACTOR must be a positive whole number")
+    } else {
+      n
+    }
+  }
+}
+
+/// The refusal text for a sweep that cannot afford the next file.
+///
+/// It names the edit, per the CLI diagnostic policy: which file it stopped
+/// before, how far it got, and the two ways out (a narrower root, or no
+/// `--where`, which is the untyped tier that handles the whole tree).
+fn grep_memory_refusal(path: String, done: Int, total: Int, headroom: Int, need: Int) -> String {
+  let mb = 1048576
+  String::concat("vibe grep: out of memory budget before typing `", String::concat(path, String::concat("` (", String::concat(__to_string(done), String::concat(" of ", String::concat(__to_string(total), String::concat(" files swept); headroom ", String::concat(__to_string(headroom / mb), String::concat(" MB, the largest file so far needed ", String::concat(__to_string(need / mb), " MB. Sweep a subdirectory, or drop --where to use the untyped tier, which handles the whole tree. VIBE_GREP_MEMORY_BUDGET_MB raises the budget, but wasm32 linear memory stops at 4096 MB."))))))))))
+}
+
 /// `vibe grep <root>` proper. Typing runs only for files that already have a
 /// structural match: typing a file the pattern never hits would be pure cost.
-export fn grep_scan_fs_report(root: String, pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool) -> (String, String) with Exception + Fs {
+export fn grep_scan_fs_report(root: String, pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool) -> (String, String) with Env + Exception + Fs + Profiler {
   let pat = grep_compile_pattern(pattern)
   grep_check_filters(pat, wheres, where_rows)
   let files = grep_empty_strings()
@@ -216,6 +294,19 @@ export fn grep_scan_fs_report(root: String, pattern: String, wheres: Array[Strin
   // has its fingerprint AND the dep-source cache says its text is unchanged,
   // so a fresh db or a fresh dep-source cache re-checks the closure either
   // way. See grep_fs_typed_context for why sharing all three is sound.
+  // #2914: the typed tier used to TRAP on a tree-wide sweep -- a bare wasm
+  // `out of bounds memory access` naming neither the file nor the stage. The
+  // budget below turns the common case into a diagnostic that names both.
+  //
+  // It is a HEURISTIC, not a proof, and the comment says so because the
+  // diagnostic cannot: the guard stops when the headroom no longer covers
+  // `grep_memory_safety_factor` times the largest per-file cost SEEN SO FAR,
+  // and per-file cost tracks dependency-closure size with roughly a 50x spread
+  // (24 MB to 1303 MB, measured). A file whose closure dwarfs everything
+  // before it can still overrun the reserve. What the guard removes is the
+  // silent case; it does not make the trap impossible.
+  let memory_ceiling = grep_memory_ceiling_bytes()
+  let mut max_typed_cost = 0
   let mut typed_env_cache = grep_fs_empty_env_cache()
   let mut typed_rdb = ripple_new()
   let mut typed_dep_sources = grep_fs_empty_pairs()
@@ -235,10 +326,27 @@ export fn grep_scan_fs_report(root: String, pattern: String, wheres: Array[Strin
     } }
     if Array::length(hits) > 0 {
       let ctx = if typed {
+        // Checked BEFORE the allocation rather than after: once the frontier
+        // is past the ceiling the process is already gone, so a check that
+        // ran afterwards would never report anything.
+        let heap_before = Profiler::heap_bytes()
+        let headroom = memory_ceiling - heap_before
+        let reserve = max_typed_cost * grep_memory_safety_factor()
+        if max_typed_cost > 0 && headroom < reserve {
+          throw(grep_memory_refusal(path, i, Array::length(files), headroom, max_typed_cost))
+        } else {
+          ()
+        }
         let (typed_ctx, next_cache, next_rdb, next_dep_sources) = grep_fs_typed_context(path, source, typed_env_cache, typed_rdb, typed_dep_sources)
         typed_env_cache = next_cache
         typed_rdb = next_rdb
         typed_dep_sources = next_dep_sources
+        let cost = Profiler::heap_bytes() - heap_before
+        if cost > max_typed_cost {
+          max_typed_cost = cost
+        } else {
+          ()
+        }
         typed_ctx
       } else {
         grep_untyped_context()
@@ -260,7 +368,7 @@ export fn grep_scan_fs_report(root: String, pattern: String, wheres: Array[Strin
 
 /// Library-compatible result-only wrapper. The public CLI uses
 /// `grep_scan_fs_report` so it can route per-file skips to stderr.
-export fn grep_scan_fs(root: String, pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool) -> String with Exception + Fs {
+export fn grep_scan_fs(root: String, pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool) -> String with Env + Exception + Fs + Profiler {
   let (result, _) = grep_scan_fs_report(root, pattern, wheres, where_rows, only, json)
   result
 }
