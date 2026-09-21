@@ -44,7 +44,7 @@ import @vibe/compiler/runtime/eval_loader {
 }
 
 import @vibe/compiler/syntax {
-  cfg_ambient_flags_csv, lex, lex_with_offsets, offset_to_line_col, parse_program, parse_program_located
+  cfg_ambient_flags_csv, lex, lex_with_offsets, lex_with_offsets_recovering, offset_to_line_col, parse_program, parse_program_located
 }
 import @vibe/compiler/contract {
   classify_contract_stmts, contract_facade_marker, extract_package_version, extract_require_pins, parse_contract_program
@@ -706,6 +706,38 @@ fn located_parse_version_index(seen_sources: Array[String], seen_cfgs: Array[Str
   hit
 }
 
+/// Give a LEXER error back the position it was thrown with (#2946).
+///
+/// `lex_with_offsets` throws from inside the scan, so what reaches the handler
+/// below is bare text -- `unexpected character: \`. Prefixing the path alone
+/// produced `dep.vibe: unexpected character: \` for an imported module, while
+/// `vibe check dep.vibe` on the SAME file answered `line 2:13: unexpected
+/// character: \`. The position was never missing; this lane threw it away.
+///
+/// A PARSE error already carries `line L:C:` -- `parse_program_located` has
+/// the starts table -- so it is returned untouched and this is idempotent.
+/// Anything else is re-lexed with the recovering lexer, which collects offsets
+/// instead of throwing. If that finds no lexer error the message is returned
+/// exactly as thrown, so a throw from somewhere other than the lexer cannot
+/// acquire an invented position: an invented location for a real node is worse
+/// than none.
+///
+/// The re-lex costs a second scan, and only on a path that is about to throw.
+fn located_lex_message(source: String, msg: String) -> String {
+  if String::starts_with(msg, "line ") {
+    msg
+  } else {
+    let (_tokens, _starts, _ends, err_offsets, _err_msgs) = lex_with_offsets_recovering(source)
+    if Array::length(err_offsets) == 0 {
+      msg
+    } else {
+      match offset_to_line_col(source, Array::get(err_offsets, 0)) {
+        (line, col) => String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), String::concat(": ", msg)))))
+      }
+    }
+  }
+}
+
 /// The parser call chain lives in its own function with no `match` in it:
 /// #708 (the RC-lane `unreachable` in `tk_name`) reproduces when
 /// lex_with_offsets/parse_program_located are compiled next to an Option
@@ -714,7 +746,7 @@ fn located_parse_uncached(path: String, source: String) -> Array[Stmt] with Exce
   handle {
     let (tokens, starts, _ends) = lex_with_offsets(source)
     parse_program_located(tokens, starts, source)
-  } with { Exception::Throw(msg) => throw(String::concat(String::concat(path, ": "), msg)) }
+  } with { Exception::Throw(msg) => throw(String::concat(String::concat(path, ": "), located_lex_message(source, msg))) }
 }
 
 fn located_parse_record(path: String, source: String, parsed: Array[Stmt]) -> Unit {
