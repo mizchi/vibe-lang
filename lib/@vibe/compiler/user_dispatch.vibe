@@ -67,7 +67,13 @@ import @vibe/compiler/runtime {
   doc_at_source,
   escape_spans,
   escape_spans_strict,
+  grep_collect_files,
+  grep_file_list_banner,
+  grep_list_files,
+  grep_read_file_list,
+  grep_scan_files_report,
   grep_scan_fs_report,
+  grep_split_file_list,
   incremental_invalidation_trace_json,
   incremental_typecheck_telemetry_json,
   rc_classify_source,
@@ -544,8 +550,17 @@ export fn root_rel_from_invoke(invoke_rel: String, path: String) -> String {
   }
 }
 
+/// `--file-list` and `--resume-out` are here rather than left to the generic
+/// path branch below, and the difference is `--resume-out` (#2956, Codex P2).
+/// That branch only rewrites an argument that ALREADY EXISTS, which a resume
+/// file by definition does not -- so from a subdirectory the guest wrote it
+/// relative to the project root while the driver looked for it relative to the
+/// invocation directory, and a path the caller chose silently became a
+/// different path. `--file-list` happened to work through that branch, because
+/// a caller's list does exist; naming both keeps the pair from depending on
+/// that coincidence.
 fn flag_takes_output_path(flag: String) -> Bool {
-  flag == "-o" || flag == "--output" || flag == "--out" || flag == "--guest-profile" || flag == "--adapter" || flag == "--cli-wasm" || flag == "--changed" || flag == "--profile-tsv" || flag == "--profile-callstack"
+  flag == "-o" || flag == "--output" || flag == "--out" || flag == "--guest-profile" || flag == "--adapter" || flag == "--cli-wasm" || flag == "--changed" || flag == "--profile-tsv" || flag == "--profile-callstack" || flag == "--file-list" || flag == "--resume-out"
 }
 
 /// Flags whose verb parser reads the NEXT argv entry as a non-path value
@@ -602,6 +617,18 @@ export fn rewrite_user_argv(args: Array[String], invoke_dir: String, project_roo
       } else if String::starts_with(a, "--guest-profile=") {
         Array::push(out, String::concat("--guest-profile=", root_rel_from_invoke(invoke_rel, a[16: String::length(a)])))
         prev = ""
+      } else if String::starts_with(a, "--file-list=") {
+        // The equals spellings need their own arms for the same reason
+        // `--guest-profile=` and `--out=` do: an argument beginning with `-`
+        // never reaches the generic path branch, so the value rides through
+        // untouched and resolves against the wrong directory.
+        Array::push(out, String::concat("--file-list=", root_rel_from_invoke(invoke_rel, a[12: String::length(a)])))
+        prev = ""
+        ()
+      } else if String::starts_with(a, "--resume-out=") {
+        Array::push(out, String::concat("--resume-out=", root_rel_from_invoke(invoke_rel, a[13: String::length(a)])))
+        prev = ""
+        ()
       } else if String::starts_with(a, "--out=") {
         // The equals spelling `vibe profile --out=prof.json` names an output
         // path the same way the split one does (Codex review of #2858).
@@ -2150,6 +2177,19 @@ fn selfhost_cli_user_grep_args(args: Array[String]) -> Int with Env + Exception 
   let mut pattern = ""
   let mut json = false
   let mut only = ""
+  // #2914's chunked-sweep contract, as FLAGS rather than env selectors.
+  //
+  // The env-mode entry (cli_adapter) reads `VIBE_GREP_LIST_FILES` and friends
+  // because it has no argv at all -- it is `(input, output)` plus VIBE_*
+  // selectors, and that is the only channel there is. This path HAS an
+  // argument parser, so using the env spelling here was copying the wrong half
+  // of that pattern: `VIBE_GREP_LIST_FILES` is an adapter BRANCH SELECTOR, and
+  // a launcher that dispatches by argv must not set one
+  // (`check_selector_precedence.sh`, which caught exactly this). A hidden env
+  // knob on a user-facing CLI is worse than a flag anyway.
+  let mut list_files = false
+  let mut file_list = ""
+  let mut resume_out = ""
   let wheres: Array[String] = []
   let where_rows: Array[String] = []
   let paths: Array[String] = []
@@ -2187,6 +2227,21 @@ fn selfhost_cli_user_grep_args(args: Array[String]) -> Int with Env + Exception 
     } else if arg == "--only-well-typed" {
       only = "well"
       ()
+    } else if arg == "--list-files" {
+      list_files = true
+      ()
+    } else if arg == "--file-list" {
+      i = i + 1
+      file_list = need_value(args, i, "grep", arg)
+      ()
+    } else if String::starts_with(arg, "--file-list=") {
+      file_list = arg[12: String::length(arg)]
+    } else if arg == "--resume-out" {
+      i = i + 1
+      resume_out = need_value(args, i, "grep", arg)
+      ()
+    } else if String::starts_with(arg, "--resume-out=") {
+      resume_out = arg[13: String::length(arg)]
     } else if arg == "--" {
       i = i + 1
       while i < Array::length(args) {
@@ -2202,6 +2257,25 @@ fn selfhost_cli_user_grep_args(args: Array[String]) -> Int with Env + Exception 
   }
   if pattern == "" {
     throw("vibe grep: --pattern needs an argument")
+  } else if resume_out != "" && file_list == "" && Array::length(paths) > 1 {
+    // `file_list == ""` is half the condition and the important half: WITH an
+    // explicit list the index is well defined against it, and the launcher's
+    // own chunk calls pass one alongside every original root -- so refusing on
+    // the root count alone rejected every chunk of a multi-root typed sweep
+    // before it scanned anything (Codex on #2956, P2, against the refusal I
+    // added one commit earlier). Without a list the roots are walked
+    // separately, and there is no single sequence for an index to mean
+    // anything against. Left unrefused, a hand-off in an early
+    // root returned partial output and wrote its index, the loop moved on, and
+    // THAT root's sweep deleted the index as stale -- exit 0, the first root
+    // partly searched, nothing left saying so (Codex on #2956, P1; the delete
+    // was my own fix for a stale index, one round earlier).
+    //
+    // Refused rather than stopped after the first hand-off, because stopping
+    // still hands back an index the caller cannot attribute to a root.
+    // `--json` below refuses several paths for the same kind of reason: one
+    // answer, one input.
+    throw("vibe grep --resume-out: one path at a time (the resume index is an offset into a single file list)")
   } else if json && Array::length(paths) > 1 {
     // Each sweep returns one complete JSON array; concatenating two is not
     // JSON. The launcher refused this before the verbs moved (Codex review).
@@ -2212,11 +2286,78 @@ fn selfhost_cli_user_grep_args(args: Array[String]) -> Int with Env + Exception 
     } else {
       ()
     }
+    // #2914: the same file-list / resume contract cli_adapter.vibe carries, so
+    // `runtime/vibe grep` can drive a resumable sweep too. Until this, the
+    // argv path had no way to be chunked: it stopped at the guard with the
+    // located refusal and never finished a tree-wide typed sweep -- measured,
+    // file 70 of 1224 -- while its own diagnostic advised lowering
+    // `VIBE_GREP_CHUNK_FILES`, a knob that did nothing on this path.
+    //
+    // There is exactly ONE call to the sweep below. Two call sites are how
+    // `VIBE_GREP_RESUME` came to be honoured on one adapter path and silently
+    // ignored on the other.
+    let chunk_list = file_list
+    // The files the sweep WOULD visit, for a driver that wants to partition
+    // them. Printed rather than swept; the skip policy stays in source_walk.
+    if list_files {
+      let listing = StringBuilder::new()
+      StringBuilder::push(listing, grep_file_list_banner())
+      StringBuilder::push(listing, "\n")
+      let mut li = 0
+      while li < Array::length(paths) {
+        StringBuilder::push(listing, grep_list_files(Array::get(paths, li)))
+        li = li + 1
+      }
+      print_text(StringBuilder::freeze(listing))
+      return 0
+    } else {
+      ()
+    }
+    // A chunk IS the sweep, once -- not once per path. The chunk a driver
+    // hands back was cut from the COMBINED listing of every path, so running
+    // it inside the per-path loop would emit each match once per path: two
+    // paths, every result doubled, exit 0. That is the silent-wrong shape
+    // this repo ranks above crashing, and it is invisible to a one-path gate.
+    let job_count = if chunk_list != "" {
+      1
+    } else {
+      Array::length(paths)
+    }
     let acc = StringBuilder::new()
     let mut first = true
     let mut pi = 0
-    while pi < Array::length(paths) {
-      let (text, warnings) = grep_scan_fs_report(Array::get(paths, pi), pattern, wheres, where_rows, only, json)
+    while pi < job_count {
+      let sweep_root = Array::get(paths, pi)
+      let sweep_files = if chunk_list != "" {
+        grep_read_file_list(chunk_list)
+      } else {
+        grep_collect_files(sweep_root)
+      }
+      // Which files this sweep was asked about BY NAME, so an unparseable one
+      // throws rather than warning (#2940). When a chunk spans several roots
+      // it is EVERY named non-directory among them -- a chunk cut from the
+      // combined listing has no single root, and answering "directory" for it
+      // downgraded a named `bad.vibe` to exit 0 (Codex on #2956, P1).
+      let named_files: Array[String] = []
+      let mut ni = 0
+      while ni < (if chunk_list != "" {
+        Array::length(paths)
+      } else {
+        1
+      }) {
+        let cand = if chunk_list != "" {
+          Array::get(paths, ni)
+        } else {
+          sweep_root
+        }
+        if Fs::is_dir(cand) {
+          ()
+        } else {
+          Array::push(named_files, cand)
+        }
+        ni = ni + 1
+      }
+      let (text, warnings) = grep_scan_files_report(sweep_files, pattern, wheres, where_rows, only, json, named_files, resume_out)
       // A file the sweep could not parse is reported, not searched: the
       // warning is what tells "no match" from "not searched" apart, so it
       // reaches stderr the way the launcher used to relay `<out>.warn`.

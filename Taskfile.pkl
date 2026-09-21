@@ -1519,7 +1519,7 @@ local testCheckGrepMemoryBudget = new Task {
 }
 // #2914: a chunked `vibe grep` sweep answers exactly what an unchunked one
 // does. `deps { selfhostGeneration }` and the env override because the chunk
-// path needs a compiler that understands VIBE_GREP_LIST_FILES -- against an
+// path needs a compiler that understands `grep --list-files` -- against an
 // older one the driver falls back to the single call, and the gate would
 // compare that path against itself and pass while testing nothing.
 local checkGrepChunkedSweep = new Task {
@@ -1535,6 +1535,57 @@ local testCheckGrepChunkedSweep = new Task {
   cmd = "bash scripts/check_grep_chunked_sweep_test.sh"
   inputs { ...compilerProbeInputs; ...scriptSources }
   deps { selfhostGeneration }
+}
+// `runtime/viberun` is not tracked and `selfhostGeneration` does not build it,
+// so a gate that DRIVES `runtime/vibe` has to say so or fail on a fresh
+// checkout -- which `release-check` would then do, for a setup step a user has
+// to discover by reading the refusal (Codex on #2956, P1). The script is
+// content-addressed and a ~50 ms no-op once the binary matches its sources, so
+// depending on it costs nothing when it is already there.
+local ensureViberun = new Task {
+  name = "ensure-viberun"
+  description =
+    "build runtime/viberun when its sources changed (content-addressed, no-op otherwise)"
+  cmd = "bash scripts/ensure_viberun.sh"
+  // UNCACHED, like ensure-seed and ensure-generated, and for their reason: the
+  // OUTPUT is untracked and can vanish without any input changing. A fresh
+  // worktree sharing ~/.cache/pkfire, or a `cargo clean`, leaves a successful
+  // cache entry beside no binary -- pkfire replays the success, the script
+  // never runs, and the parity gates then refuse for the missing runner this
+  // task exists to supply (Codex on #2956, P1). The script already owns the
+  // content check, so skipping is its call to make, not the cache's.
+  cache = false
+  inputs {
+    "runtime/viberun/src/**"
+    "runtime/viberun/Cargo.toml"
+    "runtime/viberun/Cargo.lock"
+    "scripts/ensure_viberun.sh"
+  }
+}
+// #2914: the two `vibe grep` drivers answer alike. `runtime/vibe` is
+// self-contained by design -- it installs standalone and can source nothing --
+// so the chunked-sweep loop is written twice, against two different CLI entry
+// points. `deps { selfhostGeneration }` and the env override because a
+// compiler without the chunk mode makes BOTH drivers fall back to the single
+// call, agree perfectly, and certify nothing.
+local checkGrepDriverParity = new Task {
+  name = "check-grep-driver-parity"
+  description = "runtime/vibe and scripts/vibe_grep_bin.sh return the same grep answer (#2914)"
+  cmd = "bash scripts/check_grep_driver_parity.sh"
+  // `runtime/vibe` is an INPUT: this gate runs the launcher, and its
+  // self-test mutates a copy of it. Neither shared set carries it, so a
+  // launcher-only change would replay an earlier success and certify a driver
+  // it never ran (Codex on #2956, P2). Five other launcher tasks already list
+  // it; this is the convention, not a new one.
+  inputs { ...compilerProbeInputs; ...scriptSources; "runtime/vibe" }
+  deps { selfhostGeneration; ensureViberun }
+}
+local testCheckGrepDriverParity = new Task {
+  name = "test-check-grep-driver-parity"
+  description = "the grep driver-parity gate can actually fail (#2248)"
+  cmd = "bash scripts/check_grep_driver_parity_test.sh"
+  inputs { ...compilerProbeInputs; ...scriptSources; "runtime/vibe" }
+  deps { selfhostGeneration; ensureViberun }
 }
 local checkCliLineTermination =
   scriptTask("check-cli-line-termination", "scripts/check_cli_line_termination.sh")
@@ -2879,6 +2930,8 @@ local releaseCheck = new Task {
     testCheckGrepMemoryBudget
     checkGrepChunkedSweep
     testCheckGrepChunkedSweep
+    checkGrepDriverParity
+    testCheckGrepDriverParity
     checkPackageSiblingScope
     checkDocCommands
     checkRcDefault
@@ -3027,6 +3080,9 @@ tasks {
   testCheckGrepMemoryBudget
   checkGrepChunkedSweep
   testCheckGrepChunkedSweep
+  ensureViberun
+  checkGrepDriverParity
+  testCheckGrepDriverParity
   checkPackageSiblingScope
   checkDocCommands
   checkRcDefault

@@ -42,9 +42,13 @@ import @vibe/compiler/runtime {
   doc_at_source,
   escape_spans,
   escape_spans_strict,
+  grep_collect_files,
+  grep_file_list_banner,
   grep_list_files,
+  grep_read_file_list,
   grep_scan_files_report,
   grep_scan_fs_report,
+  grep_split_file_list,
   incremental_invalidation_trace_json,
   incremental_typecheck_telemetry_json,
   locate_type_error,
@@ -574,6 +578,18 @@ fn parse_int_or(s: String, default: Int) -> Int {
 /// passes repeatable `--where` / `--where-row` clauses this way: a clause can
 /// contain spaces, commas and `:` (they are type syntax), so newline is the
 /// only separator that never needs quoting.
+/// The files this sweep was asked about BY NAME (#2940), for the one root the
+/// env-mode entry takes. A directory names no file; a file names itself.
+fn adapter_grep_named_files(root: String) -> Array[String] with Fs {
+  let out: Array[String] = []
+  if Fs::is_dir(root) {
+    ()
+  } else {
+    Array::push(out, root)
+  }
+  out
+}
+
 fn adapter_split_nonempty_lines(text: String) -> Array[String] {
   let out = Array::slice([""], 0, 0)
   let parts = String::split(text, "\n")
@@ -2437,15 +2453,12 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
   // Checked before the sweep itself so it never runs one.
   if Env::get("VIBE_GREP_LIST_FILES") == "1" {
     return handle {
-      Fs::write_bytes(output_path, adapter_string_to_bytes(line_terminated(grep_list_files(input_path))))
+      Fs::write_bytes(output_path, adapter_string_to_bytes(line_terminated(String::concat(grep_file_list_banner(), String::concat("\n", grep_list_files(input_path))))))
       0
     } with { Exception::Throw(msg) => emit_compile_diag(output_path, msg) }
   }
   if Env::get("VIBE_GREP") == "1" {
     return handle {
-      // `VIBE_GREP_FILE_LIST` names a file of newline-separated paths: ONE
-      // chunk of a partitioned sweep. Absent, `input_path` is a root to walk,
-      // which is the unchanged single-process behaviour.
       // `VIBE_GREP_FILE_LIST` names a file of newline-separated paths: ONE
       // chunk of a partitioned sweep. Absent, the list is the whole walk of
       // `input_path`, which is the unchanged single-process behaviour.
@@ -2458,16 +2471,16 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
       // shape this repo ranks above crashing.
       let chunk_list = Env::get("VIBE_GREP_FILE_LIST")
       let sweep_files = if chunk_list != "" {
-        adapter_split_nonempty_lines(Fs::read_file(chunk_list))
+        grep_read_file_list(chunk_list)
       } else {
-        adapter_split_nonempty_lines(grep_list_files(input_path))
+        grep_collect_files(input_path)
       }
       let resume_out = if Env::get("VIBE_GREP_RESUME") == "1" {
         String::concat(output_path, ".resume")
       } else {
         ""
       }
-      let (text, warnings) = grep_scan_files_report(sweep_files, Env::get("VIBE_GREP_PATTERN"), adapter_split_nonempty_lines(Env::get("VIBE_GREP_WHERE")), adapter_split_nonempty_lines(Env::get("VIBE_GREP_WHERE_ROW")), Env::get("VIBE_GREP_ONLY"), Env::get("VIBE_GREP_JSON") == "1", Fs::is_dir(input_path), resume_out)
+      let (text, warnings) = grep_scan_files_report(sweep_files, Env::get("VIBE_GREP_PATTERN"), adapter_split_nonempty_lines(Env::get("VIBE_GREP_WHERE")), adapter_split_nonempty_lines(Env::get("VIBE_GREP_WHERE_ROW")), Env::get("VIBE_GREP_ONLY"), Env::get("VIBE_GREP_JSON") == "1", adapter_grep_named_files(input_path), resume_out)
       // #2133: both are line-oriented (`path:line:col: <match>` one per line,
       // and one warning per line), so both terminate their last record. JSON
       // mode gets the trailing newline too, which is conventional and which no

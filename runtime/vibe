@@ -1099,6 +1099,24 @@ invoke_cli() {
 # imports through the same walk `vibe check` uses -- `vibe diagnostics`'s
 # import-blind false positives are not reproduced here.
 # 
+# A tree-wide typed sweep cannot fit in one wasm32 process, so it is split
+# across several; that is automatic and invisible in the result. Three flags
+# expose the pieces for a driver that wants to partition it itself:
+#   --list-files                 print the files a sweep would visit, one per
+#                                line, after a format banner -- and sweep
+#                                nothing
+#   --file-list <path>           sweep exactly the files named in <path>, one
+#                                per line. Entries resolve against the PROJECT
+#                                ROOT, exactly as --list-files prints them:
+#                                the output of one flag is the input of the
+#                                other. <path> itself is relative to where you
+#                                stand.
+#   --resume-out <path>          on stopping at its own memory budget, write
+#                                the index of the file NOT swept to <path>,
+#                                instead of refusing
+# `VIBE_GREP_CHUNK_FILES` caps how many files share one process (default 8); it
+# is a speed knob, not a correctness one.
+#
 # Output is one match per line, `path:line:col: <matched text>` followed by
 # tab-separated `$var=<capture>`; `--json` emits the same matches as a JSON
 # array (each capture carrying its inferred type when the typed tier ran).
@@ -1111,6 +1129,231 @@ grep_help_requested() {
     case "$a" in --help|-h) return 0 ;; --) return 1 ;; esac
   done
   return 1
+}
+# `vibe grep`'s chunked sweep (#2914).
+#
+# A typed sweep cannot finish a tree in ONE process: wasm32 tops out at 4 GiB
+# and the sweep's cost ACCUMULATES across files, so however cheap each file is
+# made, a large enough corpus runs out. Measured on this repo before any of
+# this existed, `runtime/vibe grep --where '$x : Array[_]' lib` stopped at file
+# 70 of 1224 -- and its own diagnostic advised lowering VIBE_GREP_CHUNK_FILES,
+# a knob that until now did nothing on this path.
+#
+# Only a fresh process resets the frontier, so the sweep is split across
+# several. Three things make the split invisible in the answer:
+#
+#   * the FILE LIST comes from the sweep itself (`grep --list-files`), not
+#     from a glob here. The skip policy (`deps/`, `_build/`, dotted dirs) is a
+#     user-visible answer source_walk.vibe keeps in one place; a driver that
+#     re-derived it would disagree with the sweep and nothing would say so.
+#   * where a process STOPS is the sweep's call, not this loop's. Its memory
+#     guard measures real headroom and the largest per-file cost, and hands
+#     back the index of the file it did not type. The chunk cap below is a
+#     performance hint on top of that, not a correctness constant.
+#   * JSON is reassembled into ONE array. The chunking is an implementation
+#     detail and must not be visible in the result.
+#
+# scripts/vibe_grep_bin.sh runs the same loop against the env-mode entry for
+# checkouts with no native runner. The duplication is forced -- this launcher
+# is self-contained by design and installs standalone, so it can source
+# nothing -- and scripts/check_grep_driver_parity.sh is what keeps the two
+# answering alike.
+grep_sweep() {
+  local json=0 arg status=0
+  # A caller using the sweep's own pieces is DRIVING; do not wrap a second
+  # loop around them. The chunk call appends the user's argv after this
+  # function's own `--file-list` / `--resume-out`, and the guest's parser takes
+  # the LAST occurrence -- so a caller-supplied `--resume-out` silently won,
+  # `$resumef` was never written, the loop read that as "no hand-off", advanced
+  # by the whole slice and exited 0 having skipped every file the sweep did not
+  # reach. `--list-files` was the milder version of the same: the guest answers
+  # it before sweeping, so every chunk printed a listing instead of matches.
+  #
+  # Both are the flags this launcher advertises in `grep --help`, so using them
+  # as documented was the way to hit it (Codex on #2956, P2). Handing the call
+  # straight through is also the right SEMANTICS, not just the safe one: these
+  # flags exist so a driver can partition the sweep itself.
+  #
+  # Scanned up to `--`, after which everything is a path.
+  for arg in "$@"; do
+    case "$arg" in
+      --) break ;;
+      --list-files|--file-list|--file-list=*|--resume-out|--resume-out=*)
+        invoke_cli grep "$@"
+        return $?
+        ;;
+    esac
+  done
+
+  # ONLY A TYPED SWEEP NEEDS THIS. The accumulating cost #2914 is about is the
+  # CHECKER's: the memory guard that stops a sweep lives inside the typed
+  # branch, so a parse-only sweep can never hand off and gains exactly nothing
+  # from being split. What it loses is large -- at the default cap of 8, a
+  # 1224-file tree becomes ~153 fresh runner + compiler starts in place of one
+  # process, which is the ordinary `vibe grep --pattern ... lib` made
+  # dramatically slower for no benefit at all (Codex on #2956, P2).
+  #
+  # The switches that turn on typing are the ones `grep_needs_typing` reads:
+  # --where, --where-row, --only-ill-typed, --only-well-typed. Anything else
+  # goes straight through, which is exactly the behaviour that existed before
+  # this loop did.
+  local typed=0
+  for arg in "$@"; do
+    case "$arg" in
+      --) break ;;
+      --where|--where=*|--where-row|--where-row=*|--only-ill-typed|--only-well-typed) typed=1 ;;
+    esac
+  done
+  if [ "$typed" = 0 ]; then
+    invoke_cli grep "$@"
+    return $?
+  fi
+  for arg in "$@"; do
+    case "$arg" in
+      --) break ;;
+      --json|--output-json) json=1 ;;
+    esac
+  done
+
+  # 8 is a PERFORMANCE hint, not a correctness constant -- that is the point of
+  # the resume hand-off. A cap too large for a corpus costs time and nothing
+  # else, because the sweep stops on its own guard and says where to continue.
+  # Empty means no cap: hand over everything left and let the guard decide.
+  local chunk_cap="${VIBE_GREP_CHUNK_FILES:-8}"
+  if [ -n "$chunk_cap" ]; then
+    case "$chunk_cap" in
+      *[!0-9]*) die "VIBE_GREP_CHUNK_FILES must be a positive whole number: $chunk_cap" ;;
+    esac
+    [ "$chunk_cap" -gt 0 ] || die "VIBE_GREP_CHUNK_FILES must be a positive whole number: $chunk_cap"
+  fi
+
+  local wd listf blanks chunkf resumef chunkout jsonbody
+  wd="$(mktemp -d -t vibe-grep-sweep-XXXXXX)"
+  listf="$wd/listing"; blanks="$wd/paths"; chunkf="$wd/chunk"
+  resumef="$wd/resume"; chunkout="$wd/out"; jsonbody="$wd/json"
+  sweep_cleanup() { rm -rf "$wd"; }
+
+  # PROBED, not assumed. This launcher runs against whatever compiler is
+  # installed, and these flags only exist in ones built after #2914.
+  #
+  # ARGV, not env. The chunked-sweep contract reaches this path as `--list-files`
+  # / `--file-list` / `--resume-out`, not as VIBE_* variables: `VIBE_GREP_LIST_
+  # FILES` is an adapter BRANCH SELECTOR, and a launcher that dispatches by argv
+  # must not set one (check_selector_precedence.sh). The env spelling belongs to
+  # the env-mode entry, which has no argv to carry flags in.
+  #
+  # "Did it print something" is NOT the probe. Unlike the env-mode entry --
+  # where an older compiler sees no mode at all and dies on EISDIR -- this path
+  # takes its verb from argv, so an older compiler REJECTS the unknown flag or,
+  # worse, a future one could answer with a full SWEEP. Its `path:line:col: text`
+  # lines chunk perfectly well, into a list of things that are not files: exit 0,
+  # no matches, no message. The banner is a line the sweep cannot produce, so
+  # seeing it is positive evidence of support. Not seeing it falls back to the
+  # single call, which is exactly the old behaviour, budget diagnostic and all.
+  status=0
+  invoke_cli grep --list-files "$@" > "$listf" 2>/dev/null || status=$?
+  if [ "$status" -ne 0 ] || [ "$(sed -n '1p' "$listf" 2>/dev/null)" != "vibe-grep-file-list-v1" ]; then
+    sweep_cleanup
+    invoke_cli grep "$@"
+    return $?
+  fi
+
+  sed '1d' "$listf" | grep . > "$blanks" || true
+  local total done_n
+  total="$(grep -c . "$blanks" 2>/dev/null || true)"
+  [ -n "$total" ] || total=0
+  if [ "$total" -eq 0 ]; then
+    # Nothing to partition. Answered by the ordinary single call rather than
+    # by printing an empty result here: what "no files" looks like in each
+    # output mode is the sweep's answer to give, not this loop's to invent.
+    sweep_cleanup
+    invoke_cli grep "$@"
+    return $?
+  fi
+
+  : > "$jsonbody"
+  done_n=0
+  while [ "$done_n" -lt "$total" ]; do
+    # `sed -n 'A,Bp'` and NOT `grep . | tail -n +A | head -n N`: under
+    # `set -o pipefail`, `head` closing the pipe early kills the upstream
+    # `grep` with SIGPIPE and the run exits 141 with no output and no message
+    # -- byte-for-byte what a clean no-match sweep looks like.
+    if [ -n "$chunk_cap" ]; then
+      sed -n "$((done_n + 1)),$((done_n + chunk_cap))p" "$blanks" > "$chunkf.paths"
+    else
+      sed -n "$((done_n + 1)),\$p" "$blanks" > "$chunkf.paths"
+    fi
+    [ -s "$chunkf.paths" ] || break
+    # THE CHUNK KEEPS THE BANNER. `grep_read_file_list` decodes escapes only
+    # when the banner says the file is in the encoded format -- so a chunk
+    # built by stripping it is read literally, and a path the listing escaped
+    # (a backslash or a newline in a filename) names a file that does not
+    # exist (Codex on #2956, P2). The paths are cut into their own file so the
+    # slice count below stays a count of PATHS, not of lines.
+    printf 'vibe-grep-file-list-v1\n' > "$chunkf"
+    cat "$chunkf.paths" >> "$chunkf"
+    rm -f "$resumef"
+    status=0
+    invoke_cli grep --file-list "$chunkf" --resume-out "$resumef" "$@" > "$chunkout" || status=$?
+    # A chunk that failed is fatal, and its output is dropped rather than
+    # printed: a sweep that stopped part-way must not present what it reached
+    # as a complete answer. Chunking makes that worse, not better -- earlier
+    # chunks have already printed real matches by now, so the status is the
+    # only thing left saying the result is partial.
+    if [ "$status" -ne 0 ]; then
+      sweep_cleanup
+      return "$status"
+    fi
+    if [ -s "$chunkout" ]; then
+      if [ "$json" = 1 ]; then
+        # `[` / one object per line / `]`. Drop the brackets and keep the
+        # objects; commas are re-added once at the end, so a chunk boundary
+        # cannot leave a trailing or a doubled one.
+        sed -e '1d' -e '$d' "$chunkout" | sed -e 's/,[[:space:]]*$//' >> "$jsonbody"
+      else
+        cat "$chunkout"
+      fi
+    fi
+    local slice advance
+    slice="$(grep -c . "$chunkf.paths" 2>/dev/null || true)"
+    [ -n "$slice" ] || slice=0
+    if [ -s "$resumef" ]; then
+      # The sweep stopped on its own budget and says where: that index is how
+      # many of THIS slice it swept.
+      advance="$(tr -d '[:space:]' < "$resumef")"
+      case "$advance" in
+        ''|*[!0-9]*) sweep_cleanup; die "grep: unreadable resume index from the sweep: '$advance'" ;;
+      esac
+      # A hand-off that advanced nothing would loop forever, reprinting the
+      # same matches on every pass -- worse than the trap this replaces. The
+      # guard cannot fire before one file has been typed, so this is
+      # unreachable; it is asserted because "unreachable" and "untested" look
+      # identical from a hang.
+      if [ "$advance" -le 0 ]; then
+        sweep_cleanup
+        die "grep: the sweep handed back without advancing (index 0 of $slice files); refusing to loop"
+      fi
+      if [ "$advance" -gt "$slice" ]; then
+        sweep_cleanup
+        die "grep: the sweep reports $advance files swept of a $slice-file slice"
+      fi
+    else
+      advance="$slice"
+      [ "$advance" -gt 0 ] || { sweep_cleanup; die "grep: an empty slice at file $done_n of $total; refusing to loop"; }
+    fi
+    done_n=$((done_n + advance))
+  done
+
+  if [ "$json" = 1 ]; then
+    # One array for the whole sweep, whatever it was split into.
+    echo "["
+    if [ -s "$jsonbody" ]; then
+      sed -e '$!s/$/,/' "$jsonbody"
+    fi
+    echo "]"
+  fi
+  sweep_cleanup
+  return 0
 }
 cmd="${1:-help}"; shift || true
 case "$cmd" in
@@ -1483,7 +1726,7 @@ REPL_HELP
       sed -n '/^# vibe grep \[flags\]/,/^# END grep help/p' "$LAUNCHER" | sed '/^# END grep help/d; s/^# \{0,1\}//'
       exit 0
     fi
-    invoke_cli grep "$@"
+    grep_sweep "$@"
     ;;
   help|--help|-h)
     # Content-anchored (not fixed line numbers): the whole Subcommands block

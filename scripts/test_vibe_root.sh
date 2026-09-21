@@ -159,6 +159,182 @@ got="$(cd "$app/sub" && vibe test cwd_test.vibe --jobs 2>&1)" && fail "vibe test
 case "$got" in *"missing value after --jobs"*) ;; *) fail "vibe test <file> --jobs: expected 'missing value after --jobs' in: $got" ;; esac
 pass "vibe run --alloc-site <src> rewrites the source; a trailing --jobs is refused"
 
+# --- 4c. the grep driver flags carry PATHS, so they are rewritten too -------
+# `--file-list` and `--resume-out` (#2914) name files the caller chose. From a
+# subdirectory the compiler runs at the ROOT, so an unrewritten value resolves
+# against the wrong directory -- silently, because the equals spellings begin
+# with `-` and never reach the generic path branch at all, and `--resume-out`
+# names a file that does not exist yet, which that branch skips by design
+# (Codex on #2956, P2). Both spellings, because they failed for different
+# reasons.
+# TWO matching files, and that is not padding. The memory guard runs only
+# inside `if Array::length(hits) > 0` and needs `max_typed_cost > 0`, which is
+# set only AFTER a matching file is typed -- so with one match it cannot fire
+# at all, and the resume assertion below would fail unconditionally rather than
+# testing anything (Codex on #2956, P1). The second match is where it fires.
+printf 'export fn gtarget(xs: Array[String]) -> Int {\n  Array::length(xs)\n}\n' > "$app/sub/greppable.vibe"
+printf 'export fn gtarget2(ys: Array[String]) -> Int {\n  Array::length(ys)\n}\n' > "$app/sub/greppable2.vibe"
+# LIST ENTRIES RESOLVE AGAINST THE PROJECT ROOT, exactly as `--list-files`
+# prints them -- the output of one flag is the input of the other, and that
+# round trip is the whole point of the pair. Only the list FILE's own path is
+# rewritten from where the user stood.
+printf 'sub/greppable.vibe\nsub/greppable2.vibe\n' > "$app/sub/mylist.txt"
+got="$(cd "$app/sub" && vibe grep --file-list=./mylist.txt --pattern 'Array::length($(x:exp))' . 2>&1)" \
+  || fail "vibe grep --file-list=<rel> from a subdirectory failed: $got"
+case "$got" in *"greppable.vibe:2:3"*) ;; *) fail "vibe grep --file-list=<rel> from sub/: expected a match in greppable.vibe, got: $got" ;; esac
+[ ! -e "$app/mylist.txt" ] || fail "vibe grep --file-list=<rel> looked for the list at the ROOT"
+# The split spelling of a file that does NOT exist yet: a 1 MB budget forces
+# the sweep to hand off at the SECOND match, and the index must land where the
+# user stood.
+( cd "$app/sub" && VIBE_GREP_MEMORY_BUDGET_MB=1 vibe grep --resume-out ./r.idx \
+    --pattern 'Array::length($(x:exp))' --where '$x : Array[String]' . >/dev/null 2>&1 ) || true
+if [ -e "$app/r.idx" ]; then
+  fail "vibe grep --resume-out <rel> wrote the index to the ROOT ($app/r.idx), not to sub/"
+fi
+[ -e "$app/sub/r.idx" ] || fail "vibe grep --resume-out <rel> wrote no index at all under sub/.
+A 1 MB budget must force a hand-off at the second matching file, or this case
+proves nothing about where the file lands."
+# A LIST ENTRY THAT DOES NOT EXIST MUST SAY SO. Unguarded this was a bare wasm
+# trap -- `viberun: error while executing at wasm backtrace: <wasm function
+# 6411>`, no file, no reason -- which is what the CLI-install smoke reported
+# when the entries in this very test resolved against the wrong root. A
+# mistyped list is the most likely way to meet this flag wrongly, so it gets
+# the message that names the rule.
+# A DIRECTORY entry gets its own diagnostic: it passes the existence check and
+# would then fail inside Fs::read_file as a host-level EISDIR, which is the
+# bare trap the guard above exists to replace.
+# Its OWN directory, created here. The first version pointed at `sub/nl`,
+# which this file does not create until the newline case further down, so the
+# entry did not exist and the guard answered "not found" -- the right refusal
+# for the wrong reason, and the case caught it only because it asserts WHICH
+# diagnostic appears rather than merely that one did.
+mkdir -p "$app/sub/adirentry"
+printf 'sub/adirentry\n' > "$app/sub/dirlist.txt"
+got="$(cd "$app/sub" && vibe grep --file-list=./dirlist.txt --pattern 'Array::length($(x:exp))' . 2>&1)" \
+  && fail "a directory in a file list must fail, got exit 0: $got"
+case "$got" in
+  *"file-list entry is a directory"*) ;;
+  *) fail "a directory entry must say so, got: $got" ;;
+esac
+case "$got" in
+  *"wasm backtrace"*|*EISDIR*) fail "a directory entry still reached the host read: $got" ;;
+  *) ;;
+esac
+
+printf 'no_such_file_here.vibe\n' > "$app/sub/badlist.txt"
+got="$(cd "$app/sub" && vibe grep --file-list=./badlist.txt --pattern 'Array::length($(x:exp))' . 2>&1)" \
+  && fail "vibe grep with a missing file-list entry must fail, got exit 0: $got"
+case "$got" in
+  *"file-list entry not found"*) ;;
+  *) fail "a missing file-list entry must name itself and the rule, got: $got" ;;
+esac
+case "$got" in
+  *"no_such_file_here.vibe"*) ;;
+  *) fail "a missing file-list entry must name the FILE, got: $got" ;;
+esac
+case "$got" in
+  *"wasm backtrace"*) fail "a missing file-list entry still trapped: $got" ;;
+  *) ;;
+esac
+# THE LIST FILE ITSELF, mistyped and pointed at a directory. The two cases
+# above guard the ENTRIES; the guard was written one level too deep, so the
+# path the user actually types on the command line still reached the same
+# unguarded `Fs::read_file` and produced the same bare trap -- the flag's most
+# immediate invalid input was its least actionable one (Codex on #2956, P2).
+# Both assert WHICH diagnostic appears: "not found" and "is a directory" are
+# different mistakes, and a guard that collapses them sends the reader to the
+# wrong fix.
+got="$(cd "$app/sub" && vibe grep --file-list=./no_such_list.txt --pattern 'Array::length($(x:exp))' . 2>&1)" \
+  && fail "vibe grep with a missing --file-list must fail, got exit 0: $got"
+case "$got" in
+  *"--file-list not found"*) ;;
+  *) fail "a missing list FILE must say so, got: $got" ;;
+esac
+case "$got" in
+  *"no_such_list.txt"*) ;;
+  *) fail "a missing list FILE must name the file, got: $got" ;;
+esac
+case "$got" in
+  *"wasm backtrace"*) fail "a missing list FILE still trapped: $got" ;;
+  *) ;;
+esac
+# A DIRECTORY passes the existence check and fails inside the read as EISDIR.
+mkdir -p "$app/sub/alistdir"
+got="$(cd "$app/sub" && vibe grep --file-list=./alistdir --pattern 'Array::length($(x:exp))' . 2>&1)" \
+  && fail "vibe grep with a directory as --file-list must fail, got exit 0: $got"
+case "$got" in
+  *"--file-list is a directory"*) ;;
+  *) fail "a directory as the list FILE must say so, got: $got" ;;
+esac
+case "$got" in
+  *"wasm backtrace"*|*EISDIR*) fail "a directory as the list FILE still reached the host read: $got" ;;
+  *) ;;
+esac
+# CRLF. A list written by an editor that ends lines with \r\n must work: the
+# splitter this one replaced trimmed every entry, so dropping the trim while
+# consolidating rejected every valid path as missing -- a regression on the
+# env-mode path too, not just the new one (Codex on #2956, P2). Splitting on
+# `\n` alone is not reading lines.
+printf 'sub/greppable.vibe\r\nsub/greppable2.vibe\r\n' > "$app/sub/crlflist.txt"
+got="$(cd "$app/sub" && vibe grep --file-list=./crlflist.txt --pattern 'Array::length($(x:exp))' . 2>&1)" \
+  || fail "vibe grep with a CRLF file-list failed: $got"
+case "$got" in *"greppable.vibe:2:3"*) ;; *) fail "a CRLF file-list must sweep the same files a LF one does, got: $got" ;; esac
+# THE DOCUMENTED ROUND TRIP, run as documented. `grep --help` says the output
+# of --list-files is the input of --file-list; it was not, because --list-files
+# leads with the format banner and the reader took it for a source path. The
+# two shell drivers hid that by stripping line 1 themselves, so the contract
+# held for the code that knew the trick and not for the one the help described
+# (Codex on #2956, P2). No `sed` here on purpose: this is the user's spelling.
+( cd "$app/sub" && vibe grep --list-files --pattern 'Array::length($(x:exp))' . > ./roundtrip.txt 2>&1 ) \
+  || fail "vibe grep --list-files from a subdirectory failed: $(cat "$app/sub/roundtrip.txt")"
+head -1 "$app/sub/roundtrip.txt" | grep -q '^vibe-grep-file-list-v1$' \
+  || fail "--list-files no longer leads with the banner, so this round trip tests nothing: $(head -1 "$app/sub/roundtrip.txt")"
+got="$(cd "$app/sub" && vibe grep --file-list=./roundtrip.txt --pattern 'Array::length($(x:exp))' . 2>&1)" \
+  || fail "the documented --list-files | --file-list round trip failed: $got"
+case "$got" in *"greppable.vibe:2:3"*) ;; *) fail "the round trip found no match, got: $got" ;; esac
+case "$got" in *"vibe-grep-file-list-v1"*) fail "the banner reached the sweep as a path: $got" ;; *) ;; esac
+# AN ESCAPED NEWLINE IN A LIST DECODES BACK TO THE REAL NAME. A POSIX
+# filename may contain a newline, and the list format escapes it (`\n`) so one
+# path stays one line -- the same answer #2723 gave for `vibe symbols` NAME
+# fields, after the same defect.
+#
+# Driven from a HAND-WRITTEN list, not from `--list-files`, and that is the
+# honest scope. `Fs::readdir` frames entry names as one "\n"-joined string at
+# the host boundary and splits them guest-side (#729/#730, see
+# `fs_read_dir` in scripts/wasm_vibe_host_runner.js; filed as #2957), so a newline in a
+# filename is already destroyed before any walk-based listing can escape it --
+# measured: the walk yields `sub/nl/ird.vibe`, with the `we` fragment dropped
+# for not ending in `.vibe`. That is a hole one layer below this list format
+# and outside this change; escaping cannot reach it. What escaping DOES
+# guarantee is that a path which reaches the list survives it, and reading the
+# file by its exact name works regardless of readdir.
+nl_dir="$app/sub/nl"
+nl_name="$nl_dir/we"$'\n'"ird.vibe"
+mkdir -p "$nl_dir"
+printf 'export fn nlfn(zs: Array[String]) -> Int {\n  Array::length(zs)\n}\n' > "$nl_name" 2>/dev/null || true
+if [ -e "$nl_name" ] && [ "$(printf '%s' "$nl_name" | wc -l | tr -d ' ')" = "1" ]; then
+  # Banner + the path with its newline ESCAPED: one record, one line.
+  printf 'vibe-grep-file-list-v1\nsub/nl/we\\nird.vibe\n' > "$app/sub/esc_list.txt"
+  [ "$(grep -c . "$app/sub/esc_list.txt")" = "2" ] \
+    || fail "the escaped list is not 2 lines: $(cat -A "$app/sub/esc_list.txt")"
+  got="$(cd "$app/sub" && vibe grep --file-list=./esc_list.txt --pattern 'Array::length($(x:exp))' . 2>&1)" \
+    || fail "an escaped newline path was not decoded back to a real file: $got"
+  case "$got" in *"ird.vibe:2:3"*) ;; *) fail "no match from the newline-named file: $got" ;; esac
+  # The control: the SAME list without the banner must NOT be decoded, because
+  # a hand-written list is not in the encoded format and a literal backslash
+  # belongs to the path.
+  printf 'sub/nl/we\\nird.vibe\n' > "$app/sub/raw_list.txt"
+  got="$(cd "$app/sub" && vibe grep --file-list=./raw_list.txt --pattern 'Array::length($(x:exp))' . 2>&1)" \
+    && fail "a bannerless list was decoded anyway, so a literal backslash in a
+hand-written path is being rewritten: $got"
+  case "$got" in *"file-list entry not found"*) ;; *) fail "expected a named
+missing entry for the undecoded literal path, got: $got" ;; esac
+  pass "an escaped newline decodes back to the real name; a bannerless list is left alone"
+else
+  note "  skip: this filesystem rejected a newline in a filename"
+fi
+pass "vibe grep --file-list=/--resume-out resolve against the invoking directory; a missing entry AND a missing list file are named; CRLF lists work; --list-files round-trips into --file-list"
+
 # --- 5. vibe clean ----------------------------------------------------------
 mkdir -p "$app/.vibe/store/@x/y"
 got="$(cd "$app/sub" && vibe clean)"

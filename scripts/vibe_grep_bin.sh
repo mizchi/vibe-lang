@@ -151,7 +151,7 @@ run_grep() {
   listf="$(mktemp -t vibe-grep-list-XXXXXX)"
   chunkf="$(mktemp -t vibe-grep-chunk-XXXXXX)"
   jsonbody="$(mktemp -t vibe-grep-json-XXXXXX)"
-  trap 'rm -f "$out" "$out.diag" "$out.warn" "$err" "$listf" "$listf.nonblank" "$chunkf" "$jsonbody" "$out.resume"' RETURN
+  trap 'rm -f "$out" "$out.diag" "$out.warn" "$err" "$listf" "$listf.nonblank" "$chunkf" "$chunkf.paths" "$jsonbody" "$out.resume"' RETURN
 
   # #2914: a single wasm32 process tops out at 4 GiB and the sweep's cost
   # ACCUMULATES across files, so a tree-wide typed sweep cannot finish in one
@@ -270,7 +270,15 @@ run_grep() {
     # as `EISDIR`. Falling back to the single call is not a regression: it is
     # exactly today's behaviour, trap and all, and the budget diagnostic still
     # says so when it stops.
-    if ! try_cli "$g_path" VIBE_GREP_LIST_FILES=1 || [ -s "$out.diag" ] || [ ! -s "$out" ]; then
+    # The banner is the POSITIVE half of the probe. "It printed something" is
+    # not evidence of support: a compiler that ignored the mode and swept
+    # instead also prints something, and `path:line:col: text` chunks just
+    # fine -- into a list of things that are not files. Here that shape is
+    # ruled out twice over (an older compiler sees no mode at all and tries to
+    # COMPILE a directory, which fails as EISDIR), but the argv driver in
+    # runtime/vibe has only the banner, and one format means one check.
+    if ! try_cli "$g_path" VIBE_GREP_LIST_FILES=1 || [ -s "$out.diag" ] || [ ! -s "$out" ] ||
+       [ "$(sed -n '1p' "$out")" != "vibe-grep-file-list-v1" ]; then
       invoke_cli "$g_path" VIBE_GREP=1
       if [ -s "$out.warn" ]; then
         cat "$out.warn" >&2
@@ -284,10 +292,19 @@ run_grep() {
       fi
       continue
     fi
-    cp "$out" "$listf"
+    sed '1d' "$out" > "$listf"
 
     local total done_n
-    total="$(grep -c . "$listf" 2>/dev/null || echo 0)"
+    # `|| true`, NOT `|| echo 0`. `grep -c` PRINTS `0` and THEN exits 1 when
+    # it matches nothing, so the fallback appends a second zero and `$total`
+    # becomes `0\n0` -- `[ "$total" -gt 0 ]` then writes `integer expression
+    # expected` to stderr on a sweep that succeeded and simply found no files.
+    # An empty directory is the ordinary way to reach it, and it became
+    # reachable here only once the compiler learned to answer a listing with
+    # just the banner, which the `sed '1d'` above then strips to nothing
+    # (Codex on #2956, P2). The runtime/vibe driver already spells it `|| true`.
+    total="$(grep -c . "$listf" 2>/dev/null || true)"
+    [ -n "$total" ] || total=0
     [ "$total" -gt 0 ] || continue
     # `sed -n 'A,Bp'` and NOT `grep . | tail -n +A | head -n N`: under
     # `set -o pipefail`, `head` closing the pipe early kills the upstream
@@ -306,11 +323,19 @@ run_grep() {
       # of `vibe grep`. `VIBE_GREP_CHUNK_FILES` still caps the slice, because
       # the chunked-sweep gate needs to force boundaries at chosen places.
       if [ -n "$chunk_cap" ]; then
-        sed -n "$((done_n + 1)),$((done_n + chunk_cap))p" "$blanks" > "$chunkf"
+        sed -n "$((done_n + 1)),$((done_n + chunk_cap))p" "$blanks" > "$chunkf.paths"
       else
-        sed -n "$((done_n + 1)),$ p" "$blanks" > "$chunkf"
+        sed -n "$((done_n + 1)),$ p" "$blanks" > "$chunkf.paths"
       fi
-      [ -s "$chunkf" ] || break
+      [ -s "$chunkf.paths" ] || break
+      # THE CHUNK KEEPS THE BANNER. `grep_read_file_list` decodes escapes only
+      # when the banner says the file is in the encoded format -- so a chunk
+      # built by stripping it is read literally, and a path the listing escaped
+      # (a backslash or a newline in a filename) names a file that does not
+      # exist (Codex on #2956, P2). The paths are cut into their own file so the
+      # slice count below stays a count of PATHS, not of lines.
+      printf 'vibe-grep-file-list-v1\n' > "$chunkf"
+      cat "$chunkf.paths" >> "$chunkf"
       rm -f "$out.resume"
       invoke_cli "$g_path" VIBE_GREP=1 VIBE_GREP_FILE_LIST="$chunkf" VIBE_GREP_RESUME=1
       if [ -s "$out.warn" ]; then
@@ -327,7 +352,7 @@ run_grep() {
         fi
       fi
       local slice advance
-      slice="$(grep -c . "$chunkf" || true)"
+      slice="$(grep -c . "$chunkf.paths" || true)"
       if [ -s "$out.resume" ]; then
         # The sweep stopped on its own budget and says where. That index is
         # how many of THIS slice it swept.
