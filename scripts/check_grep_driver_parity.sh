@@ -214,4 +214,52 @@ which is why this compares OUTPUT and not just the status.
 $(diff "$WORK/bin_plain" "$WORK/vibe_budget" | head -8)"
 echo "grep-driver-parity: runtime/vibe answers at a budget the no-loop control refuses"
 
+# ---------------------------------------------------------------- property 5
+# THE ADVERTISED FLAGS REACH THE CLI. `grep --help` documents `--list-files`,
+# `--file-list` and `--resume-out` for a caller partitioning a sweep itself,
+# and the launcher wraps its own loop around every grep call -- so using them
+# as documented put them AFTER the loop's own copies, where the guest's parser
+# takes the last occurrence. A caller's `--resume-out` won, the loop's file was
+# never written, and that reads as "no hand-off": advance by the whole slice
+# and exit 0, having skipped every file the sweep did not reach (Codex on
+# #2956, P2). The loop now stands aside for these flags.
+listing_out="$WORK/listing"
+status=0
+env VIBE_CLI_WASM="$STAGE2" VIBE_RUNNER="$RUNNER" VIBE_BUILD_CACHE_DIR="$(mktemp -d)" \
+    "$LAUNCHER" grep --list-files --pattern "$PATTERN" "$CORPUS" \
+    >"$listing_out" 2>"$listing_out.err" || status=$?
+[ "$status" = "0" ] || fail "runtime/vibe grep --list-files failed (exit $status)
+$(cat "$listing_out.err")"
+banners="$(grep -c '^vibe-grep-file-list-v1$' "$listing_out" || true)"
+[ "$banners" = "1" ] ||
+  fail "--list-files printed $banners banner(s), want exactly 1.
+More than one means the loop ran anyway and each chunk re-answered the listing;
+zero means the flag did not reach the CLI at all."
+grep -qE '^[^:]+\.vibe$' "$listing_out" ||
+  fail "--list-files printed no file paths.
+$(head -3 "$listing_out")"
+grep -qE ':[0-9]+:[0-9]+:' "$listing_out" &&
+  fail "--list-files printed MATCH lines, so it swept instead of listing --
+which is exactly the shape the banner probe exists to tell apart."
+echo "grep-driver-parity: --list-files answers once and lists files, not matches"
+
+# `--file-list` likewise: the caller's list is what gets swept, not a
+# re-derived one. One file in, matches from that file only.
+one_list="$WORK/one_file_list"
+head -2 "$listing_out" | tail -1 > "$one_list"
+one_file="$(cat "$one_list")"
+[ -n "$one_file" ] || fail "could not take a single file from the listing"
+status=0
+env VIBE_CLI_WASM="$STAGE2" VIBE_RUNNER="$RUNNER" VIBE_BUILD_CACHE_DIR="$(mktemp -d)" \
+    "$LAUNCHER" grep --file-list "$one_list" --pattern "$PATTERN" "$CORPUS" \
+    >"$WORK/one.out" 2>"$WORK/one.err" || status=$?
+[ "$status" = "0" ] || fail "runtime/vibe grep --file-list failed (exit $status)
+$(cat "$WORK/one.err")"
+stray="$(cut -d: -f1 < "$WORK/one.out" | sort -u | grep -vxF "$one_file" | head -3 || true)"
+[ -z "$stray" ] ||
+  fail "--file-list named one file but the sweep covered others:
+$stray
+The caller's list was ignored or re-chunked."
+echo "grep-driver-parity: --file-list sweeps exactly the caller's list"
+
 echo "grep-driver-parity: ok"

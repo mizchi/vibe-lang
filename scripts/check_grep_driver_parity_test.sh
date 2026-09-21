@@ -161,4 +161,12 @@ expect_red "the resume index is ignored" \
 expect_red "the support probe never succeeds" \
   's|!= "vibe-grep-file-list-v1" \]; then|!= "vibe-grep-file-list-vNEVER" ]; then|'
 
+# The loop stops standing aside for a caller driving the sweep itself, so its
+# own `--file-list` / `--resume-out` go in front of the caller's and the guest
+# parser's last-occurrence rule hands the caller's copy the win. `--list-files`
+# then re-answers per chunk, and a caller's `--resume-out` silently disables
+# the hand-off detection entirely. Property 5 is the only thing that sees it.
+expect_red "the loop does not stand aside for the advertised flags" \
+  's|      --list-files\|--file-list\|--file-list=\*\|--resume-out\|--resume-out=\*)|      --a-flag-no-caller-passes)|'
+
 echo "grep-driver-parity-test: ok ($passed mutations reddened the gate)"

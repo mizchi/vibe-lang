@@ -1155,6 +1155,30 @@ grep_help_requested() {
 # answering alike.
 grep_sweep() {
   local json=0 arg status=0
+  # A caller using the sweep's own pieces is DRIVING; do not wrap a second
+  # loop around them. The chunk call appends the user's argv after this
+  # function's own `--file-list` / `--resume-out`, and the guest's parser takes
+  # the LAST occurrence -- so a caller-supplied `--resume-out` silently won,
+  # `$resumef` was never written, the loop read that as "no hand-off", advanced
+  # by the whole slice and exited 0 having skipped every file the sweep did not
+  # reach. `--list-files` was the milder version of the same: the guest answers
+  # it before sweeping, so every chunk printed a listing instead of matches.
+  #
+  # Both are the flags this launcher advertises in `grep --help`, so using them
+  # as documented was the way to hit it (Codex on #2956, P2). Handing the call
+  # straight through is also the right SEMANTICS, not just the safe one: these
+  # flags exist so a driver can partition the sweep itself.
+  #
+  # Scanned up to `--`, after which everything is a path.
+  for arg in "$@"; do
+    case "$arg" in
+      --) break ;;
+      --list-files|--file-list|--file-list=*|--resume-out|--resume-out=*)
+        invoke_cli grep "$@"
+        return $?
+        ;;
+    esac
+  done
   for arg in "$@"; do
     case "$arg" in
       --) break ;;
