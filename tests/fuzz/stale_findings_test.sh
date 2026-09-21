@@ -270,11 +270,22 @@ rm -f "$ws_keep"
 ws_drop="$(inject_ws drop 's@^if \[ ! -d "\$WORK" \] || \[ ! -d "\$FIND" \]; then@if false; then@')"
 if grep -q 'if false; then' "$ws_drop"; then
   say "  ok   control staged: same fault, guard disabled"
-  out="$(bash "$ws_drop" --seeds 1..1 --cli "$STAGE2" 2>&1)"
+  # The control must reach the silently-wrong OUTCOME, not merely get past the
+  # guard. Checking only for the banner would also pass for a mutant that
+  # announced itself and then died in generation or compilation, which proves
+  # execution crossed the guard and nothing about a clean `0 findings` result
+  # (#2955 review). The ledger and pre-fix controls already required both;
+  # this one did not.
+  out="$(bash "$ws_drop" --seeds 1..1 --cli "$STAGE2" 2>&1)"; wcrc=$?
   case "$out" in
-    *"[fuzz] mode="*) say "  ok   without the guard it announces a campaign -- the silently-wrong outcome" ;;
+    *"[fuzz] mode="*) say "  ok   without the guard it announces a campaign" ;;
     *) bad "control did not announce a campaign: $(printf '%s' "$out" | tail -1)" ;;
   esac
+  case "$out" in
+    *"0 findings"*) say "  ok   and completes with 0 findings -- the silently-wrong outcome" ;;
+    *) bad "control did not complete a campaign: $(printf '%s' "$out" | tail -1)" ;;
+  esac
+  [ "$wcrc" -eq 0 ] && say "  ok   control exits 0, so the refusal above is the guard's doing" || bad "control exited $wcrc"
 else
   bad "the control mutation did not apply -- the case above is unattributed"
 fi
