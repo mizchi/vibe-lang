@@ -195,30 +195,81 @@ fi
 # Anyone who needs a finding kept across runs copies it out, which is a
 # deliberate act -- the right shape for evidence.
 #
-# The reset is CHECKED, and checked by its postcondition rather than by `rm`'s
-# exit status. This script runs under `set -uo pipefail` with no `-e`, so a
-# failed `rm -rf` -- root-owned or immutable contents, a busy mount -- would
-# otherwise pass unnoticed, `mkdir -p` would succeed against the surviving
-# directory, and the campaign would report `0 findings` with the stale ones
-# still sitting there: exactly the silently-wrong measurement this reset
-# exists to prevent (#2955 review). Asking whether the directory is GONE
+# The reset is CHECKED, and checked by its postcondition rather than by the
+# removal's exit status. This script runs under `set -uo pipefail` with no
+# `-e`, so a failed reset -- root-owned or immutable contents, a busy mount --
+# would otherwise pass unnoticed, `mkdir -p` would succeed against the
+# surviving directory, and the campaign would report `0 findings` with the
+# stale ones still sitting there: exactly the silently-wrong measurement this
+# reset exists to prevent (#2955 review). Asking whether the directory is GONE
 # answers that directly; asking whether `rm` returned 0 is a proxy for it.
-rm -rf "$FIND"
-if [ -e "$FIND" ]; then
-  echo "[fuzz] could not reset $FIND -- findings left there would be read as this run's" >&2
-  echo "[fuzz] remove it by hand and re-run; refusing to measure with an unreset findings dir" >&2
+#
+# The findings are MOVED ASIDE rather than deleted, and removed only once the
+# replacement workspace is known to be usable. Deleting them first meant a run
+# that REFUSED over a workspace it could not recreate had already destroyed
+# what the refusal existed to protect -- measured with a regular file in
+# `work`'s place: `could not create the workspace`, exit 2, and
+# `findings/seed_9_REAL_EVIDENCE/single.vibe` gone (#2955 review). It is the
+# same rule as the ledger ordering above, one step later: nothing irreversible
+# happens until the run is committed to.
+#
+# The block between the markers is excised as a unit by the pre-fix case in
+# tests/fuzz/stale_findings_test.sh, which is why the markers are here. The
+# name is bound ABOVE them: the excision reconstructs a harness with no reset
+# at all, and the steps below still read it, so leaving the binding inside the
+# markers made the mutant die on an unbound variable instead of running the
+# campaign the case needs it to run.
+FIND_PREV="$FIND.prev.$$"
+# >>> findings reset
+rm -rf "$FIND_PREV" 2>/dev/null || true
+if [ -e "$FIND_PREV" ]; then
+  echo "[fuzz] could not clear the holding directory $FIND_PREV" >&2
+  echo "[fuzz] remove it by hand and re-run; refusing to measure without somewhere to keep the previous findings" >&2
   exit 2
 fi
+if [ -e "$FIND" ]; then
+  mv "$FIND" "$FIND_PREV" 2>/dev/null || true
+  if [ -e "$FIND" ]; then
+    echo "[fuzz] could not reset $FIND -- findings left there would be read as this run's" >&2
+    echo "[fuzz] remove it by hand and re-run; refusing to measure with an unreset findings dir" >&2
+    exit 2
+  fi
+fi
+# <<< findings reset
 # Recreating the workspace is checked like every other step here: without
 # `-e`, a failed `mkdir` (no space, no inodes, a permission change between the
 # removal and now) would let the campaign announce itself and finish with
 # `0 findings` and no findings directory at all -- nothing to read, and no
-# error (#2955 review).
+# error (#2955 review). The refusal puts the previous findings BACK first, so
+# what it declined to overwrite is still there when it returns.
 mkdir -p "$WORK" "$FIND" 2>/dev/null || true
 if [ ! -d "$WORK" ] || [ ! -d "$FIND" ]; then
-  echo "[fuzz] could not create the workspace ($WORK, $FIND)" >&2
+  kept=""
+  if [ -e "$FIND_PREV" ]; then
+    # `$FIND` may exist and be empty here -- `mkdir -p` creates what it can and
+    # only `$WORK` failed. Remove that empty shell (rmdir, so it can never take
+    # contents with it) before putting the real one back.
+    rmdir "$FIND" 2>/dev/null || true
+    [ -e "$FIND" ] || mv "$FIND_PREV" "$FIND" 2>/dev/null || true
+    if [ -e "$FIND_PREV" ]; then
+      kept=" -- the previous findings are in $FIND_PREV"
+    else
+      kept=" -- the previous findings were put back"
+    fi
+  fi
+  echo "[fuzz] could not create the workspace ($WORK, $FIND)$kept" >&2
   echo "[fuzz] refusing to measure without somewhere to record findings" >&2
   exit 2
+fi
+# The replacement is usable, so the previous campaign's findings can go. A
+# failure HERE is not fatal and must not refuse: they are no longer in `$FIND`,
+# so nothing reads them as this run's result -- but say where they went rather
+# than leaving an unexplained directory behind.
+if [ -e "$FIND_PREV" ]; then
+  rm -rf "$FIND_PREV" 2>/dev/null || true
+  if [ -e "$FIND_PREV" ]; then
+    echo "[fuzz] note: the previous findings could not be removed; they are in $FIND_PREV" >&2
+  fi
 fi
 
 echo "[fuzz] mode=$MODE gen=${GENMODE:-liveness} seeds=$A..$B cli=$CLI jobs=$JOBS"

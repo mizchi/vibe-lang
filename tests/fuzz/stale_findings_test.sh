@@ -53,7 +53,12 @@ STALE="$FIND/seed_999_STALE_FIXTURE"
 # (#2955 review). The probe must sit beside run_fuzz.sh, which derives the
 # repo root from its own dirname.
 PROBE="tests/fuzz/.probe_stale$$.sh"
-cleanup() { rm -rf "$VIBE_FUZZ_ROOT" "$PROBE" "$SHIMDIR" 2>/dev/null; }
+# PID-scoped, so the glob can never reach a concurrent sibling's probes. The
+# injected copies are removed at each case too; this is the crash path.
+cleanup() {
+  rm -rf "$VIBE_FUZZ_ROOT" "$PROBE" "$SHIMDIR" 2>/dev/null
+  rm -f tests/fuzz/.probe_*"$$".sh tests/fuzz/.probe_*"$$".sh.bak 2>/dev/null
+}
 SHIMDIR=""
 trap cleanup EXIT
 rc=0
@@ -91,32 +96,49 @@ if plant; then
     *"0 findings"*) say "  ok   the run itself reported 0 findings" ;;
     *) bad "the probe run did not report 0 findings: $(printf '%s' "$out" | tail -1)" ;;
   esac
+  # The reset moves the old findings aside before recreating the workspace, so
+  # a successful run must also have removed the holding copy -- otherwise every
+  # campaign leaves one more `findings.prev.<pid>` behind, and a person reading
+  # the workspace finds several directories of findings with nothing saying
+  # which is this run's.
+  if ls -d "$VIBE_FUZZ_ROOT"/findings.prev.* >/dev/null 2>&1; then
+    bad "a holding copy survived a successful run: $(ls -d "$VIBE_FUZZ_ROOT"/findings.prev.* | tr '\n' ' ')"
+  else
+    say "  ok   no holding copy was left behind"
+  fi
 fi
 
-say "=== red: an unresettable findings dir ABORTS the run ==="
-# The #2955 review case. `set -uo pipefail` carries no `-e`, so a failed
-# `rm -rf` would pass unnoticed and `mkdir -p` would succeed against the
-# surviving directory -- a clean campaign reporting 0 findings with stale ones
-# still present.
+say "=== red: a findings dir that cannot be MOVED ASIDE aborts the run ==="
+# The #2955 review case. `set -uo pipefail` carries no `-e`, so a failed reset
+# would pass unnoticed and `mkdir -p` would succeed against the surviving
+# directory -- a clean campaign reporting 0 findings with stale ones still
+# present.
 #
-# Driven by a PATH shim whose `rm` removes nothing and exits nonzero, which
-# works on every filesystem and in every container. A `chattr +i` fixture was
-# tried first and is the more realistic cause, but it SKIPPED wherever the
-# flag is unsupported -- and a skip that leaves `rc` untouched is a gate
-# waiving the property it exists to hold, which is this file's own subject.
+# The reset moves the findings aside instead of deleting them (a refusal must
+# not destroy what it refuses to overwrite, #2955 review), so the operation
+# that can fail is `mv`, and that is what this shim blocks. It used to shim
+# `rm`; under the current ordering a failing `rm` is NOT fatal -- the findings
+# are already out of `$FIND` by then, so nothing reads them as this run's --
+# and shimming it would assert a refusal the harness no longer owes.
+#
+# A PATH shim works on every filesystem and in every container. A `chattr +i`
+# fixture was tried first and is the more realistic cause, but it SKIPPED
+# wherever the flag is unsupported -- and a skip that leaves `rc` untouched is
+# a gate waiving the property it exists to hold, which is this file's own
+# subject.
 SHIMDIR="$(mktemp -d 2>/dev/null || true)"
-need_dir "${SHIMDIR:-}" "rm shim dir" || exit 1
-cat > "$SHIMDIR/rm" <<'SHIM'
+need_dir "${SHIMDIR:-}" "mv shim dir" || exit 1
+cat > "$SHIMDIR/mv" <<'SHIM'
 #!/bin/sh
-# Refuse to remove anything, the way a busy mount or an immutable entry does.
+# Refuse to move anything, the way a busy mount or an immutable entry does.
 exit 1
 SHIM
-chmod +x "$SHIMDIR/rm"
+chmod +x "$SHIMDIR/mv"
 if plant; then
   out="$(PATH="$SHIMDIR:$PATH" bash tests/fuzz/run_fuzz.sh --seeds 1..1 --jobs 1 --cli "$STAGE2" 2>&1)"; arc=$?
   # The precondition must be real before anything the run says is believed.
   if [ ! -e "$STALE" ]; then
-    bad "the shim did NOT block removal -- this case proves nothing"
+    bad "the shim did NOT block the move -- this case proves nothing"
   else
     say "  ok   the shim genuinely blocks the reset"
     case "$out" in
@@ -298,6 +320,71 @@ else
 fi
 rm -f "$ws_drop"
 
+say "=== red: a failed workspace recreation PRESERVES the previous findings ==="
+# The same rule as the ledger ordering above, one step later: a refusal must
+# not destroy what it refuses to overwrite. Measured before the fix with a
+# regular file in `work`'s place -- `could not create the workspace`, exit 2,
+# and `findings/seed_9_REAL_EVIDENCE/single.vibe` gone for good (#2955 review).
+#
+# The fixture needs no fault injection and is deterministic on every platform:
+# `mkdir -p` cannot create `work` where a regular file already sits, so the
+# recreation fails at a point the findings reset has already passed.
+plant_evidence() {
+  rm -rf "$FIND" "$VIBE_FUZZ_ROOT/work"
+  mkdir -p "$FIND/seed_9_REAL_EVIDENCE"
+  printf 'repro\n' > "$FIND/seed_9_REAL_EVIDENCE/single.vibe"
+  : > "$VIBE_FUZZ_ROOT/work"
+  if [ ! -f "$FIND/seed_9_REAL_EVIDENCE/single.vibe" ] || [ ! -f "$VIBE_FUZZ_ROOT/work" ]; then
+    bad "the workspace-collision fixture was not staged -- this case proves nothing"
+    return 1
+  fi
+}
+
+if plant_evidence; then
+  say "  ok   fixture staged: a regular file occupies the work directory's path"
+  out="$(bash tests/fuzz/run_fuzz.sh --seeds 1..1 --jobs 1 --cli "$STAGE2" 2>&1)"; erc=$?
+  case "$out" in
+    *"could not create the workspace"*) say "  ok   the run refused, naming the workspace" ;;
+    *) bad "no workspace refusal: $(printf '%s' "$out" | tail -1)" ;;
+  esac
+  [ "$erc" -ne 0 ] && say "  ok   nonzero exit ($erc)" || bad "the run exited 0 with no workspace"
+  case "$out" in
+    *"[fuzz] mode="*) bad "the run ANNOUNCED itself and fuzzed anyway" ;;
+    *) say "  ok   no campaign was started" ;;
+  esac
+  if [ -f "$FIND/seed_9_REAL_EVIDENCE/single.vibe" ]; then
+    say "  ok   the refusal preserved the previous campaign's evidence"
+  else
+    bad "the refusal DESTROYED the findings it refused to overwrite"
+  fi
+fi
+
+# The pairing: the same fixture against a harness that DELETES instead of
+# moving aside. It must lose the evidence -- otherwise the case above would
+# pass for some reason other than the ordering, and prove nothing.
+wsdel="tests/fuzz/.probe_wsdel$$.sh"
+cp tests/fuzz/run_fuzz.sh "$wsdel"
+sed -i.bak 's@^  mv "\$FIND" "\$FIND_PREV" 2>/dev/null .*$@  rm -rf "$FIND"@' "$wsdel" && rm -f "$wsdel.bak"
+if grep -q '^  rm -rf "\$FIND"$' "$wsdel"; then
+  say "  ok   pre-fix mutant staged: the reset deletes instead of moving aside"
+  if plant_evidence; then
+    out="$(bash "$wsdel" --seeds 1..1 --jobs 1 --cli "$STAGE2" 2>&1)"
+    case "$out" in
+      *"could not create the workspace"*) say "  ok   pre-fix: it refuses at the same point" ;;
+      *) bad "pre-fix: the mutant did not reach the workspace refusal: $(printf '%s' "$out" | tail -1)" ;;
+    esac
+    if [ -f "$FIND/seed_9_REAL_EVIDENCE/single.vibe" ]; then
+      bad "pre-fix: the evidence survived deletion too -- the case above proves nothing"
+    else
+      say "  ok   pre-fix: the evidence is gone, so preserving it is the fix's doing"
+    fi
+  fi
+else
+  bad "the pre-fix mutation did not apply -- the case above is unattributed"
+fi
+rm -f "$wsdel"
+rm -rf "$FIND" "$VIBE_FUZZ_ROOT/work"
+
 say "=== red: a malformed or zero-padded range must not touch the findings ==="
 # Two shapes, one property: nothing destructive happens before the range is
 # known good. `typo` has no `..`; `08..09` is digit-only and passes `[ -le ]`
@@ -356,7 +443,7 @@ say "=== red: the PRE-FIX harness runs a campaign and leaves it behind ==="
 # completed it with zero findings -- i.e. a run that genuinely did not care.
 probe="$PROBE"
 cp tests/fuzz/run_fuzz.sh "$probe"
-sed -i.bak '/^rm -rf "\$FIND"$/,/^fi$/d' "$probe" && rm -f "$probe.bak"
+sed -i.bak '/^# >>> findings reset$/,/^# <<< findings reset$/d' "$probe" && rm -f "$probe.bak"
 if cmp -s tests/fuzz/run_fuzz.sh "$probe"; then
   bad "the mutation changed nothing -- this case would pass while proving nothing"
 elif grep -q "findings left there would be read as this run" "$probe"; then
