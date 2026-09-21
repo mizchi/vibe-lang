@@ -15,7 +15,8 @@ ships.
 | --- | --- | --- |
 | `v0.0.1` | The one historical release (MoonBit host era) | tagged 2026-04-14 |
 | `0.0.x` | Everything since: the selfhost cutover and all development, including the content once prepared as "0.3.0 GA" ([archive/release-notes-0.3.0.md](../../archive/release-notes-0.3.0.md)) | never released |
-| **`0.1.0-rc.1`** | **The candidate.** Everything 0.1.0 promises is implemented and its acceptance evidence is recorded; what has not happened yet is the bug hunt below | current target |
+| `0.1.0-rc.1` | The first candidate to publish assets. Its bug hunt came back clean | published 2026-09-21 as a pre-release; superseded |
+| **`0.1.0-rc.2`** | **The candidate.** Everything 0.1.0 promises is implemented and its acceptance evidence is recorded; what has not happened yet is a bug hunt against THIS tree | current target |
 | `0.1.0` | **The first release usable by anyone but the author** | after the rc clears §"What promotes an rc to the release"; see [release-notes-0.1.0.md](../../user/getting-started/release-notes-0.1.0.md) |
 | `0.2.0` | Structured concurrency, a type system aimed at formalization, a dedicated agent harness | after 0.1.0 |
 | `1.0.0` | Maturity. Not a synonym for the first public release | unscheduled |
@@ -25,12 +26,12 @@ architecture experiments, repository tooling, stdlib additions — lives in the
 [Backlog (unscheduled) milestone](https://github.com/mizchi/vibe-lang/milestone/4)
 rather than in a version above. It is not a fourth rung of the ladder.
 
-`runtime/vibe` reports `0.1.0-rc.1`.
+`runtime/vibe` reports `0.1.0-rc.2`.
 `scripts/build_release_assets.sh` requires `VIBE_VERSION` to equal the tag being
 built, so a candidate cannot be published under the release's own number, and
 `scripts/check_version_ladder.sh` keeps this table, the launcher, and the
 release notes from drifting apart (a pre-release is reduced to the release it
-documents, so `0.1.0-rc.1` is checked against the 0.1.0 notes). `release.yml`
+documents, so `0.1.0-rc.2` is checked against the 0.1.0 notes). `release.yml`
 marks any tag carrying a SemVer pre-release suffix as a GitHub **pre-release**,
 so a candidate never becomes the "Latest release" the README's installer
 resolves to.
@@ -49,8 +50,22 @@ not expressed as one.
 
 So a botched candidate is not retried under its own number; the candidate line
 moves up. `0.1.0-rc.0` was published with zero assets by the pre-#2951
-workflow, and `0.1.0-rc.1` is the candidate for that reason and no other -- the
-tree it is cut from carries no compiler change on that account.
+workflow, and `0.1.0-rc.1` was the candidate for that reason and no other --
+the tree it was cut from carries no compiler change on that account.
+
+**`0.1.0-rc.2` moves the line for a different reason, and a healthier one.**
+`0.1.0-rc.1` published cleanly: ten assets, checksums verified, and
+`release-install` green on fresh Ubuntu and macOS. Nothing about it failed.
+The line moves because the TREE moved -- a candidate names a commit, and the
+commit rc.1 names is no longer main's -- and because rc.1's number is spent
+the moment it is published, whether or not anything went wrong with it. A
+candidate exists to be hunted for bugs, so leaving one in place while its tree
+is superseded would be asking people to look for problems in something nobody
+is going to ship.
+
+The corollary is the rule this section really encodes: **every new candidate
+costs a number, so cut one when the tree is worth hunting, not on a
+schedule.**
 
 ### What promotes an rc to the release
 
