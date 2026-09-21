@@ -70,6 +70,13 @@ esac
 case "${B:-}" in
   ''|*[!0-9]*) echo "[fuzz] --seeds end must be a non-negative integer (got: ${B:-empty} from $SEEDS)" >&2; exit 2 ;;
 esac
+# Normalize to explicit base 10 BEFORE any comparison or arithmetic. A
+# digit-only check accepts `08..09`, and the two numeric parsers disagree:
+# `[ 08 -le 09 ]` passes, while `$((09))` is an invalid octal literal. So a
+# zero-padded range used to clear the findings and the ledger, and only then
+# die at `total=$((B - A + 1))` with `total: unbound variable` -- the campaign
+# never ran and the previous one was gone (#2955 review).
+A=$((10#$A)); B=$((10#$B))
 [ "$A" -le "$B" ] || { echo "[fuzz] --seeds start must not exceed end (got: $SEEDS)" >&2; exit 2; }
 if [ -z "$JOBS" ]; then
   JOBS="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)"

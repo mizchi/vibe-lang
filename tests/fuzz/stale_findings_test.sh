@@ -298,6 +298,40 @@ else
 fi
 rm -f "$ws_drop"
 
+say "=== red: a malformed or zero-padded range must not touch the findings ==="
+# Two shapes, one property: nothing destructive happens before the range is
+# known good. `typo` has no `..`; `08..09` is digit-only and passes `[ -le ]`
+# but is an invalid octal literal to `$(( ))`, so it used to clear both
+# records and then die at `total=$((B - A + 1))` (#2955 review).
+for rng in typo 9..1; do
+  rm -rf "$FIND/seed_9_RANGE"; mkdir -p "$FIND/seed_9_RANGE"
+  printf 'repro\n' > "$FIND/seed_9_RANGE/single.vibe"
+  out="$(bash tests/fuzz/run_fuzz.sh --seeds "$rng" --jobs 1 --cli "$STAGE2" 2>&1)"; rrc=$?
+  case "$out" in
+    *"--seeds"*) say "  ok   '$rng' rejected, naming --seeds" ;;
+    *) bad "'$rng' produced no --seeds diagnostic: $(printf '%s' "$out" | tail -1)" ;;
+  esac
+  [ "$rrc" -ne 0 ] && say "  ok   '$rng' exits nonzero ($rrc)" || bad "'$rng' exited 0"
+  if [ -f "$FIND/seed_9_RANGE/single.vibe" ]; then
+    say "  ok   '$rng' left the previous findings intact"
+  else
+    bad "'$rng' DESTROYED the previous findings before validating the range"
+  fi
+  rm -rf "$FIND/seed_9_RANGE"
+done
+
+# Zero-padded endpoints are accepted and read as base 10, not octal.
+out="$(bash tests/fuzz/run_fuzz.sh --seeds 08..09 --jobs 1 --cli "$STAGE2" 2>&1)"; zrc=$?
+case "$out" in
+  *"seeds=8..9"*) say "  ok   '08..09' normalizes to 8..9" ;;
+  *) bad "'08..09' was not normalized: $(printf '%s' "$out" | head -1)" ;;
+esac
+case "$out" in
+  *"done: 2 seeds"*) say "  ok   and completes the campaign" ;;
+  *) bad "'08..09' did not complete: $(printf '%s' "$out" | tail -1)" ;;
+esac
+[ "$zrc" -eq 0 ] && say "  ok   exits 0" || bad "'08..09' exited $zrc"
+
 say "=== red: the PRE-FIX harness runs a campaign and leaves it behind ==="
 # Reconstruct the old behaviour so the case proves the fix was load-bearing
 # rather than merely present.
