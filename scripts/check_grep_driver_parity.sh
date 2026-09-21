@@ -223,9 +223,18 @@ echo "grep-driver-parity: runtime/vibe answers at a budget the no-loop control r
 # never written, and that reads as "no hand-off": advance by the whole slice
 # and exit 0, having skipped every file the sweep did not reach (Codex on
 # #2956, P2). The loop now stands aside for these flags.
+#
+# VIBE_GREP_CHUNK_FILES=1 IS LOAD-BEARING, and leaving it out made this case
+# certify nothing. The corpus is 4 files and the default cap is 8, so the sweep
+# takes ONE chunk -- and "each chunk re-answers the listing" cannot be seen
+# when there is only one chunk. Measured: with the bypass removed the banner
+# count stayed 1 and this property passed, which the self-test caught by the
+# mutation failing to redden the gate. At cap=1 the same removal yields one
+# listing per file instead.
 listing_out="$WORK/listing"
 status=0
 env VIBE_CLI_WASM="$STAGE2" VIBE_RUNNER="$RUNNER" VIBE_BUILD_CACHE_DIR="$(mktemp -d)" \
+    VIBE_GREP_CHUNK_FILES=1 \
     "$LAUNCHER" grep --list-files --pattern "$PATTERN" "$CORPUS" \
     >"$listing_out" 2>"$listing_out.err" || status=$?
 [ "$status" = "0" ] || fail "runtime/vibe grep --list-files failed (exit $status)
