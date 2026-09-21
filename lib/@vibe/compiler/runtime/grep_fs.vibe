@@ -91,19 +91,31 @@ fn grep_fs_empty_pairs() -> Array[(String, String)] {
 /// Proven by varying only the cap: a corpus that succeeds at the default 8192
 /// MB traps with the identical message at 512 MB.
 ///
-/// The dependency `rdb` stays per-call on purpose. It holds SOURCES, and
-/// sharing it across entry files is how one file would resolve a name against
-/// another's entry context -- a typed filter answering from the wrong context
-/// would return a quietly wrong set, which is worse than the crash. The env
-/// cache is keyed by dependency PATH and `ensure_fingerprint_fs_impl` only
-/// records a module once it has actually checked it, so its entries are whole
-/// per module and reusable across entries. That is the same reuse the
+/// The env cache is keyed by dependency PATH and `ensure_fingerprint_fs_impl`
+/// only records a module once it has actually checked it, so its entries are
+/// whole per module and reusable across entries. That is the same reuse the
 /// incremental build already relies on from this function; grep was the only
 /// caller discarding it.
-fn grep_fs_typed_context(path: String, raw_source: String, cache_in: Array[(String, TypeEnv)]) -> (GrepTyped, Array[(String, TypeEnv)]) with Fs {
+///
+/// `rdb_in` and `dep_sources_in` are threaded for the same reason, and they
+/// only pay off TOGETHER. Sharing the ripple db alone changes nothing
+/// measurable: the db supplies the FINGERPRINT half of `step_module_fs`'s
+/// reuse test, and the other half is `dep_source_cache_is_current`, which a
+/// per-call empty cache answers `false` for every time -- so the walk re-checked
+/// every module with the fingerprint sitting right there. Measured, sharing the
+/// db by itself was +0.2% wall and no memory change.
+///
+/// Neither shared value can carry one entry's context into another's answer.
+/// Both are keyed by dependency PATH: the ripple db maps a path to that file's
+/// own text, the dep-source cache maps a path to the text last walked for it,
+/// and a relative import resolves through the importing file's directory,
+/// which is part of the path. `valid_persistent_type_env` is content-addressed
+/// by fingerprint on top of that. `grep_fs_test.vibe` pins the property with
+/// two swept files binding the same name to different types.
+fn grep_fs_typed_context(path: String, raw_source: String, cache_in: Array[(String, TypeEnv)], rdb_in: RippleDb, dep_sources_in: Array[(String, String)]) -> (GrepTyped, Array[(String, TypeEnv)], RippleDb, Array[(String, String)]) with Fs {
   handle {
     let groups = collect_source_groups_fs(path)
-    let mut rdb = ripple_new()
+    let mut rdb = rdb_in
     let mut entry_source = raw_source
     let mut gi = 0
     while gi < Array::length(groups) {
@@ -121,13 +133,13 @@ fn grep_fs_typed_context(path: String, raw_source: String, cache_in: Array[(Stri
       }
       gi = gi + 1
     }
-    let (_, walked, env_cache, _, _) = ensure_fingerprint_fs_impl(rdb, cache_in, grep_fs_empty_pairs(), 0, path)
+    let (_, walked, env_cache, dep_sources, _) = ensure_fingerprint_fs_impl(rdb, cache_in, dep_sources_in, 0, path)
     let deps = match ripple_get_deps(walked, path) {
       Some(d) => d,
       None => grep_empty_strings()
     }
     let import_env = projected_import_env_for_test(entry_source, path, deps, grep_fs_fill_dep_envs(walked, env_cache, deps))
-    (grep_typed_context(raw_source, entry_source, import_env), env_cache)
+    (grep_typed_context(raw_source, entry_source, import_env), env_cache, walked, dep_sources)
   } with {
   // The graph did not check. That is a real answer, not a reason to fall
   // back to single-file typing: doing so would type-check this file against
@@ -136,7 +148,10 @@ fn grep_fs_typed_context(path: String, raw_source: String, cache_in: Array[(Stri
   // `cache_in` and not an empty cache: entries are whole per module, so a
   // file whose own walk threw leaves the ones already recorded valid for the
   // files after it.
-  Exception::Throw(msg) => (grep_typed_context_error(raw_source, msg), cache_in) }
+  // `rdb_in` / `dep_sources_in` and not fresh ones, for the same reason as
+  // `cache_in`: both are per-path records of a file's own text, so the rows a
+  // thrown walk already wrote stay valid for the files after it.
+  Exception::Throw(msg) => (grep_typed_context_error(raw_source, msg), cache_in, rdb_in, dep_sources_in) }
 }
 
 fn grep_fs_cache_has(cache: Array[(String, TypeEnv)], path: String) -> Bool {
@@ -194,10 +209,16 @@ export fn grep_scan_fs_report(root: String, pattern: String, wheres: Array[Strin
   let has_typed_filter = Array::length(wheres) > 0 || Array::length(where_rows) > 0
   let out = grep_empty_strings()
   let warnings = grep_empty_strings()
-  // #2914: one cache for the whole sweep. Per-file it was cold every time, so
-  // the tree-wide typed sweep re-typed the compiler's closure once per
-  // matching file and ran past the 8 GB linear-memory cap.
+  // #2914: three caches for the whole sweep, not one per file. Cold every
+  // time, the tree-wide typed sweep re-typed the compiler's closure once per
+  // matching file and ran past the 8 GB linear-memory cap. The env cache alone
+  // was not enough: `step_module_fs` reuses a module only when the ripple db
+  // has its fingerprint AND the dep-source cache says its text is unchanged,
+  // so a fresh db or a fresh dep-source cache re-checks the closure either
+  // way. See grep_fs_typed_context for why sharing all three is sound.
   let mut typed_env_cache = grep_fs_empty_env_cache()
+  let mut typed_rdb = ripple_new()
+  let mut typed_dep_sources = grep_fs_empty_pairs()
   let mut i = 0
   while i < Array::length(files) {
     let path = Array::get(files, i)
@@ -214,8 +235,10 @@ export fn grep_scan_fs_report(root: String, pattern: String, wheres: Array[Strin
     } }
     if Array::length(hits) > 0 {
       let ctx = if typed {
-        let (typed_ctx, next_cache) = grep_fs_typed_context(path, source, typed_env_cache)
+        let (typed_ctx, next_cache, next_rdb, next_dep_sources) = grep_fs_typed_context(path, source, typed_env_cache, typed_rdb, typed_dep_sources)
         typed_env_cache = next_cache
+        typed_rdb = next_rdb
+        typed_dep_sources = next_dep_sources
         typed_ctx
       } else {
         grep_untyped_context()
