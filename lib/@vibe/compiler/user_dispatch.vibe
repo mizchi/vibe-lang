@@ -67,7 +67,11 @@ import @vibe/compiler/runtime {
   doc_at_source,
   escape_spans,
   escape_spans_strict,
+  grep_list_files,
+  grep_read_file_list,
+  grep_scan_files_report,
   grep_scan_fs_report,
+  grep_split_file_list,
   incremental_invalidation_trace_json,
   incremental_typecheck_telemetry_json,
   rc_classify_source,
@@ -2212,11 +2216,58 @@ fn selfhost_cli_user_grep_args(args: Array[String]) -> Int with Env + Exception 
     } else {
       ()
     }
+    // #2914: the same file-list / resume contract cli_adapter.vibe carries, so
+    // `runtime/vibe grep` can drive a resumable sweep too. Until this, the
+    // argv path had no way to be chunked: it stopped at the guard with the
+    // located refusal and never finished a tree-wide typed sweep -- measured,
+    // file 70 of 1224 -- while its own diagnostic advised lowering
+    // `VIBE_GREP_CHUNK_FILES`, a knob that did nothing on this path.
+    //
+    // Read ONCE, outside the loop, and there is exactly one call to the sweep
+    // below. Two call sites are how `VIBE_GREP_RESUME` came to be honoured on
+    // one adapter path and silently ignored on the other.
+    let chunk_list = Env::get("VIBE_GREP_FILE_LIST")
+    let resume_out = Env::get("VIBE_GREP_RESUME_OUT")
+    // The files the sweep WOULD visit, for a driver that wants to partition
+    // them. Printed rather than swept; the skip policy stays in source_walk.
+    if Env::get("VIBE_GREP_LIST_FILES") == "1" {
+      let listing = StringBuilder::new()
+      let mut li = 0
+      while li < Array::length(paths) {
+        StringBuilder::push(listing, grep_list_files(Array::get(paths, li)))
+        li = li + 1
+      }
+      print_text(StringBuilder::freeze(listing))
+      return 0
+    } else {
+      ()
+    }
+    // A chunk IS the sweep, once -- not once per path. The chunk a driver
+    // hands back was cut from the COMBINED listing of every path, so running
+    // it inside the per-path loop would emit each match once per path: two
+    // paths, every result doubled, exit 0. That is the silent-wrong shape
+    // this repo ranks above crashing, and it is invisible to a one-path gate.
+    let job_count = if chunk_list != "" { 1 } else { Array::length(paths) }
     let acc = StringBuilder::new()
     let mut first = true
     let mut pi = 0
-    while pi < Array::length(paths) {
-      let (text, warnings) = grep_scan_fs_report(Array::get(paths, pi), pattern, wheres, where_rows, only, json)
+    while pi < job_count {
+      let sweep_root = Array::get(paths, pi)
+      let sweep_files = if chunk_list != "" {
+        grep_read_file_list(chunk_list)
+      } else {
+        grep_split_file_list(grep_list_files(sweep_root))
+      }
+      // `root_is_dir` decides whether an unparseable file is fatal: naming ONE
+      // file and getting silence back is the case that must throw. Several
+      // paths is a set however the files arrived, so the chunked reading keeps
+      // the single-named-file case exactly and widens nothing else.
+      let sweep_is_dir = if chunk_list != "" && Array::length(paths) > 1 {
+        true
+      } else {
+        Fs::is_dir(sweep_root)
+      }
+      let (text, warnings) = grep_scan_files_report(sweep_files, pattern, wheres, where_rows, only, json, sweep_is_dir, resume_out)
       // A file the sweep could not parse is reported, not searched: the
       // warning is what tells "no match" from "not searched" apart, so it
       // reaches stderr the way the launcher used to relay `<out>.warn`.

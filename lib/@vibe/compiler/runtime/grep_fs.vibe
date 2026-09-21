@@ -298,6 +298,39 @@ export fn grep_list_files(root: String) -> String with Fs {
   grep_join_lines(files, false)
 }
 
+/// Split a listing produced by `grep_list_files` back into paths.
+///
+/// Both halves of the file-list contract live here, with the format, so a
+/// producer and a consumer cannot disagree about it. The two drivers
+/// (`scripts/vibe_grep_bin.sh` and `runtime/vibe`) and the two CLI entry
+/// paths (env-mode `cli_adapter`, argv-mode `user_dispatch`) all go through
+/// these, rather than each carrying its own splitter.
+export fn grep_split_file_list(text: String) -> Array[String] {
+  let out = grep_empty_strings()
+  let mut start = 0
+  let mut i = 0
+  while i <= String::length(text) {
+    if i == String::length(text) || String::byte_at(text, i) == 10 {
+      let line = String::substring(text, start, i)
+      if String::length(line) > 0 {
+        Array::push(out, line)
+      } else {
+        ()
+      }
+      start = i + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// The chunk a driver wrote, read back as paths.
+export fn grep_read_file_list(path: String) -> Array[String] with Exception + Fs {
+  grep_split_file_list(Fs::read_file(path))
+}
+
 /// The sweep proper, over an EXPLICIT file list.
 ///
 /// #2914: a single wasm32 process tops out at 4 GiB and the sweep's cost
