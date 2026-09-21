@@ -27,13 +27,24 @@
 # budget's override exists so the same code path is reachable in seconds. The
 # tree-wide behaviour is recorded in the commit, not re-run here.
 #
+# WHICH COMPILER: the STRICT resolver, not the lenient one. This gate tests
+# behaviour that exists only in a NEW compiler, so `resolve_stage2`'s
+# degradation -- newest generation on disk, else the committed seed -- is
+# always the wrong answer here: the seed has no budget guard, so the gate
+# would fail while reporting nothing about the change. It failed exactly that
+# way on its first CI run. The strict resolver refuses instead.
+#
+# `VIBE_STAGE2_WASM` is the second name because that is what the compiler-gate
+# selftests lane exports; `GREP_BUDGET_STAGE2` stays first so a caller can
+# still point this at one artifact specifically.
+#
 #   GREP_BUDGET_STAGE2=<stage2.wasm> bash scripts/check_grep_memory_budget.sh
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 . "$ROOT_DIR/scripts/resolve_stage2.sh"
 
-STAGE2="$(resolve_stage2 grep-memory-budget "${GREP_BUDGET_STAGE2:-}")" || exit 1
+STAGE2="$(resolve_stage2_strict grep-memory-budget "${GREP_BUDGET_STAGE2:-${VIBE_STAGE2_WASM:-}}")" || exit 1
 
 # Small enough to sweep in seconds, with enough typed files that the guard has
 # a previous file's cost to reason from (it cannot fire on the first file).

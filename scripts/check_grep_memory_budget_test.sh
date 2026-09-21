@@ -32,6 +32,16 @@ unset VIBE_GREP_MEMORY_BUDGET_MB
 unset VIBE_GREP_MEMORY_SAFETY_FACTOR
 unset VIBE_CLI_WASM
 
+# Resolve the compiler ONCE here and hand it to every run below, rather than
+# letting each mutant resolve for itself. The gate uses the STRICT resolver,
+# so an unresolved compiler is a refusal rather than a silent seed fallback --
+# and a refusal would redden every mutation for a reason that has nothing to
+# do with the mutation, which is the failure mode this whole file exists to
+# rule out. `VIBE_STAGE2_WASM` is what the selftests lane exports.
+. "$ROOT_DIR/scripts/resolve_stage2.sh"
+STAGE2="$(resolve_stage2_strict grep-memory-budget-test "${GREP_BUDGET_STAGE2:-${VIBE_STAGE2_WASM:-}}")" || exit 1
+export GREP_BUDGET_STAGE2="$STAGE2"
+
 MUTANT="scripts/.check_grep_memory_budget_mutant.sh"
 cleanup() { rm -f "$MUTANT"; }
 trap cleanup EXIT
@@ -51,7 +61,7 @@ expect_red() { # <name> <sed-expr>
   if cmp -s "$GATE" "$MUTANT"; then
     fail "$name: the mutation changed NOTHING, so this case proves nothing"
   fi
-  GREP_BUDGET_STAGE2="${GREP_BUDGET_STAGE2:-}" bash "$MUTANT" >/dev/null 2>&1 || status=$?
+  bash "$MUTANT" >/dev/null 2>&1 || status=$?
   if [ "$status" = "0" ]; then
     fail "$name: the mutated gate PASSED; that assertion is not load-bearing"
   fi
@@ -62,7 +72,7 @@ expect_red() { # <name> <sed-expr>
 # The gate must pass unmutated first. Otherwise every case below is red for a
 # reason that has nothing to do with its mutation.
 status=0
-GREP_BUDGET_STAGE2="${GREP_BUDGET_STAGE2:-}" bash "$GATE" >/dev/null 2>&1 || status=$?
+bash "$GATE" >/dev/null 2>&1 || status=$?
 [ "$status" = "0" ] || fail "the UNMUTATED gate does not pass (exit $status).
 Every case below would then be red for an unrelated reason. Run it directly to see why."
 echo "grep-memory-budget-test: ok -- the unmutated gate passes"
