@@ -2,6 +2,7 @@
 
 import ./wit_parser.vibe {
   FKFreestanding,
+  FKStatic,
   IIFunction,
   IITypeDef,
   IIUse,
@@ -480,4 +481,41 @@ test "a resource method keeps its async marker" {
     },
     _ => assert(false)
   }
+}
+
+test "a static resource method keeps its async marker" {
+  // `static` comes first in WIT and `async` belongs to the func-type, so
+  // `static async func` is the valid spelling. Measured before the fix: this
+  // threw `expected 'func'` while the reversed order parsed -- the parser
+  // rejected the valid order and accepted the invalid one.
+  let src = "package wasi:http@0.3.0;\n\ninterface handler {\n  resource client {\n    open: static async func(base: string) -> future<s64>;\n    probe: static func() -> s64;\n  }\n}\n"
+  assert(parse_ok(src))
+  let (_, interfaces, _) = wit_parse(src)
+  let (_, _, items) = Array::get(interfaces, 0)
+  match Array::get(items, 0) {
+    IITypeDef(TDResource(_, funcs, _)) => {
+      let (open_name, open_kind, open_async, _, _, _) = Array::get(funcs, 0)
+      assert(open_name == "open")
+      assert(open_async)
+      match open_kind {
+        FKStatic(owner) => assert(owner == "client"),
+        _ => assert(false)
+      }
+      let (probe_name, probe_kind, probe_async, _, _, _) = Array::get(funcs, 1)
+      assert(probe_name == "probe")
+      assert(not(probe_async))
+      match probe_kind {
+        FKStatic(_) => assert(true),
+        _ => assert(false)
+      }
+    },
+    _ => assert(false)
+  }
+}
+
+test "the reversed async static order is refused by name" {
+  let src = "package wasi:http@0.3.0;\n\ninterface handler {\n  resource client {\n    open: async static func() -> future<s64>;\n  }\n}\n"
+  let msg = parse_err(src)
+  assert(String::contains(msg, "write `static async func`"))
+  assert(String::contains(msg, "open"))
 }

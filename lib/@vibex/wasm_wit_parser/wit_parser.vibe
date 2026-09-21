@@ -546,12 +546,23 @@ fn wit_parse_resource(tokens: Array[WitToken], pos: Array[Int], name: String, do
       } else {
         let fname = wit_expect_ident(tokens, pos)
         wit_expect_sym(tokens, pos, ":")
-        let mut is_static = false
+        // ORDER MATTERS, and this site had it backwards. WIT spells a static
+        // method `id ':' 'static' func-type`, with `async` belonging to the
+        // func-type -- so `static` comes FIRST. Matching `async` first made
+        // the parser reject the VALID `f: static async func()` (`expected
+        // 'func'`, because `async` was still unconsumed) while ACCEPTING the
+        // invalid `f: async static func()`. Measured both ways; Codex on
+        // #2961 caught it.
+        let is_static = wit_match_kw(tokens, pos, "static")
         // Kept, not dropped -- see wit_parse_function. A resource METHOD may
         // be async too, and wasi:http's client surface is written that way.
         let method_is_async = wit_match_kw(tokens, pos, "async")
-        if wit_match_kw(tokens, pos, "static") {
-          is_static = true
+        if method_is_async && not(is_static) && wit_match_kw(tokens, pos, "static") {
+          // The reversed order, refused by name rather than as a bare
+          // `expected 'func'` three tokens later.
+          throw("in resource function '\{fname}': write `static async func`, not `async static func` -- WIT puts `static` before the function type, and `async` is part of that type")
+        } else {
+          ()
         }
         wit_expect_kw(tokens, pos, "func")
         let params = wit_parse_params(tokens, pos)
