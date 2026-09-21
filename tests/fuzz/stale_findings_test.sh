@@ -676,7 +676,21 @@ if grep -q "$(basename "$tlib")" "$tprobe" && grep -q 'vibe_absent_gtimeout' "$t
     # DIRECTORIES only. Counting every entry also counted the node runner's
     # flag cache -- a file it writes into TMPDIR by design -- so the case
     # failed for something that is not a leak.
-    count_dirs() { find "$1" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' '; }
+    # A shell glob, not `find`: no external command to fail, and so nothing to
+    # swallow. The first version redirected `find`'s diagnostic away and piped
+    # an empty result to `wc`, so ANY failure counted as 0 -- the count could
+    # not tell "no directories" from "the command did not run", and this file's
+    # own subject is checks that cannot fail (#2955 review). (`-maxdepth` is
+    # not the portability problem it was reported as: FreeBSD find has both
+    # primaries, and 15 scripts here already use them, several on the macOS
+    # lanes. Removing the external command is still the better answer.)
+    count_dirs() {
+      cd_n=0
+      for cd_e in "$1"/*; do
+        [ -d "$cd_e" ] && cd_n=$((cd_n + 1))
+      done
+      printf '%s' "$cd_n"
+    }
     rm -rf "$FIND"
     TMPDIR="$tmphome" bash "$tprobe" --seeds 1..1 --jobs 1 --cli "$STAGE2" >/dev/null 2>&1
     left="$(count_dirs "$tmphome")"
