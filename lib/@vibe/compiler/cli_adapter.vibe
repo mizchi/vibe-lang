@@ -2572,7 +2572,29 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
   let bare_unstable = if Env::get("VIBE_UNSTABLE") == "1" {
     adapter_no_warnings()
   } else {
-    unstable_surface_diagnostics(input_path, source)
+    // #2938: this gate LEXES (`unstable_import_diagnostics` ->
+    // `lex_with_offsets`), and it runs BEFORE the compile's own handler
+    // exists, so a lexer error left this lane as an uncaught throw: the host
+    // printed `vibe: uncaught error: unexpected character: \` and trapped,
+    // and no `.diag` was written at all. A TYPE error in the same file, on the
+    // same lane, produced `line 2:16-22: binding type mismatch ...` on the
+    // sidecar -- two kinds of rejection, one of them indistinguishable from a
+    // compiler crash. The differential fuzzer classifies exactly that (no
+    // artifact, no diag) as COMPILE_CRASH, which is why 135 of 300 mutated
+    // programs were findings.
+    //
+    // The FS lane's wrapper already swallows here, and says why: "An
+    // unreadable or uningestable entry is the compile's error to report, in
+    // its own words" (`check_unstable_surface_warnings_from_path`). This lane
+    // called the collector directly and inherited no such guard. Falling
+    // through leaves the compile below to report it from inside its handler,
+    // which writes a LOCATED diagnostic.
+    //
+    // Nothing is weakened: a file that cannot be lexed has no imports to
+    // admit, so there is no unstable surface for this gate to miss.
+    handle {
+      unstable_surface_diagnostics(input_path, source)
+    } with { Exception::Throw(_) => adapter_no_warnings() }
   }
   if Array::length(bare_unstable) > 0 {
     return emit_compile_diag(output_path, String::join(bare_unstable, "\n"))
