@@ -215,7 +215,16 @@ case "$got" in
   *"wasm backtrace"*) fail "a missing file-list entry still trapped: $got" ;;
   *) ;;
 esac
-pass "vibe grep --file-list=/--resume-out resolve against the invoking directory; a missing entry is named"
+# CRLF. A list written by an editor that ends lines with \r\n must work: the
+# splitter this one replaced trimmed every entry, so dropping the trim while
+# consolidating rejected every valid path as missing -- a regression on the
+# env-mode path too, not just the new one (Codex on #2956, P2). Splitting on
+# `\n` alone is not reading lines.
+printf 'sub/greppable.vibe\r\nsub/greppable2.vibe\r\n' > "$app/sub/crlflist.txt"
+got="$(cd "$app/sub" && vibe grep --file-list=./crlflist.txt --pattern 'Array::length($(x:exp))' . 2>&1)" \
+  || fail "vibe grep with a CRLF file-list failed: $got"
+case "$got" in *"greppable.vibe:2:3"*) ;; *) fail "a CRLF file-list must sweep the same files a LF one does, got: $got" ;; esac
+pass "vibe grep --file-list=/--resume-out resolve against the invoking directory; a missing entry is named; CRLF lists work"
 
 # --- 5. vibe clean ----------------------------------------------------------
 mkdir -p "$app/.vibe/store/@x/y"
