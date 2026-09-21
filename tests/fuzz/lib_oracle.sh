@@ -27,31 +27,90 @@ RTIMEOUT="${RTIMEOUT:-20}"
 # stale-findings gate that runs this harness fails for a reason having nothing
 # to do with what it checks (#2955 review).
 #
-# The fallback is a REFUSAL rather than "run it without a timeout", which is
-# the pattern scripts/test_vibe_library.sh uses for a test runner. Exit 124 is
-# load-bearing HERE: it is the only thing separating COMPILE_HANG / RUN_HANG
-# from a crash, so running unbounded would delete two finding classes from a
-# differential oracle -- and an actual hang would never end, leaving the
-# campaign stuck instead of recording it. A measurement refuses rather than
-# degrading.
-#
-# `exit` from a sourced file ends the SOURCING shell, which is what both
-# consumers want; it is also what the `:?` guards above already do.
+# The fallback is a WATCHDOG, not "run it unbounded" -- the pattern
+# scripts/test_vibe_library.sh uses for a test runner. Exit 124 is load-bearing
+# HERE: it is the only thing separating COMPILE_HANG / RUN_HANG from a crash,
+# so an unbounded lane deletes two finding classes from a differential oracle,
+# and an actual hang never ends -- the campaign wedges instead of recording it.
+# So bounded execution is kept on a machine with neither binary, in shell
+# (#2955 review).
 if command -v timeout >/dev/null 2>&1; then
   TIMEOUT_BIN="timeout"
 elif command -v gtimeout >/dev/null 2>&1; then
   TIMEOUT_BIN="gtimeout"
 else
-  echo "[fuzz] neither 'timeout' nor 'gtimeout' is on PATH" >&2
-  echo "[fuzz] install GNU coreutils -- on macOS 'brew install coreutils' provides gtimeout" >&2
-  echo "[fuzz] refusing to measure: without one, every compile reads as COMPILE_CRASH and a hang never ends" >&2
-  exit 2
+  TIMEOUT_BIN=""
 fi
+
+# A `timeout`-compatible watchdog in POSIX shell, used only when neither
+# binary exists. Contract kept identical to timeout(1) for the one thing the
+# callers read: **124 means the bound was reached**, any other status is the
+# command's own.
+#
+# The killed-vs-died distinction is taken from a MARKER the watchdog writes
+# before signalling, not from the exit status. A child killed by SIGTERM
+# reports 143 either way, so mapping 143 to 124 would report a program the OOM
+# killer took as a HANG -- the wrong finding class, which is worse than none.
+# With the marker, only a kill this function performed answers 124.
+watchdog_run() { # <seconds> <cmd...>
+  local secs="$1"; shift
+  local marker
+  marker="$(mktemp 2>/dev/null)" || marker=""
+  [ -n "$marker" ] && rm -f "$marker"
+  # Job control is enabled around the launch so the child becomes a PROCESS
+  # GROUP LEADER, and the signals below go to `-$cmd_pid` -- the whole group.
+  # This is what timeout(1) does, and without it the bound does not bound:
+  # measured, `watchdog_run 2 sh -c 'echo before; sleep 30'` answered 124 after
+  # 30 SECONDS, because only the direct child was signalled while the real
+  # workload kept running and held the command substitution's pipe open. Every
+  # call site here spawns exactly that shape (`env ... bash runner ... node`).
+  local had_monitor=0
+  case "$-" in *m*) had_monitor=1 ;; esac
+  set -m
+  "$@" &
+  local cmd_pid=$!
+  [ "$had_monitor" -eq 1 ] || set +m
+  (
+    # stdout is closed off so this subshell never holds a command
+    # substitution's pipe open past the child it is watching.
+    i=0
+    while [ "$i" -lt "$secs" ]; do
+      sleep 1
+      kill -0 "$cmd_pid" 2>/dev/null || exit 0
+      i=$((i + 1))
+    done
+    [ -n "$marker" ] && : > "$marker"
+    kill -TERM "-$cmd_pid" 2>/dev/null || kill -TERM "$cmd_pid" 2>/dev/null
+    sleep 2
+    kill -KILL "-$cmd_pid" 2>/dev/null || kill -KILL "$cmd_pid" 2>/dev/null
+  ) >/dev/null 2>&1 &
+  local watch_pid=$!
+  wait "$cmd_pid" 2>/dev/null
+  local rc=$?
+  kill "$watch_pid" 2>/dev/null
+  wait "$watch_pid" 2>/dev/null
+  if [ -n "$marker" ] && [ -e "$marker" ]; then
+    rm -f "$marker"
+    return 124
+  fi
+  rm -f "$marker" 2>/dev/null
+  return "$rc"
+}
+
+# One spelling for the three call sites below, so which mechanism bounds them
+# is decided once.
+run_bounded() { # <seconds> <cmd...>
+  if [ -n "$TIMEOUT_BIN" ]; then
+    "$TIMEOUT_BIN" "$@"
+  else
+    watchdog_run "$@"
+  fi
+}
 
 compile() { # src out extra-env...
   local src="$1" out="$2"; shift 2
   rm -f "$out" "$out.diag"
-  "$TIMEOUT_BIN" "$CTIMEOUT" env VIBE_PREOPEN_DIR="$ROOT" VIBE_IMPORT_ABI=raw "$@" \
+  run_bounded "$CTIMEOUT" env VIBE_PREOPEN_DIR="$ROOT" VIBE_IMPORT_ABI=raw "$@" \
     $RUNNER --invoke cli_main "$CLI" "$src" "$out" _start \
     > "$out.log" 2>&1
   local rc=$?
@@ -64,7 +123,7 @@ compile() { # src out extra-env...
 run_linear() { # wasm -> prints result or RUN_TRAP/RUN_HANG
   local wasm="$1"
   local out
-  out=$("$TIMEOUT_BIN" "$RTIMEOUT" env VIBE_PREOPEN_DIR="$ROOT" \
+  out=$(run_bounded "$RTIMEOUT" env VIBE_PREOPEN_DIR="$ROOT" \
     $RUNNER --invoke _start "$wasm" 2>/dev/null)
   local rc=$?
   if [ $rc -eq 124 ]; then echo "RUN_HANG"; return; fi
@@ -75,7 +134,7 @@ run_linear() { # wasm -> prints result or RUN_TRAP/RUN_HANG
 run_gc() {
   local wasm="$1"
   local out
-  out=$("$TIMEOUT_BIN" "$RTIMEOUT" wasmtime run -W gc=y,function-references=y,exceptions=y \
+  out=$(run_bounded "$RTIMEOUT" wasmtime run -W gc=y,function-references=y,exceptions=y \
     --invoke _start "$wasm" 2>/dev/null)
   local rc=$?
   if [ $rc -eq 124 ]; then echo "RUN_HANG"; return; fi

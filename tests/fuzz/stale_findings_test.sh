@@ -455,40 +455,117 @@ fi
 rm -f "$hold"
 rm -rf "$FIND" "$HOLD0" "$FIND.prev.FIXEDPID.1"
 
-say "=== red: no GNU timeout REFUSES instead of reporting every seed as a finding ==="
+say "=== red: no GNU timeout falls back to a watchdog that still BOUNDS ==="
 # `timeout` is absent from a stock macOS (BSD userland; coreutils installs it
 # as `gtimeout`), and this gate runs the real harness from `release-check`.
 # With neither binary present every lane of every seed was a command-not-found
 # -- 127, no wasm, no diag -- which `compile` reads as COMPILE_CRASH, so the
 # campaign reported a compiler bug per generated program (#2955 review).
 #
+# The fallback keeps the BOUND rather than dropping it: 124 is the only thing
+# separating COMPILE_HANG / RUN_HANG from a crash, so an unbounded lane would
+# delete two finding classes and a real hang would wedge the campaign. The
+# cases below check the watchdog against timeout(1)'s contract, then run a real
+# campaign through it.
+#
 # The probe removes both candidates by NAME rather than by emptying PATH, so
 # everything else the harness needs still resolves.
 tprobe="tests/fuzz/.probe_to$$.sh"
 tlib="tests/fuzz/.probe_tolib$$.sh"
+wdcase="tests/fuzz/.probe_wdcase$$.sh"
 cp tests/fuzz/run_fuzz.sh "$tprobe"
 cp tests/fuzz/lib_oracle.sh "$tlib"
 sed -i.bak "s@lib_oracle.sh\"@$(basename "$tlib")\"@" "$tprobe" && rm -f "$tprobe.bak"
 sed -i.bak 's@command -v timeout @command -v vibe_absent_timeout @; s@command -v gtimeout @command -v vibe_absent_gtimeout @' "$tlib" && rm -f "$tlib.bak"
+
+cat > "$wdcase" <<'WD'
+# One watchdog_run case per invocation, with the shell fallback forced on.
+# Prints "rc=<status> elapsed=<seconds>".
+set -uo pipefail
+cd "$(dirname "$0")/../.."
+ROOT="$PWD"
+CLI="x"
+# shellcheck disable=SC1090
+. "$1"
+TIMEOUT_BIN=""
+t0=$(date +%s)
+case "$2" in
+  hang)       watchdog_run 2 sleep 12 >/dev/null 2>&1; rc=$? ;;
+  status)     watchdog_run 5 sh -c 'exit 7' >/dev/null 2>&1; rc=$? ;;
+  self_term)  watchdog_run 5 sh -c 'kill -TERM $$' >/dev/null 2>&1; rc=$? ;;
+  # The shape every call site here actually has: a wrapper that spawns the
+  # real workload. Signalling only the direct child leaves the grandchild
+  # holding the command substitution's pipe, so the answer is 124 and the
+  # WALL CLOCK is the child's full lifetime -- a bound that does not bind
+  # (#2955 review).
+  grandchild) out=$(watchdog_run 2 bash -c 'bash -c "sleep 12" & wait' 2>/dev/null); rc=$? ;;
+  *) echo "unknown case: $2" >&2; exit 2 ;;
+esac
+t1=$(date +%s)
+echo "rc=$rc elapsed=$((t1 - t0))"
+WD
+
+wd_expect() { # <case> <want-rc> <max-seconds> <why>
+  local c="$1"
+  local want="$2"
+  local maxs="$3"
+  local why="$4"
+  local line
+  line="$(bash "$wdcase" "$ROOT/$tlib" "$c" 2>&1 | tail -1)"
+  local rc="${line#rc=}"
+  rc="${rc%% *}"
+  local el="${line##*elapsed=}"
+  case "$rc$el" in
+    *[!0-9]*) bad "$c: unreadable result '$line'"; return ;;
+  esac
+  if [ "$rc" = "$want" ] && [ "$el" -le "$maxs" ]; then
+    say "  ok   $c: rc=$rc in ${el}s -- $why"
+  else
+    bad "$c: got rc=$rc in ${el}s, want rc=$want within ${maxs}s -- $why"
+  fi
+}
+
 if grep -q "$(basename "$tlib")" "$tprobe" && grep -q 'vibe_absent_gtimeout' "$tlib"; then
   say "  ok   probe staged: neither timeout binary resolves"
-  rm -rf "$FIND"; mkdir -p "$FIND/seed_9_REAL_EVIDENCE"
-  printf 'repro\n' > "$FIND/seed_9_REAL_EVIDENCE/single.vibe"
-  out="$(bash "$tprobe" --seeds 1..1 --jobs 1 --cli "$STAGE2" 2>&1)"; trc=$?
-  case "$out" in
-    *"gtimeout"*) say "  ok   the refusal names the binary to install" ;;
-    *) bad "no timeout refusal: $(printf '%s' "$out" | tail -1)" ;;
-  esac
-  [ "$trc" -ne 0 ] && say "  ok   nonzero exit ($trc)" || bad "the run exited 0 with no timeout binary"
-  case "$out" in
-    *"[fuzz] mode="*) bad "the run ANNOUNCED itself and fuzzed anyway" ;;
-    *) say "  ok   no campaign was started" ;;
-  esac
-  if [ -f "$FIND/seed_9_REAL_EVIDENCE/single.vibe" ]; then
-    say "  ok   and the refusal landed before the reset, so the findings survive"
+  wd_expect hang 124 8 "the bound is reached, and reported the way timeout(1) reports it"
+  wd_expect status 7 8 "a command's own status passes through untouched"
+  wd_expect self_term 143 8 "a program the OOM killer TERMs is not relabelled a hang"
+  wd_expect grandchild 124 8 "the whole process group is signalled, so the bound binds"
+  # The pairing for that one: signal only the direct child, as the first
+  # version of this watchdog did. It still ANSWERS 124 -- the marker says the
+  # bound was reached -- while the grandchild runs to completion, so only the
+  # wall clock tells the two apart. That is why this case asserts a duration.
+  gklib="tests/fuzz/.probe_gklib$$.sh"
+  cp "$tlib" "$gklib"
+  sed -i.bak 's@kill -TERM "-\$cmd_pid" 2>/dev/null || @@; s@kill -KILL "-\$cmd_pid" 2>/dev/null || @@' "$gklib" && rm -f "$gklib.bak"
+  if grep -q 'kill -TERM "-\$cmd_pid"' "$gklib"; then
+    bad "the group-kill mutation did not apply -- the grandchild case is unattributed"
   else
-    bad "the refusal DESTROYED the previous findings"
+    gkline="$(bash "$wdcase" "$ROOT/$gklib" grandchild 2>&1 | tail -1)"
+    gkel="${gkline##*elapsed=}"
+    case "$gkel" in
+      ''|*[!0-9]*) bad "pre-fix group-kill: unreadable result '$gkline'" ;;
+      *)
+        if [ "$gkel" -ge 10 ]; then
+          say "  ok   pre-fix: signalling only the direct child ran ${gkel}s -- the bound did not bind"
+        else
+          bad "pre-fix: the direct-child-only kill also finished in ${gkel}s -- the case above proves nothing"
+        fi
+        ;;
+    esac
   fi
+  rm -f "$gklib"
+  rm -rf "$FIND"
+  out="$(bash "$tprobe" --seeds 1..2 --jobs 1 --cli "$STAGE2" 2>&1)"; trc=$?
+  case "$out" in
+    *"[fuzz] mode="*) say "  ok   a campaign runs on the fallback" ;;
+    *) bad "no campaign announced on the fallback: $(printf '%s' "$out" | tail -1)" ;;
+  esac
+  case "$out" in
+    *", 0 findings"*) say "  ok   and reports 0 findings, not one per seed" ;;
+    *) bad "the fallback campaign did not come back clean: $(printf '%s' "$out" | tail -1)" ;;
+  esac
+  [ "$trc" -eq 0 ] && say "  ok   exits 0" || bad "the fallback campaign exited $trc"
 else
   bad "the timeout probe was not staged -- this case would prove nothing"
 fi
@@ -497,8 +574,9 @@ fi
 # It must reach the silently-wrong outcome -- a campaign that announces itself
 # and reports a finding for every seed.
 sed -i.bak '/^if command -v vibe_absent_timeout /,/^fi$/d' "$tlib" && rm -f "$tlib.bak"
-sed -i.bak 's@"\$TIMEOUT_BIN"@vibe_absent_timeout@g' "$tlib" && rm -f "$tlib.bak"
-if ! grep -q 'TIMEOUT_BIN' "$tlib" && grep -q 'vibe_absent_timeout "\$CTIMEOUT"' "$tlib"; then
+sed -i.bak 's@^  run_bounded "\$CTIMEOUT"@  vibe_absent_timeout "$CTIMEOUT"@' "$tlib" && rm -f "$tlib.bak"
+sed -i.bak 's@out=\$(run_bounded "\$RTIMEOUT"@out=$(vibe_absent_timeout "$RTIMEOUT"@' "$tlib" && rm -f "$tlib.bak"
+if ! grep -q 'TIMEOUT_BIN=' "$tlib" && grep -q 'vibe_absent_timeout "\$CTIMEOUT"' "$tlib"; then
   say "  ok   pre-fix mutant staged: the timeout command is called unconditionally"
   rm -rf "$FIND"
   out="$(bash "$tprobe" --seeds 1..2 --jobs 1 --cli "$STAGE2" 2>&1)"
@@ -514,7 +592,7 @@ if ! grep -q 'TIMEOUT_BIN' "$tlib" && grep -q 'vibe_absent_timeout "\$CTIMEOUT"'
 else
   bad "the pre-fix timeout mutation did not apply -- the case above is unattributed"
 fi
-rm -f "$tprobe" "$tlib"
+rm -f "$tprobe" "$tlib" "$wdcase" "$gklib"
 rm -rf "$FIND"
 
 say "=== red: a malformed or zero-padded range must not touch the findings ==="
