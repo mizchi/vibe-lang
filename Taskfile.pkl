@@ -861,6 +861,25 @@ local checkRcDefault = new Task {
 // never broken must still refuse, and real higher-order code must still
 // compile AND run with the right answers -- otherwise "refuse everything"
 // passes the red rows.
+// #2941: `builtin_fixed_arity` falls back to the registry, which answers -1
+// for a name with no row -- "no certain arity, tolerate". Eleven names landed
+// there, so any argument count reached codegen: `Path::resolve("/a", "b")`
+// was clean at `vibe check` and then `reached code generation unresolved`,
+// telling the reader to report a compiler bug for one argument too many.
+// Carries the other half as a control: each name at its DECLARED arity must
+// still be accepted and still run, since a wrong arity in the table would
+// reject correct code while every red row still passed.
+local checkBuiltinArity = new Task {
+  name = "check-builtin-arity"
+  description =
+    "builtins enforce their argument count, and the declared arity still compiles and runs"
+  cmd = "bash scripts/builtin_arity_test.sh"
+  inputs {
+    ...compilerProbeInputs
+    "scripts/builtin_arity_test.sh"
+  }
+  deps { selfhostGeneration }
+}
 local checkArrayArgHead = new Task {
   name = "check-array-arg-head"
   description =
@@ -2678,6 +2697,7 @@ local releaseCheck = new Task {
     checkBuiltinSpelling
     checkGrepNamedUnparseable
     checkArrayArgHead
+    checkBuiltinArity
     checkTaskfileFmt
     // These ran ONLY from the local pre-commit hook -- CI never invoked them.
     // That made the hook the single enforcement point, so #1729 (a stale
@@ -2973,6 +2993,7 @@ tasks {
   checkBuiltinSpelling
   checkGrepNamedUnparseable
   checkArrayArgHead
+  checkBuiltinArity
   testVibeFmt
   testEnsureEntryWasm
   testVibeNormalizeSmoke
