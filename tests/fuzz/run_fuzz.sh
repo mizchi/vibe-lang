@@ -88,6 +88,46 @@ FUZZ_ROOT="${VIBE_FUZZ_ROOT:-_build/fuzz}"
 WORK="$FUZZ_ROOT/work"
 FIND="$FUZZ_ROOT/findings"
 SEEDS_FILE="$FUZZ_ROOT/failing_seeds.txt"
+# ORDER MATTERS, and it is the reverse of the obvious one. The findings
+# directory holds the previous campaign's repro inputs and logs -- the evidence
+# -- so it must not be destroyed until the whole reset is known to be possible.
+# Deleting it first meant a run that REFUSED over an unresettable ledger had
+# already erased what the refusal existed to protect: measured, exit 2 with the
+# finding gone (#2955 review). So the ledger is reset and validated FIRST; only
+# then are the findings removed.
+#
+# Residual, stated rather than hidden: if the findings removal fails AFTER the
+# ledger reset succeeded, the seed list is lost while the findings survive.
+# That is the right way round -- the ledger is a list of seed numbers, which
+# the findings directory's own entry names carry anyway.
+
+mkdir -p "$FUZZ_ROOT"
+# The seed ledger is the OTHER half of the same reset, and it needs the same
+# check: `set -uo pipefail` carries no `-e`, so a redirection that cannot
+# truncate -- a root-owned or immutable file, or a directory in its place --
+# leaves the script running. Every later `record` append then fails too, and
+# the final `wc -l` reads 0 while `findings/` holds a real finding: the
+# campaign reports success having found something (#2955 review). Asking
+# whether the file is now an empty regular file is NOT sufficient on its own:
+# that is also the state of a ledger which was ALREADY empty and could not be
+# truncated, and whose later appends will therefore fail silently (#2955
+# review). So both are required -- the truncation must SUCCEED, and the result
+# must be an empty regular file. The postcondition cannot replace the status
+# here because the desired end state and the failed-but-already-there state are
+# the same state.
+# The subshell is not decoration: bash reports a failed redirection before the
+# `2>/dev/null` on that same command takes effect, so a bare
+# `: > "$f" 2>/dev/null` still prints `Operation not permitted` above the
+# actionable message. Redirecting the subshell's stderr suppresses it from
+# outside, leaving only the diagnostic that says what to do.
+seeds_reset_ok=1
+( : > "$SEEDS_FILE" ) 2>/dev/null || seeds_reset_ok=0
+if [ "$seeds_reset_ok" -eq 0 ] || [ ! -f "$SEEDS_FILE" ] || [ -s "$SEEDS_FILE" ]; then
+  echo "[fuzz] could not reset $SEEDS_FILE -- findings could not be recorded and the run would report 0" >&2
+  echo "[fuzz] remove it by hand and re-run; refusing to measure with an unresettable seed ledger" >&2
+  exit 2
+fi
+
 # Reset BOTH records of what this run found, so they always describe the same
 # run. `failing_seeds.txt` was truncated here and `findings/` was not, which
 # meant a finding directory from an earlier invocation sat there looking
@@ -119,32 +159,6 @@ if [ -e "$FIND" ]; then
   exit 2
 fi
 mkdir -p "$WORK" "$FIND"
-mkdir -p "$FUZZ_ROOT"
-# The seed ledger is the OTHER half of the same reset, and it needs the same
-# check: `set -uo pipefail` carries no `-e`, so a redirection that cannot
-# truncate -- a root-owned or immutable file, or a directory in its place --
-# leaves the script running. Every later `record` append then fails too, and
-# the final `wc -l` reads 0 while `findings/` holds a real finding: the
-# campaign reports success having found something (#2955 review). Asking
-# whether the file is now an empty regular file is NOT sufficient on its own:
-# that is also the state of a ledger which was ALREADY empty and could not be
-# truncated, and whose later appends will therefore fail silently (#2955
-# review). So both are required -- the truncation must SUCCEED, and the result
-# must be an empty regular file. The postcondition cannot replace the status
-# here because the desired end state and the failed-but-already-there state are
-# the same state.
-# The subshell is not decoration: bash reports a failed redirection before the
-# `2>/dev/null` on that same command takes effect, so a bare
-# `: > "$f" 2>/dev/null` still prints `Operation not permitted` above the
-# actionable message. Redirecting the subshell's stderr suppresses it from
-# outside, leaving only the diagnostic that says what to do.
-seeds_reset_ok=1
-( : > "$SEEDS_FILE" ) 2>/dev/null || seeds_reset_ok=0
-if [ "$seeds_reset_ok" -eq 0 ] || [ ! -f "$SEEDS_FILE" ] || [ -s "$SEEDS_FILE" ]; then
-  echo "[fuzz] could not reset $SEEDS_FILE -- findings could not be recorded and the run would report 0" >&2
-  echo "[fuzz] remove it by hand and re-run; refusing to measure with an unresettable seed ledger" >&2
-  exit 2
-fi
 
 echo "[fuzz] mode=$MODE gen=${GENMODE:-liveness} seeds=$A..$B cli=$CLI jobs=$JOBS"
 

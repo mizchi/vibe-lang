@@ -138,7 +138,18 @@ if [ ! -d "$VIBE_FUZZ_ROOT/failing_seeds.txt" ]; then
   bad "the ledger fixture was not created -- this case proves nothing"
 else
   say "  ok   the ledger path is a directory, so truncation must fail"
+  # A refusal must not destroy what it is refusing to overwrite: the findings
+  # directory holds the previous campaign's repro inputs. Before the reorder,
+  # this run exited 2 with the evidence already gone (#2955 review).
+  mkdir -p "$FIND/seed_9_REAL_EVIDENCE"
+  printf 'repro\n' > "$FIND/seed_9_REAL_EVIDENCE/single.vibe"
   out="$(bash tests/fuzz/run_fuzz.sh --seeds 1..1 --cli "$STAGE2" 2>&1)"; lrc=$?
+  if [ -f "$FIND/seed_9_REAL_EVIDENCE/single.vibe" ]; then
+    say "  ok   the refusal preserved the previous campaign's evidence"
+  else
+    bad "the refusal DESTROYED the findings it refused to overwrite"
+  fi
+  rm -rf "$FIND/seed_9_REAL_EVIDENCE"
   case "$out" in
     *"could not reset"*"failing_seeds"*) say "  ok   the run refused, naming the ledger" ;;
     *) bad "no ledger refusal: $(printf '%s' "$out" | tail -1)" ;;
