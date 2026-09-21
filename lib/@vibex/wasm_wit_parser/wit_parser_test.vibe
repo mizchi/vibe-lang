@@ -2,6 +2,7 @@
 
 import ./wit_parser.vibe {
   FKFreestanding,
+  FKStatic,
   IIFunction,
   IITypeDef,
   IIUse,
@@ -12,10 +13,12 @@ import ./wit_parser.vibe {
   TDResource,
   TDVariant,
   TyBool,
+  TyFuture,
   TyId,
   TyList,
   TyOption,
   TyResult,
+  TyS64,
   TyString,
   TyTuple,
   TyU32,
@@ -44,6 +47,16 @@ fn parse_ok(source: String) -> Bool {
     let _ = wit_parse(source)
     true
   } with { Exception::Throw(_) => false }
+}
+
+/// The message a parse threw, or "" when it did not throw. A refusal test
+/// that only asserts "it failed" passes for the wrong reason as soon as an
+/// unrelated error moves in front of the one it means to pin.
+fn parse_err(source: String) -> String {
+  handle {
+    let _ = wit_parse(source)
+    ""
+  } with { Exception::Throw(m) => m }
 }
 
 fn tok_count(source: String) -> Int with Exception {
@@ -123,7 +136,7 @@ test "parse interface with func" {
   assert(name == "greet")
   assert(eq(Array::length(items), 1))
   match Array::get(items, 0) {
-    IIFunction(fname, _, params, result, _) => {
+    IIFunction(fname, _, _, params, result, _) => {
       assert(fname == "greet")
       assert(eq(Array::length(params), 1))
       let (pname, pty) = Array::get(params, 0)
@@ -245,11 +258,11 @@ test "parse world with imports/exports" {
   assert(eq(Array::length(imports), 1))
   assert(eq(Array::length(exports), 1))
   match Array::get(imports, 0) {
-    WIFunction(fname, _, _, _, _) => assert(fname == "log"),
+    WIFunction(fname, _, _, _, _, _) => assert(fname == "log"),
     _ => assert(false)
   }
   match Array::get(exports, 0) {
-    WIFunction(fname, _, _, result, _) => {
+    WIFunction(fname, _, _, _, result, _) => {
       assert(fname == "run")
       match result {
         Some(TyU32) => assert(true),
@@ -278,7 +291,7 @@ test "parse result type" {
   let (_, ifaces, _) = wit_parse(src)
   let (_, _, items) = Array::get(ifaces, 0)
   match Array::get(items, 0) {
-    IIFunction(_, _, _, result, _) => match result {
+    IIFunction(_, _, _, _, result, _) => match result {
       Some(TyResult(ok, err)) => {
         match ok {
           TyString => assert(true),
@@ -301,7 +314,7 @@ test "parse tuple type" {
   let (_, ifaces, _) = wit_parse(src)
   let (_, _, items) = Array::get(ifaces, 0)
   match Array::get(items, 0) {
-    IIFunction(_, _, _, result, _) => match result {
+    IIFunction(_, _, _, _, result, _) => match result {
       Some(TyTuple(items)) => assert(eq(Array::length(items), 2)),
       _ => assert(false)
     }
@@ -315,7 +328,7 @@ test "parse option type" {
   let (_, ifaces, _) = wit_parse(src)
   let (_, _, items) = Array::get(ifaces, 0)
   match Array::get(items, 0) {
-    IIFunction(_, _, _, result, _) => match result {
+    IIFunction(_, _, _, _, result, _) => match result {
       Some(TyOption(inner)) => match inner {
         TyU32 => assert(true),
         _ => assert(false)
@@ -340,4 +353,169 @@ test "parse resource" {
 test "parse wasi http types snippet" {
   let src = "package wasi:http@0.2.0;\n\ninterface types {\n  type method = string;\n  type status-code = u32;\n  record header {\n    name: string,\n    value: string,\n  }\n}"
   assert(parse_ok(src))
+}
+
+// --- the `async` marker (#2064) ------------------------------------------
+// Both defects below were measured before the fix, on the committed seed:
+// the interface case PARSED and returned an item indistinguishable from the
+// sync one, and the world case THREW `expected 'func' or 'interface' after
+// ':'`. A WIT-derived async import set cannot be built from either answer.
+
+test "an interface async func is distinguishable from a sync one" {
+  let src = "package example:prices@1.0.0;\n\ninterface api {\n  get-price: async func(sym: string) -> future<s64>;\n  get-cached: func(sym: string) -> s64;\n}\n"
+  let (_, interfaces, _) = wit_parse(src)
+  let (_, _, items) = Array::get(interfaces, 0)
+  assert(eq(Array::length(items), 2))
+  match Array::get(items, 0) {
+    IIFunction(fname, _, is_async, _, result, _) => {
+      assert(fname == "get-price")
+      assert(is_async)
+      // The future result is recovered too, but it is NOT what makes the
+      // function async -- the next case is the one that separates them.
+      match result {
+        Some(TyFuture(TyS64)) => assert(true),
+        _ => assert(false)
+      }
+    },
+    _ => assert(false)
+  }
+  match Array::get(items, 1) {
+    IIFunction(fname, _, is_async, _, _, _) => {
+      assert(fname == "get-cached")
+      assert(not(is_async))
+    },
+    _ => assert(false)
+  }
+}
+
+test "async is read from the declaration, not from a future result" {
+  // A plain `func` may return `future<T>`, and an `async func` need not. If
+  // the marker were recovered from the result type, both rows below would be
+  // classified wrongly -- which is why the parser records what was written.
+  let src = "package example:prices@1.0.0;\n\ninterface api {\n  sync-future: func() -> future<s64>;\n  async-plain: async func() -> s64;\n}\n"
+  let (_, interfaces, _) = wit_parse(src)
+  let (_, _, items) = Array::get(interfaces, 0)
+  match Array::get(items, 0) {
+    IIFunction(fname, _, is_async, _, result, _) => {
+      assert(fname == "sync-future")
+      assert(not(is_async))
+      match result {
+        Some(TyFuture(TyS64)) => assert(true),
+        _ => assert(false)
+      }
+    },
+    _ => assert(false)
+  }
+  match Array::get(items, 1) {
+    IIFunction(fname, _, is_async, _, result, _) => {
+      assert(fname == "async-plain")
+      assert(is_async)
+      match result {
+        Some(TyS64) => assert(true),
+        _ => assert(false)
+      }
+    },
+    _ => assert(false)
+  }
+}
+
+test "a world can import and export an async func" {
+  let src = "package example:prices@1.0.0;\n\nworld app {\n  import get-price: async func(sym: string) -> future<s64>;\n  import get-cached: func(sym: string) -> s64;\n  export run: async func() -> future<s64>;\n}\n"
+  // Asserted BEFORE destructuring: this used to throw `expected 'func' or
+  // 'interface' after ':'`, and an escaped throw fails the FILE without
+  // naming the test, so a reader cannot tell which property broke.
+  assert(parse_ok(src))
+  let (_, _, worlds) = wit_parse(src)
+  let (_, _, _, imports, exports) = Array::get(worlds, 0)
+  assert(eq(Array::length(imports), 2))
+  assert(eq(Array::length(exports), 1))
+  match Array::get(imports, 0) {
+    WIFunction(fname, _, is_async, _, _, _) => {
+      assert(fname == "get-price")
+      assert(is_async)
+    },
+    _ => assert(false)
+  }
+  match Array::get(imports, 1) {
+    WIFunction(fname, _, is_async, _, _, _) => {
+      assert(fname == "get-cached")
+      assert(not(is_async))
+    },
+    _ => assert(false)
+  }
+  match Array::get(exports, 0) {
+    WIFunction(fname, _, is_async, _, _, _) => {
+      assert(fname == "run")
+      assert(is_async)
+    },
+    _ => assert(false)
+  }
+}
+
+test "a world async interface is refused, not silently accepted" {
+  // Without this arm the `async` match would consume the keyword and fall
+  // through to the interface arm, which accepts it and drops the marker --
+  // the exact silent loss this change removes.
+  let src = "package example:prices@1.0.0;\n\nworld app {\n  import api: async interface {\n    get-price: async func() -> future<s64>;\n  }\n}\n"
+  let msg = parse_err(src)
+  assert(String::contains(msg, "expected 'func' after 'async'"))
+  assert(String::contains(msg, "api"))
+}
+
+test "a resource method keeps its async marker" {
+  let src = "package wasi:http@0.3.0;\n\ninterface handler {\n  resource client {\n    constructor(base: string);\n    send: async func(path: string) -> future<s64>;\n    close: func();\n  }\n}\n"
+  let (_, interfaces, _) = wit_parse(src)
+  let (_, _, items) = Array::get(interfaces, 0)
+  match Array::get(items, 0) {
+    IITypeDef(TDResource(rname, funcs, _)) => {
+      assert(rname == "client")
+      assert(eq(Array::length(funcs), 3))
+      let (_, _, ctor_async, _, _, _) = Array::get(funcs, 0)
+      assert(not(ctor_async))
+      let (send_name, _, send_async, _, _, _) = Array::get(funcs, 1)
+      assert(send_name == "send")
+      assert(send_async)
+      let (close_name, _, close_async, _, _, _) = Array::get(funcs, 2)
+      assert(close_name == "close")
+      assert(not(close_async))
+    },
+    _ => assert(false)
+  }
+}
+
+test "a static resource method keeps its async marker" {
+  // `static` comes first in WIT and `async` belongs to the func-type, so
+  // `static async func` is the valid spelling. Measured before the fix: this
+  // threw `expected 'func'` while the reversed order parsed -- the parser
+  // rejected the valid order and accepted the invalid one.
+  let src = "package wasi:http@0.3.0;\n\ninterface handler {\n  resource client {\n    open: static async func(base: string) -> future<s64>;\n    probe: static func() -> s64;\n  }\n}\n"
+  assert(parse_ok(src))
+  let (_, interfaces, _) = wit_parse(src)
+  let (_, _, items) = Array::get(interfaces, 0)
+  match Array::get(items, 0) {
+    IITypeDef(TDResource(_, funcs, _)) => {
+      let (open_name, open_kind, open_async, _, _, _) = Array::get(funcs, 0)
+      assert(open_name == "open")
+      assert(open_async)
+      match open_kind {
+        FKStatic(owner) => assert(owner == "client"),
+        _ => assert(false)
+      }
+      let (probe_name, probe_kind, probe_async, _, _, _) = Array::get(funcs, 1)
+      assert(probe_name == "probe")
+      assert(not(probe_async))
+      match probe_kind {
+        FKStatic(_) => assert(true),
+        _ => assert(false)
+      }
+    },
+    _ => assert(false)
+  }
+}
+
+test "the reversed async static order is refused by name" {
+  let src = "package wasi:http@0.3.0;\n\ninterface handler {\n  resource client {\n    open: async static func() -> future<s64>;\n  }\n}\n"
+  let msg = parse_err(src)
+  assert(String::contains(msg, "write `static async func`"))
+  assert(String::contains(msg, "open"))
 }

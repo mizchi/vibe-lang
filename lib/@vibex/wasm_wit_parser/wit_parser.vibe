@@ -65,18 +65,18 @@ export enum WitTypeDef {
   TDFlags(String, Array[String], Option[String]);
   TDVariant(String, Array[(String, Option[WitTypeExpr])], Option[String]);
   TDAlias(String, WitTypeExpr, Option[String]);
-  TDResource(String, Array[(String, WitFuncKind, Array[(String, WitTypeExpr)], Option[WitTypeExpr], Option[String])], Option[String])
+  TDResource(String, Array[(String, WitFuncKind, Bool, Array[(String, WitTypeExpr)], Option[WitTypeExpr], Option[String])], Option[String])
 }
 
 export enum WitInterfaceItem {
   IIUse(String, String, Option[String], String, Array[String]);
   IITypeDef(WitTypeDef);
-  IIFunction(String, WitFuncKind, Array[(String, WitTypeExpr)], Option[WitTypeExpr], Option[String])
+  IIFunction(String, WitFuncKind, Bool, Array[(String, WitTypeExpr)], Option[WitTypeExpr], Option[String])
 }
 
 export enum WitWorldItem {
   WIInterface(String, String, Option[String], String);
-  WIFunction(String, WitFuncKind, Array[(String, WitTypeExpr)], Option[WitTypeExpr], Option[String]);
+  WIFunction(String, WitFuncKind, Bool, Array[(String, WitTypeExpr)], Option[WitTypeExpr], Option[String]);
   WIInlineInterface(String, Option[String], Array[WitInterfaceItem]);
   WIInclude(String, String, Option[String], String, Array[(String, String)])
 }
@@ -498,11 +498,20 @@ fn wit_parse_variant(tokens: Array[WitToken], pos: Array[Int], name: String, doc
   TDVariant(name, ArrayBuilder::freeze(cases), docs)
 }
 
-/// wit_parse_function: (Array[WitToken], Array[Int], WitFuncKind, Option[String]) -> (String, WitFuncKind, Array[(String, WitTypeExpr)], Option[WitTypeExpr], Option[String]) with Exception
-fn wit_parse_function(tokens: Array[WitToken], pos: Array[Int], kind: WitFuncKind, docs: Option[String]) -> (String, WitFuncKind, Array[(String, WitTypeExpr)], Option[WitTypeExpr], Option[String]) with Exception {
+/// wit_parse_function: (Array[WitToken], Array[Int], WitFuncKind, Option[String]) -> (String, WitFuncKind, Bool, Array[(String, WitTypeExpr)], Option[WitTypeExpr], Option[String]) with Exception
+///
+/// The `Bool` is the `async` marker. It used to be matched and DISCARDED
+/// (`let _ = wit_match_kw(..., "async")`), so `f: async func() -> future<s64>`
+/// and `f: func() -> future<s64>` parsed to the same item and a caller could
+/// not tell them apart (#2064). Asking "does it return a future?" instead is
+/// not the same question -- WIT lets a plain `func` return `future<T>`, and
+/// lets an `async func` return something else -- so recovering the marker
+/// from the result type classifies by SHAPE where the source made a
+/// DECLARATION, which is the habit #1963 exists to remove.
+fn wit_parse_function(tokens: Array[WitToken], pos: Array[Int], kind: WitFuncKind, docs: Option[String]) -> (String, WitFuncKind, Bool, Array[(String, WitTypeExpr)], Option[WitTypeExpr], Option[String]) with Exception {
   let name = wit_expect_ident(tokens, pos)
   wit_expect_sym(tokens, pos, ":")
-  let _ = wit_match_kw(tokens, pos, "async")
+  let is_async = wit_match_kw(tokens, pos, "async")
   wit_expect_kw(tokens, pos, "func")
   let params = wit_parse_params(tokens, pos)
   let result = if wit_match_sym(tokens, pos, "->") {
@@ -511,14 +520,14 @@ fn wit_parse_function(tokens: Array[WitToken], pos: Array[Int], kind: WitFuncKin
     None
   }
   wit_expect_sym(tokens, pos, ";")
-  (name, kind, params, result, docs)
+  (name, kind, is_async, params, result, docs)
 }
 
 /// wit_parse_resource: (Array[WitToken], Array[Int], String, Option[String]) -> WitTypeDef with Exception
 fn wit_parse_resource(tokens: Array[WitToken], pos: Array[Int], name: String, docs: Option[String]) -> WitTypeDef with Exception {
   if wit_match_sym(tokens, pos, ";") {
     TDResource(name, Array::slice([
-      ("", FKFreestanding, Array::slice([("", TyBool)], 0, 0), None, None)
+      ("", FKFreestanding, false, Array::slice([("", TyBool)], 0, 0), None, None)
     ], 0, 0), docs)
   } else {
     wit_expect_sym(tokens, pos, "{")
@@ -533,14 +542,27 @@ fn wit_parse_resource(tokens: Array[WitToken], pos: Array[Int], name: String, do
           None
         }
         wit_expect_sym(tokens, pos, ";")
-        ArrayBuilder::push(funcs, ("constructor", FKConstructor(name), params, result, fdocs))
+        ArrayBuilder::push(funcs, ("constructor", FKConstructor(name), false, params, result, fdocs))
       } else {
         let fname = wit_expect_ident(tokens, pos)
         wit_expect_sym(tokens, pos, ":")
-        let mut is_static = false
-        let _ = wit_match_kw(tokens, pos, "async")
-        if wit_match_kw(tokens, pos, "static") {
-          is_static = true
+        // ORDER MATTERS, and this site had it backwards. WIT spells a static
+        // method `id ':' 'static' func-type`, with `async` belonging to the
+        // func-type -- so `static` comes FIRST. Matching `async` first made
+        // the parser reject the VALID `f: static async func()` (`expected
+        // 'func'`, because `async` was still unconsumed) while ACCEPTING the
+        // invalid `f: async static func()`. Measured both ways; Codex on
+        // #2961 caught it.
+        let is_static = wit_match_kw(tokens, pos, "static")
+        // Kept, not dropped -- see wit_parse_function. A resource METHOD may
+        // be async too, and wasi:http's client surface is written that way.
+        let method_is_async = wit_match_kw(tokens, pos, "async")
+        if method_is_async && not(is_static) && wit_match_kw(tokens, pos, "static") {
+          // The reversed order, refused by name rather than as a bare
+          // `expected 'func'` three tokens later.
+          throw("in resource function '\{fname}': write `static async func`, not `async static func` -- WIT puts `static` before the function type, and `async` is part of that type")
+        } else {
+          ()
         }
         wit_expect_kw(tokens, pos, "func")
         let params = wit_parse_params(tokens, pos)
@@ -555,7 +577,7 @@ fn wit_parse_resource(tokens: Array[WitToken], pos: Array[Int], name: String, do
         } else {
           FKMethod(name)
         }
-        ArrayBuilder::push(funcs, (fname, kind, params, result, fdocs))
+        ArrayBuilder::push(funcs, (fname, kind, method_is_async, params, result, fdocs))
       }
     }
     TDResource(name, ArrayBuilder::freeze(funcs), docs)
@@ -763,8 +785,8 @@ fn wit_parse_interface_items(tokens: Array[WitToken], pos: Array[Int]) -> Array[
       let name = wit_expect_ident(tokens, pos)
       ArrayBuilder::push(items, IITypeDef(wit_parse_type_alias(tokens, pos, name, docs)))
     } else {
-      let (fname, kind, params, result, _) = wit_parse_function(tokens, pos, FKFreestanding, docs)
-      ArrayBuilder::push(items, IIFunction(fname, kind, params, result, docs))
+      let (fname, kind, fn_is_async, params, result, _) = wit_parse_function(tokens, pos, FKFreestanding, docs)
+      ArrayBuilder::push(items, IIFunction(fname, kind, fn_is_async, params, result, docs))
     }
   }
   ArrayBuilder::freeze(items)
@@ -802,6 +824,12 @@ fn wit_parse_world(tokens: Array[WitToken], pos: Array[Int], docs: Option[String
         WTIdent(_) => {
           let iname = wit_expect_ident(tokens, pos)
           if wit_match_sym(tokens, pos, ":") {
+            // A world function may be `async func`, and this site did not
+            // match the keyword at all -- so `import x: async func(..)` was a
+            // PARSE ERROR ("expected 'func' or 'interface' after ':'"), not a
+            // dropped marker. That is the exact spelling #2064 needs for a
+            // program to declare a WIT-derived async import.
+            let fn_is_async = wit_match_kw(tokens, pos, "async")
             if wit_match_kw(tokens, pos, "func") {
               let params = wit_parse_params(tokens, pos)
               let result = if wit_match_sym(tokens, pos, "->") {
@@ -810,7 +838,12 @@ fn wit_parse_world(tokens: Array[WitToken], pos: Array[Int], docs: Option[String
                 None
               }
               wit_expect_sym(tokens, pos, ";")
-              ArrayBuilder::push(imports, WIFunction(iname, FKFreestanding, params, result, item_docs))
+              ArrayBuilder::push(imports, WIFunction(iname, FKFreestanding, fn_is_async, params, result, item_docs))
+            } else if fn_is_async {
+              // `async interface` is not a thing. Refuse rather than fall
+              // through to the interface arm, which would accept it and drop
+              // the marker -- the failure this whole change is about.
+              throw("expected 'func' after 'async' in world item '\{iname}': only a function can be async -- write `\{iname}: async func(..)`, or drop `async` to declare an interface")
             } else if wit_match_kw(tokens, pos, "interface") {
               let items = wit_parse_interface_items(tokens, pos)
               ArrayBuilder::push(imports, WIInlineInterface(iname, item_docs, items))
@@ -829,6 +862,12 @@ fn wit_parse_world(tokens: Array[WitToken], pos: Array[Int], docs: Option[String
         WTIdent(_) => {
           let iname = wit_expect_ident(tokens, pos)
           if wit_match_sym(tokens, pos, ":") {
+            // A world function may be `async func`, and this site did not
+            // match the keyword at all -- so `export x: async func(..)` was a
+            // PARSE ERROR ("expected 'func' or 'interface' after ':'"), not a
+            // dropped marker. That is the exact spelling #2064 needs for a
+            // program to declare a WIT-derived async import.
+            let fn_is_async = wit_match_kw(tokens, pos, "async")
             if wit_match_kw(tokens, pos, "func") {
               let params = wit_parse_params(tokens, pos)
               let result = if wit_match_sym(tokens, pos, "->") {
@@ -837,7 +876,12 @@ fn wit_parse_world(tokens: Array[WitToken], pos: Array[Int], docs: Option[String
                 None
               }
               wit_expect_sym(tokens, pos, ";")
-              ArrayBuilder::push(exports, WIFunction(iname, FKFreestanding, params, result, item_docs))
+              ArrayBuilder::push(exports, WIFunction(iname, FKFreestanding, fn_is_async, params, result, item_docs))
+            } else if fn_is_async {
+              // `async interface` is not a thing. Refuse rather than fall
+              // through to the interface arm, which would accept it and drop
+              // the marker -- the failure this whole change is about.
+              throw("expected 'func' after 'async' in world item '\{iname}': only a function can be async -- write `\{iname}: async func(..)`, or drop `async` to declare an interface")
             } else if wit_match_kw(tokens, pos, "interface") {
               let items = wit_parse_interface_items(tokens, pos)
               ArrayBuilder::push(exports, WIInlineInterface(iname, item_docs, items))
