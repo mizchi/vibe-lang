@@ -110,13 +110,20 @@ watchdog_run() { # <seconds> <cmd...>
   if [ -z "$marker" ] || [ ! -f "$marker" ]; then
     # Loud, not silent: without a marker this function cannot tell a bound
     # from a crash, and guessing is what the whole mechanism exists to avoid.
-    # 125 is timeout(1)'s own "the timeout itself failed" status. In `compile`
-    # it ends the seed's subshell, so no completion stamp is written and the
-    # campaign refuses; in the run lanes it surfaces as a finding to triage.
-    # Over-reporting is the safe side here, under-reporting is not.
+    # 125 is timeout(1)'s own "the timeout itself failed" status, and every
+    # caller below PROPAGATES it up to run_seed, which ends the seed without
+    # writing a completion stamp -- so the campaign refuses.
+    #
+    # This was `exit 125`, with a comment claiming it ended the seed. It did
+    # not: `compile` is called as `st=$(compile ...)`, so the exit ended only
+    # that command substitution. Measured, a campaign whose marker allocation
+    # fails recorded `seed_1_` with an EMPTY class and `bump= rc= gc= fs=`,
+    # then reported `2 seeds, 2 findings` -- fabricated compiler bugs from a
+    # broken watchdog, which is the one outcome this file must never produce
+    # (#2955 review).
     echo "[fuzz] watchdog could not create its marker in ${WATCHDOG_DIR:-<unset>}" >&2
     echo "[fuzz] refusing to bound this command: a hang could not be told from a crash" >&2
-    exit 125
+    return 125
   fi
   # Job control is enabled around the launch so the child becomes a PROCESS
   # GROUP LEADER, and the signals below go to `-$cmd_pid` -- the whole group.
@@ -178,6 +185,9 @@ compile() { # src out extra-env...
     $RUNNER --invoke cli_main "$CLI" "$src" "$out" _start \
     > "$out.log" 2>&1
   local rc=$?
+  # The watchdog could not bound this command. Say nothing classifiable and
+  # hand the status up: a lane with no verdict is not a finding.
+  if [ $rc -eq 125 ]; then return 125; fi
   if [ $rc -eq 124 ]; then echo "COMPILE_HANG"; return; fi
   if [ -s "$out" ]; then echo "OK"; return; fi
   if [ -s "$out.diag" ]; then echo "COMPILE_DIAG"; return; fi
@@ -190,6 +200,7 @@ run_linear() { # wasm -> prints result or RUN_TRAP/RUN_HANG
   out=$(run_bounded "$RTIMEOUT" env VIBE_PREOPEN_DIR="$ROOT" \
     $RUNNER --invoke _start "$wasm" 2>/dev/null)
   local rc=$?
+  if [ $rc -eq 125 ]; then return 125; fi
   if [ $rc -eq 124 ]; then echo "RUN_HANG"; return; fi
   if [ $rc -ne 0 ]; then echo "RUN_TRAP"; return; fi
   echo "$out" | tail -1 | tr -d '[:space:]'
@@ -201,6 +212,7 @@ run_gc() {
   out=$(run_bounded "$RTIMEOUT" wasmtime run -W gc=y,function-references=y,exceptions=y \
     --invoke _start "$wasm" 2>/dev/null)
   local rc=$?
+  if [ $rc -eq 125 ]; then return 125; fi
   if [ $rc -eq 124 ]; then echo "RUN_HANG"; return; fi
   if [ $rc -ne 0 ]; then echo "RUN_TRAP"; return; fi
   echo "$out" | tail -1 | tr -d '[:space:]'
@@ -216,15 +228,19 @@ run_gc() {
 classify() {
   local dir="$1"
   local st_bump st_rc st_gc st_fs
-  st_bump=$(compile "$dir/single.vibe" "$dir/bump.wasm" VIBE_RC=0)
-  st_rc=$(compile "$dir/single.vibe" "$dir/rc.wasm" VIBE_RC=1)
-  st_gc=$(compile "$dir/single.vibe" "$dir/gc.wasm" VIBE_RC=0 VIBE_BACKEND=gc)
+  # Each lane's STATUS is checked, not just its output: 125 means the watchdog
+  # could not bound that command, and an unbounded lane has no verdict to
+  # contribute. Propagated rather than folded into `bad`, so the seed refuses
+  # instead of recording a finding with an empty class.
+  st_bump=$(compile "$dir/single.vibe" "$dir/bump.wasm" VIBE_RC=0) || [ $? -ne 125 ] || return 125
+  st_rc=$(compile "$dir/single.vibe" "$dir/rc.wasm" VIBE_RC=1) || [ $? -ne 125 ] || return 125
+  st_gc=$(compile "$dir/single.vibe" "$dir/gc.wasm" VIBE_RC=0 VIBE_BACKEND=gc) || [ $? -ne 125 ] || return 125
   st_fs="OK"
   if [ -f "$dir/main.vibe" ]; then
     # FS compilation populates persistent source-list and source-group cache
     # files. Isolate them per candidate: deleting repository-global files
     # races when run_fuzz.sh runs multiple seeds concurrently.
-    st_fs=$(compile "$dir/main.vibe" "$dir/fs.wasm" VIBE_RC=0 VIBE_FS_COMPILE=1 VIBE_BUILD_CACHE_DIR="$dir/cache")
+    st_fs=$(compile "$dir/main.vibe" "$dir/fs.wasm" VIBE_RC=0 VIBE_FS_COMPILE=1 VIBE_BUILD_CACHE_DIR="$dir/cache") || [ $? -ne 125 ] || return 125
   fi
 
   local bad="" pair lane st
@@ -240,11 +256,13 @@ classify() {
   fi
 
   local r_bump r_rc r_gc r_fs
-  r_bump=$(run_linear "$dir/bump.wasm")
-  r_rc=$(run_linear "$dir/rc.wasm")
-  r_gc=$(run_gc "$dir/gc.wasm")
+  r_bump=$(run_linear "$dir/bump.wasm") || [ $? -ne 125 ] || return 125
+  r_rc=$(run_linear "$dir/rc.wasm") || [ $? -ne 125 ] || return 125
+  r_gc=$(run_gc "$dir/gc.wasm") || [ $? -ne 125 ] || return 125
   r_fs="$r_bump"
-  [ -f "$dir/main.vibe" ] && r_fs=$(run_linear "$dir/fs.wasm")
+  if [ -f "$dir/main.vibe" ]; then
+    r_fs=$(run_linear "$dir/fs.wasm") || [ $? -ne 125 ] || return 125
+  fi
 
   case "$r_bump$r_rc$r_gc$r_fs" in
     *RUN_TRAP*) echo "RUN_TRAP bump=$r_bump rc=$r_rc gc=$r_gc fs=$r_fs"; return ;;

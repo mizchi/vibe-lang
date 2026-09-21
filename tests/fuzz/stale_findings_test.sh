@@ -756,6 +756,56 @@ if grep -q "$(basename "$tlib")" "$tprobe" && grep -q 'vibe_absent_gtimeout' "$t
     *) bad "the fallback campaign did not come back clean: $(printf '%s' "$out" | tail -1)" ;;
   esac
   [ "$trc" -eq 0 ] && say "  ok   exits 0" || bad "the fallback campaign exited $trc"
+  # A watchdog that cannot bound a command has no verdict for that seed, and
+  # that must reach the CAMPAIGN. It did not: `compile` and `classify` are
+  # called as `st=$(...)`, so the `exit 125` inside them ended only the
+  # command substitution -- measured, `seed_1_` with an empty class and
+  # `2 seeds, 2 findings`, compiler bugs fabricated by a broken watchdog
+  # (#2955 review). The status is propagated to run_seed now, which ends the
+  # seed without a completion stamp, so the count refuses the campaign.
+  nomark="tests/fuzz/.probe_nomarklib$$.sh"
+  nomarkrun="tests/fuzz/.probe_nomarkrun$$.sh"
+  cp "$tlib" "$nomark"
+  cp "$tprobe" "$nomarkrun"
+  sed -i.bak "s@$(basename "$tlib")\"@$(basename "$nomark")\"@" "$nomarkrun" && rm -f "$nomarkrun.bak"
+  sed -i.bak 's@^  marker="\$(mktemp .*$@  marker=""@' "$nomark" && rm -f "$nomark.bak"
+  if grep -q '^  marker=""$' "$nomark"; then
+    say "  ok   mutant staged: the marker cannot be allocated mid-campaign"
+    rm -rf "$FIND"
+    out="$(bash "$nomarkrun" --seeds 1..2 --jobs 1 --cli "$STAGE2" 2>&1)"; nrc=$?
+    case "$out" in
+      *"refusing to report a campaign that did not run"*) say "  ok   the campaign refuses" ;;
+      *) bad "the campaign did not refuse: $(printf '%s' "$out" | tail -1)" ;;
+    esac
+    case "$out" in
+      *"findings"*[0-9]*"findings"*|*", 2 findings"*) bad "it reported findings: $(printf '%s' "$out" | tail -1)" ;;
+      *) say "  ok   and reports no findings at all" ;;
+    esac
+    [ "$nrc" -ne 0 ] && say "  ok   nonzero exit ($nrc)" || bad "exited 0 with no verdict for any seed"
+    if [ -d "$FIND" ] && [ -n "$(ls -A "$FIND" 2>/dev/null)" ]; then
+      bad "a finding was recorded from a broken watchdog: $(ls -A "$FIND" | head -1)"
+    else
+      say "  ok   nothing was written to findings/"
+    fi
+    # Paired: same mutant, propagation removed. It must fabricate the
+    # empty-class findings that were measured before the fix.
+    sed -i.bak 's@ || watchdog_failed "\$seed" \$?@@g' "$nomarkrun" && rm -f "$nomarkrun.bak"
+    if grep -q 'watchdog_failed "\$seed"' "$nomarkrun"; then
+      bad "the propagation mutation did not apply -- the case above is unattributed"
+    else
+      rm -rf "$FIND"
+      out="$(bash "$nomarkrun" --seeds 1..2 --jobs 1 --cli "$STAGE2" 2>&1)"
+      case "$out" in
+        *", 2 findings"*) say "  ok   pre-fix: '$(printf '%s' "$out" | tail -1)' -- fabricated from a broken watchdog" ;;
+        *) bad "pre-fix: no fabricated findings ($(printf '%s' "$out" | tail -1)) -- the case above proves nothing" ;;
+      esac
+    fi
+    rm -rf "$FIND"
+  else
+    bad "the marker mutation did not apply -- this case would prove nothing"
+  fi
+  rm -f "$nomark" "$nomarkrun"
+
   # The fallback's marker allocation is part of selecting it: a marker it
   # cannot allocate is not a smaller answer but a wrong one -- the watchdog
   # would still kill at the deadline and report the signal status, so a

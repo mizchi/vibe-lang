@@ -346,6 +346,19 @@ record() { # seed class dir note
   echo "[fuzz] seed $seed: $class ($note)"
 }
 
+# 125 from the oracle means the watchdog could not bound a command, so that
+# seed has no verdict. Ending the subshell HERE is what makes it visible: no
+# `.seed_done` stamp is written, and the count at the end of the campaign
+# refuses rather than reporting. Nothing else can carry it out -- `compile`
+# and `classify` are called in command substitutions, so an exit inside them
+# ends only the substitution (measured: `seed_1_` with an empty class and
+# `2 seeds, 2 findings`, fabricated from a broken watchdog, #2955 review).
+watchdog_failed() { # seed status -- returns non-125 statuses to the caller
+  [ "$2" = "125" ] || return "$2"
+  echo "[fuzz] seed $1: the watchdog could not bound a command; this seed has no verdict" >&2
+  exit 125
+}
+
 run_seed() { # seed -- runs entirely in its own background subshell/process
   local seed="$1"
   local dir="$WORK/s$seed"
@@ -368,14 +381,14 @@ for _ in range(r.randint(1, 24)):
     else: data.insert(i, r.randrange(32, 127))
 open(f"{d}/mut.vibe", "wb").write(bytes(data))
 EOF
-    st=$(compile "$dir/mut.vibe" "$dir/mut.wasm" VIBE_RC=0)
+    st=$(compile "$dir/mut.vibe" "$dir/mut.wasm" VIBE_RC=0) || watchdog_failed "$seed" $?
     case "$st" in
       OK|COMPILE_DIAG) : ;;
       *) record "$seed" "MUT_$st" "$dir" "mutated input: $st" ;;
     esac
   else
     # --- generative differential mode ---
-    result=$(classify "$dir")
+    result=$(classify "$dir") || watchdog_failed "$seed" $?
     cls="${result%% *}"
     detail="${result#* }"
     if [ "$cls" != "OK" ]; then
