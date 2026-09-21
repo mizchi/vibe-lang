@@ -1099,6 +1099,19 @@ invoke_cli() {
 # imports through the same walk `vibe check` uses -- `vibe diagnostics`'s
 # import-blind false positives are not reproduced here.
 # 
+# A tree-wide typed sweep cannot fit in one wasm32 process, so it is split
+# across several; that is automatic and invisible in the result. Three flags
+# expose the pieces for a driver that wants to partition it itself:
+#   --list-files                 print the files a sweep would visit, one per
+#                                line, after a format banner -- and sweep
+#                                nothing
+#   --file-list <path>           sweep exactly the files named in <path>
+#   --resume-out <path>          on stopping at its own memory budget, write
+#                                the index of the file NOT swept to <path>,
+#                                instead of refusing
+# `VIBE_GREP_CHUNK_FILES` caps how many files share one process (default 8); it
+# is a speed knob, not a correctness one.
+#
 # Output is one match per line, `path:line:col: <matched text>` followed by
 # tab-separated `$var=<capture>`; `--json` emits the same matches as a JSON
 # array (each capture carrying its inferred type when the typed tier ran).
@@ -1124,7 +1137,7 @@ grep_help_requested() {
 # Only a fresh process resets the frontier, so the sweep is split across
 # several. Three things make the split invisible in the answer:
 #
-#   * the FILE LIST comes from the sweep itself (VIBE_GREP_LIST_FILES), not
+#   * the FILE LIST comes from the sweep itself (`grep --list-files`), not
 #     from a glob here. The skip policy (`deps/`, `_build/`, dotted dirs) is a
 #     user-visible answer source_walk.vibe keeps in one place; a driver that
 #     re-derived it would disagree with the sweep and nothing would say so.
@@ -1168,20 +1181,24 @@ grep_sweep() {
   sweep_cleanup() { rm -rf "$wd"; }
 
   # PROBED, not assumed. This launcher runs against whatever compiler is
-  # installed, and the mode only exists in ones built after #2914.
+  # installed, and these flags only exist in ones built after #2914.
+  #
+  # ARGV, not env. The chunked-sweep contract reaches this path as `--list-files`
+  # / `--file-list` / `--resume-out`, not as VIBE_* variables: `VIBE_GREP_LIST_
+  # FILES` is an adapter BRANCH SELECTOR, and a launcher that dispatches by argv
+  # must not set one (check_selector_precedence.sh). The env spelling belongs to
+  # the env-mode entry, which has no argv to carry flags in.
   #
   # "Did it print something" is NOT the probe. Unlike the env-mode entry --
   # where an older compiler sees no mode at all and dies on EISDIR -- this path
-  # takes its verb from argv, so an older compiler answers a listing request
-  # with a full SWEEP. Its `path:line:col: text` lines chunk perfectly well,
-  # into a list of things that are not files: exit 0, no matches, no message.
-  # The banner is a line the sweep cannot produce, so seeing it is positive
-  # evidence of support. Not seeing it falls back to the single call, which is
-  # exactly the old behaviour, budget diagnostic and all.
+  # takes its verb from argv, so an older compiler REJECTS the unknown flag or,
+  # worse, a future one could answer with a full SWEEP. Its `path:line:col: text`
+  # lines chunk perfectly well, into a list of things that are not files: exit 0,
+  # no matches, no message. The banner is a line the sweep cannot produce, so
+  # seeing it is positive evidence of support. Not seeing it falls back to the
+  # single call, which is exactly the old behaviour, budget diagnostic and all.
   status=0
-  ( export VIBE_GREP_LIST_FILES=1
-    unset VIBE_GREP_FILE_LIST VIBE_GREP_RESUME_OUT
-    invoke_cli grep "$@" ) > "$listf" 2>/dev/null || status=$?
+  invoke_cli grep --list-files "$@" > "$listf" 2>/dev/null || status=$?
   if [ "$status" -ne 0 ] || [ "$(sed -n '1p' "$listf" 2>/dev/null)" != "vibe-grep-file-list-v1" ]; then
     sweep_cleanup
     invoke_cli grep "$@"
@@ -1216,9 +1233,7 @@ grep_sweep() {
     [ -s "$chunkf" ] || break
     rm -f "$resumef"
     status=0
-    ( export VIBE_GREP_FILE_LIST="$chunkf" VIBE_GREP_RESUME_OUT="$resumef"
-      unset VIBE_GREP_LIST_FILES
-      invoke_cli grep "$@" ) > "$chunkout" || status=$?
+    invoke_cli grep --file-list "$chunkf" --resume-out "$resumef" "$@" > "$chunkout" || status=$?
     # A chunk that failed is fatal, and its output is dropped rather than
     # printed: a sweep that stopped part-way must not present what it reached
     # as a complete answer. Chunking makes that worse, not better -- earlier

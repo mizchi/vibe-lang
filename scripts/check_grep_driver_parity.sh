@@ -180,7 +180,7 @@ echo "grep-driver-parity: JSON agrees and holds $json_objects object(s)"
 # ---------------------------------------------------------------- property 4
 # Everything above is satisfied by a runtime/vibe that never looped at all: the
 # driver falls back to the single call against a compiler that does not
-# understand VIBE_GREP_LIST_FILES, and a fallback agrees with the env-mode
+# understand `grep --list-files`, and a fallback agrees with the env-mode
 # driver perfectly. So the loop is proven directly, by the one behaviour only a
 # loop can produce -- answering at a budget a single process cannot finish
 # under.
