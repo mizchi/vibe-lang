@@ -281,7 +281,7 @@ fn grep_memory_refusal(path: String, done: Int, total: Int, headroom: Int, need:
 export fn grep_scan_fs_report(root: String, pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool) -> (String, String) with Env + Exception + Fs + Profiler {
   let files = grep_empty_strings()
   source_walk_collect_files(root, files)
-  grep_scan_files_report(files, pattern, wheres, where_rows, only, json, Fs::is_dir(root))
+  grep_scan_files_report(files, pattern, wheres, where_rows, only, json, Fs::is_dir(root), "")
 }
 
 /// The files a sweep of `root` would visit, one per line, in sweep order.
@@ -319,7 +319,23 @@ export fn grep_list_files(root: String) -> String with Fs {
 /// already moved into a function with no `root`. Git merged both edits cleanly
 /// and the result did not compile (`unknown name: root`). Passing it in is
 /// what makes the dependency visible instead of ambient.
-export fn grep_scan_files_report(files: Array[String], pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool, root_is_dir: Bool) -> (String, String) with Env + Exception + Fs + Profiler {
+/// `resume_out`, when non-empty, names a file the sweep writes the index of
+/// the first file it did NOT reach to. That turns the budget guard from a
+/// REFUSAL into a hand-off: the driver restarts from there in a fresh process,
+/// which is the one thing that resets the bump frontier, and no constant chunk
+/// size is needed at all.
+///
+/// Empty keeps the #2914 (a) behaviour: throw the located diagnostic. Both
+/// exist because the guard is the only thing that knows when to stop, and a
+/// caller that cannot restart (a library call, `runtime/vibe` before it grows
+/// a resume loop) still needs a loud failure rather than a partial answer.
+///
+/// TERMINATION: the guard cannot fire before at least one file has been typed
+/// -- it needs `max_typed_cost > 0`, which only a completed typed file
+/// supplies -- so every hand-off advances by at least one file. The driver
+/// asserts that anyway, because a resume loop that does not advance would
+/// print results forever, which is worse than the trap this replaces.
+export fn grep_scan_files_report(files: Array[String], pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool, root_is_dir: Bool, resume_out: String) -> (String, String) with Env + Exception + Fs + Profiler {
   let pat = grep_compile_pattern(pattern)
   grep_check_filters(pat, wheres, where_rows)
   let typed = grep_needs_typing(wheres, where_rows, only)
@@ -378,7 +394,21 @@ export fn grep_scan_files_report(files: Array[String], pattern: String, wheres: 
         let headroom = memory_ceiling - heap_before
         let reserve = max_typed_cost * grep_memory_safety_factor()
         if max_typed_cost > 0 && headroom < reserve {
-          throw(grep_memory_refusal(path, i, Array::length(files), headroom, max_typed_cost))
+          if resume_out != "" {
+            // Hand off, do not refuse: `i` is the index of the file NOT
+            // swept, so the driver resumes exactly there. Returning early
+            // keeps everything found so far -- it is a complete answer for
+            // files[0..i), and the driver concatenates the rest.
+            //
+            // The `named_unparseable` throw below is unreachable from here by
+            // construction: it needs `root_is_dir == false`, which means the
+            // caller named ONE file, and the guard needs a previously typed
+            // file to have a cost at all. One file cannot be both.
+            Fs::write_file(resume_out, __to_string(i))
+            return (grep_join_lines(out, json), grep_join_lines(warnings, false))
+          } else {
+            throw(grep_memory_refusal(path, i, Array::length(files), headroom, max_typed_cost))
+          }
         } else {
           ()
         }

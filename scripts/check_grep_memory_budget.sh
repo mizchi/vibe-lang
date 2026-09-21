@@ -8,19 +8,28 @@
 # through `Profiler::heap_bytes()` before typing each file and refuses with a
 # diagnostic that names where it stopped.
 #
-# This gate asserts the three properties that are worth anything:
+# Since the resume hand-off (#2914 adaptive), the guard has TWO callers and
+# this gate gates both:
 #
-#   1. DEFAULT BUDGET CHANGES NOTHING. A corpus that swept clean before still
-#      answers, byte for byte, and exits 0. A guard that quietly trims real
-#      answers would be worse than the trap.
-#   2. A SMALL BUDGET REFUSES, AND THE REFUSAL IS ACTIONABLE. Exit 1, EMPTY
-#      stdout (never a partial answer presented as complete), and a message
-#      naming the file it stopped before, how far it got, and the way out.
-#   3. A MALFORMED BUDGET IS REJECTED, not read as some other number.
+#   1. DEFAULT BUDGET ANSWERS. Unchanged, exit 0, non-empty.
+#   2. A SMALL BUDGET STILL ANSWERS, BYTE-IDENTICALLY, through the driver.
+#      The budget is now a per-process cap, not a failure threshold: the sweep
+#      stops on it, says where, and a fresh process continues. Measured: 400 MB
+#      returns the same 236 lines the default does. This is the property that
+#      replaced "a small budget refuses" -- it is a stronger claim, because a
+#      resume loop that silently dropped the files around each hand-off would
+#      still exit 0.
+#   3. WITHOUT RESUME, A SMALL BUDGET REFUSES. #2914 (a)'s guarantee, still
+#      live for every caller that cannot restart -- a library call, or
+#      `runtime/vibe` before it grows a resume loop. Exit 1, EMPTY stdout, and
+#      a message naming the file it stopped before. Driven by invoking the
+#      compiler directly, the way such a caller does, because the driver now
+#      always asks for resume.
+#   4. A MALFORMED BUDGET IS REJECTED, not read as some other number.
 #
-# Property 1 and property 2 are the same sweep over the same corpus, varying
-# ONLY the cap -- the technique that established the cap was the binding
-# constraint in the first place (grep_fs.vibe's own comment).
+# Properties 1-3 are the same sweep over the same corpus, varying ONLY the cap
+# -- the technique that established the cap was the binding constraint in the
+# first place (grep_fs.vibe's own comment).
 #
 # WHY A SMALL BUDGET AND NOT THE REAL CEILING: reproducing the actual trap
 # needs a tree-wide typed sweep, which costs minutes and gigabytes. The
@@ -93,34 +102,63 @@ default_lines="$(wc -l < "$WORK/default.out")"
 echo "grep-memory-budget: default budget answers ($default_lines lines, exit 0)"
 
 # ---------------------------------------------------------------- property 2
-# 400 MB: below what this corpus's closure needs, above one file's cost, so the
-# guard fires partway rather than on the first file (which it cannot do -- it
-# has no observed cost yet).
+# 400 MB: far below what this corpus's closure needs, so the guard fires
+# partway and the driver must resume across several processes. It cannot fire
+# on the first file -- it has no observed cost yet -- so progress is
+# guaranteed and the sweep must finish.
 status="$(run_grep 400 "$WORK/small.out" "$WORK/small.err")"
-[ "$status" = "1" ] || fail "small budget: expected exit 1, got $status.
-A refusal that exits 0 is a sweep reporting success for an answer it never produced.
+[ "$status" = "0" ] || fail "small budget: expected exit 0 (the resume hand-off
+should carry the sweep across processes), got $status.
 $(cat "$WORK/small.err")"
-[ ! -s "$WORK/small.out" ] || fail "small budget: stdout was NOT empty ($(wc -l < "$WORK/small.out") lines).
-A partial sweep printed as though complete is the failure this guard exists to prevent."
-grep -q 'out of memory budget before typing' "$WORK/small.err" ||
-  fail "small budget: refused, but not with the budget diagnostic.
-A wasm trap also exits 1 with empty stdout, so the MESSAGE is what tells the
-two apart -- without this assertion the gate passes on the very bug it guards.
-$(cat "$WORK/small.err")"
-grep -qE 'before typing `[^`]*\.vibe`' "$WORK/small.err" ||
-  fail "small budget: the diagnostic does not name the file it stopped before.
-Naming the file is the whole point: the trap it replaces already said nothing.
-$(cat "$WORK/small.err")"
-grep -qE '\([0-9]+ of [0-9]+ files swept\)' "$WORK/small.err" ||
-  fail "small budget: the diagnostic does not say how far the sweep got.
-$(cat "$WORK/small.err")"
-grep -q 'drop --where' "$WORK/small.err" ||
-  fail "small budget: the diagnostic does not name a way out.
-A diagnostic leads with the edit that fixes it (AGENTS.md).
-$(cat "$WORK/small.err")"
-echo "grep-memory-budget: small budget refuses with a located, actionable diagnostic"
+cmp -s "$WORK/default.out" "$WORK/small.out" ||
+  fail "a small budget changed the answer.
+The budget decides how many processes the sweep takes, not what it finds. A
+hand-off that dropped the files around each boundary would still exit 0, which
+is why this compares OUTPUT and not just the status.
+$(diff "$WORK/default.out" "$WORK/small.out" | head -5)"
+echo "grep-memory-budget: a small budget still answers identically ($(grep -c . "$WORK/small.out" || true) lines, exit 0)"
 
 # ---------------------------------------------------------------- property 3
+# The refusal #2914 (a) added is still live for a caller that CANNOT restart.
+# Driven by invoking the compiler directly, without VIBE_GREP_RESUME, because
+# the driver always asks for resume now and would never reach this path.
+run_no_resume() { # <budget> <stdout> <stderr>; echoes the status
+  local budget="$1" out="$2" err="$3" status=0 cache
+  cache="$(mktemp -d)"
+  rm -f "$out" "$out.diag" "$out.warn"
+  env VIBE_GREP=1 \
+      VIBE_GREP_PATTERN="$PATTERN" \
+      VIBE_GREP_WHERE="$WHERE
+" \
+      VIBE_GREP_WHERE_ROW="" VIBE_GREP_ONLY="" VIBE_GREP_JSON=0 \
+      VIBE_GREP_MEMORY_BUDGET_MB="$budget" \
+      VIBE_IMPORT_ABI=raw VIBE_PREOPEN_DIR="$ROOT_DIR" \
+      VIBE_BUILD_CACHE_DIR="$cache" \
+      bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+      "$STAGE2" "$CORPUS" "$out" >/dev/null 2>"$err" || status=$?
+  rm -rf "$cache"
+  printf '%s' "$status"
+}
+run_no_resume 400 "$WORK/noresume.out" "$WORK/noresume.err" >/dev/null || true
+[ -s "$WORK/noresume.out.diag" ] ||
+  fail "without resume, a small budget did NOT refuse.
+#2914 (a)'s guarantee is that a caller which cannot restart gets a located
+diagnostic rather than a partial answer. The adaptive lane must not have
+removed it -- it is the only thing standing between such a caller and a sweep
+that stops early while reporting success."
+grep -q 'out of memory budget before typing' "$WORK/noresume.out.diag" ||
+  fail "without resume, it refused but not with the budget diagnostic.
+A wasm trap also produces no answer, so the MESSAGE is what tells them apart.
+$(cat "$WORK/noresume.out.diag")"
+grep -qE 'before typing `[^`]*\.vibe`' "$WORK/noresume.out.diag" ||
+  fail "the refusal does not name the file it stopped before.
+$(cat "$WORK/noresume.out.diag")"
+grep -q 'drop --where' "$WORK/noresume.out.diag" ||
+  fail "the refusal does not name a way out.
+$(cat "$WORK/noresume.out.diag")"
+echo "grep-memory-budget: without resume, a small budget still refuses with a located diagnostic"
+
+# ---------------------------------------------------------------- property 4
 for bad in abc 0 -5 12x; do
   status="$(run_grep "$bad" "$WORK/bad.out" "$WORK/bad.err")"
   [ "$status" = "1" ] || fail "budget '$bad': expected exit 1, got $status.
