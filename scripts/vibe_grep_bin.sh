@@ -151,7 +151,7 @@ run_grep() {
   listf="$(mktemp -t vibe-grep-list-XXXXXX)"
   chunkf="$(mktemp -t vibe-grep-chunk-XXXXXX)"
   jsonbody="$(mktemp -t vibe-grep-json-XXXXXX)"
-  trap 'rm -f "$out" "$out.diag" "$out.warn" "$err" "$listf" "$listf.nonblank" "$chunkf" "$jsonbody"' RETURN
+  trap 'rm -f "$out" "$out.diag" "$out.warn" "$err" "$listf" "$listf.nonblank" "$chunkf" "$jsonbody" "$out.resume"' RETURN
 
   # #2914: a single wasm32 process tops out at 4 GiB and the sweep's cost
   # ACCUMULATES across files, so a tree-wide typed sweep cannot finish in one
@@ -160,25 +160,24 @@ run_grep() {
   # compiler on the RC lane -- which frees -- moved it from 70 to 71. Only a
   # fresh process resets the frontier. Same shape lint_review_regressions.sh
   # already uses in a shell loop for this exact defect.
-  # 8, MEASURED on this repo, not picked. Tree-wide typed sweep of `lib`
-  # (1224 files), same answer every time -- 15 matches, byte-identical:
-  #   chunk=2  exit 0  291s
-  #   chunk=4  exit 0  246s
-  #   chunk=8  exit 0  242s
-  #   chunk=40 exit 1  refused at file 30 OF 40 -- one file cost 1227 MB
-  # Bigger is faster (fewer process starts) until a chunk cannot fit, and the
-  # cliff is sharp because per-file cost spans ~50x. 8 sits just below it here.
+  # No default cap: the sweep's own memory guard decides where each process
+  # stops and hands back the index to resume from, so there is no constant to
+  # tune. Measured on this repo before the adaptive lane existed, a fixed size
+  # gave the same answer at 2/4/8 (15 matches, 291/246/242s) and FAILED at 40,
+  # refusing at file 30 OF 40 because one file cost 1227 MB -- the cliff is
+  # sharp because per-file cost spans ~50x, which is exactly why a constant was
+  # the wrong shape for it.
   #
-  # It is still a CONSTANT standing in for a quantity that varies per corpus,
-  # so a tree with larger closures can need less. That is why the budget
-  # diagnostic names this variable: the failure is loud and the knob is in the
-  # message. The adaptive fix -- the guard reports where it stopped and the
-  # driver resumes there, so no constant is needed -- is the follow-up.
-  local chunk_files="${VIBE_GREP_CHUNK_FILES:-8}"
-  case "$chunk_files" in
-    ''|*[!0-9]*) die "VIBE_GREP_CHUNK_FILES must be a positive whole number: $chunk_files" ;;
-  esac
-  [ "$chunk_files" -gt 0 ] || die "VIBE_GREP_CHUNK_FILES must be a positive whole number: $chunk_files"
+  # Setting it caps the slice anyway. The chunked-sweep gate needs that to
+  # force boundaries at chosen places (chunk=1 puts one between every pair of
+  # files), and a caller wanting a smaller blast radius per process can use it.
+  local chunk_cap="${VIBE_GREP_CHUNK_FILES:-}"
+  if [ -n "$chunk_cap" ]; then
+    case "$chunk_cap" in
+      *[!0-9]*) die "VIBE_GREP_CHUNK_FILES must be a positive whole number: $chunk_cap" ;;
+    esac
+    [ "$chunk_cap" -gt 0 ] || die "VIBE_GREP_CHUNK_FILES must be a positive whole number: $chunk_cap"
+  fi
 
   # One `env` shape for every invocation below, so a chunked run and a
   # list-files run cannot drift apart in which switches they clear.
@@ -292,9 +291,21 @@ run_grep() {
     grep . "$listf" > "$blanks" || true
     done_n=0
     while [ "$done_n" -lt "$total" ]; do
-      sed -n "$((done_n + 1)),$((done_n + chunk_files))p" "$blanks" > "$chunkf"
+      # ADAPTIVE by default: hand over everything that is left and let the
+      # sweep stop where its own memory guard says to. The guard already
+      # measures headroom and the largest per-file cost; a constant chunk size
+      # was a stand-in for a quantity that varies ~50x across the corpus, and
+      # 40 failed on this repo while 8 worked -- neither number is a property
+      # of `vibe grep`. `VIBE_GREP_CHUNK_FILES` still caps the slice, because
+      # the chunked-sweep gate needs to force boundaries at chosen places.
+      if [ -n "$chunk_cap" ]; then
+        sed -n "$((done_n + 1)),$((done_n + chunk_cap))p" "$blanks" > "$chunkf"
+      else
+        sed -n "$((done_n + 1)),$ p" "$blanks" > "$chunkf"
+      fi
       [ -s "$chunkf" ] || break
-      invoke_cli "$g_path" VIBE_GREP=1 VIBE_GREP_FILE_LIST="$chunkf"
+      rm -f "$out.resume"
+      invoke_cli "$g_path" VIBE_GREP=1 VIBE_GREP_FILE_LIST="$chunkf" VIBE_GREP_RESUME=1
       if [ -s "$out.warn" ]; then
         cat "$out.warn" >&2
       fi
@@ -308,7 +319,28 @@ run_grep() {
           cat "$out"
         fi
       fi
-      done_n=$((done_n + $(grep -c . "$chunkf" || true)))
+      local slice advance
+      slice="$(grep -c . "$chunkf" || true)"
+      if [ -s "$out.resume" ]; then
+        # The sweep stopped on its own budget and says where. That index is
+        # how many of THIS slice it swept.
+        advance="$(tr -d '[:space:]' < "$out.resume")"
+        case "$advance" in
+          ''|*[!0-9]*) die "grep: unreadable resume index from the sweep: '$advance'" ;;
+        esac
+        # A hand-off that advanced nothing would loop forever, printing the
+        # same results on every pass -- worse than the trap this replaces. The
+        # guard cannot fire before one file has been typed, so this is
+        # unreachable; it is asserted because "unreachable" and "untested"
+        # look the same from a hang.
+        [ "$advance" -gt 0 ] ||
+          die "grep: the sweep handed back without advancing (index 0 of $slice files); refusing to loop"
+        [ "$advance" -le "$slice" ] ||
+          die "grep: the sweep reports $advance files swept of a $slice-file slice"
+      else
+        advance="$slice"
+      fi
+      done_n=$((done_n + advance))
     done
   done
 
