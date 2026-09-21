@@ -151,7 +151,7 @@ run_grep() {
   listf="$(mktemp -t vibe-grep-list-XXXXXX)"
   chunkf="$(mktemp -t vibe-grep-chunk-XXXXXX)"
   jsonbody="$(mktemp -t vibe-grep-json-XXXXXX)"
-  trap 'rm -f "$out" "$out.diag" "$out.warn" "$err" "$listf" "$chunkf" "$jsonbody"' RETURN
+  trap 'rm -f "$out" "$out.diag" "$out.warn" "$err" "$listf" "$listf.nonblank" "$chunkf" "$jsonbody"' RETURN
 
   # #2914: a single wasm32 process tops out at 4 GiB and the sweep's cost
   # ACCUMULATES across files, so a tree-wide typed sweep cannot finish in one
@@ -269,9 +269,16 @@ run_grep() {
     local total done_n
     total="$(grep -c . "$listf" 2>/dev/null || echo 0)"
     [ "$total" -gt 0 ] || continue
+    # `sed -n 'A,Bp'` and NOT `grep . | tail -n +A | head -n N`: under
+    # `set -o pipefail`, `head` closing the pipe early kills the upstream
+    # `grep` with SIGPIPE and the whole run exits 141 with no output and no
+    # message -- which is what the first version of this loop did.
+    local blanks
+    blanks="$listf.nonblank"
+    grep . "$listf" > "$blanks" || true
     done_n=0
     while [ "$done_n" -lt "$total" ]; do
-      grep . "$listf" | tail -n +"$((done_n + 1))" | head -n "$chunk_files" > "$chunkf"
+      sed -n "$((done_n + 1)),$((done_n + chunk_files))p" "$blanks" > "$chunkf"
       [ -s "$chunkf" ] || break
       invoke_cli "$g_path" VIBE_GREP=1 VIBE_GREP_FILE_LIST="$chunkf"
       if [ -s "$out.warn" ]; then
@@ -287,7 +294,7 @@ run_grep() {
           cat "$out"
         fi
       fi
-      done_n=$((done_n + $(grep -c . "$chunkf")))
+      done_n=$((done_n + $(grep -c . "$chunkf" || true)))
     done
   done
 
