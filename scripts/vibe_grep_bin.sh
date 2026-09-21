@@ -160,7 +160,21 @@ run_grep() {
   # compiler on the RC lane -- which frees -- moved it from 70 to 71. Only a
   # fresh process resets the frontier. Same shape lint_review_regressions.sh
   # already uses in a shell loop for this exact defect.
-  local chunk_files="${VIBE_GREP_CHUNK_FILES:-40}"
+  # 8, MEASURED on this repo, not picked. Tree-wide typed sweep of `lib`
+  # (1224 files), same answer every time -- 15 matches, byte-identical:
+  #   chunk=2  exit 0  291s
+  #   chunk=4  exit 0  246s
+  #   chunk=8  exit 0  242s
+  #   chunk=40 exit 1  refused at file 30 OF 40 -- one file cost 1227 MB
+  # Bigger is faster (fewer process starts) until a chunk cannot fit, and the
+  # cliff is sharp because per-file cost spans ~50x. 8 sits just below it here.
+  #
+  # It is still a CONSTANT standing in for a quantity that varies per corpus,
+  # so a tree with larger closures can need less. That is why the budget
+  # diagnostic names this variable: the failure is loud and the knob is in the
+  # message. The adaptive fix -- the guard reports where it stopped and the
+  # driver resumes there, so no constant is needed -- is the follow-up.
+  local chunk_files="${VIBE_GREP_CHUNK_FILES:-8}"
   case "$chunk_files" in
     ''|*[!0-9]*) die "VIBE_GREP_CHUNK_FILES must be a positive whole number: $chunk_files" ;;
   esac
