@@ -97,6 +97,20 @@ else
   bad "mtime_beside: could not be staged, so the case did not run"
 fi
 
+say "=== red 7: proceeds after the refusal, and exits NONZERO doing it ==="
+# The case CI caught and this test did not. Red 4's mutant falls back to the
+# committed seed: where the seed exists it fuzzes it and exits 0, which the old
+# exit-code check flagged -- but on a runner without one it died nonzero, and
+# "nonzero exit, refusal text present" was satisfied by a harness that had
+# started a run against something nobody chose. This mutant falls back to a
+# path that exists NOWHERE, so it proceeds and exits nonzero on every machine.
+# The gate must reject it for announcing the run, not for its exit code.
+if p="$(stage proceeds_nonzero 's|^CLI="$(resolve_stage2_strict fuzz "$CLI")" .*$|CLI="$(resolve_stage2_strict fuzz "$CLI")" \|\| CLI=/nonexistent/fallback.wasm|')"; then
+  expect_fail proceeds_nonzero "$p"
+else
+  bad "proceeds_nonzero: could not be staged, so the case did not run"
+fi
+
 say "=== red 5: the gate refuses a harness that is not there at all ==="
 out="$(FUZZ_HARNESS="tests/fuzz/.probe_absent.sh" bash "$GATE" 2>&1)"; rc=$?
 [ "$rc" -ne 0 ] && say "  ok   absent: rejected -- $(printf '%s' "$out" | head -1)" || bad "absent: gate ACCEPTED a missing harness"

@@ -48,8 +48,24 @@ if sed 's/#.*$//' "$HARNESS" | grep -q 'ls -t.*generations'; then
   fail "$HARNESS still picks a generation by MTIME (ls -t); that answers a different question than HEAD's build"
 fi
 
-# 2. behavioural. Neither probe compiles anything: both die at resolution.
+# 2. behavioural. Neither probe compiles anything: both must die AT resolution.
+#
+# "Nonzero exit, and the refusal text appeared" is not enough, and CI proved
+# it: a harness that prints the refusal and then carries on anyway satisfies
+# both whenever the run it should not have started later dies for some
+# unrelated reason -- a missing seed, a generator error. Locally that mutant
+# exited 0 and was caught; on a CI runner it exited nonzero and the gate waved
+# it through. The exit code was a proxy for "did not proceed".
+#
+# So the probes assert the property itself. The harness announces itself with
+# `[fuzz] mode=...` on the line immediately after resolution succeeds, so that
+# banner is present exactly when the run started. Refusal means it is absent.
+proceeded() { case "$1" in *"[fuzz] mode="*) return 0 ;; *) return 1 ;; esac; }
+
 out="$(bash "$HARNESS" --cli /nonexistent/stage2.wasm --seeds 1..1 2>&1)"; rc=$?
+if proceeded "$out"; then
+  fail "a named artifact that does not exist did not stop the run -- it announced '[fuzz] mode=' and started fuzzing"
+fi
 [ "$rc" -ne 0 ] || fail "a named artifact that does not exist was ACCEPTED (exit 0)"
 case "$out" in
   *"override does not exist"*) ;;
@@ -65,6 +81,9 @@ git worktree add -q --detach "$probe" HEAD >/dev/null 2>&1 \
 cp "$HARNESS" "$probe/tests/fuzz/run_fuzz.sh" \
   || fail "could not stage the harness into the probe worktree"
 out2="$(cd "$probe" && bash tests/fuzz/run_fuzz.sh --seeds 1..1 2>&1)"; rc2=$?
+if proceeded "$out2"; then
+  fail "no generation for HEAD did not stop the run -- it announced '[fuzz] mode=' and started fuzzing against whatever it settled for"
+fi
 [ "$rc2" -ne 0 ] || fail "no generation for HEAD was ACCEPTED (exit 0) -- it degraded instead of refusing"
 case "$out2" in
   *"no generation for HEAD"*) ;;
