@@ -273,27 +273,59 @@ fn grep_memory_safety_factor() -> Int with Env + Exception {
 /// `--where`, which is the untyped tier that handles the whole tree).
 fn grep_memory_refusal(path: String, done: Int, total: Int, headroom: Int, need: Int) -> String {
   let mb = 1048576
-  String::concat("vibe grep: out of memory budget before typing `", String::concat(path, String::concat("` (", String::concat(__to_string(done), String::concat(" of ", String::concat(__to_string(total), String::concat(" files swept); headroom ", String::concat(__to_string(headroom / mb), String::concat(" MB, the largest file so far needed ", String::concat(__to_string(need / mb), " MB. Sweep a subdirectory, or drop --where to use the untyped tier, which handles the whole tree. VIBE_GREP_MEMORY_BUDGET_MB raises the budget, but wasm32 linear memory stops at 4096 MB."))))))))))
+  String::concat("vibe grep: out of memory budget before typing `", String::concat(path, String::concat("` (", String::concat(__to_string(done), String::concat(" of ", String::concat(__to_string(total), String::concat(" files swept); headroom ", String::concat(__to_string(headroom / mb), String::concat(" MB, the largest file so far needed ", String::concat(__to_string(need / mb), " MB. Lower VIBE_GREP_CHUNK_FILES so fewer files share one process, sweep a subdirectory, or drop --where to use the untyped tier. VIBE_GREP_MEMORY_BUDGET_MB raises the budget, but wasm32 linear memory stops at 4096 MB."))))))))))
 }
 
 /// `vibe grep <root>` proper. Typing runs only for files that already have a
 /// structural match: typing a file the pattern never hits would be pure cost.
 export fn grep_scan_fs_report(root: String, pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool) -> (String, String) with Env + Exception + Fs + Profiler {
-  let pat = grep_compile_pattern(pattern)
-  grep_check_filters(pat, wheres, where_rows)
   let files = grep_empty_strings()
   source_walk_collect_files(root, files)
+  grep_scan_files_report(files, pattern, wheres, where_rows, only, json, Fs::is_dir(root))
+}
+
+/// The files a sweep of `root` would visit, one per line, in sweep order.
+///
+/// #2914: this exists so a DRIVER can partition the sweep across processes
+/// without re-deriving which files are in it. The skip policy is a
+/// user-visible answer and `source_walk.vibe` says it lives in exactly one
+/// place -- a driver that globbed for `*.vibe` itself would disagree with the
+/// sweep about `deps/`, `_build/` and dotted directories, and nothing would
+/// say so. Asking the sweep is what keeps one policy.
+export fn grep_list_files(root: String) -> String with Fs {
+  let files = grep_empty_strings()
+  source_walk_collect_files(root, files)
+  grep_join_lines(files, false)
+}
+
+/// The sweep proper, over an EXPLICIT file list.
+///
+/// #2914: a single wasm32 process tops out at 4 GiB and the sweep's cost
+/// accumulates across files, so a tree-wide typed sweep cannot finish in one
+/// process however cheap each file is made -- measured, neither dropping the
+/// 46 MB of generated bundles (file 70 -> 118 of 1224) nor building the
+/// compiler on the RC lane, which frees (file 70 -> 71), changes that shape.
+/// The driver runs this once per chunk in a FRESH process, which is the one
+/// thing that does reset the frontier.
+/// `root_is_dir` is #2940's distinction, threaded EXPLICITLY because this
+/// function no longer sees the root. Naming a file is asking about that file,
+/// so "it could not be parsed" must not answer as "no matches"; a sweep of a
+/// directory is the opposite case and keeps #1943's skip. The chunked lane
+/// gets it right because the adapter still receives the original root and
+/// computes the flag from it -- a chunk is a subset of one root, never a mix.
+///
+/// This parameter exists because a MERGE, not a conflict, removed it: #2940
+/// added `let root_is_dir = Fs::is_dir(root)` to the body that this commit had
+/// already moved into a function with no `root`. Git merged both edits cleanly
+/// and the result did not compile (`unknown name: root`). Passing it in is
+/// what makes the dependency visible instead of ambient.
+export fn grep_scan_files_report(files: Array[String], pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool, root_is_dir: Bool) -> (String, String) with Env + Exception + Fs + Profiler {
+  let pat = grep_compile_pattern(pattern)
+  grep_check_filters(pat, wheres, where_rows)
   let typed = grep_needs_typing(wheres, where_rows, only)
   let has_typed_filter = Array::length(wheres) > 0 || Array::length(where_rows) > 0
   let out = grep_empty_strings()
   let warnings = grep_empty_strings()
-  // #2940: naming a file is asking about THAT file, so "it could not be
-  // parsed" must not answer as "no matches". A sweep is the opposite case and
-  // keeps #1943's behaviour below: one work-in-progress file must not stop a
-  // repo-wide answer. `root` is exactly the path the caller named -- the
-  // runner invokes this once per argument -- so the two cases are
-  // distinguishable here and nowhere downstream.
-  let root_is_dir = Fs::is_dir(root)
   let mut named_unparseable = ""
   // #2914: three caches for the whole sweep, not one per file. Cold every
   // time, the tree-wide typed sweep re-typed the compiler's closure once per

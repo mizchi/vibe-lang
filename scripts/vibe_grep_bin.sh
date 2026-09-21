@@ -147,29 +147,51 @@ run_grep() {
   local out err status g_path
   out="$(mktemp -t vibe-grep-XXXXXX)"
   err="$(mktemp -t vibe-grep-err-XXXXXX)"
-  trap 'rm -f "$out" "$out.diag" "$out.warn" "$err"' RETURN
+  local listf chunkf jsonbody
+  listf="$(mktemp -t vibe-grep-list-XXXXXX)"
+  chunkf="$(mktemp -t vibe-grep-chunk-XXXXXX)"
+  jsonbody="$(mktemp -t vibe-grep-json-XXXXXX)"
+  trap 'rm -f "$out" "$out.diag" "$out.warn" "$err" "$listf" "$listf.nonblank" "$chunkf" "$jsonbody"' RETURN
 
-  for g_path in "${g_paths[@]}"; do
-    [ -e "$g_path" ] || die "not found: $g_path"
-    # rm, not truncate. `mktemp` pre-creates the file, so `[ -s "$out" ]` can
-    # never distinguish "the runner wrote nothing" from "the runner never ran"
-    # while the file is guaranteed to exist -- a guard that cannot fail (#2248).
+  # #2914: a single wasm32 process tops out at 4 GiB and the sweep's cost
+  # ACCUMULATES across files, so a tree-wide typed sweep cannot finish in one
+  # process however cheap each file is made. Measured: dropping the 46 MB of
+  # generated bundles moved it from file 70 to 118 of 1224, and building the
+  # compiler on the RC lane -- which frees -- moved it from 70 to 71. Only a
+  # fresh process resets the frontier. Same shape lint_review_regressions.sh
+  # already uses in a shell loop for this exact defect.
+  # 8, MEASURED on this repo, not picked. Tree-wide typed sweep of `lib`
+  # (1224 files), same answer every time -- 15 matches, byte-identical:
+  #   chunk=2  exit 0  291s
+  #   chunk=4  exit 0  246s
+  #   chunk=8  exit 0  242s
+  #   chunk=40 exit 1  refused at file 30 OF 40 -- one file cost 1227 MB
+  # Bigger is faster (fewer process starts) until a chunk cannot fit, and the
+  # cliff is sharp because per-file cost spans ~50x. 8 sits just below it here.
+  #
+  # It is still a CONSTANT standing in for a quantity that varies per corpus,
+  # so a tree with larger closures can need less. That is why the budget
+  # diagnostic names this variable: the failure is loud and the knob is in the
+  # message. The adaptive fix -- the guard reports where it stopped and the
+  # driver resumes there, so no constant is needed -- is the follow-up.
+  local chunk_files="${VIBE_GREP_CHUNK_FILES:-8}"
+  case "$chunk_files" in
+    ''|*[!0-9]*) die "VIBE_GREP_CHUNK_FILES must be a positive whole number: $chunk_files" ;;
+  esac
+  [ "$chunk_files" -gt 0 ] || die "VIBE_GREP_CHUNK_FILES must be a positive whole number: $chunk_files"
+
+  # One `env` shape for every invocation below, so a chunked run and a
+  # list-files run cannot drift apart in which switches they clear.
+  # Non-fatal: returns the status instead of dying, for the support probe.
+  try_cli() { # <input_path> <extra-env-assignments...>
+    local in_path="$1"; shift
     rm -f "$out" "$out.diag" "$out.warn" "$err"
     status=0
-    # Same adapter-mode contract as runtime/vibe's `grep)` case: VIBE_GREP=1
-    # plus the pattern/filter env vars, then cli_main(input, output).
-    # `cmd || status=$?`, NOT `if ! cmd; then status=$?; fi`. Inside `if !`,
-    # `$?` is the status of the INVERTED pipeline -- 0 exactly when the command
-    # failed -- so the branch whose only job was to record a failure recorded
-    # success, and a wasm trap left this script with status=0 and no output:
-    # byte-for-byte what a legitimate no-match sweep looks like (#2914).
-    #   status=0; if ! (exit 42); then status=$?; fi   -> 0
-    #   status=0; (exit 42) || status=$?               -> 42
     env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_TYPE_AT -u VIBE_DOC_AT \
         -u VIBE_BINDING_AT -u VIBE_SYMBOLS -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT -u VIBE_ALLOCS -u VIBE_DEPS \
         -u VIBE_RC_CLASSIFY -u VIBE_RC_PLAN -u VIBE_RC_PLAN_FN \
         -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK -u VIBE_EMIT_MODULE_SOURCE \
-        VIBE_GREP=1 \
+        -u VIBE_GREP -u VIBE_GREP_LIST_FILES -u VIBE_GREP_FILE_LIST \
         VIBE_GREP_PATTERN="$g_pattern" \
         VIBE_GREP_WHERE="$g_where" \
         VIBE_GREP_WHERE_ROW="$g_where_row" \
@@ -177,37 +199,128 @@ run_grep() {
         VIBE_GREP_JSON="$g_json" \
         VIBE_IMPORT_ABI=raw \
         VIBE_PREOPEN_DIR="${VIBE_PREOPEN_DIR:-$ROOT_DIR}" \
-        bash "$runner" --invoke cli_main "$cli" "$g_path" "$out" >/dev/null 2>"$err" || status=$?
+        "$@" \
+        bash "$runner" --invoke cli_main "$cli" "$in_path" "$out" >/dev/null 2>"$err" || status=$?
+    return "$status"
+  }
+
+  invoke_cli() { # <input_path> <extra-env-assignments...>
+    local in_path="$1"; shift
+    rm -f "$out" "$out.diag" "$out.warn" "$err"
+    status=0
+    # `cmd || status=$?`, NOT `if ! cmd; then status=$?; fi`. Inside `if !`,
+    # `$?` is the status of the INVERTED pipeline -- 0 exactly when the command
+    # failed -- so the branch whose only job was to record a failure recorded
+    # success, and a wasm trap left this script with status=0 and no output:
+    # byte-for-byte what a legitimate no-match sweep looks like (#2914).
+    env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_TYPE_AT -u VIBE_DOC_AT \
+        -u VIBE_BINDING_AT -u VIBE_SYMBOLS -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT -u VIBE_ALLOCS -u VIBE_DEPS \
+        -u VIBE_RC_CLASSIFY -u VIBE_RC_PLAN -u VIBE_RC_PLAN_FN \
+        -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK -u VIBE_EMIT_MODULE_SOURCE \
+        -u VIBE_GREP -u VIBE_GREP_LIST_FILES -u VIBE_GREP_FILE_LIST \
+        VIBE_GREP_PATTERN="$g_pattern" \
+        VIBE_GREP_WHERE="$g_where" \
+        VIBE_GREP_WHERE_ROW="$g_where_row" \
+        VIBE_GREP_ONLY="$g_only" \
+        VIBE_GREP_JSON="$g_json" \
+        VIBE_IMPORT_ABI=raw \
+        VIBE_PREOPEN_DIR="${VIBE_PREOPEN_DIR:-$ROOT_DIR}" \
+        "$@" \
+        bash "$runner" --invoke cli_main "$cli" "$in_path" "$out" >/dev/null 2>"$err" || status=$?
+    # A diagnostic is fatal wherever it comes from: a chunk that refused must
+    # not be swallowed by the chunks around it that happened to succeed.
     if [ -s "$out.diag" ]; then
       echo "error: $(cat "$out.diag")" >&2
       die "grep failed"
     fi
-    # A non-zero status is fatal WHETHER OR NOT `$out` holds anything. The old
-    # guard also required empty output, so a sweep that trapped part-way
-    # printed the files it had reached as though it had finished -- a partial
-    # answer presented as a complete one.
+    # Non-zero is fatal WHETHER OR NOT `$out` holds anything. The old guard
+    # also required empty output, so a sweep that trapped part-way printed the
+    # files it had reached as though it had finished -- a partial answer
+    # presented as a complete one. Chunking makes that worse, not better:
+    # earlier chunks have already produced real output by then.
     if [ "$status" -ne 0 ]; then
-      if [ -s "$err" ]; then
-        cat "$err" >&2
-      fi
+      [ -s "$err" ] && cat "$err" >&2
       die "grep could not run (cli=$cli status=$status)"
     fi
-    # The runner exited 0 but wrote no result file at all. Reachable now that
-    # the file is removed rather than truncated above; `[ -s ]` below would
-    # read it as an honest no-match.
     if [ ! -e "$out" ]; then
-      if [ -s "$err" ]; then
-        cat "$err" >&2
-      fi
+      [ -s "$err" ] && cat "$err" >&2
       die "grep produced no result file (cli=$cli)"
     fi
-    if [ -s "$out.warn" ]; then
-      cat "$out.warn" >&2
+  }
+
+  : > "$jsonbody"
+  for g_path in "${g_paths[@]}"; do
+    [ -e "$g_path" ] || die "not found: $g_path"
+
+    # Ask the SWEEP which files it would visit rather than globbing here: the
+    # skip policy (`deps/`, `_build/`, dotted dirs) is a user-visible answer
+    # that source_walk.vibe keeps in one place, and a driver that re-derived it
+    # would disagree with the sweep and nothing would say so.
+    #
+    # PROBED, not assumed. This script runs against whatever compiler is on
+    # hand -- a generation, a CI artifact, the committed seed -- and the mode
+    # only exists in compilers built after #2914. An older one sees no mode set
+    # at all and tries to COMPILE the input, which for a directory root fails
+    # as `EISDIR`. Falling back to the single call is not a regression: it is
+    # exactly today's behaviour, trap and all, and the budget diagnostic still
+    # says so when it stops.
+    if ! try_cli "$g_path" VIBE_GREP_LIST_FILES=1 || [ -s "$out.diag" ] || [ ! -s "$out" ]; then
+      invoke_cli "$g_path" VIBE_GREP=1
+      if [ -s "$out.warn" ]; then
+        cat "$out.warn" >&2
+      fi
+      if [ -s "$out" ]; then
+        if [ "$g_json" = "1" ]; then
+          sed -e '1d' -e '$d' "$out" | sed -e 's/,[[:space:]]*$//' >> "$jsonbody"
+        else
+          cat "$out"
+        fi
+      fi
+      continue
     fi
-    if [ -s "$out" ]; then
-      cat "$out"
-    fi
+    cp "$out" "$listf"
+
+    local total done_n
+    total="$(grep -c . "$listf" 2>/dev/null || echo 0)"
+    [ "$total" -gt 0 ] || continue
+    # `sed -n 'A,Bp'` and NOT `grep . | tail -n +A | head -n N`: under
+    # `set -o pipefail`, `head` closing the pipe early kills the upstream
+    # `grep` with SIGPIPE and the whole run exits 141 with no output and no
+    # message -- which is what the first version of this loop did.
+    local blanks
+    blanks="$listf.nonblank"
+    grep . "$listf" > "$blanks" || true
+    done_n=0
+    while [ "$done_n" -lt "$total" ]; do
+      sed -n "$((done_n + 1)),$((done_n + chunk_files))p" "$blanks" > "$chunkf"
+      [ -s "$chunkf" ] || break
+      invoke_cli "$g_path" VIBE_GREP=1 VIBE_GREP_FILE_LIST="$chunkf"
+      if [ -s "$out.warn" ]; then
+        cat "$out.warn" >&2
+      fi
+      if [ -s "$out" ]; then
+        if [ "$g_json" = "1" ]; then
+          # `[` / one object per line / `]`. Drop the brackets and keep the
+          # objects; commas are re-added once at the end so a chunk boundary
+          # cannot leave a trailing or doubled comma.
+          sed -e '1d' -e '$d' "$out" | sed -e 's/,[[:space:]]*$//' >> "$jsonbody"
+        else
+          cat "$out"
+        fi
+      fi
+      done_n=$((done_n + $(grep -c . "$chunkf" || true)))
+    done
   done
+
+  if [ "$g_json" = "1" ]; then
+    # One array for the whole sweep, whatever it was split into: the chunking
+    # is an implementation detail and must not be visible in the answer.
+    echo "["
+    if [ -s "$jsonbody" ]; then
+      sed -e '$!s/$/,/' "$jsonbody"
+    fi
+    echo "]"
+  fi
 }
 
 run_probe() {
