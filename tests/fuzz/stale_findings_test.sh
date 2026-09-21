@@ -287,7 +287,7 @@ if grep -q '\[ ! -d "\$WORK" \] || \[ ! -d "\$FIND" \]' "$ws_keep"; then
   say "  ok   fault injected, workspace guard still present"
   out="$(bash "$ws_keep" --seeds 1..1 --jobs 1 --cli "$STAGE2" 2>&1)"; wrc=$?
   case "$out" in
-    *"could not create the workspace"*) say "  ok   with the guard, a failed mkdir REFUSES" ;;
+    *"could not create or write the workspace"*) say "  ok   with the guard, a failed mkdir REFUSES" ;;
     *) bad "with the guard present the run did not refuse: $(printf '%s' "$out" | tail -1)" ;;
   esac
   [ "$wrc" -ne 0 ] && say "  ok   nonzero exit ($wrc)" || bad "exited 0 with no findings directory"
@@ -296,7 +296,7 @@ else
 fi
 rm -f "$ws_keep"
 
-ws_drop="$(inject_ws drop 's@^if \[ ! -d "\$WORK" \] || \[ ! -d "\$FIND" \]; then@if false; then@')"
+ws_drop="$(inject_ws drop 's@^if \[ ! -d "\$WORK" \] || \[ ! -d "\$FIND" \] || \[ "\$ws_writable" -eq 0 \]; then@if false; then@')"
 if grep -q 'if false; then' "$ws_drop"; then
   say "  ok   control staged: same fault, guard disabled"
   # The control must reach the silently-wrong OUTCOME, not merely get past the
@@ -323,7 +323,8 @@ rm -f "$ws_drop"
 say "=== red: a failed workspace recreation PRESERVES the previous findings ==="
 # The same rule as the ledger ordering above, one step later: a refusal must
 # not destroy what it refuses to overwrite. Measured before the fix with a
-# regular file in `work`'s place -- `could not create the workspace`, exit 2,
+# regular file in `work`'s place -- `could not create or write the workspace`,
+# exit 2,
 # and `findings/seed_9_REAL_EVIDENCE/single.vibe` gone for good (#2955 review).
 #
 # The fixture needs no fault injection and is deterministic on every platform:
@@ -344,7 +345,7 @@ if plant_evidence; then
   say "  ok   fixture staged: a regular file occupies the work directory's path"
   out="$(bash tests/fuzz/run_fuzz.sh --seeds 1..1 --jobs 1 --cli "$STAGE2" 2>&1)"; erc=$?
   case "$out" in
-    *"could not create the workspace"*) say "  ok   the run refused, naming the workspace" ;;
+    *"could not create or write the workspace"*) say "  ok   the run refused, naming the workspace" ;;
     *) bad "no workspace refusal: $(printf '%s' "$out" | tail -1)" ;;
   esac
   [ "$erc" -ne 0 ] && say "  ok   nonzero exit ($erc)" || bad "the run exited 0 with no workspace"
@@ -370,7 +371,7 @@ if grep -q '^  rm -rf "\$FIND"$' "$wsdel"; then
   if plant_evidence; then
     out="$(bash "$wsdel" --seeds 1..1 --jobs 1 --cli "$STAGE2" 2>&1)"
     case "$out" in
-      *"could not create the workspace"*) say "  ok   pre-fix: it refuses at the same point" ;;
+      *"could not create or write the workspace"*) say "  ok   pre-fix: it refuses at the same point" ;;
       *) bad "pre-fix: the mutant did not reach the workspace refusal: $(printf '%s' "$out" | tail -1)" ;;
     esac
     if [ -f "$FIND/seed_9_REAL_EVIDENCE/single.vibe" ]; then
@@ -455,6 +456,69 @@ fi
 rm -f "$hold"
 rm -rf "$FIND" "$HOLD0" "$FIND.prev.FIXEDPID.1"
 
+say "=== red: an existing but UNWRITABLE workspace is refused (fault-injected) ==="
+# `[ -d ]` asks whether the directory exists; the run needs it WRITABLE, and
+# the two part company where it matters -- root-owned residue from another
+# container makes `mkdir -p` succeed and the `-d` test pass, so the holding
+# copy is deleted and the first seed then cannot create anything (#2955
+# review).
+#
+# Injected rather than staged with real permissions: these gates run as root
+# in CI, where the mode bits do not bind (measured earlier in this PR --
+# `chmod 0444` leaves a file writable for root), and `chattr +i` is
+# unsupported on some filesystems. Injection exercises the same branch
+# everywhere, which is why the ledger predicate above is tested this way too.
+inject_ws_probe() { # <name> <extra-sed> -> path
+  local nm="$1"
+  local extra="$2"
+  local dst="tests/fuzz/.probe_wsw${nm}$$.sh"
+  cp tests/fuzz/run_fuzz.sh "$dst"
+  # The probe reports failure while the directories are genuinely fine, so
+  # the ONLY thing that can refuse is the predicate under test.
+  sed -i.bak 's@^  ( : > "\$ws_probe" ) 2>/dev/null || ws_writable=0$@  ws_writable=0@' "$dst" && rm -f "$dst.bak"
+  if [ -n "$extra" ]; then sed -i.bak "$extra" "$dst" && rm -f "$dst.bak"; fi
+  printf '%s\n' "$dst"
+}
+
+wsw_keep="$(inject_ws_probe keep "")"
+if grep -q '\[ "\$ws_writable" -eq 0 \]' "$wsw_keep" && grep -q '^  ws_writable=0$' "$wsw_keep"; then
+  say "  ok   fault injected, writability predicate still present"
+  rm -rf "$FIND"; mkdir -p "$FIND/seed_9_REAL_EVIDENCE"
+  printf 'repro\n' > "$FIND/seed_9_REAL_EVIDENCE/single.vibe"
+  out="$(bash "$wsw_keep" --seeds 1..1 --jobs 1 --cli "$STAGE2" 2>&1)"; wwrc=$?
+  case "$out" in
+    *"could not create or write the workspace"*) say "  ok   an unwritable workspace REFUSES" ;;
+    *) bad "no writability refusal: $(printf '%s' "$out" | tail -1)" ;;
+  esac
+  [ "$wwrc" -ne 0 ] && say "  ok   nonzero exit ($wwrc)" || bad "exited 0 with an unwritable workspace"
+  if [ -f "$FIND/seed_9_REAL_EVIDENCE/single.vibe" ]; then
+    say "  ok   and the refusal preserved the previous campaign's evidence"
+  else
+    bad "the refusal DESTROYED the findings it refused to overwrite"
+  fi
+else
+  bad "the writability injection did not apply -- this case would prove nothing"
+fi
+rm -f "$wsw_keep"
+
+# The control: same fault, predicate dropped from the guard. It must proceed,
+# which is what makes the refusal above the predicate's doing.
+wsw_drop="$(inject_ws_probe drop 's@ || \[ "\$ws_writable" -eq 0 \]; then@; then@')"
+if ! grep -q '\[ "\$ws_writable" -eq 0 \]; then' "$wsw_drop"; then
+  say "  ok   control staged: same fault, predicate removed from the guard"
+  rm -rf "$FIND"
+  out="$(bash "$wsw_drop" --seeds 1..1 --jobs 1 --cli "$STAGE2" 2>&1)"; wcrc2=$?
+  case "$out" in
+    *", 0 findings"*) say "  ok   without it the run proceeds -- so the refusal is the predicate's" ;;
+    *) bad "control did not complete a campaign: $(printf '%s' "$out" | tail -1)" ;;
+  esac
+  [ "$wcrc2" -eq 0 ] && say "  ok   control exits 0" || bad "control exited $wcrc2"
+else
+  bad "the control mutation did not apply -- the case above is unattributed"
+fi
+rm -f "$wsw_drop"
+rm -rf "$FIND"
+
 say "=== red: no GNU timeout falls back to a watchdog that still BOUNDS ==="
 # `timeout` is absent from a stock macOS (BSD userland; coreutils installs it
 # as `gtimeout`), and this gate runs the real harness from `release-check`.
@@ -499,6 +563,15 @@ case "$2" in
   # WALL CLOCK is the child's full lifetime -- a bound that does not bind
   # (#2955 review).
   grandchild) out=$(watchdog_run 2 bash -c 'bash -c "sleep 12" & wait' 2>/dev/null); rc=$? ;;
+  # The marker directory is gone, as it would be if the filesystem filled
+  # after the fallback was selected. The elapsed cross-check has to carry
+  # these two on its own -- and it must not answer 124 for the second.
+  hang_nomarker)
+    WATCHDOG_DIR="/nonexistent-wd-$$"
+    watchdog_run 2 sleep 12 >/dev/null 2>&1; rc=$? ;;
+  self_term_nomarker)
+    WATCHDOG_DIR="/nonexistent-wd-$$"
+    watchdog_run 5 sh -c 'kill -TERM $$' >/dev/null 2>&1; rc=$? ;;
   *) echo "unknown case: $2" >&2; exit 2 ;;
 esac
 t1=$(date +%s)
@@ -531,6 +604,8 @@ if grep -q "$(basename "$tlib")" "$tprobe" && grep -q 'vibe_absent_gtimeout' "$t
   wd_expect status 7 8 "a command's own status passes through untouched"
   wd_expect self_term 143 8 "a program the OOM killer TERMs is not relabelled a hang"
   wd_expect grandchild 124 8 "the whole process group is signalled, so the bound binds"
+  wd_expect hang_nomarker 124 8 "with the marker dir gone, elapsed-and-signalled still answers 124"
+  wd_expect self_term_nomarker 143 8 "and an early signal death is still not relabelled without it"
   # The pairing for that one: signal only the direct child, as the first
   # version of this watchdog did. It still ANSWERS 124 -- the marker says the
   # bound was reached -- while the grandchild runs to completion, so only the
@@ -566,6 +641,30 @@ if grep -q "$(basename "$tlib")" "$tprobe" && grep -q 'vibe_absent_gtimeout' "$t
     *) bad "the fallback campaign did not come back clean: $(printf '%s' "$out" | tail -1)" ;;
   esac
   [ "$trc" -eq 0 ] && say "  ok   exits 0" || bad "the fallback campaign exited $trc"
+  # The fallback's marker allocation is part of selecting it: a marker it
+  # cannot allocate is not a smaller answer but a wrong one -- the watchdog
+  # would still kill at the deadline and report the signal status, so a
+  # compiler hang would be recorded as COMPILE_CRASH (#2955 review). With no
+  # usable TMPDIR the run must refuse, and refuse BEFORE the reset and the
+  # banner.
+  rm -rf "$FIND"; mkdir -p "$FIND/seed_9_REAL_EVIDENCE"
+  printf 'repro\n' > "$FIND/seed_9_REAL_EVIDENCE/single.vibe"
+  out="$(TMPDIR="/nonexistent-tmp-$$" bash "$tprobe" --seeds 1..1 --jobs 1 --cli "$STAGE2" 2>&1)"; mrc=$?
+  case "$out" in
+    *"TMPDIR"*) say "  ok   an unusable TMPDIR is refused, naming what to set" ;;
+    *) bad "no TMPDIR refusal: $(printf '%s' "$out" | tail -1)" ;;
+  esac
+  [ "$mrc" -ne 0 ] && say "  ok   nonzero exit ($mrc)" || bad "exited 0 with no marker directory"
+  case "$out" in
+    *"[fuzz] mode="*) bad "the run ANNOUNCED itself and fuzzed anyway" ;;
+    *) say "  ok   no campaign was started" ;;
+  esac
+  if [ -f "$FIND/seed_9_REAL_EVIDENCE/single.vibe" ]; then
+    say "  ok   and that refusal landed before the reset too"
+  else
+    bad "the TMPDIR refusal DESTROYED the previous findings"
+  fi
+  rm -rf "$FIND"
 else
   bad "the timeout probe was not staged -- this case would prove nothing"
 fi

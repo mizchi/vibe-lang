@@ -40,6 +40,20 @@ elif command -v gtimeout >/dev/null 2>&1; then
   TIMEOUT_BIN="gtimeout"
 else
   TIMEOUT_BIN=""
+  # The fallback needs somewhere to put its per-call markers, and a marker it
+  # could not allocate is not a smaller answer -- it is a WRONG one: the
+  # watchdog would still kill at the deadline and then report the signal
+  # status, so a compiler hang would be recorded as COMPILE_CRASH and a
+  # runtime hang as RUN_TRAP (#2955 review). Allocated once, here, so an
+  # invalid or unwritable TMPDIR is refused before any campaign begins rather
+  # than per seed in the middle of one.
+  WATCHDOG_DIR="$(mktemp -d 2>/dev/null || true)"
+  if [ -z "$WATCHDOG_DIR" ] || [ ! -d "$WATCHDOG_DIR" ]; then
+    echo "[fuzz] no 'timeout' or 'gtimeout', and no writable temporary directory for the fallback" >&2
+    echo "[fuzz] set TMPDIR to a writable directory, or install GNU coreutils (macOS: 'brew install coreutils')" >&2
+    echo "[fuzz] refusing to measure: the fallback could not tell a hang from a crash" >&2
+    exit 2
+  fi
 fi
 
 # A `timeout`-compatible watchdog in POSIX shell, used only when neither
@@ -54,9 +68,13 @@ fi
 # With the marker, only a kill this function performed answers 124.
 watchdog_run() { # <seconds> <cmd...>
   local secs="$1"; shift
-  local marker
-  marker="$(mktemp 2>/dev/null)" || marker=""
-  [ -n "$marker" ] && rm -f "$marker"
+  # The marker lives in the directory allocated when this fallback was
+  # selected, so there is no per-call allocation to fail. It must NOT exist
+  # yet: only the kill below creates it.
+  local marker="${WATCHDOG_DIR:-}/wd.$$.$RANDOM"
+  rm -f "$marker" 2>/dev/null
+  local started
+  started="$(date +%s)"
   # Job control is enabled around the launch so the child becomes a PROCESS
   # GROUP LEADER, and the signals below go to `-$cmd_pid` -- the whole group.
   # This is what timeout(1) does, and without it the bound does not bound:
@@ -89,11 +107,22 @@ watchdog_run() { # <seconds> <cmd...>
   local rc=$?
   kill "$watch_pid" 2>/dev/null
   wait "$watch_pid" 2>/dev/null
-  if [ -n "$marker" ] && [ -e "$marker" ]; then
+  if [ -e "$marker" ]; then
     rm -f "$marker"
     return 124
   fi
   rm -f "$marker" 2>/dev/null
+  # Second line of defence, for the one case the marker cannot cover: the
+  # filesystem filling mid-run, so the kill happened but writing the marker
+  # did not. A status above 128 means the child died of a signal, and having
+  # ALSO reached the bound is what separates that from a program the OOM
+  # killer took early -- the case the marker exists to protect. Both
+  # conditions, never either alone.
+  local ended
+  ended="$(date +%s)"
+  if [ "$rc" -gt 128 ] && [ "$((ended - started))" -ge "$secs" ]; then
+    return 124
+  fi
   return "$rc"
 }
 

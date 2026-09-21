@@ -275,7 +275,22 @@ fi
 # error (#2955 review). The refusal puts the previous findings BACK first, so
 # what it declined to overwrite is still there when it returns.
 mkdir -p "$WORK" "$FIND" 2>/dev/null || true
-if [ ! -d "$WORK" ] || [ ! -d "$FIND" ]; then
+# `[ -d ]` asks whether the directory EXISTS; what the run needs is whether it
+# can be WRITTEN, and the two part company exactly where it matters: an
+# existing but non-writable `$WORK` -- root-owned residue from another
+# container -- makes `mkdir -p` succeed and the `-d` test pass, so the holding
+# copy is deleted and only then does the first seed discover it cannot create
+# its work directory (#2955 review). So each one is probed by creating a file
+# in it, which is the property rather than a proxy for it.
+ws_writable=1
+for ws_dir in "$WORK" "$FIND"; do
+  ws_probe="$ws_dir/.writable.$$"
+  rm -f "$ws_probe" 2>/dev/null
+  ( : > "$ws_probe" ) 2>/dev/null || ws_writable=0
+  [ -f "$ws_probe" ] || ws_writable=0
+  rm -f "$ws_probe" 2>/dev/null
+done
+if [ ! -d "$WORK" ] || [ ! -d "$FIND" ] || [ "$ws_writable" -eq 0 ]; then
   kept=""
   if [ -e "$FIND_PREV" ]; then
     # `$FIND` may exist and be empty here -- `mkdir -p` creates what it can and
@@ -289,7 +304,7 @@ if [ ! -d "$WORK" ] || [ ! -d "$FIND" ]; then
       kept=" -- the previous findings were put back"
     fi
   fi
-  echo "[fuzz] could not create the workspace ($WORK, $FIND)$kept" >&2
+  echo "[fuzz] could not create or write the workspace ($WORK, $FIND)$kept" >&2
   echo "[fuzz] refusing to measure without somewhere to record findings" >&2
   exit 2
 fi
