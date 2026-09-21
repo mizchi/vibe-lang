@@ -151,6 +151,45 @@ else
 fi
 rm -rf "$VIBE_FUZZ_ROOT/failing_seeds.txt"
 
+say "=== red: an EMPTY ledger whose truncation fails is still rejected ==="
+# The shape the directory case cannot produce: the ledger is already an empty
+# regular file, so the postcondition alone reads as success, while truncation
+# fails and every later append will too -- a real finding reported as
+# `0 findings` (#2955 review). Only the truncation's STATUS distinguishes it.
+#
+# Measured while fixing this: `chmod 0444` does NOT reproduce it as root --
+# the redirect succeeds, `[ -w ]` reports writable and appends work, because
+# root bypasses the mode bits. `chattr +i` does block root, so that is the
+# fixture. Where the flag is unsupported this case cannot run, but the BRANCH
+# it exercises is the same one the directory case above covers
+# deterministically, so nothing is left unchecked by the skip.
+lfile="$VIBE_FUZZ_ROOT/failing_seeds.txt"
+rm -rf "$lfile"; : > "$lfile"
+if ! command -v chattr >/dev/null 2>&1 || ! chattr +i "$lfile" 2>/dev/null; then
+  say "  SKIP chattr +i unavailable here; the directory case above covers this branch"
+  rm -f "$lfile"
+else
+  if ( : > "$lfile" ) 2>/dev/null; then
+    bad "the fixture did NOT block truncation -- this case proves nothing"
+  elif [ -s "$lfile" ]; then
+    bad "the fixture is not empty -- it would be caught by the postcondition, not the status"
+  else
+    say "  ok   the ledger is empty AND untruncatable, so only the status can tell"
+    out="$(bash tests/fuzz/run_fuzz.sh --seeds 1..1 --cli "$STAGE2" 2>&1)"; erc=$?
+    case "$out" in
+      *"could not reset"*"failing_seeds"*) say "  ok   the run refused, naming the ledger" ;;
+      *) bad "no ledger refusal: $(printf '%s' "$out" | tail -1)" ;;
+    esac
+    [ "$erc" -ne 0 ] && say "  ok   nonzero exit ($erc)" || bad "the run exited 0 with an untruncatable ledger"
+    case "$out" in
+      *"[fuzz] mode="*) bad "the run ANNOUNCED itself and fuzzed anyway" ;;
+      *) say "  ok   no campaign was started" ;;
+    esac
+  fi
+  chattr -i "$lfile" 2>/dev/null
+  rm -f "$lfile"
+fi
+
 say "=== red: the PRE-FIX harness runs a campaign and leaves it behind ==="
 # Reconstruct the old behaviour so the case proves the fix was load-bearing
 # rather than merely present.

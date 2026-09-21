@@ -126,10 +126,21 @@ mkdir -p "$FUZZ_ROOT"
 # leaves the script running. Every later `record` append then fails too, and
 # the final `wc -l` reads 0 while `findings/` holds a real finding: the
 # campaign reports success having found something (#2955 review). Asking
-# whether the file is now an empty regular file answers that; asking whether
-# the redirect returned 0 is a proxy for it.
-: > "$SEEDS_FILE" 2>/dev/null || true
-if [ ! -f "$SEEDS_FILE" ] || [ -s "$SEEDS_FILE" ]; then
+# whether the file is now an empty regular file is NOT sufficient on its own:
+# that is also the state of a ledger which was ALREADY empty and could not be
+# truncated, and whose later appends will therefore fail silently (#2955
+# review). So both are required -- the truncation must SUCCEED, and the result
+# must be an empty regular file. The postcondition cannot replace the status
+# here because the desired end state and the failed-but-already-there state are
+# the same state.
+# The subshell is not decoration: bash reports a failed redirection before the
+# `2>/dev/null` on that same command takes effect, so a bare
+# `: > "$f" 2>/dev/null` still prints `Operation not permitted` above the
+# actionable message. Redirecting the subshell's stderr suppresses it from
+# outside, leaving only the diagnostic that says what to do.
+seeds_reset_ok=1
+( : > "$SEEDS_FILE" ) 2>/dev/null || seeds_reset_ok=0
+if [ "$seeds_reset_ok" -eq 0 ] || [ ! -f "$SEEDS_FILE" ] || [ -s "$SEEDS_FILE" ]; then
   echo "[fuzz] could not reset $SEEDS_FILE -- findings could not be recorded and the run would report 0" >&2
   echo "[fuzz] remove it by hand and re-run; refusing to measure with an unresettable seed ledger" >&2
   exit 2
