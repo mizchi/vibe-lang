@@ -2,10 +2,15 @@
 //
 // An ERASED handle nested inside a kinded one is a new catch-all boundary:
 // everything its body raises ends in it, so the outer kind is not imposed
-// on it. A closure literal passed straight to a callee is discharged by
-// whoever receives it, so its throws are not counted against the enclosing
-// kinded arm either (a closure created and called in the body IS counted --
-// fixtures/typecheck/exception_kinded_handle_local_closure_reject.vibe).
+// on it. A closure literal passed straight to a callee is checked against
+// the row the callee's PARAMETER declares: an erased `Exception` there takes
+// any kind (what comes back out is the callee's own declared row, charged
+// strictly like any other call); a kind there lets the literal throw exactly
+// that kind. A closure created and called in the body IS counted
+// (fixtures/typecheck/exception_kinded_handle_local_closure_reject.vibe),
+// and so is one handed to a parameter whose row has no exception label, so
+// that the throw rides the row variable back out
+// (fixtures/typecheck/exception_kinded_handle_rowvar_closure_reject.vibe).
 
 fn boom() -> Int with Exception[String] {
   throw("abc")
@@ -40,4 +45,47 @@ test "a closure literal handed to a callee is discharged by the callee" {
     }) + 10
   } with { Exception[String]::Throw(s) => String::length(s) }
   assert_eq(ok, 9)
+}
+
+fn invoke[e](f: () -> Int with e) -> Int with e {
+  f()
+}
+
+fn takes_int(f: () -> Int with Exception[Int]) -> Int {
+  handle {
+    f()
+  } with { Exception[Int]::Throw(n) => n + 1000 }
+}
+
+test "a closure literal through a row variable may throw only the handled kind" {
+  let r = handle {
+    invoke(() -> Int {
+      throw("abcd")
+    })
+  } with { Exception[String]::Throw(s) => String::length(s) }
+  assert_eq(r, 4)
+}
+
+test "a closure literal handed to a kinded parameter throws that kind" {
+  let r = handle {
+    takes_int(() -> Int {
+      throw(7)
+    }) + 1
+  } with { Exception[String]::Throw(s) => String::length(s) }
+  assert_eq(r, 1008)
+}
+
+fn convert(f: () -> Int with Exception) -> Int with Exception[String] {
+  handle {
+    f()
+  } with { Exception::Throw(_e) => throw("conv") }
+}
+
+test "a converting callee's literal may throw anything; its declared row is what comes out" {
+  let r = handle {
+    convert(() -> Int {
+      throw(7)
+    })
+  } with { Exception[String]::Throw(s) => String::length(s) }
+  assert_eq(r, 4)
 }

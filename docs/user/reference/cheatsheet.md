@@ -1553,10 +1553,16 @@ Rules:
   erased callee (`with Exception`), and a throw of another kind that the
   enclosing row would have let propagate are all refused there; the erased
   `Exception::Throw(m)` arm still catches everything, with an untyped payload.
-  A closure literal passed straight to a callee keeps the gradual rule: its
-  throws belong to whoever receives it (a `TaskGroup::spawn` child's `throw`
-  becomes a `TaskError`); one created and called in the body is checked like
-  the body. An erased `handle .. with Exception` nested inside is its own
+  A closure literal passed straight to a callee is checked against the row
+  the callee's PARAMETER declares: a row admitting the erased `Exception`
+  (`TaskGroup::spawn`'s `() -> T with Exception + e`) takes any kind, and what
+  comes back out is the callee's own declared row, charged strictly like any
+  other call; a row naming a kind (`f: () -> Int with Exception[K]`) lets the
+  literal throw exactly `K`; a row with no exception label
+  (`invoke[e](f: () -> Int with e) -> Int with e`) absorbs nothing, so the
+  literal is as strict as the body -- and so is one handed to a callback
+  parameter or a builtin, or created and called in the body. An erased
+  `handle .. with Exception` nested inside is its own
   catch-all boundary. And a handle may have only ONE exception arm: the
   channel carries no kind and only the first exception arm is compiled, so
   `Exception[A]::Throw` next to `Exception[B]::Throw` is refused -- match on

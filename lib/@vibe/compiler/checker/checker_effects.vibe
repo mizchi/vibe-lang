@@ -2344,25 +2344,93 @@ fn exception_effect_labels(labels: Array[String]) -> Array[String] {
   out
 }
 
-/// The declared row a call ARGUMENT is walked under. A closure literal
-/// passed straight to a callee is discharged by whoever receives it
-/// (`TaskGroup::spawn`'s parameter row `() -> T with Exception + e`; the
-/// runtime turns a child's throw into a `TaskError`), and #761 charges its
-/// throws to the enclosing row only as an approximation -- so under a
-/// kinded handle the literal is checked the ordinary gradual way (marker
-/// dropped, erased exception label restored). Anything else keeps the
-/// enclosing row as is.
-fn closure_arg_declared(arg: Expr, declared: Array[String]) -> Array[String] {
+/// The declared row a call ARGUMENT is walked under. Under a kinded handle
+/// a closure literal passed straight to a callee is walked under the row the
+/// callee's PARAMETER declares for it, as far as exceptions go:
+///
+/// - a parameter row admitting the erased `Exception` (`TaskGroup::spawn`'s
+///   `() -> T with Exception + e`, `Parallel::map`'s `(T) -> U with Exception
+///   + e`) takes any kind, so the literal is walked the ordinary gradual way
+///   (marker dropped, erased label restored); what comes back OUT of the call
+///   is the callee's own declared row, which the transitive check charges to
+///   the strict body like any other call (`Exception[TaskError]` passes an
+///   `Exception[TaskError]` arm, an erased `with Exception` is refused);
+/// - a parameter row naming kinds (`f: () -> Int with Exception[K]`) lets the
+///   literal throw exactly those kinds, still strictly -- the callee's own
+///   arm for `K` catches everything the literal raises;
+/// - a parameter row with no exception label (`f: () -> Int with e`) absorbs
+///   nothing: whatever the literal throws rides the row variable back into
+///   the body, so the literal stays as strict as the body.
+///
+/// A callee this pass cannot see -- a callback parameter (its parameter rows
+/// are not in the overlay), a builtin, a field or call result -- keeps the
+/// literal as strict as the body.
+///
+/// #2985 review (Codex P0, second round): the first version relaxed EVERY
+/// literal argument. An unannotated literal handed to
+/// `invoke[e](f: () -> Int with e) -> Int with e` throws straight back into
+/// the enclosing body through `e`, and the row-variable instantiation bails
+/// on such a literal (its row IS the lexical charge the relaxation dropped),
+/// so `throw(7)` in it reached an `Exception[String]` arm and read as a
+/// String (`14`). The parameter's row decides now, not the argument's shape.
+/// What this deliberately trusts is the callee's DECLARED row: a helper
+/// declared `with Exception[String]` whose body calls a `with Exception`
+/// callback is accepted at its own definition by the gradual rule and so
+/// can raise a kind it does not declare -- a definition-site hole reachable
+/// through a named or an annotated argument as well, filed separately.
+fn closure_arg_declared(arg: Expr, declared: Array[String], callee: String, lexical_callee: Option[Array[String]], index: Int) -> Array[String] {
   match arg {
-    EFn(_, _, _, _, _, _) => if under_kinded_handle(declared) {
-      labels_union(labels_without_exception_family_marker(declared), [
-        "Exception"
-      ])
-    } else {
+    EFn(_, _, _, _, _, _) => if !under_kinded_handle(declared) {
       declared
+    } else {
+      match lexical_callee {
+        Some(_) => declared,
+        None => match MutMap::get(Array::get(callee_sig_index, 0), callee) {
+          None => declared,
+          Some(si) => {
+            let prows = Array::get(callee_sig_param_effs, si)
+            if index >= Array::length(prows) {
+              declared
+            } else {
+              let prow = Array::get(prows, index)
+              if row_has_erased_exception(prow) {
+                labels_union(labels_without_exception_family_marker(declared), [
+                  "Exception"
+                ])
+              } else {
+                let kinds = exception_effect_labels(prow)
+                if Array::length(kinds) > 0 {
+                  labels_union(labels_union(labels_without_exception_family(declared), [
+                    kinded_handle_marker()
+                  ]), kinds)
+                } else {
+                  declared
+                }
+              }
+            }
+          }
+        }
+      }
     },
     _ => declared
   }
+}
+
+/// Does a row carry the ERASED exception effect (`Exception` /
+/// `Exception::Throw`, kind empty), the spelling that admits every kind?
+fn row_has_erased_exception(labels: Array[String]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(labels) {
+    let l = Array::get(labels, i)
+    if is_exception_label(l) && String::length(exception_label_kind(l)) == 0 {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
 }
 
 /// The kinded exception labels (`Exception[K]`, kind non-empty) among a
@@ -3816,6 +3884,53 @@ fn no_param_effs() -> Array[Array[Array[String]]] {
   array_empty()
 }
 
+/// The callee signatures a call ARGUMENT's row is decided by
+/// (closure_arg_declared). The program table (`fn_names` / `fn_effs` /
+/// `fn_param_effs`) records what the transitive check needs -- every
+/// top-level binding of the module, and of the env only the bindings with a
+/// non-empty row, those with no parameter rows (#1485 keeps imports on its
+/// exemption). The argument rule needs an imported callee's PARAMETER rows
+/// (`TaskGroup::spawn`'s `() -> T with Exception + e` is the one that
+/// licenses the relaxation), so it reads this separate table --
+/// the same module bindings plus EVERY function binding of the env, module
+/// first so a same-named import is shadowed the way lookups shadow it. Set
+/// at every entry of the pass, and cleared by the entries with no env, so
+/// no table survives into the next module (the throw_kind_cell rule).
+let callee_sig_index: Array[MutMap[String, Int]] = [MutMap::new_string()]
+
+let callee_sig_effs: Array[Array[String]] = array_empty()
+
+let callee_sig_param_effs: Array[Array[Array[String]]] = array_empty()
+
+fn set_callee_sigs(stmts: Array[Stmt], env: TypeEnv) -> Unit {
+  Array::truncate(callee_sig_effs, 0)
+  Array::truncate(callee_sig_param_effs, 0)
+  let names = array_empty()
+  build_perform_fn_effs(stmts, names, callee_sig_effs, callee_sig_param_effs)
+  seed_env_fn_effs(env, names, callee_sig_effs, callee_sig_param_effs, true)
+  Array::set(callee_sig_index, 0, program_fn_index(names))
+}
+
+/// `param_type_effect_labels` over a checked `Type`: the row a function-typed
+/// parameter declares, nothing for any other parameter.
+fn type_param_effect_labels(pty: Type) -> Array[String] {
+  match pty {
+    CtFn(_, _, peff) => effect_row_labels(effect_row_parse(peff)),
+    _ => no_str_labels()
+  }
+}
+
+/// `fn_binding_param_effects` over a checked function `Type`, positionally.
+fn fn_type_param_effects(params: Array[Type]) -> Array[Array[String]] {
+  let out = no_param_row()
+  let mut i = 0
+  while i < Array::length(params) {
+    Array::push(out, type_param_effect_labels(Array::get(params, i)))
+    i = i + 1
+  }
+  out
+}
+
 /// One callee's "no parameter rows known" entry.
 fn no_param_row() -> Array[Array[String]] {
   array_empty()
@@ -4579,16 +4694,18 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
             let mut ai = 0
             while ai < Array::length(args) {
               let arg = Array::get(args, ai)
-              Array::push(stack, (arg, closure_arg_declared(arg, declared), in_handle, ov_names, ov_effs, kinds))
+              Array::push(stack, (arg, closure_arg_declared(arg, declared, cname, lookup_fn_effs(ov_names, ov_effs, cname), ai), in_handle, ov_names, ov_effs, kinds))
               ai = ai + 1
             }
           },
           _ => {
+            // A callee that is not a name (a field, a call result) is one
+            // this pass cannot see, so a closure literal handed to it stays
+            // as strict as the body (closure_arg_declared).
             Array::push(stack, (callee, declared, in_handle, ov_names, ov_effs, kinds))
             let mut bi = 0
             while bi < Array::length(args) {
-              let arg = Array::get(args, bi)
-              Array::push(stack, (arg, closure_arg_declared(arg, declared), in_handle, ov_names, ov_effs, kinds))
+              Array::push(stack, (Array::get(args, bi), declared, in_handle, ov_names, ov_effs, kinds))
               bi = bi + 1
             }
           }
@@ -4619,8 +4736,9 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
         // inside a kinded handle keeps the handle's strictness (its throws
         // reach that arm: `let f = () -> Int { throw(7) }; f()` under
         // `Exception[String]` read `7` as a String). Only a literal passed
-        // directly as a call ARGUMENT is relaxed, at the call site
-        // (closure_arg_declared): whoever receives it discharges its throws.
+        // directly as a call ARGUMENT is relaxed, at the call site and only
+        // when the callee's signature shows it discharges the throws
+        // (closure_arg_declared).
         let body_declared = effect_row_inherit(effect_row_parse(effect), labels_union(declared, current_ret_fn_rows()))
         // #885: extend the callback-parameter overlay with THIS function's own
         // function-typed parameters (if any carry a declared effect), scoped to
@@ -5073,6 +5191,7 @@ export fn check_perform_effects_expr(root: Expr, root_declared: Array[String], r
   // Same clearing rule as check_perform_effects_stmt (#1344): no env here, so
   // no payload kinds are resolvable and none must be carried over.
   set_throw_kind_table(EnvEmpty)
+  set_callee_sigs(array_empty(), EnvEmpty)
   check_perform_effects_expr_tx(root, root_declared, root_in_handle, no_str_labels(), no_ov_effs(), no_str_labels(), no_ov_effs())
 }
 
@@ -5464,6 +5583,7 @@ export fn check_perform_effects_stmt(stmt: Stmt) -> Array[EffectError] {
   // No env to resolve payload kinds from: clear the table rather than let a
   // previous module's bindings decide this one's throw kinds (#1344).
   set_throw_kind_table(EnvEmpty)
+  set_callee_sigs(Array::slice([stmt], 0, 1), EnvEmpty)
   set_entry_user_effect_operations(Array::slice([stmt], 0, 1))
   check_perform_effects_stmt_tx(stmt, no_str_labels(), no_ov_effs(), program_fn_index(no_str_labels()), no_param_effs())
 }
@@ -5477,15 +5597,22 @@ export fn check_perform_effects_stmt(stmt: Stmt) -> Array[EffectError] {
 /// AFTER the local rows (lookup_fn_effs is first-match, so a same-name local
 /// row still shadows the env row). Effect-free bindings are skipped — an
 /// absent row and an empty row enforce the same (nothing).
-fn push_env_fn_eff(name: String, ty: Type, fn_names: Array[String], fn_effs: Array[Array[String]], fn_param_effs: Array[Array[Array[String]]]) -> Unit {
+/// `every_fn` (the callee-signature table, set_callee_sigs) records every
+/// function binding with its parameter rows; the program table keeps the
+/// #1485 shape below.
+fn push_env_fn_eff(name: String, ty: Type, fn_names: Array[String], fn_effs: Array[Array[String]], fn_param_effs: Array[Array[Array[String]]], every_fn: Bool) -> Unit {
   let fnty = match ty {
     CtForAll(_, _, body) => body,
     _ => ty
   }
   match fnty {
-    CtFn(_, _, eff) => {
+    CtFn(params, _, eff) => {
       let labels = effect_row_labels(effect_row_parse(eff))
-      if Array::length(labels) > 0 {
+      if every_fn {
+        Array::push(fn_names, name)
+        Array::push(fn_effs, labels)
+        Array::push(fn_param_effs, fn_type_param_effects(params))
+      } else if Array::length(labels) > 0 {
         Array::push(fn_names, name)
         Array::push(fn_effs, labels)
         // #1485: an env-seeded (imported) binding carries a checked `Type`, not
@@ -5502,13 +5629,13 @@ fn push_env_fn_eff(name: String, ty: Type, fn_names: Array[String], fn_effs: Arr
   }
 }
 
-fn seed_env_fn_effs(env: TypeEnv, fn_names: Array[String], fn_effs: Array[Array[String]], fn_param_effs: Array[Array[Array[String]]]) -> Unit {
+fn seed_env_fn_effs(env: TypeEnv, fn_names: Array[String], fn_effs: Array[Array[String]], fn_param_effs: Array[Array[Array[String]]], every_fn: Bool) -> Unit {
   let mut cur = env
   let mut looping = true
   while looping {
     match cur {
       EnvBind(name, binding, rest) => {
-        push_env_fn_eff(name, binding.ty, fn_names, fn_effs, fn_param_effs)
+        push_env_fn_eff(name, binding.ty, fn_names, fn_effs, fn_param_effs, every_fn)
         cur = rest
       },
       EnvTraitDef(_, _, _, _, rest, _, _) => {
@@ -5533,7 +5660,7 @@ fn seed_env_fn_effs(env: TypeEnv, fn_names: Array[String], fn_effs: Array[Array[
         let mut ei = 0
         while ei < Array::length(entries) {
           let (ename, binding) = Array::get(entries, ei)
-          push_env_fn_eff(ename, binding.ty, fn_names, fn_effs, fn_param_effs)
+          push_env_fn_eff(ename, binding.ty, fn_names, fn_effs, fn_param_effs, every_fn)
           ei = ei + 1
         }
         looping = false
@@ -5584,8 +5711,9 @@ export fn check_perform_effects_stmts_env(stmts: Array[Stmt], env: TypeEnv) -> A
   // the pre-#1485 exemption.
   let fn_param_effs = no_param_effs()
   build_perform_fn_effs(stmts, fn_names, fn_effs, fn_param_effs)
-  seed_env_fn_effs(env, fn_names, fn_effs, fn_param_effs)
+  seed_env_fn_effs(env, fn_names, fn_effs, fn_param_effs, false)
   let fn_index = program_fn_index(fn_names)
+  set_callee_sigs(stmts, env)
   // #1451: struct FIELD rows, for closure literals stored into a field whose
   // declared type carries one (see build_struct_field_rows).
   build_struct_field_rows(stmts)
@@ -6098,6 +6226,7 @@ export fn file_tests_cacheable(stmts: Array[Stmt]) -> Bool {
   }
   let empty_decl = array_empty()
   let fn_index = program_fn_index(fn_names)
+  set_callee_sigs(stmts, EnvEmpty)
   let mut any_test = false
   let mut all_ok = true
   let mut i = 0
@@ -6214,6 +6343,7 @@ export fn file_entry_cacheable(stmts: Array[Stmt], entry_name: String) -> Bool {
           EFn(_, _, _, _, _, fn_body) => fn_body,
           _ => body
         }
+        set_callee_sigs(stmts, EnvEmpty)
         let errs = check_perform_effects_expr_tx_indexed(exec_body, cache_safe_row, false, fn_names, fn_effs, program_fn_index(fn_names), no_str_labels(), no_ov_effs())
         Array::length(errs) == 0
       }
