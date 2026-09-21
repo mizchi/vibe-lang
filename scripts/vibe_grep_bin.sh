@@ -295,7 +295,16 @@ run_grep() {
     sed '1d' "$out" > "$listf"
 
     local total done_n
-    total="$(grep -c . "$listf" 2>/dev/null || echo 0)"
+    # `|| true`, NOT `|| echo 0`. `grep -c` PRINTS `0` and THEN exits 1 when
+    # it matches nothing, so the fallback appends a second zero and `$total`
+    # becomes `0\n0` -- `[ "$total" -gt 0 ]` then writes `integer expression
+    # expected` to stderr on a sweep that succeeded and simply found no files.
+    # An empty directory is the ordinary way to reach it, and it became
+    # reachable here only once the compiler learned to answer a listing with
+    # just the banner, which the `sed '1d'` above then strips to nothing
+    # (Codex on #2956, P2). The runtime/vibe driver already spells it `|| true`.
+    total="$(grep -c . "$listf" 2>/dev/null || true)"
+    [ -n "$total" ] || total=0
     [ "$total" -gt 0 ] || continue
     # `sed -n 'A,Bp'` and NOT `grep . | tail -n +A | head -n N`: under
     # `set -o pipefail`, `head` closing the pipe early kills the upstream
