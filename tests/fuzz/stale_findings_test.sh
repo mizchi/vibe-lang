@@ -577,6 +577,20 @@ case "$2" in
   # itself at 1.2s under a 2s bound answer 124 -- measured, 2 runs in 8. Run
   # repeatedly, because the wrong answer was INTERMITTENT: a single sample
   # passed most of the time while the defect was present (#2955 review).
+  # Seeds run concurrently, and each lane calls this. Two overlapping calls
+  # must not share a marker: the first to finish removes it, and the second
+  # then reads its absence as its own bound -- a program that completed
+  # normally reported as a hang.
+  concurrent)
+    watchdog_run 9 sh -c 'sleep 1' >/dev/null 2>&1 &
+    c1=$!
+    watchdog_run 9 sh -c 'sleep 3' >/dev/null 2>&1 &
+    c2=$!
+    wait "$c1"; r1=$?
+    wait "$c2"; r2=$?
+    rc=0
+    [ "$r1" = "124" ] && rc=124
+    [ "$r2" = "124" ] && rc=124 ;;
   late_self_term)
     rc=0
     n=0
@@ -622,6 +636,24 @@ if grep -q "$(basename "$tlib")" "$tprobe" && grep -q 'vibe_absent_gtimeout' "$t
   wd_expect hang_nomarker 125 8 "with no marker there is no evidence, so it refuses rather than guessing"
   wd_expect self_term_nomarker 125 8 "and refuses the same way rather than passing the signal off as its own"
   wd_expect late_self_term 143 40 "a late self-kill under the bound is never relabelled (8 runs, none 124)"
+  wd_expect concurrent 0 20 "overlapping calls do not share a marker"
+  # Paired: a marker name that is NOT unique per call. `$$` is shared by every
+  # background seed, and a bash 3.2 subshell inherits the parent's RANDOM
+  # sequence, so this is what composing the name instead of allocating it
+  # amounts to -- the second call reports a hang for a program that finished.
+  collidelib="tests/fuzz/.probe_collidelib$$.sh"
+  cp "$tlib" "$collidelib"
+  sed -i.bak 's@^  marker="\$(mktemp .*$@  marker="${WATCHDOG_DIR:-/nonexistent}/wd.shared"; ( : > "$marker" ) 2>/dev/null@' "$collidelib" && rm -f "$collidelib.bak"
+  if grep -q 'wd.shared' "$collidelib"; then
+    cline="$(bash "$wdcase" "$ROOT/$collidelib" concurrent 2>&1 | tail -1)"
+    case "$cline" in
+      rc=124*) say "  ok   pre-fix: a shared marker answers 124 for a completed program" ;;
+      *) bad "pre-fix: a shared marker did not collide ($cline) -- the case above proves nothing" ;;
+    esac
+  else
+    bad "the shared-marker mutation did not apply -- the case above is unattributed"
+  fi
+  rm -f "$collidelib"
   # The behavioural case above is INTERMITTENT by nature -- the defect it
   # guards showed up in 2 runs of 8 -- so the rule is also asserted
   # lexically, where it is decidable: ownership of a kill comes from state the

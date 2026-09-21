@@ -92,10 +92,22 @@ watchdog_run() { # <seconds> <cmd...>
   # The marker lives in the directory allocated when this fallback was
   # selected, so there is no per-call allocation to fail. It must NOT exist
   # yet: only the kill below creates it.
-  local marker="${WATCHDOG_DIR:-}/wd.$$.$RANDOM"
-  rm -f "$marker" 2>/dev/null
-  ( : > "$marker" ) 2>/dev/null
-  if [ ! -f "$marker" ]; then
+  # Allocated ATOMICALLY, not composed from `$$` and `$RANDOM`. Seeds run as
+  # background subshells, which share the shell's `$$`, so the name rested on
+  # 15 bits of `$RANDOM` -- and a subshell in bash 3.2 (what macOS ships, the
+  # platform this fallback exists for) inherits the parent's RANDOM sequence,
+  # which makes the collision systematic rather than merely likely. Two calls
+  # sharing a name is not a lost answer but a WRONG one: the first to finish
+  # removes the shared marker, and the second reads its absence as its own
+  # bound and reports COMPILE_HANG / RUN_HANG for a program that completed
+  # normally (#2955 review).
+  #
+  # mktemp both creates and guarantees uniqueness in one step, and its failure
+  # is the creation failure handled below -- the same check, one fewer thing
+  # to get right.
+  local marker
+  marker="$(mktemp "${WATCHDOG_DIR:-/nonexistent}/wd.XXXXXXXX" 2>/dev/null || true)"
+  if [ -z "$marker" ] || [ ! -f "$marker" ]; then
     # Loud, not silent: without a marker this function cannot tell a bound
     # from a crash, and guessing is what the whole mechanism exists to avoid.
     # 125 is timeout(1)'s own "the timeout itself failed" status. In `compile`
