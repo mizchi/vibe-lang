@@ -10710,6 +10710,15 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                     // ones re-opened the same hole for `Exception[Array[Int]]`).
                     // A kind the parser cannot read falls back to the erased
                     // binder rather than failing the arm.
+                    // The kind may name a FORMAL of the enclosing declaration
+                    // (`fn f[T](x: T) { handle { throw([x]) } with {
+                    // Exception[Array[T]]::Throw(e) => .. } }`), so the resolved
+                    // type is mapped onto the env's variables the way a
+                    // body-level annotation is (#2130, the ascription site):
+                    // `resolve_type_expr` alone leaves a rigid `CtNamed("T")`
+                    // that unifies with nothing and checks nothing, and
+                    // `String::length(Array::get(e, 0))` on an Int payload
+                    // printed `82` (Codex P0 on #2985).
                     // The ERASED payload stays CtUnknown: `throw` accepts any
                     // value (#786 — suberror payloads like `throw(AppError("x"))`
                     // are legal), so pinning String would newly reject valid
@@ -10718,7 +10727,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                     let eaty = if String::length(eakind) > 0 {
                       handle {
                         let (kind_te, _) = parse_type(lex(eakind), 0)
-                        resolve_type_expr(kind_te, defs)
+                        resolve_tparams_in(resolve_type_expr(kind_te, defs), eaenv)
                       } with { Exception::Throw(_unreadable) => CtUnknown }
                     } else {
                       CtUnknown
