@@ -63,8 +63,14 @@ fail() { echo "grep-memory-budget-test: FAIL: $*" >&2; exit 1; }
 # the match first is the point: an edit that matches nothing leaves the target
 # pristine, the gate passes, and that pass would be recorded as proof. It has
 # happened in this repo.
-expect_red() { # <target-file> <backup-file> <name> <sed-expr>
-  local target="$1" backup="$2" name="$3" expr="$4" status=0
+# `run_this` is separate from `target` ON PURPOSE, and getting it wrong is how
+# the first version of this file broke: it mutated the MUTANT copy of the gate
+# and then ran the pristine `$GATE`, so three cases reported "the mutated file
+# PASSED" about a file that was never executed. A gate mutation must run the
+# MUTANT; a driver mutation must run the real gate, because the driver is what
+# the gate invokes.
+expect_red() { # <target-file> <backup-file> <run-this> <name> <sed-expr>
+  local target="$1" backup="$2" run_this="$3" name="$4" expr="$5" status=0
   cp "$backup" "$target"
   sed -i.bak "$expr" "$target"
   rm -f "$target.bak"
@@ -72,7 +78,7 @@ expect_red() { # <target-file> <backup-file> <name> <sed-expr>
     cp "$backup" "$target"
     fail "$name: the mutation changed NOTHING, so this case proves nothing"
   fi
-  bash "$GATE" >/dev/null 2>&1 || status=$?
+  bash "$run_this" >/dev/null 2>&1 || status=$?
   cp "$backup" "$target"
   if [ "$status" = "0" ]; then
     fail "$name: the mutated file PASSED the gate; that property is not
@@ -80,12 +86,6 @@ actually being checked"
   fi
   echo "grep-memory-budget-test: ok -- $name reddens the gate (exit $status)"
   passed=$((passed + 1))
-}
-
-expect_red_gate() { # <name> <sed-expr>
-  cp "$GATE" "$MUTANT.orig"
-  expect_red "$MUTANT" "$GATE" "$1" "$2"
-  rm -f "$MUTANT.orig"
 }
 
 # The unmutated gate must pass, or every case below is red for an unrelated
@@ -106,16 +106,16 @@ echo "grep-memory-budget-test: ok -- the unmutated gate passes"
 # Note this mutation targets the MUTANT copy of the gate, so the probe inside
 # it is what changes; the real gate is untouched.
 cp "$GATE" "$MUTANT"
-expect_red "$MUTANT" "$GATE" "the refusal probe asks for resume" \
+expect_red "$MUTANT" "$GATE" "$MUTANT" "the refusal probe asks for resume" \
   's|env VIBE_GREP=1 |env VIBE_GREP=1 VIBE_GREP_RESUME=1 |'
 
 # A corpus with no matches makes every comparison hold vacuously.
-expect_red "$MUTANT" "$GATE" "a corpus with no matches" \
+expect_red "$MUTANT" "$GATE" "$MUTANT" "a corpus with no matches" \
   "s|^CORPUS=.*|CORPUS=\"lib/@vibe/compiler/runtime/grep_fs.vibe\"\nPATTERN='ThisNameDoesNotExistAnywhere(\$(x:exp))'|"
 
 # The refusal's MESSAGE is what tells a budget stop from a wasm trap: both
 # produce no answer.
-expect_red "$MUTANT" "$GATE" "a refusal message that never appears" \
+expect_red "$MUTANT" "$GATE" "$MUTANT" "a refusal message that never appears" \
   "s/out of memory budget before typing/a message the guard never emits/"
 
 # ------------------------------------------------------ the driver's stitching
@@ -128,14 +128,14 @@ expect_red "$MUTANT" "$GATE" "a refusal message that never appears" \
 # last line loses real matches. Property 2's `cmp` must catch it. Property 1
 # alone would not: the default budget takes one process and would lose only its
 # final line, which the comparison is not against.
-expect_red "$DRIVER" "$DRIVER_BACKUP" "each resumed process loses its last line" \
+expect_red "$DRIVER" "$DRIVER_BACKUP" "$GATE" "each resumed process loses its last line" \
   's|^          cat "$out"$|          sed "$d" "$out"|'
 
 # The resume index is ignored and the driver advances by the whole slice
 # instead. Files the sweep never reached would be skipped silently -- the sweep
 # stopped early and the driver reported success for the part it never asked
 # about.
-expect_red "$DRIVER" "$DRIVER_BACKUP" "the resume index is ignored" \
+expect_red "$DRIVER" "$DRIVER_BACKUP" "$GATE" "the resume index is ignored" \
   's|^        advance="$(tr -d .\[:space:\]. < "$out.resume")"$|        advance="$slice"|'
 
 echo "grep-memory-budget-test: ok ($passed mutations reddened the gate)"
