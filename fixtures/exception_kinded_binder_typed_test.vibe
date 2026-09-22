@@ -1,0 +1,84 @@
+// #2963: the binder of a KINDED exception arm has the kind's type. It used to
+// be bound `CtUnknown` like the erased arm's (the same checker branch served
+// both spellings), so `Exception[IoErr]::Throw(e) => e` unified `e` with the
+// handle's Int result and printed a pointer. The answers below are the ones a
+// typed binder gives; the refusal side is
+// fixtures/typecheck/exception_kinded_binder_as_int_reject.vibe.
+
+enum IoErr {
+  NotFound(String);
+  Denied(Int)
+}
+
+fn fail_not_found() -> Int with Exception[IoErr] {
+  throw(NotFound("cfg"))
+}
+
+fn fail_denied() -> Int with Exception[IoErr] {
+  throw(Denied(3))
+}
+
+fn fail_text() -> Int with Exception[String] {
+  throw("abc")
+}
+
+fn fail_code() -> Int with Exception[Int] {
+  throw(41)
+}
+
+fn fail_list() -> Int with Exception[Array[Int]] {
+  throw([1, 2, 3])
+}
+
+fn fail_maybe() -> Int with Exception[Option[String]] {
+  throw(Some("xy"))
+}
+
+fn describe(e: IoErr) -> String {
+  match e {
+    NotFound(p) => String::concat("nf:", p)
+    Denied(c) => "denied \{c}"
+  }
+}
+
+test "a kinded binder is passed where its kind is expected" {
+  let r = handle {
+    fail_not_found()
+    ""
+  } with {
+    Exception[IoErr]::Throw(e) => describe(e)
+  }
+  assert_eq(r, "nf:cfg")
+}
+
+test "a kinded binder is matched directly" {
+  let r = handle { fail_denied() } with {
+    Exception[IoErr]::Throw(e) => match e {
+      NotFound(_) => 0
+      Denied(c) => c
+    }
+  }
+  assert_eq(r, 3)
+}
+
+test "a String kind binds a String" {
+  let r = handle { fail_text() } with { Exception[String]::Throw(m) => String::length(m) }
+  assert_eq(r, 3)
+}
+
+test "an Int kind binds an Int" {
+  let r = handle { fail_code() } with { Exception[Int]::Throw(n) => n + 1 }
+  assert_eq(r, 42)
+}
+
+test "an applied kind binds at the applied type" {
+  let n = handle { fail_list() } with { Exception[Array[Int]]::Throw(e) => Array::length(e) }
+  assert_eq(n, 3)
+  let m = handle { fail_maybe() } with {
+    Exception[Option[String]]::Throw(e) => match e {
+      Some(s) => String::length(s)
+      None => 0
+    }
+  }
+  assert_eq(m, 2)
+}

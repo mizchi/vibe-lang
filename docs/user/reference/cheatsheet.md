@@ -1507,8 +1507,9 @@ sources the parser no longer accepts).
 
 ### Typed exceptions (`Exception[E]`, ADR-0085 / #1344)
 
-bracket なしの `Exception` は kind を持たない erased な例外 row。失敗の**型**を
-row に出したいときは `Exception[E]` と書く。`E` は投げる値の静的型。
+The bare `Exception` is the erased exception row, with no kind. To put the
+TYPE of a failure into the row, write `Exception[E]`, where `E` is the static
+type of the thrown value.
 
 ```vibe
 enum IoError {
@@ -1519,35 +1520,60 @@ enum ParseError {
   Eof
 }
 
-// この関数が投げうるのは IoError だけ、と row が言う
+// the row says this function can throw only an IoError
 let read_cfg: () -> Int with Exception[IoError] = () -> {
   throw(NotFound("cfg"))
 }
 
-// 複数 family は subclass ではなく effectset の union で表す
+// several families are an effectset union, not a subclass hierarchy
 effectset ConfigExceptions = {
   Exception[IoError],
   Exception[ParseError]
 }
 
-// handler は exact kind だけを放電する
+// a handler discharges exactly its kind
 let n = handle { read_cfg() } with { Exception[IoError]::Throw(_e) => 0 }
 ```
 
-規則:
+Rules:
 
-- `Exception[IoError]` は `Exception[ParseError]` を authorize も discharge も
-  しない。row に無い kind を投げると `missing { Exception[IoError] }`。
-- **bracket なしの `Exception` は全 kind と compatible** な erased 綴り。
-  `with Exception` は今までどおり何でも投げられるし、erased な
-  `handle .. with Exception` は kind 付きの throw も捕まえる。
-- payload の kind が解決できない throw (例: `throw(e)` の `e` が local
-  binding) は erased 扱いになり、どの `Exception[K]` でも通る (gradual)。
-  検出漏れはあるが誤検出はしない。
-- runtime は kind を区別しない — すべて単一の abortive Wasm tag。exact-kind
-  の保証は checker 側の性質。
+- `Exception[IoError]` neither authorizes nor discharges `Exception[ParseError]`.
+  Throwing a kind that is not in the row is `missing { Exception[IoError] }`.
+- **The bare `Exception` is the erased spelling, compatible with every kind.**
+  `with Exception` keeps allowing any throw, and an erased
+  `handle .. with Exception` also catches kinded throws.
+- A throw whose payload kind cannot be resolved (for example `throw(r.cause)`)
+  is treated as erased and passes under a function ROW of any `Exception[K]`
+  (gradual): it can miss a violation, never invent one.
+- The runtime does not distinguish kinds: every spelling is one abortive Wasm
+  tag. The exact-kind guarantee is a property of the checker -- which is why a
+  **kinded handler arm is strict** (#2985): `handle { .. } with {
+  Exception[K]::Throw(e) => .. }` catches EVERY exception its body raises, so
+  the body may raise only `Exception[K]`. An erased or unresolved throw, an
+  erased callee (`with Exception`), and a throw of another kind that the
+  enclosing row would have let propagate are all refused there; the erased
+  `Exception::Throw(m)` arm still catches everything, with an untyped payload.
+  A closure literal passed straight to a callee is checked against the row
+  the callee's PARAMETER declares: a row admitting the erased `Exception`
+  (`TaskGroup::spawn`'s `() -> T with Exception + e`) takes any kind, and what
+  comes back out is the callee's own declared row, charged strictly like any
+  other call; a row naming a kind (`f: () -> Int with Exception[K]`) lets the
+  literal throw exactly `K`; a row with no exception label
+  (`invoke[e](f: () -> Int with e) -> Int with e`) absorbs nothing, so the
+  literal is as strict as the body -- and so is one handed to a callback
+  parameter or a builtin, or created and called in the body. An erased
+  `handle .. with Exception` nested inside is its own
+  catch-all boundary. And a handle may have only ONE exception arm: the
+  channel carries no kind and only the first exception arm is compiled, so
+  `Exception[A]::Throw` next to `Exception[B]::Throw` is refused -- match on
+  the payload inside one erased arm, or nest handles.
+- A kinded arm binds its payload at the kind's type (#2963):
+  `Exception[IoError]::Throw(e)` gives `e : IoError`, so `e` can be matched or
+  passed on directly, and returning it where the handle produces an `Int` is a
+  type error. The erased `Exception::Throw(m)` binder is still untyped (it can
+  receive any kind).
 
-詳細と v1 の限界: [exception-effect.md](../../internal/design/exception-effect.md)。
+Details and the v1 limits: [exception-effect.md](../../internal/design/exception-effect.md).
 
 ### Railway try (`?`) — `Option` (#635 / #1324)
 
@@ -1597,29 +1623,46 @@ fn main allows Stdout {
 }
 ```
 
-継続呼び出しは `resume(v)` が canonical (one-shot tail-resumptive, ADR-0050)。
+`resume(v)` is the canonical way to call the continuation (one-shot,
+tail-resumptive, ADR-0050).
 
-Effect row の呼び出し解決も通常の値解決と同じ lexical scope に従う。局所
-closure・関数 parameter・pattern/loop binder が top-level `fn` と同名なら、
-局所 binding が優先される。したがって、純粋な局所 `take` が同名の
-`fn take(..) with Ask` を隠している間、その呼び出しに `Ask` は計上されない。
-局所 scope を抜けると top-level の row が再び有効になる。
+**A tail value that is not wrapped in `resume(...)` is an implicit resume**
+(#2962). Every tail value of an arm that does not store `resume` as a value is
+delivered to the `perform` and the body continues, whether it is written
+`resume(v)` or a bare `v`, so the checker types each such value against the
+OPERATION's return type: for `Get() -> Int`, an arm `Get() => 5` makes the
+perform evaluate to `5`, and `Get() => "x"` or `Get() => if c { resume(1) }
+else { "x" }` is `handler arm value type mismatch with the operation's return
+type`. An arm that stores `resume` as a value (the suspend shape below) keeps
+the other rule: its own value is the handle's result. Only `Exception` arms
+abort; a declared effect has no abortive operations (#2969 tracks declaring
+one).
 
-> **evidence-passing 実装 (#817, ADR-0076 追記34 V2 で replay 全廃)**:
-> handler は evidence dict への直接呼び出し (tail-resumptive) か
-> suspend CPS (first-class resume) にコンパイルされ、handle body は
-> **常に一度だけ実行される** (旧 replay 実装の副作用重複と ~16K perform
-> 上限は消滅)。代償として、handle body から届く perform は migration が
-> 追える形に限られる — 追えない形 (row 変数 `with e` の callee 経由、
-> row 無しの外側 local closure 経由など) の非 Exception handle は
-> **compile error** になる (needle: "cannot be compiled here")。
-> 受理される形の実測表は下の
-> [A `handle` that type-checks can still fail to compile](#a-handle-that-type-checks-can-still-fail-to-compile) 節。
+Call resolution for an effect row follows the same lexical scope as ordinary
+value resolution. When a local closure, a function parameter, or a pattern /
+loop binder has the same name as a top-level `fn`, the local binding wins. So
+while a pure local `take` shadows a top-level `fn take(..) with Ask`, a call to
+`take` is not charged `Ask`; once the local scope ends, the top-level row is in
+force again.
 
-**`resume` は arm 内で第一級の one-shot 値** (ADR-0076 Phase 3a, #817):
-直接呼び出し `resume(v)` は tail 位置限定のまま (#942) だが、値として
-束縛・保存すればふつうの closure として後から (一度だけ) 呼べる —
-scheduler が継続を受け取る suspend パターンの基盤 (ADR-0068)。
+> **Evidence-passing implementation (#817; ADR-0076 addendum 34 V2 removed
+> replay entirely)**: a handler compiles either to a direct call into the
+> evidence dictionary (tail-resumptive) or to suspend CPS (first-class
+> resume), and the handle body **always runs exactly once** (the old replay
+> implementation's duplicated side effects and its ~16K-perform ceiling are
+> gone). The price is that a perform reaching the handle body must be in a
+> shape the migration can follow; a non-`Exception` handle over a shape it
+> cannot follow (a callee through a row variable `with e`, an outer local
+> closure with no row, and so on) is a **compile error** (needle: "cannot be
+> compiled here"). The measured table of accepted shapes is the
+> [A `handle` that type-checks can still fail to compile](#a-handle-that-type-checks-can-still-fail-to-compile)
+> section below.
+
+**`resume` is a first-class one-shot value inside an arm** (ADR-0076 Phase 3a,
+#817): the direct call `resume(v)` stays tail-only (#942), but bound or stored
+as a value it can be called later, once, like an ordinary closure. This is the
+basis of the suspend pattern where a scheduler receives the continuation
+(ADR-0068).
 
 ```vibe
 effect Async { Suspend(Int) -> Int }
@@ -1630,75 +1673,84 @@ let r = handle {
   a * 10
 } with {
   Async::Suspend(t) => {
-    Array::push(conts, resume)   // 保存して…
-    0 - t                        // …arm の値で handle が「サスペンド」
+    Array::push(conts, resume)   // store it...
+    0 - t                        // ...and the arm's value "suspends" the handle
   }
 }
-// あとで (Array::get(conts, 0))(5) を呼ぶと残りの body が走って 50
+// later, calling (Array::get(conts, 0))(5) runs the rest of the body: 50
 ```
 
-制約 (linear backend のみ): resume を値参照する handle の body では、
-対象 effect の perform (と、row にその effect を持つ関数の呼び出し) は
-let/seq/tail/分岐 tail に直接現れる必要がある。**let 連鎖 (brace block
-文や文位置の async-iterator `for` の脱糖出力) が文の途中 (sequence HEAD)
-に立つ形は、split が継続 spine へ float して受理する** (#1536 (a) v3,
-ADR-0076 追記42 — `AsyncIter::collect` / `AsyncIter::fold` / `AsyncIter::count` が suspend
-body から呼べるのはこれ)。**`if` condition / `match` scrutinee が direct
-perform・concrete needing call・CPS-local call そのものなら、fresh let へ
-一回評価してから selection する形も可** (追記44)。同じ direct 形そのものは
-**継続 spine 上の通常代入 (`x = perform Op()`) の RHS** でも fresh let を介して
-一回だけ代入できる (追記45)。**compound の中に埋まった perform も可** —
-被演算子 (`acc + perform Op(i)`)・呼び出し引数
-(`Array::push(out, perform Op(i))`)・コンストラクタ引数
-(`Some(perform Op(i))`)・compound な `while` 条件 (`perform Next() > 0`)・
-`+=` 等の compound assignment は、**元の評価順で let 連鎖へ線形化**されてから
-spine に乗る (#1536 (a) v8)。perform より前に評価されるものは先に名前が付くので
-順序は変わらない。条件付き位置は原則 reject だが、`&&` / `||` 全体が**不変の
-`let` initializer** で、左辺が suspend せず、選択される右辺が直接対応済みの
-suspension またはその `let` / sequence spine である場合だけ対応する。入れ子の
-short-circuit、呼び出し引数等の compound、`return` / `break` / `continue` で
-終わる spine、`if` / `match` の枝など、より広い条件付き・制御移譲形は reject のまま。
-**concrete な row に
-対象 effect を含む top-level 関数の呼び出しは可** (3b yield bubbling —
-再帰も可; callee には CPS clone が合成され、元の関数は他の呼び出し元
-向けに無変更)。それ以外に呼べるのは perform / pure builtin / ctor /
-「concrete row が対象 effect を含まない関数」、そして **row-free な
-closure param 経由の呼び出しのうち、その関数の全 by-name call site が
-perform を含まない closure literal (または委譲元の同様に証明済みの
-param) を渡すと静的に証明できるもの** (#1536 (a) — `AsyncIter::find`
-の `pred(v)` がこの形。1 site でも perform する literal を渡すと従来
-どおり reject)。**`while` / `loop` の中の perform も可** (#1230/#1536 —
-ループは step を返す再帰クロージャになる。`break` / `continue` を持つ本体も
-可で、`break` はループの脱出継続、`continue` はループ自身の呼び出しになる。
-`return` を含む本体だけは今も compile error — クロージャから関数を return
-できないため)。row 変数 (`with e`)
-付き callee・`for` 形式の中の perform は compile error。同じ継続の 2 回目の
-呼び出しは stderr 診断つきで trap する。post-processing は値経由
-(`let k = resume  let r = k(v)  r + 7`) で書く。see-through できない
-呼び出しで reject されるときの診断は、handle 適格性の診断と同じ形式で
-**どの呼び出しが不適格かを名指しし、その `line:col` を指す**
-(`(here: the call to 'pred')`, #1536/#1514)。
+Constraints (linear backend only): in the body of a handle whose arm
+references `resume` as a value, a perform of the handled effect (and a call to
+a function whose row carries it) must appear directly in a let / sequence /
+tail / branch-tail position. **A let chain standing in the middle of a
+statement (the sequence HEAD, as a brace-block statement or the desugaring of
+a statement-position async-iterator `for` produces) is accepted: the split
+floats it onto the continuation spine** (#1536 (a) v3, ADR-0076 addendum 42;
+this is what lets `AsyncIter::collect` / `AsyncIter::fold` /
+`AsyncIter::count` be called from a suspend body). **An `if` condition or a
+`match` scrutinee that is itself a direct perform, a concrete needing call, or
+a CPS-local call is also accepted, evaluated once into a fresh let before the
+selection** (addendum 44). The same direct shape as the RHS of an **ordinary
+assignment on the continuation spine (`x = perform Op()`)** is assigned once
+through a fresh let (addendum 45). **A perform buried inside a compound
+expression is accepted too** -- an operand (`acc + perform Op(i)`), a call
+argument (`Array::push(out, perform Op(i))`), a constructor argument
+(`Some(perform Op(i))`), a compound `while` condition (`perform Next() > 0`),
+and compound assignments such as `+=` are **linearized into a let chain in the
+original evaluation order** before they go on the spine (#1536 (a) v8); what
+was evaluated before the perform is named first, so the order does not change.
+Conditional positions are rejected as a rule, with one exception: an `&&` /
+`||` whose whole expression is an **immutable `let` initializer**, whose left
+side does not suspend, and whose selected right side is a directly supported
+suspension or its `let` / sequence spine. Nested short-circuits, compounds such
+as call arguments, a spine ending in `return` / `break` / `continue`, the
+branches of an `if` / `match`, and other wider conditional or
+control-transfer shapes stay rejected. **A call to a top-level function whose
+concrete row contains the handled effect is accepted** (3b yield bubbling;
+recursion too -- the callee gets a synthesized CPS clone and the original
+function stays unchanged for its other callers). Beyond that, what may be
+called is a perform, a pure builtin, a constructor, a function whose concrete
+row does not contain the effect, and **a call through a row-free closure
+parameter when every by-name call site of that function can be statically
+shown to pass a closure literal containing no perform (or a parameter of a
+delegating caller proven the same way)** (#1536 (a) -- `AsyncIter::find`'s
+`pred(v)` has this shape; one site passing a performing literal rejects as
+before). **A perform inside `while` / `loop` is accepted** (#1230/#1536: the
+loop becomes a recursive closure returning a step; bodies with `break` /
+`continue` work, `break` becoming the loop's exit continuation and `continue`
+the loop's own call; only a body containing `return` is still a compile error,
+because a closure cannot return from the function). A callee with a row
+variable (`with e`) and a perform inside a `for` form are compile errors. A
+second call of the same continuation traps with a diagnostic on stderr.
+Post-processing is written through the value (`let k = resume  let r = k(v)
+r + 7`). When a call that cannot be seen through causes a rejection, the
+diagnostic has the same form as the handle-eligibility one: **it names the
+ineligible call and points at its `line:col`** (`(here: the call to 'pred')`,
+#1536/#1514).
 
-**closure 値経由の suspend も可** (closure-CPS ABI, ADR-0076 追記31):
-`fn run_with(f: () -> Int with E) -> Int { handle { f() } with E
-{...} }` のように、suspend する body を **closure 引数**として渡せる
-(handle site を library 側に置ける — `TaskGroup::spawn_suspend` が
-この形)。suspend する closure literal には**明示 row 注釈が必要**:
-`() -> Int with E { ... }` (無注釈 lambda の effect は enclosing の
-row へ継承されるため、#761)。同じ effect を「resume 値参照の handler」
-と「tail-resumptive handler」で混在させたまま closure を step-compile
-するプログラムは compile error (規約整合ガード)。
+**Suspending through a closure value is also accepted** (closure-CPS ABI,
+ADR-0076 addendum 31): a suspending body can be passed as a **closure
+argument**, as in `fn run_with(f: () -> Int with E) -> Int { handle { f() }
+with E {...} }`, so the handle site can live in a library
+(`TaskGroup::spawn_suspend` has this shape). A suspending closure literal
+**needs an explicit row annotation**: `() -> Int with E { ... }` (an
+unannotated lambda's effects are inherited from the enclosing row, #761). A
+program that step-compiles a closure while the same effect is mixed between a
+"resume-as-value handler" and a "tail-resumptive handler" is a compile error
+(the convention-consistency guard).
 
-operation の宣言 arity より 1 つ多い末尾パラメータを束縛する `k` 規約
-(`Emit(v, k) => v + k(0)`、non-tail 継続) は **旧 MoonBit fixture runner
-専用だった機能で、現行 build path では未サポート** — checker が
-`handler arm ... expects 0 payload binding(s), got 1` で reject する
-(#814)。evidence-passing 移行 (#817) は完了したが非 tail 継続は入って
-おらず、`resume(v)` も **arm の tail 位置限定** (`resume(10) + 1` は
-`resume(...) must be the last expression of the handler arm` で reject、
-#942/ADR-0050)。継続呼び出しは tail の `resume(v)` を使う。
-規約の詳細は [archive/mut-effect-plan.md](../../archive/mut-effect-plan.md) の
-「継続呼び出し規約」(#627) を参照。
+The `k` convention, which binds one trailing parameter beyond the operation's
+declared arity (`Emit(v, k) => v + k(0)`, a non-tail continuation), **was a
+feature of the retired MoonBit fixture runner and is not supported on the
+current build path**: the checker rejects it with `handler arm ... expects 0
+payload binding(s), got 1` (#814). The evidence-passing migration (#817) is
+complete but brought no non-tail continuation, and `resume(v)` is **restricted
+to the arm's tail position** (`resume(10) + 1` is rejected with `resume(...)
+must be the last expression of the handler arm`, #942/ADR-0050). Call the
+continuation with a tail `resume(v)`. The convention's details are in
+[archive/mut-effect-plan.md](../../archive/mut-effect-plan.md), "継続呼び出し規約"
+(#627).
 
 ### Effect polymorphism
 

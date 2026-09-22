@@ -1,0 +1,154 @@
+// #2962: a handler arm that never mentions `resume` is an IMPLICIT tail
+// resume -- its value is what the `perform` receives, and the body continues.
+// The checker used to type such an arm as the handle's RESULT (#938's rule,
+// written for the abortive Exception arm and generalised by mistake), so a
+// `Unit`-returning operation's arm was rejected inside an `Int` body while an
+// arm of the body's type was accepted for a `String`-returning operation and
+// read as a string at run time. Both backends already implemented the
+// implicit resume; this pins the checker to the same rule.
+
+effect Cfg {
+  Get() -> Int
+}
+
+effect Log {
+  Emit(String) -> Unit
+}
+
+effect Name {
+  Get() -> String
+}
+
+fn add_hundred() -> Int with Cfg {
+  let a = perform Cfg::Get()
+  a + 100
+}
+
+fn work() -> Int with Log {
+  perform Log::Emit("first")
+  perform Log::Emit("second")
+  42
+}
+
+fn greet_len() -> Int with Name {
+  let s = perform Name::Get()
+  String::length(s)
+}
+
+test "an arm without resume delivers its value to the perform and the body continues" {
+  let r = handle {
+    add_hundred()
+  } with { Cfg::Get() => 5 }
+  assert_eq(r, 105)
+}
+
+test "an explicit tail resume answers the same" {
+  let r = handle {
+    add_hundred()
+  } with { Cfg::Get() => resume(5) }
+  assert_eq(r, 105)
+}
+
+test "a Unit-returning operation's arm is accepted inside an Int body" {
+  let sink: Array[String] = []
+  let r = handle {
+    work()
+  } with { Log::Emit(msg) => {
+    Array::push(sink, msg)
+  } }
+  assert_eq(r, 42)
+  assert_eq(Array::length(sink), 2)
+  assert_eq(Array::get(sink, 1), "second")
+}
+
+test "the arm's value is checked against the operation's return type, not the body's" {
+  let r = handle {
+    greet_len()
+  } with { Name::Get() => "abcd" }
+  assert_eq(r, 4)
+}
+
+test "a lambda parameter named resume? shadows the continuation for the checker and the lowering alike" {
+  // #2985 review: the lowering's shadow walk stripped only `~`, so this
+  // arm was classified as an implicit resume by the checker and as a
+  // suspend (captured `resume`) by the lowering, and the string became the
+  // handle's Int result (measured 296352743426).
+  let r = handle {
+    greet_len()
+  } with { Name::Get() => {
+    let h = (resume?: Int) -> Int {
+      match resume {
+        Some(v) => v
+        None => 0
+      }
+    }
+    let _ = h()
+    "abcd"
+  } }
+  assert_eq(r, 4)
+}
+
+test "a tail branch without resume next to a branch with resume is the same implicit resume" {
+  // Codex P0 on #2985: `if c { resume("ok") } else { "no" }` -- the lowering
+  // strips the tail resume, so both branches are what the perform receives.
+  let a = handle {
+    greet_len()
+  } with { Name::Get() => if true {
+    resume("ok")
+  } else {
+    "no"
+  } }
+  let b = handle {
+    greet_len()
+  } with { Name::Get() => if false {
+    resume("ok")
+  } else {
+    "three"
+  } }
+  assert_eq(a, 2)
+  assert_eq(b, 5)
+}
+
+effect Word {
+  Get() -> String
+}
+
+fn pick_or_leave(flag: Bool) -> Int {
+  // #2985 review (Codex P2): an arm whose every tail is `return` has no
+  // value to resume with -- the return leaves the function -- so it is not
+  // checked against the operation's String. It used to be refused as
+  // `expected String, got Int`.
+  let r = handle {
+    String::length(perform Word::Get()) + 1
+  } with { Word::Get() => if flag {
+    return 42
+  } else {
+    return 7
+  } }
+  r * 10
+}
+
+test "an arm that only returns is not an implicit resume" {
+  assert_eq(pick_or_leave(true), 42)
+  assert_eq(pick_or_leave(false), 7)
+}
+
+fn pick_or_answer(flag: Bool) -> Int {
+  // A `return` in one branch next to a value in the other (Codex P2 on
+  // #2985): the returning branch yields nothing, the value branch is the
+  // implicit resume and is checked against the operation's String.
+  let r = handle {
+    String::length(perform Word::Get()) + 1
+  } with { Word::Get() => if flag {
+    return 42
+  } else {
+    "abcd"
+  } }
+  r * 10
+}
+
+test "a return in one branch of an arm; the other branch resumes" {
+  assert_eq(pick_or_answer(true), 42)
+  assert_eq(pick_or_answer(false), 50)
+}
+

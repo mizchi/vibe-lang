@@ -48,6 +48,17 @@ fn caught_send[rg, e, T](s: Sender[rg, e, T], v: T) -> Option[SendError] with e 
   } with { Exception[SendError]::Throw(err) => Some(err) }
 }
 
+/// #2985: a `run` body under an `Exception[TaskError]` arm may raise only
+/// `TaskError` -- the body's row is `e`, which carries its exceptions out of
+/// `run` unconverted, and the kinded arm catches everything at run time. So a
+/// channel built inside such a body discharges `ChannelConfigError` itself
+/// and reports it as the task failure it would amount to.
+fn bounded_or_fail[rg, e, T: Send](g: TaskGroup[rg, e], capacity: Int) -> (Sender[rg, e, T], Receiver[rg, e, T]) with Exception[TaskError] {
+  handle {
+    Channel::bounded(g, capacity)
+  } with { Exception[ChannelConfigError]::Throw(_c) => throw(TaskError::Failed("channel configuration")) }
+}
+
 //# Lifecycle conformance locks (docs/internal/design/concurrency.md)
 
 /// The eager prototype ran the thunk inside spawn; the ADR-0068 scheduler
@@ -621,7 +632,7 @@ test "spawned task may perform Fs and Process alongside Error" {
 test "a typed child throw is reported by kind, not as a reinterpreted pointer" {
   let caught = handle {
     let _v = TaskGroup::run((g) -> {
-      let (tx, rx) = Channel::bounded(g, 1)
+      let (tx, rx) = bounded_or_fail(g, 1)
       let tx2 = Sender::clone(tx)
       Sender::release(tx)
       Sender::release(tx2)

@@ -1,0 +1,58 @@
+// #2985 review (Codex P0): the kind of a kinded exception arm may name a
+// FORMAL of the enclosing declaration (`Exception[Array[T]]`,
+// `Exception[Option[T]]`). The binder then has the formal's type, so the arm
+// can only do to the payload what it could do to `T` -- hand it to a
+// function over `T`, or read the container around it. The refusal side is
+// fixtures/typecheck/exception_kind_formal_binder_as_int_reject.vibe.
+//
+// The throws go through helpers whose ROW names the kind: a kinded arm is
+// strict about what its body raises (it catches everything at run time), and
+// an array literal's throw has no resolvable kind of its own.
+
+fn raise_pair[T](x: T) -> Int with Exception[Array[T]] {
+  throw([x, x])
+}
+
+fn raise_triple[T](x: T) -> Int with Exception[Array[T]] {
+  throw([x, x, x])
+}
+
+fn raise_some[T](x: T) -> Int with Exception[Option[T]] {
+  throw(Some(x))
+}
+
+fn catch_first[T](x: T, g: (T) -> Int) -> Int {
+  handle {
+    raise_pair(x)
+  } with { Exception[Array[T]]::Throw(e) => g(Array::get(e, 0)) }
+}
+
+fn catch_count[T](x: T) -> Int {
+  handle {
+    raise_triple(x)
+  } with { Exception[Array[T]]::Throw(e) => Array::length(e) }
+}
+
+fn catch_some[T](x: T, g: (T) -> Int) -> Int {
+  handle {
+    raise_some(x)
+  } with { Exception[Option[T]]::Throw(e) => match e {
+    Some(v) => g(v)
+    None => -1
+  } }
+}
+
+test "a formal kind's payload goes to a function over the formal" {
+  assert_eq(catch_first("abc", (s) -> String::length(s)), 3)
+  assert_eq(catch_first(41, (n) -> n + 1), 42)
+}
+
+test "a formal kind's container is read without touching the element" {
+  assert_eq(catch_count("abc"), 3)
+  assert_eq(catch_count(1.5), 3)
+}
+
+test "a nested formal kind is matched through its container" {
+  assert_eq(catch_some("xy", (s) -> String::length(s)), 2)
+  assert_eq(catch_some(7, (n) -> n * 6), 42)
+}

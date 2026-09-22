@@ -1478,7 +1478,12 @@ fn scps_fn_params_bind_resume(params: Array[(String, Option[TypeExpr])]) -> Bool
   while i < Array::length(params) {
     let (pn, _) = Array::get(params, i)
     let ln = String::length(pn)
-    let base = if ln > 0 && pn[ln - 1: ln] == "~" {
+    // A labeled (`~`) OR optional (`?`) parameter keeps its marker in the raw
+    // AST name; strip either, the way the checker's param_base_name does, so
+    // a `resume?` parameter shadows the continuation for BOTH walks (#2985
+    // review: the checker saw the shadow and classified the arm as an implicit
+    // resume while this walk saw a captured `resume` and chose suspend).
+    let base = if ln > 0 && (pn[ln - 1: ln] == "~" || pn[ln - 1: ln] == "?") {
       pn[0: ln - 1]
     } else {
       pn
@@ -1494,6 +1499,15 @@ fn scps_fn_params_bind_resume(params: Array[(String, Option[TypeExpr])]) -> Bool
 }
 
 export fn scps_arm_refs_resume_value(e: Expr, sh: Bool) -> Bool {
+  scps_arm_refs_resume_value_at(e, sh, false)
+}
+
+/// The walk itself. `in_fn` = inside a nested lambda literal: there even the
+/// direct call form `resume(v)` is a CAPTURE of the continuation (the
+/// closure keeps it and may run it later, after the arm has returned), so
+/// it counts as a value reference. Outside a lambda the callee position is
+/// the tail-resumptive form and is not.
+fn scps_arm_refs_resume_value_at(e: Expr, sh: Bool, in_fn: Bool) -> Bool {
   match e {
     EIdent(nm, _) => nm == "resume" && !sh,
     ECall(callee, args, _) => {
@@ -1501,22 +1515,22 @@ export fn scps_arm_refs_resume_value(e: Expr, sh: Bool) -> Bool {
       // (#942's territory), NOT a value reference. Everything else in the
       // call -- including a computed callee -- is walked normally.
       let callee_hit = match callee {
-        EIdent(_, _) => false,
-        _ => scps_arm_refs_resume_value(callee, sh)
+        EIdent(cn, _) => in_fn && cn == "resume" && !sh,
+        _ => scps_arm_refs_resume_value_at(callee, sh, in_fn)
       }
-      callee_hit || scps_exprs_ref_resume_value(args, sh)
+      callee_hit || scps_exprs_ref_resume_value(args, sh, in_fn)
     },
-    ELet(n, v, b, _) => scps_arm_refs_resume_value(v, sh) || scps_arm_refs_resume_value(b, sh || n == "resume"),
-    ELetMut(n, v, b, _) => scps_arm_refs_resume_value(v, sh) || scps_arm_refs_resume_value(b, sh || n == "resume"),
-    ELetRec(n, v, b) => scps_arm_refs_resume_value(v, sh || n == "resume") || scps_arm_refs_resume_value(b, sh || n == "resume"),
-    ESeq(a, b) => scps_arm_refs_resume_value(a, sh) || scps_arm_refs_resume_value(b, sh),
-    EIf(c, t, el) => scps_arm_refs_resume_value(c, sh) || scps_arm_refs_resume_value(t, sh) || scps_arm_refs_resume_value(el, sh),
+    ELet(n, v, b, _) => scps_arm_refs_resume_value_at(v, sh, in_fn) || scps_arm_refs_resume_value_at(b, sh || n == "resume", in_fn),
+    ELetMut(n, v, b, _) => scps_arm_refs_resume_value_at(v, sh, in_fn) || scps_arm_refs_resume_value_at(b, sh || n == "resume", in_fn),
+    ELetRec(n, v, b) => scps_arm_refs_resume_value_at(v, sh || n == "resume", in_fn) || scps_arm_refs_resume_value_at(b, sh || n == "resume", in_fn),
+    ESeq(a, b) => scps_arm_refs_resume_value_at(a, sh, in_fn) || scps_arm_refs_resume_value_at(b, sh, in_fn),
+    EIf(c, t, el) => scps_arm_refs_resume_value_at(c, sh, in_fn) || scps_arm_refs_resume_value_at(t, sh, in_fn) || scps_arm_refs_resume_value_at(el, sh, in_fn),
     EMatch(s, arms) => {
-      let mut hit = scps_arm_refs_resume_value(s, sh)
+      let mut hit = scps_arm_refs_resume_value_at(s, sh, in_fn)
       let mut i = 0
       while i < Array::length(arms) {
         let (p, ex) = Array::get(arms, i)
-        if scps_arm_refs_resume_value(ex, sh || scps_pat_binds_resume(p)) {
+        if scps_arm_refs_resume_value_at(ex, sh || scps_pat_binds_resume(p), in_fn) {
           hit = true
         } else {
           ()
@@ -1526,14 +1540,14 @@ export fn scps_arm_refs_resume_value(e: Expr, sh: Bool) -> Bool {
       hit
     },
     EHandle(b, arms) => {
-      let mut hit = scps_arm_refs_resume_value(b, sh)
+      let mut hit = scps_arm_refs_resume_value_at(b, sh, in_fn)
       let mut i = 0
       while i < Array::length(arms) {
         let (_, ex) = Array::get(arms, i)
         // A nested handle's arms rebind `resume` for THEMSELVES (their
         // value references belong to the inner site, detected when the
         // rewrite reaches that inner EHandle) -- shadowed here.
-        if scps_arm_refs_resume_value(ex, true) {
+        if scps_arm_refs_resume_value_at(ex, true, in_fn) {
           hit = true
         } else {
           ()
@@ -1542,14 +1556,14 @@ export fn scps_arm_refs_resume_value(e: Expr, sh: Bool) -> Bool {
       }
       hit
     },
-    EFn(_, _, params, _, _, b) => scps_arm_refs_resume_value(b, sh || scps_fn_params_bind_resume(params)),
-    EWhile(c, b) => scps_arm_refs_resume_value(c, sh) || scps_arm_refs_resume_value(b, sh),
+    EFn(_, _, params, _, _, b) => scps_arm_refs_resume_value_at(b, sh || scps_fn_params_bind_resume(params), true),
+    EWhile(c, b) => scps_arm_refs_resume_value_at(c, sh, in_fn) || scps_arm_refs_resume_value_at(b, sh, in_fn),
     EForIn(v1, v2, it, b) => {
       let for_sh = v1 == "resume" || (match v2 {
         Some(v2n) => v2n == "resume",
         None => false
       })
-      scps_arm_refs_resume_value(it, sh) || scps_arm_refs_resume_value(b, sh || for_sh)
+      scps_arm_refs_resume_value_at(it, sh, in_fn) || scps_arm_refs_resume_value_at(b, sh || for_sh, in_fn)
     },
     ELoop(pairs, b) => {
       let mut hit = false
@@ -1562,41 +1576,41 @@ export fn scps_arm_refs_resume_value(e: Expr, sh: Bool) -> Bool {
         } else {
           ()
         }
-        if scps_arm_refs_resume_value(v, sh) {
+        if scps_arm_refs_resume_value_at(v, sh, in_fn) {
           hit = true
         } else {
           ()
         }
         i = i + 1
       }
-      hit || scps_arm_refs_resume_value(b, loop_sh)
+      hit || scps_arm_refs_resume_value_at(b, loop_sh, in_fn)
     },
-    EBinOp(_, l, r, _) => scps_arm_refs_resume_value(l, sh) || scps_arm_refs_resume_value(r, sh),
-    EUnaryOp(_, e2) => scps_arm_refs_resume_value(e2, sh),
-    EAssign(_, v, c) => scps_arm_refs_resume_value(v, sh) || scps_arm_refs_resume_value(c, sh),
-    EAssignOp(_, _, v, c) => scps_arm_refs_resume_value(v, sh) || scps_arm_refs_resume_value(c, sh),
-    EReturn(e2) => scps_arm_refs_resume_value(e2, sh),
-    EDot(o, _, _, _) => scps_arm_refs_resume_value(o, sh),
-    ELabeledArg(_, _, v) => scps_arm_refs_resume_value(v, sh),
+    EBinOp(_, l, r, _) => scps_arm_refs_resume_value_at(l, sh, in_fn) || scps_arm_refs_resume_value_at(r, sh, in_fn),
+    EUnaryOp(_, e2) => scps_arm_refs_resume_value_at(e2, sh, in_fn),
+    EAssign(_, v, c) => scps_arm_refs_resume_value_at(v, sh, in_fn) || scps_arm_refs_resume_value_at(c, sh, in_fn),
+    EAssignOp(_, _, v, c) => scps_arm_refs_resume_value_at(v, sh, in_fn) || scps_arm_refs_resume_value_at(c, sh, in_fn),
+    EReturn(e2) => scps_arm_refs_resume_value_at(e2, sh, in_fn),
+    EDot(o, _, _, _) => scps_arm_refs_resume_value_at(o, sh, in_fn),
+    ELabeledArg(_, _, v) => scps_arm_refs_resume_value_at(v, sh, in_fn),
     EBreak(opt) => match opt {
-      Some(e2) => scps_arm_refs_resume_value(e2, sh),
+      Some(e2) => scps_arm_refs_resume_value_at(e2, sh, in_fn),
       None => false
     },
-    EContinue(args) => scps_exprs_ref_resume_value(args, sh),
-    ETuple(elems) => scps_exprs_ref_resume_value(elems, sh),
-    EArray(elems) => scps_exprs_ref_resume_value(elems, sh),
-    ERecord(_, fields, _) => scps_fields_ref_resume_value(fields, sh),
-    EMap(fields) => scps_fields_ref_resume_value(fields, sh),
-    ESpread(e2) => scps_arm_refs_resume_value(e2, sh),
+    EContinue(args) => scps_exprs_ref_resume_value(args, sh, in_fn),
+    ETuple(elems) => scps_exprs_ref_resume_value(elems, sh, in_fn),
+    EArray(elems) => scps_exprs_ref_resume_value(elems, sh, in_fn),
+    ERecord(_, fields, _) => scps_fields_ref_resume_value(fields, sh, in_fn),
+    EMap(fields) => scps_fields_ref_resume_value(fields, sh, in_fn),
+    ESpread(e2) => scps_arm_refs_resume_value_at(e2, sh, in_fn),
     _ => false
   }
 }
 
-fn scps_exprs_ref_resume_value(es: Array[Expr], sh: Bool) -> Bool {
+fn scps_exprs_ref_resume_value(es: Array[Expr], sh: Bool, in_fn: Bool) -> Bool {
   let mut i = 0
   let mut hit = false
   while i < Array::length(es) {
-    if scps_arm_refs_resume_value(Array::get(es, i), sh) {
+    if scps_arm_refs_resume_value_at(Array::get(es, i), sh, in_fn) {
       hit = true
     } else {
       ()
@@ -1606,12 +1620,12 @@ fn scps_exprs_ref_resume_value(es: Array[Expr], sh: Bool) -> Bool {
   hit
 }
 
-fn scps_fields_ref_resume_value(fields: Array[(String, Expr)], sh: Bool) -> Bool {
+fn scps_fields_ref_resume_value(fields: Array[(String, Expr)], sh: Bool, in_fn: Bool) -> Bool {
   let mut i = 0
   let mut hit = false
   while i < Array::length(fields) {
     let (_, v) = Array::get(fields, i)
-    if scps_arm_refs_resume_value(v, sh) {
+    if scps_arm_refs_resume_value_at(v, sh, in_fn) {
       hit = true
     } else {
       ()
