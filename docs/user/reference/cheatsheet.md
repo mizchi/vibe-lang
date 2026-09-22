@@ -1984,6 +1984,10 @@ via `memory.copy`, so `push` is amortised O(1)):
 | `Bytes::fill(b, value, count)` | **appends** `count` copies of `value` (a `push` loop) | linear / gc |
 | `Bytes::from_array(a)` / `to_array(b)` | conversion to/from `Array[Int]` (**copies**) | linear / gc |
 
+> **`Bytes` has no renderer**, so `"\{b}"` is refused at check time (#2987) rather
+> than printing an address. Convert first: `let a: Array[Int] = Bytes::to_array(b)`
+> and interpolate `a` for the byte values (`[65, 255]`).
+>
 > Replacing a `Bytes::push` loop with `Bytes::append` / `Bytes::blit` over a whole
 > range is faster — both lower to a single `memory.copy` instruction. Accumulating
 > into an `Array[Int]` and then calling `Bytes::from_array` costs one extra copy,
