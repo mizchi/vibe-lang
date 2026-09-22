@@ -1,0 +1,35 @@
+//# #3019 (found on #2985): a `break` that targets a loop OUTSIDE a handle
+//# whose arm captures `resume` as a value is REFUSED at build time with the
+//# edit named. The body and the arms of such a handle run inside the
+//# driver's step closure, which has no label for that loop: before the
+//# refusal this program checked clean and the module failed validation
+//# (`expected 1 elements on the stack for branch`). The same `break` in an
+//# arm of a handle with no capturing sibling is an ordinary transfer
+//# (fixtures/handler_arm_loop_transfer_test.vibe).
+
+effect Ask {
+  Get() -> String;
+  Now() -> Int
+}
+
+export let _start: () -> Int = () -> {
+  let mut i = 0
+  let mut acc = 0
+  while i < 5 {
+    i = i + 1
+    let v = handle {
+      let t = perform Ask::Now()
+      let s = perform Ask::Get()
+      String::length(s) + t
+    } with { Ask::Now() => {
+      let k = resume
+      k(10)
+    }; Ask::Get() => if i == 3 {
+      break
+    } else {
+      "ab"
+    } }
+    acc = acc + v
+  }
+  acc
+}

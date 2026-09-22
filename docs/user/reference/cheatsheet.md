@@ -1561,8 +1561,11 @@ Rules:
   literal throw exactly `K`; a row with no exception label
   (`invoke[e](f: () -> Int with e) -> Int with e`) absorbs nothing, so the
   literal is as strict as the body -- and so is one handed to a callback
-  parameter or a builtin, or created and called in the body. An erased
-  `handle .. with Exception` nested inside is its own
+  parameter or a builtin, or created and called in the body. A `throw` whose
+  payload kind cannot be read from its syntax (a call result, an unannotated
+  `let`, a field) is refused there with the edit: bind it first,
+  `let e: K = ..; throw(e)`. An erased `handle .. with Exception` nested
+  inside is its own
   catch-all boundary. And a handle may have only ONE exception arm: the
   channel carries no kind and only the first exception arm is compiled, so
   `Exception[A]::Throw` next to `Exception[B]::Throw` is refused -- match on
@@ -1633,10 +1636,16 @@ delivered to the `perform` and the body continues, whether it is written
 OPERATION's return type: for `Get() -> Int`, an arm `Get() => 5` makes the
 perform evaluate to `5`, and `Get() => "x"` or `Get() => if c { resume(1) }
 else { "x" }` is `handler arm value type mismatch with the operation's return
-type`. An arm that stores `resume` as a value (the suspend shape below) keeps
-the other rule: its own value is the handle's result. Only `Exception` arms
-abort; a declared effect has no abortive operations (#2969 tracks declaring
-one).
+type`. An arm whose every tail transfers control -- `return`, or `break` /
+`continue` out of an enclosing loop -- resumes with nothing and is exempt; a
+transferring branch next to a value branch yields nothing to the `if` /
+`match`, so only the value branch is checked. Under a handle whose sibling
+arm captures `resume`, a `break` / `continue` that targets a loop outside the
+handle is refused at build time (the body runs as a continuation, #3019):
+set a flag and break after the handle. An arm that stores `resume` as a value
+(the suspend shape below) keeps the other rule: its own value is the handle's
+result. Only `Exception` arms abort; a declared effect has no abortive
+operations (#2969 tracks declaring one).
 
 Call resolution for an effect row follows the same lexical scope as ordinary
 value resolution. When a local closure, a function parameter, or a pattern /

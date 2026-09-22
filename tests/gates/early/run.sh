@@ -2251,6 +2251,35 @@ for eqrefuse_src in fixtures/structural_eq_untyped_empty_*_refused.vibe; do
     exit 1
   fi
 done
+# #3019 (found on #2985): a `break` / `continue` that targets a loop outside a
+# handle whose arm captures `resume` as a value is REFUSED at build time. The
+# body and the arms of such a handle run inside the driver's step closure,
+# which has no label for that loop: before the refusal the program checked
+# clean and the module failed validation (`expected 1 elements on the stack
+# for branch`). Asserted on the MESSAGE and on the EDIT it names, like the
+# #2475 loop above; the GREEN control is fixtures/handler_arm_loop_transfer_test.vibe
+# in the unit runner, where the same `break` in an arm with no capturing
+# sibling is an ordinary transfer.
+echo "[compiler-gate] a loop transfer out of a suspend-transformed handle is refused, not miscompiled (#3019)"
+ltsdir="_build/_gate_loop_transfer_split"
+rm -rf "$ltsdir"; mkdir -p "$ltsdir"
+lts_src="fixtures/handler_arm_loop_transfer_split_refused.vibe"
+lts_wasm="$ltsdir/refused.wasm"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$lts_src" "$lts_wasm" _start >/dev/null 2>&1 || true
+if [ -s "$lts_wasm" ]; then
+  echo "[compiler-gate] FAIL: $lts_src compiled; expected a build-time refusal (#3019)" >&2
+  exit 1
+fi
+if ! grep -qF 'cannot contain a `break` or `continue` that targets a loop outside the handle' "$lts_wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: $lts_src was refused without the #3019 message" >&2
+  cat "$lts_wasm.diag" >&2 2>/dev/null; exit 1
+fi
+if ! grep -qF 'Set a flag inside the handle' "$lts_wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: $lts_src refusal does not name an edit" >&2
+  cat "$lts_wasm.diag" >&2 2>/dev/null; exit 1
+fi
 # #2912: rendering an array whose element type does not resolve is REFUSED at
 # build time. It used to fall through to `compile_call`'s general `__to_string`
 # arm -- a runtime heuristic that guesses string-pointer vs integer from the

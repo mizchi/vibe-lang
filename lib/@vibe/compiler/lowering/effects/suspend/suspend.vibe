@@ -2537,6 +2537,72 @@ fn scps_cellify_arms(arms: Array[(Pat, Expr)], x: String) -> Array[(Pat, Expr)] 
 ///
 /// The `return` inside a nested closure is unaffected (it targets that
 /// closure) and stays accepted -- scps_body_has_return stops at EFn.
+/// Does `e` contain a `break` / `continue` that targets a loop OUTSIDE `e`?
+/// A loop inside `e` owns the transfers in its body (its own condition,
+/// initializers and iterated expression are outside it), and a lambda literal
+/// is a function boundary of its own.
+fn scps_has_free_loop_transfer(e: Expr) -> Bool {
+  match e {
+    EBreak(_) => true,
+    EContinue(_) => true,
+    EWhile(c, _) => scps_has_free_loop_transfer(c),
+    ELoop(inits, _) => {
+      let mut hit = false
+      let mut i = 0
+      while i < Array::length(inits) {
+        let (_, iv) = Array::get(inits, i)
+        if scps_has_free_loop_transfer(iv) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    EForIn(_, _, iter, _) => scps_has_free_loop_transfer(iter),
+    EFn(_, _, _, _, _, _) => false,
+    _ => {
+      let kids = expr_children(e)
+      let mut hit = false
+      let mut i = 0
+      while i < Array::length(kids) {
+        if scps_has_free_loop_transfer(Array::get(kids, i)) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    }
+  }
+}
+
+fn scps_arms_have_free_loop_transfer(arms: Array[(Pat, Expr)]) -> Bool {
+  let mut hit = false
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (_, ab) = Array::get(arms, i)
+    if scps_has_free_loop_transfer(ab) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+/// #3019: a `break` / `continue` targeting a loop outside a suspend-transformed
+/// handle has the same problem as a `return` (the body and the arms run in
+/// the driver's step closure) and no rewrite yet: codegen emitted a branch to
+/// a label the closure does not have, and the module failed validation
+/// (`expected 1 elements on the stack for branch`) after a clean check.
+fn scps_loop_transfer_in_split_msg(subject: String) -> String {
+  String::concat(subject, " cannot contain a `break` or `continue` that targets a loop outside the handle: the suspend lowering turns the body into continuations, which cannot leave that loop. Set a flag inside the handle (`let mut stop = false`) and `break` after it, or use `return`. A transfer inside a loop written within the handle is fine (#3019)")
+}
+
 fn scps_return_in_split_msg(subject: String) -> String {
   String::concat(subject, " cannot contain a `return`: the suspend lowering turns the body into continuations that return a step, so the `return` would hand its own value to the driver instead of leaving the function. Produce the early-exit value instead of returning it (bind it and select on it), or move the `return` outside the handle. A `return` inside a nested closure targets that closure and is fine (#1536, ADR-0076 Phase 3a/3b)")
 }
@@ -5005,6 +5071,8 @@ fn scps_wrap_tail_resume(expr: Expr, ik: String, sh: Bool) -> Expr {
     EAssign(n, v, c) => EAssign(n, v, scps_wrap_tail_resume(c, ik, sh)),
     EAssignOp(n, op, v, c) => EAssignOp(n, op, v, scps_wrap_tail_resume(c, ik, sh)),
     EReturn(_) => expr,
+    EBreak(_) => expr,
+    EContinue(_) => expr,
     ECall(callee, _, _) => match callee {
       EIdent(nm, _) => if nm == "resume" && !sh {
         expr
@@ -5081,7 +5149,12 @@ fn scps_rewrite(e: Expr, ctx: (Array[Stmt], Array[(String, Array[(String, Array[
         // the implicit-resume wrap, so the recorded placeholder stays an
         // unwrapped tail (an abort of the driver) and the real return happens
         // after the handle.
-        if scps_body_has_return(rbody) || scps_body_arms_have_return(sarms) {
+        if scps_has_free_loop_transfer(rbody) || scps_arms_have_free_loop_transfer(sarms) {
+          // #3019: refused with the edit named, rather than an uninstantiable
+          // module; the record-and-transfer rewrite is the follow-up.
+          Array::push(scps_st_errs(st), scps_loop_transfer_in_split_msg("a handler arm captures `resume` as a value, so this handle's body and its arms"))
+          EHandle(rbody, rarms)
+        } else if scps_body_has_return(rbody) || scps_body_arms_have_return(sarms) {
           let hsite = scps_next_site(st)
           let probe = EHandle(rbody, sarms)
           let flag = scps_seq_float_fresh("hreturned", probe, EUnit, hsite)

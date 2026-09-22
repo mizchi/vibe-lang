@@ -435,17 +435,22 @@ fn fields_ref_resume_value(fields: Array[(String, Expr)], sh: Bool, in_fn: Bool)
   hit
 }
 
-/// #2985 review (Codex P2): does EVERY tail of a handler arm leave the
-/// enclosing function with `return`? Such an arm has no tail VALUE to
-/// resume with -- the `return` exits before the perform could receive
-/// anything -- so the implicit-resume check against the operation's return
-/// type does not apply to it (`Get() => return 42` in an Int function
-/// handling `Get() -> String` is legal). A `return` inside one branch next
-/// to a value in another is not "all return": the value branch is checked,
-/// and the branch types are unified by the ordinary `if` / `match` rule.
+/// #2985 review (Codex P2): does EVERY tail of a handler arm TRANSFER
+/// control away -- `return` out of the enclosing function, `break` /
+/// `continue` out of or around an enclosing loop? Such an arm has no tail
+/// VALUE to resume with -- the transfer happens before the perform could
+/// receive anything -- so the implicit-resume check against the operation's
+/// return type does not apply to it (`Get() => return 42` in an Int function
+/// handling `Get() -> String` is legal, and so is `Get() => break` in a loop).
+/// A transfer inside one branch next to a value in another is not "all
+/// transfer": the value branch is checked, and the branch types are unified
+/// by the ordinary `if` / `match` rule, where a transferring branch yields
+/// nothing (#3012).
 export fn arm_tail_all_return(e: Expr) -> Bool {
   match e {
     EReturn(_) => true,
+    EBreak(_) => true,
+    EContinue(_) => true,
     ELet(_, _, b, _) => arm_tail_all_return(b),
     ELetMut(_, _, b, _) => arm_tail_all_return(b),
     ELetRec(_, _, b) => arm_tail_all_return(b),

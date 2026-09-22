@@ -1,0 +1,65 @@
+// #2985 review (Codex P2): a handler arm whose every tail transfers control
+// -- `break` or `continue` out of an enclosing loop, like `return` out of the
+// function -- has no value to resume with, so it is not held to the
+// operation's return type. Before, `Get() => break` for `Get() -> String`
+// was refused with `expected String, got Unit`.
+
+effect Ask {
+  Get() -> String
+}
+
+test "an arm that breaks out of the enclosing loop is not an implicit resume" {
+  let mut i = 0
+  let mut acc = 0
+  while i < 5 {
+    i = i + 1
+    let v = handle {
+      let s = perform Ask::Get()
+      String::length(s) + 10
+    } with { Ask::Get() => if i == 3 {
+      break
+    } else {
+      "ab"
+    } }
+    acc = acc + v
+  }
+  assert_eq(i, 3)
+  assert_eq(acc, 24)
+}
+
+test "an arm that continues the enclosing loop skips the rest of the body" {
+  let mut i = 0
+  let mut acc = 0
+  while i < 5 {
+    i = i + 1
+    let v = handle {
+      let s = perform Ask::Get()
+      String::length(s) + 10
+    } with { Ask::Get() => if i == 3 {
+      continue
+    } else {
+      "ab"
+    } }
+    acc = acc + v
+  }
+  assert_eq(i, 5)
+  assert_eq(acc, 48)
+}
+
+test "an arm whose every tail transfers is exempt outright" {
+  let mut i = 0
+  let mut acc = 0
+  while i < 5 {
+    i = i + 1
+    let v = handle {
+      if i < 3 {
+        String::length(perform Ask::Get())
+      } else {
+        7
+      }
+    } with { Ask::Get() => break }
+    acc = acc + v
+  }
+  assert_eq(i, 1)
+  assert_eq(acc, 0)
+}

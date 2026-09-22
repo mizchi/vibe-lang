@@ -90,6 +90,7 @@ export enum EffectError {
   // is read at the wrong type. Fields: enclosing function, the handler's
   // kinded labels, the offending required labels, offset.
   EEKindedHandleCatchesAll(String, String, String, Int);
+  EEKindedHandleUnresolvedThrow(String, String, Int);
   // #2985 review (Codex P0): a handle with more than one exception arm.
   // Fields: enclosing function, the exception labels of its arms.
   EEMultipleExceptionArms(String, String);
@@ -199,6 +200,21 @@ export fn effect_error_to_string(err: EffectError) -> String {
         String::concat("'", String::concat(fname, "'"))
       }
       let body = String::concat("handler arm `", String::concat(handler, String::concat("::Throw` catches EVERY exception its body raises at run time (the exception channel carries no kind), so the body may raise only `", String::concat(handler, String::concat("`; in ", String::concat(where_, String::concat(" it also raises { ", String::concat(offending, " }\nhint: add an arm for that kind, use the erased `Exception::Throw(m)` arm (which catches everything, with an untyped payload), give the throw a payload of the handled kind, or move that call outside this handle"))))))))
+      if off >= 0 {
+        String::concat(body, String::concat(" [@off=", String::concat(__to_string(off), "]")))
+      } else {
+        body
+      }
+    },
+    EEKindedHandleUnresolvedThrow(fname, handler, off) => {
+      let block = entry_block_display_name(fname)
+      let where_ = if String::length(block) > 0 {
+        block
+      } else {
+        String::concat("'", String::concat(fname, "'"))
+      }
+      let kind = exception_label_kind(handler)
+      let body = String::concat("`throw` in ", String::concat(where_, String::concat(" under handler arm `", String::concat(handler, String::concat("::Throw`: the payload's kind cannot be read from its syntax (a call result, an unannotated `let`, a field), and the arm catches EVERY exception at run time, so it cannot be trusted to bind the payload at `", String::concat(kind, String::concat("`\nhint: bind the payload with an annotated `let` first (`let e: ", String::concat(kind, " = ..; throw(e)`), or use the erased `Exception::Throw(m)` arm (which catches everything, with an untyped payload)"))))))))
       if off >= 0 {
         String::concat(body, String::concat(" [@off=", String::concat(__to_string(off), "]")))
       } else {
@@ -2364,7 +2380,11 @@ fn exception_effect_labels(labels: Array[String]) -> Array[String] {
 ///
 /// A callee this pass cannot see -- a callback parameter (its parameter rows
 /// are not in the overlay), a builtin, a field or call result -- keeps the
-/// literal as strict as the body.
+/// literal as strict as the body. So does every callee while the exception
+/// row is UNCHECKED (`VIBE_CHECK_ERROR_ROW=0`): the reading above rests on a
+/// callee that leaks its parameter's throws being refused at its own
+/// definition (`fn invoke(f: () -> Int with Exception) -> Int { f() }` is
+/// `missing { Exception }`), and that refusal is the checked row's.
 ///
 /// #2985 review (Codex P0, second round): the first version relaxed EVERY
 /// literal argument. An unannotated literal handed to
@@ -2380,7 +2400,7 @@ fn exception_effect_labels(labels: Array[String]) -> Array[String] {
 /// through a named or an annotated argument as well, filed separately.
 fn closure_arg_declared(arg: Expr, declared: Array[String], callee: String, lexical_callee: Option[Array[String]], index: Int) -> Array[String] {
   match arg {
-    EFn(_, _, _, _, _, _) => if !under_kinded_handle(declared) {
+    EFn(_, _, _, _, _, _) => if !under_kinded_handle(declared) || !error_row_checked() {
       declared
     } else {
       match lexical_callee {
@@ -2841,6 +2861,28 @@ fn throw_payload_kind(payload: Expr, binds: Array[(String, String)]) -> String {
       EIdent(f, _) => match afe_lookup_local(binds, f) {
         Some(_) => "",
         None => throw_kind_lookup(f, true)
+      },
+      // A local `let e: K = v` has no annotation slot of its own: the parser
+      // wraps the value as `((__asc: K) -> __asc)(v)` (ascribe_wrap). The
+      // annotation IS the kind the checker will hold `e` to, so it resolves
+      // here exactly as a parameter's annotation does -- which is what makes
+      // "bind the payload with an annotated `let`" a true edit under a kinded
+      // handler (#2985 review).
+      EFn(_, _, asc_params, _, _, EIdent(asc_body, _)) => if asc_body == "__asc" && Array::length(asc_params) == 1 {
+        let (asc_name, asc_ty) = Array::get(asc_params, 0)
+        if asc_name == "__asc" {
+          match asc_ty {
+            Some(te) => match afe_texpr_head_name(te) {
+              Some(h) => h,
+              None => ""
+            },
+            None => ""
+          }
+        } else {
+          ""
+        }
+      } else {
+        ""
       },
       _ => ""
     },
@@ -4504,10 +4546,19 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                     } else if (!is_exception_effect_name(eff) || error_row_checked() || under_kinded_handle(declared)) && !in_handle && !decl_authorizes_op(declared, required_op) {
                       // #2985 review (Codex P0): under a KINDED handler the
                       // erased exemption is off -- this throw would be caught
-                      // by that arm and read at its kind.
-                      Array::push(errors, make_contextual_row_error(fn_name, declared, [
-                        throw_report_label(op_name, required_op, declared)
-                      ], call_off))
+                      // by that arm and read at its kind. A payload whose kind
+                      // did not RESOLVE (throw_payload_kind reads syntax: a
+                      // call result, an unannotated `let` or a field answer
+                      // "") is refused with its own message, because "it also
+                      // raises { Exception::Throw }" names nothing the reader
+                      // wrote and the edit is to bind the payload first.
+                      if under_kinded_handle(declared) && is_exception_effect_name(eff) && String::length(exception_label_kind(required_op)) == 0 {
+                        Array::push(errors, EEKindedHandleUnresolvedThrow(fn_name, join_labels(kinded_exception_labels(declared)), call_off))
+                      } else {
+                        Array::push(errors, make_contextual_row_error(fn_name, declared, [
+                          throw_report_label(op_name, required_op, declared)
+                        ], call_off))
+                      }
                     } else {
                       ()
                     }
