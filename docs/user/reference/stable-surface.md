@@ -127,7 +127,18 @@ of each item is [spec/syntax.md](syntax.md) and the
 ### 2.2 Bindings and mutability
 - `let` (immutable), `let rec` (recursive), `let mut` (block-scoped mutable,
   ADR-0017).
-- Destructuring `let (a, b) = ...` / `let Some(v) = e else { ... }`.
+- Destructuring `let (a, b) = ...`, and the refutable-binding form
+  `guard value is PAT else { .. }`, whose `else` must leave the function
+  (#1283). `let PAT = value else { .. }` (let-else) is **not** part of the
+  surface -- the parser refuses it and names `guard` as its replacement.
+
+```vibe
+let first_or: (Option[Int], Int) -> Int = (opt, fallback) -> {
+  let (a, b) = (1, 2)
+  guard opt is Some(v) else { return fallback }
+  a + b + v
+}
+```
 - The five mutation styles (see the cheatsheet's table), `struct { mut field }`
   (ADR-0052 — despite that ADR's wasm-gc framing, these run on the linear lane
   too; measured 2026-08-19).

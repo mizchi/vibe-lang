@@ -955,8 +955,27 @@ fn lex_decimal(s: String, len: Int, i: Int) -> (Token, Int) with Exception {
   } else {
     check_no_scientific_suffix(s, len, int_end)
     let int_str = s[i: int_end];
-    (TInt(parse_int_from_string(int_str)), int_end)
+    if int_str == "4611686018427387904" && minus_precedes(s, i) {
+      // #2996: `Int::min_value` is -2^62, one past the positive bound, so its
+      // magnitude alone overflows and `-4611686018427387904` was refused. The
+      // magnitude lexes as -2^62 when a `-` precedes it: negating that is
+      // -2^62 again under the 63-bit wrap (#1877), and a binary `a - 2^62` is
+      // the same value modulo 2^63, so both readings of the `-` are exact.
+      // Without the `-` it stays an overflow -- a bare 2^62 would be wrong.
+      (TInt(0 - 4611686018427387903 - 1), int_end)
+    } else {
+      (TInt(parse_int_from_string(int_str)), int_end)
+    }
   }
+}
+
+/// #2996: is the nearest non-blank character before `i` a `-`?
+fn minus_precedes(s: String, i: Int) -> Bool {
+  let mut j = i - 1
+  while j >= 0 && (String::char_code_at(s, j) == ' ' || String::char_code_at(s, j) == '\t') {
+    j = j - 1
+  }
+  j >= 0 && String::char_code_at(s, j) == '-'
 }
 
 fn lex_number(s: String, len: Int, i: Int) -> (Token, Int) with Exception {

@@ -65,7 +65,11 @@ import @vibe/compiler/core {
   env_type_defs,
   exception_effect_kind,
   exception_effect_labels_equal,
+  expr_child_at,
   expr_children,
+  expr_children_pop,
+  expr_children_push,
+  expr_children_top,
   find_enum_typedef,
   find_typedef,
   fresh_var,
@@ -3961,6 +3965,108 @@ fn effect_fresh_targs(etps: Array[String], c: Int) -> (Array[Type], Int) {
 /// compiler-generated effect variables), so this never collides with a user
 /// binding, and riding the ordinary lexical env gives nested handles the right
 /// scoping for free: the innermost handle of an effect wins.
+/// #3010: a handle instantiates each generic effect it discharges ONCE
+/// (`henv_shared`), and a `perform` in the body reads that instantiation -- but
+/// a CALL whose declared row names the effect at a concrete argument
+/// (`counter() with State[Int]`) was never compared with it, so a `Get` arm
+/// answering a String discharged `State[Int]` and `+ 1` ran on the string.
+///
+/// Each direct callee's row item `Eff[Arg]` is compared with the handle's
+/// resolved argument. Only a scalar `Arg` spelled as its builtin name is
+/// compared (an alias or a structured argument could be spelled differently
+/// and still be the same type), and only when the handle's argument has
+/// resolved to a ground type -- this refuses nothing it cannot name exactly.
+fn check_handle_inst_vs_callee_rows(body: Expr, insts: Array[(String, Type)], env: TypeEnv, errors: Array[String]) -> Unit {
+  if Array::length(insts) > 0 {
+    let calls: Array[(String, Int)] = []
+    handle_collect_direct_calls(body, calls)
+    let mut ci = 0
+    while ci < Array::length(calls) {
+      let (cname, coff) = Array::get(calls, ci)
+      let row = match env_lookup(env, cname) {
+        Some(CtFn(_, _, r)) => r,
+        Some(CtForAll(_, _, CtFn(_, _, r))) => r,
+        _ => None
+      }
+      match row {
+        Some(rtext) => {
+          let items = String::split(rtext, ",")
+          let mut ii = 0
+          while ii < Array::length(items) {
+            let item = String::trim(Array::get(items, ii))
+            let lb = String::index_of(item, "[")
+            if lb > 0 && String::ends_with(item, "]") {
+              let ename = String::substring(item, 0, lb)
+              let arg_text = String::substring(item, lb + 1, String::length(item) - 1)
+              let mut ki = 0
+              while ki < Array::length(insts) {
+                let (iname, have) = Array::get(insts, ki)
+                if iname == ename {
+                  match builtin_scalar_type_of_name(arg_text) {
+                    Some(want) => if head_kind(have) != 0 && !scalar_types_same(have, want) {
+                      Array::push(errors, String::concat("handler instantiates `", String::concat(ename, String::concat("[", String::concat(type_to_string(have), String::concat("]` but the handled body requires `", String::concat(item, String::concat("` (from `", String::concat(cname, String::concat("`) -- make the arms answer `", String::concat(arg_text, String::concat("`, or handle `", String::concat(cname, String::concat("` with a handler for `", String::concat(item, String::concat("`", off_marker(coff)))))))))))))))))
+                    } else {
+                      ()
+                    },
+                    None => ()
+                  }
+                } else {
+                  ()
+                }
+                ki = ki + 1
+              }
+            } else {
+              ()
+            }
+            ii = ii + 1
+          }
+        },
+        None => ()
+      }
+      ci = ci + 1
+    }
+  } else {
+    ()
+  }
+}
+
+fn handle_collect_direct_calls(e: Expr, out: Array[(String, Int)]) -> Unit {
+  match e {
+    ECall(EIdent(n, noff), _, _) => Array::push(out, (n, noff)),
+    _ => ()
+  }
+  let mark = expr_children_push(e)
+  let end = expr_children_top()
+  let mut i = mark
+  while i < end {
+    handle_collect_direct_calls(expr_child_at(i), out)
+    i = i + 1
+  }
+  expr_children_pop(mark)
+}
+
+fn builtin_scalar_type_of_name(n: String) -> Option[Type] {
+  if n == "Int" {
+    Some(CtInt)
+  } else if n == "String" {
+    Some(CtString)
+  } else if n == "Bool" {
+    Some(CtBool)
+  } else if n == "Double" {
+    Some(CtDouble)
+  } else if n == "Unit" {
+    Some(CtUnit)
+  } else if n == "Bytes" {
+    Some(CtBytes)
+  } else {
+    None
+  }
+}
+
+fn scalar_types_same(a: Type, b: Type) -> Bool {
+  head_fold_char(head_kind(a)) == head_fold_char(head_kind(b)) && head_kind(a) != 0
+}
+
 fn effect_inst_env_key(eff: String) -> String {
   String::concat("$einst$", eff)
 }
@@ -5297,6 +5403,40 @@ fn check_builtin_arg_head(name: String, i: Int, arg_ty: Type, errors: Array[Stri
     }
   } else {
     ()
+  }
+}
+
+/// #3006: unify an unresolved type-variable argument with the concrete type a
+/// builtin's parameter head names. Only heads that name ONE type are bound
+/// (`String`, `Bytes`, and `Array[_]` with a fresh element); every other head,
+/// and a head of 0 (a parameter the builtin leaves open), leaves the variable
+/// alone exactly as before. A failed unify (a bounded variable, say) also
+/// leaves it alone -- the head check above is the one that reports.
+fn bind_builtin_arg_var(arg_ty: Type, want: Int, s: Subst, c: Int) -> (Subst, Int) {
+  match arg_ty {
+    CtVar(_) => {
+      let target = if want == 4 {
+        Some(CtString)
+      } else if want == 7 {
+        Some(CtBytes)
+      } else if want == 9 {
+        Some(CtArray(CtVar(c)))
+      } else {
+        None
+      }
+      match target {
+        Some(t) => match unify(arg_ty, t, s) {
+          Some(s2) => (s2, if want == 9 {
+            c + 1
+          } else {
+            c
+          }),
+          None => (s, c)
+        },
+        None => (s, c)
+      }
+    },
+    _ => (s, c)
   }
 }
 
@@ -6933,6 +7073,20 @@ fn resume_walk_param_base(pn: String) -> String {
 /// formal is a `CtVar`, a kinded one the `#hktformal.` marker (the EFn arm's
 /// `tp_env`). They are handed to `resolve_type_expr_shadowed` so a
 /// same-named import alias in `defs` cannot capture them (#1510).
+/// #3011: `own` (a declaration's own formals) plus every name in `te` that the
+/// env binds as an ENCLOSING declaration's formal -- the shadow set a
+/// body-level `TypeExpr` must resolve under, so an import alias spelled like a
+/// formal in scope cannot capture it.
+fn formal_shadow(te: TypeExpr, env: TypeEnv, own: Array[String]) -> Array[String] {
+  let acc: Array[String] = []
+  let mut i = 0
+  while i < Array::length(own) {
+    Array::push(acc, Array::get(own, i))
+    i = i + 1
+  }
+  exception_kind_formals_in_env(te, env, acc)
+}
+
 fn exception_kind_formals_in_env(te: TypeExpr, env: TypeEnv, acc: Array[String]) -> Array[String] {
   let note = (name: String) -> Unit {
     let is_formal = match env_lookup(env, name) {
@@ -9609,8 +9763,20 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                 } else {
                   ()
                 }
-                s2 = ns
-                c2 = nc
+                // #3006: a type VARIABLE argument -- a generic body's formal, or
+                // an unannotated lambda parameter -- used to be tolerated
+                // without being bound, so `fn g[T](x: T) -> Int {
+                // String::length(x) }` stayed fully generic and `g(41)` read an
+                // Int as a string (`82`). Bind it to what the builtin reads, the
+                // way a user function's parameter would.
+                let want_any = if ai == 0 {
+                  want_head
+                } else {
+                  builtin_param_head(name, ai)
+                }
+                let (bound_s, bound_c) = bind_builtin_arg_var(subst_apply(ns, at), want_any, ns, nc)
+                s2 = bound_s
+                c2 = bound_c
                 ai = ai + 1
               }
               (tab_call_ty(tytab, call_off, subst_apply(s2, ret_ty), capture, lane), s2, c2)
@@ -10041,7 +10207,10 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             // looked like it worked because the rigid name matched by string
             // equality. `env` already binds each formal to a fresh `CtVar` (see
             // the EFn arm's `tp_env`), so the mapping is available right here.
-            let resolved = resolve_tparams_in(resolve_type_expr(ann_te, defs), env)
+            // #3011: the enclosing formals SHADOW a same-named import alias in
+            // `defs`; resolving with `defs` first turned `let y: T` into the
+            // alias's type before the env could map `T` to its variable.
+            let resolved = resolve_tparams_in(resolve_type_expr_shadowed(ann_te, defs, formal_shadow(ann_te, env, array_empty())), env)
             // #2125: a body-level `let y: Intt = ..` annotation. `shadow` is
             // empty here by construction (the ascription lambda carries no
             // formals of its own); the env is what knows the enclosing
@@ -10851,6 +11020,12 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                         // (Codex P0 on #2985, the #1510 shape). The names the
                         // env binds as type variables are shadowed first.
                         let kind_shadow = exception_kind_formals_in_env(kind_te, eaenv, array_empty())
+                        // #3018: the kind is a TYPE, and an undeclared one
+                        // (`Exception[IoError]` with no `IoError` in scope) was
+                        // bound as an opaque nominal the arm body could hand
+                        // to `String::length`. Refused like an unknown type in
+                        // a `let` annotation.
+                        report_unknown_type_names(kind_te, defs, kind_shadow, eaenv, array_empty(), "an exception kind", errors)
                         resolve_tparams_in(resolve_type_expr_shadowed(kind_te, defs, kind_shadow), eaenv)
                       } with { Exception::Throw(_unreadable) => CtUnknown }
                     } else {
@@ -10933,6 +11108,21 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       } else {
         ()
       }
+      let hinst_resolved: Array[(String, Type)] = []
+      let mut hri = 0
+      while hri < Array::length(hinst_seen) {
+        let hr_eff = Array::get(hinst_seen, hri)
+        match env_lookup(henv_shared, effect_inst_env_key(hr_eff)) {
+          Some(CtTuple(hr_targs)) => if Array::length(hr_targs) == 1 {
+            Array::push(hinst_resolved, (hr_eff, subst_apply(hs1, Array::get(hr_targs, 0))))
+          } else {
+            ()
+          },
+          _ => ()
+        }
+        hri = hri + 1
+      }
+      check_handle_inst_vs_callee_rows(body, hinst_resolved, env, errors)
       (hres, hs1, hc1)
     },
     EWhile(cond, body) => {
@@ -11398,7 +11588,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           Some(te) => {
             // #1512: `tparams` shadow `defs`, so `resolve_tparams_in` below
             // still finds `CtNamed(<tparam>, [])` to map onto the fresh var.
-            let resolved = resolve_type_expr_shadowed(te, defs, tparams)
+            let resolved = resolve_type_expr_shadowed(te, defs, formal_shadow(te, env, tparams))
             let pt2 = resolve_tparams_in(resolved, fn_env)
             // #2125: an unresolvable name here becomes a wildcard at every
             // call site, so `f("s")` and `f(1)` both pass the SAME slot.
@@ -11449,7 +11639,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           // #2125: see the parameter arm above.
           report_unknown_type_names(rte, defs, tparams, fn_env, declared_row_binders, "the return type", errors)
           report_formal_applications(rte, tparams, "the return type", errors)
-          env_bind(fn_env, "__return__", resolve_tparams_in(resolve_type_expr_shadowed(rte, defs, tparams), fn_env))
+          env_bind(fn_env, "__return__", resolve_tparams_in(resolve_type_expr_shadowed(rte, defs, formal_shadow(rte, env, tparams)), fn_env))
         },
         None => env_bind(fn_env, "__return__", CtUnknown)
       }
@@ -11482,7 +11672,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       }
       let (base_ret, s3) = match ret_ty {
         Some(te) => {
-          let resolved = resolve_type_expr_shadowed(te, defs, tparams)
+          let resolved = resolve_type_expr_shadowed(te, defs, formal_shadow(te, env, tparams))
           let resolved_ret = resolve_tparams_in(resolved, fn_env)
           // #1451: check_assignable, not a raw `unify`, so the IMPLICIT
           // tail-expression return follows the same rules as an EXPLICIT
@@ -11628,7 +11818,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       }
       let inferred_ret = subst_apply_except(s3, final_ret, keep_ids)
       let scheme_ret_raw = match ret_ty {
-        Some(te) => subst_apply_except(s3, resolve_tparams_in(resolve_type_expr_shadowed(te, defs, tparams), scheme_env), keep_ids),
+        Some(te) => subst_apply_except(s3, resolve_tparams_in(resolve_type_expr_shadowed(te, defs, formal_shadow(te, env, tparams)), scheme_env), keep_ids),
         None => inferred_ret
       }
       let scheme_ret = merge_capture_provenance(scheme_ret_raw, inferred_ret)
@@ -11637,7 +11827,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       while spi2 < plen {
         let inferred_pt = subst_apply_except(s3, Array::get(param_types, spi2), keep_ids)
         match Array::get(params, spi2) {
-          (_, Some(pte)) => Array::push(scheme_params, merge_capture_provenance(subst_apply_except(s3, resolve_tparams_in(resolve_type_expr_shadowed(pte, defs, tparams), scheme_env), keep_ids), inferred_pt)),
+          (_, Some(pte)) => Array::push(scheme_params, merge_capture_provenance(subst_apply_except(s3, resolve_tparams_in(resolve_type_expr_shadowed(pte, defs, formal_shadow(pte, env, tparams)), scheme_env), keep_ids), inferred_pt)),
           _ => Array::push(scheme_params, inferred_pt)
         }
         spi2 = spi2 + 1
@@ -11816,7 +12006,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                 let resolved = array_empty()
                 let mut tpi = 0
                 while tpi < tplen {
-                  Array::push(resolved, resolve_tparams_in(resolve_type_expr(Array::get(targs, tpi), defs), env))
+                  Array::push(resolved, resolve_tparams_in(resolve_type_expr_shadowed(Array::get(targs, tpi), defs, formal_shadow(Array::get(targs, tpi), env, array_empty())), env))
                   tpi = tpi + 1
                 }
                 let reified = resolve_type_constructor_args(s_tparams, targs, resolved, defs, array_empty())

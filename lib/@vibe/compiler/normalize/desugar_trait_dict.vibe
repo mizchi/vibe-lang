@@ -3769,11 +3769,18 @@ fn infer_impl_target_expr(arg: Expr, struct_sets: Array[(String, Array[String])]
           None => None
         }
       },
-      ERecord(name, _, type_args) => if name != "" {
+      ERecord(name, rfields, type_args) => if name != "" {
         if Array::length(type_args) > 0 {
           Some(TyApp(name, type_args))
         } else {
-          Some(TyName(name))
+          // #3008: a generic struct literal without explicit arguments keeps
+          // them when every formal is read off a field declared exactly that
+          // formal -- otherwise the `[T: Eq]` witness is built for the bare
+          // head and compares the erased field by reference.
+          match generic_record_inferred_args(name, rfields, struct_sets, var_types, fn_returns) {
+            Some(args) => Some(TyApp(name, args)),
+            None => Some(TyName(name))
+          }
         }
       } else {
         None
@@ -4078,7 +4085,26 @@ fn build_concrete_dict_for_target(actual_target: TypeExpr, trait_name: String, t
         // type can occupy. Skipping `fn_exists` drops through to the builtin
         // and scalar arms below, where the right answer is.
         let injected_eq_scalar = dtd_eq_was_injected() && trait_ref_name(trait_name) == dtd_eq_witness_trait() && (dtd_scalar_eq_witness(cname, m) is Some)
-        if injected_eq_scalar || not(fn_exists(fn_returns, qm)) {
+        let specialized_generic_eq = match actual_target {
+          TyApp(ghead, gargs) => if trait_ref_name(trait_name) == dtd_eq_witness_trait() && m == "equals" && Array::length(gargs) > 0 && str_array_contains(dtd_eq_derived_generic, ghead) && !eq_ty_has_formal(actual_target) {
+            // #3008: see `dtd_eq_derived_generic`. The closure body is exactly
+            // what a direct `a == b` at this type lowers to.
+            let gparams: Array[(String, Option[TypeExpr])] = [
+              ("__geq_a", Some(actual_target)),
+              ("__geq_b", Some(actual_target))
+            ]
+            Some(EFn(array_empty(), array_empty(), gparams, Some(TyName("Bool")), None, eq_for_typed_declared_app(actual_target, ghead, gargs, EIdent("__geq_a", -1), EIdent("__geq_b", -1), dtd_eq_known_types)))
+          } else {
+            None
+          },
+          _ => None
+        }
+        if specialized_generic_eq is Some {
+          match specialized_generic_eq {
+            Some(closure) => Array::push(recfields, (m, closure)),
+            None => ()
+          }
+        } else if injected_eq_scalar || not(fn_exists(fn_returns, qm)) {
           // #2872: the name may still be a BUILTIN -- `fn_exists` knows only
           // user functions, and `String::equals` is a real builtin that a
           // bodyless `impl Eq for String` should be able to resolve to.
@@ -5477,7 +5503,9 @@ fn shape_is_composite(sh: String) -> Bool {
 /// already-recorded function result shape, but only admit the tuple/array forms
 /// the interpolation renderer knows how to expand.
 fn interp_shape(sh: String) -> String {
-  if String::starts_with(sh, "(") || String::starts_with(sh, "[") {
+  if String::starts_with(sh, "(") || String::starts_with(sh, "[") || String::starts_with(sh, "{o:") || String::starts_with(sh, "{r:") {
+    sh
+  } else if String::starts_with(sh, "{g:") && show_generic_struct_known(generic_shape_head(sh)) {
     sh
   } else {
     ""
@@ -5805,6 +5833,40 @@ fn infer_shape_by_syntax(e: Expr, struct_sets: Array[(String, Array[String])], v
       }
       String::concat(acc, ")")
     },
+    // #3007: a `derive (Show)` generic struct literal. Its arguments come from
+    // the explicit `Box[..]::{ }` list, else from a field whose declared type
+    // is exactly the formal. A formal neither answers leaves the literal
+    // unclaimed, which is what it was before.
+    ERecord(rname, rfields, rtargs) => match show_generic_struct_decl(rname) {
+      Some((_, formals, dfields)) => {
+        let mut acc = String::concat("{g:", rname)
+        let mut ok = true
+        let mut ti = 0
+        while ti < Array::length(formals) {
+          let arg_sh = if Array::length(rtargs) == Array::length(formals) {
+            ty_to_eq_shape(Array::get(rtargs, ti))
+          } else {
+            record_formal_shape(Array::get(formals, ti), dfields, rfields, struct_sets, var_types, fn_returns)
+          }
+          if String::length(arg_sh) == 0 {
+            ok = false
+          } else {
+            ()
+          }
+          acc = String::concat(acc, String::concat(",", arg_sh))
+          ti = ti + 1
+        }
+        if ok {
+          String::concat(acc, "}")
+        } else {
+          rname
+        }
+      },
+      None => match infer_arg_type_name(e, struct_sets, var_types, fn_returns) {
+        Some(t) => t,
+        None => ""
+      }
+    },
     // The first element stands for all of them: this pass has no unifier, and
     // a heterogeneous array literal does not type-check anyway.
     EArray(items) => if Array::length(items) == 0 {
@@ -5920,6 +5982,69 @@ fn infer_shape_by_syntax(e: Expr, struct_sets: Array[(String, Array[String])], v
       None => ""
     }
   }
+}
+
+/// #3008: the type arguments of a generic struct literal written without
+/// them, or None when any formal is not read off a field declared exactly that
+/// formal.
+fn generic_record_inferred_args(name: String, rfields: Array[(String, Expr)], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[Array[TypeExpr]] {
+  let mut out: Option[Array[TypeExpr]] = None
+  let mut i = 0
+  while i < Array::length(dtd_eq_generic_structs) {
+    let decl = Array::get(dtd_eq_generic_structs, i)
+    if decl.0 == name {
+      let args = empty_type_exprs()
+      let mut ok = true
+      let mut fi = 0
+      while fi < Array::length(decl.1) {
+        let sh = record_formal_shape(Array::get(decl.1, fi), decl.2, rfields, struct_sets, var_types, fn_returns)
+        if String::length(sh) == 0 {
+          ok = false
+        } else {
+          Array::push(args, shape_to_eq_ty(sh))
+        }
+        fi = fi + 1
+      }
+      out = if ok {
+        Some(args)
+      } else {
+        None
+      }
+      i = Array::length(dtd_eq_generic_structs)
+    } else {
+      i = i + 1
+    }
+  }
+  out
+}
+
+/// #3007: the shape of formal `f` in a generic struct literal, read from the
+/// first field declared exactly `f`, or "".
+fn record_formal_shape(f: String, dfields: Array[(String, TypeExpr)], rfields: Array[(String, Expr)], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
+  let mut out = ""
+  let mut i = 0
+  while i < Array::length(dfields) && String::length(out) == 0 {
+    let (dname, dty) = Array::get(dfields, i)
+    match dty {
+      TyName(tn) => if tn == f {
+        let mut j = 0
+        while j < Array::length(rfields) {
+          let (rn, rv) = Array::get(rfields, j)
+          if rn == dname {
+            out = infer_shape(rv, struct_sets, var_types, fn_returns)
+          } else {
+            ()
+          }
+          j = j + 1
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
 }
 
 /// Record a binding's recursive shape, when there is one worth recording. A
@@ -9565,6 +9690,96 @@ fn interp_expand_shape(subject: Expr, sh: String, derived_only: Bool, gens: Arra
     EMatch(subject, Array::slice([
       (PTuple(pats), concat2(acc, EString(")", -1)))
     ], 0, 1))
+  } else if String::starts_with(sh, "{o:") {
+    // #2971: an Option. Every non-tuple composite used to take the ARRAY arm
+    // below, so the `{o:Int}` element of an `Array[Option[Int]]` was walked
+    // with `Array::length` / `Array::get` and `[None, Some(0), Some(1)]`
+    // rendered `[[], [0], [0]]`.
+    let v = show_tmp_name()
+    let payload = interp_render_shaped(EIdent(v, -1), String::substring(sh, 3, String::length(sh) - 1), derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+    EMatch(subject, Array::slice([
+      (PCtor("Some", Array::slice([PBind(v)], 0, 1)), concat2(EString("Some(", -1), concat2(payload, EString(")", -1)))),
+      (PCtor("None", array_empty()), EString("None", -1))
+    ], 0, 2))
+  } else if String::starts_with(sh, "{r:") {
+    let parts = shape_split(String::substring(sh, 3, String::length(sh) - 1))
+    let ok_sh = if Array::length(parts) == 2 {
+      Array::get(parts, 0)
+    } else {
+      ""
+    }
+    let err_sh = if Array::length(parts) == 2 {
+      Array::get(parts, 1)
+    } else {
+      ""
+    }
+    let ov = show_tmp_name()
+    let ev = show_tmp_name()
+    let ok_piece = interp_render_shaped(EIdent(ov, -1), ok_sh, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+    let err_piece = interp_render_shaped(EIdent(ev, -1), err_sh, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+    EMatch(subject, Array::slice([
+      (PCtor("Ok", Array::slice([PBind(ov)], 0, 1)), concat2(EString("Ok(", -1), concat2(ok_piece, EString(")", -1)))),
+      (PCtor("Err", Array::slice([PBind(ev)], 0, 1)), concat2(EString("Err(", -1), concat2(err_piece, EString(")", -1))))
+    ], 0, 2))
+  } else if String::starts_with(sh, "{g:") && show_generic_struct_known(generic_shape_head(sh)) {
+    // #3007: a `derive (Show)` generic struct at a known instantiation. The
+    // field types get the arguments substituted, so each field renders at its
+    // real type; the text matches `gen_show_fn`'s (`Box { v: 1.5 }`).
+    let gparts = shape_split(String::substring(sh, 3, String::length(sh) - 1))
+    match show_generic_struct_decl(Array::get(gparts, 0)) {
+      Some((sname, formals, fields)) => {
+        let targs = empty_type_exprs()
+        let mut ai = 1
+        while ai < Array::length(gparts) {
+          Array::push(targs, shape_to_eq_ty(Array::get(gparts, ai)))
+          ai = ai + 1
+        }
+        let nm = match subject {
+          EIdent(n, _) => n,
+          _ => show_tmp_name()
+        }
+        let mut acc = EString(String::concat(namespace_rename_original(sname), " { "), -1)
+        let mut fi = 0
+        while fi < Array::length(fields) {
+          let (fname, fty) = Array::get(fields, fi)
+          let fsh = if Array::length(targs) == Array::length(formals) {
+            ty_to_eq_shape(eq_subst_ty(fty, formals, targs))
+          } else {
+            ""
+          }
+          let fv = show_tmp_name()
+          let piece = ELet(fv, EDot(EIdent(nm, -1), fname, -1, -1), interp_render_shaped(EIdent(fv, -1), fsh, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns), -1)
+          let label = if fi == 0 {
+            String::concat(fname, ": ")
+          } else {
+            String::concat(", ", String::concat(fname, ": "))
+          }
+          acc = concat2(acc, concat2(EString(label, -1), piece))
+          fi = fi + 1
+        }
+        let rendered = concat2(acc, EString(" }", -1))
+        match subject {
+          EIdent(_, _) => rendered,
+          _ => ELet(nm, subject, rendered, -1)
+        }
+      },
+      None => interp_render_sub(subject, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+    }
+  } else if !String::starts_with(sh, "[") {
+    // #2971: an encoding this renderer does not expand (`{u}`, `{m:..}`,
+    // `{g:..}`). Treating it as an array was the bug above; the ordinary path
+    // is the honest answer, and a `{g:Head,..}` keeps its head so a
+    // `Head::to_string` renderer is still found.
+    let head_vt = if String::starts_with(sh, "{g:") {
+      let gparts = shape_split(String::substring(sh, 3, String::length(sh) - 1))
+      match subject {
+        EIdent(sv, _) => extend_var_types(var_types, sv, Some(Array::get(gparts, 0))),
+        _ => var_types
+      }
+    } else {
+      var_types
+    }
+    interp_render_sub(subject, derived_only, gens, traits, struct_sets, dict_binds, head_vt, fn_returns)
   } else {
     // Array. The subject is read twice (length + per-index get), so it must be
     // a name; anything else is bound once first.
@@ -9660,9 +9875,59 @@ fn interp_arg_is_bool(arg: Expr, struct_sets: Array[(String, Array[String])], va
   }
 }
 
+/// #2993: a NAME whose recorded binding type is Double -- the synthesized
+/// element binder of a container render, above all. Only a name: a call is
+/// answered from `fn_returns`, which is keyed by the top-level name and cannot
+/// see a local binding that shadows it (a local `let value = () -> Int` beside
+/// a top-level `fn value() -> Double` rendered `1` through the float path), and
+/// a literal or a projection is already answered by codegen's classifiers.
+fn interp_arg_is_double(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Bool {
+  match arg {
+    EIdent(n, _) => match lookup_var_type(var_types, n) {
+      Some(t) => t == "Double" || t == "Float",
+      None => false
+    },
+    _ => false
+  }
+}
+
 /// The structural rendering for an interpolated wrapper value, or None when
 /// this pass has no shape to work from and the `__to_string` call must stand.
 fn interp_expand(arg: Expr, derived_only: Bool, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[Expr] with Exception {
+  let erased_throw_head = if derived_only {
+    dtd_erased_top_formal_head(arg, dict_binds, traits, struct_sets, var_types, fn_returns)
+  } else {
+    ""
+  }
+  if String::length(erased_throw_head) > 0 {
+    // #3003: `derived_only` is a THROW site's synthesized render (the message an
+    // erased `Exception::Throw(m)` arm reads), not an interpolation the user
+    // wrote. Refusing it with the interpolation message told `throw(x)` to
+    // "interpolate at a concrete type", while `throw([x])` compiled and
+    // rendered `<Array>`. Both render a placeholder naming the type now.
+    Some(EString(String::concat("<", String::concat(erased_throw_head, ">")), -1))
+  } else {
+    interp_expand_checked(arg, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+  }
+}
+
+/// #3003: the formal `arg` is typed at when it is an erased top-level formal
+/// with no renderer witness (the case `dtd_check_top_interp` refuses), or "".
+fn dtd_erased_top_formal_head(arg: Expr, dict_binds: Array[(String, String, String, Array[String])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
+  match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
+    Some(head) => if formal_in_scope(head) && !dtd_formal_innermost_is_nested(head) && !str_array_contains(dtd_show_shims, Array::get(dtd_show_self_fn, 0)) {
+      match dtd_show_witness_dict(dict_binds, traits, head) {
+        Some(_) => "",
+        None => head
+      }
+    } else {
+      ""
+    },
+    None => ""
+  }
+}
+
+fn interp_expand_checked(arg: Expr, derived_only: Bool, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[Expr] with Exception {
   dtd_check_top_interp(arg, dict_binds, traits, struct_sets, var_types, fn_returns)
   let head = match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
     Some(h) => h,
@@ -10273,7 +10538,15 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
         // refused, so did all three routes #2773 listed as open, and the
         // 1315-file unit corpus kept both programs refused -- what changed was
         // only WHICH channel reports them.
-        let show_target = interp_show_target(Array::get(args, 0), false, struct_sets, var_types, fn_returns)
+        // #3007: a `derive (Show)` generic struct whose instantiation this pass
+        // can see renders field by field (`interp_expand_shape`'s `{g:` arm);
+        // its one derived `to_string` erases the formals.
+        let generic_show_sh = interp_shape(infer_shape(Array::get(args, 0), struct_sets, var_types, fn_returns))
+        let show_target = if String::starts_with(generic_show_sh, "{g:") {
+          ""
+        } else {
+          interp_show_target(Array::get(args, 0), false, struct_sets, var_types, fn_returns)
+        }
         if show_target != "" {
           Some(ECall(EIdent(show_target, -1), Array::slice([
             rewrite_expr(Array::get(args, 0), gens, traits, struct_sets, dict_binds, var_types, fn_returns)
@@ -10291,6 +10564,16 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
           // excluded — every classifier already answers it, and skipping it
           // keeps the common case's lowering untouched.
           Some(EIf(rewrite_expr(Array::get(args, 0), gens, traits, struct_sets, dict_binds, var_types, fn_returns), EString("true", -1), EString("false", -1)))
+        } else if interp_arg_is_double(Array::get(args, 0), struct_sets, var_types, fn_returns) {
+          // #2993: the same gap for a Double. A container's element reaches
+          // here as a synthesized binder (`let __show_vN = Array::get(xs, i)`)
+          // whose recorded type is Double, but codegen's floatish classifiers
+          // cannot see that binder's type, so `[1.5, 2.25]` rendered the boxed
+          // Doubles' addresses (`[352, 360]`). This pass knows the type, so it
+          // names the renderer.
+          Some(ECall(EIdent("Double::to_string", -1), Array::slice([
+            rewrite_expr(Array::get(args, 0), gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+          ], 0, 1), off))
         } else {
           let expanded = interp_expand(Array::get(args, 0), false, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
           // #1445: nothing rendered it structurally AND the type is a declared
@@ -12924,6 +13207,52 @@ let dtd_eq_generic_types: Array[String] = empty_str_array()
 // after the rewrite, like the recorded Array comparators.
 let dtd_eq_generic_structs: Array[(String, Array[String], Array[(String, TypeExpr)])] = array_empty()
 
+/// #3008: the generic structs and enums that `derive (Eq)`. Their derived
+/// `equals` is generated once with the formals erased, so a `[T: Eq]` witness
+/// built from it compared a `Box[Double]` field by reference. The witness for a
+/// concrete instantiation is the per-instantiation comparator the direct `==`
+/// already uses (#2195, #2467) instead.
+let dtd_eq_derived_generic: Array[String] = empty_str_array()
+
+/// #3007: the generic structs that `derive (Show)` -- (name, formals, fields).
+/// Their derived `to_string` is generated ONCE with the formals erased, so a
+/// field whose type is a formal renders through the raw heuristic and a
+/// `Box[Double]` printed `Box { v: 268 }`. An interpolation that knows the
+/// instantiation renders the fields itself instead (`interp_expand_shape`'s
+/// `{g:` arm), with the arguments substituted into the field types.
+let dtd_show_generic_structs: Array[(String, Array[String], Array[(String, TypeExpr)])] = array_empty()
+
+fn show_generic_struct_decl(head: String) -> Option[(String, Array[String], Array[(String, TypeExpr)])] {
+  let mut found: Option[(String, Array[String], Array[(String, TypeExpr)])] = None
+  let mut i = 0
+  while i < Array::length(dtd_show_generic_structs) {
+    let decl = Array::get(dtd_show_generic_structs, i)
+    if decl.0 == head {
+      found = Some(decl)
+      i = Array::length(dtd_show_generic_structs)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+fn show_generic_struct_known(head: String) -> Bool {
+  match show_generic_struct_decl(head) {
+    Some(_) => true,
+    None => false
+  }
+}
+
+/// The head of a `{g:Head,..}` shape, or "".
+fn generic_shape_head(sh: String) -> String {
+  if String::starts_with(sh, "{g:") {
+    Array::get(shape_split(String::substring(sh, 3, String::length(sh) - 1)), 0)
+  } else {
+    ""
+  }
+}
+
 /// Codex round 7 on #2456: every declared enum -- (name, formals, variants
 /// with their payload types) -- so a generic enum's payloads can be read
 /// when deciding whether its derived comparator is structural (see
@@ -13359,6 +13688,8 @@ fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {
   Array::truncate(dtd_eq_generic_types, 0)
   Array::truncate(dtd_eq_unsafe_types, 0)
   Array::truncate(dtd_eq_generic_structs, 0)
+  Array::truncate(dtd_show_generic_structs, 0)
+  Array::truncate(dtd_eq_derived_generic, 0)
   Array::truncate(dtd_eq_enum_decls, 0)
   Array::truncate(dtd_eq_enum_payload_check_stack, 0)
   Array::truncate(dtd_eq_enum_formal_visit_stack, 0)
@@ -13387,11 +13718,21 @@ fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {
   let mut j = 0
   while j < Array::length(stmts) {
     match Array::get(stmts, j) {
-      SStruct(_, sname, fields, _, _, decl_tparams) => {
+      SStruct(_, sname, fields, derives, _, decl_tparams) => {
         Array::push(dtd_eq_type_owners, sname)
         if Array::length(decl_tparams) > 0 {
           Array::push(dtd_eq_generic_types, sname)
           Array::push(dtd_eq_generic_structs, (sname, decl_tparams, fields))
+          if str_array_contains(derives, "Show") {
+            Array::push(dtd_show_generic_structs, (sname, decl_tparams, fields))
+          } else {
+            ()
+          }
+          if str_array_contains(derives, "Eq") {
+            Array::push(dtd_eq_derived_generic, sname)
+          } else {
+            ()
+          }
         } else {
           ()
         }
@@ -13401,12 +13742,17 @@ fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {
           ()
         }
       },
-      SEnum(_, ename, decl_tparams, variants, _) => {
+      SEnum(_, ename, decl_tparams, variants, enum_derives) => {
         Array::push(dtd_eq_type_owners, ename)
         Array::push(dtd_eq_enum_decls, (ename, decl_tparams, variants))
         Array::push(enum_names, ename)
         if Array::length(decl_tparams) > 0 {
           Array::push(dtd_eq_generic_types, ename)
+          if str_array_contains(enum_derives, "Eq") {
+            Array::push(dtd_eq_derived_generic, ename)
+          } else {
+            ()
+          }
         } else {
           ()
         }
