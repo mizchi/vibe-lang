@@ -2307,6 +2307,70 @@ done
 rm -rf "$amrdir"
 echo "[compiler-gate] unrenderable array refusal ok (message names the edit; 3 resolvable spellings still compile)"
 
+# #2987 (and #2986, #2970, #2998): a render argument the CHECKER typed as an
+# Option / Array / tuple / Bytes / record, but whose shape normalize could not
+# resolve, used to reach the same runtime heuristic as #2912 and print its
+# address. The checker now files those arguments (typed-lowering tag 6) and the
+# `__to_string` lowering refuses them; a `Bytes` is refused by the checker
+# itself, since nothing can ever render it. Asserted on the message and the
+# edit, with green controls that must still compile AND render by content.
+echo "[compiler-gate] an unrenderable render argument is refused, not printed as an address (#2987)"
+urdir="_build/_gate_unrenderable_render"
+rm -rf "$urdir"; mkdir -p "$urdir"
+ur_refused() {
+  local ur_src="$1" ur_msg="$2" ur_edit="$3"
+  local ur_wasm="$urdir/$(basename "${ur_src%.vibe}").wasm"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$ur_src" "$ur_wasm" _start >/dev/null 2>&1 || true
+  if [ -s "$ur_wasm" ]; then
+    echo "[compiler-gate] FAIL: $ur_src compiled; expected a compile-time refusal (#2987)" >&2
+    exit 1
+  fi
+  if ! grep -qF "$ur_msg" "$ur_wasm.diag" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: $ur_src was refused without the #2987 message ($ur_msg)" >&2
+    cat "$ur_wasm.diag" >&2 2>/dev/null; exit 1
+  fi
+  if ! grep -qF "$ur_edit" "$ur_wasm.diag" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: $ur_src refusal does not name the edit ($ur_edit)" >&2
+    cat "$ur_wasm.diag" >&2 2>/dev/null; exit 1
+  fi
+}
+ur_refused fixtures/err_interp_unrenderable_bytes_refused.vibe 'cannot interpolate a `Bytes` value' 'Bytes::to_array(b)'
+ur_refused fixtures/err_interp_unrenderable_field_refused.vibe 'cannot interpolate field `tags`' 'bind it with a type annotation'
+ur_refused fixtures/err_interp_unrenderable_shadow_refused.vibe 'cannot interpolate `shadowed`' 'bind it with a type annotation'
+# The spellings the refusal message recommends, and the shapes normalize
+# already resolves, must still compile and still render BY CONTENT -- the
+# answer is written to stdout and compared, so a control that compiled but
+# printed an address would fail here too.
+ur_i=0
+for ur_ok in \
+  'struct Bx { tags: Array[Int] }|let bx = Bx::{ tags: [1, 2] }; let t: Array[Int] = bx.tags; println("\{t}")|[1, 2]' \
+  '|let v: Option[Int] = Int::parse("42"); println("\{v}")|Some(42)' \
+  '|let xs = [1, 2, 3]; let o: Option[Int] = Some(3); println("\{xs} \{o} \{Array::length(xs)}")|[1, 2, 3] Some(3) 3' \
+  'fn k2(b?: Int) -> String { "o=\{b}" }|println("\{k2(1)} \{k2()}")|o=Some(1) o=None' \
+  'fn f(t: (Int, String)) -> String { "\{t}" }|println(f((1, "a")))|(1, a)'; do
+  ur_i=$((ur_i + 1))
+  ur_decl="${ur_ok%%|*}"; ur_rest="${ur_ok#*|}"
+  ur_body="${ur_rest%%|*}"; ur_want="${ur_rest#*|}"
+  printf '%s\nfn main allows Stdout {\n  %s\n}\n' "$ur_decl" "$ur_body" > "$urdir/ok$ur_i.vibe"
+  rm -f "$urdir/ok$ur_i.wasm"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$urdir/ok$ur_i.vibe" "$urdir/ok$ur_i.wasm" main >/dev/null 2>&1 || true
+  if [ ! -s "$urdir/ok$ur_i.wasm" ]; then
+    echo "[compiler-gate] FAIL: a RESOLVABLE render was refused (#2987 over-refuses): $ur_body" >&2
+    cat "$urdir/ok$ur_i.wasm.diag" >&2 2>/dev/null; exit 1
+  fi
+  ur_got="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$urdir/ok$ur_i.wasm" 2>/dev/null | head -1)"
+  if [ "$ur_got" != "$ur_want" ]; then
+    echo "[compiler-gate] FAIL: control $ur_i rendered '$ur_got', expected '$ur_want' (#2987)" >&2
+    exit 1
+  fi
+done
+rm -rf "$urdir"
+echo "[compiler-gate] unrenderable render refusal ok (message names the edit; 5 resolvable spellings still render)"
+
 # #2737: a witness dispatch on a bound declared by a LAMBDA binder is refused,
 # with a message that names the edit. The checks, the measurements behind them,
 # and the red test that proves they can fail live in the gate script and its

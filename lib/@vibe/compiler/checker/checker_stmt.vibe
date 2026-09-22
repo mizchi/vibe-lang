@@ -79,7 +79,8 @@ import @vibe/compiler/core {
   type_implements_trait,
   type_to_string,
   typed_lowering_arg_offset,
-  typed_lowering_float_key
+  typed_lowering_float_key,
+  typed_render_refuse_key
 }
 
 import ./checker.vibe {
@@ -7498,6 +7499,30 @@ fn irc_resolves_to_scalar(s: Subst, ty: Type, want_bool: Bool) -> Bool {
   result
 }
 
+/// #2987 tag 6: does this occurrence's type have NO runtime rendering?
+///
+/// An argument that reaches codegen's `__to_string` lowering unexpanded is
+/// printed by a heuristic that knows two representations -- a string pointer
+/// and an Int. An `Option` / `Array` / tuple / `Bytes` / record value is
+/// neither, so it printed its allocation address with no diagnostic
+/// (#2970, #2986, #2987, #2991, #2998). Normalize expands the shapes it can
+/// resolve into a structural render before codegen, so what still arrives here
+/// is exactly the set it could not resolve, and the only honest answer left is
+/// a refusal. Only these heads: a nominal type can be an opaque wrapper over a
+/// scalar, which the heuristic does print correctly, and a function type is
+/// left out because a call key is its callee's offset, where the callee's own
+/// `CtFn` occurrence also sits.
+fn irc_resolves_to_unrenderable(s: Subst, ty: Type) -> Bool {
+  match subst_apply(s, ty) {
+    CtOption(_) => true,
+    CtArray(_) => true,
+    CtTuple(_) => true,
+    CtBytes => true,
+    CtRecord(_) => true,
+    _ => false
+  }
+}
+
 /// The builtins whose argument codegen must know the type of: the renderer
 /// (both spellings) and the untyped equality. `\{...}` interpolation is
 /// already `__to_string` HERE -- the parser builds the call
@@ -7584,6 +7609,48 @@ fn irc_is_bare_to_string_of(body: Expr, pname: String) -> Bool {
     },
     _ => false
   }
+}
+
+/// #2987: the render-argument keys inside the program's own top-level Show
+/// shims. A shim's body is expanded at each CALL SITE, where the argument's
+/// type is known (`fn f(t: (Int, String)) -> String { "\{t}" }` renders
+/// `(1, a)` through `f((1, "a"))`), so the `__to_string(t)` left in the body is
+/// not the render that runs. Tag 6 stands down there, the way
+/// `check_interp_formal` does inside a shim body; the call site's own argument
+/// is still filed.
+fn irc_shim_body_arg_offsets(stmts: Array[Stmt]) -> Array[Int] {
+  let out: Array[Int] = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let value = match Array::get(stmts, i) {
+      SLet(_, _, _, _, v) => Some(v),
+      SFnDecl(_, _, v, _, _) => Some(v),
+      _ => None
+    }
+    match value {
+      Some(v) => if irc_is_show_shim_value(v) {
+        match v {
+          EFn(_, _, _, _, _, ECall(_, ba, _)) => Array::push(out, typed_lowering_arg_offset(Array::get(ba, 0))),
+          _ => ()
+        }
+      } else {
+        ()
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn irc_int_array_has(xs: Array[Int], v: Int) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(xs) && !found {
+    found = Array::get(xs, i) == v
+    i = i + 1
+  }
+  found
 }
 
 /// A one-parameter function whose body is just `__to_string` of that parameter.
@@ -7960,22 +8027,37 @@ fn irc_render_arg_offsets(checked: CheckedProgram, want: Int) -> Array[Int] {
 /// sharing the walk is a cost decision, sharing the answers would put a Bool
 /// offset where `ts_known_int` reads and render `true` as a number.
 fn irc_render_arg_offsets_pair(checked: CheckedProgram, want_a: Int, want_b: Int) -> (Array[Int], Array[Int]) {
+  let (a, b, _) = irc_render_arg_offsets_triple(checked, want_a, want_b, 0 - 1)
+  (a, b)
+}
+
+/// #2987 et al.: the pair walk plus an optional third tag (`want_c`, -1 for
+/// none) answered from the same candidate set. Only tag 6 uses it, and it
+/// shares tag 3's key, so no candidate is filed under a key nobody reads.
+fn irc_render_arg_offsets_triple(checked: CheckedProgram, want_a: Int, want_b: Int, want_c: Int) -> (Array[Int], Array[Int], Array[Int]) {
   let raw: Array[Int] = []
   let shims = irc_shim_set(irc_show_shim_names(checked.checked_stmts))
   irc_collect_stmts(checked.checked_stmts, raw, want_a, shims)
   let cands = irc_sorted_unique(raw)
+  let shim_args = if want_c >= 0 {
+    irc_shim_body_arg_offsets(checked.checked_stmts)
+  } else {
+    []
+  }
   let n = Array::length(cands)
   if n == 0 {
-    ([], [])
+    ([], [], [])
   } else {
     let seen_any: Array[Int] = []
     let all_a: Array[Int] = []
     let all_b: Array[Int] = []
+    let all_c: Array[Int] = []
     let mut k = 0
     while k < n {
       Array::push(seen_any, 0)
       Array::push(all_a, 1)
       Array::push(all_b, 1)
+      Array::push(all_c, 1)
       k = k + 1
     }
     let mut oi = 0
@@ -7995,6 +8077,11 @@ fn irc_render_arg_offsets_pair(checked: CheckedProgram, want_a: Int, want_b: Int
           } else {
             Array::set(all_b, idx, 0)
           }
+          if want_c < 0 || irc_occurrence_wants(checked, oty, want_c) {
+            ()
+          } else {
+            Array::set(all_c, idx, 0)
+          }
         } else {
           ()
         }
@@ -8005,6 +8092,7 @@ fn irc_render_arg_offsets_pair(checked: CheckedProgram, want_a: Int, want_b: Int
     }
     let out_a: Array[Int] = []
     let out_b: Array[Int] = []
+    let out_c: Array[Int] = []
     let mut m = 0
     while m < n {
       if Array::get(seen_any, m) == 1 {
@@ -8018,12 +8106,17 @@ fn irc_render_arg_offsets_pair(checked: CheckedProgram, want_a: Int, want_b: Int
         } else {
           ()
         }
+        if want_c >= 0 && Array::get(all_c, m) == 1 && !irc_int_array_has(shim_args, Array::get(cands, m)) {
+          Array::push(out_c, Array::get(cands, m))
+        } else {
+          ()
+        }
       } else {
         ()
       }
       m = m + 1
     }
-    (out_a, out_b)
+    (out_a, out_b, out_c)
   }
 }
 
@@ -8031,6 +8124,8 @@ fn irc_render_arg_offsets_pair(checked: CheckedProgram, want_a: Int, want_b: Int
 fn irc_occurrence_wants(checked: CheckedProgram, oty: Type, want: Int) -> Bool {
   if want == 4 {
     subst_resolves_to_double(checked.final_subst, oty)
+  } else if want == 6 {
+    irc_resolves_to_unrenderable(checked.final_subst, oty)
   } else {
     irc_resolves_to_scalar(checked.final_subst, oty, want == 5)
   }
@@ -8041,6 +8136,34 @@ fn irc_occurrence_wants(checked: CheckedProgram, oty: Type, want: Int) -> Bool {
 /// two singles, so the shared candidate set is computed once.
 export fn checked_int_and_bool_render_offsets(checked: CheckedProgram) -> (Array[Int], Array[Int]) {
   irc_render_arg_offsets_pair(checked, 3, 5)
+}
+
+/// #2987 tag 6: tags 3 and 5 plus the render/eq argument offsets whose type the
+/// runtime renderer cannot print (see `irc_resolves_to_unrenderable`), from the
+/// ONE walk the pair already runs.
+export fn checked_int_bool_and_unrenderable_render_offsets(checked: CheckedProgram) -> (Array[Int], Array[Int], Array[Int]) {
+  irc_render_arg_offsets_triple(checked, 3, 5, 6)
+}
+
+/// #2987: the Int channel with the tag-6 rows folded in under
+/// `typed_render_refuse_key`, which is how every codegen lane receives them.
+/// The refusal rides the Int array rather than a table of its own because the
+/// array already reaches every `__to_string` lowering on every lane; a
+/// negative key can never equal the non-negative offset an Int lookup asks
+/// for, so the Int answers are untouched.
+export fn merge_unrenderable_render_offsets(ints: Array[Int], unrenderable: Array[Int]) -> Array[Int] {
+  let out: Array[Int] = []
+  let mut i = 0
+  while i < Array::length(ints) {
+    Array::push(out, Array::get(ints, i))
+    i = i + 1
+  }
+  let mut j = 0
+  while j < Array::length(unrenderable) {
+    Array::push(out, typed_render_refuse_key(Array::get(unrenderable, j)))
+    j = j + 1
+  }
+  out
 }
 
 /// #2424 tag 3: render/eq argument offsets the checker typed as `Int`.
@@ -8095,7 +8218,7 @@ export fn checked_double_render_offsets(checked: CheckedProgram) -> Array[Int] {
 /// flat Array[Int]: enc = offset * 8 + tag, with tag 0 = Double call result,
 /// 1 = String relational binop anchor, 2 = String `+` binop anchor, 3 = Int
 /// render/`eq` argument, 4 = Double render/`eq` argument, 5 = Bool render/`eq`
-/// argument. Rebasing a module
+/// argument, 6 = unrenderable render/`eq` argument (#2987). Rebasing a module
 /// table by a merge base B therefore adds B * 8. The decoder lives in
 /// file_compile's split; keep the two in lockstep.
 ///
@@ -8338,7 +8461,7 @@ fn typed_lowering_located_observation_impl(stmts: Array[Stmt], initial_env: Type
       // than a second one is the whole point of the slice-2 encoding: the
       // memo, the sidecar, the per-file rebase and the reuse arms are already
       // built and already require the sidecar before skipping a check.
-      let (int_renders, bool_renders) = checked_int_and_bool_render_offsets(checked)
+      let (int_renders, bool_renders, unrenderable) = checked_int_bool_and_unrenderable_render_offsets(checked)
       let mut ii = 0
       while ii < Array::length(int_renders) {
         Array::push(enc, typed_lowering_enc(Array::get(int_renders, ii), 3))
@@ -8365,6 +8488,15 @@ fn typed_lowering_located_observation_impl(stmts: Array[Stmt], initial_env: Type
       while bi < Array::length(bool_renders) {
         Array::push(enc, typed_lowering_enc(Array::get(bool_renders, bi), 5))
         bi = bi + 1
+      }
+      // #2987: tag 6 -- the same argument offsets the checker typed as a
+      // shape the runtime renderer cannot print (`irc_resolves_to_unrenderable`).
+      // The decoder folds them into the Int array under
+      // `typed_render_refuse_key`, exactly as the direct lanes do.
+      let mut ui = 0
+      while ui < Array::length(unrenderable) {
+        Array::push(enc, typed_lowering_enc(Array::get(unrenderable, ui), 6))
+        ui = ui + 1
       }
       // #2441: the typed-`==` rows carry a String payload (the operand
       // TypeExpr's impl_target_key), so they cannot ride the Int-encoded

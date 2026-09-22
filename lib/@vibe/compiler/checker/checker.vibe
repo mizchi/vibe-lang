@@ -3284,6 +3284,34 @@ fn check_interp_formal(ty: Type, s: Subst, env: TypeEnv, errors: Array[String], 
       Array::push(errors, String::concat(edit, String::concat(name, String::concat("` is erased here and has no renderer witness; a marker `Show` bound does not provide one", off_marker(off)))))
     }
   }
+  if interp_mentions_bytes(subst_apply(s, ty), s) {
+    Array::push(errors, String::concat("cannot interpolate a `Bytes` value: `Bytes` has no renderer -- convert it first: `let a: Array[Int] = Bytes::to_array(b)`, then interpolate `a` (#2987)", off_marker(off)))
+  }
+}
+
+/// #2987: `Bytes` has no renderer, and nothing can be derived for a builtin,
+/// so interpolating one (bare or inside a container) printed its allocation
+/// address. Walk the shapes the interpolation renderer descends.
+fn interp_mentions_bytes(ty: Type, s: Subst) -> Bool {
+  match ty {
+    CtBytes => true,
+    CtVar(id) => match subst_apply(s, CtVar(id)) {
+      CtVar(_) => false,
+      other => interp_mentions_bytes(other, s)
+    },
+    CtArray(element) => interp_mentions_bytes(element, s),
+    CtOption(element) => interp_mentions_bytes(element, s),
+    CtTuple(items) => {
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(items) && !found {
+        found = interp_mentions_bytes(Array::get(items, i), s)
+        i = i + 1
+      }
+      found
+    },
+    _ => false
+  }
 }
 
 fn eq_formals_has_name(items: Array[(Int, String)], name: String) -> Bool {
