@@ -19,7 +19,6 @@ import @vibe/compiler/core {
   env_type_definition_origin,
   env_type_defs,
   exception_effect_labels_equal,
-  exception_kinds_compatible,
   exception_label_kind,
   exception_throw_label_for_kind,
   expr_child_at,
@@ -2509,12 +2508,7 @@ fn decl_authorizes_effect(labels: Array[String], eff_name: String) -> Bool {
     let mut alias_i = 0
     while alias_i < Array::length(labels) {
       let declared_label = Array::get(labels, alias_i)
-      let declared_kind = exception_label_kind(declared_label)
-      let covers = if strict {
-        String::length(required_kind) > 0 && declared_kind == required_kind
-      } else {
-        exception_kinds_compatible(declared_kind, required_kind)
-      }
+      let covers = declared_exception_label_covers(labels, declared_label, required_kind, strict)
       if is_exception_label(declared_label) && covers {
         alias_found = true
       }
@@ -2534,6 +2528,44 @@ fn decl_authorizes_effect(labels: Array[String], eff_name: String) -> Bool {
     }
     has_effect_var
   }
+}
+
+/// Does the declared exception label `declared_label` (one of `labels`)
+/// cover an exception requirement of kind `required_kind` ("" = erased)?
+///
+/// - Under a kinded handle (`strict`), only exactly the arm's kind.
+/// - An ERASED declared label covers every requirement (the gradual rule).
+/// - A KINDED declared label covers its own kind, and does NOT cover an erased
+///   requirement (#3015, #2964): a callee or callback declared `with
+///   Exception`, or a `throw` whose payload kind does not resolve, may raise
+///   any kind, so a row that promises only `Exception[K]` would be a lie every
+///   caller trusts -- a kinded handler around the call then read a foreign
+///   payload at the wrong type. The one exception is a row that also carries
+///   an effect VARIABLE (`with Exception[TaskError] + e`): the erased
+///   requirement may be exactly what `e` stands for.
+fn declared_exception_label_covers(labels: Array[String], declared_label: String, required_kind: String, strict: Bool) -> Bool {
+  let declared_kind = exception_label_kind(declared_label)
+  if strict {
+    String::length(required_kind) > 0 && declared_kind == required_kind
+  } else if String::length(declared_kind) == 0 {
+    true
+  } else if String::length(required_kind) == 0 {
+    row_has_effect_variable(labels)
+  } else {
+    declared_kind == required_kind
+  }
+}
+
+fn row_has_effect_variable(labels: Array[String]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(labels) && !found {
+    if label_is_effect_var(Array::get(labels, i)) {
+      found = true
+    }
+    i = i + 1
+  }
+  found
 }
 
 /// A DIRECT `perform EffName::Op` is authorized if the declared row names
@@ -2556,8 +2588,8 @@ fn decl_authorizes_op(labels: Array[String], op_name: String) -> Bool {
     let mut found = false
     while i < Array::length(labels) {
       let lab = Array::get(labels, i)
-      let equal = if strict {
-        is_exception_label(lab) && is_exception_label(op_name) && String::length(exception_label_kind(op_name)) > 0 && exception_label_kind(lab) == exception_label_kind(op_name)
+      let equal = if is_exception_label(lab) && is_exception_label(op_name) {
+        declared_exception_label_covers(labels, lab, exception_label_kind(op_name), strict)
       } else {
         exception_effect_labels_equal(lab, op_name)
       }
@@ -2600,9 +2632,12 @@ fn effect_name_of_op(op_name: String) -> String {
 //   throw(e)  // let e = Eof      -> ParseError   local binder (see below)
 //   throw(r.cause)                -> ""           unresolved
 //
-// An unresolved payload yields kind "", which exception_kinds_compatible
-// treats as compatible with every declared exception label -- so this can
-// never invent an error out of the gap, only miss one.
+// An unresolved payload yields kind "". An ERASED declared label (`with
+// Exception`) covers it, so under the erased row the gap never invents an
+// error. A row that declares only KINDED labels does not (#2964, #3015 --
+// `declared_exception_label_covers`): the gap there would let the row promise
+// a kind the body does not keep, so the throw is refused and the edit is to
+// annotate the payload's type or declare the erased `with Exception`.
 //
 // LOCAL binders (the #1344 follow-up, and the shape #1324's migration mostly
 // produces -- `let e = ...; Err(e)` becoming `let e = ...; throw(e)`) are
@@ -2644,6 +2679,79 @@ fn type_kind_name(t: Type) -> String {
     CtStruct(n) => n,
     CtNamed(n, _) => n,
     _ => ""
+  }
+}
+
+/// #3017: the payload kinds the CHECKER resolved, per `throw` site. Keyed by
+/// the `perform` call's offset (the `throw` keyword), each entry carries the
+/// payload's syntactic fingerprint (`throw_payload_fingerprint`) so a stale
+/// entry cannot answer for a different site that happens to share an offset.
+/// `throw_payload_kind` consults it only when the syntax does not resolve --
+/// a builtin call's result, an unannotated local, a pattern binder, a field
+/// projection -- which is exactly what an untyped walk cannot see and the
+/// checker already knows. Two different answers for one site read as
+/// unresolved.
+let typed_throw_kind_cell: Array[MutMap[Int, (String, String)]] = [
+  MutMap::new_int()
+]
+
+/// Forget every recorded throw-site kind. Called when a module's check starts
+/// so one module's sites never answer for another's.
+export fn typed_throw_kinds_clear() -> Unit {
+  Array::set(typed_throw_kind_cell, 0, MutMap::new_int())
+}
+
+/// Record that the `throw` at `off` (payload `payload`) throws kind `kind`.
+/// An empty kind or an unlocated site records nothing.
+export fn typed_throw_kind_record(off: Int, payload: Expr, kind: String) -> Unit {
+  if off < 0 || String::length(kind) == 0 {
+    ()
+  } else {
+    let table = Array::get(typed_throw_kind_cell, 0)
+    let fp = throw_payload_fingerprint(payload)
+    match MutMap::get(table, off) {
+      Some((prev_fp, prev_kind)) => if prev_fp == fp && prev_kind == kind {
+        ()
+      } else {
+        MutMap::set(table, off, ("#conflict", ""))
+      },
+      None => MutMap::set(table, off, (fp, kind))
+    }
+  }
+}
+
+fn typed_throw_kind_at(off: Int, payload: Expr) -> String {
+  if off < 0 {
+    ""
+  } else {
+    match MutMap::get(Array::get(typed_throw_kind_cell, 0), off) {
+      Some((fp, kind)) => if fp == throw_payload_fingerprint(payload) {
+        kind
+      } else {
+        ""
+      },
+      None => ""
+    }
+  }
+}
+
+/// A cheap syntactic identity for a payload: its constructor and, where it has
+/// one, its name and offset.
+fn throw_payload_fingerprint(payload: Expr) -> String {
+  match payload {
+    EIdent(n, o) => String::concat("i:", String::concat(n, String::concat("@", __to_string(o)))),
+    ECall(callee, args, o) => {
+      let head = match callee {
+        EIdent(n, _) => n,
+        EDot(_, f, _, _) => String::concat(".", f),
+        _ => "?"
+      }
+      String::concat("c:", String::concat(head, String::concat("/", String::concat(__to_string(Array::length(args)), String::concat("@", __to_string(o))))))
+    },
+    EDot(_, f, o, _) => String::concat("d:", String::concat(f, String::concat("@", __to_string(o)))),
+    EBinOp(op, _, _, o) => String::concat("b:", String::concat(op, String::concat("@", __to_string(o)))),
+    EString(_, o) => String::concat("s@", __to_string(o)),
+    _ => "e"
   }
 }
 
@@ -2851,30 +2959,17 @@ fn throw_payload_kind(payload: Expr, binds: Array[(String, String)]) -> String {
 /// The row label a `throw` requires: the typed `Exception[K]::Throw` when the
 /// payload's kind is resolvable, and the pinned erased `Exception::Throw`
 /// otherwise. Non-exception operations pass through untouched.
-fn throw_required_label(op_name: String, opargs: Array[Expr], binds: Array[(String, String)]) -> String {
+fn throw_required_label(op_name: String, opargs: Array[Expr], binds: Array[(String, String)], site_off: Int) -> String {
   if is_exception_throw_operation(op_name) && Array::length(opargs) == 1 {
-    exception_throw_label_for_kind(throw_payload_kind(Array::get(opargs, 0), binds))
-  } else {
-    op_name
-  }
-}
-
-/// Which spelling of the missing label to REPORT. A row that names no
-/// exception label at all is the pre-#1344 "this function cannot throw" case,
-/// and its diagnostic stays byte-identical (`missing { Exception::Throw }`); the
-/// typed spelling is surfaced only once the row is already speaking in kinds,
-/// where it is the actionable fix-it.
-fn throw_report_label(op_name: String, required: String, declared: Array[String]) -> String {
-  let mut i = 0
-  let mut typed_row = false
-  while i < Array::length(declared) {
-    if is_exception_label(Array::get(declared, i)) {
-      typed_row = true
+    let payload = Array::get(opargs, 0)
+    let syntactic = throw_payload_kind(payload, binds)
+    // #3017: what the syntax cannot resolve, the checker may have.
+    let kind = if String::length(syntactic) > 0 {
+      syntactic
+    } else {
+      typed_throw_kind_at(site_off, payload)
     }
-    i = i + 1
-  }
-  if typed_row {
-    required
+    exception_throw_label_for_kind(kind)
   } else {
     op_name
   }
@@ -3082,9 +3177,53 @@ fn join_labels(xs: Array[String]) -> String {
 /// is the set difference (callee requires minus caller declares), rendered
 /// sorted; `required` is the sorted union the fix-it hint suggests declaring.
 fn make_row_mismatch(fn_name: String, declared: Array[String], missing: Array[String], off: Int) -> EffectError {
+  // #2975: the labels an enclosing `handle` discharges are not the function's
+  // own row. Showing them as "declared" and folding them into the hint told
+  // the user to declare what they had just handled, and printed the arm's
+  // `Exception[A]::Throw` spelling, which the row grammar does not accept.
+  let own = labels_without_discharged(declared)
   let missing_sorted = sort_labels(labels_union(no_str_labels(), missing))
-  let required = sort_labels(labels_union(declared, missing))
-  EEEffectRowMismatch(fn_name, join_labels(missing_sorted), join_labels(declared), join_labels(required), off)
+  let required = sort_labels(labels_union(own, missing))
+  EEEffectRowMismatch(fn_name, join_labels(missing_sorted), join_labels(own), join_labels(required), off)
+}
+
+fn discharged_marker_prefix() -> String {
+  "#discharged:"
+}
+
+/// A marker for every label of `discharged` that `declared` does not already
+/// carry (on its own, not only through an outer handle's discharge).
+fn discharged_markers_for(declared: Array[String], discharged: Array[String]) -> Array[String] {
+  let out = no_str_labels()
+  let mut i = 0
+  while i < Array::length(discharged) {
+    let d = Array::get(discharged, i)
+    if !effect_row_has_label(Some(declared), d) || effect_row_has_label(Some(declared), String::concat(discharged_marker_prefix(), d)) {
+      Array::push(out, String::concat(discharged_marker_prefix(), d))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// `labels` without the markers and without every label a marker names --
+/// the part of the row the enclosing FUNCTION wrote.
+fn labels_without_discharged(labels: Array[String]) -> Array[String] {
+  let out = no_str_labels()
+  let prefix = discharged_marker_prefix()
+  let mut i = 0
+  while i < Array::length(labels) {
+    let l = Array::get(labels, i)
+    if String::starts_with(l, "#") || effect_row_has_label(Some(labels), String::concat(prefix, l)) {
+      ()
+    } else {
+      Array::push(out, l)
+    }
+    i = i + 1
+  }
+  out
 }
 
 fn is_program_entry_name(name: String) -> Bool {
@@ -4472,7 +4611,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                     // label carries the payload's exception KIND
                     // (`Exception[IoError]::Throw`); every other operation
                     // keeps its own name verbatim.
-                    let required_op = throw_required_label(op_name, opargs, kinds)
+                    let required_op = throw_required_label(op_name, opargs, kinds, call_off)
                     // #640 Stage 2: `Error` is exempt from the DIRECT
                     // discipline, exactly like the transitive slice below
                     // (`teff != "Error"`) and builtin_call_effect's Error
@@ -4505,8 +4644,14 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                       // #2985 review (Codex P0): under a KINDED handler the
                       // erased exemption is off -- this throw would be caught
                       // by that arm and read at its kind.
+                      // #2982: report the kind the throw requires whenever it
+                      // resolved (`Exception[IoErr]`), and the erased
+                      // `Exception::Throw` only when it did not -- the hint
+                      // used to print the erased row whenever the declared row
+                      // had no exception label yet, steering every user to the
+                      // spelling ADR-0085 calls transitional.
                       Array::push(errors, make_contextual_row_error(fn_name, declared, [
-                        throw_report_label(op_name, required_op, declared)
+                        required_op
                       ], call_off))
                     } else {
                       ()
@@ -4809,7 +4954,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
         // for the body and the marker makes the exception check exact. An
         // ERASED arm is a new catch-all boundary: everything its body raises
         // ends in it, so an enclosing kinded handle's marker is cleared.
-        let body_declared = if Array::length(kinded_exception_labels(discharged)) > 0 {
+        let body_declared_core = if Array::length(kinded_exception_labels(discharged)) > 0 {
           labels_union(labels_union(labels_without_exception_family(declared), discharged), [
             kinded_handle_marker()
           ])
@@ -4818,6 +4963,10 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
         } else {
           labels_union(declared, discharged)
         }
+        // #2975: remember which labels only this handle supplies, so a row
+        // hint for its body names what the FUNCTION must declare -- not the
+        // effects the handle already discharges.
+        let body_declared = labels_union(body_declared_core, discharged_markers_for(declared, discharged))
         // Unknown wildcard arms stay conservative for the legacy surface,
         // but a structurally empty handler must not gain that permission.
         // Known discharge stays out of `in_handle`: that flag also skips the

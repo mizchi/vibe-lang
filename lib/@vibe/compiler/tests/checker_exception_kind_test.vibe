@@ -141,8 +141,17 @@ test "the erased Error row still authorizes a suberror throw (#786 unchanged)" {
   assert(eq(Array::length(checked_diags(src)), 0))
 }
 
-test "a row naming no exception label reports the erased Exception::Throw requirement" {
+test "a row naming no exception label reports the resolved kind (#2982)" {
+  // The kind is reported whenever it resolves, whatever the row already
+  // says: the hint used to print the erased `Exception::Throw` here.
   let src = "let boom = () -> Int with Stdout {\n  throw(\"x\")\n}\n\nlet main = () -> Int with Stdout {\n  handle {\n    boom()\n  } with {\n    Exception::Throw(_e) => 42\n  }\n}\n"
+  let diags = checked_diags(src)
+  assert(eq(Array::length(diags), 1))
+  assert(String::contains(Array::get(diags, 0), "missing { Exception[String] }"))
+}
+
+test "an unresolved payload kind is reported erased (#2982)" {
+  let src = "let boom = (x) -> Int with Stdout {\n  throw(x)\n}\n\nlet main = () -> Int with Stdout {\n  handle {\n    boom(1)\n  } with {\n    Exception::Throw(_e) => 42\n  }\n}\n"
   let diags = checked_diags(src)
   assert(eq(Array::length(diags), 1))
   assert(String::contains(Array::get(diags, 0), "missing { Exception::Throw }"))
@@ -181,12 +190,15 @@ test "an erased slot still accepts a kinded value (and the reverse)" {
   assert(eq(Array::length(checked_diags(into_kinded)), 0))
 }
 
-test "an unresolved payload kind is authorized by any exception row (gradual)" {
-  // A payload this pass cannot classify -- here a pattern binder, whose type
-  // lives only in the inference substitution -- has no kind, and is compatible
-  // with every declared exception label rather than an invented error.
+test "a pattern binder's kind comes from the checker (#2964, #3017)" {
+  // The effect pass cannot classify a pattern binder from syntax; the checker
+  // records the payload's type at the throw site. This test used to assert
+  // that the String `m` thrown under `Exception[ParseError]` was ACCEPTED --
+  // the row then promised a kind the body did not keep.
   let src = "enum IoError {\n  NotFound(String)\n}\n\nenum ParseError {\n  Eof\n}\n\nlet boom = (r: IoError) -> Int with Exception[ParseError] {\n  match r {\n    NotFound(m) => throw(m)\n  }\n}\n\nlet main = () -> Int {\n  handle {\n    boom(NotFound(\"x\"))\n  } with {\n    Exception::Throw(_e) => 42\n  }\n}\n"
-  assert(eq(Array::length(checked_diags(src)), 0))
+  let diags = checked_diags(src)
+  assert(eq(Array::length(diags), 1))
+  assert(String::contains(Array::get(diags, 0), "missing { Exception[String] }"))
 }
 
 // --- local binders (#1344 follow-up)
@@ -252,7 +264,12 @@ test "an applied local shadows a same-named top-level function" {
 
 test "a for-loop binder shadows a same-named top-level binding" {
   let src = "enum IoError {\n  NotFound(String)\n}\n\nlet x = NotFound(\"top\")\n\nlet boom = (xs: Array[String]) -> Int with Exception[ParseError] {\n  for x in xs {\n    throw(x)\n  }\n  0\n}\n\nenum ParseError {\n  Eof\n}\n\nlet main = () -> Int {\n  handle {\n    boom([\n      \"a\"\n    ])\n  } with {\n    Exception::Throw(_e) => 42\n  }\n}\n"
-  assert(eq(Array::length(checked_diags(src)), 0))
+  // The loop binder is a String (#3017 reads it from the checker), never the
+  // top-level `x: IoError` it shadows.
+  let diags = checked_diags(src)
+  assert(eq(Array::length(diags), 1))
+  assert(String::contains(Array::get(diags, 0), "missing { Exception[String] }"))
+  assert(!String::contains(Array::get(diags, 0), "IoError"))
 }
 
 test "struct-literal and float payloads carry their own kinds" {

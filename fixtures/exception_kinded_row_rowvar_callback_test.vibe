@@ -1,0 +1,29 @@
+// #3015: the honest shape of a kinded row over an erased callback. A row that
+// also carries an effect variable (`Exception[Wrapped] + e`) may pass the
+// callback's erased exception on through `e`, the way `Parallel::map` does.
+enum Wrapped {
+  Wrapped(String)
+}
+
+fn guarded[e](f: () -> Int with Exception + e) -> Int with Exception[Wrapped] + e {
+  let r = f()
+  if r < 0 {
+    throw(Wrapped("negative"))
+  } else {
+    r
+  }
+}
+
+fn relabel(f: () -> Int with Exception) -> Int with Exception {
+  f()
+}
+
+test "a kinded row with an effect variable still admits an erased callback" {
+  let r = handle { guarded(() -> 41) + 1 } with { Exception::Throw(_) => 0 }
+  inspect(r, content = "42")
+}
+
+test "an erased row admits an erased callback" {
+  let r = handle { relabel(() -> 5) } with { Exception::Throw(_) => 0 }
+  inspect(r, content = "5")
+}

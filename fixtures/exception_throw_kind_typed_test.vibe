@@ -1,0 +1,57 @@
+// #3017: a `throw` payload's kind comes from the checker when its syntax does
+// not say it -- a builtin call's result, an unannotated local, a field. Each of
+// these is an Int and is handled by an `Exception[Int]` arm; they used to be
+// refused because the effect pass read kinds from syntax only.
+struct P {
+  code: Int
+}
+
+enum Wrapped {
+  Wrapped(Int)
+}
+
+fn from_field(p: P) -> Int with Exception[Int] {
+  throw(p.code)
+}
+
+fn from_binder(x: Option[Wrapped]) -> Int with Exception[Wrapped] {
+  match x {
+    Some(w) => throw(w)
+    None => 0
+  }
+}
+
+test "a builtin call's result" {
+  let r = handle { throw(String::length("abcd")) } with { Exception[Int]::Throw(n) => n * 100 }
+  inspect(r, content = "400")
+}
+
+test "an unannotated local" {
+  let r = handle {
+    let m = String::length("abcd")
+    throw(m)
+  } with { Exception[Int]::Throw(n) => n * 100 }
+  inspect(r, content = "400")
+}
+
+test "a field projection" {
+  let r = handle {
+    let p = P::{ code: 9 }
+    throw(p.code)
+  } with { Exception[Int]::Throw(n) => n * 100 }
+  inspect(r, content = "900")
+}
+
+test "a kinded row over a field projection" {
+  let r = handle { from_field(P::{ code: 3 }) } with { Exception[Int]::Throw(n) => n + 1 }
+  inspect(r, content = "4")
+}
+
+test "a kinded row over a pattern binder" {
+  let r = handle { from_binder(Some(Wrapped(5))) } with {
+    Exception[Wrapped]::Throw(w) => match w {
+      Wrapped(n) => n
+    }
+  }
+  inspect(r, content = "5")
+}

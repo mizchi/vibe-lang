@@ -153,10 +153,12 @@ fixtures/exception_typed_row.vibe が実際に 42 を返すこと
   `Exception[IoError]` 以外の kind が残っていれば checker が拒否するから
   であって、tag が識別しているからではない。つまり **exact-kind の保証は
   完全に checker 側の性質**であり、Wasm EH はそれを支えても否定してもいない。
-- 例外は gradual な穴だけである: payload の kind が解決できなかった throw
-  (下記 v1 の限界) は kind `""` として *どの* `Exception[K]` にも通る。
-  この場合 handler が捕まえるのは checker が許した throw なので、動的挙動は
-  やはり宣言と一致する。
+- A throw whose payload kind does not resolve has kind `""` (erased). Only an
+  erased declared label authorizes it: a row that names only kinds
+  (`with Exception[K]`) refuses it, and so does a kinded handler arm (#2964,
+  #3015, #2985). The one exception is a row that also carries an effect
+  variable (`with Exception[K] + e`), where the erased requirement may be what
+  `e` stands for. So a kinded row is a guarantee a caller can rely on.
 - したがって WebAssembly の typed tag / `try_table` を採用するかは
   **source semantics に対して観測不能な最適化**である。採用すれば
   「捕まえない」を tag で表現できるようになるが、それは上の checker 保証を
@@ -217,8 +219,12 @@ compiler source を移行する前に、seed compiler と stage2/stage3 fixpoint
 
 - 宣言側が erased (`with Error`) → どの kind の throw も authorize する。
   これが既存コード無変更の根拠。
-- 要求側が erased (payload の kind が解決できない throw) → どの
-  `Exception[K]` 宣言でも authorize される。これが gradual 側。
+- Required side erased (a throw whose payload kind does not resolve, a callee
+  or callback declared `with Exception`): authorized by an erased declared
+  label only. It used to be authorized by every `Exception[K]` too; that let
+  `fn relabel(f: () -> Int with Exception) -> Int with Exception[String]`
+  claim a kind it did not keep, and a kinded handler around it read an Int as
+  a String (#3015). `declared_exception_label_covers` owns the rule.
 
 結果として、この機能は **既存コードに対して証明可能に additive** である:
 宣言 row は (a) erased な exception label を持つ (= 全 kind と compatible)、
@@ -230,7 +236,7 @@ compiler source を移行する前に、seed compiler と stage2/stage3 fixpoint
 change** になる。`Error` を消すということは「kind 不明の throw を許す」逃げ道
 を消すことであり、下記の解決範囲を広げるほど安全に近づく (local binder と
 annotated parameter は follow-up で閉じた。pattern binder と field 射影は
-まだ解決不能)。
+#3017 の typed channel で解決される)。
 
 ## 実装状況 (Phase 3)
 
@@ -254,7 +260,13 @@ annotated parameter は follow-up で閉じた。pattern binder と field 射影
   (`lc_wrap_entry_error_boundary`)。
 
 **throw payload の kind 解決範囲**: effect pass は型付けを持たない AST walk
-なので、payload の kind は syntax と module 環境から復元する。解決できるのは:
+なので、payload の kind はまず syntax と module 環境から復元する。syntax が
+答えられないときは、checker が throw site ごとに記録した payload の型
+(`typed_throw_kind_record`, keyed by the `throw` offset plus a payload
+fingerprint, #3017) を使う。これで builtin 呼び出しの結果、型注釈のない local、
+pattern binder、field 射影、そして generic body 内の formal (`Array[T]`) が
+解決される。checker の型がまだ推論変数のままなら kind は `""` のまま。
+syntax だけで解決できるのは:
 
 | payload | kind |
 | --- | --- |
@@ -265,8 +277,8 @@ annotated parameter は follow-up で閉じた。pattern binder と field 射影
 | `throw(Wrapped::{ .. })` | struct literal の型 |
 | `let e = NotFound("cfg"); throw(e)` | initializer から (再帰的に) |
 | `fn f(e: IoError) { throw(e) }` | parameter annotation の head 名 |
-| `match r { Err(e) => throw(e) }` | **解決不能** (pattern binder) |
-| `throw(r.cause)` | **解決不能** (field 射影) |
+| `match r { Err(e) => throw(e) }` | checker の型 (pattern binder, #3017) |
+| `throw(r.cause)` | checker の型 (field 射影, #3017) |
 
 local binder は #1344 の v1 では見えていなかったが、**#1324 の移行が生む形
 (`let e = ..; Err(e)` → `let e = ..; throw(e)`) がちょうどそれ**だったため

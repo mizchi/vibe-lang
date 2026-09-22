@@ -1542,9 +1542,23 @@ Rules:
 - **The bare `Exception` is the erased spelling, compatible with every kind.**
   `with Exception` keeps allowing any throw, and an erased
   `handle .. with Exception` also catches kinded throws.
-- A throw whose payload kind cannot be resolved (for example `throw(r.cause)`)
-  is treated as erased and passes under a function ROW of any `Exception[K]`
-  (gradual): it can miss a violation, never invent one.
+- A throw's kind is its payload's static type as the checker sees it
+  (#3017): `throw(r.cause)`, `throw(String::length(s))`, a pattern binder and
+  an unannotated `let` all have one. A payload whose type the checker leaves
+  open (an inference variable) has no kind, and is treated as an erased throw.
+- **A row that names only kinds is exact** (#2964, #3015): under
+  `with Exception[K]`, an erased requirement -- a throw with no kind, a call to
+  a callee or a callback declared `with Exception` -- is refused, because it
+  may raise any kind and every caller trusts the row. Declare the erased
+  `with Exception`, handle it in the body, or give the callback a kinded row.
+  A row that also carries an effect variable (`with Exception[K] + e`) may
+  pass an erased callback's exception on through `e`.
+- **The kind must name a type** (#3018, #3002): `Exception[Nope]` with no
+  `Nope` in scope, and `Exception[SomeEffectset]`, are refused where they are
+  written. So is a type formal in a `with` row (`fn f[T](..) -> .. with
+  Exception[T]`): a row does not substitute formals at a call. A handler arm
+  inside the generic body may name one (`Exception[Array[T]]::Throw(e)`, with
+  the throw in the same body).
 - The runtime does not distinguish kinds: every spelling is one abortive Wasm
   tag. The exact-kind guarantee is a property of the checker -- which is why a
   **kinded handler arm is strict** (#2985): `handle { .. } with {
@@ -1599,6 +1613,39 @@ option 2 — would let user types opt in; it is not implemented.)
 ```vibe
 suberror NotFound(String)
 suberror InvalidInput(Int, String)   // tuple payload only
+```
+
+A `suberror` declares a type with ONE constructor of the same name -- the
+checker registers it exactly as `enum NotFound { NotFound(String) }` -- so its
+exception kind is that name: `throw(NotFound("cfg"))` requires
+`Exception[NotFound]`.
+
+**A family that must be caught as one is an `enum`**, not a set of
+`suberror`s: one kind, one kinded arm, and an exhaustive `match` on the
+payload. An `effectset` of kinds is for a row that may throw several kinds a
+caller handles SEPARATELY -- a handle has only one exception arm, so each kind
+gets its own (nested) handle, or one erased `Exception::Throw(m)` arm.
+
+```vibe
+enum IoFailure {
+  Missing(String);
+  Denied(Int)
+}
+
+let open_cfg: (Int) -> Int with Exception[IoFailure] = (x) -> {
+  if x == 0 {
+    throw(Missing("cfg"))
+  } else {
+    throw(Denied(x))
+  }
+}
+
+let code = handle { open_cfg(1) } with {
+  Exception[IoFailure]::Throw(e) => match e {
+    Missing(_) => 404
+    Denied(n) => 403 + n
+  }
+}
 ```
 
 ### User-defined effects (algebraic)

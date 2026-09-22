@@ -65,6 +65,7 @@ import @vibe/compiler/core {
   env_type_defs,
   exception_effect_kind,
   exception_effect_labels_equal,
+  exception_label_kind,
   expr_children,
   find_enum_typedef,
   find_typedef,
@@ -124,6 +125,10 @@ import ./builtins.vibe {
 
 import @vibe/core {
   array_empty, struct MutMap
+}
+
+import ./checker_effects.vibe {
+  typed_throw_kind_record
 }
 
 import ./checker_exhaustive.vibe {
@@ -425,6 +430,285 @@ export fn report_unknown_type_names_deferred_validation(te: TypeExpr, defs: Arra
 export fn report_unknown_type_names(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], env: TypeEnv, row_binders: Array[String], where_label: String, errors: Array[String]) -> Unit {
   report_map_key_types(te, defs, shadow, where_label, errors)
   report_unknown_type_names_only(te, defs, shadow, env, row_binders, where_label, errors)
+  report_exception_kinds_in_type_expr(te, defs, shadow, env, errors)
+}
+
+/// #3018 / #2983 (2): the KIND of an exception label is the static type of
+/// the thrown payload, so it must name a type. The row grammar carries it as
+/// text, and nothing resolved it: `with Exception[IoError]` and an arm
+/// `Exception[IoError]::Throw(e)` were accepted with no `IoError` anywhere,
+/// and the arm then bound `e` at a nominal type nothing declared (a host
+/// failure's String payload flowed through `String::length(e)` and printed a
+/// number). The kind is re-read with the real type parser and checked with the
+/// same unknown-name sweep an annotation gets; an effect or effectset name in
+/// that slot is refused with the spelling that does mean something.
+/// A kind the type parser cannot read is left alone here -- the arm binder
+/// falls back to the erased type for it, and this check does not guess.
+fn report_exception_kind(label: String, defs: Array[TypeDef], shadow: Array[String], env: TypeEnv, in_row: Bool, errors: Array[String]) -> Unit {
+  let kind = exception_label_kind(label)
+  if String::length(kind) == 0 {
+    ()
+  } else {
+    let parsed = handle {
+      let (kind_te, _) = parse_type(lex(kind), 0)
+      Some(kind_te)
+    } with { Exception::Throw(_unreadable) => None }
+    match parsed {
+      Some(kind_te) => {
+        let spelled = String::concat(String::concat("Exception[", kind), "]")
+        let effect_head = match kind_te {
+          TyName(head) => if string_array_has(shadow, head) {
+            ""
+          } else {
+            // An effectset is registered in the env's type defs, not in
+            // `defs`, so both are asked.
+            match find_typedef(defs, head) {
+              Some(TDEffectSet(_, _)) => "an effectset",
+              Some(TDEffect(_, _, _)) => "an effect",
+              Some(_) => "",
+              None => match find_typedef(env_type_defs(env), head) {
+                Some(TDEffectSet(_, _)) => "an effectset",
+                Some(TDEffect(_, _, _)) => "an effect",
+                _ => ""
+              }
+            }
+          },
+          _ => ""
+        }
+        let formals = if in_row {
+          exception_kind_formal_names(kind_te, shadow, env)
+        } else {
+          array_empty()
+        }
+        if Array::length(formals) > 0 {
+          // #3002: a row stores its items as text, so a formal inside a kind
+          // is never substituted at a call site -- the declaration was
+          // accepted and every call refused with a hint naming the callee's
+          // own formal as a missing effect. Refuse it where it is written.
+          Array::push(errors, String::concat(String::concat(String::concat(String::concat(String::concat(String::concat("`", spelled), "`: the exception kind in a `with` row must be a concrete type -- `"), Array::get(formals, 0)), "` is a type formal, and a row does not substitute it at a call; throw a concrete type, or write the erased `Exception` (a handler arm `"), spelled), "::Throw(e)` inside the generic body is fine)"))
+        } else if String::length(effect_head) > 0 {
+          Array::push(errors, String::concat(String::concat(String::concat(String::concat(String::concat(String::concat(String::concat(String::concat("`", spelled), "`: `"), kind), "` is "), effect_head), ", not a type -- write `with "), kind), "` to raise what it lists, and handle each exception kind by its own type"))
+        } else {
+          report_unknown_type_names_only(kind_te, defs, shadow, env, array_empty(), String::concat(String::concat("the exception kind `", spelled), "` (declare it, or write the erased `Exception`)"), errors)
+        }
+      },
+      None => ()
+    }
+  }
+}
+
+/// #3017: the exception kind a checked `throw` payload type names, spelled
+/// the way a row or an arm writes it: a scalar or a nominal by name, an
+/// application in full (`Array[Int]`, `Box[Int]`), and a type variable that is
+/// an enclosing declaration's FORMAL by that formal's name (`Array[T]` inside
+/// `fn f[T]`). Anything else -- an inference variable, a function, a tuple --
+/// gives "", and the effect pass keeps its own (syntactic) answer.
+fn checked_throw_kind(t: Type, s: Subst, env: TypeEnv) -> String {
+  match t {
+    CtString => "String",
+    CtInt => "Int",
+    CtDouble => "Double",
+    CtBool => "Bool",
+    CtChar => "Char",
+    CtBytes => "Bytes",
+    CtUnit => "Unit",
+    CtEnum(n) => n,
+    CtStruct(n) => n,
+    CtNamed(n, targs) => if String::starts_with(n, "#") {
+      ""
+    } else if Array::length(targs) == 0 {
+      n
+    } else {
+      checked_throw_kind_applied(n, targs, s, env)
+    },
+    CtArray(e) => checked_throw_kind_applied("Array", [e], s, env),
+    CtOption(e) => checked_throw_kind_applied("Option", [e], s, env),
+    CtVar(id) => checked_throw_kind_formal_name(id, s, env),
+    _ => ""
+  }
+}
+
+fn checked_throw_kind_applied(head: String, targs: Array[Type], s: Subst, env: TypeEnv) -> String {
+  let mut acc = String::concat(head, "[")
+  let mut ok = true
+  let mut i = 0
+  while ok && i < Array::length(targs) {
+    let part = checked_throw_kind(subst_apply(s, Array::get(targs, i)), s, env)
+    if String::length(part) == 0 {
+      ok = false
+    } else {
+      acc = String::concat(acc, if i == 0 {
+        part
+      } else {
+        String::concat(", ", part)
+      })
+    }
+    i = i + 1
+  }
+  if ok {
+    String::concat(acc, "]")
+  } else {
+    ""
+  }
+}
+
+/// The name of the enclosing formal whose variable `id` is, or "". Formals are
+/// bound in the local env as type variables under a capitalized name; the walk
+/// is innermost-first and a name counts only at its innermost binding.
+fn checked_throw_kind_formal_name(id: Int, s: Subst, env: TypeEnv) -> String {
+  let seen = array_empty()
+  let mut cur = env
+  let mut found = ""
+  let mut looping = true
+  // Formals sit near the top of a body's env; a bounded walk keeps a throw of
+  // an unresolved payload from scanning a whole module's bindings.
+  let mut budget = 4096
+  while looping && budget > 0 {
+    budget = budget - 1
+    match cur {
+      EnvBind(name, binding, rest) => {
+        let c0 = if String::length(name) > 0 {
+          String::char_code_at(name, 0)
+        } else {
+          0
+        }
+        if c0 >= 65 && c0 <= 90 && !string_array_has(seen, name) {
+          Array::push(seen, name)
+          match subst_apply(s, binding.ty) {
+            CtVar(bid) => if bid == id {
+              found = name
+              looping = false
+            } else {
+              ()
+            },
+            _ => ()
+          }
+        } else {
+          ()
+        }
+        cur = rest
+      },
+      EnvCached(_, _, rest) => {
+        cur = rest
+      },
+      EnvMutCell(_, _, rest) => {
+        cur = rest
+      },
+      EnvTypeDefs(_, _, rest) => {
+        cur = rest
+      },
+      EnvTraitDef(_, _, _, _, rest, _, _) => {
+        cur = rest
+      },
+      EnvTraitImpl(_, _, rest) => {
+        cur = rest
+      },
+      EnvTraitImplGen(_, _, _, _, rest) => {
+        cur = rest
+      },
+      _ => {
+        looping = false
+      }
+    }
+  }
+  found
+}
+
+/// The names in `te` that are type formals in scope: this declaration's own
+/// (`shadow`), or an enclosing one's (bound in `env` to a type variable).
+fn exception_kind_formal_names(te: TypeExpr, shadow: Array[String], env: TypeEnv) -> Array[String] {
+  let out = array_empty()
+  exception_kind_formal_names_into(te, shadow, env, out)
+  out
+}
+
+fn exception_kind_formal_names_into(te: TypeExpr, shadow: Array[String], env: TypeEnv, out: Array[String]) -> Unit {
+  match te {
+    TyName(n) => if exception_kind_name_is_formal(n, shadow, env) && !string_array_has(out, n) {
+      Array::push(out, n)
+    } else {
+      ()
+    },
+    TyApp(n, targs) => {
+      if exception_kind_name_is_formal(n, shadow, env) && !string_array_has(out, n) {
+        Array::push(out, n)
+      } else {
+        ()
+      }
+      let mut i = 0
+      while i < Array::length(targs) {
+        exception_kind_formal_names_into(Array::get(targs, i), shadow, env, out)
+        i = i + 1
+      }
+    },
+    TyTuple(elems) => {
+      let mut i = 0
+      while i < Array::length(elems) {
+        exception_kind_formal_names_into(Array::get(elems, i), shadow, env, out)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+fn exception_kind_name_is_formal(n: String, shadow: Array[String], env: TypeEnv) -> Bool {
+  if formals_contain_source_name(shadow, n) {
+    true
+  } else {
+    match env_lookup(env, n) {
+      Some(CtVar(_)) => true,
+      Some(CtNamed(bound_name, bargs)) => Array::length(bargs) == 0 && bound_name == String::concat("#hktformal.", n),
+      _ => false
+    }
+  }
+}
+
+/// Every exception label of `row` (a `with ..` row), checked by
+/// `report_exception_kind`.
+fn report_exception_kinds_in_row(row: Option[String], defs: Array[TypeDef], shadow: Array[String], env: TypeEnv, errors: Array[String]) -> Unit {
+  let labels = row_labels(row)
+  let mut i = 0
+  while i < Array::length(labels) {
+    let label = Array::get(labels, i)
+    if is_exception_label(label) {
+      report_exception_kind(label, defs, shadow, env, true, errors)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
+/// The rows of every function type written inside an annotation
+/// (`f: () -> Int with Exception[K]`), checked by `report_exception_kind`.
+fn report_exception_kinds_in_type_expr(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], env: TypeEnv, errors: Array[String]) -> Unit {
+  match te {
+    TyApp(_, targs) => {
+      let mut i = 0
+      while i < Array::length(targs) {
+        report_exception_kinds_in_type_expr(Array::get(targs, i), defs, shadow, env, errors)
+        i = i + 1
+      }
+    },
+    TyTuple(elems) => {
+      let mut i = 0
+      while i < Array::length(elems) {
+        report_exception_kinds_in_type_expr(Array::get(elems, i), defs, shadow, env, errors)
+        i = i + 1
+      }
+    },
+    TyFn(ps, ret, row) => {
+      let mut i = 0
+      while i < Array::length(ps) {
+        report_exception_kinds_in_type_expr(Array::get(ps, i), defs, shadow, env, errors)
+        i = i + 1
+      }
+      report_exception_kinds_in_type_expr(ret, defs, shadow, env, errors)
+      report_exception_kinds_in_row(row, defs, shadow, env, errors)
+    },
+    _ => ()
+  }
 }
 
 /// ADR-0090 MutBytes: reject a known-wrong receiver head instead of letting
@@ -8273,9 +8557,18 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                   let mut tc = c
                   let mut ti = 0
                   while ti < Array::length(opargs) {
-                    let (_, ns, nc) = check_expr_capture(Array::get(opargs, ti), env, defs, ts, tc, errors, tytab, capture, lane)
+                    let (tpt, ns, nc) = check_expr_capture(Array::get(opargs, ti), env, defs, ts, tc, errors, tytab, capture, lane)
                     ts = ns
                     tc = nc
+                    // #3017: hand the effect pass the payload's checked kind,
+                    // which its syntactic walk cannot recover for a builtin
+                    // call's result, an unannotated local, a pattern binder or
+                    // a field.
+                    if Array::length(opargs) == 1 {
+                      typed_throw_kind_record(call_off, Array::get(opargs, 0), checked_throw_kind(subst_apply(ts, tpt), ts, env))
+                    } else {
+                      ()
+                    }
                     ti = ti + 1
                   }
                   typed_occurrence_capture_restore_frame_depth(capture, throw_parent_depth)
@@ -10807,6 +11100,10 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               // (`throw` / `perform Exception::Throw` unwind for good; the arm's
               // value IS the handle result, so the resume never ran).
               reject_resume_in_error_arm(hbody, errors)
+              // #3018: the arm's kind must name a type in scope, whatever the
+              // binder -- otherwise `e` binds at a nominal type nothing
+              // declared.
+              report_exception_kind(String::substring(hqname, 0, hci), defs, array_empty(), env, false, errors)
               // #938: an Error arm never resumes, so its value IS the handle
               // result — type the body (Throw's payload binds as String) and
               // unify with the handle body's type. Ground-gated, so arms
@@ -11383,6 +11680,8 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       // `fn f(x: Async) -> Int with Async` keep `Async` as a wildcard
       // `CtNamed` (measured) -- the very shape this issue is about.
       let declared_row_binders = row_variable_labels(effect)
+      // #3018: `with Exception[K]` names a type; check that it does.
+      report_exception_kinds_in_row(effect, defs, tparams, fn_env, errors)
       let param_types = array_empty()
       let mut pi = 0
       while pi < plen {
