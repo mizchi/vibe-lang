@@ -45,7 +45,7 @@ already infers**, which is why it is cheaper than it sounds.
 | existing piece | where | what it gives |
 |---|---|---|
 | per-parameter borrow mask, whole-program fixpoint | `compute_borrow_param_user_fns` in `codegen/common_analysis/common_analysis.vibe` | which parameters are never consumed |
-| `borrow_ret`, `view_ret`, `scalar_ret` sets | `runtime/rc_query.vibe` (`vibe rc-classify`) | which results alias a parameter |
+| `borrow_ret`, `view_ret`, `scalar_ret` sets | `runtime/rc_query.vibe` (`vibe rc-classify`) | whether a result's **root** aliases a parameter (not its interior; A2) |
 | consume counting | `md_consume_count` in `common_analysis.vibe` | the usage map Bend uses, mostly computed (loop and closure bodies count once; A4 needs ω there) |
 | guarded constructor reuse | ADR-0092, [perceus-reuse.md](../../internal/design/perceus-reuse.md) | in-place reuse behind a run-time `rc == 1` test |
 | region tokens and escape errors | ADR-0090, `checker/checker.vibe` | return / outer-binding / container-write / capture escape checks |
@@ -130,11 +130,19 @@ therefore needs a separate **write check**:
   `t.0`), element reads, pattern variables, `if` / `match` results, tuple /
   struct / enum / `Option` construction (`Holder::{ buf: xs }`), and locals
   bound by `let` or assigned by `let mut`. The only exception is the one that
-  cannot carry a buffer at all. Call results follow the same rule, and can
-  be refined only *toward* untainted: a result stays borrow-derived unless
-  the callee's return-alias summary (`borrow_ret` / `view_ret`, see
-  `vibe rc-classify`) proves it aliases no argument in a borrow-derived
-  position, or its type is buffer-free.
+  cannot carry a buffer at all. Call results follow the same rule: a call
+  with a borrow-derived argument yields a borrow-derived result unless the
+  result type is buffer-free. The existing `borrow_ret` / `view_ret`
+  summaries (`vibe rc-classify`) **cannot** clear it. They describe who owns
+  the result's *root*, and `mrv_fresh` in
+  `codegen/common_analysis/common_analysis.vibe` classifies a tuple, array or
+  record constructor as fresh regardless of what its children alias. So
+  `wrap(xs) = Holder::{ buf: xs }` has a fresh root and an aliased interior,
+  and `Array::set(wrap(xs).buf, 0, 1)` would mutate the borrowed buffer.
+  Refining a result toward untainted needs a new **deep-alias summary**,
+  "no buffer reachable from the result comes from argument *i*", computed
+  and imported like the write summary. Until that summary exists, the rule
+  does not refine at all.
 
   This is a flow-insensitive taint over one function body, which is
   conservative and cheap. Earlier drafts listed the propagating forms instead,
@@ -303,17 +311,17 @@ Two parts of the practice matter as much as the theorems:
   not through projections, one drops the identity check, one drops the
   buffer-free-argument rule, one checks only bare-buffer globals, one
   counts a loop body's consume once, one admits a `mut` call through a
-  capturing closure, one ignores call results in the borrow taint, one ignores aggregate construction in it, one lets
+  capturing closure, one ignores call results in the borrow taint, one ignores aggregate construction in it, one trusts a root-only alias summary for a call result, one lets
   an opaque type count as buffer-free, and one lets a `mut` callee perform a
   user effect whose handler captures the buffer. `formal/` already keeps such witnesses for the Error policy.
 
 **Why the model has to come first.** Review of this document found the
 same class of hole again and again, each one a path the prose rules had not
-enumerated. Sixteen findings in six rounds so far:
+enumerated. Seventeen findings in seven rounds so far:
 - aliases hidden in an aggregate argument, in an aggregate global, and in a
   closure callee;
 - aliases reached through an effect handler or an opaque type;
-- writes made through a projection, a call result, and a constructed aggregate;
+- writes made through a projection, a call result (twice), and a constructed aggregate;
 - a consume inside a loop.
 
 Enumerating exceptions in English does not converge. What does converge is an
