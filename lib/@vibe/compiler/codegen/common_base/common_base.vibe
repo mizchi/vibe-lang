@@ -3962,6 +3962,25 @@ export fn emit_arith_wrap_int(buf: Bytes, enable_rc: Bool, op: String) -> Unit {
   }
 }
 
+/// #2978: a shift COUNT saturates at 63, the Int's width. Wasm reduces the
+/// count mod 64 -- the width of the i64 REPRESENTATION -- so `1 << 63` was `0`
+/// and `1 << 64` came back as `1`, with a negative count wrapping the same way.
+/// With the count clamped (unsigned, so a negative count is huge), every lane
+/// answers `x << n == 0` and `x >> n == (x < 0 ? -1 : 0)` for `n >= 63` or
+/// `n < 0`. Expects the untagged count on the stack; `tmp` is a scratch i64
+/// local the caller owns.
+export fn emit_shift_count_clamp(buf: Bytes, tmp: Int) -> Unit {
+  emit_local_set(buf, tmp)
+  emit_local_get(buf, tmp)
+  emit_i64_const(buf, 63)
+  emit_local_get(buf, tmp)
+  emit_i64_const(buf, 63)
+  // i64.lt_u (0x54): keep the count while it is below 63, unsigned.
+  bytebuf_push(buf, 84)
+  // select (0x1B)
+  bytebuf_push(buf, 27)
+}
+
 export fn emit_binop_op(buf: Bytes, op: String) -> Unit with Exception {
   if op == "+" {
     emit_i64_add(buf)

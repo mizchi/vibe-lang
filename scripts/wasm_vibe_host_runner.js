@@ -2248,6 +2248,24 @@ let covWasmBytesGlobal = null;
 // staleness in a --daemon/long-running context isn't a concern here — the
 // stack-overflow catch only fires once, ending the process).
 let passthroughArgsGlobal = null;
+// #2988: the export being run, so a host-level failure can say whether it hit
+// the COMPILER (`cli_main`) or the user's program (`main` / `_start` / a test).
+let currentInvokeGlobal = null;
+// #2976: the entry boundary prints `vibe: uncaught error: <msg>` and then
+// executes `unreachable` to fail the process. That trap is the boundary's exit,
+// not a crash, so once the diagnosis has been written the runner exits 1
+// without the wasm stack a miscompile would print (`VIBE_TRACE_UNCAUGHT=1`
+// keeps it). Every stderr path funnels through process.stderr.write.
+let uncaughtDiagnosedGlobal = false;
+{
+  const origStderrWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = (chunk, ...rest) => {
+    if (typeof chunk === "string" ? chunk.includes("vibe: uncaught error: ") : (chunk && Buffer.from(chunk).includes("vibe: uncaught error: "))) {
+      uncaughtDiagnosedGlobal = true;
+    }
+    return origStderrWrite(chunk, ...rest);
+  };
+}
 
 // #cov: dump the function/branch hit bitmaps from the (possibly trapped)
 // instance's live memory to VIBE_COV_OUT. Called both after a clean run AND from
@@ -3914,6 +3932,7 @@ async function main() {
     let result;
     let isSelfhost = false;
     for (const invoke of invokes) {
+      currentInvokeGlobal = invoke;
       ({ result, isSelfhost } = invokeExport(invoke));
     }
     const elapsedUs = Number(process.hrtime.bigint() - profileStartNs) / 1000;
@@ -4290,6 +4309,16 @@ main().catch((err) => {
   // one, silently losing the diagnostic all over again. Match
   // read_arg_or_env's precedence: positional arg (passthroughArgsGlobal[1])
   // first.
+  if (err instanceof RangeError && /call stack/i.test(err.message || "") && currentInvokeGlobal && currentInvokeGlobal !== "cli_main") {
+    // #2988: the overflow happened while RUNNING the user's program, not while
+    // compiling it. The compiler-side message below ("one expression nests too
+    // deeply ... split the file") sent the reader to a file that was fine.
+    console.error(`[vibe] stack overflow while running \`${currentInvokeGlobal}\`: the call depth exceeded the host stack -- usually unbounded or very deep recursion. Make the recursion iterative (a loop, or a tail call with an accumulator), or raise the host stack with VIBE_NODE_STACK_SIZE=<KB>.`);
+    try {
+      annotateTrapWithLinemap(err, covWasmBytesGlobal);
+    } catch (_) {}
+    process.exit(1);
+  }
   if (err instanceof RangeError && /call stack/i.test(err.message || "")) {
     // #2858: under the verb protocol the positional args are the verb's own
     // words, so the launcher names the crash sidecar explicitly
@@ -4372,6 +4401,9 @@ main().catch((err) => {
         }
       }
     } catch (_) {}
+  }
+  if (uncaughtDiagnosedGlobal && err instanceof WebAssembly.RuntimeError && /unreachable/.test(err.message || "") && process.env.VIBE_TRACE_UNCAUGHT !== "1") {
+    process.exit(1);
   }
   // usage() is only relevant for argument-parsing errors. Runtime errors
   // (wasm traps, exceptions, etc.) drop straight to the stack trace so the

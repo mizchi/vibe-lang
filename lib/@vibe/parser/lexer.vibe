@@ -391,17 +391,27 @@ fn scan_interp_end(s: String, len: Int, idx: Int, depth: Int) -> Int with Except
   let mut found = -1
   while out < len && found < 0 {
     let c = String::char_code_at(s, out)
-    if c == '{' {
-      current_depth = current_depth + 1
-    } else if c == '}' {
-      if current_depth == 1 {
-        found = out
-      } else {
-        current_depth = current_depth - 1
+    if c == '"' {
+      // #2973: a string literal INSIDE the interpolated expression is skipped
+      // whole, so a brace in it (`"\{"{"}"`) does not count toward the
+      // interpolation's own braces.
+      out = skip_interp_string_literal(s, len, out + 1)
+    } else if c == 39 {
+      // A char literal (`'{'`) likewise.
+      out = skip_interp_char_literal(s, len, out + 1)
+    } else {
+      if c == '{' {
+        current_depth = current_depth + 1
+      } else if c == '}' {
+        if current_depth == 1 {
+          found = out
+        } else {
+          current_depth = current_depth - 1
+        }
       }
-    }
-    if found < 0 {
-      out = out + 1
+      if found < 0 {
+        out = out + 1
+      }
     }
   }
   if found >= 0 {
@@ -409,6 +419,50 @@ fn scan_interp_end(s: String, len: Int, idx: Int, depth: Int) -> Int with Except
   } else {
     throw("unterminated string interpolation")
   }
+}
+
+/// #2973: the index just past the string literal whose body starts at `idx`,
+/// honouring escapes and any interpolation nested in it.
+fn skip_interp_string_literal(s: String, len: Int, idx: Int) -> Int with Exception {
+  let mut i = idx
+  let mut done = false
+  while !done {
+    if i >= len {
+      throw("unterminated string interpolation")
+    }
+    let c = String::char_code_at(s, i)
+    if c == 92 {
+      if i + 1 < len && String::char_code_at(s, i + 1) == '{' {
+        i = scan_interp_end(s, len, i + 2, 1) + 1
+      } else {
+        i = i + 2
+      }
+    } else if c == '"' {
+      i = i + 1
+      done = true
+    } else {
+      i = i + 1
+    }
+  }
+  i
+}
+
+/// #2973: the index just past the char literal whose body starts at `idx`.
+fn skip_interp_char_literal(s: String, len: Int, idx: Int) -> Int {
+  let mut i = idx
+  let mut done = false
+  while !done && i < len {
+    let c = String::char_code_at(s, i)
+    if c == 92 {
+      i = i + 2
+    } else if c == 39 {
+      i = i + 1
+      done = true
+    } else {
+      i = i + 1
+    }
+  }
+  i
 }
 
 /// #997: 1-based "line L:C: " prefix for a 0-based char offset, matching the
@@ -1314,6 +1368,12 @@ let last_unexpected_token_pos_cell: Array[Int] = Array::slice([0], 0, 0)
 export fn remember_parse_source(source: String) -> Unit {
   Array::truncate(last_parse_source_cell, 0)
   Array::push(last_parse_source_cell, source)
+}
+
+/// #2974: the source text the current parse is reading, for a fragment parse
+/// (an interpolation's `\{..}`) that locates its own errors.
+export fn remembered_parse_source() -> String {
+  last_parse_source()
 }
 
 fn last_parse_source() -> String {

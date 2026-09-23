@@ -597,7 +597,17 @@ fn lsp_parse_diag_line_for(path: String, source: String, raw: String) -> Json {
   if origin != "" && path != "" && origin != path {
     lsp_diag_foreign_origin(raw, origin, payload)
   } else {
-    let msg = payload
+    // #2992: an UNLOCATED diagnostic of the checked file itself arrives as
+    // `<path>: msg` on the FS lane (there is no `: line ` for
+    // `lsp_split_origin` to split on) and bare on `--single-file`, so the two
+    // `--json` lanes disagreed on `message`. The client has the URI; the path
+    // is not part of the message.
+    let own_prefix = String::concat(path, ": ")
+    let msg = if path != "" && origin == "" && String::starts_with(payload, own_prefix) {
+      String::substring(payload, String::length(own_prefix), String::length(payload))
+    } else {
+      payload
+    }
     if String::starts_with(msg, "line ") {
       let after = msg[5: String::length(msg)]
       let colon1 = String::index_of(after, ":")

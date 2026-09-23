@@ -134,5 +134,15 @@ if grep -qF '\n' "$WORK/multi.fs.json" 2>/dev/null; then
   echo "  got: $(cat "$WORK/multi.fs.json")" >&2
 fi
 
+# An UNLOCATED diagnostic (#2992). A literal `if` condition carries no offset,
+# so the diagnostic falls back to the synthetic range -- and the FS lane's
+# message used to start with the file's path while `--single-file`'s did not.
+printf 'fn f() -> Int {\n  if 1 { 2 } else { 3 }\n}\n' > "$WORK/unlocated.vibe"
+probe unlocated 1
+if grep -qF 'unlocated.vibe' "$WORK/unlocated.fs.json" 2>/dev/null; then
+  bad "unlocated: the FS lane's message carries the file path"
+  echo "  got: $(cat "$WORK/unlocated.fs.json")" >&2
+fi
+
 [ "$fails" -eq 0 ] || exit 1
-echo "[check-json-parity] ok (5 probes: both lanes agree on diagnostics, exit code, and UTF-16 offsets)"
+echo "[check-json-parity] ok (6 probes: both lanes agree on diagnostics, exit code, and UTF-16 offsets)"

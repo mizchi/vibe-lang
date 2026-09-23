@@ -1,0 +1,31 @@
+// #3019: a `break` inside a handle whose arm captures `resume` as a value, and
+// the loop it leaves is OUTSIDE the handle. The handle runs inside the
+// suspend driver's step closure, so codegen emitted a branch to a label the
+// closure does not have: `vibe check` was clean and the module failed wasm
+// validation (`expected 1 elements on the stack for branch`). Refused at
+// build time with the edit named.
+effect Ask {
+  Now() -> Int
+}
+
+export let _start: () -> Int = () -> {
+  let mut i = 0
+  let mut acc = 0
+  while i < 5 {
+    i = i + 1
+    let v = handle {
+      let t = perform Ask::Now()
+      if i == 3 {
+        break
+      }
+      t + 1
+    } with {
+      Ask::Now() => {
+        let k = resume
+        k(10)
+      }
+    }
+    acc = acc + v
+  }
+  acc
+}

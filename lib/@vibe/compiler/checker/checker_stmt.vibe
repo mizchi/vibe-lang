@@ -13,7 +13,10 @@ import ./checker_effects.vibe {
   check_mutability_stmts,
   check_perform_effects_stmts_env,
   check_stdin_provider_direct_calls_stmts,
-  effect_error_to_string
+  effect_error_to_string,
+  env_row_labels,
+  row_text_labels,
+  set_throw_site_kinds
 }
 
 import ./checker_pattern.vibe {
@@ -59,6 +62,7 @@ import @vibe/compiler/core {
   find_typedef,
   generalize,
   has_standard_effect_policy,
+  has_standard_host_provider,
   is_singleton_resource_kind,
   lookup_registry_builtin,
   overlapping_impl_target_for,
@@ -112,9 +116,11 @@ import ./checker.vibe {
   report_unknown_type_names_deferred_validation,
   reset_eq_formal_vars,
   reset_return_provenance_index,
+  reset_throw_payload_sites,
   resolve_deferred_field_reads,
   resolve_impl_self_field_reads,
   resolve_trait_bound_self_reference,
+  throw_payload_site_types,
   trait_erased_type_param_env,
   trait_reference_display,
   ty_has_open_array_elem,
@@ -4594,6 +4600,380 @@ fn collect_stdin_provider_direct_call_errors(stmts: Array[Stmt], errors: Array[S
   }
 }
 
+/// #3017: the exception kind a resolved payload type names, spelled the way a
+/// kinded row writes it (`Int`, `Array[Int]`, `Option[P]`, `P`). "" for
+/// anything else -- an unresolved variable, a type formal, a tuple, a
+/// function, a generic nominal -- which leaves the syntactic answer standing.
+fn throw_kind_of_type(t: Type) -> String {
+  match t {
+    CtInt => "Int",
+    CtDouble => "Double",
+    CtBool => "Bool",
+    CtString => "String",
+    CtChar => "Char",
+    CtBytes => "Bytes",
+    CtStruct(n) => if String::starts_with(n, "#") {
+      ""
+    } else {
+      n
+    },
+    CtEnum(n) => n,
+    CtArray(e) => {
+      let k = throw_kind_of_type(e)
+      if String::length(k) > 0 {
+        String::concat("Array[", String::concat(k, "]"))
+      } else {
+        ""
+      }
+    },
+    CtOption(e) => {
+      let k = throw_kind_of_type(e)
+      if String::length(k) > 0 {
+        String::concat("Option[", String::concat(k, "]"))
+      } else {
+        ""
+      }
+    },
+    _ => ""
+  }
+}
+
+/// #3017: resolve every recorded `throw` payload type under the final
+/// substitution and hand the kinds to the effects pass.
+fn publish_throw_site_kinds(final_s: Subst) -> Unit {
+  let raw = throw_payload_site_types()
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(raw) {
+    let (k, t) = Array::get(raw, i)
+    Array::push(out, (k, throw_kind_of_type(subst_apply(final_s, t))))
+    i = i + 1
+  }
+  set_throw_site_kinds(out)
+}
+
+/// #2968: an effect label in a written row that names nothing -- no declared
+/// or imported `effect`, no `effectset`, no standard provider, no builtin
+/// effect, no row variable -- was an opaque label nothing could perform, so a
+/// typo (`with Excepton`) became a new effect instead of a diagnostic. The
+/// same for `E::op` where `E` is declared and has no operation `op`, or `E` is
+/// a builtin provider with no such builtin. Checked on top-level declarations'
+/// rows (their own and their function-typed parameters') and on handler arms.
+fn collect_unknown_effect_label_errors(stmts: Array[Stmt], env: TypeEnv, es_names: Array[String], ed_names: Array[String], ed_ops: Array[Array[String]], errors: Array[String]) -> Unit {
+  let local_names = array_empty()
+  let type_names = array_empty()
+  let mut ln = 0
+  while ln < Array::length(stmts) {
+    match Array::get(stmts, ln) {
+      SLet(_, _, lname, _, _) => Array::push(local_names, lname),
+      SLetMut(lname, _, _) => Array::push(local_names, lname),
+      SSuberror(_, tname, _) => Array::push(type_names, tname),
+      SEnum(_, tname, _, _, _) => Array::push(type_names, tname),
+      SStruct(_, tname, _, _, _, _) => Array::push(type_names, tname),
+      _ => ()
+    }
+    ln = ln + 1
+  }
+  let env_labels = env_row_labels(env, local_names)
+  let mut i = 0
+  let mut reported = false
+  while i < Array::length(stmts) && !reported {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, ty, body) => {
+        let rows = array_empty()
+        match ty {
+          Some(te) => fek_rows_in_texpr(te, rows),
+          None => ()
+        }
+        match body {
+          EFn(_, _, params, ret, eff, _) => {
+            match eff {
+              Some(row) => Array::push(rows, row),
+              None => ()
+            }
+            let mut pi = 0
+            while pi < Array::length(params) {
+              match Array::get(params, pi) {
+                (_, Some(pte)) => fek_rows_in_texpr(pte, rows),
+                _ => ()
+              }
+              pi = pi + 1
+            }
+            match ret {
+              Some(rte) => fek_rows_in_texpr(rte, rows),
+              None => ()
+            }
+          },
+          _ => ()
+        }
+        let mut ri = 0
+        while ri < Array::length(rows) && !reported {
+          let labels = row_text_labels(Array::get(rows, ri))
+          let mut li = 0
+          while li < Array::length(labels) && !reported {
+            let msg = unknown_effect_label_message(Array::get(labels, li), es_names, ed_names, ed_ops, env_labels, type_names)
+            // The entry's grant check names a missing provider operation
+            // with its own edit (`allows Console`), so it answers for `main`.
+            if String::length(msg) > 0 && !(name == "main" && String::starts_with(msg, "effect `")) {
+              reported = true
+              Array::push(errors, String::concat(msg, String::concat(String::concat(" (in the row of '", String::concat(name, "')")), String::concat(" [@fn=", String::concat(name, "]")))))
+            }
+            li = li + 1
+          }
+          ri = ri + 1
+        }
+        if !reported {
+          let arm_msg = unknown_effect_arm_in_expr(body, es_names, ed_names, ed_ops, env_labels, type_names)
+          if String::length(arm_msg) > 0 {
+            reported = true
+            Array::push(errors, String::concat(arm_msg, String::concat(" [@fn=", String::concat(name, "]"))))
+          }
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn uel_contains(xs: Array[String], x: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(xs) && !found {
+    if Array::get(xs, i) == x {
+      found = true
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// The effect head of a label: `Fs::read_file?` -> `Fs`, `Exception[E]` -> `Exception`.
+fn uel_head(raw: String) -> String {
+  // An optional grade (`Fs?`, `Fs::read_file?`) names the same effect.
+  let label = if String::ends_with(raw, "?") {
+    String::substring(raw, 0, String::length(raw) - 1)
+  } else {
+    raw
+  }
+  let ci = String::index_of(label, "::")
+  let h = if ci > 0 {
+    String::substring(label, 0, ci)
+  } else {
+    label
+  }
+  let bi = String::index_of(h, "[")
+  if bi > 0 {
+    String::substring(h, 0, bi)
+  } else {
+    h
+  }
+}
+
+fn uel_head_known(head: String, es_names: Array[String], ed_names: Array[String], env_labels: Array[String]) -> Bool {
+  if uel_contains(ed_names, head) || uel_contains(es_names, head) {
+    true
+  } else if has_standard_effect_policy(head) || head == "Async" || head == "AsyncIter" || head == "Exception" || head == "Error" || head == "Random" {
+    true
+  } else {
+    let mut i = 0
+    let mut found = false
+    while i < Array::length(env_labels) && !found {
+      if uel_head(Array::get(env_labels, i)) == head {
+        found = true
+      }
+      i = i + 1
+    }
+    found
+  }
+}
+
+fn uel_edit_distance(a: String, b: String) -> Int {
+  let la = String::length(a)
+  let lb = String::length(b)
+  let prev = array_empty()
+  let mut j = 0
+  while j <= lb {
+    Array::push(prev, j)
+    j = j + 1
+  }
+  let mut i = 1
+  while i <= la {
+    let cur = array_empty()
+    Array::push(cur, i)
+    let mut k = 1
+    while k <= lb {
+      let cost = if String::char_code_at(a, i - 1) == String::char_code_at(b, k - 1) {
+        0
+      } else {
+        1
+      }
+      let del = Array::get(prev, k) + 1
+      let ins = Array::get(cur, k - 1) + 1
+      let sub = Array::get(prev, k - 1) + cost
+      let m1 = if del < ins {
+        del
+      } else {
+        ins
+      }
+      Array::push(cur, if m1 < sub {
+        m1
+      } else {
+        sub
+      })
+      k = k + 1
+    }
+    let mut c = 0
+    while c <= lb {
+      Array::set(prev, c, Array::get(cur, c))
+      c = c + 1
+    }
+    i = i + 1
+  }
+  Array::get(prev, lb)
+}
+
+fn uel_suggestion(head: String, es_names: Array[String], ed_names: Array[String]) -> String {
+  let cands = array_empty()
+  let builtin = [
+    "Exception",
+    "Async",
+    "Fs",
+    "Env",
+    "Stdin",
+    "Stdout",
+    "Stderr",
+    "Console",
+    "Process",
+    "Profiler",
+    "Http",
+    "Socket"
+  ]
+  let mut i = 0
+  while i < Array::length(builtin) {
+    Array::push(cands, Array::get(builtin, i))
+    i = i + 1
+  }
+  i = 0
+  while i < Array::length(ed_names) {
+    Array::push(cands, Array::get(ed_names, i))
+    i = i + 1
+  }
+  i = 0
+  while i < Array::length(es_names) {
+    Array::push(cands, Array::get(es_names, i))
+    i = i + 1
+  }
+  let mut best = ""
+  let mut best_d = 3
+  i = 0
+  while i < Array::length(cands) {
+    let c = Array::get(cands, i)
+    let d = uel_edit_distance(head, c)
+    if d < best_d {
+      best_d = d
+      best = c
+    }
+    i = i + 1
+  }
+  best
+}
+
+fn unknown_effect_label_message(label: String, es_names: Array[String], ed_names: Array[String], ed_ops: Array[Array[String]], env_labels: Array[String], type_names: Array[String]) -> String {
+  let head = uel_head(label)
+  let first = if String::length(head) > 0 {
+    String::char_code_at(head, 0)
+  } else {
+    0
+  }
+  if first < 65 || first > 90 {
+    // A row variable (`e`) or something this scan does not classify.
+    ""
+  } else if !uel_head_known(head, es_names, ed_names, env_labels) && uel_contains(type_names, head) {
+    String::concat("`", String::concat(head, String::concat("` is a type, not an effect: a function that throws it declares `with Exception[", String::concat(head, "]`"))))
+  } else if !uel_head_known(head, es_names, ed_names, env_labels) {
+    let sug = uel_suggestion(head, es_names, ed_names)
+    let fix = if String::length(sug) > 0 {
+      String::concat("did you mean `", String::concat(sug, "`? Otherwise declare it"))
+    } else {
+      "declare it"
+    }
+    String::concat("unknown effect `", String::concat(head, String::concat("`: ", String::concat(fix, String::concat(" (`effect ", String::concat(head, " { .. }`) or import it"))))))
+  } else {
+    let ci = String::index_of(label, "::")
+    if ci > 0 && String::index_of(head, "[") < 0 {
+      let raw_op = String::substring(label, ci + 2, String::length(label))
+      let op = if String::ends_with(raw_op, "?") {
+        String::substring(raw_op, 0, String::length(raw_op) - 1)
+      } else {
+        raw_op
+      }
+      let mut di = 0
+      let mut declared_idx = 0 - 1
+      while di < Array::length(ed_names) {
+        if Array::get(ed_names, di) == head && declared_idx < 0 {
+          declared_idx = di
+        }
+        di = di + 1
+      }
+      if declared_idx >= 0 {
+        if uel_contains(Array::get(ed_ops, declared_idx), op) || head == "Exception" {
+          ""
+        } else {
+          String::concat("effect `", String::concat(head, String::concat("` has no such operation `", String::concat(op, "`"))))
+        }
+      } else if has_standard_host_provider(head) {
+        let qn = String::concat(head, String::concat("::", op))
+        if lookup_builtin(qn) != None || lookup_registry_builtin(qn) != None || uel_contains(env_labels, qn) {
+          ""
+        } else {
+          String::concat("effect `", String::concat(head, String::concat("` has no such operation `", String::concat(op, "`"))))
+        }
+      } else {
+        ""
+      }
+    } else {
+      ""
+    }
+  }
+}
+
+/// The first handler arm (`E::Op(..) => ..`) under `expr` whose effect is unknown.
+fn unknown_effect_arm_in_expr(expr: Expr, es_names: Array[String], ed_names: Array[String], ed_ops: Array[Array[String]], env_labels: Array[String], type_names: Array[String]) -> String {
+  let stack = [expr]
+  let mut out = ""
+  while Array::length(stack) > 0 && String::length(out) == 0 {
+    let e = Array::get(stack, Array::length(stack) - 1)
+    Array::truncate(stack, Array::length(stack) - 1)
+    match e {
+      EHandle(_, arms) => {
+        let mut ai = 0
+        while ai < Array::length(arms) && String::length(out) == 0 {
+          let (pat, _) = Array::get(arms, ai)
+          match pat {
+            PCtor(pname, _) => if String::index_of(pname, "::") > 0 {
+              let msg = unknown_effect_label_message(pname, es_names, ed_names, ed_ops, env_labels, type_names)
+              if String::length(msg) > 0 {
+                out = String::concat(msg, " (in a handler arm)")
+              }
+            },
+            _ => ()
+          }
+          ai = ai + 1
+        }
+      },
+      _ => ()
+    }
+    let kids = expr_children(e)
+    let mut ki = 0
+    while ki < Array::length(kids) {
+      Array::push(stack, Array::get(kids, ki))
+      ki = ki + 1
+    }
+  }
+  out
+}
+
 /// Append `Async`-escape diagnostics (an async primitive used outside an
 /// `{Async}` context) to the type-error list, but only when type checking is
 /// otherwise clean so we surface the real error first.
@@ -4623,8 +5003,14 @@ fn collect_async_effect_errors(stmts: Array[Stmt], env: TypeEnv, frozen_errors: 
       // check_perform_effects_stmts_env itself is untouched.
       let (perform_es_names, perform_es_members_list, perform_ed_names, perform_ed_ops) = es_collect_tables(stmts, 0)
       es_append_imported_tables(env_type_defs(env), perform_es_names, perform_es_members_list, perform_ed_names, perform_ed_ops)
+      // #2968: a row label must name an effect something declares.
+      collect_unknown_effect_label_errors(stmts, env, perform_es_names, perform_ed_names, perform_ed_ops, frozen_errors)
       let expanded_stmts = es_expand_stmts_effect_rows(stmts, perform_es_names, perform_es_members_list)
-      let perform_errs = check_perform_effects_stmts_env(expanded_stmts, env)
+      let perform_errs = if Array::length(frozen_errors) == 0 {
+        check_perform_effects_stmts_env(expanded_stmts, env)
+      } else {
+        array_empty()
+      }
       let mut j = 0
       while j < Array::length(perform_errs) {
         Array::push(frozen_errors, effect_error_to_string(Array::get(perform_errs, j)))
@@ -5146,6 +5532,7 @@ export fn check_stmts(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[
   // Same reason as check_expr: a compatibility entry that starts its own
   // variable numbering must not see formals from an earlier standalone check.
   reset_eq_formal_vars()
+  reset_throw_payload_sites()
   let ignored_type_def_binders = array_empty()
   // #1455: this compatibility entry point is handed a caller-owned `defs`
   // that never contains seeded imported enums, so every declaration in it is
@@ -5761,7 +6148,171 @@ fn collect_decl_formal_application_errors(stmts: Array[Stmt], errors: Array[Stri
   }
 }
 
+/// #3002: an exception kind that names a type parameter of its declaration
+/// (`fn boom[T](x: T) -> Int with Exception[T]`, or a parameter row
+/// `f: () -> Int with Exception[T]`). A row item is text and is never
+/// substituted at a call site, so every caller was refused with a hint that
+/// named the callee's formal. Refused where it is WRITTEN instead.
+fn collect_formal_exception_kind_errors(stmts: Array[Stmt], errors: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, EFn(tparams, _, params, ret, eff, _)) => if Array::length(tparams) > 0 {
+        let formals = array_empty()
+        let mut ti = 0
+        while ti < Array::length(tparams) {
+          Array::push(formals, type_param_name(Array::get(tparams, ti)))
+          ti = ti + 1
+        }
+        let rows = array_empty()
+        match eff {
+          Some(row) => Array::push(rows, row),
+          None => ()
+        }
+        let mut pi = 0
+        while pi < Array::length(params) {
+          match Array::get(params, pi) {
+            (_, Some(pte)) => fek_rows_in_texpr(pte, rows),
+            _ => ()
+          }
+          pi = pi + 1
+        }
+        match ret {
+          Some(rte) => fek_rows_in_texpr(rte, rows),
+          None => ()
+        }
+        let mut ri = 0
+        let mut reported = false
+        while ri < Array::length(rows) && !reported {
+          let (kind, formal) = fek_formal_kind_in_row(Array::get(rows, ri), formals)
+          if String::length(kind) > 0 {
+            reported = true
+            let mut m = String::concat("the exception kind `Exception[", String::concat(kind, String::concat("]` of '", String::concat(name, "' names its type parameter `"))))
+            m = String::concat(m, String::concat(formal, "`, but a row does not substitute a type parameter at a call site, so no caller could discharge it -- write a concrete kind (`Exception[String]`), or return the failure as a value (`Result[_, "))
+            m = String::concat(m, String::concat(formal, String::concat("]`) [@fn=", String::concat(name, "]"))))
+            Array::push(errors, m)
+          }
+          ri = ri + 1
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+/// Every effect row written inside a type expression (a function-typed
+/// parameter, a function nested in a tuple or an application).
+fn fek_rows_in_texpr(te: TypeExpr, out: Array[String]) -> Unit {
+  match te {
+    TyFn(ps, r, eff) => {
+      match eff {
+        Some(row) => Array::push(out, row),
+        None => ()
+      }
+      let mut i = 0
+      while i < Array::length(ps) {
+        fek_rows_in_texpr(Array::get(ps, i), out)
+        i = i + 1
+      }
+      fek_rows_in_texpr(r, out)
+    },
+    TyApp(_, args) => {
+      let mut i = 0
+      while i < Array::length(args) {
+        fek_rows_in_texpr(Array::get(args, i), out)
+        i = i + 1
+      }
+    },
+    TyTuple(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        fek_rows_in_texpr(Array::get(items, i), out)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+fn fek_ident_char(c: Int) -> Bool {
+  (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || (c >= 48 && c <= 57) || c == 95
+}
+
+/// The first `Exception[..]` kind in a row's text that mentions one of
+/// `formals` as a whole identifier, and that formal; ("", "") when none does.
+fn fek_formal_kind_in_row(row: String, formals: Array[String]) -> (String, String) {
+  let head = "Exception["
+  let n = String::length(row)
+  let mut from = 0
+  let mut kind_out = ""
+  let mut formal_out = ""
+  let mut scanning = true
+  while scanning {
+    let rel = String::index_of(String::substring(row, from, n), head)
+    if rel < 0 {
+      scanning = false
+    } else {
+      let kopen = from + rel + String::length(head)
+      let mut j = kopen
+      let mut depth = 1
+      while j < n && depth > 0 {
+        let c = String::char_code_at(row, j)
+        if c == 91 {
+          depth = depth + 1
+        } else if c == 93 {
+          depth = depth - 1
+        }
+        j = j + 1
+      }
+      let close = if depth == 0 {
+        j - 1
+      } else {
+        n
+      }
+      let kind = String::substring(row, kopen, close)
+      let klen = String::length(kind)
+      let mut k = 0
+      while k < klen && String::length(formal_out) == 0 {
+        if fek_ident_char(String::char_code_at(kind, k)) {
+          let st = k
+          while k < klen && fek_ident_char(String::char_code_at(kind, k)) {
+            k = k + 1
+          }
+          let word = String::substring(kind, st, k)
+          let mut fi = 0
+          while fi < Array::length(formals) {
+            if Array::get(formals, fi) == word {
+              formal_out = word
+            }
+            fi = fi + 1
+          }
+        } else {
+          k = k + 1
+        }
+      }
+      if String::length(formal_out) > 0 {
+        kind_out = kind
+        scanning = false
+      } else {
+        from = if close < n {
+          close + 1
+        } else {
+          n
+        }
+        if from >= n {
+          scanning = false
+        }
+      }
+    }
+  }
+  (kind_out, formal_out)
+}
+
 fn collect_type_param_shadowing_errors(stmts: Array[Stmt], errors: Array[String]) -> Unit {
+  collect_formal_exception_kind_errors(stmts, errors)
   collect_reserved_type_prefix_errors(stmts, errors)
   collect_reserved_value_prefix_errors(stmts, errors)
   collect_decl_formal_application_errors(stmts, errors)
@@ -6688,6 +7239,7 @@ fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: Option[
   let tytab = array_empty()
   reset_return_provenance_index()
   reset_eq_formal_vars()
+  reset_throw_payload_sites()
   // #986: labeled-argument name validation (unknown / out-of-order labels).
   // Must run after desugar_labeled_args above.
   check_labeled_arg_names_stmts(stmts, frozen_errors, false)
@@ -6725,6 +7277,7 @@ fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: Option[
   // an actionable message instead. The capability predicate lives next to
   // build_gens in desugar_trait_dict.vibe.
   push_error_strings(collect_undispatchable_trait_method_errors(stmts, env), frozen_errors)
+  publish_throw_site_kinds(final_s)
   collect_async_effect_errors(expanded_stmts, env, frozen_errors)
   // #1455 step 3: `empty_defs` is the finished enum table by now, so the
   // qualifiers drained above can finally be checked against it.
@@ -8566,6 +9119,7 @@ export fn check_program_type_table(stmts: Array[Stmt]) -> (Array[(Int, Type)], S
   let tytab = array_empty()
   reset_return_provenance_index()
   reset_eq_formal_vars()
+  reset_throw_payload_sites()
   handle {
     let (_, final_s0, _) = check_stmts(stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors, tytab)
     // #2848 (Codex on #2864, round 3): a deferred field read is typed by a
@@ -8630,6 +9184,7 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
       let tytab = array_empty()
       reset_return_provenance_index()
       reset_eq_formal_vars()
+      reset_throw_payload_sites()
       // #986: labeled-argument name validation (see check_program).
       check_labeled_arg_names_stmts(stmts, frozen_errors, false)
       // Keep CheckedProgram.checked_stmts as the original post-desugar source,
@@ -8654,6 +9209,7 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
       // using an imported method-bearing trait (e.g. @vibe/core's Default)
       // is covered too.
       push_error_strings(collect_undispatchable_trait_method_errors(stmts, env), frozen_errors)
+      publish_throw_site_kinds(final_s)
       collect_async_effect_errors(expanded_stmts, env, frozen_errors)
       // #1455 step 3: `empty_defs` holds the imported enums seeded above plus
       // this module's own, which is exactly the set a qualifier may name.

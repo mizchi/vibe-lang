@@ -71,6 +71,7 @@ import @vibe/compiler/codegen/common_base {
   rewrite_self_tail_calls,
   source_declares_constructor,
   str_table_lite,
+  suspend_cps_pass,
   ty_head_names_formal,
   wrap_entry_exception_boundary
 }
@@ -1305,6 +1306,15 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, generated
   // that fallback, it does not change the fallback itself. No-op on
   // programs with no eligible handle (identical to the linear backend's
   // unconditional call site), so this is strictly additive for gc codegen.
+  // #3009: the suspend CPS pass (a handler arm that captures `resume` as a
+  // value) runs first, as in the linear prelude. The gc lane never ran it,
+  // so such a site reached codegen with `resume` unresolved.
+  let scps_errs = suspend_cps_pass(stmts)
+  if Array::length(scps_errs) > 0 {
+    throw(Array::get(scps_errs, 0))
+  } else {
+    ()
+  }
   let edp_errs = evidence_dict_pass(stmts, entry_name)
   if Array::length(edp_errs) > 0 {
     throw(Array::get(edp_errs, 0))

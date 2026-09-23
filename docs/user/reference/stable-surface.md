@@ -78,7 +78,10 @@ of each item is [spec/syntax.md](syntax.md) and the
 
 ### 2.1 Values and types
 - Primitives: `Int` (63-bit tagged, literals up to 2^62-1, arithmetic wraps as
-  63-bit two's complement — ADR-0006, #1877), `Float` (32-bit), `Double`
+  63-bit two's complement — ADR-0006, #1877; a shift count of 63 or more, or a
+  negative one, saturates: `<<` gives `0`, `>>` gives the sign; `Double::to_int`
+  saturates to `Int::max_value` / `Int::min_value` and maps NaN to `0` — #2978),
+  `Float` (32-bit), `Double`
   (64-bit), `String` (a **byte** string with byte-offset indexing, ADR-0098),
   `Char` (an `Int` alias), `Bool`, `Unit`.
 - Literals: integers (decimal / `0x` hex), floats (`1.5f` / `3.14`), strings

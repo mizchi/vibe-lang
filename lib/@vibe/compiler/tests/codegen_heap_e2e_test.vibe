@@ -874,20 +874,21 @@ test "wasi: bare top-level fn named map (no r# prefix), called locally (#832)" {
 /// This wasm target has no feature flag for `i64.trunc_sat_f64_s` (checked:
 /// no wasm_emit helper for it exists, and none of this compiler's wasmtime
 /// invocations enable the nontrapping-float-to-int-conversions proposal),
-/// so these values now saturate to 0 instead.
+/// so these values are guarded by hand: NaN answers 0, and since #2978 an
+/// out-of-range value saturates to Int::max_value / Int::min_value.
 test "heap e2e: Double::to_int(NaN) does not trap, saturates to 0 (#997)" {
   let src = "let main: () -> Int = () -> {\n  let nan = 0.0 / 0.0\n  Double::to_int(nan)\n}"
   assert_result(src, "main", "double_to_int_nan", "0")
 }
 
-test "heap e2e: Double::to_int(+Infinity) does not trap, saturates to 0 (#997)" {
+test "heap e2e: Double::to_int(+Infinity) does not trap, saturates to Int::max_value (#997, #2978)" {
   let src = "let main: () -> Int = () -> {\n  let inf = 1.0 / 0.0\n  Double::to_int(inf)\n}"
-  assert_result(src, "main", "double_to_int_pos_inf", "0")
+  assert_result(src, "main", "double_to_int_pos_inf", "4611686018427387903")
 }
 
-test "heap e2e: Double::to_int(-Infinity) does not trap, saturates to 0 (#997)" {
+test "heap e2e: Double::to_int(-Infinity) does not trap, saturates to Int::min_value (#997, #2978)" {
   let src = "let main: () -> Int = () -> {\n  let ninf = (0.0 - 1.0) / 0.0\n  Double::to_int(ninf)\n}"
-  assert_result(src, "main", "double_to_int_neg_inf", "0")
+  assert_result(src, "main", "double_to_int_neg_inf", "-4611686018427387904")
 }
 
 /// The guard added for the above must not disturb ordinary in-range

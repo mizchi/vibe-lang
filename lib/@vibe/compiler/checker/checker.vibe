@@ -151,6 +151,10 @@ import ./checker_spawnable.vibe {
   check_spawnable_captures, closure_bare_callee_names, closure_free_names
 }
 
+import ./checker_effects.vibe {
+  throw_payload_site_key
+}
+
 import ./checker_escape.vibe {
   diag_report_into, expr_free_in, mut_binding_escapes
 }
@@ -2800,6 +2804,23 @@ let return_provenance_index: Array[MutMap[String, Int]] = [MutMap::new_string()]
 
 export fn reset_return_provenance_index() -> Unit {
   Array::set(return_provenance_index, 0, MutMap::new_string())
+}
+
+/// #3017: every `throw` payload's inferred type, keyed by the `perform` call's
+/// offset plus a short spelling of the payload (`throw_payload_site_key`). The
+/// effects pass is syntactic, so a builtin call's result, an unannotated `let`
+/// and a field projection have no exception kind there; this table hands it
+/// the type the checker already inferred. Reset per check with the other
+/// per-run tables, and resolved under the final substitution by
+/// `checker_stmt.vibe` before the effects pass reads it.
+let throw_payload_sites: Array[(String, Type)] = []
+
+export fn reset_throw_payload_sites() -> Unit {
+  Array::truncate(throw_payload_sites, 0)
+}
+
+export fn throw_payload_site_types() -> Array[(String, Type)] {
+  throw_payload_sites
 }
 
 /// #2474 (a): the type-parameter variables bound so far in this check --
@@ -8427,7 +8448,11 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                   let mut tc = c
                   let mut ti = 0
                   while ti < Array::length(opargs) {
-                    let (_, ns, nc) = check_expr_capture(Array::get(opargs, ti), env, defs, ts, tc, errors, tytab, capture, lane)
+                    let (pt, ns, nc) = check_expr_capture(Array::get(opargs, ti), env, defs, ts, tc, errors, tytab, capture, lane)
+                    // #3017: hand the payload's type to the effects pass.
+                    if ti == 0 && Array::length(opargs) == 1 && call_off >= 0 {
+                      Array::push(throw_payload_sites, (throw_payload_site_key(call_off, Array::get(opargs, 0)), pt))
+                    }
                     ts = ns
                     tc = nc
                     ti = ti + 1
@@ -9192,9 +9217,10 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           // #983: refine the result from bare CtUnknown to the receiver's value
           // slot, so a wrongly-typed consume of the looked-up value is caught
           // by the ordinary unify. NOTE: `Map::get` returns the RAW stored
-          // value (0 on a miss) — `declare Map::get(Map[T, U], T) -> U` in
-          // builtins/declarations.vibe and the linear codegen agree — NOT an
-          // Option. Untyped receivers keep the conservative CtUnknown.
+          // value and TRAPS on a miss (#2990) — `declare Map::get(Map[T, U],
+          // T) -> U` in builtins/declarations.vibe and both codegen lanes
+          // agree — NOT an Option. Untyped receivers keep the conservative
+          // CtUnknown.
           let (m_ty, s1, c1) = check_expr_capture(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
           let (k_ty, s2, c2) = check_expr_capture(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
           let s3 = check_assignable(CtString, subst_apply(s2, k_ty), s2, errors, "argument type mismatch for Map::get", call_off)
@@ -10367,10 +10393,16 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       // separate, deliberately isolated change because pinned diagnostic
       // expectations reference these positions.
       let bin_left_off = railway_expr_off(left)
+      let bin_right_off = railway_expr_off(right)
       let bin_off = if bin_left_off >= 0 {
         bin_left_off
+      } else if bin_right_off >= 0 {
+        bin_right_off
       } else {
-        railway_expr_off(right)
+        // #2999: two literal operands (`1 == 1.0`, `true && 1`) carry no
+        // offset, and the mismatch was reported with no position at all. The
+        // operator's own offset (#2435) is where the reader looks.
+        boff
       }
       let left_applied = subst_apply(s2, left_ty)
       let right_applied = subst_apply(s2, right_ty)
