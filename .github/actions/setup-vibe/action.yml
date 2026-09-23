@@ -86,6 +86,42 @@ runs:
         fi
         echo "[pkfire] pinned $want, installed $got"
 
+    # The Pkl package Taskfile.pkl amends (`pkfire@X`) is downloaded by pkf at
+    # evaluation time. Uncached, that download lands inside whichever step
+    # first runs pkf, and a transient fetch error there fails a correctness
+    # gate for a reason unrelated to what it checks (CI run 35916386839,
+    # check_task_env_sanitized_test.sh). Cache the package, which is
+    # immutable per version, and warm it here with retries. This is NOT the
+    # task-output cache (~/.cache/pkfire-mbt, `pkfire-cache` below), which
+    # could replay a run that did not happen; a package archive cannot.
+    - name: Pkl package pin
+      if: inputs.pkfire == 'true'
+      id: pkl-package
+      shell: bash
+      run: |
+        pin="$(sed -n 's|^amends "package://pkg\.pkl-lang\.org/\([^#"]*\)#.*|\1|p' "$GITHUB_WORKSPACE/Taskfile.pkl" | head -n 1 | tr '/@' '--')"
+        echo "pin=${pin:-none}" >> "$GITHUB_OUTPUT"
+
+    - name: Restore Pkl package cache
+      if: inputs.pkfire == 'true'
+      id: pkl-package-cache
+      uses: actions/cache/restore@v5
+      with:
+        path: ~/.cache/pkl-mbt
+        key: pkl-mbt-packages-${{ runner.os }}-${{ steps.pkl-package.outputs.pin }}
+
+    - name: Warm Pkl package cache
+      if: inputs.pkfire == 'true'
+      shell: bash
+      run: bash "$GITHUB_WORKSPACE/scripts/warm_pkl_package_cache.sh"
+
+    - name: Save Pkl package cache
+      if: inputs.pkfire == 'true' && steps.pkl-package-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v5
+      with:
+        path: ~/.cache/pkl-mbt
+        key: ${{ steps.pkl-package-cache.outputs.cache-primary-key }}
+
     # pkfire content-addressed CAS cache. Use restore+save semantics so
     # cache hits short-circuit task replay even when inputs hash drifts;
     # the auto-save post-job hook persists fresh entries. Keys are
