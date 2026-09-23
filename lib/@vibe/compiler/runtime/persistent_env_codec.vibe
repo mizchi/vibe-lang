@@ -1152,7 +1152,12 @@ export fn persistent_module_cache_text(env: TypeEnv, lowering: Option[(Array[Int
     Some((offsets, eq_offs, eq_keys)) => module_typed_lowering_text(offsets, eq_offs, eq_keys),
     None => "lowering\tmissing\n"
   }
-  String::concat("version\t10\nenv\t", String::concat(serialize_segment(serialize_type_env(env)), String::concat("\n", section)))
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "version\t10\nenv\t")
+  push_serialized_type_env_segment(out, env)
+  StringBuilder::push(out, "\n")
+  StringBuilder::push(out, section)
+  StringBuilder::freeze(out)
 }
 
 /// Reject the whole entry when either section is malformed. In particular a
@@ -1191,7 +1196,25 @@ export fn parse_persistent_module_cache(text: String) -> Option[PersistentModule
 }
 
 export fn persistent_type_env_cache_text(env: TypeEnv) -> String {
-  String::concat("version\t9\nenv\t", String::concat(serialize_segment(serialize_type_env(env)), "\n"))
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "version\t9\nenv\t")
+  push_serialized_type_env_segment(out, env)
+  StringBuilder::push(out, "\n")
+  StringBuilder::freeze(out)
+}
+
+/// `serialize_segment(serialize_type_env(env))`, pushed into `out` as its
+/// three pieces instead of being materialized (#2945). A `String::concat`
+/// copies both operands, so the nested-concat spelling copied the payload
+/// once per enclosing concat -- three times for the v9 text and four for the
+/// v10 record -- on every module commit and every dependency re-serialization.
+/// A builder push keeps a view of the piece and `freeze` copies it exactly
+/// once, so the bytes are identical and the payload is copied once.
+fn push_serialized_type_env_segment(out: StringBuilder, env: TypeEnv) -> Unit {
+  let payload = serialize_type_env(env)
+  StringBuilder::push(out, __to_string(String::length(payload)))
+  StringBuilder::push(out, ":")
+  StringBuilder::push(out, payload)
 }
 
 export fn load_persistent_leaf_fingerprint(path: String, source: String, typing_semantics_seed: String) -> Option[String] with Exception + Fs {

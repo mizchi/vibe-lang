@@ -4669,8 +4669,17 @@ fn store_persistent_type_env(fingerprint: String, env: TypeEnv) -> String with E
 let typing_dependency_env_reuse_alias_v9_tag = "TDRE9A"
 let typing_dependency_env_reuse_witness_v9_tag = "TDRE9W"
 
-fn typing_reuse_segment(text: String) -> String {
-  String::concat(__to_string(String::length(text)), String::concat(":", text))
+/// One `<byte length>:<text>` segment, pushed into a builder as its pieces
+/// (#2945). The TDRE9 texts embed a module's verbatim source and its
+/// dependencies' exact env texts, so they are as large as the source closure
+/// they describe (the CLI's generated adapter bundle alone is 30 MB).
+/// Materializing each segment with nested `String::concat` copied that text
+/// once per level before the builder copied it again; pushing the pieces
+/// leaves the single copy `freeze` makes, and the bytes are identical.
+fn push_typing_reuse_segment(out: StringBuilder, text: String) -> Unit {
+  StringBuilder::push(out, __to_string(String::length(text)))
+  StringBuilder::push(out, ":")
+  StringBuilder::push(out, text)
 }
 
 fn parse_typing_reuse_segment(text: String, pos: Int) -> Option[(String, Int)] {
@@ -4703,7 +4712,12 @@ fn parse_typing_reuse_segment(text: String, pos: Int) -> Option[(String, Int)] {
 }
 
 fn typing_dependency_reuse_binding_text(tag: String, input_key: String, target_fingerprint: String, target_text: String) -> String {
-  String::concat(tag, String::concat(typing_reuse_segment(input_key), String::concat(typing_reuse_segment(target_fingerprint), typing_reuse_segment(target_text))))
+  let out = StringBuilder::new()
+  StringBuilder::push(out, tag)
+  push_typing_reuse_segment(out, input_key)
+  push_typing_reuse_segment(out, target_fingerprint)
+  push_typing_reuse_segment(out, target_text)
+  StringBuilder::freeze(out)
 }
 
 fn parse_typing_dependency_reuse_binding(text: String, tag: String) -> Option[(String, String, String)] {
@@ -4739,16 +4753,16 @@ fn parse_typing_dependency_reuse_binding(text: String, tag: String) -> Option[(S
 fn typing_dependency_transport_input_key(path: String, source: String, semantics_seed: String, dep_envs: Array[(String, TypeEnv)]) -> String {
   let out = StringBuilder::new()
   StringBuilder::push(out, "vibe-typing-dependency-transport-env:v9")
-  StringBuilder::push(out, typing_reuse_segment(normalize_path(path)))
-  StringBuilder::push(out, typing_reuse_segment(source))
-  StringBuilder::push(out, typing_reuse_segment(semantics_seed))
-  StringBuilder::push(out, typing_reuse_segment(resolution_env_seed()))
-  StringBuilder::push(out, typing_reuse_segment(__to_string(Array::length(dep_envs))))
+  push_typing_reuse_segment(out, normalize_path(path))
+  push_typing_reuse_segment(out, source)
+  push_typing_reuse_segment(out, semantics_seed)
+  push_typing_reuse_segment(out, resolution_env_seed())
+  push_typing_reuse_segment(out, __to_string(Array::length(dep_envs)))
   let mut i = 0
   while i < Array::length(dep_envs) {
     let (dep_path, dep_env) = Array::get(dep_envs, i)
-    StringBuilder::push(out, typing_reuse_segment(dep_path))
-    StringBuilder::push(out, typing_reuse_segment(persistent_type_env_cache_text(dep_env)))
+    push_typing_reuse_segment(out, dep_path)
+    push_typing_reuse_segment(out, persistent_type_env_cache_text(dep_env))
     i = i + 1
   }
   StringBuilder::freeze(out)
@@ -4799,10 +4813,40 @@ fn typing_dependency_env_reuse_witness_binding(fingerprint: String) -> Option[(S
   }
 }
 
+/// #2945: the dependency fingerprints whose witness this walk has already
+/// validated. Without it the eligibility walk re-read and re-validated a
+/// dependency's witness once per DEPENDENT: the witness embeds the
+/// dependency's verbatim source and its own dependencies' env texts, and
+/// validating it reads, decodes and re-encodes the target record too, so a
+/// widely imported module was paid for hundreds of times. Measured on a cold
+/// `vibe check lib/@vibe/cli/entry.vibe` (427 modules), that walk alone
+/// allocated 882 MB of a 4 GiB address space.
+///
+/// Only POSITIVE answers are kept, and only for one walk
+/// (`ensure_fingerprint_fs_impl` resets it with the other per-walk memos). A
+/// positive answer only admits the alias lookup: that lookup still validates
+/// the exact alias/witness/target binding of the module being reused, and
+/// the dependency envs in its input key come from this walk's memory, not
+/// from the dependency's witness, so remembering a validation cannot turn a
+/// file torn after it into a reuse. A negative answer is re-asked, so a
+/// witness published later in the walk is still seen.
+let typing_dependency_env_reuse_valid_witness_memo: Array[String] = []
+
+fn typing_dependency_env_reuse_valid_witness_memo_reset() -> Unit {
+  Array::truncate(typing_dependency_env_reuse_valid_witness_memo, 0)
+}
+
 fn typing_dependency_env_reuse_eligibility_is_valid(fingerprint: String) -> Bool with Fs {
-  match typing_dependency_env_reuse_witness_binding(fingerprint) {
-    Some(_) => true,
-    None => false
+  if contains_str(typing_dependency_env_reuse_valid_witness_memo, fingerprint) {
+    true
+  } else {
+    match typing_dependency_env_reuse_witness_binding(fingerprint) {
+      Some(_) => {
+        Array::push(typing_dependency_env_reuse_valid_witness_memo, fingerprint)
+        true
+      },
+      None => false
+    }
   }
 }
 
@@ -7257,6 +7301,7 @@ export fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, Ty
   // earlier compile of a since-edited file, without any eviction policy that
   // could drop a row the ACTIVE compile still needs.
   module_typed_lowering_memo_reset()
+  typing_dependency_env_reuse_valid_witness_memo_reset()
   checked_module_cache_reset()
   // #2386: the source-text fingerprint memo spans one compile too.
   compact_source_fingerprint_memo_reset()
