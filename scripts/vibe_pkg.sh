@@ -145,7 +145,9 @@ invoke_cli() {
   while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do envs+=("$1"); shift; done
   shift
   if [ -n "${VIBE_PKG_RUNNER:-}" ]; then
-    env "${envs[@]}" "$VIBE_PKG_RUNNER" "$CLI" "$1" "$2" __no_entry__ >/dev/null 2>&1 || true
+    # viberun writes a checker stack overflow's diagnostic only where the
+    # invoker names it (VIBE_CRASH_DIAG_OUT): the sidecar read back below.
+    env "${envs[@]}" VIBE_CRASH_DIAG_OUT="$2.diag" "$VIBE_PKG_RUNNER" "$CLI" "$1" "$2" __no_entry__ >/dev/null 2>&1 || true
   else
     env "${envs[@]}" VIBE_PREOPEN_DIR="$ROOT_DIR" \
       bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" --invoke cli_main "$CLI" \

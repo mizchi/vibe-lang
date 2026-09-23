@@ -19,7 +19,7 @@ import @vibe/compiler/codegen/wasi {
 }
 
 import @vibe/compiler/syntax {
-  Token, lex_with_offsets, parse_program_located
+  lex_with_offsets, parse_program_located
 }
 import ./preprocess_interp.vibe {
   expand_interp_stmts
@@ -30,7 +30,7 @@ import ./preprocess_strip.vibe {
 }
 
 import @vibe/compiler/core {
-  Expr, Stmt, TypeEnv, TypeExpr
+  Expr, Pat, Stmt, TypeEnv, TypeExpr, expr_children
 }
 
 import @vibe/core {
@@ -156,25 +156,140 @@ export fn maybe_wrap_stdin_provider_core(bytes: Bytes, entry_name: String) -> By
   }
 }
 
-/// Does the program's own text call the host exit? Read from the TOKENS, which
-/// hold no comments, before normalization: the exception boundary's exit is
-/// generated later, so it never appears here, and anything that does is the
-/// program's own `exit`.
-fn source_tokens_call_process_exit(tokens: Array[Token]) -> Bool {
-  let mut found = false
+/// Does the program itself reach the host exit builtin? Read from the parsed
+/// statements before normalization: the exception boundary's exit is
+/// generated later, so it never appears here, and any reference that does is
+/// the program's own. A name the program binds itself -- a top-level
+/// declaration, a local, a parameter, a pattern -- is that binding, not the
+/// builtin (#3030), so an unused local named `vibe_process_exit_raw` no longer
+/// refuses the build.
+fn stmts_reach_process_exit(stmts: Array[Stmt]) -> Bool {
+  let exit_name = "vibe_process_exit_raw"
+  let mut declared = false
   let mut i = 0
-  while i < Array::length(tokens) && !found {
-    match Array::get(tokens, i) {
-      TIdent(name) => if name == "vibe_process_exit_raw" {
-        found = true
-      } else {
-        ()
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, n, _, _) => if n == exit_name {
+        declared = true
+      },
+      SLetMut(n, _, _) => if n == exit_name {
+        declared = true
       },
       _ => ()
     }
     i = i + 1
   }
-  found
+  if declared {
+    false
+  } else {
+    let mut found = false
+    let mut j = 0
+    while j < Array::length(stmts) && !found {
+      match Array::get(stmts, j) {
+        SLet(_, _, _, _, v) => found = expr_reaches_name(v, exit_name, false),
+        SLetMut(_, _, v) => found = expr_reaches_name(v, exit_name, false),
+        STest(_, b) => found = expr_reaches_name(b, exit_name, false),
+        SBench(_, b) => found = expr_reaches_name(b, exit_name, false),
+        _ => ()
+      }
+      j = j + 1
+    }
+    found
+  }
+}
+
+/// Is `name` referenced in `e` where no enclosing binder in `e` rebinds it?
+/// `hidden` is true once such a binder is in scope.
+fn expr_reaches_name(e: Expr, name: String, hidden: Bool) -> Bool {
+  if hidden {
+    false
+  } else {
+    match e {
+      EIdent(n, _) => n == name,
+      ELet(n, v, rest, _) => expr_reaches_name(v, name, false) || expr_reaches_name(rest, name, n == name),
+      ELetMut(n, v, rest, _) => expr_reaches_name(v, name, false) || expr_reaches_name(rest, name, n == name),
+      ELetRec(n, v, rest) => n != name && (expr_reaches_name(v, name, false) || expr_reaches_name(rest, name, false)),
+      EFn(_, _, params, _, _, body) => {
+        let mut rebound = false
+        let mut pi = 0
+        while pi < Array::length(params) {
+          let (pn, _) = Array::get(params, pi)
+          if pn == name {
+            rebound = true
+          }
+          pi = pi + 1
+        }
+        expr_reaches_name(body, name, rebound)
+      },
+      EForIn(n, n2, iter, body) => expr_reaches_name(iter, name, false) || expr_reaches_name(body, name, n == name || n2 == Some(name)),
+      EMatch(scrut, arms) => {
+        let mut hit = expr_reaches_name(scrut, name, false)
+        let mut ai = 0
+        while ai < Array::length(arms) && !hit {
+          let (pat, arm) = Array::get(arms, ai)
+          hit = expr_reaches_name(arm, name, pat_binds_name(pat, name))
+          ai = ai + 1
+        }
+        hit
+      },
+      EHandle(body, arms) => {
+        let mut hit = expr_reaches_name(body, name, false)
+        let mut ai = 0
+        while ai < Array::length(arms) && !hit {
+          let (pat, arm) = Array::get(arms, ai)
+          hit = expr_reaches_name(arm, name, pat_binds_name(pat, name))
+          ai = ai + 1
+        }
+        hit
+      },
+      _ => {
+        let kids = expr_children(e)
+        let mut hit = false
+        let mut ki = 0
+        while ki < Array::length(kids) && !hit {
+          hit = expr_reaches_name(Array::get(kids, ki), name, false)
+          ki = ki + 1
+        }
+        hit
+      }
+    }
+  }
+}
+
+fn pat_binds_name(p: Pat, name: String) -> Bool {
+  match p {
+    PBind(n) => n == name,
+    PCtor(_, subs) => {
+      let mut hit = false
+      let mut i = 0
+      while i < Array::length(subs) && !hit {
+        hit = pat_binds_name(Array::get(subs, i), name)
+        i = i + 1
+      }
+      hit
+    },
+    PTuple(subs) => {
+      let mut hit = false
+      let mut i = 0
+      while i < Array::length(subs) && !hit {
+        hit = pat_binds_name(Array::get(subs, i), name)
+        i = i + 1
+      }
+      hit
+    },
+    POr(l, r) => pat_binds_name(l, name) || pat_binds_name(r, name),
+    PStruct(_, fields) => {
+      let mut hit = false
+      let mut i = 0
+      while i < Array::length(fields) && !hit {
+        let (_, fp) = Array::get(fields, i)
+        hit = pat_binds_name(fp, name)
+        i = i + 1
+      }
+      hit
+    },
+    _ => false
+  }
 }
 
 fn maybe_wrap_async_component(bytes: Bytes, wrap_async: Bool, user_exits: Bool) -> Bytes with Exception {
@@ -299,6 +414,9 @@ fn compile_source_wasi_only_impl(source: String, entry_name: String, trusted_gen
   // CONSTRUCTION -- the channel would be wired up and permanently inert.
   let (tokens, starts, _ends) = lex_with_offsets(source)
   let stmts = parse_program_located(tokens, starts, source)
+  // Before anything rewrites the statements: the exception boundary's own
+  // exit is generated later and must not count as the program's (#3030).
+  let user_exits = stmts_reach_process_exit(stmts)
   validate_source_if_user(stmts, trusted_generated)
   expand_interp_stmts(stmts)
   // Check before stripping generic type params (see merge_sources.vibe).
@@ -306,7 +424,7 @@ fn compile_source_wasi_only_impl(source: String, entry_name: String, trusted_gen
   validate_source_exports_if_user(stmts, checked_env, trusted_generated)
   let wrap_async = (entry_name == "run") && entry_declares_async_int(stmts, entry_name)
   strip_generic_type_params(stmts)
-  maybe_wrap_async_component(compile_wasi_module_impl_with_typed_offsets(stmts, entry_name, float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys), wrap_async, source_tokens_call_process_exit(tokens))
+  maybe_wrap_async_component(compile_wasi_module_impl_with_typed_offsets(stmts, entry_name, float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys), wrap_async, user_exits)
 }
 
 export fn compile_source_wasi_only(source: String, entry_name: String) -> Bytes with Exception {
@@ -367,13 +485,16 @@ fn compile_source_wasi_only_rc_impl(source: String, entry_name: String, trusted_
   // Doubles differently.
   let (tokens, starts, _ends) = lex_with_offsets(source)
   let stmts = parse_program_located(tokens, starts, source)
+  // Before anything rewrites the statements: the exception boundary's own
+  // exit is generated later and must not count as the program's (#3030).
+  let user_exits = stmts_reach_process_exit(stmts)
   validate_source_if_user(stmts, trusted_generated)
   expand_interp_stmts(stmts)
   let (float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys, checked_env) = source_offsets(stmts)
   validate_source_exports_if_user(stmts, checked_env, trusted_generated)
   let wrap_async = (entry_name == "run") && entry_declares_async_int(stmts, entry_name)
   strip_generic_type_params(stmts)
-  maybe_wrap_async_component(compile_wasi_module_rc_impl_with_typed_offsets(stmts, entry_name, float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys), wrap_async, source_tokens_call_process_exit(tokens))
+  maybe_wrap_async_component(compile_wasi_module_rc_impl_with_typed_offsets(stmts, entry_name, float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys), wrap_async, user_exits)
 }
 
 export fn compile_source_wasi_only_rc(source: String, entry_name: String) -> Bytes with Exception {
@@ -398,13 +519,16 @@ fn compile_source_wasi_only_rc_shadow_impl(source: String, entry_name: String, t
   // carries.
   let (tokens, starts, _ends) = lex_with_offsets(source)
   let stmts = parse_program_located(tokens, starts, source)
+  // Before anything rewrites the statements: the exception boundary's own
+  // exit is generated later and must not count as the program's (#3030).
+  let user_exits = stmts_reach_process_exit(stmts)
   validate_source_if_user(stmts, trusted_generated)
   expand_interp_stmts(stmts)
   let (float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys, checked_env) = source_offsets(stmts)
   validate_source_exports_if_user(stmts, checked_env, trusted_generated)
   let wrap_async = (entry_name == "run") && entry_declares_async_int(stmts, entry_name)
   strip_generic_type_params(stmts)
-  maybe_wrap_async_component(compile_wasi_module_rc_shadow_impl_with_typed_offsets(stmts, entry_name, float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys), wrap_async, source_tokens_call_process_exit(tokens))
+  maybe_wrap_async_component(compile_wasi_module_rc_shadow_impl_with_typed_offsets(stmts, entry_name, float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys), wrap_async, user_exits)
 }
 
 export fn compile_source_wasi_only_rc_shadow(source: String, entry_name: String) -> Bytes with Exception {

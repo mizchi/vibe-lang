@@ -155,4 +155,22 @@ if ! grep -q "the program calls the host exit" "$component_exit.diag" 2>/dev/nul
   exit 1
 fi
 
-echo "[exception-exit] ok (linear/gc status+diagnostic, handled=0, explicit=7, component non-zero, component user exit refused)"
+# #3030: a binding the program itself names `vibe_process_exit_raw` is that
+# binding, not the host exit, so it does not refuse the build.
+cat >"$WORK/component_exit_local.vibe" <<'EOF'
+let run: () -> Int with Async = () -> {
+  let vibe_process_exit_raw = 3
+  vibe_process_exit_raw + 4
+}
+EOF
+component_exit_local="$WORK/component_exit_local.wasm"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$COMPILER" \
+  "$WORK/component_exit_local.vibe" "$component_exit_local" run >/dev/null 2>&1 || true
+if [ ! -s "$component_exit_local" ]; then
+  echo "[exception-exit] async component with a local named vibe_process_exit_raw was refused" >&2
+  cat "$component_exit_local.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+
+echo "[exception-exit] ok (linear/gc status+diagnostic, handled=0, explicit=7, component non-zero, component user exit refused, local of that name built)"

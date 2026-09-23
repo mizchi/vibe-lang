@@ -1665,73 +1665,45 @@ fn run(args: Vec<String>) -> Result<i32> {
             // `handle {...} with Exception {...}` can intercept it -- it used to
             // surface here as an ordinary trap message, which `vibe
             // check`/`vibe diagnostics`'s `>/dev/null 2>&1 || true` wrapper
-            // silently swallowed into "clean". Write the same `.diag` sidecar
-            // the checker's own error paths use (cli_adapter.vibe's
-            // emit_compile_diag reads it back via read_arg_or_env(1,
-            // "VIBE_OUTPUT")) so those commands report a real (if unlocated)
-            // diagnostic instead.
+            // silently swallowed into "clean". Write a `.diag` sidecar where
+            // the invoker names one so those commands report a real (if
+            // unlocated) diagnostic instead.
             //
-            // #1007 review (Codex P2): read_arg_or_env prefers the POSITIONAL
-            // arg over the env var (only falling back to VIBE_OUTPUT when the
-            // arg is absent) -- `runtime/vibe` never unsets an inherited
-            // VIBE_OUTPUT before invoking the runner, so preferring the env
-            // var here (as the first cut did) could write the sidecar beside
-            // a stale inherited path while the compiled program itself (and
-            // the shell script waiting on `$out.diag`) used the real
-            // positional one, silently losing the diagnostic all over again.
-            // Match read_arg_or_env's precedence: positional arg first.
             // #2988: a stack overflow in the USER's program is not the
-            // checker's. Only the compiler (the module exporting `cli_main`)
-            // gets the type-checking message and its `.diag` sidecar.
-            // The compiler is what the launcher vouches for with
-            // VIBE_CRASH_DIAG_OUT (`invoke_cli`); a direct adapter-protocol
-            // run is recognised by a `cli_main` export with no `main`. An
-            // unrelated `cli_main` export in a user program is not enough
-            // (#3022 review).
-            // A test or bench executable keeps its `__test_*` / `__bench_*`
-            // exports next to whatever else it defines, so it is never the
-            // compiler even when it exports `cli_main` and no `main`.
-            let has_test_exports = instance.exports(&mut store).any(|e| {
-                let n = e.name();
-                n.starts_with("__test_") || n.starts_with("__bench_")
-            });
-            let running_compiler = std::env::var_os("VIBE_CRASH_DIAG_OUT").is_some_and(|v| !v.is_empty())
-                || (instance.get_export(&mut store, "cli_main").is_some()
-                    && instance.get_export(&mut store, "main").is_none()
-                    && !has_test_exports);
-            if matches!(e.downcast_ref::<Trap>(), Some(Trap::StackOverflow)) && !running_compiler {
+            // checker's. Only the compiler gets the type-checking message and
+            // its `.diag` sidecar, and the compiler is what the launcher
+            // vouches for with VIBE_CRASH_DIAG_OUT (`invoke_cli`, which every
+            // compiling verb goes through). #3031: the export set cannot
+            // stand in for that signal -- `run()` always enters through
+            // `_start`, so a user module that also exports a `cli_main` and
+            // no `main` was classified as the compiler and told to split its
+            // declarations instead of being told it recursed.
+            let running_compiler_sidecar = std::env::var("VIBE_CRASH_DIAG_OUT")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .filter(|_| matches!(e.downcast_ref::<Trap>(), Some(Trap::StackOverflow)));
+            if matches!(e.downcast_ref::<Trap>(), Some(Trap::StackOverflow))
+                && running_compiler_sidecar.is_none()
+            {
                 eprintln!(
                     "viberun: stack overflow while running `{wasm_path}`: the program recursed too deeply -- make the recursion a loop, or bound its depth"
                 );
                 return Ok(1);
             }
-            if matches!(e.downcast_ref::<Trap>(), Some(Trap::StackOverflow)) {
-                // #2858: under the verb protocol (`cli check <file>`) the
-                // positional args are the verb's own words, so `args[2]` is
-                // the user's source path or a flag -- writing `<that>.diag`
-                // would drop a sidecar beside the user's file (or a file
-                // named `--single-file.diag` in the project root). The
-                // launcher names the sidecar explicitly (VIBE_CRASH_DIAG_OUT,
-                // read back by runtime/vibe's invoke_cli); the positional /
-                // VIBE_OUTPUT convention stays for the adapter protocol.
-                let crash_diag = std::env::var("VIBE_CRASH_DIAG_OUT")
-                    .ok()
-                    .filter(|s| !s.is_empty());
-                let sidecar = match crash_diag {
-                    Some(path) => Some(path),
-                    None => args
-                        .get(2)
-                        .cloned()
-                        .filter(|s| !s.is_empty())
-                        .or_else(|| std::env::var("VIBE_OUTPUT").ok())
-                        .map(|output_path| format!("{output_path}.diag")),
-                };
-                if let Some(sidecar) = sidecar {
-                    let _ = std::fs::write(
-                        sidecar,
-                        "expression too deeply nested (stack overflow while type-checking)\n",
-                    );
-                }
+            if let Some(sidecar) = running_compiler_sidecar {
+                // #2858: the launcher names the sidecar (VIBE_CRASH_DIAG_OUT,
+                // read back by runtime/vibe's invoke_cli). Under the verb
+                // protocol (`cli check <file>`) the positional args are the
+                // verb's own words, so no sidecar is derived from them. A
+                // direct adapter-protocol caller (`viberun compiler.wasm <in>
+                // <out>`) vouches the same way, naming `<out>.diag`
+                // (scripts/vibe_pkg.sh, scripts/parallel_warm_pool.sh):
+                // nothing the module exports can say it is the compiler
+                // (#3031, Codex on #3039).
+                let _ = std::fs::write(
+                    sidecar,
+                    "expression too deeply nested (stack overflow while type-checking)\n",
+                );
                 eprintln!("viberun: stack overflow: expression too deeply nested");
                 return Ok(1);
             }
