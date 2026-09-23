@@ -35,6 +35,23 @@ Type checking is a CLI verb rather than a task: `vibe check <file.vibe>`
 The playground is an ordinary vite app with no pkf task — `cd playground &&
 pnpm install && pnpm dev` (or `pnpm build`).
 
+### jev-lint on Vibe sources
+
+With a sibling `mizchi/jev-lint` checkout (Node 24+ and its dependencies
+installed), run `pkf run jev-parser` to build the native tree-sitter parser
+at `.jev-lint/parsers/vibe.dylib`, then `pkf run jev-plan` to inspect the
+no-API scan of `lib/`. `.jev-lint.yaml` enables two warning-level Vibe rules
+with fully qualified names. To request verdicts for selected files, run
+`node --experimental-strip-types ../jev-lint/src/cli.ts check --config
+.jev-lint.yaml lib/@vibe/builtin/array_test.vibe`; this requires the
+`TYPESAFE_API_KEY` or `TYPESAFEAI_API_KEY` environment variable. Set
+`JEV_LINT_CLI` when the sibling checkout is elsewhere.
+
+The grammar in `integrations/treesitter-vibe/` also builds the playground and
+Zed WASM parsers. After changing it, regenerate the C parser and both WASM
+files, then run `bash scripts/stamp_treesitter_artifacts.sh`. The stamper
+checks the corpus against both WASM copies before updating its hash manifest.
+
 Coverage は selfhost テストスイート基準で測る:
 - 集計: `pkf run coverage`
 - branch coverage gate: `pkf run coverage-suite-branch-gate`
