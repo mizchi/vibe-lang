@@ -3999,15 +3999,19 @@ fn effect_fresh_targs(etps: Array[String], c: Int) -> (Array[Type], Int) {
 /// resolved to a ground type -- this refuses nothing it cannot name exactly.
 fn check_handle_inst_vs_callee_rows(body: Expr, insts: Array[(String, Array[Type])], env: TypeEnv, defs: Array[TypeDef], errors: Array[String]) -> Unit {
   if Array::length(insts) > 0 {
-    let calls: Array[(String, Int, String)] = []
+    let calls: Array[(String, Int, String, String)] = []
     handle_collect_direct_calls(body, " ", calls)
     let mut ci = 0
     while ci < Array::length(calls) {
-      let (cname, coff, shadowed) = Array::get(calls, ci)
-      let row = match env_lookup(env, cname) {
-        Some(CtFn(_, _, r)) => r,
-        Some(CtForAll(_, _, CtFn(_, _, r))) => r,
-        _ => None
+      let (cname, coff, shadowed, local_row) = Array::get(calls, ci)
+      let row = if String::length(local_row) > 0 {
+        Some(local_row)
+      } else {
+        match env_lookup(env, cname) {
+          Some(CtFn(_, _, r)) => r,
+          Some(CtForAll(_, _, CtFn(_, _, r))) => r,
+          _ => None
+        }
       }
       match row {
         Some(rtext) => {
@@ -4075,19 +4079,47 @@ fn check_handle_inst_vs_callee_rows(body: Expr, insts: Array[(String, Array[Type
 /// shadows only the effects its own arms name: a call inside it that needs
 /// another effect still reaches this handler (#3022 review). A lambda's body
 /// runs where the lambda is called, not here.
-fn handle_collect_direct_calls(e: Expr, shadowed: String, out: Array[(String, Int, String)]) -> Unit {
+fn handle_collect_direct_calls(e: Expr, shadowed: String, out: Array[(String, Int, String, String)]) -> Unit {
   handle_collect_direct_calls_scoped(e, shadowed, " ", out)
 }
 
 /// `locals` holds every name bound between the handle and this node, space
 /// delimited. A call to one of them is not the top-level function the outer
-/// environment names, so it is not collected: the row read for it would be
-/// another binding's (#3022 review).
-fn handle_collect_direct_calls_scoped(e: Expr, shadowed: String, locals: String, out: Array[(String, Int, String)]) -> Unit {
+/// environment names, so its row is never read from the environment: it would
+/// be another binding's (#3022 review). A local LAMBDA is followed instead.
+fn handle_collect_direct_calls_scoped(e: Expr, shadowed: String, locals: String, out: Array[(String, Int, String, String)]) -> Unit {
   match e {
     ECall(EIdent(n, noff), _, _) => {
-      if !String::contains(locals, String::concat(" ", String::concat(n, " "))) {
-        Array::push(out, (n, noff, shadowed))
+      let key = String::concat(" ", String::concat(n, " "))
+      if !String::contains(locals, key) {
+        Array::push(out, (n, noff, shadowed, ""))
+      } else {
+        // A lambda bound inside the handled body runs HERE when called here:
+        // its declared row is compared, and its body is walked (#3022
+        // review). The innermost binding of `n` must be that lambda.
+        let pos = String::last_index_of(locals, key)
+        match handle_local_lambda_at(n, pos) {
+          Some(EFn(_, _, fparams, _, feff, fbody)) => {
+            match feff {
+              Some(r) => Array::push(out, (n, noff, shadowed, r)),
+              None => ()
+            }
+            let mark = String::concat(n, String::concat("@", __to_string(pos)))
+            if !handle_lambda_expanding(mark) {
+              Array::push(handle_lambda_expanding_cell, mark)
+              let mut inner = locals
+              let mut pi = 0
+              while pi < Array::length(fparams) {
+                let (pname, _) = Array::get(fparams, pi)
+                inner = handle_locals_with(inner, pname)
+                pi = pi + 1
+              }
+              handle_collect_direct_calls_scoped(fbody, shadowed, inner, out)
+              Array::truncate(handle_lambda_expanding_cell, Array::length(handle_lambda_expanding_cell) - 1)
+            }
+          },
+          _ => ()
+        }
       }
       handle_collect_direct_calls_children(e, shadowed, locals, out)
     },
@@ -4110,7 +4142,9 @@ fn handle_collect_direct_calls_scoped(e: Expr, shadowed: String, locals: String,
     },
     ELet(name, value, rest, _) => {
       handle_collect_direct_calls_scoped(value, shadowed, locals, out)
+      let depth = handle_bind_local_lambda(name, locals, value)
       handle_collect_direct_calls_scoped(rest, shadowed, handle_locals_with(locals, name), out)
+      Array::truncate(handle_local_lambdas_cell, depth)
     },
     ELetMut(name, value, rest, _) => {
       handle_collect_direct_calls_scoped(value, shadowed, locals, out)
@@ -4118,8 +4152,10 @@ fn handle_collect_direct_calls_scoped(e: Expr, shadowed: String, locals: String,
     },
     ELetRec(name, value, rest) => {
       let inner = handle_locals_with(locals, name)
+      let depth = handle_bind_local_lambda(name, locals, value)
       handle_collect_direct_calls_scoped(value, shadowed, inner, out)
       handle_collect_direct_calls_scoped(rest, shadowed, inner, out)
+      Array::truncate(handle_local_lambdas_cell, depth)
     },
     EForIn(name, second, iter, body) => {
       handle_collect_direct_calls_scoped(iter, shadowed, locals, out)
@@ -4182,7 +4218,7 @@ fn handle_collect_direct_calls_scoped(e: Expr, shadowed: String, locals: String,
   }
 }
 
-fn handle_collect_direct_calls_children(e: Expr, shadowed: String, locals: String, out: Array[(String, Int, String)]) -> Unit {
+fn handle_collect_direct_calls_children(e: Expr, shadowed: String, locals: String, out: Array[(String, Int, String, String)]) -> Unit {
   let mark = expr_children_push(e)
   let end = expr_children_top()
   let mut i = mark
@@ -4191,6 +4227,53 @@ fn handle_collect_direct_calls_children(e: Expr, shadowed: String, locals: Strin
     i = i + 1
   }
   expr_children_pop(mark)
+}
+
+/// Lambdas bound inside the handled body, as (name, position of ` name ` in
+/// `locals` when bound, the lambda). Pushed on entry to the binding's scope
+/// and truncated on exit, so a sibling scope never sees another's entry.
+let handle_local_lambdas_cell: Array[(String, Int, Expr)] = []
+
+/// `name@pos` marks for lambdas whose bodies are being walked, so a lambda
+/// that calls itself is walked once.
+let handle_lambda_expanding_cell: Array[String] = []
+
+/// Record `value` under `name` when it is a lambda; returns the depth to
+/// truncate back to when the binding's scope ends.
+fn handle_bind_local_lambda(name: String, locals: String, value: Expr) -> Int {
+  let depth = Array::length(handle_local_lambdas_cell)
+  match value {
+    EFn(_, _, _, _, _, _) => Array::push(handle_local_lambdas_cell, (name, String::length(locals) - 1, value)),
+    _ => ()
+  }
+  depth
+}
+
+fn handle_local_lambda_at(name: String, pos: Int) -> Option[Expr] {
+  let mut found = None
+  let mut i = Array::length(handle_local_lambdas_cell) - 1
+  while i >= 0 {
+    let (ln, lpos, lv) = Array::get(handle_local_lambdas_cell, i)
+    if ln == name && lpos == pos {
+      found = Some(lv)
+      i = 0 - 1
+    } else {
+      i = i - 1
+    }
+  }
+  found
+}
+
+fn handle_lambda_expanding(mark: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(handle_lambda_expanding_cell) {
+    if Array::get(handle_lambda_expanding_cell, i) == mark {
+      found = true
+    }
+    i = i + 1
+  }
+  found
 }
 
 fn handle_locals_with(locals: String, name: String) -> String {
@@ -4234,21 +4317,18 @@ fn handle_locals_with_pat(locals: String, pat: Pat) -> String {
 }
 
 /// Does the handler's resolved argument `have` disagree with the argument a
-/// callee's row spells as `want`? Compared: a spelling built from builtin
-/// names, and a bare name declaring a non-generic struct or enum here. An
-/// alias, a generic nominal type, a type formal or an unresolved handler type
-/// is not judged (#3010, #3022 review).
+/// callee's row spells as `want`? Compared: a spelling whose every name is a
+/// builtin or a struct or enum declared here -- `Int`, `Array[String]`, `B`,
+/// `Box[Int]` -- since such a spelling has one meaning. An alias, a type formal
+/// or an unresolved handler type is not judged (#3010, #3022 review).
 fn effect_arg_mismatch(have: Type, want: String, defs: Array[TypeDef]) -> Bool {
   match builtin_scalar_type_of_name(want) {
     Some(want_ty) => head_kind(have) != 0 && !scalar_types_same(have, want_ty),
     None => {
       let have_text = type_to_string(have)
-      if builtin_structural_spelling(want) {
-        !String::contains(have_text, "?") && strip_spaces(have_text) != strip_spaces(want)
-      } else if declared_plain_nominal(defs, want) {
-        // The handler's type is judged only when it is itself something with
-        // one meaning: a builtin spelling or another plain nominal type.
-        have_text != want && !String::contains(have_text, "?") && (builtin_structural_spelling(have_text) || declared_plain_nominal(defs, have_text))
+      if closed_type_spelling(want, defs) {
+        // The handler's type is judged only when it is itself closed.
+        !String::contains(have_text, "?") && closed_type_spelling(have_text, defs) && strip_spaces(have_text) != strip_spaces(want)
       } else {
         false
       }
@@ -4256,12 +4336,46 @@ fn effect_arg_mismatch(have: Type, want: String, defs: Array[TypeDef]) -> Bool {
   }
 }
 
-/// Is `name` a struct or enum declared with no type parameters? Such a name
-/// denotes exactly one type, so two different ones never agree.
-fn declared_plain_nominal(defs: Array[TypeDef], name: String) -> Bool {
+/// Is `t` spelled only with builtin type names, structs or enums declared
+/// here, brackets, parentheses and commas?
+fn closed_type_spelling(t: String, defs: Array[TypeDef]) -> Bool {
+  let n = String::length(t)
+  let mut ok = n > 0
+  let mut i = 0
+  while i < n && ok {
+    let c = String::char_code_at(t, i)
+    if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+      let st = i
+      while i < n && is_type_name_char(String::char_code_at(t, i)) {
+        i = i + 1
+      }
+      let w = String::substring(t, st, i)
+      if !(builtin_type_word(w) || declared_nominal(defs, w)) {
+        ok = false
+      }
+    } else if c == '[' || c == ']' || c == '(' || c == ')' || c == ',' || c == ' ' {
+      i = i + 1
+    } else {
+      ok = false
+    }
+  }
+  ok
+}
+
+fn is_type_name_char(c: Int) -> Bool {
+  (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
+}
+
+fn builtin_type_word(w: String) -> Bool {
+  w == "Int" || w == "String" || w == "Bool" || w == "Double" || w == "Char" || w == "Bytes" || w == "Array" || w == "Option"
+}
+
+/// Is `name` a struct or enum declared here? Such a name denotes one type
+/// constructor, so two different spellings of its applications never agree.
+fn declared_nominal(defs: Array[TypeDef], name: String) -> Bool {
   match find_typedef(defs, name) {
-    Some(TDStruct(_, _, _, tps)) => Array::length(tps) == 0,
-    Some(TDEnum(_, tps, _)) => Array::length(tps) == 0,
+    Some(TDStruct(_, _, _, _)) => true,
+    Some(TDEnum(_, _, _)) => true,
     _ => false
   }
 }
@@ -4291,33 +4405,6 @@ fn split_row_top_level(row: String) -> Array[String] {
 
 fn strip_spaces(t: String) -> String {
   String::join(String::split(t, " "), "")
-}
-
-/// Is `t` a type spelled only with builtin names, brackets, parentheses and
-/// commas? Such a spelling has one meaning everywhere, so it can be compared
-/// with a resolved type's printed form.
-fn builtin_structural_spelling(t: String) -> Bool {
-  let n = String::length(t)
-  let mut ok = n > 0
-  let mut i = 0
-  while i < n && ok {
-    let c = String::char_code_at(t, i)
-    if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
-      let st = i
-      while i < n && ((String::char_code_at(t, i) >= 'a' && String::char_code_at(t, i) <= 'z') || (String::char_code_at(t, i) >= 'A' && String::char_code_at(t, i) <= 'Z')) {
-        i = i + 1
-      }
-      let w = String::substring(t, st, i)
-      if !(w == "Int" || w == "String" || w == "Bool" || w == "Double" || w == "Char" || w == "Bytes" || w == "Array" || w == "Option") {
-        ok = false
-      }
-    } else if c == '[' || c == ']' || c == '(' || c == ')' || c == ',' || c == ' ' {
-      i = i + 1
-    } else {
-      ok = false
-    }
-  }
-  ok
 }
 
 fn builtin_scalar_type_of_name(n: String) -> Option[Type] {
@@ -5683,16 +5770,20 @@ fn check_builtin_arg_head(name: String, i: Int, arg_ty: Type, errors: Array[Stri
 
 /// #3006: unify an unresolved type-variable argument with the concrete type a
 /// builtin's parameter head names. Only heads that name ONE type are bound
-/// (`Double`, `Bool`, `String`, `Bytes`, and `Array[_]` with a fresh
+/// (`Int`, `Double`, `Bool`, `String`, `Bytes`, and `Array[_]` with a fresh
 /// element); every other head, and a head of 0 (a parameter the builtin leaves
-/// open), leaves the variable alone exactly as before. The Int head is not
-/// bound here because it also admits `Char`. A failed unify (a bounded
-/// variable, say) also leaves it alone -- the head check above is the one that
-/// reports.
+/// open), leaves the variable alone exactly as before. The Int head also
+/// admits a concrete `Char`, but a variable is bound to `Int`: a generic
+/// wrapper then takes `Int` and a `Char` caller converts, instead of the
+/// formal staying open to a `String` read as an integer (#3022 review). A
+/// failed unify (a bounded variable, say) also leaves it alone -- the head
+/// check above is the one that reports.
 fn bind_builtin_arg_var(arg_ty: Type, want: Int, s: Subst, c: Int) -> (Subst, Int) {
   match arg_ty {
     CtVar(_) => {
-      let target = if want == 2 {
+      let target = if want == 1 {
+        Some(CtInt)
+      } else if want == 2 {
         Some(CtDouble)
       } else if want == 3 {
         Some(CtBool)
