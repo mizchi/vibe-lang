@@ -28,7 +28,7 @@ import @vibe/compiler/checker {
 }
 
 import ./binding_at.vibe {
-  binding_occurrences
+  binding_occurrences, local_binder_sites
 }
 
 import @vibe/compiler/syntax {
@@ -102,9 +102,13 @@ fn line_col_to_offset(source: String, line: Int, col: Int) -> Int {
 /// `CalleeHit` is an `EIdent` that is the callee of an `ECall` — the type
 /// table records CallResult at that same offset (`callee_offset`), so hover
 /// must not last-win the call result (#1941).
+/// `BinderHit` is the declaration site of a LOCAL binder (pattern binder,
+/// parameter, local `let`, `for` / `loop` binder), recovered by the scope walk
+/// in binding_at.vibe because the AST stores it as a bare String (#3000).
 enum IdentHit {
   IdentHit(String, Int);
-  CalleeHit(String, Int)
+  CalleeHit(String, Int);
+  BinderHit(String, Int)
 }
 
 fn empty_hits() -> Array[IdentHit] {
@@ -357,15 +361,45 @@ fn collect_binding_name_hits(stmts: Array[Stmt], span_start: Array[Int], span_en
 fn hit_name_off(hit: IdentHit) -> (String, Int) {
   match hit {
     IdentHit(name, off) => (name, off),
-    CalleeHit(name, off) => (name, off)
+    CalleeHit(name, off) => (name, off),
+    BinderHit(name, off) => (name, off)
   }
 }
 
 fn hit_is_callee(hit: IdentHit) -> Bool {
   match hit {
     CalleeHit(_, _) => true,
-    IdentHit(_, _) => false
+    IdentHit(_, _) => false,
+    BinderHit(_, _) => false
   }
+}
+
+fn hit_is_local_binder(hit: IdentHit) -> Bool {
+  match hit {
+    BinderHit(_, _) => true,
+    IdentHit(_, _) => false,
+    CalleeHit(_, _) => false
+  }
+}
+
+/// True when the innermost hit covering `tgt` is a local binder's declaration.
+fn pick_ident_is_local_binder(hits: Array[IdentHit], tgt: Int) -> Bool {
+  let mut best_off = -1
+  let mut best_binder = false
+  let mut i = 0
+  while i < Array::length(hits) {
+    let hit = Array::get(hits, i)
+    let (name, off) = hit_name_off(hit)
+    let span_end = off + String::length(name)
+    if off <= tgt && tgt < span_end && off > best_off {
+      best_off = off
+      best_binder = hit_is_local_binder(hit)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  best_binder
 }
 
 /// Among all collected idents whose span [off, off+len(name)) contains `tgt`,
@@ -475,7 +509,12 @@ fn type_at_off_in_occ(occ: Array[(Int, Int)], off: Int) -> Bool {
   found
 }
 
-fn type_at_use_or_env(table: Array[(Int, Type)], hits: Array[IdentHit], name: String, chosen_off: Int, final_s: Subst, stmts: Array[Stmt], occ: Array[(Int, Int)]) -> String with Exception {
+/// A name with no row of its own in the type table answers with the type of a
+/// USE that resolves to the same binding (`occ`, from the scope walk). Only a
+/// name that is not a local binder may then fall back to the top-level env: a
+/// local binder with no use has no recorded type, and looking its spelling up
+/// in the module env would answer for an unrelated top-level name.
+fn type_at_use_or_env(table: Array[(Int, Type)], hits: Array[IdentHit], name: String, chosen_off: Int, final_s: Subst, stmts: Array[Stmt], occ: Array[(Int, Int)], local_binder: Bool) -> String with Exception {
   let mut use_ty = ""
   let mut u = 0
   while u < Array::length(hits) {
@@ -494,6 +533,8 @@ fn type_at_use_or_env(table: Array[(Int, Type)], hits: Array[IdentHit], name: St
   }
   if use_ty != "" {
     use_ty
+  } else if local_binder {
+    ""
   } else {
     let env = check_program(stmts)
     match env_lookup(env, name) {
@@ -550,6 +591,16 @@ export fn type_at_source(source: String, line: Int, col: Int) -> String {
       // their source offset from each statement's span and the source text.
       let (span_stmts, span_start, span_end) = parse_program_spans(tokens, starts, ends)
       collect_binding_name_hits(span_stmts, span_start, span_end, source, hits)
+      // LOCAL binder declaration sites (pattern binders, parameters, local
+      // `let`s, `for` / `loop` binders) carry no offset either, and are not
+      // statements, so take them from binding_at's scope walk (#3000).
+      let binder_sites = local_binder_sites(source)
+      let mut bsi = 0
+      while bsi < Array::length(binder_sites) {
+        let (b_name, b_off) = Array::get(binder_sites, bsi)
+        Array::push(hits, BinderHit(b_name, b_off))
+        bsi = bsi + 1
+      }
       let name = pick_ident_at(hits, tgt)
       if name == "" {
         ""
@@ -577,7 +628,7 @@ export fn type_at_source(source: String, line: Int, col: Int) -> String {
           }
           match table_hit {
             Some(rec_ty) => type_to_string(subst_apply(final_s, rec_ty)),
-            None => type_at_use_or_env(table, hits, name, chosen_off, final_s, stmts, binding_occurrences(source, line, col))
+            None => type_at_use_or_env(table, hits, name, chosen_off, final_s, stmts, binding_occurrences(source, line, col), pick_ident_is_local_binder(hits, tgt))
           }
         }
       }

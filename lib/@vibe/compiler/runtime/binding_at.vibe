@@ -671,3 +671,36 @@ export fn binding_occurrences(source: String, line: Int, col: Int) -> Array[(Int
     binding_occurrences_impl(source, line, col)
   } with { Exception::Throw(_) => array_empty() }
 }
+
+/// The declaration sites of every LOCAL binder the scope walk recovers: a
+/// match / handle arm pattern binder (`Some(v)`, `Log::Emit(msg)`), a
+/// function / lambda parameter, a local `let`, a `for` / `loop` binder and a
+/// `let*` binder, as `(name, start byte offset)`. A binder's canonical id is its
+/// own offset + 1, which is how a declaration is told apart from a reference
+/// that resolves to it. Module-level names (key 0) are left out: `type-at`
+/// already finds those through each statement's span.
+///
+/// `vibe type-at` (#3000) needs these because none of them is an `EIdent`: the
+/// AST stores the binder as a bare String, so the hover walk never saw the
+/// place a name is introduced and answered nothing there.
+export fn local_binder_sites(source: String) -> Array[(String, Int)] {
+  handle {
+    let (tokens, starts, _ends) = lex_with_offsets(source)
+    let stmts = parse_program_located(tokens, starts, source)
+    let st = bind_new_state(tokens, starts)
+    bind_walk_stmts(st, stmts)
+    let out = array_empty()
+    let mut i = 0
+    while i < Array::length(st.hits) {
+      match Array::get(st.hits, i) {
+        BindHit(name, off, key) => if off >= 0 && key == off + 1 {
+          Array::push(out, (name, off))
+        } else {
+          ()
+        }
+      }
+      i = i + 1
+    }
+    out
+  } with { Exception::Throw(_) => array_empty() }
+}
