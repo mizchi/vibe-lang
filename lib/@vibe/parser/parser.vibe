@@ -927,6 +927,21 @@ fn zero_alloc_marker_ident(mode: String) -> String {
   }
 }
 
+/// One top-level statement of the preserving parse: an `impl` block expands
+/// to its method statements, anything else is a single statement.
+fn parse_preserving_top_stmt(tokens: Array[Token], starts: Array[Int], pos: Int) -> (Array[Stmt], Int) with Exception {
+  match peek(tokens, pos) {
+    TImpl => {
+      let (simpl, hp) = parse_impl_stmt_dispatch(tokens, pos + 1)
+      parse_impl_methods(tokens, hp, simpl, None)
+    },
+    _ => {
+      let (stmt, n) = parse_stmt_preserving(tokens, starts, pos)
+      ([stmt], n)
+    }
+  }
+}
+
 /// Program parser that KEEPS `fn` declarations as SFnDecl (see
 /// parse_stmt_preserving) — used by the printer/normalize round-trip so
 /// `vibe normalize` re-emits `fn name(..) -> T where { .. } { .. }` instead
@@ -942,6 +957,26 @@ fn zero_alloc_marker_ident(mode: String) -> String {
 /// logs already drained; the markers were appended last here and the
 /// lowerings keep statement order, so they stay last.
 export fn parse_program_preserving(tokens: Array[Token]) -> Array[Stmt] with Exception {
+  parse_program_preserving_impl(tokens, [], "", false)
+}
+
+/// `parse_program_preserving` with positions (#2948): the statements keep
+/// `fn` as SFnDecl, and a syntax error carries `line L:col C:` exactly as
+/// `parse_program_located` reports it. A `.vibex` entry is validated on the
+/// preserving shape (ADR-0075 inspects SFnDecl / SExport, which the located
+/// parser lowers away), and that validation parse used to take tokens only --
+/// so its parse errors had no position, and a token index encoded as `at #N`
+/// reached the reader verbatim.
+export fn parse_program_preserving_located(tokens: Array[Token], starts: Array[Int], source: String) -> Array[Stmt] with Exception {
+  parse_program_preserving_impl(tokens, starts, source, true)
+}
+
+fn parse_program_preserving_impl(tokens: Array[Token], starts: Array[Int], source: String, located: Bool) -> Array[Stmt] with Exception {
+  if located {
+    remember_parse_source(source)
+  } else {
+    ()
+  }
   let cfg_active = cfg_scan_enabled(tokens)
   let b = ArrayBuilder::new()
   let mut pos = 0
@@ -978,20 +1013,41 @@ export fn parse_program_preserving(tokens: Array[Token]) -> Array[Stmt] with Exc
           }
         }
       },
-      TImpl => {
-        let (simpl, hp) = parse_impl_stmt_dispatch(tokens, pos + 1)
-        let (impl_stmts, next) = parse_impl_methods(tokens, hp, simpl, None)
+      _ => if located {
+        // Same per-statement wrapper as `parse_program_located`, so both
+        // lanes name the same position for the same error.
+        let start_pos = pos
+        let (stmts, next) = handle {
+          parse_preserving_top_stmt(tokens, starts, pos)
+        } with { Exception::Throw(msg) => {
+          throw(locate_parse_error(msg, start_pos, starts, source))
+        } }
         let mut ii = 0
-        while ii < Array::length(impl_stmts) {
-          ArrayBuilder::push(b, Array::get(impl_stmts, ii))
+        while ii < Array::length(stmts) {
+          ArrayBuilder::push(b, Array::get(stmts, ii))
           ii = ii + 1
         }
         pos = next
-      },
-      _ => {
-        let (stmt, next) = parse_stmt_preserving(tokens, [], pos)
-        ArrayBuilder::push(b, stmt)
-        pos = next
+      } else {
+        // The tokens-only path (every `parse_program`) keeps its original
+        // shape: no handler and no per-statement array.
+        match peek(tokens, pos) {
+          TImpl => {
+            let (simpl, hp) = parse_impl_stmt_dispatch(tokens, pos + 1)
+            let (impl_stmts, next) = parse_impl_methods(tokens, hp, simpl, None)
+            let mut ii = 0
+            while ii < Array::length(impl_stmts) {
+              ArrayBuilder::push(b, Array::get(impl_stmts, ii))
+              ii = ii + 1
+            }
+            pos = next
+          },
+          _ => {
+            let (stmt, next) = parse_stmt_preserving(tokens, [], pos)
+            ArrayBuilder::push(b, stmt)
+            pos = next
+          }
+        }
       }
     }
   }

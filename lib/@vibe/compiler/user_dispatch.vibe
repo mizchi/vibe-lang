@@ -96,7 +96,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/compiler/syntax {
-  lex, located_lex_message, parse_program
+  lex, lex_with_offsets, located_lex_message, parse_program, parse_program_located
 }
 
 import ./cli_support.vibe {
@@ -2507,14 +2507,17 @@ fn host_granted_from_flags(allows: Array[String], denies: Array[String]) -> Arra
 ///   vibe serve e.vibex         error: unexpected character: \
 ///   vibe build --wit w.vibe    error: unexpected character: \
 ///
-/// while `vibe check` on the same file answered `line 2:13:`. A PARSE error is
-/// unchanged apart from the path: `located_lex_message` returns anything
-/// already carrying `line ` untouched, and declines to invent a position for a
-/// throw the recovering lexer cannot place.
+/// while `vibe check` on the same file answered `line 2:13:`. A PARSE error
+/// is located by the parse itself (#2948), and `located_lex_message` returns
+/// anything already carrying `line ` untouched; it declines to invent a
+/// position for a throw the recovering lexer cannot place.
 fn parse_user_entry_file(src: String) -> Array[Stmt] with Exception + Fs {
   let source = Fs::read_file(src)
+  // #2948: the located parse, so a PARSE error carries `line L:col C:` too
+  // (and never the raw `at #N` token index a tokens-only parse leaves in).
   handle {
-    parse_program(lex(source))
+    let (tokens, starts, _ends) = lex_with_offsets(source)
+    parse_program_located(tokens, starts, source)
   } with { Exception::Throw(msg) => throw(String::concat(String::concat(src, ": "), located_lex_message(source, msg))) }
 }
 

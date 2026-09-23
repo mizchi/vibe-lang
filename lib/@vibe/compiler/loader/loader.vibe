@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/syntax {
-  cfg_ambient_flags_csv, lex, lex_with_offsets, located_lex_message, parse_program, parse_program_preserving
+  cfg_ambient_flags_csv, lex, lex_with_offsets, located_lex_message, parse_program, parse_program_preserving_located
 }
 
 import @vibe/core {
@@ -530,8 +530,14 @@ fn validate_vibex_entry_source(path: String, source: String) -> Unit with Except
     //
     // The third is `located_parse_uncached`, which a `.vibe` entry reaches and
     // a `.vibex` entry does not, because this runs first and throws.
+    //
+    // #2948: the parse is the LOCATED preserving one, so a syntax error
+    // carries `line L:col C:` as it does on the `.vibe` lane; the tokens-only
+    // parse had no starts table and so no position (and an `at #N` token
+    // index leaked into the message instead).
     let stmts = handle {
-      parse_program_preserving(lex(pin_blanked))
+      let (tokens, starts, _ends) = lex_with_offsets(pin_blanked)
+      parse_program_preserving_located(tokens, starts, pin_blanked)
     } with { Exception::Throw(msg) => throw(String::concat(String::concat(path, ": "), located_lex_message(pin_blanked, msg))) }
     let mut main_count = 0
     let mut saw_value_main = false
