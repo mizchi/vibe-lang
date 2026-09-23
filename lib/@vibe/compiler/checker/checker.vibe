@@ -128,7 +128,7 @@ import @vibe/core {
 }
 
 import ./checker_effects.vibe {
-  typed_throw_kind_record
+  exception_kind_alias_record, typed_throw_kind_record
 }
 
 import ./checker_exhaustive.vibe {
@@ -425,6 +425,9 @@ fn report_unknown_type_names_only(te: TypeExpr, defs: Array[TypeDef], shadow: Ar
 /// that currently looks like a compiler-owned builtin head.
 export fn report_unknown_type_names_deferred_validation(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], env: TypeEnv, row_binders: Array[String], where_label: String, errors: Array[String]) -> Unit {
   report_unknown_type_names_only(te, defs, shadow, env, row_binders, where_label, errors)
+  // The rows of function types in a struct field or an enum payload name
+  // exception kinds too (Codex on #3021).
+  report_exception_kinds_in_type_expr(te, defs, shadow, env, errors)
 }
 
 export fn report_unknown_type_names(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], env: TypeEnv, row_binders: Array[String], where_label: String, errors: Array[String]) -> Unit {
@@ -474,7 +477,21 @@ fn report_exception_kind(label: String, defs: Array[TypeDef], shadow: Array[Stri
         } else if String::length(effect_head) > 0 {
           Array::push(errors, String::concat(String::concat(String::concat(String::concat(String::concat(String::concat(String::concat(String::concat("`", spelled), "`: `"), effect_name), "` is "), effect_head), ", not a type -- write `with "), effect_name), "` to raise what it lists, and handle each exception kind by its own type"))
         } else {
-          report_unknown_type_names_only(kind_te, defs, shadow, env, array_empty(), String::concat(String::concat("the exception kind `", spelled), "` (declare it, or write the erased `Exception`)"), errors)
+          let where_kind = String::concat(String::concat("the exception kind `", spelled), "` (declare it, or write the erased `Exception`)")
+          let before = Array::length(errors)
+          // Arity and map-key checks as an annotation gets them
+          // (`Exception[Option[Int, String]]`, Codex on #3021).
+          report_map_key_types(kind_te, defs, shadow, where_kind, errors)
+          report_unknown_type_names_only(kind_te, defs, shadow, env, array_empty(), where_kind, errors)
+          if Array::length(errors) == before {
+            // The kind as the checker resolves it -- aliases expanded, nested
+            // and parameterized ones included -- so the effect pass compares
+            // it with a payload's checked type (Codex on #3021).
+            let resolved = resolve_tparams_in(resolve_type_expr_shadowed(kind_te, defs, shadow), env)
+            exception_kind_alias_record(kind, checked_throw_kind(resolved, SubstEmpty, env))
+          } else {
+            ()
+          }
         }
       },
       None => ()
@@ -509,8 +526,53 @@ fn checked_throw_kind(t: Type, s: Subst, env: TypeEnv) -> String {
     CtArray(e) => checked_throw_kind_applied("Array", [e], s, env),
     CtOption(e) => checked_throw_kind_applied("Option", [e], s, env),
     CtVar(id) => checked_throw_kind_formal_name(id, s, env),
+    CtTuple(elems) => {
+      // `(Int, Int)`, as a row writes a tuple kind (Codex on #3021).
+      let mut acc = "("
+      let mut ok = Array::length(elems) > 0
+      let mut i = 0
+      while ok && i < Array::length(elems) {
+        let part = checked_throw_kind(subst_apply(s, Array::get(elems, i)), s, env)
+        if String::length(part) == 0 {
+          ok = false
+        } else {
+          acc = String::concat(acc, if i == 0 {
+            part
+          } else {
+            String::concat(", ", part)
+          })
+        }
+        i = i + 1
+      }
+      if ok {
+        String::concat(acc, ")")
+      } else {
+        ""
+      }
+    },
     _ => ""
   }
+}
+
+/// Throw sites whose payload type was still open when visited, resolved by
+/// `typed_throw_kinds_flush` with the enclosing binding's final substitution.
+let pending_throw_kinds: Array[(Int, Expr, Type, TypeEnv)] = array_empty()
+
+/// Resolve every pending throw site with `s` (a top-level binding's
+/// substitution once its value is checked) and record what became concrete.
+export fn typed_throw_kinds_flush(s: Subst) -> Unit {
+  let mut i = 0
+  while i < Array::length(pending_throw_kinds) {
+    let (off, payload, ty, penv) = Array::get(pending_throw_kinds, i)
+    let k = checked_throw_kind(subst_apply(s, ty), s, penv)
+    if String::length(k) > 0 {
+      typed_throw_kind_record(off, payload, k)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  Array::truncate(pending_throw_kinds, 0)
 }
 
 fn checked_throw_kind_applied(head: String, targs: Array[Type], s: Subst, env: TypeEnv) -> String {
@@ -8614,7 +8676,16 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                     // call's result, an unannotated local, a pattern binder or
                     // a field.
                     if Array::length(opargs) == 1 {
-                      typed_throw_kind_record(call_off, Array::get(opargs, 0), checked_throw_kind(subst_apply(ts, tpt), ts, env))
+                      let tkind = checked_throw_kind(subst_apply(ts, tpt), ts, env)
+                      if String::length(tkind) > 0 {
+                        typed_throw_kind_record(call_off, Array::get(opargs, 0), tkind)
+                      } else {
+                        // Still an inference variable here; a later
+                        // expression of the same binding may pin it (Codex
+                        // on #3021), so resolve it again with the binding's
+                        // final substitution (`typed_throw_kinds_flush`).
+                        Array::push(pending_throw_kinds, (call_off, Array::get(opargs, 0), tpt, env))
+                      }
                     } else {
                       ()
                     }

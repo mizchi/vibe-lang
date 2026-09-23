@@ -2575,24 +2575,86 @@ fn exception_kinds_same(a: String, b: String) -> Bool {
   a == b || exception_kind_canonical(a) == exception_kind_canonical(b)
 }
 
-/// `kind` followed through `alias_kind_cell` (bounded, so a cyclic alias
-/// cannot loop).
+/// The written spelling of a row or arm kind -> the checker's resolution of
+/// it (aliases expanded, nested and parameterized ones included), recorded
+/// while the kind is validated. Cleared with the throw-site table.
+let kind_resolution_cell: Array[MutMap[String, String]] = [MutMap::new_string()]
+
+/// Record that the kind written `written` resolves to `resolved`.
+export fn exception_kind_alias_record(written: String, resolved: String) -> Unit {
+  let w = kind_without_spaces(written)
+  let r = kind_without_spaces(resolved)
+  if String::length(r) > 0 && w != r {
+    MutMap::set(Array::get(kind_resolution_cell, 0), w, r)
+  } else {
+    ()
+  }
+}
+
+/// `kind` with whitespace dropped, its recorded resolution applied, and then
+/// every identifier that names a non-generic alias replaced by its target
+/// (bounded, so a cyclic alias cannot loop). The second step is what a
+/// callee's row from another module gets, whose kinds were not validated in
+/// this module's check.
 fn exception_kind_canonical(kind: String) -> String {
-  let aliases = Array::get(alias_kind_cell, 0)
-  let mut cur = kind
-  let mut hops = 0
-  while hops < 8 {
-    match MutMap::get(aliases, cur) {
-      Some(target) => {
-        cur = target
-        hops = hops + 1
-      },
-      None => {
-        hops = 8
-      }
+  let k0 = kind_without_spaces(kind)
+  let k1 = match MutMap::get(Array::get(kind_resolution_cell, 0), k0) {
+    Some(r) => r,
+    None => k0
+  }
+  let mut cur = k1
+  let mut pass = 0
+  while pass < 8 {
+    let next = kind_substitute_aliases(cur)
+    if next == cur {
+      pass = 8
+    } else {
+      cur = next
+      pass = pass + 1
     }
   }
   cur
+}
+
+fn kind_without_spaces(kind: String) -> String {
+  let parts = String::split(kind, " ")
+  let mut acc = ""
+  let mut i = 0
+  while i < Array::length(parts) {
+    acc = String::concat(acc, Array::get(parts, i))
+    i = i + 1
+  }
+  acc
+}
+
+fn kind_ident_char(c: Int) -> Bool {
+  (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95
+}
+
+/// One pass of identifier-wise alias substitution over a kind spelling.
+fn kind_substitute_aliases(kind: String) -> String {
+  let aliases = Array::get(alias_kind_cell, 0)
+  let n = String::length(kind)
+  let mut out = ""
+  let mut i = 0
+  while i < n {
+    if kind_ident_char(String::char_code_at(kind, i)) {
+      let mut j = i
+      while j < n && kind_ident_char(String::char_code_at(kind, j)) {
+        j = j + 1
+      }
+      let word = String::substring(kind, i, j)
+      out = String::concat(out, match MutMap::get(aliases, word) {
+        Some(target) => kind_without_spaces(target),
+        None => word
+      })
+      i = j
+    } else {
+      out = String::concat(out, String::substring(kind, i, i + 1))
+      i = i + 1
+    }
+  }
+  out
 }
 
 /// Non-generic alias name -> the kind spelling of its target, rebuilt with the
@@ -2774,6 +2836,7 @@ let typed_throw_kind_cell: Array[MutMap[Int, (String, String)]] = [
 /// so one module's sites never answer for another's.
 export fn typed_throw_kinds_clear() -> Unit {
   Array::set(typed_throw_kind_cell, 0, MutMap::new_int())
+  Array::set(kind_resolution_cell, 0, MutMap::new_string())
 }
 
 /// Record that the `throw` at `off` (payload `payload`) throws kind `kind`.
@@ -3038,12 +3101,15 @@ fn throw_payload_kind(payload: Expr, binds: Array[(String, String)]) -> String {
 fn throw_required_label(op_name: String, opargs: Array[Expr], binds: Array[(String, String)], site_off: Int) -> String {
   if is_exception_throw_operation(op_name) && Array::length(opargs) == 1 {
     let payload = Array::get(opargs, 0)
-    let syntactic = throw_payload_kind(payload, binds)
-    // #3017: what the syntax cannot resolve, the checker may have.
-    let kind = if String::length(syntactic) > 0 {
-      syntactic
+    // #3017: the checker's answer first -- it is the payload's full static
+    // type (`Array[IoErr]`, where the syntax reads a parameter annotation's
+    // head `Array`); the syntactic walk is the fallback for a site the
+    // checker left open or never saw.
+    let typed = typed_throw_kind_at(site_off, payload)
+    let kind = if String::length(typed) > 0 {
+      typed
     } else {
-      typed_throw_kind_at(site_off, payload)
+      throw_payload_kind(payload, binds)
     }
     exception_throw_label_for_kind(kind)
   } else {

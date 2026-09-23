@@ -121,6 +121,7 @@ import ./checker.vibe {
   ty_has_open_array_elem,
   typed_occurrence_capture_begin_statement,
   typed_occurrence_capture_end_statement,
+  typed_throw_kinds_flush,
   validate_trait_reference
 }
 
@@ -3196,6 +3197,9 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         } else {
           check_expr_capture(val, val_env, defs, s, c, errors, tytab, role_lane_capture, "Primary")
         }
+        // #3017 (Codex on #3021): a throw whose payload was still open when
+        // visited is resolved now that the whole value has been checked.
+        typed_throw_kinds_flush(ns0)
         attach_unlocated_decl_name_marker(errors, err_before, name)
         // The value must be assignable to a declared annotation (previously
         // unchecked — `let x: Int = "s"` was accepted).
@@ -6636,7 +6640,10 @@ fn refresh_completed_type_env(env: TypeEnv, defs: Array[TypeDef], from: Int, to:
 
 fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: Option[CheckerStatementCapture], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture]) -> CheckedProgramTypeDefsObservation with Exception {
   let errors = ArrayBuilder::new()
-  // #3017: this module's throw sites record their checked kinds afresh.
+  // #3017: this module's throw sites record their checked kinds afresh (a
+  // previous module's pending sites are settled first, into the table that
+  // is about to be cleared, so none can answer here).
+  typed_throw_kinds_flush(SubstEmpty)
   typed_throw_kinds_clear()
   let frozen_errors = ArrayBuilder::freeze(errors)
   push_error_strings(collect_trait_namespace_conflict_errors(stmts, EnvEmpty), frozen_errors)
@@ -8588,7 +8595,9 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
   match initial_env {
     EnvEmpty => check_program_type_defs_observation_impl(stmts, capture, role_lane_capture),
     _ => {
-      // #3017: this module's throw sites record their checked kinds afresh.
+      // #3017: this module's throw sites record their checked kinds afresh
+      // (see check_program_type_defs_observation_impl).
+      typed_throw_kinds_flush(SubstEmpty)
       typed_throw_kinds_clear()
       let errors = ArrayBuilder::new()
       let frozen_errors = ArrayBuilder::freeze(errors)

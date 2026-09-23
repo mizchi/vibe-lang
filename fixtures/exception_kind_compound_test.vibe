@@ -1,0 +1,48 @@
+// Codex on #3021: exception kinds compared as the checker resolves them --
+// an alias nested in a compound kind, a parameterized alias, and a payload
+// whose type a LATER expression of the same function pins. (A tuple kind
+// cannot be written: the row grammar takes a type name in the brackets.)
+enum IoErr {
+  NotFound(String)
+}
+
+type E = IoErr
+
+type Es[T] = Array[T]
+
+fn nested_alias(xs: Array[E]) -> Int with Exception[Array[E]] {
+  throw(xs)
+}
+
+fn param_alias(xs: Es[IoErr]) -> Int with Exception[Es[IoErr]] {
+  throw(xs)
+}
+
+// `x` is unannotated: at the throw its type is still open, and only the
+// `else` branch pins it to Int.
+let settled_later = (c: Bool, x) -> Int with Exception[Int] {
+  if c {
+    throw(x)
+  } else {
+    x + 1
+  }
+}
+
+test "an alias nested in a compound kind" {
+  let r = handle { nested_alias([NotFound("a"), NotFound("b")]) } with {
+    Exception[Array[IoErr]]::Throw(es) => Array::length(es)
+  }
+  inspect(r, content = "2")
+}
+
+test "a parameterized alias kind" {
+  let r = handle { param_alias([NotFound("a")]) } with {
+    Exception[Array[IoErr]]::Throw(es) => Array::length(es)
+  }
+  inspect(r, content = "1")
+}
+
+test "a payload type pinned after the throw" {
+  let r = handle { settled_later(true, 41) } with { Exception[Int]::Throw(n) => n + 1 }
+  inspect(r, content = "42")
+}
