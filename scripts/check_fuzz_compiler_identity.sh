@@ -52,7 +52,14 @@ lexical() { # <path>
   # The shape the strict resolver replaced. Checked outside comments so the
   # explanation above may quote it (the gate must not be able to see itself,
   # and the file must not be tripped by its own rationale).
-  if sed 's/#.*$//' "$f" | grep -q 'ls -t.*generations'; then
+  #
+  # NOT `grep -q`: this file runs under `pipefail`, and `grep -q` exits at the
+  # first match while `sed` may still be writing the rest of a 22 KB harness.
+  # sed then dies of SIGPIPE, the pipeline reports 141, the `if` is false, and
+  # the mtime pick sails through -- a silent miss, measured at 8/300 on the
+  # red-6 mutant and seen once in CI (run 35911450805). A grep that reads to
+  # EOF cannot cut its producer off.
+  if sed 's/#.*$//' "$f" | grep 'ls -t.*generations' >/dev/null; then
     fail "$f still picks a generation by MTIME (ls -t); that answers a different question than HEAD's build"
   fi
 }

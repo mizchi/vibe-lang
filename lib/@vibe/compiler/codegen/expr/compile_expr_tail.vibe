@@ -1164,7 +1164,21 @@ fn classify_let_value_heap(buf: Bytes, value: Expr, name: String, local_idx: Int
       Array::push(ctx.heap_binding_names, name)
     } else if is_eident(value) {
       let src = get_eident_name(value)
-      if array_contains_str(ctx.heap_binding_names, src) {
+      // An alias of a source this pass never classified -- a pattern or
+      // destructure binder (`let (t, s, c) = f(); let mut s1 = s`) is the
+      // common one, since only this file registers heap bindings -- is still
+      // heap when the Perceus plan gives the ALIAS a scope-end drop: the plan
+      // budgeted it as an owned heap binding. (Dups alone are not the test --
+      // the plan also budgets them for an alias of an `Int` parameter, whose
+      // guarded dups are no-ops that only cost fuel.) Declining here
+      // applied that plan by halves: the budget dups landed on the initial
+      // value at the declaration, while the reassignment re-budget and the
+      // scope-end drop (both gated on heap_binding_names) were skipped. A
+      // `let mut` reassigned in a loop then reached its later owning uses
+      // one reference short per extra use, and an owning callee freed the
+      // value the next use still held -- the checker's handle arm returned
+      // a `Subst` whose cell the tuple around it had been allocated into.
+      if array_contains_str(ctx.heap_binding_names, src) || array_contains_str(ctx.rc_drop_names, name) {
         rc_kind = 2
         Array::push(ctx.heap_binding_names, name)
         if array_contains_str(ctx.rc_alias_dup_names, name) {

@@ -1,0 +1,72 @@
+// A `let mut` initialised from a destructured binder, reassigned in a loop,
+// then consumed twice. Codegen classified the slot as non-heap (its source
+// was a pattern binder, which nothing registers) while the Perceus plan
+// budgeted it as an owned heap binding, so the reassigned value reached its
+// two owning uses one reference short: `keep` freed it and the returned tuple
+// held the freed cell. Measured before the fix: `len(h)` answered 2.
+enum L {
+  Nil;
+  Cons(Int, L)
+}
+
+fn len(s: L) -> Int {
+  match s {
+    Nil => 0,
+    Cons(_, rest) => 1 + len(rest)
+  }
+}
+
+fn keep(s: L, sink: Array[L]) -> Unit {
+  let held = [s]
+  Array::push(sink, Nil)
+  if Array::length(held) > 5 {
+    Array::push(sink, Array::get(held, 0))
+  } else {
+    ()
+  }
+}
+
+fn sum(s: L) -> Int {
+  match s {
+    Nil => 0,
+    Cons(v, rest) => v + sum(rest)
+  }
+}
+
+fn make(n: Int) -> (Int, L, Int) {
+  (n, Cons(n, Nil), n)
+}
+
+fn grow(s: L, n: Int) -> L {
+  Cons(n, s)
+}
+
+fn run(n: Int, sink: Array[L]) -> (Int, L, Int) {
+  let (_, hs, _) = make(n)
+  let mut hs1 = hs
+  let mut i = 0
+  while i < n {
+    if i > 2 {
+      hs1 = grow(hs1, i)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  keep(hs1, sink)
+  (1, hs1, 2)
+}
+
+test "a let mut aliasing a destructured binder keeps its reference across a reassignment" {
+  let sink: Array[L] = []
+  let (_, h, _) = run(5, sink)
+  Array::truncate(sink, 0)
+  let junk: Array[L] = []
+  let mut k = 0
+  while k < 64 {
+    Array::push(junk, Cons(k, Cons(k, Nil)))
+    k = k + 1
+  }
+  inspect(len(h), "3")
+  inspect(sum(h), "12")
+}

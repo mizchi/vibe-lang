@@ -95,7 +95,9 @@ mkdir -p "$WORK/disc" "$WORK/jobs"
 # convention appears.
 run_cli() {  # run_cli <input> <output> [env assignments...]
   local input="$1" output="$2"; shift 2
-  env "$@" timeout 600 "$RUNNER" "$COMPILER" "$input" "$output" __no_entry__ \
+  # VIBE_CRASH_DIAG_OUT: the runner writes a checker stack overflow's
+  # diagnostic only to a sidecar the invoker names.
+  env "$@" VIBE_CRASH_DIAG_OUT="$output.diag" timeout 600 "$RUNNER" "$COMPILER" "$input" "$output" __no_entry__ \
     >/dev/null 2>&1
 }
 export -f run_cli
@@ -215,6 +217,7 @@ build_and_run_job_body() {  # build_and_run_job_body <path>
     i=$((i + 1))
   done < "$DISC_DIR/$key.out"
   env VIBE_PREOPEN_DIR="$jobdir" VIBE_MODULE_JOB_DIR=1 VIBE_IMPORT_ABI=raw \
+    VIBE_CRASH_DIAG_OUT="$jobdir/worker.out.diag" \
     timeout 600 "$RUNNER" "$COMPILER" "$jobdir" "$jobdir/worker.out" __no_entry__ \
     >/dev/null 2>&1 || true
   [ "$(cat "$jobdir/outcome.txt" 2>/dev/null || true)" = "ok" ] || rm -f "$jobdir/env.out"
