@@ -117,13 +117,26 @@ no escape, and a check built only on the mask would accept it. That would let
 a write bypass the `mut` exclusivity contract (A3). A declared `borrow`
 therefore needs a separate **write check**:
 
-- the parameter is never the buffer argument of a mutating builtin (the
-  registry already knows which builtins write; `md_is_borrow_arg0_call`'s
-  list is the starting point, and the rule is the opposite one — a
-  mutator is a write, whatever its ownership class);
-- it is never passed to a `mut` position;
-- it is passed to an unannotated position only if that callee's per-parameter
-  **write summary** says "does not write". The summary is computed and
+- the check applies to every **borrow-derived** value, not only to the
+  parameter's own name. A value is borrow-derived if it is the parameter
+  itself, a projection of a borrow-derived value (`h.buf`, `h.a.b`, `t.0`),
+  an element read from one (`Array::get(xs, i)`), a pattern variable bound
+  by matching one, or a local (`let`, or `let mut` assignment) bound to a
+  borrow-derived expression. This is a flow-insensitive taint over one
+  function body, which is conservative and cheap. Without it,
+  `fn f(borrow h: Holder) { Array::set(h.buf, 0, 1) }` passes: `h` sits only
+  in projection positions, its consume count is 0, and it does not escape,
+  yet its reachable contents change;
+- a borrow-derived value is never the buffer argument of a mutating builtin.
+  The registry already knows which builtins write; `md_is_borrow_arg0_call`'s
+  list is the starting point, and the rule is the opposite one: a mutator is
+  a write, whatever its ownership class. It is also never the target of a
+  `mut` struct-field assignment (ADR-0052);
+- a borrow-derived value is never passed to a `mut` position;
+- a borrow-derived value is passed to an unannotated position only if that
+  callee's per-parameter **write summary** says "does not write". Summaries
+  attribute writes to the **root** parameter, so a callee that writes
+  `p.buf` reports a write to `p`. The summary is computed and
   imported the same way `#zero_alloc` summaries are (ADR-0091). An unknown
   callee (a function value, a missing summary) counts as a writer.
 
@@ -247,7 +260,8 @@ Two parts of the practice matter as much as the theorems:
   a second Bend `bend.lean`.
 - **Negative witnesses.** A deliberately broken checker must admit a concrete
   unsound program. One variant drops the escape rule, one drops the
-  `borrow` write check, one drops the identity check, one drops the
+  `borrow` write check, one checks writes on the parameter name only and
+  not through projections, one drops the identity check, one drops the
   buffer-free-argument rule, one checks only bare-buffer globals, one
   counts a loop body's consume once, and one admits a `mut` call through a
   capturing closure. `formal/` already keeps such witnesses for the Error policy.
@@ -271,8 +285,21 @@ shadow-liveness (`VIBE_RC=shadow`, ADR-0062) obligation, not a theorem.
 
 - `Array[Int]` slots are tagged `n << 1`, and **addition is tag-transparent**:
   `i64x2.add` over raw slots is correct with no untag, and it wraps at exactly
-  the 63-bit boundary ADR-0105 specifies. Multiplication needs one operand
-  untagged. Comparisons preserve order. `bench/bench_simd_int_column.vibe`
+  the 63-bit boundary ADR-0105 specifies. The other operations are not all
+  tag-transparent, and each one needs its own lowering:
+
+  | operation | tagged-lane lowering |
+  |---|---|
+  | `+ - & \| ^`, negation, comparisons | as is (the tag bit is 0 on both sides and stays 0; order is preserved) |
+  | `*` | untag one operand (`i64x2.shr_s` by 1) first |
+  | `<< c` | as is, for `c` in `[0, 62]` |
+  | `>> c` | `i64x2.shr_s` by `c`, then clear bit 0, which receives a value bit |
+  | `~` | **xor with tagged(-1) = `-2`, not `v128.not`**. A plain not sets the tag bit and produces a malformed `Int`, the same trap the scalar lowering documents in `AGENTS.md` (`~0` must be `-2`, not `-1`) |
+  | literals, captured scalars | splat the tagged value |
+
+  Each row is a lemma in B8, and each has a negative control. A lowering that
+  uses `v128.not` for `~`, or that omits the bit-0 clear after `>>`, must fail
+  the differential gate. `bench/bench_simd_int_column.vibe`
   measured a 6.0× speedup for the tagged 2-lane sum over the loop, and 14.7× for
   a packed i32 column. Some of the first number is loop overhead, not SIMD.
   As simd-api-design.md warns, the honest baseline is a native builtin, not a
@@ -307,12 +334,22 @@ analysis:
    `abs`, literals, `let`, and `if` whose two arms are themselves in the
    subset (lowered to `v128.bitselect`), and it obeys the range rule of B4;
 3. it **makes no calls** except to functions whose bodies are in the subset
-   (these are inlined). That excludes every mutating builtin. The effect row
-   is not enough here: `Array::set` carries no effect in vibe;
+   **and that carry no `where` contract** (these are inlined). That excludes
+   every mutating builtin. The effect row is not enough here: `Array::set`
+   carries no effect in vibe. The contract exclusion exists because `if`
+   lowered to `bitselect` evaluates **both** arms on **every** lane. A
+   `requires` is an always-on trap (ADR-0064), so
+   `if x > 0 { positive(x) } else { 0 }` is safe as a scalar program but
+   would trap on the inactive lanes. More generally, every operation in the
+   subset must be **total**, meaning it cannot trap on any input. That is
+   also why division is excluded, not only for its missing lane instruction.
+   Predicating contract checks with the active-lane mask is possible in
+   principle, but it is not proposed for a first cut;
 4. it does not allocate (the `#zero_alloc(strict)` machinery answers this);
 5. it is non-recursive and has no early `return`.
 
-Division, and anything else without a lane instruction, is outside the subset.
+Division, contracted calls, and anything else that can trap or has no lane
+instruction are outside the subset.
 Such a kernel stays scalar and is still correct.
 
 ### B4. The rule that keeps narrowing honest
@@ -459,7 +496,8 @@ Follow veri's four parts:
    extremes.
 3. **Negative controls**: a deliberately wrong lowering must fail the
    differential gate. Such lowerings include vectorizing a comparison after an
-   overflowing add, a `Double` min/max reduction without NaN canonicalization, `abs(x) > 0` on a loaded `-2147483648`, a shift by 32 on an
+   overflowing add, `v128.not` for `~` on tagged lanes, a contracted call under
+   `bitselect`, a `Double` min/max reduction without NaN canonicalization, `abs(x) > 0` on a loaded `-2147483648`, a shift by 32 on an
    i32 lane, and reassociating a `Double` sum. This is the repository's
    rule that a gate is trusted only once it has been shown to fail (#2248).
 4. **A correspondence table** in the eventual ADR. Its last column states,
