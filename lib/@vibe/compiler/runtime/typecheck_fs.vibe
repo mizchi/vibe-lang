@@ -1631,7 +1631,122 @@ fn prepend_dependency_trait_nodes(dep_env: TypeEnv, mappings: Array[(String, Str
   out
 }
 
-fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_path: String, names: Array[ImportItem], declaration_names: Array[ImportItem], cache: Array[(String, TypeEnv)], unresolved: Array[String], trait_claims: Array[(String, String, Bool, String)], reexport_surface_only: Bool) -> TypeEnv {
+/// #3026: the nominal type names this module declares at top level. A type
+/// is identified by its bare name (`CtEnum("IoErr")`), so one of these names
+/// appearing inside an IMPORTED signature is a different declaration spelled
+/// the same way -- see `foreign_type_name_collisions`.
+fn local_declared_type_names(stmts: Array[Stmt]) -> Array[String] {
+  let out: Array[String] = []
+  for stmt in stmts {
+    match stmt {
+      SEnum(_, name, _, _, _) => Array::push(out, name),
+      SStruct(_, name, _, _, _, _) => Array::push(out, name),
+      STypeAlias(_, name, _, _) => Array::push(out, name),
+      SSuberror(_, name, _) => Array::push(out, name),
+      _ => ()
+    }
+  }
+  out
+}
+
+/// Type names written inside the brackets of an effect row -- the kind of an
+/// `Exception[K]` label, or the argument of a generic effect. A row is a
+/// string, so this reads the spelling: every identifier that starts with an
+/// uppercase letter at bracket depth > 0.
+fn row_bracketed_type_names_into(row: String, out: Array[String]) -> Unit {
+  let len = String::length(row)
+  let mut depth = 0
+  let mut i = 0
+  while i < len {
+    let c = String::char_code_at(row, i)
+    if c == 91 {
+      depth = depth + 1
+      i = i + 1
+    } else if c == 93 {
+      depth = depth - 1
+      i = i + 1
+    } else if row_ident_char(c) {
+      let start = i
+      while i < len && row_ident_char(String::char_code_at(row, i)) {
+        i = i + 1
+      }
+      if depth > 0 && c >= 65 && c <= 90 {
+        Array::push(out, String::substring(row, start, i))
+      }
+    } else {
+      i = i + 1
+    }
+  }
+}
+
+fn row_ident_char(c: Int) -> Bool {
+  c >= 65 && c <= 90 || c >= 97 && c <= 122 || c >= 48 && c <= 57 || c == 95
+}
+
+fn nominal_type_names_into(ty: Type, out: Array[String]) -> Unit {
+  match ty {
+    CtEnum(name) => Array::push(out, name),
+    CtStruct(name) => Array::push(out, name),
+    CtNamed(name, args) => {
+      Array::push(out, name)
+      for arg in args {
+        nominal_type_names_into(arg, out)
+      }
+    },
+    CtTuple(items) => for item in items {
+      nominal_type_names_into(item, out)
+    },
+    CtArray(inner) => nominal_type_names_into(inner, out),
+    CtOption(inner) => nominal_type_names_into(inner, out),
+    CtFn(params, ret, row) => {
+      for p in params {
+        nominal_type_names_into(p, out)
+      }
+      nominal_type_names_into(ret, out)
+      match row {
+        Some(r) => row_bracketed_type_names_into(r, out),
+        None => ()
+      }
+    },
+    CtApplied(head, args) => {
+      nominal_type_names_into(head, out)
+      for arg in args {
+        nominal_type_names_into(arg, out)
+      }
+    },
+    CtForAll(_, _, body) => nominal_type_names_into(body, out),
+    CtRecord(fields) => for field in fields {
+      let (_, fty) = field
+      nominal_type_names_into(fty, out)
+    },
+    _ => ()
+  }
+}
+
+/// #3026: an imported value's published type names nominal types by their
+/// bare spelling, and so does this module's own declaration of a type. When
+/// the two spellings agree, the checker cannot tell the dependency's type from
+/// the local one, and unifies them: a dependency's `struct Err { code: Int }`
+/// was read through this module's `struct Err { name: String }` -- as a
+/// value, and as the payload of an `Exception[Err]` handler -- with `vibe
+/// check` clean. The import cannot be the local declaration (a dependency
+/// never sees its importer's types), so the collision is refused here, naming
+/// the edit.
+fn foreign_type_name_collisions(imported: String, raw_path: String, ty: Type, local_types: Array[String], unresolved: Array[String]) -> Unit {
+  if Array::length(local_types) > 0 {
+    let mentioned: Array[String] = []
+    nominal_type_names_into(ty, mentioned)
+    let reported: Array[String] = []
+    for name in mentioned {
+      if contains_str(local_types, name) && !contains_str(reported, name) {
+        Array::push(reported, name)
+        Array::push(unresolved, "rename this module's type `" + name + "`: imported `" + imported + "` from '" + raw_path + "' uses a different type also named `" + name + "`, and the two would be treated as one type")
+      }
+    }
+  }
+}
+
+fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_path: String, names: Array[ImportItem], declaration_names: Array[ImportItem], cache: Array[(String, TypeEnv)], unresolved: Array[String], trait_claims: Array[(String, String, Bool, String)], reexport_surface_only: Bool, local_types: Array[String]) -> TypeEnv {
   let cached = lookup_env_cache(cache, resolved)
   let dep_env = match cached {
     Some(e) => e,
@@ -1696,7 +1811,10 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
       let imported_ty = env_lookup_flat(dep_bindings, name)
       let binding_origin = selected_module_binding_origin(dep_env, resolved, name, surface_only_item)
       let ty = match imported_ty {
-        Some(t) => trait_projection_map_type_bounds(t, trait_mappings),
+        Some(t) => {
+          foreign_type_name_collisions(name, raw_path, t, local_types, unresolved)
+          trait_projection_map_type_bounds(t, trait_mappings)
+        },
         None => {
           // Declaration authority travels explicitly in EnvTypeDefs, so
           // uppercase is never evidence that an import is valid. Effects and
@@ -1848,6 +1966,7 @@ fn build_import_env(stmts: Array[Stmt], base_dir: String, cache: Array[(String, 
 /// witness-set fingerprint stays put.
 fn build_import_envs_collecting(stmts: Array[Stmt], base_dir: String, cache: Array[(String, TypeEnv)], unresolved: Array[String]) -> (TypeEnv, TypeEnv) {
   let trait_claims = array_empty()
+  let local_types = local_declared_type_names(stmts)
   let len = Array::length(stmts)
   let rec go: (Int, TypeEnv, TypeEnv) -> (TypeEnv, TypeEnv) = (i, local_acc, surface_acc) -> {
     if i >= len {
@@ -1858,13 +1977,13 @@ fn build_import_envs_collecting(stmts: Array[Stmt], base_dir: String, cache: Arr
           (local_acc, surface_acc)
         } else {
           let resolved = resolve_cached_import_path(base_dir, raw_path, cache)
-          (bind_import_names_from_cache_collecting(local_acc, resolved, raw_path, names, names, cache, unresolved, trait_claims, false), surface_acc)
+          (bind_import_names_from_cache_collecting(local_acc, resolved, raw_path, names, names, cache, unresolved, trait_claims, false, local_types), surface_acc)
         },
         SReExport(raw_path, names) => {
           let resolved = resolve_cached_import_path(base_dir, raw_path, cache)
           let local_declarations = reexport_items_with_alias(names, false)
           let surface_declarations = reexport_items_with_alias(names, true)
-          (bind_import_names_from_cache_collecting(local_acc, resolved, raw_path, names, local_declarations, cache, unresolved, trait_claims, true), prepend_reexport_alias_declarations(surface_acc, resolved, surface_declarations, cache))
+          (bind_import_names_from_cache_collecting(local_acc, resolved, raw_path, names, local_declarations, cache, unresolved, trait_claims, true, local_types), prepend_reexport_alias_declarations(surface_acc, resolved, surface_declarations, cache))
         },
         _ => (local_acc, surface_acc)
       }
