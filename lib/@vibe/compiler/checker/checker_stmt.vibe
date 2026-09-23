@@ -106,6 +106,7 @@ import ./checker.vibe {
   preserve_generic_instantiation,
   refuse_generalized_field_reads,
   reject_resume_outside_handler,
+  report_exception_kinds_in_decl_type,
   report_formal_applications,
   report_formal_applications_across,
   report_map_key_types,
@@ -2151,6 +2152,28 @@ fn deferred_names_for_decl(rows: Array[(Array[String], Array[String])], decl_nam
 /// unknown-type report -- the declaration's own type parameters, any
 /// trait-dict erased names, plus this statement list's deferred-name
 /// sentinels (see `collect_deferred_type_name_sentinels`).
+/// Codex on #3021: an exported type whose function row has an exception kind
+/// resolving to a spelling a row cannot hold (a tuple alias) would publish
+/// the alias NAME, which an importer could confuse with its own type of that
+/// name. `owner` names the export (a binding, `S.field`, `E::Variant`).
+fn refuse_unpublishable_exception_row(t: Type, owner: String, errors: Array[String]) -> Unit {
+  let (uw, ur) = type_exception_row_unpublishable(t)
+  if String::length(uw) > 0 {
+    let dot = String::index_of(owner, ".")
+    let colons = String::index_of(owner, "::")
+    let anchor = if dot >= 0 {
+      String::substring(owner, 0, dot)
+    } else if colons >= 0 {
+      String::substring(owner, 0, colons)
+    } else {
+      owner
+    }
+    Array::push(errors, String::concat(String::concat(String::concat(String::concat(String::concat(String::concat(String::concat(String::concat(String::concat(String::concat("`Exception[", uw), "]` in the row of exported `"), owner), "`: `"), uw), "` is `"), ur), "`, which a published row cannot spell -- throw a struct or enum that wraps it instead [@fn="), anchor), "]"))
+  } else {
+    ()
+  }
+}
+
 fn decl_report_shadow(tparams: Array[String], dict_erased: Array[String], deferred: Array[String]) -> Array[String] {
   if Array::length(dict_erased) == 0 && Array::length(deferred) == 0 {
     tparams
@@ -3282,12 +3305,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
           // Codex on #3021: an exported row whose kind resolves to a spelling
           // a row cannot hold (a tuple alias) would publish the alias NAME,
           // which an importer could confuse with its own type of that name.
-          let (uw, ur) = type_exception_row_unpublishable(t)
-          if String::length(uw) > 0 {
-            Array::push(errors, String::concat(String::concat(String::concat(String::concat(String::concat(String::concat(String::concat(String::concat(String::concat(String::concat("`Exception[", uw), "]` in the row of exported `"), name), "`: `"), uw), "` is `"), ur), "`, which a published row cannot spell -- throw a struct or enum that wraps it instead [@fn="), name), "]"))
-          } else {
-            ()
-          }
+          refuse_unpublishable_exception_row(t, name, errors)
         } else {
           ()
         }
@@ -3450,10 +3468,19 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
           while ti < Array::length(vtypes) {
             // #2125: an unknown name in a payload otherwise becomes a wildcard
             // `CtNamed` -- same hole as the annotation sites.
-            report_unknown_type_names_deferred_validation(Array::get(vtypes, ti), defs, decl_report_shadow(params, array_empty(), deferred_names_for_decl(deferred_type_names, name)), env, array_empty(), String::concat(String::concat(String::concat("the payload of `", name), String::concat("::", vname)), "`"), errors)
+            let payload_shadow = decl_report_shadow(params, array_empty(), deferred_names_for_decl(deferred_type_names, name))
+            report_unknown_type_names_deferred_validation(Array::get(vtypes, ti), defs, payload_shadow, env, array_empty(), String::concat(String::concat(String::concat("the payload of `", name), String::concat("::", vname)), "`"), errors)
+            report_exception_kinds_in_decl_type(Array::get(vtypes, ti), defs, payload_shadow, params, env, errors)
             // #1512: `params` shadow `defs`, so the substitution below still
             // finds `CtNamed(<param>, [])` when an import bound that name.
-            let named_vt = resolve_type_expr_shadowed(Array::get(vtypes, ti), defs, params)
+            // Codex on #3021: a function row in the payload carries its
+            // exception kinds resolved, as a published binding's does.
+            let named_vt = type_exception_rows_resolved(resolve_type_expr_shadowed(Array::get(vtypes, ti), defs, params))
+            if exported {
+              refuse_unpublishable_exception_row(named_vt, String::concat(name, String::concat("::", vname)), errors)
+            } else {
+              ()
+            }
             Array::push(named_vtypes, named_vt)
             Array::push(resolved_vtypes, subst_type_params(named_vt, params, param_var_types))
             ti = ti + 1
@@ -3663,11 +3690,19 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
           let dict_erased = trait_dict_erasure_for(trait_dict_erasures, name, fname)
           let report_shadow = decl_report_shadow(tparams, dict_erased, deferred_names_for_decl(deferred_type_names, name))
           report_unknown_type_names_deferred_validation(ftype_expr, defs, report_shadow, env, array_empty(), struct_field_decl_label(name, fname), errors)
+          report_exception_kinds_in_decl_type(ftype_expr, defs, report_shadow, tparams, env, errors)
           Array::push(field_tes, ftype_expr)
           // #1512: `tparams` shadow `defs` -- the #829 comment below assumes a
           // param name resolves to a rigid `CtNamed(param, [])` because no
           // typedef/builtin claims it, which an import alias otherwise breaks.
-          let ftype = resolve_type_expr_shadowed(ftype_expr, defs, tparams)
+          // Codex on #3021: a function row in the field carries its exception
+          // kinds resolved, as a published binding's does.
+          let ftype = type_exception_rows_resolved(resolve_type_expr_shadowed(ftype_expr, defs, tparams))
+          if exported {
+            refuse_unpublishable_exception_row(ftype, String::concat(name, String::concat(".", fname)), errors)
+          } else {
+            ()
+          }
           Array::push(resolved_fields, (fname, ftype))
           fi = fi + 1
         }

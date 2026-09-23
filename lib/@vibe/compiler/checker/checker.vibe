@@ -427,15 +427,21 @@ fn report_unknown_type_names_only(te: TypeExpr, defs: Array[TypeDef], shadow: Ar
 /// that currently looks like a compiler-owned builtin head.
 export fn report_unknown_type_names_deferred_validation(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], env: TypeEnv, row_binders: Array[String], where_label: String, errors: Array[String]) -> Unit {
   report_unknown_type_names_only(te, defs, shadow, env, row_binders, where_label, errors)
-  // The rows of function types in a struct field or an enum payload name
-  // exception kinds too (Codex on #3021).
-  report_exception_kinds_in_type_expr(te, defs, shadow, env, errors)
+}
+
+/// The rows of function types in a struct field or an enum payload name
+/// exception kinds too (Codex on #3021). `shadow` is what the unknown-name
+/// sweep exempts (a `.vpkg` declaration's deferred opaque names included);
+/// `formals` is the declaration's own type parameters -- only those are
+/// refused as a formal kind.
+export fn report_exception_kinds_in_decl_type(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], formals: Array[String], env: TypeEnv, errors: Array[String]) -> Unit {
+  report_exception_kinds_in_type_expr(te, defs, shadow, formals, env, errors)
 }
 
 export fn report_unknown_type_names(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], env: TypeEnv, row_binders: Array[String], where_label: String, errors: Array[String]) -> Unit {
   report_map_key_types(te, defs, shadow, where_label, errors)
   report_unknown_type_names_only(te, defs, shadow, env, row_binders, where_label, errors)
-  report_exception_kinds_in_type_expr(te, defs, shadow, env, errors)
+  report_exception_kinds_in_type_expr(te, defs, shadow, shadow, env, errors)
 }
 
 /// #3018 / #2983 (2): the KIND of an exception label is the static type of
@@ -449,7 +455,7 @@ export fn report_unknown_type_names(te: TypeExpr, defs: Array[TypeDef], shadow: 
 /// that slot is refused with the spelling that does mean something.
 /// A kind the type parser cannot read is left alone here -- the arm binder
 /// falls back to the erased type for it, and this check does not guess.
-fn report_exception_kind(label: String, defs: Array[TypeDef], shadow: Array[String], env: TypeEnv, in_row: Bool, errors: Array[String]) -> Unit {
+fn report_exception_kind(label: String, defs: Array[TypeDef], shadow: Array[String], formals: Array[String], env: TypeEnv, in_row: Bool, errors: Array[String]) -> Unit {
   let kind = exception_label_kind(label)
   if String::length(kind) == 0 {
     ()
@@ -464,9 +470,9 @@ fn report_exception_kind(label: String, defs: Array[TypeDef], shadow: Array[Stri
         // An effect or effectset named anywhere in the kind -- at the top
         // (`Exception[Ask]`) or below a constructor (`Exception[Array[Ask]]`,
         // Codex on #3021) -- is not a type.
-        let (effect_name, effect_head) = exception_kind_effect_name(kind_te, defs, shadow, env)
+        let (effect_name, effect_head) = exception_kind_effect_name(kind_te, defs, formals, env)
         let formals = if in_row {
-          exception_kind_formal_names(kind_te, shadow, env)
+          exception_kind_formal_names(kind_te, formals, env)
         } else {
           array_empty()
         }
@@ -602,8 +608,25 @@ export fn type_exception_row_unpublishable(t: Type) -> (String, String) {
     CtForAll(_, _, body) => type_exception_row_unpublishable(body),
     CtArray(e) => type_exception_row_unpublishable(e),
     CtOption(e) => type_exception_row_unpublishable(e),
+    // Through tuples and type arguments too (Codex on #3021): a callback
+    // returned inside `(() -> Int with Exception[Pair], Int)` is published.
+    CtTuple(elems) => type_exception_row_unpublishable_first(elems),
+    CtNamed(_, targs) => type_exception_row_unpublishable_first(targs),
     _ => ("", "")
   }
+}
+
+fn type_exception_row_unpublishable_first(ts: Array[Type]) -> (String, String) {
+  let mut found = ("", "")
+  let mut i = 0
+  while i < Array::length(ts) {
+    let (fw, _) = found
+    if String::length(fw) == 0 {
+      found = type_exception_row_unpublishable(Array::get(ts, i))
+    }
+    i = i + 1
+  }
+  found
 }
 
 /// `t` with the exception kinds of every function row in it resolved (see
@@ -874,13 +897,13 @@ fn exception_kind_name_is_formal(n: String, shadow: Array[String], env: TypeEnv)
 
 /// Every exception label of `row` (a `with ..` row), checked by
 /// `report_exception_kind`.
-fn report_exception_kinds_in_row(row: Option[String], defs: Array[TypeDef], shadow: Array[String], env: TypeEnv, errors: Array[String]) -> Unit {
+fn report_exception_kinds_in_row(row: Option[String], defs: Array[TypeDef], shadow: Array[String], formals: Array[String], env: TypeEnv, errors: Array[String]) -> Unit {
   let labels = row_labels(row)
   let mut i = 0
   while i < Array::length(labels) {
     let label = Array::get(labels, i)
     if is_exception_label(label) {
-      report_exception_kind(label, defs, shadow, env, true, errors)
+      report_exception_kind(label, defs, shadow, formals, env, true, errors)
     } else {
       ()
     }
@@ -890,30 +913,30 @@ fn report_exception_kinds_in_row(row: Option[String], defs: Array[TypeDef], shad
 
 /// The rows of every function type written inside an annotation
 /// (`f: () -> Int with Exception[K]`), checked by `report_exception_kind`.
-fn report_exception_kinds_in_type_expr(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], env: TypeEnv, errors: Array[String]) -> Unit {
+fn report_exception_kinds_in_type_expr(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], formals: Array[String], env: TypeEnv, errors: Array[String]) -> Unit {
   match te {
     TyApp(_, targs) => {
       let mut i = 0
       while i < Array::length(targs) {
-        report_exception_kinds_in_type_expr(Array::get(targs, i), defs, shadow, env, errors)
+        report_exception_kinds_in_type_expr(Array::get(targs, i), defs, shadow, formals, env, errors)
         i = i + 1
       }
     },
     TyTuple(elems) => {
       let mut i = 0
       while i < Array::length(elems) {
-        report_exception_kinds_in_type_expr(Array::get(elems, i), defs, shadow, env, errors)
+        report_exception_kinds_in_type_expr(Array::get(elems, i), defs, shadow, formals, env, errors)
         i = i + 1
       }
     },
     TyFn(ps, ret, row) => {
       let mut i = 0
       while i < Array::length(ps) {
-        report_exception_kinds_in_type_expr(Array::get(ps, i), defs, shadow, env, errors)
+        report_exception_kinds_in_type_expr(Array::get(ps, i), defs, shadow, formals, env, errors)
         i = i + 1
       }
-      report_exception_kinds_in_type_expr(ret, defs, shadow, env, errors)
-      report_exception_kinds_in_row(row, defs, shadow, env, errors)
+      report_exception_kinds_in_type_expr(ret, defs, shadow, formals, env, errors)
+      report_exception_kinds_in_row(row, defs, shadow, formals, env, errors)
     },
     _ => ()
   }
@@ -11320,7 +11343,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               // #3018: the arm's kind must name a type in scope, whatever the
               // binder -- otherwise `e` binds at a nominal type nothing
               // declared.
-              report_exception_kind(String::substring(hqname, 0, hci), defs, array_empty(), env, false, errors)
+              report_exception_kind(String::substring(hqname, 0, hci), defs, array_empty(), array_empty(), env, false, errors)
               // #938: an Error arm never resumes, so its value IS the handle
               // result — type the body (Throw's payload binds as String) and
               // unify with the handle body's type. Ground-gated, so arms
@@ -11898,7 +11921,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       // `CtNamed` (measured) -- the very shape this issue is about.
       let declared_row_binders = row_variable_labels(effect)
       // #3018: `with Exception[K]` names a type; check that it does.
-      report_exception_kinds_in_row(effect, defs, tparams, fn_env, errors)
+      report_exception_kinds_in_row(effect, defs, tparams, tparams, fn_env, errors)
       let param_types = array_empty()
       let mut pi = 0
       while pi < plen {
