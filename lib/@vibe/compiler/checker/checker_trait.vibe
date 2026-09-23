@@ -337,6 +337,14 @@ export fn check_bounds_satisfied(env: TypeEnv, s: Subst, ty: Type, bounds: Array
 }
 
 export fn register_builtin_traits(env: TypeEnv) -> TypeEnv {
+  register_builtin_traits_for(env, true)
+}
+
+/// `seed_show` is false when the program declares its OWN `trait Show`: the
+/// scalar impls below belong to the builtin trait, and seeding them by name
+/// would let a local `Show` with a different method be satisfied at `Int` by
+/// an impl nobody wrote (#3022 review).
+export fn register_builtin_traits_for(env: TypeEnv, seed_show: Bool) -> TypeEnv {
   let no_supers = empty_strings()
   let eq_supers = one_super("Eq")
   let i64_type = CtNamed("i64", no_type_args())
@@ -362,7 +370,11 @@ export fn register_builtin_traits(env: TypeEnv) -> TypeEnv {
   // five scalars, but only the `Eq` / `Ord` / arithmetic rows below were
   // seeded, so `[T: Show]` answered ``no impl `Show` for `Int` `` while a
   // `derive (Show)` struct satisfied it. Seeded the same way as `Eq`'s.
-  let env_show = EnvTraitImpl("Show", CtString, EnvTraitImpl("Show", CtChar, EnvTraitImpl("Show", CtBool, EnvTraitImpl("Show", CtDouble, EnvTraitImpl("Show", CtInt, env)))))
+  let env_show = if seed_show {
+    EnvTraitImpl("Show", CtString, EnvTraitImpl("Show", CtChar, EnvTraitImpl("Show", CtBool, EnvTraitImpl("Show", CtDouble, EnvTraitImpl("Show", CtInt, env)))))
+  } else {
+    env
+  }
   let e1 = EnvTraitDef("Eq", no_supers, false, eq_methods, env_show, empty_strings(), no_trait_method_gens())
   let e2 = EnvTraitDef("Ord", eq_supers, false, nm, e1, empty_strings(), no_trait_method_gens())
   let e3 = EnvTraitDef("Add", no_supers, false, nm, e2, empty_strings(), no_trait_method_gens())

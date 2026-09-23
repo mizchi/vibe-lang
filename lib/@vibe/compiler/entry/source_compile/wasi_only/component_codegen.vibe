@@ -1627,9 +1627,18 @@ export fn comp_emit_component_wasm_async_trampolined_p1(main_core_wasm: Bytes, e
     // local trapping stub keeps the self-contained component valid and
     // preserves the same non-zero outcome as core launchers; components that
     // do not carry the boundary retain their exact pre-existing bytes.
-    emit_core_module_section(buf, comp_generate_host_stub_module([
-      "stderr_write_stream"
-    ], [[1, 126, 0]]))
+    // #2976: the boundary leaves through `vibe.process_exit` after its
+    // diagnosis; the same trapping stub serves it when the core imports it.
+    if comp_core_imports_func(main_core_wasm, "vibe", "process_exit") {
+      emit_core_module_section(buf, comp_generate_host_stub_module([
+        "stderr_write_stream",
+        "process_exit"
+      ], [[1, 126, 0], [1, 126, 0]]))
+    } else {
+      emit_core_module_section(buf, comp_generate_host_stub_module([
+        "stderr_write_stream"
+      ], [[1, 126, 0]]))
+    }
   } else {
     emit_core_module_section(buf, comp_generate_wasi_fd_write_stub())
   }
@@ -6710,7 +6719,7 @@ export fn comp_reject_unsatisfiable_selfcontained_imports(core_wasm: Bytes) -> U
     let ifn = Array::get(names, i)
     if im == "wasi_snapshot_preview1" && ifn == "fd_write" {
       ()
-    } else if im == "vibe" && ifn == "stderr_write_stream" {
+    } else if im == "vibe" && (ifn == "stderr_write_stream" || ifn == "process_exit") {
       ()
     } else {
       throw("component(async): core module uses host import '\{im}.\{ifn}', which nothing in this component provides -- an async component entry can use sleep, host futures and host streams; other host capabilities have no provider inside the component (#1342)")

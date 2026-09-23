@@ -4053,9 +4053,28 @@ fn check_handle_inst_vs_callee_rows(body: Expr, insts: Array[(String, Type)], en
 
 fn handle_collect_direct_calls(e: Expr, out: Array[(String, Int)]) -> Unit {
   match e {
-    ECall(EIdent(n, noff), _, _) => Array::push(out, (n, noff)),
-    _ => ()
+    ECall(EIdent(n, noff), _, _) => {
+      Array::push(out, (n, noff))
+      handle_collect_direct_calls_children(e, out)
+    },
+    // A nested handle's BODY is discharged by that inner handler, which may
+    // instantiate the same generic effect differently; only its arms run
+    // under this one (#3022 review). A lambda's body runs where it is called,
+    // not here.
+    EHandle(_, arms) => {
+      let mut ai = 0
+      while ai < Array::length(arms) {
+        let (_, arm) = Array::get(arms, ai)
+        handle_collect_direct_calls(arm, out)
+        ai = ai + 1
+      }
+    },
+    EFn(_, _, _, _, _, _) => (),
+    _ => handle_collect_direct_calls_children(e, out)
   }
+}
+
+fn handle_collect_direct_calls_children(e: Expr, out: Array[(String, Int)]) -> Unit {
   let mark = expr_children_push(e)
   let end = expr_children_top()
   let mut i = mark
@@ -7110,9 +7129,20 @@ fn formal_shadow(te: TypeExpr, env: TypeEnv, own: Array[String]) -> Array[String
 
 fn exception_kind_formals_in_env(te: TypeExpr, env: TypeEnv, acc: Array[String]) -> Array[String] {
   let note = (name: String) -> Unit {
+    // A CtVar is a TYPE formal only when a binder recorded it under this
+    // name; an unannotated VALUE parameter is a CtVar too, and treating it as
+    // a formal let `let y: T = 1` shadow a real `type T` (#3022 review).
     let is_formal = match env_lookup(env, name) {
       Some(t) => match t {
-        CtVar(_) => true,
+        CtVar(vid) => {
+          let row = eq_formal_row_of(vid)
+          if row >= 0 {
+            let (_, rname) = Array::get(eq_formal_vars, row)
+            rname == name
+          } else {
+            false
+          }
+        },
         CtNamed(n, _) => String::starts_with(n, "#hktformal."),
         _ => false
       },

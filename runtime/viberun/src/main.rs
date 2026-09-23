@@ -160,10 +160,6 @@ struct HostFsScope {
 
 struct HostState {
     last_error: Option<String>,
-    /// #2976: the program's entry boundary already wrote
-    /// `vibe: uncaught error: ...` to stderr, so the trap that follows it is
-    /// the exit path, not a second fault to report.
-    uncaught_diagnosed: bool,
     args: Arc<Vec<String>>,
     print_buf: Vec<u16>,
     pending_bytes: Option<Arc<Vec<u8>>>,
@@ -361,7 +357,6 @@ impl HostState {
         let alloc_site = std::env::var("VIBE_ALLOC_SITE").as_deref() == Ok("1");
         Self {
             last_error: None,
-            uncaught_diagnosed: false,
             args: Arc::new(args),
             print_buf: Vec::new(),
             pending_bytes: None,
@@ -1696,16 +1691,6 @@ fn run(args: Vec<String>) -> Result<i32> {
                 );
                 return Ok(1);
             }
-            // #2976: the entry boundary already printed `vibe: uncaught
-            // error: ...`; the `unreachable` it traps with is how it exits,
-            // so exit 1 without a second report. VIBE_TRACE_UNCAUGHT=1 keeps
-            // the trap for debugging.
-            if store.data().uncaught_diagnosed
-                && matches!(e.downcast_ref::<Trap>(), Some(Trap::UnreachableCodeReached))
-                && std::env::var_os("VIBE_TRACE_UNCAUGHT").map_or(true, |v| v.is_empty() || v == "0")
-            {
-                return Ok(1);
-            }
             if matches!(e.downcast_ref::<Trap>(), Some(Trap::StackOverflow)) {
                 // #2858: under the verb protocol (`cli check <file>`) the
                 // positional args are the verb's own words, so `args[2]` is
@@ -2477,14 +2462,6 @@ fn read_wasi_u32(
     Ok(u32::from_le_bytes(buf))
 }
 
-/// #2976: remember that the entry boundary diagnosed an escaping exception.
-fn note_uncaught_diagnosis(host: &mut HostState, bytes: &[u8]) {
-    const MARK: &[u8] = b"vibe: uncaught error: ";
-    if bytes.windows(MARK.len()).any(|w| w == MARK) {
-        host.uncaught_diagnosed = true;
-    }
-}
-
 fn write_wasi_fd(host: &mut HostState, fd: i32, bytes: &[u8]) -> io::Result<()> {
     match fd {
         1 if host.capture_stdout => {
@@ -2496,7 +2473,6 @@ fn write_wasi_fd(host: &mut HostState, fd: i32, bytes: &[u8]) -> io::Result<()> 
             stdout.lock().write_all(bytes)
         }
         2 => {
-            note_uncaught_diagnosis(host, bytes);
             let stderr = std::io::stderr();
             stderr.lock().write_all(bytes)
         }
@@ -3445,7 +3421,6 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
         "stderr_write_stream",
         |mut caller: Caller<'_, HostState>, s: i64| -> Result<()> {
             let s = vibe_read_packed_str(&mut caller, s)?;
-            note_uncaught_diagnosis(caller.data_mut(), s.as_bytes());
             let stderr = io::stderr();
             let mut h = stderr.lock();
             h.write_all(s.as_bytes())

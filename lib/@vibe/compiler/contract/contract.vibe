@@ -2011,6 +2011,39 @@ export fn contract_types_item_names(tds: Array[Stmt]) -> Array[String] {
   out
 }
 
+/// #2968: the in-band carrier naming the effects and effectsets a contract
+/// declares, for its sibling implementation files. Those declarations stay in
+/// the facade, which a sibling cannot import (facade -> impl is already an
+/// edge), so without this a sibling's `with Ask` over the contract's
+/// `effect Ask` read as an unknown effect. Same shape as the #2125 deferred
+/// type-name sentinel: a `let` the checker reads, carried in the text so the
+/// isolated worker lane sees it too.
+export let vpkg_contract_effects_prefix: String = "__vpkg_contract_effects_"
+
+/// Placeholder the loader replaces with a per-sibling suffix, so two siblings
+/// of one contract never declare the same private name in a merged program.
+export let vpkg_contract_effects_sibling_slot: String = "SIBLING"
+
+/// The carrier line for `type_defs` (a contract's classified declarations), or
+/// "" when it declares no effect or effectset.
+export fn contract_effect_names_line(type_defs: Array[Stmt]) -> String {
+  let names = array_empty()
+  let mut i = 0
+  while i < Array::length(type_defs) {
+    match Array::get(type_defs, i) {
+      SEffectDef(_, name, _, _) => Array::push(names, name),
+      SEffectSet(_, name, _) => Array::push(names, name),
+      _ => ()
+    }
+    i = i + 1
+  }
+  if Array::length(names) == 0 {
+    ""
+  } else {
+    "let \{vpkg_contract_effects_prefix}\{vpkg_contract_effects_sibling_slot}__: String = \"\{String::join(names, " ")}\"\n"
+  }
+}
+
 /// #1840: one source line importing (keyword `import`) or re-exporting
 /// (keyword `export`) the materialized types module.
 export fn contract_types_module_line(keyword: String, types_path: String, tds: Array[Stmt]) -> String {

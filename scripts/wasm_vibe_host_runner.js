@@ -2251,22 +2251,6 @@ let passthroughArgsGlobal = null;
 // #2988: the export being run, so a host-level failure can say whether it hit
 // the COMPILER (`cli_main`) or the user's program (`main` / `_start` / a test).
 let currentInvokeGlobal = null;
-// #2976: the entry boundary prints `vibe: uncaught error: <msg>` and then
-// executes `unreachable` to fail the process. That trap is the boundary's exit,
-// not a crash, so once the diagnosis has been written the runner exits 1
-// without the wasm stack a miscompile would print (`VIBE_TRACE_UNCAUGHT=1`
-// keeps it). Every stderr path funnels through process.stderr.write.
-let uncaughtDiagnosedGlobal = false;
-{
-  const origStderrWrite = process.stderr.write.bind(process.stderr);
-  process.stderr.write = (chunk, ...rest) => {
-    if (typeof chunk === "string" ? chunk.includes("vibe: uncaught error: ") : (chunk && Buffer.from(chunk).includes("vibe: uncaught error: "))) {
-      uncaughtDiagnosedGlobal = true;
-    }
-    return origStderrWrite(chunk, ...rest);
-  };
-}
-
 // #cov: dump the function/branch hit bitmaps from the (possibly trapped)
 // instance's live memory to VIBE_COV_OUT. Called both after a clean run AND from
 // the top-level catch — a compile that throws (parse/type error) still exercised
@@ -4401,9 +4385,6 @@ main().catch((err) => {
         }
       }
     } catch (_) {}
-  }
-  if (uncaughtDiagnosedGlobal && err instanceof WebAssembly.RuntimeError && /unreachable/.test(err.message || "") && process.env.VIBE_TRACE_UNCAUGHT !== "1") {
-    process.exit(1);
   }
   // usage() is only relevant for argument-parsing errors. Runtime errors
   // (wasm traps, exceptions, etc.) drop straight to the stack trace so the

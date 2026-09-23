@@ -2982,11 +2982,23 @@ fn throw_payload_kind(payload: Expr, binds: Array[(String, String)]) -> String {
       // #2964: a type ascription -- the parser spells `let e: K = v` as
       // `((__asc: K) -> __asc)(v)` -- names its kind, which is the edit the
       // unresolved-kind refusal tells the reader to make.
-      EFn(_, _, aps, _, _, _) => if Array::length(aps) == 1 {
+      // Only the parser's own ascription wrapper -- the reserved `__asc`
+      // parameter returned unchanged -- names the payload's kind. Any other
+      // immediately-applied one-parameter lambda (`((x: String) -> Int { 1 })("s")`)
+      // annotates its ARGUMENT, not its result, and is left to the checker's
+      // inferred type (#3022 review).
+      EFn(_, _, aps, _, _, abody) => if Array::length(aps) == 1 {
         match Array::get(aps, 0) {
-          (_, Some(te)) => match afe_texpr_head_name(te) {
-            Some(h) => h,
-            None => ""
+          (pname, Some(te)) => match abody {
+            EIdent(bname, _) => if pname == "__asc" && bname == "__asc" {
+              match afe_texpr_head_name(te) {
+                Some(h) => h,
+                None => ""
+              }
+            } else {
+              ""
+            },
+            _ => ""
           },
           _ => ""
         }
