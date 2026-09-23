@@ -2729,7 +2729,17 @@ fn cc_compile_resolved_call(buf: Bytes, fname: String, args: Array[Expr], local_
   // to that unrelated function instead of a closure_resolve/call_indirect
   // to the actual in-scope value — a wasm-validation-time arity mismatch
   // with no compile-time diagnostic. See #875.
-  if fn_idx_in_list >= 0 && local_idx_hint < 0 {
+  //
+  // #3025: a top-level `let` whose value is not a syntactic lambda (`let g =
+  // mk()`, `let f = __dst0.0` from a destructuring `let`) is registered as a
+  // zero-parameter THUNK that computes and caches the value. Its func_table
+  // entry is the getter, not the function the value holds, so a direct call
+  // pushed the arguments and then the getter's own operand -- invalid wasm
+  // (`values remaining on stack`) with any argument, and the closure itself
+  // returned un-called with none. Read the value through the getter and call
+  // it as a closure instead, the way a non-identifier callee is called.
+  let is_thunk_value = fn_idx_in_list >= 0 && local_idx_hint < 0 && bsearch_leftmost(ctx.thunk_names, fname) >= 0
+  if fn_idx_in_list >= 0 && local_idx_hint < 0 && !is_thunk_value {
     let fidx = Array::get(ctx.func_table.indices, fn_idx_in_list)
     let has_ret = Array::get(ctx.func_table.returns, fn_idx_in_list)
     let needs_env = Array::get(ctx.func_table.needs_env, fn_idx_in_list)
@@ -2810,6 +2820,8 @@ fn cc_compile_resolved_call(buf: Bytes, fname: String, args: Array[Expr], local_
   } else {
     let local_idx2 = if local_idx_hint >= 0 {
       local_idx_hint
+    } else if is_thunk_value {
+      0 - 1
     } else {
       resolve_local(local_names, fname, "call")
     }
@@ -2821,11 +2833,18 @@ fn cc_compile_resolved_call(buf: Bytes, fname: String, args: Array[Expr], local_
     Array::push(local_names, "__fn_val")
     Array::push(local_names, "__slot")
     Array::push(local_names, "__env")
-    emit_local_get(buf, local_idx2)
+    if is_thunk_value {
+      // #3025: the getter call, exactly what reading the name as a value
+      // emits (compile_expr's thunk arm).
+      emit_i64_const(buf, 0)
+      emit_call(buf, Array::get(ctx.func_table.indices, fn_idx_in_list))
+    } else {
+      emit_local_get(buf, local_idx2)
+    }
     // #2012: a captured `let mut` local holds a cell address, not the
     // function value. Load the i64 in the cell before closure_resolve
     // or the cell pointer is used as a table index.
-    if array_contains_str(ctx.ref_cell_names, fname) {
+    if !is_thunk_value && array_contains_str(ctx.ref_cell_names, fname) {
       emit_i32_wrap_i64(buf)
       emit_i64_load(buf, 3, 0)
     } else {
