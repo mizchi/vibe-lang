@@ -324,6 +324,27 @@ use so far is a `consume`. For such a value:
    `pl-survey-2026-07.md` already names the shallow case as the intended use
    of uniqueness.
 
+   Even a pointer-free unique buffer is **not** movable by this proposal
+   alone. Two more premises are needed, and both belong to a later slice:
+   - **A transferable arena.** On the native/WASI backend every worker has
+     its own `Store`, `Instance` and linear memory
+     ([concurrency.md](../../internal/design/concurrency.md), native/WASI
+     backend policy), so an `Array`'s address means nothing in the child.
+     The concurrency contract already allows a move only when every
+     reachable allocation lives in one transferable arena. On such a backend
+     the move is a copy of the arena, or it stays the deep copy. A pointer
+     handoff is legal only on a single-heap backend (today's cooperative
+     scheduler).
+   - **A one-shot consuming capture for the spawn closure.**
+     `TaskGroup::spawn` takes a closure, and A4 counts a use inside a lambda
+     as ω. `Array` and `Bytes` are also not `Send`, so the existing spawn
+     capture check rejects them. A move needs a rule that a closure passed
+     *directly* to `spawn` runs exactly once, so its captures may be
+     `consume`d, and it needs matching `Spawnable` handling.
+
+   Until both land, spawn keeps ADR-0068's deep-copy snapshot, and T2's
+   statement about spawn is a design target, not a claim.
+
 ### A5. Formalization, tied to the implementation
 
 A small calculus in `formal/`: first-order functions, a heap with reference
@@ -375,14 +396,14 @@ Two parts of the practice matter as much as the theorems:
   not through projections, one drops the identity check, one drops the
   buffer-free-argument rule, one checks only bare-buffer globals, one
   counts a loop body's consume once, one admits a `mut` call through a
-  capturing closure, one ignores call results in the borrow taint, one ignores aggregate construction in it, one trusts a root-only alias summary for a call result, one claims T1′ for a call that also passes the buffer to an unannotated writable parameter, one lets a borrow-derived value reach a `consume` position, one elides `rc == 1` on the strength of `mut` exclusivity alone, one claims T1′ for a `borrow` callee that performs a resumable effect, one moves a root-unique but non-shallow value into a task, one lets a `mut` parameter escape by return or capture, one lets a stored continuation retain a `borrow` frame, one computes the 2×i64 fallback untagged, one accumulates an `Int`-valued `I32Column::sum` in i32x4 lanes, one vectorizes `dst[i] = dst[i - 1]` in place, one moves an `Array[Double]` into a task, one canonicalizes the NaN of a pass-through kernel, one lets
+  capturing closure, one ignores call results in the borrow taint, one ignores aggregate construction in it, one trusts a root-only alias summary for a call result, one claims T1′ for a call that also passes the buffer to an unannotated writable parameter, one lets a borrow-derived value reach a `consume` position, one elides `rc == 1` on the strength of `mut` exclusivity alone, one claims T1′ for a `borrow` callee that performs a resumable effect, one moves a root-unique but non-shallow value into a task, one lets a `mut` parameter escape by return or capture, one lets a stored continuation retain a `borrow` frame, one computes the 2×i64 fallback untagged, one accumulates an `Int`-valued `I32Column::sum` in i32x4 lanes, one vectorizes `dst[i] = dst[i - 1]` in place, one moves an `Array[Double]` into a task, one hands a buffer pointer to a worker on a separate linear memory, one canonicalizes the NaN of a pass-through kernel, one lets
   an opaque type count as buffer-free, and one lets a `mut` callee perform a
   user effect whose handler captures the buffer, and one lets it perform
   `Async` under a user handler that does the same. `formal/` already keeps such witnesses for the Error policy.
 
 **Why the model has to come first.** Review of this document found the
 same class of hole again and again, each one a path the prose rules had not
-enumerated. Thirty findings in fourteen rounds so far:
+enumerated. Thirty-two findings in fifteen rounds so far:
 - aliases hidden in an aggregate argument, in an aggregate global, and in a
   closure callee;
 - aliases reached through an effect handler (three times: user effects, then `Async`, then under a `borrow`) or an opaque type;
@@ -396,7 +417,7 @@ enumerated. Thirty findings in fourteen rounds so far:
 - a vector fallback that wraps at 2⁶⁴ instead of 2⁶³, and a reduction accumulator that wraps at 2³²;
 - NaN canonicalization applied to a bit-exact pass-through;
 - a loop-carried dependence inside one buffer, which exclusivity does not see;
-- a task move of a buffer whose elements are heap boxes.
+- a task move of a buffer whose elements are heap boxes, one across isolated worker heaps, and one through a closure capture that A4 counts as ω.
 
 Enumerating exceptions in English does not converge. What does converge is an
 executable model whose checker is diffed against the implementation, together
@@ -675,8 +696,9 @@ SIMD is not parallelism. Bend's GPU findings apply to any "run this wide"
 annotation. Parallelism must be visible and checked, and balance is the
 program's problem. vibe's thread-level story stays ADR-0068: shared-nothing
 tasks, with `Parallel::map` over `Send` values. The only link to this proposal
-is A4, where a statically unique column is moved into a task instead of being
-deep-copied.
+is A4's later slice, which could move a statically unique pointer-free column
+into a task instead of deep-copying it. That slice needs a transferable arena
+and a one-shot consuming capture rule for spawn closures.
 
 ## 2. Contracts: where-clause Phase 3 on the same subset
 
@@ -706,7 +728,7 @@ code.
 | 1 | declared `borrow`, checked against the inferred mask plus a per-parameter write summary; written to `index.vpkg` | — | parameter mode |
 | 2 | Lean model + executable oracle for `borrow` / escape (T1), with a negative witness | 1 | none |
 | 3 | `mut` exclusivity on shallow buffers (after slice 2's model and witnesses): static place check, buffer-free other arguments, no non-buffer-free globals in the callee's reach, an effect row of at most `Exception` in the callee, entry identity check (T3) | 1, 2 | parameter mode |
-| 4 | `consume` with the local usage map (loop and closure bodies count as ω); static uniqueness skips the reuse `rc == 1` test and turns spawn of a pointer-free buffer into a move (T2) | 1 | parameter mode |
+| 4 | `consume` with the local usage map (loop and closure bodies count as ω); static uniqueness skips the reuse `rc == 1` test (T2). Spawn-as-move is a later slice, needing a transferable arena and a one-shot consuming capture for direct spawn closures | 1 | parameter mode |
 | 5 | i32x4 / i64x2 / f64x2 arithmetic and compare emitters in `codegen/wasm_emit/simd.vibe` | — | none |
 | 6 | kernel-subset recognizer + lowering for `Array[Int]` `map` / `count` / `sum` (2×i64, tag-transparent) with the differential gate | 5 | none |
 | 7 | `I32Column` (simd-data-structures Layer 3) with the B4 narrowing rule and trap-by-default output | 6 | a type |
