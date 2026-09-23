@@ -4005,8 +4005,13 @@ fn effect_fresh_targs(etps: Array[String], c: Int) -> (Array[Type], Int) {
 let generic_fn_decls_cell: Array[(String, Array[String], Array[(String, Option[TypeExpr])], Option[TypeExpr])] = [
 ]
 
+/// #3027: (callee offset, instantiated type) for each call of a generic
+/// function, recorded where the call position instantiates the scheme.
+let callee_inst_types_cell: Array[(Int, Type)] = []
+
 export fn set_generic_fn_decls(stmts: Array[Stmt]) -> Unit {
   Array::truncate(generic_fn_decls_cell, 0)
+  Array::truncate(callee_inst_types_cell, 0)
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
@@ -4040,8 +4045,8 @@ fn resolve_callee_formal_args(wants: Array[String], cname: String, coff: Int, en
       Some(CtForAll(_, _, CtFn(sparams, sret, _))) => {
         let mut inst = None
         let mut ti = 0
-        while ti < Array::length(tytab) {
-          let (toff, tty) = Array::get(tytab, ti)
+        while ti < Array::length(callee_inst_types_cell) {
+          let (toff, tty) = Array::get(callee_inst_types_cell, ti)
           if toff == coff {
             inst = Some(tty)
           }
@@ -10626,6 +10631,15 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                   let (ct, s1, c1) = match env_lookup(env, lookup_name) {
                     Some(t) => {
                       let (ti, nc, new_bounds) = instantiate(t, c)
+                      // #3027: the handle check reads a generic callee's
+                      // instantiation at this call to resolve a formal its
+                      // row names.
+                      match t {
+                        CtForAll(_, _, _) => if callee_off >= 0 {
+                          Array::push(callee_inst_types_cell, (callee_off, ti))
+                        },
+                        _ => ()
+                      }
                       let mut sbound = s
                       let mut bi = 0
                       while bi < Array::length(new_bounds) {
