@@ -1732,8 +1732,14 @@ fn nominal_type_names_into(ty: Type, out: Array[String]) -> Unit {
 /// check` clean. The import cannot be the local declaration (a dependency
 /// never sees its importer's types), so the collision is refused here, naming
 /// the edit.
-fn foreign_type_name_collisions(imported: String, raw_path: String, ty: Type, local_types: Array[String], unresolved: Array[String]) -> Unit {
-  if Array::length(local_types) > 0 {
+///
+/// One dependency is exempt by construction: a package contract's generated
+/// type stub (`is_vpkg_types_stub_path`). A contract's `type MutMap[K, V]`
+/// is DEFERRED to the package's implementation, so when a sibling that
+/// declares `struct MutMap` imports the stub's `HashMap = MutMap[K, V]`, the
+/// stub's `MutMap` is that sibling's own declaration, not a different one.
+fn foreign_type_name_collisions(imported: String, raw_path: String, resolved: String, ty: Type, local_types: Array[String], unresolved: Array[String]) -> Unit {
+  if Array::length(local_types) > 0 && !is_vpkg_types_stub_path(resolved) {
     let mentioned: Array[String] = []
     nominal_type_names_into(ty, mentioned)
     let reported: Array[String] = []
@@ -1812,7 +1818,7 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
       let binding_origin = selected_module_binding_origin(dep_env, resolved, name, surface_only_item)
       let ty = match imported_ty {
         Some(t) => {
-          foreign_type_name_collisions(name, raw_path, t, local_types, unresolved)
+          foreign_type_name_collisions(name, raw_path, resolved, t, local_types, unresolved)
           trait_projection_map_type_bounds(t, trait_mappings)
         },
         None => {
