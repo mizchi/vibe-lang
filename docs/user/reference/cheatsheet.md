@@ -1646,17 +1646,19 @@ fn main allows Stdout {
 `resume(v)` is the canonical way to call the continuation (one-shot,
 tail-resumptive, ADR-0050).
 
-**A tail value that is not wrapped in `resume(...)` is an implicit resume**
-(#2962). Every tail value of an arm that does not store `resume` as a value is
-delivered to the `perform` and the body continues, whether it is written
-`resume(v)` or a bare `v`, so the checker types each such value against the
-OPERATION's return type: for `Get() -> Int`, an arm `Get() => 5` makes the
-perform evaluate to `5`, and `Get() => "x"` or `Get() => if c { resume(1) }
-else { "x" }` is `handler arm value type mismatch with the operation's return
-type`. An arm that stores `resume` as a value (the suspend shape below) keeps
-the other rule: its own value is the handle's result. Only `Exception` arms
-abort; a declared effect has no abortive operations (#2969 tracks declaring
-one).
+**Every tail of an arm must resume or leave** (#2969). An arm that does not
+store `resume` as a value hands its value back to the `perform` by ending in
+`resume(v)` -- on every branch -- or leaves the arm with `return`, `throw(..)`,
+`perform Exception::Throw(..)`, `break` or `continue`. A bare tail value is
+refused with ``handler arm `E::Op` must pass its value back with resume(...)``,
+because nothing in the declaration says whether such an arm resumes or aborts.
+A Unit-returning operation resumes with `resume(())`. The resumed value is
+typed against the OPERATION's return type: for `Get() -> String`,
+`Get() => resume(7)` is refused. A payload binder named `resume` hides the
+continuation from the whole arm and is refused -- rename it. An arm that
+stores `resume` as a value (the suspend shape below) keeps the other rule: its
+own value is the handle's result. Only `Exception` arms abort; a declared
+effect has no abortive operations.
 
 Call resolution for an effect row follows the same lexical scope as ordinary
 value resolution. When a local closure, a function parameter, or a pattern /

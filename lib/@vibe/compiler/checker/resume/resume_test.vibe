@@ -2,7 +2,7 @@ import @vibe/compiler/core {
   Expr
 }
 import @vibe/compiler/checker/resume {
-  reject_resume_outside_handler
+  arm_first_bare_tail, reject_resume_outside_handler
 }
 test "a resume binding shadows the handler operation" {
   let call = ECall(EIdent("resume", 11), [EInt(42)], 12)
@@ -12,4 +12,35 @@ test "a resume binding shadows the handler operation" {
   reject_resume_outside_handler(call, false, errors)
   inspect(Array::length(errors), content = "1")
   inspect(String::ends_with(Array::get(errors, 0), " [@off=11]"), content = "true")
+}
+
+test "#2969: a tail resume, return or throw is not a bare tail" {
+  let resume_call = ECall(EIdent("resume", 3), [EInt(1)], 4)
+  inspect(arm_first_bare_tail(resume_call, false) is None, content = "true")
+  inspect(arm_first_bare_tail(EReturn(EInt(1)), false) is None, content = "true")
+  let throw_call = ECall(EIdent("throw", 3), [EString("no", 9)], 4)
+  inspect(arm_first_bare_tail(throw_call, false) is None, content = "true")
+  let throw_op = ECall(EIdent("perform", 0), [
+    ECall(EIdent("Exception::Throw", 8), [EString("x", 20)], 9)
+  ], 1)
+  inspect(arm_first_bare_tail(throw_op, false) is None, content = "true")
+  // A statement before the tail does not count; only the tail does.
+  inspect(arm_first_bare_tail(ESeq(EInt(0), resume_call), false) is None, content = "true")
+}
+
+test "#2969: a bare value on any tail is reported" {
+  let resume_call = ECall(EIdent("resume", 3), [EInt(1)], 4)
+  inspect(arm_first_bare_tail(EInt(7), false) is Some(_), content = "true")
+  inspect(arm_first_bare_tail(EIf(EBool(true), resume_call, EInt(7)), false) is Some(_), content = "true")
+  let other_perform = ECall(EIdent("perform", 0), [
+    ECall(EIdent("Ask::Get", 8), [], 9)
+  ], 1)
+  inspect(arm_first_bare_tail(other_perform, false) is Some(_), content = "true")
+}
+
+test "#2969: a tail resume under a local binder named resume is bare" {
+  let resume_call = ECall(EIdent("resume", 30), [EInt(1)], 31)
+  let shadowed = ELet("resume", EIdent("callback", 12), resume_call, 4)
+  inspect(arm_first_bare_tail(shadowed, false) is Some(_), content = "true")
+  inspect(arm_first_bare_tail(resume_call, true) is Some(_), content = "true")
 }

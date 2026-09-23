@@ -565,6 +565,14 @@ handle { greet("world") } with {
 }
 ```
 
+A handler arm for a declared effect ends every tail in `resume(v)` -- a
+`Unit` operation in `resume(())` -- or leaves the arm with `return`, `throw`,
+`break` or `continue`. A bare tail value is a compile error: nothing in the
+arm would say whether it resumes the `perform` or aborts the handle. An arm
+that stores `resume` as a value instead is the suspend form, and its own value
+is the handle's result. An `Exception` arm never resumes; its value is the
+handle's result.
+
 An ordinary function may expose a user-defined effect in its `with` row so a
 caller can handle it. A program entry (`main` or `_start`) cannot: only standard
 host-provider effects (`Fs`, `Env`, `Stdout`, and the other provider labels),
