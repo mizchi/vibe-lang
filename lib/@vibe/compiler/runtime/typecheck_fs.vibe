@@ -98,6 +98,7 @@ import @vibe/compiler/core {
   env_type_defs,
   env_value_binding,
   has_standard_effect_policy,
+  is_alias_constructor,
   is_builtin_iterator_serialized_boundary_path,
   is_contract_ext,
   lookup_registry_builtin,
@@ -1683,41 +1684,66 @@ fn row_ident_char(c: Int) -> Bool {
   c >= 65 && c <= 90 || c >= 97 && c <= 122 || c >= 48 && c <= 57 || c == 95
 }
 
-fn nominal_type_names_into(ty: Type, out: Array[String], row_out: Array[String]) -> Unit {
+/// `out` receives names that are nominal by construction (`CtEnum`,
+/// `CtStruct`). `named_out` receives spellings that may also be a formal: a
+/// `CtNamed` head (a type parameter of an alias body or an effect signature is
+/// a rigid `CtNamed`) and a row's bracketed name. The caller keeps a
+/// `named_out` entry only when the dependency declares a type by that name.
+fn nominal_type_names_into(ty: Type, out: Array[String], named_out: Array[String]) -> Unit {
   match ty {
     CtEnum(name) => Array::push(out, name),
     CtStruct(name) => Array::push(out, name),
     CtNamed(name, args) => {
-      Array::push(out, name)
+      Array::push(named_out, name)
       for arg in args {
-        nominal_type_names_into(arg, out, row_out)
+        nominal_type_names_into(arg, out, named_out)
       }
     },
     CtTuple(items) => for item in items {
-      nominal_type_names_into(item, out, row_out)
+      nominal_type_names_into(item, out, named_out)
     },
-    CtArray(inner) => nominal_type_names_into(inner, out, row_out),
-    CtOption(inner) => nominal_type_names_into(inner, out, row_out),
+    CtArray(inner) => nominal_type_names_into(inner, out, named_out),
+    CtOption(inner) => nominal_type_names_into(inner, out, named_out),
     CtFn(params, ret, row) => {
       for p in params {
-        nominal_type_names_into(p, out, row_out)
+        nominal_type_names_into(p, out, named_out)
       }
-      nominal_type_names_into(ret, out, row_out)
+      nominal_type_names_into(ret, out, named_out)
       match row {
-        Some(r) => row_bracketed_type_names_into(r, row_out),
+        Some(r) => row_bracketed_type_names_into(r, named_out),
         None => ()
       }
     },
-    CtApplied(head, args) => {
-      nominal_type_names_into(head, out, row_out)
+    CtApplied(head, args) => if is_alias_constructor(ty) {
+      // `CtApplied(CtNamed("#alias_ctor", []), [body, <binder>...])`: the
+      // trailing entries are the alias declaration's own parameter names, and
+      // the body mentions them as rigid `CtNamed`s. Neither is a reference.
+      let binders: Array[String] = []
+      let mut bi = 1
+      while bi < Array::length(args) {
+        match Array::get(args, bi) {
+          CtNamed(bn, _) => Array::push(binders, bn),
+          _ => ()
+        }
+        bi = bi + 1
+      }
+      let body_named: Array[String] = []
+      nominal_type_names_into(Array::get(args, 0), out, body_named)
+      for n in body_named {
+        if !contains_str(binders, n) {
+          Array::push(named_out, n)
+        }
+      }
+    } else {
+      nominal_type_names_into(head, out, named_out)
       for arg in args {
-        nominal_type_names_into(arg, out, row_out)
+        nominal_type_names_into(arg, out, named_out)
       }
     },
-    CtForAll(_, _, body) => nominal_type_names_into(body, out, row_out),
+    CtForAll(_, _, body) => nominal_type_names_into(body, out, named_out),
     CtRecord(fields) => for field in fields {
       let (_, fty) = field
-      nominal_type_names_into(fty, out, row_out)
+      nominal_type_names_into(fty, out, named_out)
     },
     _ => ()
   }
@@ -1743,9 +1769,10 @@ fn foreign_type_name_collisions(imported: String, raw_path: String, resolved: St
     let mentioned: Array[String] = []
     let row_mentioned: Array[String] = []
     nominal_type_names_into(ty, mentioned, row_mentioned)
-    // A row is a spelling with no binder information, so `Read[G]` under
-    // `fn f[G[_]]()` names the scheme's own formal `G`, not a type. Only a
-    // row name the dependency declares as a type is a nominal reference.
+    // A spelling carries no binder information: `Read[G]` under
+    // `fn f[G[_]]()` names the scheme's own formal `G`, and an alias body
+    // names its parameters as rigid `CtNamed`s. Only a spelled name the
+    // dependency declares as a type is a nominal reference.
     if Array::length(row_mentioned) > 0 {
       let dep_types: Array[String] = []
       for def in env_type_defs(dep_env) {
