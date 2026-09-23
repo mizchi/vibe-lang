@@ -3997,7 +3997,7 @@ fn effect_fresh_targs(etps: Array[String], c: Int) -> (Array[Type], Int) {
 /// compared (an alias or a structured argument could be spelled differently
 /// and still be the same type), and only when the handle's argument has
 /// resolved to a ground type -- this refuses nothing it cannot name exactly.
-fn check_handle_inst_vs_callee_rows(body: Expr, insts: Array[(String, Array[Type])], env: TypeEnv, errors: Array[String]) -> Unit {
+fn check_handle_inst_vs_callee_rows(body: Expr, insts: Array[(String, Array[Type])], env: TypeEnv, defs: Array[TypeDef], errors: Array[String]) -> Unit {
   if Array::length(insts) > 0 {
     let calls: Array[(String, Int, String)] = []
     handle_collect_direct_calls(body, " ", calls)
@@ -4041,7 +4041,7 @@ fn check_handle_inst_vs_callee_rows(body: Expr, insts: Array[(String, Array[Type
                   if Array::length(wants) == Array::length(haves) {
                     let mut wi = 0
                     while wi < Array::length(wants) {
-                      if effect_arg_mismatch(Array::get(haves, wi), Array::get(wants, wi)) {
+                      if effect_arg_mismatch(Array::get(haves, wi), Array::get(wants, wi), defs) {
                         mismatch = true
                       }
                       wi = wi + 1
@@ -4216,16 +4216,35 @@ fn handle_locals_with_pat(locals: String, pat: Pat) -> String {
 }
 
 /// Does the handler's resolved argument `have` disagree with the argument a
-/// callee's row spells as `want`? Only a spelling built from builtin names is
-/// compared; a user type, an alias or an unresolved handler type is not
-/// judged (#3010, #3022 review).
-fn effect_arg_mismatch(have: Type, want: String) -> Bool {
+/// callee's row spells as `want`? Compared: a spelling built from builtin
+/// names, and a bare name declaring a non-generic struct or enum here. An
+/// alias, a generic nominal type, a type formal or an unresolved handler type
+/// is not judged (#3010, #3022 review).
+fn effect_arg_mismatch(have: Type, want: String, defs: Array[TypeDef]) -> Bool {
   match builtin_scalar_type_of_name(want) {
     Some(want_ty) => head_kind(have) != 0 && !scalar_types_same(have, want_ty),
     None => {
       let have_text = type_to_string(have)
-      builtin_structural_spelling(want) && !String::contains(have_text, "?") && strip_spaces(have_text) != strip_spaces(want)
+      if builtin_structural_spelling(want) {
+        !String::contains(have_text, "?") && strip_spaces(have_text) != strip_spaces(want)
+      } else if declared_plain_nominal(defs, want) {
+        // The handler's type is judged only when it is itself something with
+        // one meaning: a builtin spelling or another plain nominal type.
+        have_text != want && !String::contains(have_text, "?") && (builtin_structural_spelling(have_text) || declared_plain_nominal(defs, have_text))
+      } else {
+        false
+      }
     }
+  }
+}
+
+/// Is `name` a struct or enum declared with no type parameters? Such a name
+/// denotes exactly one type, so two different ones never agree.
+fn declared_plain_nominal(defs: Array[TypeDef], name: String) -> Bool {
+  match find_typedef(defs, name) {
+    Some(TDStruct(_, _, _, tps)) => Array::length(tps) == 0,
+    Some(TDEnum(_, tps, _)) => Array::length(tps) == 0,
+    _ => false
   }
 }
 
@@ -11388,7 +11407,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         }
         hri = hri + 1
       }
-      check_handle_inst_vs_callee_rows(body, hinst_resolved, env, errors)
+      check_handle_inst_vs_callee_rows(body, hinst_resolved, env, defs, errors)
       (hres, hs1, hc1)
     },
     EWhile(cond, body) => {

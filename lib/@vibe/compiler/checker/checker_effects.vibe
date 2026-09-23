@@ -2877,25 +2877,51 @@ fn throw_kind_bind_pat(binds: Array[(String, String)], pat: Pat) -> Array[(Strin
   cur
 }
 
-/// A parameter's kind comes from its ANNOTATION's head name (`e: IoError`).
-/// Un-annotated parameters bind unresolvable -- their type exists only in the
-/// inference substitution this pass does not carry.
+/// A parameter's kind comes from its whole ANNOTATION (`e: IoError`,
+/// `xs: Array[Int]`). Un-annotated parameters bind unresolvable -- their type
+/// exists only in the inference substitution this pass does not carry.
 fn throw_kind_bind_params(binds: Array[(String, String)], params: Array[(String, Option[TypeExpr])]) -> Array[(String, String)] {
   let mut cur = binds
   let mut i = 0
   while i < Array::length(params) {
     let (pname, ptype) = Array::get(params, i)
     let kind = match ptype {
-      Some(te) => match afe_texpr_head_name(te) {
-        Some(h) => h,
-        None => ""
-      },
+      Some(te) => throw_kind_of_texpr(te),
       None => ""
     }
     cur = throw_kind_bind(cur, pname, kind)
     i = i + 1
   }
   cur
+}
+
+/// The kind an annotation names, spelled the way a kinded row writes it:
+/// `Array[Int]`, not the head `Array` -- a row `Exception[Array[Int]]` is not
+/// satisfied by `Exception[Array]` (#3022 review). A function, tuple or unit
+/// type has no row spelling here and stays unresolved ("").
+fn throw_kind_of_texpr(te: TypeExpr) -> String {
+  match te {
+    TyName(n) => n,
+    TyApp(n, args) => {
+      let parts = array_empty()
+      let mut ok = true
+      let mut i = 0
+      while i < Array::length(args) {
+        let a = throw_kind_of_texpr(Array::get(args, i))
+        if String::length(a) == 0 {
+          ok = false
+        }
+        Array::push(parts, a)
+        i = i + 1
+      }
+      if ok {
+        String::concat(n, String::concat("[", String::concat(String::join(parts, ", "), "]")))
+      } else {
+        ""
+      }
+    },
+    _ => ""
+  }
 }
 
 /// #2964: the result kind of a callee the module table does not list -- a
@@ -2991,10 +3017,7 @@ fn throw_payload_kind(payload: Expr, binds: Array[(String, String)]) -> String {
         match Array::get(aps, 0) {
           (pname, Some(te)) => match abody {
             EIdent(bname, _) => if pname == "__asc" && bname == "__asc" {
-              match afe_texpr_head_name(te) {
-                Some(h) => h,
-                None => ""
-              }
+              throw_kind_of_texpr(te)
             } else {
               ""
             },
