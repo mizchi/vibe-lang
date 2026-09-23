@@ -286,10 +286,20 @@ The checker is Bend's, and vibe already computes most of the counts:
 Statically unique means: freshly allocated in this function, and every owning
 use so far is a `consume`. For such a value:
 
-1. constructor reuse (ADR-0092) can skip the run-time `rc == 1` test;
+1. constructor reuse (ADR-0092) can skip the run-time `rc == 1` test. Reuse
+   repurposes only the root cell, and the decomposition already transfers each
+   child, so uniqueness of the root is the whole requirement;
 2. `TaskGroup::spawn` can move the value into the task instead of making the
-   deep-copy snapshot ADR-0068 specifies. `pl-survey-2026-07.md` already names
-   this as the intended use of uniqueness.
+   deep-copy snapshot ADR-0068 specifies, **but only for a shallow buffer**:
+   `Array[S]` with a scalar `S`, `Bytes`, or a packed column. Static
+   uniqueness is a fact about the *root* allocation. After
+   `let inner = [1]; let outer = [inner]`, `outer` can be fresh and consumed
+   exactly once while the caller still holds `inner`. Moving `outer` would let
+   the caller mutate what the child task reads. Deeper graphs keep the deep
+   copy until uniqueness is established transitively, for every reachable
+   object. That is a stronger analysis and a later slice.
+   `pl-survey-2026-07.md` already names the shallow case as the intended use
+   of uniqueness.
 
 ### A5. Formalization, tied to the implementation
 
@@ -308,8 +318,13 @@ counts, shallow buffers, and the three modes. Three theorems:
   { Array::set(ys, 0, 1) }`, the call `f(a, a)` writes `a` through `ys`, and
   nothing about `xs` is violated. T1′ holds when every *other* parameter is
   `borrow`, buffer-free, or `mut` (A3 already makes a `mut` buffer disjoint
-  from every other argument, `borrow` ones included), and when the callee's
-  write summary reaches no non-buffer-free global. A verifier or optimizer
+  from every other argument, `borrow` ones included), when the callee's
+  write summary reaches no non-buffer-free global, and when the callee's
+  transitive effect row is empty or `Exception` only. The last premise is the
+  same one A3 imposes on `mut`, for the same reason: a handler arm that
+  captures another alias of the buffer can write it while the call is
+  suspended in a resumable operation, even for `f(borrow a)` with no other
+  parameters at all. A verifier or optimizer
   that wants "unchanged contents" must check those premises at the call. A
   call with an unannotated writable buffer parameter does not get T1′,
   and the diagnostic for a `#vectorize` or a contract that needs it says to
@@ -337,22 +352,23 @@ Two parts of the practice matter as much as the theorems:
   not through projections, one drops the identity check, one drops the
   buffer-free-argument rule, one checks only bare-buffer globals, one
   counts a loop body's consume once, one admits a `mut` call through a
-  capturing closure, one ignores call results in the borrow taint, one ignores aggregate construction in it, one trusts a root-only alias summary for a call result, one claims T1′ for a call that also passes the buffer to an unannotated writable parameter, one lets a borrow-derived value reach a `consume` position, one elides `rc == 1` on the strength of `mut` exclusivity alone, one lets
+  capturing closure, one ignores call results in the borrow taint, one ignores aggregate construction in it, one trusts a root-only alias summary for a call result, one claims T1′ for a call that also passes the buffer to an unannotated writable parameter, one lets a borrow-derived value reach a `consume` position, one elides `rc == 1` on the strength of `mut` exclusivity alone, one claims T1′ for a `borrow` callee that performs a resumable effect, one moves a root-unique but non-shallow value into a task, one lets
   an opaque type count as buffer-free, and one lets a `mut` callee perform a
   user effect whose handler captures the buffer, and one lets it perform
   `Async` under a user handler that does the same. `formal/` already keeps such witnesses for the Error policy.
 
 **Why the model has to come first.** Review of this document found the
 same class of hole again and again, each one a path the prose rules had not
-enumerated. Twenty-one findings in ten rounds so far:
+enumerated. Twenty-three findings in eleven rounds so far:
 - aliases hidden in an aggregate argument, in an aggregate global, and in a
   closure callee;
-- aliases reached through an effect handler (twice: user effects, then `Async`) or an opaque type;
+- aliases reached through an effect handler (three times: user effects, then `Async`, then under a `borrow`) or an opaque type;
 - writes made through a projection, a call result (twice), and a constructed aggregate;
 - a consume inside a loop;
 - a caller-created alias between a `borrow` argument and a writable one;
 - a borrow-derived value passed to `consume`;
-- `rc == 1` elision justified by `mut` exclusivity, which ignores the caller's own references.
+- `rc == 1` elision justified by `mut` exclusivity, which ignores the caller's own references;
+- a task move justified by root-only uniqueness.
 
 Enumerating exceptions in English does not converge. What does converge is an
 executable model whose checker is diffed against the implementation, together
@@ -638,7 +654,7 @@ code.
 | 1 | declared `borrow`, checked against the inferred mask plus a per-parameter write summary; written to `index.vpkg` | — | parameter mode |
 | 2 | Lean model + executable oracle for `borrow` / escape (T1), with a negative witness | 1 | none |
 | 3 | `mut` exclusivity on shallow buffers (after slice 2's model and witnesses): static place check, buffer-free other arguments, no non-buffer-free globals in the callee's reach, an effect row of at most `Exception` in the callee, entry identity check (T3) | 1, 2 | parameter mode |
-| 4 | `consume` with the local usage map (loop and closure bodies count as ω); static uniqueness skips the reuse `rc == 1` test and turns spawn into a move (T2) | 1 | parameter mode |
+| 4 | `consume` with the local usage map (loop and closure bodies count as ω); static uniqueness skips the reuse `rc == 1` test and turns spawn of a shallow buffer into a move (T2) | 1 | parameter mode |
 | 5 | i32x4 / i64x2 / f64x2 arithmetic and compare emitters in `codegen/wasm_emit/simd.vibe` | — | none |
 | 6 | kernel-subset recognizer + lowering for `Array[Int]` `map` / `count` / `sum` (2×i64, tag-transparent) with the differential gate | 5 | none |
 | 7 | `I32Column` (simd-data-structures Layer 3) with the B4 narrowing rule and trap-by-default output | 6 | a type |
