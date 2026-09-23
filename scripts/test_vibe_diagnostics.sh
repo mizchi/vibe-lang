@@ -245,6 +245,22 @@ else
   fail=$((fail + 1))
 fi
 
+# Codex on #3039: a DIRECT adapter-protocol run of the compiler
+# (`viberun cli.wasm <in> <out>`, what scripts/vibe_pkg.sh does in launcher
+# mode) gets the checker's overflow diagnostic when the caller names the
+# sidecar with VIBE_CRASH_DIAG_OUT. Nothing the module exports can vouch for
+# it being the compiler (#3031), so the caller does.
+deepdirect_cli="$(find "$VIBE_HOME" -type f -name 'vibe-cli.wasm' 2>/dev/null | head -1)"
+rm -f "$WORK/deep_direct.wasm" "$WORK/deep_direct.wasm.diag"
+( cd "$WORK" && VIBE_CRASH_DIAG_OUT="$WORK/deep_direct.wasm.diag" \
+  "$deepcli_runner" "$deepdirect_cli" "$deepexpr" "$WORK/deep_direct.wasm" __no_entry__ ) >/dev/null 2>&1 || true
+if [ -n "$deepdirect_cli" ] && grep -qi 'too deeply nested' "$WORK/deep_direct.wasm.diag" 2>/dev/null; then
+  echo "ok: a direct adapter-protocol compile names its sidecar and gets the overflow diagnostic"; pass=$((pass + 1))
+else
+  echo "FAIL: expected '$WORK/deep_direct.wasm.diag' to carry the overflow diagnostic (cli: ${deepdirect_cli:-<none>})" >&2
+  fail=$((fail + 1))
+fi
+
 # #820 sub-item 1: `--json` emits the same diagnostics as an LSP-shaped
 # JSON array (0-based line/character, matching the LSP protocol, unlike the
 # 1-based `line L:C:` text form above) instead of plain text.

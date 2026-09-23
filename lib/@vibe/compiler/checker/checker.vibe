@@ -4095,7 +4095,7 @@ export fn set_generic_fn_decls(stmts: Array[Stmt]) -> Unit {
 /// Each argument that is exactly one of `cname`'s type formals, replaced by
 /// the concrete type that formal takes at the call at `coff`; every other
 /// argument, and any formal that cannot be resolved, is left as written.
-fn resolve_callee_formal_args(wants: Array[String], cname: String, coff: Int, env: TypeEnv, tytab: Array[(Int, Type)], s: Subst) -> Array[String] {
+fn resolve_callee_formal_args(wants: Array[String], cname: String, coff: Int, env: TypeEnv, defs: Array[TypeDef], s: Subst) -> Array[String] {
   let mut decl_idx = 0 - 1
   let mut di = 0
   while di < Array::length(generic_fn_decls_cell) {
@@ -4128,13 +4128,13 @@ fn resolve_callee_formal_args(wants: Array[String], cname: String, coff: Int, en
             while pi < Array::length(dparams) && pi < Array::length(sparams) {
               let (_, pann) = Array::get(dparams, pi)
               match pann {
-                Some(te) => formal_ids_from(te, Array::get(sparams, pi), tps, name_ids),
+                Some(te) => formal_ids_from(resolve_type_expr_shadowed(te, defs, tps), Array::get(sparams, pi), tps, name_ids),
                 None => ()
               }
               pi = pi + 1
             }
             match dret {
-              Some(te) => formal_ids_from(te, sret, tps, name_ids),
+              Some(te) => formal_ids_from(resolve_type_expr_shadowed(te, defs, tps), sret, tps, name_ids),
               None => ()
             }
             // scheme variable id -> the type this call gives it.
@@ -4182,51 +4182,52 @@ fn resolve_callee_formal_args(wants: Array[String], cname: String, coff: Int, en
   }
 }
 
-/// Pair each formal named in the annotation `te` with the scheme variable at
-/// the same position of `t`.
-fn formal_ids_from(te: TypeExpr, t: Type, formals: Array[String], out: Array[(String, Int)]) -> Unit {
-  match te {
-    TyName(n) => match t {
-      CtVar(id) => if str_array_contains_name(formals, n) {
-        Array::push(out, (n, id))
-      },
-      _ => ()
-    },
-    TyApp(_, targs) => {
-      let targ_tys = match t {
-        CtArray(e) => [e],
-        CtOption(e) => [e],
-        CtNamed(_, xs) => xs,
-        _ => array_empty()
+/// Pair each formal named in the annotation with the scheme variable at the
+/// same position of `t`. The annotation arrives RESOLVED with the formals
+/// shadowed, so a formal is a bare `CtNamed(formal, [])` and an alias has
+/// already been expanded: `-> Id[S]` for `type Id[T] = T` is paired as `S`,
+/// which a walk over the written `TyApp` could not see (Codex on #3039).
+fn formal_ids_from(rt: Type, t: Type, formals: Array[String], out: Array[(String, Int)]) -> Unit {
+  match rt {
+    CtNamed(n, xs) => if Array::length(xs) == 0 && str_array_contains_name(formals, n) {
+      match t {
+        CtVar(id) => Array::push(out, (n, id)),
+        _ => ()
       }
-      let mut i = 0
-      while i < Array::length(targs) && i < Array::length(targ_tys) {
-        formal_ids_from(Array::get(targs, i), Array::get(targ_tys, i), formals, out)
-        i = i + 1
+    } else {
+      match t {
+        CtNamed(_, ys) => formal_ids_from_all(xs, ys, formals, out),
+        _ => ()
       }
     },
-    TyTuple(items) => match t {
-      CtTuple(tys) => {
-        let mut i = 0
-        while i < Array::length(items) && i < Array::length(tys) {
-          formal_ids_from(Array::get(items, i), Array::get(tys, i), formals, out)
-          i = i + 1
-        }
-      },
+    CtArray(e) => match t {
+      CtArray(te) => formal_ids_from(e, te, formals, out),
       _ => ()
     },
-    TyFn(ps, r, _) => match t {
-      CtFn(tps2, tr, _) => {
-        let mut i = 0
-        while i < Array::length(ps) && i < Array::length(tps2) {
-          formal_ids_from(Array::get(ps, i), Array::get(tps2, i), formals, out)
-          i = i + 1
-        }
+    CtOption(e) => match t {
+      CtOption(te) => formal_ids_from(e, te, formals, out),
+      _ => ()
+    },
+    CtTuple(xs) => match t {
+      CtTuple(ys) => formal_ids_from_all(xs, ys, formals, out),
+      _ => ()
+    },
+    CtFn(xs, r, _) => match t {
+      CtFn(ys, tr, _) => {
+        formal_ids_from_all(xs, ys, formals, out)
         formal_ids_from(r, tr, formals, out)
       },
       _ => ()
     },
     _ => ()
+  }
+}
+
+fn formal_ids_from_all(xs: Array[Type], ys: Array[Type], formals: Array[String], out: Array[(String, Int)]) -> Unit {
+  let mut i = 0
+  while i < Array::length(xs) && i < Array::length(ys) {
+    formal_ids_from(Array::get(xs, i), Array::get(ys, i), formals, out)
+    i = i + 1
   }
 }
 
@@ -4290,7 +4291,7 @@ fn str_array_contains_name(xs: Array[String], x: String) -> Bool {
   found
 }
 
-fn check_handle_inst_vs_callee_rows(body: Expr, insts: Array[(String, Array[Type])], env: TypeEnv, defs: Array[TypeDef], tytab: Array[(Int, Type)], s: Subst, errors: Array[String]) -> Unit {
+fn check_handle_inst_vs_callee_rows(body: Expr, insts: Array[(String, Array[Type])], env: TypeEnv, defs: Array[TypeDef], s: Subst, errors: Array[String]) -> Unit {
   if Array::length(insts) > 0 {
     let calls: Array[(String, Int, String, String)] = []
     handle_collect_direct_calls(body, " ", calls)
@@ -4325,7 +4326,7 @@ fn check_handle_inst_vs_callee_rows(body: Expr, insts: Array[(String, Array[Type
                   // #3027: an argument naming one of the callee's own type
                   // formals (`fn get[S]() -> S with State[S]`) means what that
                   // formal is instantiated to at THIS call.
-                  let wants = resolve_callee_formal_args(split_row_top_level(arg_text), cname, coff, env, tytab, s)
+                  let wants = resolve_callee_formal_args(split_row_top_level(arg_text), cname, coff, env, defs, s)
                   let have_text = if Array::length(haves) == 1 {
                     type_to_string(Array::get(haves, 0))
                   } else {
@@ -12000,7 +12001,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         }
         hri = hri + 1
       }
-      check_handle_inst_vs_callee_rows(body, hinst_resolved, env, defs, tytab, hs1, errors)
+      check_handle_inst_vs_callee_rows(body, hinst_resolved, env, defs, hs1, errors)
       (hres, hs1, hc1)
     },
     EWhile(cond, body) => {
