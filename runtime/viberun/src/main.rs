@@ -1683,9 +1683,15 @@ fn run(args: Vec<String>) -> Result<i32> {
             // #2988: a stack overflow in the USER's program is not the
             // checker's. Only the compiler (the module exporting `cli_main`)
             // gets the type-checking message and its `.diag` sidecar.
-            if matches!(e.downcast_ref::<Trap>(), Some(Trap::StackOverflow))
-                && instance.get_export(&mut store, "cli_main").is_none()
-            {
+            // The compiler is what the launcher vouches for with
+            // VIBE_CRASH_DIAG_OUT (`invoke_cli`); a direct adapter-protocol
+            // run is recognised by a `cli_main` export with no `main`. An
+            // unrelated `cli_main` export in a user program is not enough
+            // (#3022 review).
+            let running_compiler = std::env::var_os("VIBE_CRASH_DIAG_OUT").is_some_and(|v| !v.is_empty())
+                || (instance.get_export(&mut store, "cli_main").is_some()
+                    && instance.get_export(&mut store, "main").is_none());
+            if matches!(e.downcast_ref::<Trap>(), Some(Trap::StackOverflow)) && !running_compiler {
                 eprintln!(
                     "viberun: stack overflow while running `{wasm_path}`: the program recursed too deeply -- make the recursion a loop, or bound its depth"
                 );

@@ -1618,32 +1618,35 @@ fn comp_generate_wasi_fd_write_stub() -> Bytes {
 /// 4=trampoline. core funcs: 0=task.return, 1=main.run, 2=trampoline.run.
 export fn comp_emit_component_wasm_async_trampolined_p1(main_core_wasm: Bytes, export_name: String, comp_result_valtype: Int) -> Bytes {
   let needs_stderr = comp_core_imports_func(main_core_wasm, "vibe", "stderr_write_stream")
+  // #2976: `vibe.process_exit` needs the same `vibe` stub, with or without
+  // the stderr import (a `Process::exit` call carries no boundary).
+  let needs_exit = comp_core_imports_func(main_core_wasm, "vibe", "process_exit")
+  let needs_vibe = needs_stderr || needs_exit
   let buf = bytebuf_new()
   emit_component_header(buf)
   emit_core_module_section(buf, main_core_wasm)
   emit_core_module_section(buf, comp_generate_async_trampoline(comp_valtype_to_core(comp_result_valtype)))
-  if needs_stderr {
-    // The exception boundary only needs this import on its failing path. A
+  if needs_vibe {
+    // The exception boundary only needs these imports on its failing path. A
     // local trapping stub keeps the self-contained component valid and
     // preserves the same non-zero outcome as core launchers; components that
-    // do not carry the boundary retain their exact pre-existing bytes.
-    // #2976: the boundary leaves through `vibe.process_exit` after its
-    // diagnosis; the same trapping stub serves it when the core imports it.
-    if comp_core_imports_func(main_core_wasm, "vibe", "process_exit") {
-      emit_core_module_section(buf, comp_generate_host_stub_module([
-        "stderr_write_stream",
-        "process_exit"
-      ], [[1, 126, 0], [1, 126, 0]]))
-    } else {
-      emit_core_module_section(buf, comp_generate_host_stub_module([
-        "stderr_write_stream"
-      ], [[1, 126, 0]]))
+    // import neither retain their exact pre-existing bytes.
+    let stub_names = array_empty()
+    let stub_sigs = array_empty()
+    if needs_stderr {
+      Array::push(stub_names, "stderr_write_stream")
+      Array::push(stub_sigs, [1, 126, 0])
     }
+    if needs_exit {
+      Array::push(stub_names, "process_exit")
+      Array::push(stub_sigs, [1, 126, 0])
+    }
+    emit_core_module_section(buf, comp_generate_host_stub_module(stub_names, stub_sigs))
   } else {
     emit_core_module_section(buf, comp_generate_wasi_fd_write_stub())
   }
   emit_core_instance_instantiate_section(buf, 2, array_empty())
-  if needs_stderr {
+  if needs_vibe {
     emit_core_instance_instantiate_args(buf, 0, [
       "wasi_snapshot_preview1",
       "vibe"
