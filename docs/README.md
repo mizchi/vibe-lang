@@ -182,6 +182,14 @@ Not normative.
 | [internal/reports/pl-survey-2026-07.md](internal/reports/pl-survey-2026-07.md) | |
 | [internal/reports/code-size-linear-vs-gc.md](internal/reports/code-size-linear-vs-gc.md) | Measured 2026-08-15/16 |
 
+### Research / other languages
+
+Not normative. Surveys of other languages and the proposals drawn from them.
+
+| Path | Notes |
+| --- | --- |
+| [research/other-languages/](research/other-languages/) | Bend, Vx, Mojo, MoonBit verification (mizchi/veri); proposal for second-class borrow modes and a `v128` kernel subset. Index: [README.md](research/other-languages/README.md) |
+
 ## 3. Generated
 
 Machine-produced. Do not edit by hand. Generator / freshness is noted where known.
