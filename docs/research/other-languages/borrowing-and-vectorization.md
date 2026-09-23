@@ -121,12 +121,18 @@ therefore needs a separate **write check**:
   parameter's own name. A value is borrow-derived if it is the parameter
   itself, a projection of a borrow-derived value (`h.buf`, `h.a.b`, `t.0`),
   an element read from one (`Array::get(xs, i)`), a pattern variable bound
-  by matching one, or a local (`let`, or `let mut` assignment) bound to a
+  by matching one, the **result of a call** that may alias a borrow-derived
+  argument, or a local (`let`, or `let mut` assignment) bound to a
   borrow-derived expression. This is a flow-insensitive taint over one
   function body, which is conservative and cheap. Without it,
   `fn f(borrow h: Holder) { Array::set(h.buf, 0, 1) }` passes: `h` sits only
   in projection positions, its consume count is 0, and it does not escape,
-  yet its reachable contents change;
+  yet its reachable contents change. A call result counts as borrow-derived
+  when the callee's return-alias summary (`borrow_ret` / `view_ret`, see
+  `vibe rc-classify`) says it may alias the argument in a borrow-derived
+  position, or when the callee has no summary and its result type is not
+  buffer-free (A3). Otherwise a non-writing helper that returns `h.buf` would
+  launder the taint;
 - a borrow-derived value is never the buffer argument of a mutating builtin.
   The registry already knows which builtins write; `md_is_borrow_arg0_call`'s
   list is the starting point, and the rule is the opposite one: a mutator is
@@ -169,12 +175,21 @@ The subset that makes it tractable:
   that *are* buffers. It misses a buffer *reachable through* another argument:
   `f(xs, Holder::{ buf: xs })` passes both checks above, yet a read through
   `holder.buf` sees the write through `xs`. So, in a call with a `mut`
-  argument, every other argument must have a **buffer-free type**. That is a
-  type that mentions no shallow buffer type, no function type (a closure may
-  capture the buffer), and no type variable (it could be instantiated to
-  either), checked transitively through struct and enum fields and type
-  aliases. The only other permitted arguments are shallow buffers themselves,
-  which the identity check covers. Anything else is a compile error that
+  argument, every other argument must have a **buffer-free type**. That is
+  defined as an **allow-list**, not by excluding known offenders:
+  - scalars and `String`;
+  - tuples and `Option` of buffer-free types;
+  - structs and enums whose declaration is visible and whose every field or
+    payload is buffer-free, checked through type aliases.
+
+  Everything else is excluded *by construction*, rather than by enumeration:
+  shallow buffers, function types (a closure may capture the buffer), type
+  variables (they could be instantiated to either), and **opaque or bodyless
+  nominal types**. An `opaque type` from another package can hide an
+  `Array[Int]` behind its methods, and its contract does not show the fields.
+  A package contract may later certify an opaque type as buffer-free
+  explicitly; until then it does not qualify. The only other permitted
+  arguments are shallow buffers themselves, which the identity check covers. Anything else is a compile error that
   names the edit: pass the buffer directly, or copy it first.
 - **No reach through the environment either.** The callee must not read any
   top-level binding whose type is **not buffer-free**, either directly or
@@ -186,6 +201,21 @@ The subset that makes it tractable:
   **reach summary** ("may read a non-buffer-free global"), computed and
   imported like the A2 write summary. The write summary alone does not
   record reads.
+- **No reach through effect handlers.** A handler is supplied dynamically by
+  the caller, and its arms can capture the very buffer passed as `mut`. If the
+  callee performs a resumable algebraic operation during the call, that arm
+  runs *inside* the call and can read the capture. Neither the argument list
+  nor the reach summary would see it. So the effect row of a function with a
+  `mut` parameter, transitively, may contain only:
+  - capability effects served by the host, which cannot hold a vibe buffer;
+  - `Exception`: raising abandons the call, so a handler that reads the
+    buffer runs after the call's frame has ended;
+  - `Async`: another task cannot hold the buffer, because `Array` and `Bytes`
+    are not `Send`.
+
+  User-defined algebraic effects are refused in `mut` callees for the first
+  cut. Checking the captures of handler arms at the call site is the
+  alternative, and a later slice can add it.
 
 With those rules the frame of a `mut` call is exactly its argument list, and
 the entry identity check covers the only aliasing the argument list can
@@ -263,8 +293,25 @@ Two parts of the practice matter as much as the theorems:
   `borrow` write check, one checks writes on the parameter name only and
   not through projections, one drops the identity check, one drops the
   buffer-free-argument rule, one checks only bare-buffer globals, one
-  counts a loop body's consume once, and one admits a `mut` call through a
-  capturing closure. `formal/` already keeps such witnesses for the Error policy.
+  counts a loop body's consume once, one admits a `mut` call through a
+  capturing closure, one ignores call results in the borrow taint, one lets
+  an opaque type count as buffer-free, and one lets a `mut` callee perform a
+  user effect whose handler captures the buffer. `formal/` already keeps such witnesses for the Error policy.
+
+**Why the model has to come first.** Review of this document found the
+same class of hole again and again, each one a path the prose rules had not
+enumerated. Fifteen findings in five rounds so far:
+- aliases hidden in an aggregate argument, in an aggregate global, and in a
+  closure callee;
+- aliases reached through an effect handler or an opaque type;
+- writes made through a projection, and through a call result;
+- a consume inside a loop.
+
+Enumerating exceptions in English does not converge. What does converge is an
+executable model whose checker is diffed against the implementation, together
+with a corpus that grows by one negative witness per hole found. Those
+findings are the initial corpus. So slice 2 (the model) precedes slice 3
+(exclusivity), and no mode lands in the compiler without its witnesses.
 
 State the gap honestly as well: the model does not cover codegen. The claim
 "the emitted dup and drop sequence realizes T1" is a differential and
@@ -330,7 +377,10 @@ analysis:
 1. its parameters and captures are scalars of the column's element type (a
    captured scalar becomes a `splat`);
 2. its body uses only `+ - *` (wrapping), `& | ^ ~`, shifts whose count is a
-   **literal smaller than the lane width** (B4), comparisons, `min` / `max` /
+   **literal smaller than the lane width** (B4), comparisons, `&&` / `||` /
+   `!` on comparison results (lowered to `v128.and` / `v128.or` /
+   `v128.not` on lane masks; both sides are evaluated, which is sound only
+   because every operation in the subset is total, item 3), `min` / `max` /
    `abs`, literals, `let`, and `if` whose two arms are themselves in the
    subset (lowered to `v128.bitselect`), and it obeys the range rule of B4;
 3. it **makes no calls** except to functions whose bodies are in the subset
@@ -540,7 +590,7 @@ code.
 |---|---|---|---|
 | 1 | declared `borrow`, checked against the inferred mask plus a per-parameter write summary; written to `index.vpkg` | — | parameter mode |
 | 2 | Lean model + executable oracle for `borrow` / escape (T1), with a negative witness | 1 | none |
-| 3 | `mut` exclusivity on shallow buffers: static place check, buffer-free other arguments, no non-buffer-free globals in the callee's reach, entry identity check (T3) | 1 | parameter mode |
+| 3 | `mut` exclusivity on shallow buffers (after slice 2's model and witnesses): static place check, buffer-free other arguments, no non-buffer-free globals in the callee's reach, no user effects in the callee's row, entry identity check (T3) | 1, 2 | parameter mode |
 | 4 | `consume` with the local usage map (loop and closure bodies count as ω); static uniqueness skips the reuse `rc == 1` test and turns spawn into a move (T2) | 1 | parameter mode |
 | 5 | i32x4 / i64x2 / f64x2 arithmetic and compare emitters in `codegen/wasm_emit/simd.vibe` | — | none |
 | 6 | kernel-subset recognizer + lowering for `Array[Int]` `map` / `count` / `sum` (2×i64, tag-transparent) with the differential gate | 5 | none |
