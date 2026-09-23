@@ -114,7 +114,12 @@ separately:
   expression the callee wrote. T1 itself becomes false: the reference is
   retained, and the caller's elided dup leaves it dangling.
 
-Raising `Exception` abandons the frame, so it is safe. A later slice can
+Raising `Exception` abandons the frame, so the *frame* cannot outlive the
+call. Its **payload** can, though. `Exception[E]` carries an arbitrary value,
+so `throw(xs)` hands `xs` to the caller's handler. The throw payload is
+therefore an escape position, on the same footing as a return value (A2): a
+borrow-derived value or a `mut` parameter may not appear in it, nor in any
+other operation payload. A later slice can
 re-admit resumable effects together with a call-site check that no enclosing
 handler captures an alias or stores the continuation. Until then the rule is
 one line, and it applies to all three modes.
@@ -123,7 +128,7 @@ one line, and it applies to all three modes.
 
 A `borrow` parameter is exactly a region token whose extent is the call. The
 escape checks vibe already runs for `region r { }` and `TaskGroup::run` —
-return, outer binding, container write, closure capture — are the escape
+return, outer binding, container write, closure capture, plus a `throw` payload (A1) — are the escape
 checks a borrow needs. Reusing them avoids a second escape analysis, and it
 closes one of the documented holes on the way: a `borrow` is a parameter, not
 a generalized `let`, so the "leak through a generalized local" gap does not
@@ -396,14 +401,14 @@ Two parts of the practice matter as much as the theorems:
   not through projections, one drops the identity check, one drops the
   buffer-free-argument rule, one checks only bare-buffer globals, one
   counts a loop body's consume once, one admits a `mut` call through a
-  capturing closure, one ignores call results in the borrow taint, one ignores aggregate construction in it, one trusts a root-only alias summary for a call result, one claims T1′ for a call that also passes the buffer to an unannotated writable parameter, one lets a borrow-derived value reach a `consume` position, one elides `rc == 1` on the strength of `mut` exclusivity alone, one claims T1′ for a `borrow` callee that performs a resumable effect, one moves a root-unique but non-shallow value into a task, one lets a `mut` parameter escape by return or capture, one lets a stored continuation retain a `borrow` frame, one computes the 2×i64 fallback untagged, one accumulates an `Int`-valued `I32Column::sum` in i32x4 lanes, one vectorizes `dst[i] = dst[i - 1]` in place, one moves an `Array[Double]` into a task, one hands a buffer pointer to a worker on a separate linear memory, one canonicalizes the NaN of a pass-through kernel, one lets
+  capturing closure, one ignores call results in the borrow taint, one ignores aggregate construction in it, one trusts a root-only alias summary for a call result, one claims T1′ for a call that also passes the buffer to an unannotated writable parameter, one lets a borrow-derived value reach a `consume` position, one elides `rc == 1` on the strength of `mut` exclusivity alone, one claims T1′ for a `borrow` callee that performs a resumable effect, one moves a root-unique but non-shallow value into a task, one lets a `mut` parameter escape by return or capture, one lets a stored continuation retain a `borrow` frame, one throws a borrowed value as an exception payload, one computes the 2×i64 fallback untagged, one accumulates an `Int`-valued `I32Column::sum` in i32x4 lanes, one vectorizes `dst[i] = dst[i - 1]` in place, one moves an `Array[Double]` into a task, one hands a buffer pointer to a worker on a separate linear memory, one canonicalizes the NaN of a pass-through kernel, one lets
   an opaque type count as buffer-free, and one lets a `mut` callee perform a
   user effect whose handler captures the buffer, and one lets it perform
   `Async` under a user handler that does the same. `formal/` already keeps such witnesses for the Error policy.
 
 **Why the model has to come first.** Review of this document found the
 same class of hole again and again, each one a path the prose rules had not
-enumerated. Thirty-two findings in fifteen rounds so far:
+enumerated. Thirty-three findings in sixteen rounds so far:
 - aliases hidden in an aggregate argument, in an aggregate global, and in a
   closure callee;
 - aliases reached through an effect handler (three times: user effects, then `Async`, then under a `borrow`) or an opaque type;
@@ -413,7 +418,7 @@ enumerated. Thirty-two findings in fifteen rounds so far:
 - a borrow-derived value passed to `consume`;
 - `rc == 1` elision justified by `mut` exclusivity, which ignores the caller's own references;
 - a task move justified by root-only uniqueness;
-- a `mut` parameter escaping by return, and a `borrow` frame retained by a stored continuation;
+- a `mut` parameter escaping by return, a `borrow` frame retained by a stored continuation, and a borrowed value escaping as an exception payload;
 - a vector fallback that wraps at 2⁶⁴ instead of 2⁶³, and a reduction accumulator that wraps at 2³²;
 - NaN canonicalization applied to a bit-exact pass-through;
 - a loop-carried dependence inside one buffer, which exclusivity does not see;
