@@ -118,21 +118,30 @@ a write bypass the `mut` exclusivity contract (A3). A declared `borrow`
 therefore needs a separate **write check**:
 
 - the check applies to every **borrow-derived** value, not only to the
-  parameter's own name. A value is borrow-derived if it is the parameter
-  itself, a projection of a borrow-derived value (`h.buf`, `h.a.b`, `t.0`),
-  an element read from one (`Array::get(xs, i)`), a pattern variable bound
-  by matching one, the **result of a call** that may alias a borrow-derived
-  argument, or a local (`let`, or `let mut` assignment) bound to a
-  borrow-derived expression. This is a flow-insensitive taint over one
-  function body, which is conservative and cheap. Without it,
-  `fn f(borrow h: Holder) { Array::set(h.buf, 0, 1) }` passes: `h` sits only
-  in projection positions, its consume count is 0, and it does not escape,
-  yet its reachable contents change. A call result counts as borrow-derived
-  when the callee's return-alias summary (`borrow_ret` / `view_ret`, see
-  `vibe rc-classify`) says it may alias the argument in a borrow-derived
-  position, or when the callee has no summary and its result type is not
-  buffer-free (A3). Otherwise a non-writing helper that returns `h.buf` would
-  launder the taint;
+  parameter's own name. The definition is **closed by default**: it is not a
+  list of expression forms that propagate. A value is borrow-derived if
+  **either** of these holds:
+  - it is the parameter itself;
+  - it is any expression with a borrow-derived subexpression, **unless its
+    type is buffer-free** (A3's allow-list).
+
+  So taint flows through every form that can carry a buffer without being
+  named, including forms added to the language later: projections (`h.buf`,
+  `t.0`), element reads, pattern variables, `if` / `match` results, tuple /
+  struct / enum / `Option` construction (`Holder::{ buf: xs }`), and locals
+  bound by `let` or assigned by `let mut`. The only exception is the one that
+  cannot carry a buffer at all. Call results follow the same rule, and can
+  be refined only *toward* untainted: a result stays borrow-derived unless
+  the callee's return-alias summary (`borrow_ret` / `view_ret`, see
+  `vibe rc-classify`) proves it aliases no argument in a borrow-derived
+  position, or its type is buffer-free.
+
+  This is a flow-insensitive taint over one function body, which is
+  conservative and cheap. Earlier drafts listed the propagating forms instead,
+  and review found a missing form three times: a projection, a call result,
+  and an aggregate constructor
+  (`let h = Holder::{ buf: xs }; Array::set(h.buf, 0, 1)`). An allow-list of
+  *exemptions* cannot be incomplete in the unsafe direction;
 - a borrow-derived value is never the buffer argument of a mutating builtin.
   The registry already knows which builtins write; `md_is_borrow_arg0_call`'s
   list is the starting point, and the rule is the opposite one: a mutator is
@@ -294,17 +303,17 @@ Two parts of the practice matter as much as the theorems:
   not through projections, one drops the identity check, one drops the
   buffer-free-argument rule, one checks only bare-buffer globals, one
   counts a loop body's consume once, one admits a `mut` call through a
-  capturing closure, one ignores call results in the borrow taint, one lets
+  capturing closure, one ignores call results in the borrow taint, one ignores aggregate construction in it, one lets
   an opaque type count as buffer-free, and one lets a `mut` callee perform a
   user effect whose handler captures the buffer. `formal/` already keeps such witnesses for the Error policy.
 
 **Why the model has to come first.** Review of this document found the
 same class of hole again and again, each one a path the prose rules had not
-enumerated. Fifteen findings in five rounds so far:
+enumerated. Sixteen findings in six rounds so far:
 - aliases hidden in an aggregate argument, in an aggregate global, and in a
   closure callee;
 - aliases reached through an effect handler or an opaque type;
-- writes made through a projection, and through a call result;
+- writes made through a projection, a call result, and a constructed aggregate;
 - a consume inside a loop.
 
 Enumerating exceptions in English does not converge. What does converge is an
