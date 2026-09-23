@@ -1683,41 +1683,41 @@ fn row_ident_char(c: Int) -> Bool {
   c >= 65 && c <= 90 || c >= 97 && c <= 122 || c >= 48 && c <= 57 || c == 95
 }
 
-fn nominal_type_names_into(ty: Type, out: Array[String]) -> Unit {
+fn nominal_type_names_into(ty: Type, out: Array[String], row_out: Array[String]) -> Unit {
   match ty {
     CtEnum(name) => Array::push(out, name),
     CtStruct(name) => Array::push(out, name),
     CtNamed(name, args) => {
       Array::push(out, name)
       for arg in args {
-        nominal_type_names_into(arg, out)
+        nominal_type_names_into(arg, out, row_out)
       }
     },
     CtTuple(items) => for item in items {
-      nominal_type_names_into(item, out)
+      nominal_type_names_into(item, out, row_out)
     },
-    CtArray(inner) => nominal_type_names_into(inner, out),
-    CtOption(inner) => nominal_type_names_into(inner, out),
+    CtArray(inner) => nominal_type_names_into(inner, out, row_out),
+    CtOption(inner) => nominal_type_names_into(inner, out, row_out),
     CtFn(params, ret, row) => {
       for p in params {
-        nominal_type_names_into(p, out)
+        nominal_type_names_into(p, out, row_out)
       }
-      nominal_type_names_into(ret, out)
+      nominal_type_names_into(ret, out, row_out)
       match row {
-        Some(r) => row_bracketed_type_names_into(r, out),
+        Some(r) => row_bracketed_type_names_into(r, row_out),
         None => ()
       }
     },
     CtApplied(head, args) => {
-      nominal_type_names_into(head, out)
+      nominal_type_names_into(head, out, row_out)
       for arg in args {
-        nominal_type_names_into(arg, out)
+        nominal_type_names_into(arg, out, row_out)
       }
     },
-    CtForAll(_, _, body) => nominal_type_names_into(body, out),
+    CtForAll(_, _, body) => nominal_type_names_into(body, out, row_out),
     CtRecord(fields) => for field in fields {
       let (_, fty) = field
-      nominal_type_names_into(fty, out)
+      nominal_type_names_into(fty, out, row_out)
     },
     _ => ()
   }
@@ -1738,10 +1738,30 @@ fn nominal_type_names_into(ty: Type, out: Array[String]) -> Unit {
 /// is DEFERRED to the package's implementation, so when a sibling that
 /// declares `struct MutMap` imports the stub's `HashMap = MutMap[K, V]`, the
 /// stub's `MutMap` is that sibling's own declaration, not a different one.
-fn foreign_type_name_collisions(imported: String, raw_path: String, resolved: String, ty: Type, local_types: Array[String], unresolved: Array[String]) -> Unit {
+fn foreign_type_name_collisions(imported: String, raw_path: String, resolved: String, ty: Type, dep_env: TypeEnv, local_types: Array[String], unresolved: Array[String]) -> Unit {
   if Array::length(local_types) > 0 && !is_vpkg_types_stub_path(resolved) {
     let mentioned: Array[String] = []
-    nominal_type_names_into(ty, mentioned)
+    let row_mentioned: Array[String] = []
+    nominal_type_names_into(ty, mentioned, row_mentioned)
+    // A row is a spelling with no binder information, so `Read[G]` under
+    // `fn f[G[_]]()` names the scheme's own formal `G`, not a type. Only a
+    // row name the dependency declares as a type is a nominal reference.
+    if Array::length(row_mentioned) > 0 {
+      let dep_types: Array[String] = []
+      for def in env_type_defs(dep_env) {
+        match def {
+          TDEnum(n, _, _) => Array::push(dep_types, n),
+          TDStruct(n, _, _, _) => Array::push(dep_types, n),
+          TDAlias(n, _, _) => Array::push(dep_types, n),
+          _ => ()
+        }
+      }
+      for name in row_mentioned {
+        if contains_str(dep_types, name) {
+          Array::push(mentioned, name)
+        }
+      }
+    }
     let reported: Array[String] = []
     for name in mentioned {
       if contains_str(local_types, name) && !contains_str(reported, name) {
@@ -1818,7 +1838,7 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
       let binding_origin = selected_module_binding_origin(dep_env, resolved, name, surface_only_item)
       let ty = match imported_ty {
         Some(t) => {
-          foreign_type_name_collisions(name, raw_path, resolved, t, local_types, unresolved)
+          foreign_type_name_collisions(name, raw_path, resolved, t, dep_env, local_types, unresolved)
           trait_projection_map_type_bounds(t, trait_mappings)
         },
         None => {
