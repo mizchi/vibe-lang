@@ -427,9 +427,7 @@ test("B2 top-level helper bodies carry context and ordinary entries pass None", 
     "parse_expr(tokens,",
     "parse_impl(tokens,",
   ]);
-  // #2948: `parse_program_preserving` and its located twin share one loop,
-  // `parse_program_preserving_impl`; that shared body is the ordinary entry.
-  for (const ordinaryProgram of ["parse_program_preserving_impl", "parse_program_recovering"]) {
+  for (const ordinaryProgram of ["parse_program_preserving", "parse_program_preserving_impl", "parse_program_recovering"]) {
     assertBody(parserSource, ordinaryProgram, [
       "parse_impl_methods(tokens, hp_d, simpl_d, None)",
       "parse_impl_methods(tokens, hp, simpl, None)",

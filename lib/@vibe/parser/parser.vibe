@@ -957,7 +957,69 @@ fn parse_preserving_top_stmt(tokens: Array[Token], starts: Array[Int], pos: Int)
 /// logs already drained; the markers were appended last here and the
 /// lowerings keep statement order, so they stay last.
 export fn parse_program_preserving(tokens: Array[Token]) -> Array[Stmt] with Exception {
-  parse_program_preserving_impl(tokens, [], "", false)
+  let cfg_active = cfg_scan_enabled(tokens)
+  let b = ArrayBuilder::new()
+  let mut pos = 0
+  let mut done = false
+  while !done {
+    match peek(tokens, pos) {
+      TEof => {
+        done = true
+      },
+      TSemicolon => {
+        pos = pos + 1
+      },
+      THash => {
+        let (dname, flag, dnext) = parse_cfg_directive(tokens, pos + 1)
+        if dname == "zero_alloc" {
+          require_zero_alloc_target(tokens, dnext)
+          ArrayBuilder::push(b, SExpr(EIdent(zero_alloc_marker_ident(flag), 0)))
+          pos = dnext
+        } else if dname == "deprecated" || dname == "cfg_enable" || cfg_flag_active(cfg_active, flag) {
+          // enable directive consumed, or active #cfg: keep the next stmt.
+          pos = dnext
+        } else {
+          // Inactive #cfg: parse the guarded statement and discard it.
+          match peek(tokens, dnext) {
+            TImpl => {
+              let (simpl_d, hp_d) = parse_impl_stmt_dispatch(tokens, dnext + 1)
+              let (_dropped, dn) = parse_impl_methods(tokens, hp_d, simpl_d, None)
+              pos = dn
+            },
+            _ => {
+              let (_dropped, dn) = parse_stmt_preserving(tokens, [], dnext)
+              pos = dn
+            }
+          }
+        }
+      },
+      TImpl => {
+        let (simpl, hp) = parse_impl_stmt_dispatch(tokens, pos + 1)
+        let (impl_stmts, next) = parse_impl_methods(tokens, hp, simpl, None)
+        let mut ii = 0
+        while ii < Array::length(impl_stmts) {
+          ArrayBuilder::push(b, Array::get(impl_stmts, ii))
+          ii = ii + 1
+        }
+        pos = next
+      },
+      _ => {
+        let (stmt, next) = parse_stmt_preserving(tokens, [], pos)
+        ArrayBuilder::push(b, stmt)
+        pos = next
+      }
+    }
+  }
+  // Copied before the markers are appended, so the builder's frozen result
+  // is never pushed to -- and only when there is a marker to append: the
+  // common program has neither log, and the copy showed up as a +2% B/op
+  // drift on parser_bench's parse_deep_binop_chain.
+  let raw = ArrayBuilder::freeze(b)
+  if has_test_effect_rows() || has_qualified_pattern_refs() {
+    attach_qualified_pattern_refs(Array::slice(raw, 0, Array::length(raw)))
+  } else {
+    raw
+  }
 }
 
 /// `parse_program_preserving` with positions (#2948): the statements keep
