@@ -1029,13 +1029,36 @@ fn lex_decimal(s: String, len: Int, i: Int) -> (Token, Int) with Exception {
   }
 }
 
-/// #2996: is the nearest non-blank character before `i` a `-`?
+/// #2996: is the nearest non-whitespace character before `i` a `-`? A line
+/// break does not end the expression after a prefix `-`, so it is skipped too
+/// -- but a `-` that ends a `//` comment on an earlier line is comment text,
+/// and reading it as a sign would give a bare overflowing literal a value.
 fn minus_precedes(s: String, i: Int) -> Bool {
   let mut j = i - 1
-  while j >= 0 && (String::char_code_at(s, j) == ' ' || String::char_code_at(s, j) == '\t') {
+  let mut crossed_line = false
+  while j >= 0 && (String::char_code_at(s, j) == ' ' || String::char_code_at(s, j) == '\t' || String::char_code_at(s, j) == 10 || String::char_code_at(s, j) == 13) {
+    if String::char_code_at(s, j) == 10 {
+      crossed_line = true
+    }
     j = j - 1
   }
-  j >= 0 && String::char_code_at(s, j) == '-'
+  if j >= 0 && String::char_code_at(s, j) == '-' {
+    if crossed_line {
+      let mut k = j - 1
+      let mut in_comment = false
+      while k >= 0 && String::char_code_at(s, k) != 10 {
+        if k > 0 && String::char_code_at(s, k) == '/' && String::char_code_at(s, k - 1) == '/' {
+          in_comment = true
+        }
+        k = k - 1
+      }
+      !in_comment
+    } else {
+      true
+    }
+  } else {
+    false
+  }
 }
 
 fn lex_number(s: String, len: Int, i: Int) -> (Token, Int) with Exception {
