@@ -1,0 +1,57 @@
+//# #3001: a comment between the arms of a handler set.
+//
+// A comment-free handler set is written on one line (`with { A => 1; B => 2 }`).
+// A `//` comment runs to the end of its line, so that form cannot hold one;
+// the formatter used to keep it anyway, pulling the first arm onto the
+// `with {` line and dedenting every comment to the `handle`'s column. Such a
+// set is now laid out like a `match`: `with {` alone, one arm per line one
+// level in, comments at the arms' indentation, `}` back at the `handle`'s
+// column.
+
+import ./format.vibe {
+  format_script
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+fn parses(src: String) -> Bool {
+  handle {
+    let _ = parse_program(lex(src))
+    true
+  } with { Exception::Throw(_) => false }
+}
+
+test "#3001: a comment in a handler set keeps the arms on their own lines" {
+  let src = "fn g() -> Int {\n  handle { f() } with {\n    Ask::Get() => resume(41);   // arm comment\n    // dangling arm comment\n  }\n}\n"
+  let expected = "fn g() -> Int {\n  handle {\n    f()\n  } with {\n    Ask::Get() => resume(41)\n    // arm comment\n    // dangling arm comment\n  }\n}\n"
+  let once = format_script(src)
+  assert_eq(once, expected)
+  assert(parses(once))
+  assert_eq(format_script(once), once)
+}
+
+test "#3001: several arms around comments keep their separators and indentation" {
+  let src = "fn g() -> Int {\n  handle { f() } with {\n    // leading\n    Ask::Get() => resume(1); // after get\n    Ask::Put(a, b) => {\n      // in body\n      resume(a + b)\n    }\n  }\n}\n"
+  let expected = "fn g() -> Int {\n  handle {\n    f()\n  } with {\n    // leading\n    Ask::Get() => resume(1);\n    // after get\n    Ask::Put(a, b) => {\n      // in body\n      resume(a + b)\n    }\n  }\n}\n"
+  let once = format_script(src)
+  assert_eq(once, expected)
+  assert(parses(once))
+  assert_eq(format_script(once), once)
+}
+
+test "#3001: comments only inside an arm body keep the one-line handler set" {
+  let src = "fn g() -> Int {\n  handle { f() } with { Exception::Throw(e) => {\n    // in body\n    0\n  } }\n}\n"
+  let once = format_script(src)
+  assert(String::contains(once, "} with { Exception::Throw(e) => {\n"))
+  assert(parses(once))
+  assert_eq(format_script(once), once)
+}
+
+test "#3001: a comment-free handler set stays on one line" {
+  let src = "fn g() -> Int {\n  handle { f() } with {\n    Ask::Get() => resume(1);\n    Ask::Put(a, b) => resume(a)\n  }\n}\n"
+  let once = format_script(src)
+  assert(String::contains(once, "} with { Ask::Get() => resume(1); Ask::Put(a, b) => resume(a) }\n"))
+  assert_eq(format_script(once), once)
+}
