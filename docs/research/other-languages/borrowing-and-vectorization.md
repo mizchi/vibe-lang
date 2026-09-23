@@ -81,7 +81,7 @@ fn finish(consume b: ArrayBuilder[Int]) -> Array[Int] { ... }         // ownersh
 | mode | callee may | caller gets | checked by |
 |---|---|---|---|
 | *(none)* | anything (today's semantics) | inferred ABI, as now | nothing new |
-| `borrow` | read; pass it only to positions that do not write | no transfer dup, no drop | consume count = 0, no escape, and no write (A2) |
+| `borrow` | read; pass it only to positions that do not write | no transfer dup, no drop; *unchanged contents* only under T1′'s premise (A5) | consume count = 0, no escape, and no write through it (A2) |
 | `mut` | write through it | the argument does not alias any other argument | exclusivity (A3) |
 | `consume` | keep, return, store, reuse in place | the binding is dead after the call | usage map at the call site (A4) |
 
@@ -285,9 +285,23 @@ A small calculus in `formal/`: first-order functions, a heap with reference
 counts, shallow buffers, and the three modes. Three theorems:
 
 - **T1 (borrow).** A call whose `borrow` arguments pass the check leaves those
-  arguments' reference counts **and contents** unchanged, and retains no
-  reference to them. So eliding the caller's dup and the callee's drop is
-  sound, and a caller may treat a `borrow` argument as read-only.
+  arguments' reference counts unchanged, retains no reference to them, and
+  performs no write **through** them. Eliding the caller's dup and the
+  callee's drop needs only this ownership half, so it is sound whatever else
+  aliases the argument.
+- **T1′ (borrow frame).** The stronger claim, that the *contents* are
+  unchanged during the call, is a separate theorem with an extra premise: no
+  other writable path of the call reaches the same buffer. `borrow` alone
+  cannot promise this. In `fn f(borrow xs: Array[Int], ys: Array[Int])
+  { Array::set(ys, 0, 1) }`, the call `f(a, a)` writes `a` through `ys`, and
+  nothing about `xs` is violated. T1′ holds when every *other* parameter is
+  `borrow`, buffer-free, or `mut` (A3 already makes a `mut` buffer disjoint
+  from every other argument, `borrow` ones included), and when the callee's
+  write summary reaches no non-buffer-free global. A verifier or optimizer
+  that wants "unchanged contents" must check those premises at the call. A
+  call with an unannotated writable buffer parameter does not get T1′,
+  and the diagnostic for a `#vectorize` or a contract that needs it says to
+  annotate that parameter.
 - **T2 (consume).** After a `consume`, the binding is dead on every path,
   including every later iteration of an enclosing loop and every later call of
   an enclosing closure, so
@@ -311,18 +325,19 @@ Two parts of the practice matter as much as the theorems:
   not through projections, one drops the identity check, one drops the
   buffer-free-argument rule, one checks only bare-buffer globals, one
   counts a loop body's consume once, one admits a `mut` call through a
-  capturing closure, one ignores call results in the borrow taint, one ignores aggregate construction in it, one trusts a root-only alias summary for a call result, one lets
+  capturing closure, one ignores call results in the borrow taint, one ignores aggregate construction in it, one trusts a root-only alias summary for a call result, one claims T1′ for a call that also passes the buffer to an unannotated writable parameter, one lets
   an opaque type count as buffer-free, and one lets a `mut` callee perform a
   user effect whose handler captures the buffer. `formal/` already keeps such witnesses for the Error policy.
 
 **Why the model has to come first.** Review of this document found the
 same class of hole again and again, each one a path the prose rules had not
-enumerated. Seventeen findings in seven rounds so far:
+enumerated. Eighteen findings in eight rounds so far:
 - aliases hidden in an aggregate argument, in an aggregate global, and in a
   closure callee;
 - aliases reached through an effect handler or an opaque type;
 - writes made through a projection, a call result (twice), and a constructed aggregate;
-- a consume inside a loop.
+- a consume inside a loop;
+- a caller-created alias between a `borrow` argument and a writable one.
 
 Enumerating exceptions in English does not converge. What does converge is an
 executable model whose checker is diffed against the implementation, together
