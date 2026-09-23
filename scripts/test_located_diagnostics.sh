@@ -139,18 +139,13 @@ expect_missing "no [@off= marker leak (unknown name)" "[@off=" \
 expect_missing "no [@off= marker leak (unknown field)" "[@off=" \
   'struct Point { x: Int; y: Int }\nexport let get = (p: Point) -> Int {\n  p.z\n}\nexport let main = () -> Int { 0 }\n'
 
-# #1567, the flip side of the located type errors above — stated so it reads as
-# a decision rather than an accident: an expression built only from literals
-# with NO offset slot has nothing to anchor on, so it stays unlocated rather
-# than borrowing a nearby node's position and confidently pointing at the wrong
-# thing.
-#
-# `EString` left that group when it gained an offset (`EString(String, Int)` in
-# lib/@vibe/ast/index.vpkg): `1 + "s"` now locates AT the literal, which is the
-# case just below. `EInt` / `EFloat` / `EBool` still carry no slot, so the
-# original contract is asserted on those instead -- the rule is "never invent
-# one", not "never have one".
-expect_missing "slotless-literal mismatch does not invent a location" "line " \
+# #1567, the flip side of the located type errors above -- stated so it reads as
+# a decision rather than an accident: a diagnostic never borrows a nearby
+# node's position. `EInt` / `EFloat` / `EBool` still carry no offset slot, but
+# an operator mismatch between them has an anchor of its own since #2999: the
+# OPERATOR token's offset (EBinOp's fourth slot, #2435). So `1 + true` locates
+# AT the `+`, and the rule stays "never invent one", not "never have one".
+expect_contains "slotless-literal mismatch locates at the operator (#2999)" "line 2:5: type mismatch in '+'" \
   'export fn main() -> Int {\n  1 + true\n}\n'
 
 # The improvement the widening buys: a String literal anchors itself, so the
