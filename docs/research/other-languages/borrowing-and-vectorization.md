@@ -88,6 +88,16 @@ fn finish(consume b: ArrayBuilder[Int]) -> Array[Int] { ... }         // ownersh
 Unannotated code does not change. A mode is an opt-in promise that the checker
 verifies and that the ABI can then rely on across a package boundary.
 
+**Modes are declared only on top-level `fn` parameters, and a function that
+declares one is called only directly.** A lambda cannot declare a mode, and a
+moded `fn` cannot be taken as a value: a function type carries no modes, and
+if it did, the mode would stop being second-class. The restriction matters for
+`mut` in particular. A local closure could capture the very buffer that is
+passed to its `mut` parameter, and then read the capture while writing through
+the parameter. The callee is neither an argument nor a global, so none of A3's
+checks would see that alias. A top-level `fn` captures nothing, and its reach
+into globals is covered by A3's environment rule.
+
 ### A2. `borrow` is a region the length of the call
 
 A `borrow` parameter is exactly a region token whose extent is the call. The
@@ -238,8 +248,9 @@ Two parts of the practice matter as much as the theorems:
 - **Negative witnesses.** A deliberately broken checker must admit a concrete
   unsound program. One variant drops the escape rule, one drops the
   `borrow` write check, one drops the identity check, one drops the
-  buffer-free-argument rule, one checks only bare-buffer globals, and one
-  counts a loop body's consume once. `formal/` already keeps such witnesses for the Error policy.
+  buffer-free-argument rule, one checks only bare-buffer globals, one
+  counts a loop body's consume once, and one admits a `mut` call through a
+  capturing closure. `formal/` already keeps such witnesses for the Error policy.
 
 State the gap honestly as well: the model does not cover codegen. The claim
 "the emitted dup and drop sequence realizes T1" is a differential and
@@ -366,7 +377,7 @@ and backs with a negative control on subtraction.
 |---|---|---|
 | `Int` / i32 wrapping sum, product, `& | ^` | yes | a commutative ring / monoid under wrap |
 | `Int` / i32 `min`, `max`, `count` | yes | associative, commutative, idempotent |
-| `Double` `min` / `max` | yes, with wasm `f64.min` semantics (NaN propagates, `-0 < +0`) | associative and commutative as specified |
+| `Double` `min` / `max` | yes, with wasm `f64.min` semantics (NaN propagates, `-0 < +0`) **and a canonical NaN result in both paths** | associative and commutative on values, but not on NaN payloads: wasm leaves an arithmetic NaN's payload nondeterministic, so reassociating can change which payload comes out. Canonicalizing the result restores bit-exact parity |
 | `Double` sum | **no**, not by default | not associative, so reordering changes the result |
 | `Double` sum, explicitly | only as `F64Column::sum_unordered` | the name carries the contract |
 
@@ -377,9 +388,17 @@ The lowering has the shape of Mojo's `vectorize`: a main loop at width
 1**. Lane-wise maps are then equal to the scalar loop by construction. Two
 floating-point caveats remain:
 
-- NaN payloads are already nondeterministic for scalar wasm float operations, so
-  vectors add no new nondeterminism there. Canonicalization, if vibe ever adds
-  it, has to cover both paths.
+- **NaN payloads.** Wasm leaves the payload of an arithmetic NaN
+  nondeterministic for scalar and vector operations alike. So "the scalar path
+  is already nondeterministic" does not make a vector path bit-exact: the two
+  may pick different payloads, and a reordered reduction certainly can. The
+  parity contract therefore canonicalizes. Every float kernel output and every
+  float reduction result that is a NaN is rewritten to the canonical NaN, on
+  **both** paths. For vectors that is one compare plus one `bitselect` per
+  output vector. The differential gate (B8) compares bit patterns, so it
+  checks the canonicalization too. The alternative, a contract that is
+  explicitly "equal modulo NaN payload", would be weaker than the rest of this
+  document promises, and is not proposed.
 - `F32Column` is deferred. A chain of `f32` operations is not equal to the same
   chain computed in `Double` and rounded once at the end, so an `F32` kernel
   would need a real `Float32` scalar type first.
@@ -412,7 +431,9 @@ fn clamp_all(xs: I32Column, lo: Int, hi: Int) -> I32Column {
 ```text
 error: clamp_all is marked #vectorize, but the lambda at 4:27 stays scalar:
   `min(hi, x)` compares a captured Int that is not known to fit in i32.
-  Add `requires: lo >= -2147483648 && hi <= 2147483647` to the where clause,
+  Bound both sides of each capture in the where clause:
+    requires: lo >= -2147483648 && lo <= 2147483647,
+    requires: hi >= -2147483648 && hi <= 2147483647
   or clamp inside the column's range.
 ```
 
@@ -438,7 +459,7 @@ Follow veri's four parts:
    extremes.
 3. **Negative controls**: a deliberately wrong lowering must fail the
    differential gate. Such lowerings include vectorizing a comparison after an
-   overflowing add, `abs(x) > 0` on a loaded `-2147483648`, a shift by 32 on an
+   overflowing add, a `Double` min/max reduction without NaN canonicalization, `abs(x) > 0` on a loaded `-2147483648`, a shift by 32 on an
    i32 lane, and reassociating a `Double` sum. This is the repository's
    rule that a gate is trusted only once it has been shown to fail (#2248).
 4. **A correspondence table** in the eventual ADR. Its last column states,
