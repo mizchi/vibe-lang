@@ -555,12 +555,47 @@ fn checked_throw_kind(t: Type, s: Subst, env: TypeEnv) -> String {
   }
 }
 
-/// `t` with the exception kinds of its function row resolved (see
-/// `exception_row_resolved`); a scheme's body is rewritten under its binder.
+/// `t` with the exception kinds of every function row in it resolved (see
+/// `exception_row_resolved`) -- its own row, and those of callback
+/// parameters, return types and type arguments (Codex on #3021); a scheme's
+/// body is rewritten under its binder.
 export fn type_exception_rows_resolved(t: Type) -> Type {
   match t {
-    CtFn(ps, ret, Some(row)) => CtFn(ps, ret, Some(exception_row_resolved(row))),
+    CtFn(ps, ret, row) => {
+      let ps2 = array_empty()
+      let mut i = 0
+      while i < Array::length(ps) {
+        Array::push(ps2, type_exception_rows_resolved(Array::get(ps, i)))
+        i = i + 1
+      }
+      CtFn(ps2, type_exception_rows_resolved(ret), match row {
+        Some(r) => Some(exception_row_resolved(r)),
+        None => None
+      })
+    },
     CtForAll(ids, bounds, body) => CtForAll(ids, bounds, type_exception_rows_resolved(body)),
+    CtArray(e) => CtArray(type_exception_rows_resolved(e)),
+    CtOption(e) => CtOption(type_exception_rows_resolved(e)),
+    CtTuple(elems) => {
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(elems) {
+        Array::push(out, type_exception_rows_resolved(Array::get(elems, i)))
+        i = i + 1
+      }
+      CtTuple(out)
+    },
+    CtNamed(n, targs) => if Array::length(targs) == 0 {
+      t
+    } else {
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(targs) {
+        Array::push(out, type_exception_rows_resolved(Array::get(targs, i)))
+        i = i + 1
+      }
+      CtNamed(n, out)
+    },
     _ => t
   }
 }
