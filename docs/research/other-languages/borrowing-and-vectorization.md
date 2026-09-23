@@ -229,17 +229,22 @@ The subset that makes it tractable:
   the caller, and its arms can capture the very buffer passed as `mut`. If the
   callee performs a resumable algebraic operation during the call, that arm
   runs *inside* the call and can read the capture. Neither the argument list
-  nor the reach summary would see it. So the effect row of a function with a
-  `mut` parameter, transitively, may contain only:
-  - capability effects served by the host, which cannot hold a vibe buffer;
-  - `Exception`: raising abandons the call, so a handler that reads the
-    buffer runs after the call's frame has ended;
-  - `Async`: another task cannot hold the buffer, because `Array` and `Bytes`
-    are not `Send`.
+  nor the reach summary would see it. **Every resumable operation can be
+  handled by user code**, and that includes the built-in ones:
+  `fixtures/async_sleep_handler_discharge_test.vibe` intercepts
+  `Async::Suspend` with an arm that writes a captured `Array` and then
+  resumes, and `fixtures/effect_handle_resume_test.vibe` shows that
+  `Console::ReadLine`, a host capability, is intercepted by a user handler in
+  the same way. So the transitive effect row of a function with a
+  `mut` parameter must be **empty, or contain only `Exception`**. Raising
+  abandons the call, so an `Exception` handler that reads the buffer runs
+  after the call's frame has ended. `Array` not being `Send` does not help
+  here, because no second task is involved: the handler runs on the same
+  stack, in the middle of the call.
 
-  User-defined algebraic effects are refused in `mut` callees for the first
-  cut. Checking the captures of handler arms at the call site is the
-  alternative, and a later slice can add it.
+  The alternative, checking the captures of the handler arms that enclose
+  the call site, is a later slice. It would re-admit `Async` and capability
+  operations whenever no enclosing arm captures a non-buffer-free value.
 
 With those rules the frame of a `mut` call is exactly its argument list, and
 the entry identity check covers the only aliasing the argument list can
@@ -334,14 +339,15 @@ Two parts of the practice matter as much as the theorems:
   counts a loop body's consume once, one admits a `mut` call through a
   capturing closure, one ignores call results in the borrow taint, one ignores aggregate construction in it, one trusts a root-only alias summary for a call result, one claims T1′ for a call that also passes the buffer to an unannotated writable parameter, one lets a borrow-derived value reach a `consume` position, one elides `rc == 1` on the strength of `mut` exclusivity alone, one lets
   an opaque type count as buffer-free, and one lets a `mut` callee perform a
-  user effect whose handler captures the buffer. `formal/` already keeps such witnesses for the Error policy.
+  user effect whose handler captures the buffer, and one lets it perform
+  `Async` under a user handler that does the same. `formal/` already keeps such witnesses for the Error policy.
 
 **Why the model has to come first.** Review of this document found the
 same class of hole again and again, each one a path the prose rules had not
-enumerated. Twenty findings in nine rounds so far:
+enumerated. Twenty-one findings in ten rounds so far:
 - aliases hidden in an aggregate argument, in an aggregate global, and in a
   closure callee;
-- aliases reached through an effect handler or an opaque type;
+- aliases reached through an effect handler (twice: user effects, then `Async`) or an opaque type;
 - writes made through a projection, a call result (twice), and a constructed aggregate;
 - a consume inside a loop;
 - a caller-created alias between a `borrow` argument and a writable one;
@@ -631,7 +637,7 @@ code.
 |---|---|---|---|
 | 1 | declared `borrow`, checked against the inferred mask plus a per-parameter write summary; written to `index.vpkg` | — | parameter mode |
 | 2 | Lean model + executable oracle for `borrow` / escape (T1), with a negative witness | 1 | none |
-| 3 | `mut` exclusivity on shallow buffers (after slice 2's model and witnesses): static place check, buffer-free other arguments, no non-buffer-free globals in the callee's reach, no user effects in the callee's row, entry identity check (T3) | 1, 2 | parameter mode |
+| 3 | `mut` exclusivity on shallow buffers (after slice 2's model and witnesses): static place check, buffer-free other arguments, no non-buffer-free globals in the callee's reach, an effect row of at most `Exception` in the callee, entry identity check (T3) | 1, 2 | parameter mode |
 | 4 | `consume` with the local usage map (loop and closure bodies count as ω); static uniqueness skips the reuse `rc == 1` test and turns spawn into a move (T2) | 1 | parameter mode |
 | 5 | i32x4 / i64x2 / f64x2 arithmetic and compare emitters in `codegen/wasm_emit/simd.vibe` | — | none |
 | 6 | kernel-subset recognizer + lowering for `Array[Int]` `map` / `count` / `sum` (2×i64, tag-transparent) with the differential gate | 5 | none |
