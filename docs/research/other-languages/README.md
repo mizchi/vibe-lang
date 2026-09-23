@@ -30,9 +30,11 @@ ADR says so. The question behind them is this:
    uniqueness, which Perceus today checks only at run time.
 2. **The rule that pays three times is exclusivity**: a `mut` buffer argument
    never aliases another argument. It is restricted to shallow buffer types,
-   so it is decidable: a static check on places, plus one identity compare at
-   entry. The verifier needs it, because Why3 rejects aliased mutable
-   arguments and veri had to split `blit` in two. The vectorizer needs it for
+   so it is decidable: a static check on places, other arguments of
+   buffer-free types only (no struct, closure or type variable that could hide
+   the buffer), no buffer-typed globals in the callee's reach, and one
+   identity compare at entry. The verifier needs it, because Why3 rejects
+   aliased mutable arguments and veri had to split `blit` in two. The vectorizer needs it for
    shifted-index kernels. Perceus needs it to drop its `rc == 1` test.
 3. **Vectorization: yes, as a whitelist subset of combinator lambdas, not a
    loop auto-vectorizer.** On wasm the width is a constant 128 bits, so Mojo's
@@ -40,8 +42,10 @@ ADR says so. The question behind them is this:
    full-width main loop and a width-1 scalar tail running the same lowered
    body. A vector never becomes a vibe value, as already decided in #2342.
    Two rules keep it from ever being silently wrong:
-   - narrowing to i32 is honest only for ring operations, so comparisons may
-     take only loaded values or values proven to be in range;
+   - narrowing to i32 is honest only for ring operations, so comparisons,
+     `min` / `max`, `>>` and `abs` take only range-exact operands (loaded
+     values, in-range literals or proven-range captures). Shift counts must
+     be literals below the lane width, because wasm masks the count;
    - a reduction needs associativity and commutativity, so there is no
      vectorized `Double` sum unless the API name says `unordered`.
 4. **Formalize the way veri does, and not the way Bend does.** Make every model

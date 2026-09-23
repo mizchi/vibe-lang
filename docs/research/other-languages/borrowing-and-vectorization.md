@@ -81,7 +81,7 @@ fn finish(consume b: ArrayBuilder[Int]) -> Array[Int] { ... }         // ownersh
 | mode | callee may | caller gets | checked by |
 |---|---|---|---|
 | *(none)* | anything (today's semantics) | inferred ABI, as now | nothing new |
-| `borrow` | read; pass to another `borrow` position | no transfer dup, no drop | consume count = 0 and no escape |
+| `borrow` | read; pass it only to positions that do not write | no transfer dup, no drop | consume count = 0, no escape, and no write (A2) |
 | `mut` | write through it | the argument does not alias any other argument | exclusivity (A3) |
 | `consume` | keep, return, store, reuse in place | the binding is dead after the call | usage map at the call site (A4) |
 
@@ -98,9 +98,28 @@ closes one of the documented holes on the way: a `borrow` is a parameter, not
 a generalized `let`, so the "leak through a generalized local" gap does not
 apply to it.
 
-Checking a declared `borrow` against the inferred mask is the first slice, and
-it changes no code generation: it only turns an inference into a contract. The
-contract is the payoff. The borrow fixpoint is whole-program today, and
+**The inferred mask is not enough on its own: it answers "is this consumed",
+not "is this written".** The consume analysis classifies `Array::set`,
+`Array::push`, `Bytes::set` and `FixedArray::set` as borrowed positions,
+because a mutator does not take ownership. So
+`fn f(borrow xs: Array[Int]) { Array::set(xs, 0, 1) }` has consume count 0 and
+no escape, and a check built only on the mask would accept it. That would let
+a write bypass the `mut` exclusivity contract (A3). A declared `borrow`
+therefore needs a separate **write check**:
+
+- the parameter is never the buffer argument of a mutating builtin (the
+  registry already knows which builtins write; `md_is_borrow_arg0_call`'s
+  list is the starting point, and the rule is the opposite one — a
+  mutator is a write, whatever its ownership class);
+- it is never passed to a `mut` position;
+- it is passed to an unannotated position only if that callee's per-parameter
+  **write summary** says "does not write". The summary is computed and
+  imported the same way `#zero_alloc` summaries are (ADR-0091). An unknown
+  callee (a function value, a missing summary) counts as a writer.
+
+Checking a declared `borrow` this way is the first slice, and it changes no
+code generation: it only turns an inference into a contract. The contract is
+the payoff. The borrow fixpoint is whole-program today, and
 module-granular incremental checking (#1379) cannot keep a whole-program
 fixpoint; a mode written in `index.vpkg` can be.
 
@@ -123,10 +142,31 @@ The subset that makes it tractable:
   every other buffer argument of a shallow type — one i64 compare per pair —
   and a match traps with a message naming the call. This is veri's `blit`
   dispatcher, promoted from a library convention to a language guarantee.
+- **No hidden paths to the buffer.** Identity comparison only sees arguments
+  that *are* buffers. It misses a buffer *reachable through* another argument:
+  `f(xs, Holder::{ buf: xs })` passes both checks above, yet a read through
+  `holder.buf` sees the write through `xs`. So, in a call with a `mut`
+  argument, every other argument must have a **buffer-free type**. That is a
+  type that mentions no shallow buffer type, no function type (a closure may
+  capture the buffer), and no type variable (it could be instantiated to
+  either), checked transitively through struct and enum fields and type
+  aliases. The only other permitted arguments are shallow buffers themselves,
+  which the identity check covers. Anything else is a compile error that
+  names the edit: pass the buffer directly, or copy it first.
+- **No reach through the environment either.** The callee must not read a
+  buffer-typed top-level binding, either directly or through a callee. This
+  uses the same interprocedural summary as the `borrow` write check (A2).
+  Otherwise `f(mut table)` could read `table` again as a global.
 
-After entry, "`dst` does not alias `src`" is a fact both the vectorizer and a
-verifier may assume: it cannot be false, because the program would have
-trapped. That satisfies "never silently wrong" without an alias analysis.
+With those rules the frame of a `mut` call is exactly its argument list, and
+the entry identity check covers the only aliasing the argument list can
+express. After entry, "`dst` does not alias anything else this call can reach"
+is a fact both the vectorizer and a verifier may assume: it cannot be false,
+because the program would either have been rejected or trapped. That
+satisfies "never silently wrong" without a general alias analysis. The price
+is expressiveness, paid deliberately: a `mut` call cannot also take a struct
+that holds buffers. It can still take that struct's buffers as separate
+arguments.
 
 Unannotated parameters keep today's semantics (arrays stay shared and
 mutable). Whether writes through a *non*-`mut` buffer parameter should warn is a
@@ -159,12 +199,14 @@ A small calculus in `formal/`: first-order functions, a heap with reference
 counts, shallow buffers, and the three modes. Three theorems:
 
 - **T1 (borrow).** A call whose `borrow` arguments pass the check leaves those
-  arguments' reference counts unchanged and retains no reference to them. So
-  eliding the caller's dup and the callee's drop is sound.
+  arguments' reference counts **and contents** unchanged, and retains no
+  reference to them. So eliding the caller's dup and the callee's drop is
+  sound, and a caller may treat a `borrow` argument as read-only.
 - **T2 (consume).** After a `consume`, the binding is dead on every path, so
   ownership moves exactly once: no double drop, no use after free.
-- **T3 (exclusivity).** A call admitted by the static-plus-dynamic check has
-  disjoint `mut` footprints. Writes through the `mut` parameter do not change
+- **T3 (exclusivity).** A call admitted by the static-plus-dynamic check,
+  with its buffer-free argument and environment rules, has disjoint `mut`
+  footprints. Writes through the `mut` parameter do not change
   any value readable through another parameter (a frame lemma).
 
 Two parts of the practice matter as much as the theorems:
@@ -176,8 +218,9 @@ Two parts of the practice matter as much as the theorems:
   already do for call typing. That diff is what keeps this model from becoming
   a second Bend `bend.lean`.
 - **Negative witnesses.** A deliberately broken checker must admit a concrete
-  unsound program: one variant drops the escape rule, another drops the
-  identity check. `formal/` already keeps such witnesses for the Error policy.
+  unsound program. One variant drops the escape rule, one drops the
+  `borrow` write check, one drops the identity check, and one drops the
+  buffer-free-argument rule. `formal/` already keeps such witnesses for the Error policy.
 
 State the gap honestly as well: the model does not cover codegen. The claim
 "the emitted dup and drop sequence realizes T1" is a differential and
@@ -219,7 +262,7 @@ compiler, not the user, writing the width-generic closure:
 ```vibe skip
 // proposed
 let ys = I32Column::map(xs, (x) -> { if x < 0 { 0 - x } else { x * 3 + 1 } })
-let n  = I32Column::count(xs, (x) -> { x >= lo && x < hi })   // lo, hi captured scalars → splat
+let n  = I32Column::count(xs, (x) -> { x >= lo && x < hi })   // lo, hi: captured, splat; must be proven in i32 range (B4)
 let s  = Array::sum_int(ints)                                  // reduction, B5
 ```
 
@@ -229,9 +272,10 @@ analysis:
 
 1. its parameters and captures are scalars of the column's element type (a
    captured scalar becomes a `splat`);
-2. its body uses only `+ - *` (wrapping), `& | ^ ~`, shifts by a constant,
-   comparisons, `min` / `max` / `abs`, literals, `let`, and `if` whose two
-   arms are themselves in the subset (lowered to `v128.bitselect`);
+2. its body uses only `+ - *` (wrapping), `& | ^ ~`, shifts whose count is a
+   **literal smaller than the lane width** (B4), comparisons, `min` / `max` /
+   `abs`, literals, `let`, and `if` whose two arms are themselves in the
+   subset (lowered to `v128.bitselect`), and it obeys the range rule of B4;
 3. it **makes no calls** except to functions whose bodies are in the subset
    (these are inlined). That excludes every mutating builtin. The effect row
    is not enough here: `Array::set` carries no effect in vibe;
@@ -245,20 +289,45 @@ Such a kernel stays scalar and is still correct.
 
 For an `I32Column`, the lambda is written over `Int` (63-bit), but the lanes are
 32 bits wide. When do they agree? Truncation modulo 2³² is a **ring
-homomorphism** from ℤ/2⁶³: for `+ - * & | ^ <<`, the low 32 bits of the 63-bit
-result equal the i32 lane result. Comparisons, `min` / `max`, `>>` and `abs`
-are **not** preserved: `(a + b) > c` can differ once `a + b` leaves the i32
-range.
+homomorphism** from ℤ/2⁶³: for `+ - * & | ^ ~`, the low 32 bits of the 63-bit
+result equal the i32 lane result, whatever the operands are. Nothing else is
+preserved unconditionally, and the exceptions are exactly where a naive
+vectorizer is silently wrong:
 
-Hence:
+- **Shifts.** `x << c` is multiplication by 2ᶜ, so it is a ring operation, but
+  only while `c` is below the lane width. Wasm's `i32x4.shl` takes the count
+  **modulo 32**, so `x << 32` yields `x` in a lane while the scalar `Int`
+  result has 32 zero low bits. The count must therefore be a literal in
+  `[0, 31]` on i32 lanes. On tagged `Int` lanes (2×i64, where `n` is stored
+  as `n << 1`) it must be in `[0, 62]`. A variable count leaves the subset.
+- **Order-sensitive operations** (`< <= > >= == != min max >>` and `abs`)
+  agree with the scalar code only when their operands already fit in i32.
+  `(a + b) > c` differs once `a + b` leaves the range, and so does `abs(a + b)`.
+- **`abs` and unary negation do not stay in range.** On a loaded
+  `-2147483648`, scalar `abs` gives `2147483648`, while the i32 lane gives
+  `-2147483648`. The low bits agree, so feeding the result into ring
+  operations is fine, but `abs(x) > 0` answers differently.
 
-> order-sensitive operations (`< <= > >= == != min max abs >>`) may take only
-> values loaded from the column, captured scalars proven in range, or
-> literals; ring operations may take anything in the subset.
+So define a **range-exact** value as one that is guaranteed to fit the lane:
 
-A kernel that breaks this rule stays scalar, and under `#vectorize` it is a
-diagnostic that points at the offending comparison. The rule is one lemma to
-prove (B7), and it is exactly the case a naive vectorizer gets silently wrong.
+- a value loaded from the column;
+- a literal in range;
+- a captured scalar whose range is proven, for example by a `requires` in the
+  enclosing `where` clause;
+- `min`, `max`, or `>>` by a literal, applied to range-exact operands.
+
+Results of `+ - * << ~`, `abs`, and negation are **not** range-exact. The rule
+is then:
+
+> order-sensitive operations (`< <= > >= == != min max >> abs`) may take only
+> range-exact operands; ring operations may take anything in the subset.
+
+A kernel that breaks this rule stays scalar. Under `#vectorize` it is a
+diagnostic that points at the offending operation. The rule becomes two lemmas
+(B8): truncation is a ring homomorphism, and each order-sensitive lane operation
+agrees with its scalar counterpart on range-exact inputs. It is exactly the
+case a naive vectorizer gets silently wrong, and the negative controls in B8
+include one variant per exception above.
 
 What happens at the output is a decision for the column API, and the lowering
 must reproduce it. If `I32ColumnBuilder::push` **traps** on a value out of i32
@@ -339,7 +408,8 @@ IDE.
 Follow veri's four parts:
 
 1. **Lemmas** (Lean, in `formal/`): the map lowering with its width-1 tail equals
-   the scalar loop; truncation is a ring homomorphism (B4); a chunked reordered
+   the scalar loop; truncation is a ring homomorphism, and order-sensitive
+   lane operations agree on range-exact inputs (B4); a chunked reordered
    fold equals the sequential fold for associative and commutative operations
    (B5).
 2. **Differential tests**: every vectorized kernel in the test corpus is also
@@ -348,8 +418,9 @@ Follow veri's four parts:
    `0 .. 2W + 1` to cover every tail boundary, and values at the i32 and i63
    extremes.
 3. **Negative controls**: a deliberately wrong lowering must fail the
-   differential gate. Two such lowerings are vectorizing a comparison after an
-   overflowing add, and reassociating a `Double` sum. This is the repository's
+   differential gate. Such lowerings include vectorizing a comparison after an
+   overflowing add, `abs(x) > 0` on a loaded `-2147483648`, a shift by 32 on an
+   i32 lane, and reassociating a `Double` sum. This is the repository's
    rule that a gate is trusted only once it has been shown to fail (#2248).
 4. **A correspondence table** in the eventual ADR. Its last column states,
    operation by operation, whether equality is **proved**, **tested**, or
@@ -389,9 +460,9 @@ code.
 
 | # | slice | depends on | new surface |
 |---|---|---|---|
-| 1 | declared `borrow`, checked against the inferred mask; written to `index.vpkg` | — | parameter mode |
+| 1 | declared `borrow`, checked against the inferred mask plus a per-parameter write summary; written to `index.vpkg` | — | parameter mode |
 | 2 | Lean model + executable oracle for `borrow` / escape (T1), with a negative witness | 1 | none |
-| 3 | `mut` exclusivity on shallow buffers: static place check + entry identity check (T3) | 1 | parameter mode |
+| 3 | `mut` exclusivity on shallow buffers: static place check, buffer-free other arguments, no buffer globals in the callee's reach, entry identity check (T3) | 1 | parameter mode |
 | 4 | `consume` with the local usage map; static uniqueness skips the reuse `rc == 1` test and turns spawn into a move (T2) | 1 | parameter mode |
 | 5 | i32x4 / i64x2 / f64x2 arithmetic and compare emitters in `codegen/wasm_emit/simd.vibe` | — | none |
 | 6 | kernel-subset recognizer + lowering for `Array[Int]` `map` / `count` / `sum` (2×i64, tag-transparent) with the differential gate | 5 | none |
