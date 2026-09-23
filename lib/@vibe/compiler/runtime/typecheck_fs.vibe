@@ -1786,73 +1786,197 @@ fn nominal_type_names_into(ty: Type, out: Array[String], named_out: Array[String
 /// is DEFERRED to the package's implementation, so when a sibling that
 /// declares `struct MutMap` imports the stub's `HashMap = MutMap[K, V]`, the
 /// stub's `MutMap` is that sibling's own declaration, not a different one.
-fn foreign_type_name_collisions(imported: String, raw_path: String, resolved: String, ty: Type, dep_env: TypeEnv, local_types: Array[String], unresolved: Array[String]) -> Unit {
+fn foreign_type_name_collisions(imported: String, raw_path: String, resolved: String, ty: Type, dep_types: Array[String], local_types: Array[String], unresolved: Array[String], reported: Array[String]) -> Unit {
   if Array::length(local_types) > 0 && !is_vpkg_types_stub_path(resolved) {
-    let mentioned: Array[String] = []
-    let row_mentioned: Array[String] = []
-    nominal_type_names_into(ty, mentioned, row_mentioned)
-    // A spelling carries no binder information: `Read[G]` under
-    // `fn f[G[_]]()` names the scheme's own formal `G`, and an alias body
-    // names its parameters as rigid `CtNamed`s. Only a spelled name the
-    // dependency declares as a type is a nominal reference.
-    if Array::length(row_mentioned) > 0 {
-      let dep_types: Array[String] = []
-      for def in env_type_defs(dep_env) {
-        match def {
-          TDEnum(n, _, _) => Array::push(dep_types, n),
-          TDStruct(n, _, _, _) => Array::push(dep_types, n),
-          TDAlias(n, _, _) => Array::push(dep_types, n),
-          _ => ()
-        }
-      }
-      for name in row_mentioned {
-        if contains_str(dep_types, name) {
-          Array::push(mentioned, name)
-        }
-      }
-    }
-    let reported: Array[String] = []
-    for name in mentioned {
-      if contains_str(local_types, name) && !contains_str(reported, name) {
-        Array::push(reported, name)
-        Array::push(unresolved, "rename this module's type `" + name + "`: imported `" + imported + "` from '" + raw_path + "' uses a different type also named `" + name + "`, and the two would be treated as one type")
-      }
+    for name in collision_type_names(ty, array_empty(), dep_types) {
+      report_foreign_type_name(name, imported, raw_path, local_types, unresolved, reported)
     }
   }
 }
 
-/// #3026, the declaration half: importing a TYPE projects its declaration
-/// closure (`typedef_projection_add_named`) -- the selected declaration plus
-/// every dependency type its payload names -- and the checker keeps a local
-/// declaration over a projected one of the same name. So `import ./dep {
-/// Wrap }` with the dependency's `enum Wrap { Bad(Err) }` and a local
-/// `struct Err` reads `Bad`'s payload at the local `Err`. A closure entry
-/// that is not the selected declaration itself, named like a local type, is
-/// refused. The selected name shadowed by a local declaration stays legal
-/// (#2292), except under an alias to an enum or struct: that alias is
-/// projected as `CtNamed(<source name>)`, which the local declaration would
-/// then answer.
-fn foreign_type_declaration_collisions(item: ImportItem, raw_path: String, resolved: String, dep_env: TypeEnv, local_types: Array[String], unresolved: Array[String]) -> Unit {
+/// The dependency's declared nominal type names (enums, structs, aliases),
+/// published or kept in the closure that describes a published signature.
+fn dependency_declared_type_names(dep_env: TypeEnv) -> Array[String] {
+  let out: Array[String] = []
+  for def in env_type_defs(dep_env) {
+    match def {
+      TDEnum(n, _, _) => Array::push(out, n),
+      TDStruct(n, _, _, _) => Array::push(out, n),
+      TDAlias(n, _, _) => Array::push(out, n),
+      _ => ()
+    }
+  }
+  out
+}
+
+/// Every type name `ty` refers to as a nominal type. `CtEnum` / `CtStruct` and
+/// an exception kind's names always count. A spelled name (`CtNamed`,
+/// `CtConstructor`, another effect's bracket) may be a formal -- the
+/// scheme's own (`Read[G]` under `fn f[G[_]]()`) or a declaration's
+/// (`value: A` in `struct Box[A]`) -- so it counts only when it is not one of
+/// `binders` and the dependency declares a type by that name.
+fn collision_type_names(ty: Type, binders: Array[String], dep_types: Array[String]) -> Array[String] {
+  let out: Array[String] = []
+  let named: Array[String] = []
+  nominal_type_names_into(ty, out, named)
+  for n in named {
+    if !contains_str(binders, n) && contains_str(dep_types, n) {
+      Array::push(out, n)
+    }
+  }
+  out
+}
+
+fn report_foreign_type_name(name: String, imported: String, raw_path: String, local_types: Array[String], unresolved: Array[String], reported: Array[String]) -> Unit {
+  if contains_str(local_types, name) && !contains_str(reported, name) {
+    Array::push(reported, name)
+    Array::push(unresolved, "rename this module's type `" + name + "`: imported `" + imported + "` from '" + raw_path + "' uses a different type also named `" + name + "`, and the two would be treated as one type")
+  }
+}
+
+fn typedef_payload_types(def: TypeDef) -> (Array[String], Array[Type]) {
+  let tys: Array[Type] = []
+  match def {
+    TDEnum(_, params, variants) => {
+      for v in variants {
+        let (_, fields) = v
+        for f in fields {
+          Array::push(tys, f)
+        }
+      }
+      (params, tys)
+    },
+    TDStruct(_, fields, _, params) => {
+      for f in fields {
+        let (_, fty) = f
+        Array::push(tys, fty)
+      }
+      (params, tys)
+    },
+    TDAlias(_, params, target) => {
+      Array::push(tys, target)
+      (params, tys)
+    },
+    TDEffect(_, ops, params) => {
+      for op in ops {
+        let (_, ps, ret) = op
+        for pt in ps {
+          Array::push(tys, pt)
+        }
+        Array::push(tys, ret)
+      }
+      (params, tys)
+    },
+    TDEffectSet(_, _) => (array_empty(), tys)
+  }
+}
+
+/// #3026, the declaration half: importing a TYPE brings its declaration and,
+/// to interpret it, every dependency type its payload names -- and the checker
+/// keeps a local declaration over a projected one of the same name. So `import
+/// ./dep { Wrap }` with the dependency's `enum Wrap { Bad(Err) }` and a local
+/// `struct Err` reads `Bad`'s payload at the local `Err`. This walks the
+/// selected declaration's payload transitively through the dependency's
+/// declarations, subtracting each declaration's own parameters (`value: A` in
+/// `struct Box[A]` is not the dependency's `struct A`), and refuses a name the
+/// importer declares locally. The selected name itself shadowed by a local
+/// declaration stays legal (#2292), except under an alias to an enum or
+/// struct: that alias is projected as `CtNamed(<source name>)`, which the
+/// local declaration would then answer.
+fn foreign_type_declaration_collisions(item: ImportItem, raw_path: String, resolved: String, dep_env: TypeEnv, dep_types: Array[String], local_types: Array[String], unresolved: Array[String], reported: Array[String]) -> Unit {
   if Array::length(local_types) > 0 && !is_vpkg_types_stub_path(resolved) {
-    let reported: Array[String] = []
-    for def in dependency_typedef_projection(dep_env, [item]) {
-      let n = typedef_projection_name(def)
-      let aliased_nominal = match item.alias {
-        Some(a) => a != item.name && match def {
-          TDEnum(_, _, _) => true,
-          TDStruct(_, _, _, _) => true,
-          _ => false
+    let dep_defs = env_type_defs(dep_env)
+    let queue: Array[TypeDef] = []
+    let visited: Array[String] = []
+    for def in dep_defs {
+      if typedef_projection_name(def) == item.name && Array::length(queue) == 0 {
+        Array::push(queue, def)
+      }
+    }
+    Array::push(visited, item.name)
+    match item.alias {
+      Some(a) => if a != item.name && Array::length(queue) > 0 {
+        match Array::get(queue, 0) {
+          TDEnum(_, _, _) => report_foreign_type_name(item.name, item.name, raw_path, local_types, unresolved, reported),
+          TDStruct(_, _, _, _) => report_foreign_type_name(item.name, item.name, raw_path, local_types, unresolved, reported),
+          _ => ()
+        }
+      } else {
+        ()
+      },
+      None => ()
+    }
+    let mut qi = 0
+    while qi < Array::length(queue) {
+      let (binders, tys) = typedef_payload_types(Array::get(queue, qi))
+      for ty in tys {
+        for n in collision_type_names(ty, binders, dep_types) {
+          if contains_str(local_types, n) {
+            report_foreign_type_name(n, item.name, raw_path, local_types, unresolved, reported)
+          } else if !contains_str(visited, n) {
+            Array::push(visited, n)
+            for def in dep_defs {
+              if typedef_projection_name(def) == n {
+                Array::push(queue, def)
+              }
+            }
+          }
+        }
+      }
+      qi = qi + 1
+    }
+  }
+}
+
+/// #3026, the trait half: importing a trait retains the dependency's impls of
+/// it (`prepend_dependency_trait_nodes`). An impl whose target names a type the
+/// importer declares locally would let the LOCAL type satisfy the dependency's
+/// impl -- and dispatch into code compiled for the dependency's layout.
+fn foreign_trait_impl_collisions(dep_env: TypeEnv, mappings: Array[(String, String)], raw_path: String, resolved: String, dep_types: Array[String], local_types: Array[String], unresolved: Array[String], reported: Array[String]) -> Unit {
+  if Array::length(local_types) > 0 && Array::length(mappings) > 0 && !is_vpkg_types_stub_path(resolved) {
+    let mut cur = dep_env
+    let mut done = false
+    while !done {
+      match cur {
+        EnvEmpty => {
+          done = true
         },
-        None => false
-      }
-      let is_alias_node = match item.alias {
-        Some(a) => n == a,
-        None => false
-      }
-      let collides = contains_str(local_types, n) && !is_alias_node && (n != item.name || aliased_nominal)
-      if collides && !contains_str(reported, n) {
-        Array::push(reported, n)
-        Array::push(unresolved, "rename this module's type `" + n + "`: imported `" + item.name + "` from '" + raw_path + "' uses a different type also named `" + n + "`, and the two would be treated as one type")
+        EnvTraitImpl(name, target, rest) => {
+          match trait_projection_mapping(mappings, trait_ref_name(name)) {
+            Some(_) => for n in collision_type_names(target, array_empty(), dep_types) {
+              report_foreign_type_name(n, trait_ref_name(name), raw_path, local_types, unresolved, reported)
+            },
+            None => ()
+          }
+          cur = rest
+        },
+        EnvTraitImplGen(name, params, _, target, rest) => {
+          match trait_projection_mapping(mappings, trait_ref_name(name)) {
+            Some(_) => for n in collision_type_names(target, params, dep_types) {
+              report_foreign_type_name(n, trait_ref_name(name), raw_path, local_types, unresolved, reported)
+            },
+            None => ()
+          }
+          cur = rest
+        },
+        EnvBind(_, _, rest) => {
+          cur = rest
+        },
+        EnvMutCell(_, _, rest) => {
+          cur = rest
+        },
+        EnvTraitDef(_, _, _, _, rest, _, _) => {
+          cur = rest
+        },
+        EnvTypeDefs(_, _, rest) => {
+          cur = rest
+        },
+        EnvFlat(_) => {
+          done = true
+        },
+        EnvCached(_, _, rest) => {
+          cur = rest
+        }
       }
     }
   }
@@ -1869,6 +1993,13 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
   env_trait_def_names_into(dep_env, bi_trait_names)
   uppercase_binding_slots_into(dep_bindings, bi_upper_slots)
   let dep_selectable_type_defs = env_selectable_type_defs(dep_env)
+  // #3026: computed once per dependency; one report per colliding name.
+  let dep_types = if Array::length(local_types) > 0 {
+    dependency_declared_type_names(dep_env)
+  } else {
+    array_empty()
+  }
+  let collision_reported: Array[String] = []
   // Kind advice is useful only for names the module actually publishes. A
   // private declaration may remain in the TypeDef closure solely to describe
   // a public type; suggesting a different qualifier cannot make it importable.
@@ -1924,7 +2055,7 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
       let binding_origin = selected_module_binding_origin(dep_env, resolved, name, surface_only_item)
       let ty = match imported_ty {
         Some(t) => {
-          foreign_type_name_collisions(name, raw_path, resolved, t, dep_env, local_types, unresolved)
+          foreign_type_name_collisions(name, raw_path, resolved, t, dep_types, local_types, unresolved, collision_reported)
           trait_projection_map_type_bounds(t, trait_mappings)
         },
         None => {
@@ -1964,10 +2095,11 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
   }
   for item in declaration_names {
     if contains_str(dep_selectable_type_defs, item.name) {
-      foreign_type_declaration_collisions(item, raw_path, resolved, dep_env, local_types, unresolved)
+      foreign_type_declaration_collisions(item, raw_path, resolved, dep_env, dep_types, local_types, unresolved, collision_reported)
     }
   }
   let declaration_trait_mappings = dependency_trait_projection_mappings(dep_env, dep_bindings, bi_trait_names, bi_upper_slots, declaration_names, array_empty())
+  foreign_trait_impl_collisions(dep_env, declaration_trait_mappings, raw_path, resolved, dep_types, local_types, unresolved, collision_reported)
   bind_names(0, prepend_dependency_trait_nodes(dep_env, declaration_trait_mappings, prepend_dependency_type_defs(dep_env, declaration_names, acc)))
 }
 
