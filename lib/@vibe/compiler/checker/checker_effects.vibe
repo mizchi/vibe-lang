@@ -20,6 +20,7 @@ import @vibe/compiler/core {
   env_type_defs,
   exception_effect_labels_equal,
   exception_kinds_compatible,
+  exception_kinds_same,
   exception_label_kind,
   exception_throw_label_for_kind,
   expr_child_at,
@@ -2595,7 +2596,7 @@ fn decl_authorizes_effect(labels: Array[String], eff_name: String) -> Bool {
       let declared_label = Array::get(labels, alias_i)
       let declared_kind = exception_label_kind(declared_label)
       let covers = if strict {
-        String::length(required_kind) > 0 && declared_kind == required_kind
+        String::length(required_kind) > 0 && String::length(declared_kind) > 0 && exception_kinds_same(declared_kind, required_kind)
       } else {
         exception_kinds_compatible(declared_kind, required_kind)
       }
@@ -2641,7 +2642,7 @@ fn decl_authorizes_op(labels: Array[String], op_name: String) -> Bool {
     while i < Array::length(labels) {
       let lab = Array::get(labels, i)
       let equal = if strict {
-        is_exception_label(lab) && is_exception_label(op_name) && String::length(exception_label_kind(op_name)) > 0 && exception_label_kind(lab) == exception_label_kind(op_name)
+        is_exception_label(lab) && is_exception_label(op_name) && String::length(exception_label_kind(op_name)) > 0 && String::length(exception_label_kind(lab)) > 0 && exception_kinds_same(exception_label_kind(lab), exception_label_kind(op_name))
       } else {
         exception_effect_labels_equal(lab, op_name)
       }
@@ -3086,21 +3087,19 @@ fn throw_site_kind(off: Int, payload: Expr) -> String {
 fn throw_required_label(op_name: String, opargs: Array[Expr], binds: Array[(String, String)], call_off: Int) -> String {
   if is_exception_throw_operation(op_name) && Array::length(opargs) == 1 {
     let payload = Array::get(opargs, 0)
-    let syntactic = throw_payload_kind(payload, binds)
-    // #3029: a struct literal's syntax names only its struct, so for a
-    // generic one (`Box[Int]::{ .. }`, or with its argument inferred) the
-    // checker's kind, which carries the arguments, is the answer when it
-    // has one.
-    let typed_first = match payload {
-      ERecord(_, _, _) => throw_site_kind(call_off, payload),
-      _ => ""
-    }
-    let kind = if String::length(typed_first) > 0 {
-      typed_first
-    } else if String::length(syntactic) > 0 {
-      syntactic
+    // The checker's kind is the answer whenever it has one. #3029: a struct
+    // literal's syntax names only its struct, so for a generic one
+    // (`Box[Int]::{ .. }`, or with its argument inferred) the checker's kind
+    // carries the arguments. #3033: a payload read through an annotation
+    // (`e: E`, `xs: Array[E]` with `type E = IoErr`) is spelled by the
+    // syntax as WRITTEN, while the checker's kind is the type it names -- the
+    // spelling kinds are compared in. The syntax answers only what the
+    // checker left unresolved (another lane, or a site whose key collided).
+    let typed = throw_site_kind(call_off, payload)
+    let kind = if String::length(typed) > 0 {
+      typed
     } else {
-      throw_site_kind(call_off, payload)
+      throw_payload_kind(payload, binds)
     }
     exception_throw_label_for_kind(kind)
   } else {

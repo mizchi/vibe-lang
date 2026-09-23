@@ -1,0 +1,41 @@
+// #3033: the honest shape of a kinded row over a callback that may raise any
+// kind. The callback's whole row is the effect variable `e`, so whatever it
+// raises -- the erased `Exception` included -- reaches the caller's row
+// through `e`, and the kinded label speaks only for this function's own
+// `throw`. (`with Exception + e` on the callback is refused instead:
+// fixtures/typecheck/exception_kinded_row_rowvar_erased_callback_reject.vibe.)
+enum Wrapped {
+  Wrapped(String)
+}
+
+fn guarded[e](f: () -> Int with e) -> Int with Exception[Wrapped] + e {
+  let r = f()
+  if r < 0 {
+    throw(Wrapped("negative"))
+  } else {
+    r
+  }
+}
+
+fn raises_any() -> Int with Exception {
+  throw("boom")
+}
+
+test "a kinded row with an effect variable passes a callback's row through" {
+  let r = handle { guarded(() -> 41) + 1 } with { Exception::Throw(_) => 0 }
+  inspect(r, content = "42")
+}
+
+test "the callback's erased exception reaches the caller's erased arm" {
+  let r = handle { guarded(raises_any) } with { Exception::Throw(_) => 7 }
+  inspect(r, content = "7")
+}
+
+test "the function's own kind is caught by its kinded arm" {
+  let r = handle { guarded(() -> 0 - 1) } with {
+    Exception[Wrapped]::Throw(w) => match w {
+      Wrapped(s) => String::length(s)
+    }
+  }
+  inspect(r, content = "8")
+}
