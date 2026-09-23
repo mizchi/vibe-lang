@@ -65,6 +65,7 @@ import @vibe/compiler/core {
   env_type_defs,
   exception_effect_kind,
   exception_effect_labels_equal,
+  exception_label_kind,
   expr_child_at,
   expr_children,
   expr_children_pop,
@@ -428,11 +429,78 @@ fn report_unknown_type_names_only(te: TypeExpr, defs: Array[TypeDef], shadow: Ar
 /// that currently looks like a compiler-owned builtin head.
 export fn report_unknown_type_names_deferred_validation(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], env: TypeEnv, row_binders: Array[String], where_label: String, errors: Array[String]) -> Unit {
   report_unknown_type_names_only(te, defs, shadow, env, row_binders, where_label, errors)
+  // A struct field's or enum payload's function row names exception kinds too.
+  report_exception_kinds_in_type_expr(te, defs, shadow, env, errors)
 }
 
 export fn report_unknown_type_names(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], env: TypeEnv, row_binders: Array[String], where_label: String, errors: Array[String]) -> Unit {
   report_map_key_types(te, defs, shadow, where_label, errors)
   report_unknown_type_names_only(te, defs, shadow, env, row_binders, where_label, errors)
+  report_exception_kinds_in_type_expr(te, defs, shadow, env, errors)
+}
+
+/// The KIND of an exception label names a type, so it gets the unknown-name
+/// check an annotation gets. A handler arm's kind already did
+/// (`an exception kind`); a function's `with` row, the row of a function type
+/// written in an annotation, and a struct field's or enum payload's row did
+/// not, so `fn f() -> Int with Exception[Nope]` was accepted with no `Nope`
+/// anywhere. A kind the type parser cannot read is left alone. Type formals
+/// in a kind are `collect_formal_exception_kind_errors`' subject, and are
+/// exempt here through `shadow` and the env.
+fn report_exception_kinds_in_row(row: Option[String], defs: Array[TypeDef], shadow: Array[String], env: TypeEnv, errors: Array[String]) -> Unit {
+  let labels = row_labels(row)
+  let mut i = 0
+  while i < Array::length(labels) {
+    let label = Array::get(labels, i)
+    let kind = exception_label_kind(label)
+    if is_exception_label(label) && String::length(kind) > 0 {
+      let parsed = handle {
+        let (kind_te, _) = parse_type(lex(kind), 0)
+        Some(kind_te)
+      } with { Exception::Throw(_unreadable) => None }
+      match parsed {
+        Some(kind_te) => {
+          report_map_key_types(kind_te, defs, shadow, "an exception kind", errors)
+          report_unknown_type_names_only(kind_te, defs, shadow, env, array_empty(), "an exception kind", errors)
+        },
+        None => ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
+/// The rows of every function type written inside an annotation, checked by
+/// `report_exception_kinds_in_row`.
+fn report_exception_kinds_in_type_expr(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], env: TypeEnv, errors: Array[String]) -> Unit {
+  match te {
+    TyApp(_, targs) => {
+      let mut i = 0
+      while i < Array::length(targs) {
+        report_exception_kinds_in_type_expr(Array::get(targs, i), defs, shadow, env, errors)
+        i = i + 1
+      }
+    },
+    TyTuple(elems) => {
+      let mut i = 0
+      while i < Array::length(elems) {
+        report_exception_kinds_in_type_expr(Array::get(elems, i), defs, shadow, env, errors)
+        i = i + 1
+      }
+    },
+    TyFn(ps, ret, row) => {
+      let mut i = 0
+      while i < Array::length(ps) {
+        report_exception_kinds_in_type_expr(Array::get(ps, i), defs, shadow, env, errors)
+        i = i + 1
+      }
+      report_exception_kinds_in_type_expr(ret, defs, shadow, env, errors)
+      report_exception_kinds_in_row(row, defs, shadow, env, errors)
+    },
+    _ => ()
+  }
 }
 
 /// ADR-0090 MutBytes: reject a known-wrong receiver head instead of letting
@@ -12078,6 +12146,8 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       // `fn f(x: Async) -> Int with Async` keep `Async` as a wildcard
       // `CtNamed` (measured) -- the very shape this issue is about.
       let declared_row_binders = row_variable_labels(effect)
+      // A function's own `with` row names exception kinds; check them as types.
+      report_exception_kinds_in_row(effect, defs, tparams, fn_env, errors)
       let param_types = array_empty()
       let mut pi = 0
       while pi < plen {

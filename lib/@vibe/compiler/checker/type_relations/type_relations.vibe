@@ -3,6 +3,7 @@ import @vibe/compiler/core {
   Type,
   exception_effect_kind,
   exception_effect_labels_equal,
+  exception_label_kind,
   instantiate,
   is_exception_effect_name,
   is_exception_label,
@@ -407,6 +408,30 @@ fn ck_row_label_base(label: String) -> String {
   }
 }
 
+/// Does `row` name exception KINDS only -- at least one kinded exception
+/// label, no erased one, and no effect variable that could stand for the
+/// erased exception?
+fn row_is_kinded_exception_only(row: Option[String]) -> Bool {
+  let labels = row_labels(row)
+  let mut kinded = false
+  let mut open_row = false
+  let mut i = 0
+  while i < Array::length(labels) {
+    let l = Array::get(labels, i)
+    if is_exception_label(l) {
+      if String::length(exception_label_kind(l)) > 0 {
+        kinded = true
+      } else {
+        open_row = true
+      }
+    } else if (String::length(l) == 1 && String::char_code_at(l, 0) >= 97 && String::char_code_at(l, 0) <= 122) || (String::length(l) >= 2 && String::char_code_at(l, 0) == 36) {
+      open_row = true
+    }
+    i = i + 1
+  }
+  kinded && !open_row
+}
+
 fn row_contains_label(row: Option[String], lbl: String) -> Bool {
   let labels = row_labels(row)
   let mut i = 0
@@ -459,7 +484,14 @@ fn effect_row_dropped(expected: Type, actual: Type) -> Option[String] {
         let mut done = false
         while i < Array::length(alabels) && !done {
           let lbl = Array::get(alabels, i)
-          if !effect_label_is_exempt(lbl) && !row_contains_label(eeff, lbl) {
+          // An ERASED exception label narrowed into a row that names only
+          // kinds (the mirror of #3015): the value may raise any kind, the
+          // slot promises only its own, and a kinded handler trusting the
+          // slot reads a foreign payload at the wrong type. The #640
+          // exemption covers erased labels dropped into rows that say
+          // nothing about kinds; it does not cover this.
+          let narrowed = is_exception_label(lbl) && String::length(exception_label_kind(lbl)) == 0 && row_is_kinded_exception_only(eeff)
+          if narrowed || (!effect_label_is_exempt(lbl) && !row_contains_label(eeff, lbl)) {
             dropped = Some(lbl)
             done = true
           } else {
