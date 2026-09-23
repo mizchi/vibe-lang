@@ -1688,9 +1688,17 @@ fn run(args: Vec<String>) -> Result<i32> {
             // run is recognised by a `cli_main` export with no `main`. An
             // unrelated `cli_main` export in a user program is not enough
             // (#3022 review).
+            // A test or bench executable keeps its `__test_*` / `__bench_*`
+            // exports next to whatever else it defines, so it is never the
+            // compiler even when it exports `cli_main` and no `main`.
+            let has_test_exports = instance.exports(&mut store).any(|e| {
+                let n = e.name();
+                n.starts_with("__test_") || n.starts_with("__bench_")
+            });
             let running_compiler = std::env::var_os("VIBE_CRASH_DIAG_OUT").is_some_and(|v| !v.is_empty())
                 || (instance.get_export(&mut store, "cli_main").is_some()
-                    && instance.get_export(&mut store, "main").is_none());
+                    && instance.get_export(&mut store, "main").is_none()
+                    && !has_test_exports);
             if matches!(e.downcast_ref::<Trap>(), Some(Trap::StackOverflow)) && !running_compiler {
                 eprintln!(
                     "viberun: stack overflow while running `{wasm_path}`: the program recursed too deeply -- make the recursion a loop, or bound its depth"

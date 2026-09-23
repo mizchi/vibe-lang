@@ -3999,11 +3999,11 @@ fn effect_fresh_targs(etps: Array[String], c: Int) -> (Array[Type], Int) {
 /// resolved to a ground type -- this refuses nothing it cannot name exactly.
 fn check_handle_inst_vs_callee_rows(body: Expr, insts: Array[(String, Type)], env: TypeEnv, errors: Array[String]) -> Unit {
   if Array::length(insts) > 0 {
-    let calls: Array[(String, Int)] = []
-    handle_collect_direct_calls(body, calls)
+    let calls: Array[(String, Int, String)] = []
+    handle_collect_direct_calls(body, " ", calls)
     let mut ci = 0
     while ci < Array::length(calls) {
-      let (cname, coff) = Array::get(calls, ci)
+      let (cname, coff, shadowed) = Array::get(calls, ci)
       let row = match env_lookup(env, cname) {
         Some(CtFn(_, _, r)) => r,
         Some(CtForAll(_, _, CtFn(_, _, r))) => r,
@@ -4022,7 +4022,9 @@ fn check_handle_inst_vs_callee_rows(body: Expr, insts: Array[(String, Type)], en
               let mut ki = 0
               while ki < Array::length(insts) {
                 let (iname, have) = Array::get(insts, ki)
-                if iname == ename {
+                // A nested handle of the same effect discharges this call
+                // itself; its own check compares it with its instantiation.
+                if iname == ename && !String::contains(shadowed, String::concat(" ", String::concat(ename, " "))) {
                   match builtin_scalar_type_of_name(arg_text) {
                     Some(want) => if head_kind(have) != 0 && !scalar_types_same(have, want) {
                       Array::push(errors, String::concat("handler instantiates `", String::concat(ename, String::concat("[", String::concat(type_to_string(have), String::concat("]` but the handled body requires `", String::concat(item, String::concat("` (from `", String::concat(cname, String::concat("`) -- make the arms answer `", String::concat(arg_text, String::concat("`, or handle `", String::concat(cname, String::concat("` with a handler for `", String::concat(item, String::concat("`", off_marker(coff)))))))))))))))))
@@ -4051,35 +4053,55 @@ fn check_handle_inst_vs_callee_rows(body: Expr, insts: Array[(String, Type)], en
   }
 }
 
-fn handle_collect_direct_calls(e: Expr, out: Array[(String, Int)]) -> Unit {
+/// Every direct call under `e`, with the effects a nested handle between it
+/// and this handle discharges (`shadowed`, space-delimited). A nested handle
+/// shadows only the effects its own arms name: a call inside it that needs
+/// another effect still reaches this handler (#3022 review). A lambda's body
+/// runs where the lambda is called, not here.
+fn handle_collect_direct_calls(e: Expr, shadowed: String, out: Array[(String, Int, String)]) -> Unit {
   match e {
     ECall(EIdent(n, noff), _, _) => {
-      Array::push(out, (n, noff))
-      handle_collect_direct_calls_children(e, out)
+      Array::push(out, (n, noff, shadowed))
+      handle_collect_direct_calls_children(e, shadowed, out)
     },
-    // A nested handle's BODY is discharged by that inner handler, which may
-    // instantiate the same generic effect differently; only its arms run
-    // under this one (#3022 review). A lambda's body runs where it is called,
-    // not here.
-    EHandle(_, arms) => {
+    EHandle(hbody, arms) => {
+      let mut inner = shadowed
       let mut ai = 0
       while ai < Array::length(arms) {
-        let (_, arm) = Array::get(arms, ai)
-        handle_collect_direct_calls(arm, out)
+        let (apat, arm) = Array::get(arms, ai)
+        match apat {
+          PCtor(pname, _) => {
+            let sep = String::index_of(pname, "::")
+            if sep > 0 {
+              let head = String::substring(pname, 0, sep)
+              let bi = String::index_of(head, "[")
+              let eff = if bi > 0 {
+                String::substring(head, 0, bi)
+              } else {
+                head
+              }
+              inner = String::concat(inner, String::concat(eff, " "))
+            }
+          },
+          _ => ()
+        }
+        // The arms run under THIS handler.
+        handle_collect_direct_calls(arm, shadowed, out)
         ai = ai + 1
       }
+      handle_collect_direct_calls(hbody, inner, out)
     },
     EFn(_, _, _, _, _, _) => (),
-    _ => handle_collect_direct_calls_children(e, out)
+    _ => handle_collect_direct_calls_children(e, shadowed, out)
   }
 }
 
-fn handle_collect_direct_calls_children(e: Expr, out: Array[(String, Int)]) -> Unit {
+fn handle_collect_direct_calls_children(e: Expr, shadowed: String, out: Array[(String, Int, String)]) -> Unit {
   let mark = expr_children_push(e)
   let end = expr_children_top()
   let mut i = mark
   while i < end {
-    handle_collect_direct_calls(expr_child_at(i), out)
+    handle_collect_direct_calls(expr_child_at(i), shadowed, out)
     i = i + 1
   }
   expr_children_pop(mark)
