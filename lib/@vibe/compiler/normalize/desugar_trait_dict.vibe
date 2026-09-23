@@ -6117,6 +6117,52 @@ fn dtd_mask_shadowed_fn_into(out: Array[(String, String)], name: String, fn_retu
   }
 }
 
+/// `dtd_mask_shadowed_fn_into` for every name a pattern binds.
+fn dtd_mask_shadowed_pat(var_types: Array[(String, String)], p: Pat, fn_returns: Array[(String, String)]) -> Array[(String, String)] {
+  let names = array_empty()
+  dtd_pat_bind_names(p, names)
+  let ps = array_empty()
+  let mut i = 0
+  while i < Array::length(names) {
+    Array::push(ps, (Array::get(names, i), None))
+    i = i + 1
+  }
+  dtd_mask_shadowed_params(var_types, ps, fn_returns)
+}
+
+fn dtd_pat_bind_names(p: Pat, out: Array[String]) -> Unit {
+  match p {
+    PBind(n) => Array::push(out, n),
+    PCtor(_, subs) => {
+      let mut i = 0
+      while i < Array::length(subs) {
+        dtd_pat_bind_names(Array::get(subs, i), out)
+        i = i + 1
+      }
+    },
+    PTuple(subs) => {
+      let mut i = 0
+      while i < Array::length(subs) {
+        dtd_pat_bind_names(Array::get(subs, i), out)
+        i = i + 1
+      }
+    },
+    POr(l, r) => {
+      dtd_pat_bind_names(l, out)
+      dtd_pat_bind_names(r, out)
+    },
+    PStruct(_, fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fp) = Array::get(fields, i)
+        dtd_pat_bind_names(fp, out)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
 /// `dtd_mask_shadowed_fn_into` for every parameter of a lambda, cloning only
 /// when one of them actually shadows a function.
 fn dtd_mask_shadowed_params(var_types: Array[(String, String)], ps: Array[(String, Option[TypeExpr])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
@@ -8894,7 +8940,7 @@ fn railway_rw(expr: Expr, struct_sets: Array[(String, Array[String])], var_types
     EForIn(name, idx, iter, body) => EForIn(name, idx, railway_rw(iter, struct_sets, var_types, fn_returns, changed), railway_rw(body, struct_sets, var_types, fn_returns, changed)),
     EBinOp(op, l, r, boff) => EBinOp(op, railway_rw(l, struct_sets, var_types, fn_returns, changed), railway_rw(r, struct_sets, var_types, fn_returns, changed), boff),
     EUnaryOp(op, e) => EUnaryOp(op, railway_rw(e, struct_sets, var_types, fn_returns, changed)),
-    EFn(tp, bs, ps, ret, eff, body) => EFn(tp, bs, ps, ret, eff, railway_rw(body, struct_sets, seed_var_types(ps, tp, var_types), fn_returns, changed)),
+    EFn(tp, bs, ps, ret, eff, body) => EFn(tp, bs, ps, ret, eff, railway_rw(body, struct_sets, dtd_mask_shadowed_params(seed_var_types(ps, tp, var_types), ps, fn_returns), fn_returns, changed)),
     EDot(obj, field, off, fdoff) => {
       let robj = railway_rw(obj, struct_sets, var_types, fn_returns, changed)
       match anon_dot_rewrite(obj, field, off, robj, var_types) {
@@ -11121,11 +11167,12 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
         // (`ctor_payload_key`, from a parameter annotation or a let-bound
         // `Some(..)`), the arm's binder gets that type for its body.
         let arm_vars0 = arm_binder_var_types_env(scrut, p, var_types, struct_sets, fn_returns)
-        let arm_vars = if Array::get(dtd_constructor_tracking, 0) {
+        let arm_vars1 = if Array::get(dtd_constructor_tracking, 0) {
           constructor_match_arm_var_types(scrut, p, gens, struct_sets, arm_vars0, fn_returns)
         } else {
           arm_vars0
         }
+        let arm_vars = dtd_mask_shadowed_pat(arm_vars1, p, fn_returns)
         Array::push(out, (p, rewrite_expr(b, gens, traits, struct_sets, dict_binds, arm_vars, fn_returns)))
         i = i + 1
       }
@@ -11136,11 +11183,11 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
       let mut i = 0
       while i < Array::length(arms) {
         let (p, b) = Array::get(arms, i)
-        let arm_vars = if Array::get(dtd_constructor_tracking, 0) {
+        let arm_vars = dtd_mask_shadowed_pat(if Array::get(dtd_constructor_tracking, 0) {
           constructor_handler_arm_var_types(scrut, p, gens, struct_sets, var_types, fn_returns)
         } else {
           var_types
-        }
+        }, p, fn_returns)
         Array::push(out, (p, rewrite_expr(b, gens, traits, struct_sets, dict_binds, arm_vars, fn_returns)))
         i = i + 1
       }
@@ -11152,11 +11199,12 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
       (name, rewrite_expr(init, gens, traits, struct_sets, dict_binds, var_types, fn_returns))
     }, rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     EForIn(name, idx, iter, body) => {
-      let body_vars = if Array::get(dtd_constructor_tracking, 0) {
+      let body_vars0 = if Array::get(dtd_constructor_tracking, 0) {
         constructor_for_body_var_types(iter, name, idx, struct_sets, var_types, fn_returns)
       } else {
         var_types
       }
+      let body_vars = dtd_mask_shadowed_params(body_vars0, [(name, None)], fn_returns)
       let rbody = rewrite_expr(body, gens, traits, struct_sets, dict_binds, body_vars, fn_returns)
       // #1350: one surface, one classification. A plain `for x in e` is
       // iterator/iterable/array-classified only when a method-bearing trait is
@@ -11936,7 +11984,7 @@ fn rewrite_stmt(stmt: Stmt, gens: Array[DictGen], traits: Array[(String, Array[(
         EFn(tparams, bounds, params, ret, eff, fbody) => {
           let binds = dict_binds_of(threaded, traits)
           let new_params = thread_dict_params(threaded, params)
-          let seeded = seed_var_types(params, tparams, toplevel_vars)
+          let seeded = dtd_mask_shadowed_params(seed_var_types(params, tparams, toplevel_vars), params, fn_returns)
           // #2141 (Codex P1 on #2183): this dict-threaded path unwraps the
           // EFn itself, so rewrite_expr's EFn arm never pushes the binder
           // frame for it -- a `[T: Trait]` formal colliding with an imported
@@ -11964,7 +12012,7 @@ fn rewrite_stmt(stmt: Stmt, gens: Array[DictGen], traits: Array[(String, Array[(
       None => match body {
         EFn(tparams, bounds, params, ret, eff, fbody) => {
           scope_formals_push(tparams, bounds, false)
-          let new_body = rewrite_expr(fbody, gens, traits, struct_sets, no_binds, seed_var_types(params, tparams, toplevel_vars), fn_returns)
+          let new_body = rewrite_expr(fbody, gens, traits, struct_sets, no_binds, dtd_mask_shadowed_params(seed_var_types(params, tparams, toplevel_vars), params, fn_returns), fn_returns)
           scope_formals_pop()
           SLet(exp, isrec, fname, ann, EFn(tparams, bounds, params, ret, eff, new_body))
         },

@@ -221,6 +221,30 @@ else
   fail=$((fail + 1))
 fi
 
+# #3031: a user program's own stack overflow is a runtime recursion even when
+# the module exports a `cli_main` and no `main`. viberun used to infer "this
+# is the compiler" from that export set and report the type-checking message.
+deepcli="$WORK/deep_cli.vibe"
+cat >"$deepcli" <<'EOF'
+fn deep(n: Int) -> Int {
+  if n == 0 { 0 } else { 1 + deep(n - 1) }
+}
+
+let cli_main: () -> Int = () -> {
+  deep(100000000)
+}
+EOF
+"$VIBE" compile "$deepcli" -o "$WORK/deep_cli.wasm" --entry cli_main >/dev/null 2>&1 || true
+deepcli_runner="$(find "$VIBE_HOME" -type f -name viberun 2>/dev/null | head -1)"
+out_deepcli="$("$deepcli_runner" "$WORK/deep_cli.wasm" 2>&1 || true)"
+if printf '%s\n' "$out_deepcli" | grep -q 'recursed too deeply' && ! printf '%s\n' "$out_deepcli" | grep -q 'too deeply nested'; then
+  echo "ok: a user program's recursion is reported as recursion even with a cli_main export"; pass=$((pass + 1))
+else
+  echo "FAIL: expected a runtime-recursion report for a cli_main-exporting user program, got:" >&2
+  printf '%s\n' "$out_deepcli" >&2
+  fail=$((fail + 1))
+fi
+
 # #820 sub-item 1: `--json` emits the same diagnostics as an LSP-shaped
 # JSON array (0-based line/character, matching the LSP protocol, unlike the
 # 1-based `line L:C:` text form above) instead of plain text.
