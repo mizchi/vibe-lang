@@ -3997,7 +3997,7 @@ fn effect_fresh_targs(etps: Array[String], c: Int) -> (Array[Type], Int) {
 /// compared (an alias or a structured argument could be spelled differently
 /// and still be the same type), and only when the handle's argument has
 /// resolved to a ground type -- this refuses nothing it cannot name exactly.
-fn check_handle_inst_vs_callee_rows(body: Expr, insts: Array[(String, Type)], env: TypeEnv, errors: Array[String]) -> Unit {
+fn check_handle_inst_vs_callee_rows(body: Expr, insts: Array[(String, Array[Type])], env: TypeEnv, errors: Array[String]) -> Unit {
   if Array::length(insts) > 0 {
     let calls: Array[(String, Int, String)] = []
     handle_collect_direct_calls(body, " ", calls)
@@ -4021,24 +4021,34 @@ fn check_handle_inst_vs_callee_rows(body: Expr, insts: Array[(String, Type)], en
               let arg_text = String::substring(item, lb + 1, String::length(item) - 1)
               let mut ki = 0
               while ki < Array::length(insts) {
-                let (iname, have) = Array::get(insts, ki)
+                let (iname, haves) = Array::get(insts, ki)
                 // A nested handle of the same effect discharges this call
                 // itself; its own check compares it with its instantiation.
                 if iname == ename && !String::contains(shadowed, String::concat(" ", String::concat(ename, " "))) {
-                  let mismatch = match builtin_scalar_type_of_name(arg_text) {
-                    Some(want) => head_kind(have) != 0 && !scalar_types_same(have, want),
-                    // #3022 review: a structured argument spelled only with
-                    // builtin type names (`Array[Int]`, `Option[String]`,
-                    // `(Int, String)`) is compared with the handler's resolved
-                    // type spelling. Anything naming a user type, an alias or
-                    // an unresolved variable stays unchecked rather than guessed.
-                    None => {
-                      let have_text = type_to_string(have)
-                      builtin_structural_spelling(arg_text) && !String::contains(have_text, "?") && strip_spaces(have_text) != strip_spaces(arg_text)
+                  let wants = split_row_top_level(arg_text)
+                  let have_text = if Array::length(haves) == 1 {
+                    type_to_string(Array::get(haves, 0))
+                  } else {
+                    let parts = array_empty()
+                    let mut hpi = 0
+                    while hpi < Array::length(haves) {
+                      Array::push(parts, type_to_string(Array::get(haves, hpi)))
+                      hpi = hpi + 1
+                    }
+                    String::join(parts, ", ")
+                  }
+                  let mut mismatch = false
+                  if Array::length(wants) == Array::length(haves) {
+                    let mut wi = 0
+                    while wi < Array::length(wants) {
+                      if effect_arg_mismatch(Array::get(haves, wi), Array::get(wants, wi)) {
+                        mismatch = true
+                      }
+                      wi = wi + 1
                     }
                   }
                   if mismatch {
-                    Array::push(errors, String::concat("handler instantiates `", String::concat(ename, String::concat("[", String::concat(type_to_string(have), String::concat("]` but the handled body requires `", String::concat(item, String::concat("` (from `", String::concat(cname, String::concat("`) -- make the arms answer `", String::concat(arg_text, String::concat("`, or handle `", String::concat(cname, String::concat("` with a handler for `", String::concat(item, String::concat("`", off_marker(coff)))))))))))))))))
+                    Array::push(errors, String::concat("handler instantiates `", String::concat(ename, String::concat("[", String::concat(have_text, String::concat("]` but the handled body requires `", String::concat(item, String::concat("` (from `", String::concat(cname, String::concat("`) -- make the arms answer `", String::concat(arg_text, String::concat("`, or handle `", String::concat(cname, String::concat("` with a handler for `", String::concat(item, String::concat("`", off_marker(coff)))))))))))))))))
                   }
                 } else {
                   ()
@@ -4112,6 +4122,20 @@ fn handle_collect_direct_calls_children(e: Expr, shadowed: String, out: Array[(S
     i = i + 1
   }
   expr_children_pop(mark)
+}
+
+/// Does the handler's resolved argument `have` disagree with the argument a
+/// callee's row spells as `want`? Only a spelling built from builtin names is
+/// compared; a user type, an alias or an unresolved handler type is not
+/// judged (#3010, #3022 review).
+fn effect_arg_mismatch(have: Type, want: String) -> Bool {
+  match builtin_scalar_type_of_name(want) {
+    Some(want_ty) => head_kind(have) != 0 && !scalar_types_same(have, want_ty),
+    None => {
+      let have_text = type_to_string(have)
+      builtin_structural_spelling(want) && !String::contains(have_text, "?") && strip_spaces(have_text) != strip_spaces(want)
+    }
+  }
 }
 
 /// A row's items split at commas outside brackets and parentheses, trimmed.
@@ -11253,15 +11277,21 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       } else {
         ()
       }
-      let hinst_resolved: Array[(String, Type)] = []
+      // Every argument of each instantiation, so an effect with two or more
+      // parameters is compared position by position (#3022 review).
+      let hinst_resolved: Array[(String, Array[Type])] = []
       let mut hri = 0
       while hri < Array::length(hinst_seen) {
         let hr_eff = Array::get(hinst_seen, hri)
         match env_lookup(henv_shared, effect_inst_env_key(hr_eff)) {
-          Some(CtTuple(hr_targs)) => if Array::length(hr_targs) == 1 {
-            Array::push(hinst_resolved, (hr_eff, subst_apply(hs1, Array::get(hr_targs, 0))))
-          } else {
-            ()
+          Some(CtTuple(hr_targs)) => {
+            let resolved_args = array_empty()
+            let mut hai = 0
+            while hai < Array::length(hr_targs) {
+              Array::push(resolved_args, subst_apply(hs1, Array::get(hr_targs, hai)))
+              hai = hai + 1
+            }
+            Array::push(hinst_resolved, (hr_eff, resolved_args))
           },
           _ => ()
         }

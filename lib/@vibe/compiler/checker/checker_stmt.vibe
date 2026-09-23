@@ -38,7 +38,6 @@ import @vibe/compiler/core {
   TypeDef,
   TypeEnv,
   TypeExpr,
-  __to_string,
   apply_type_constructor,
   canonical_builtin_name,
   collect_declared_type_names,
@@ -77,6 +76,7 @@ import @vibe/compiler/core {
   subst_resolves_to_double,
   subst_resolves_to_string,
   trait_defined,
+  trait_definition,
   trait_impl_declared_for_ctor,
   trait_is_marker,
   type_constructor_name,
@@ -5011,16 +5011,40 @@ fn unknown_effect_arm_in_expr(expr: Expr, es_names: Array[String], ed_names: Arr
   out
 }
 
-/// Does this statement list declare its own trait called `name`?
-fn stmts_declare_trait(stmts: Array[Stmt], name: String) -> Bool {
+/// Whether the builtin scalar `Show` impls may be seeded: only when every
+/// `Show` in sight -- declared here or arriving through the projected import
+/// env -- is the builtin shape, i.e. declares `to_string`. A program's own or
+/// an imported `Show` with another method would otherwise be satisfied at
+/// `Int` by an impl nobody wrote (#3022 review).
+fn builtin_show_seed_allowed(stmts: Array[Stmt], env: TypeEnv) -> Bool {
+  let mut ok = true
   let mut i = 0
-  let mut found = false
-  while i < Array::length(stmts) && !found {
+  while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      STrait(_, tname, _, _, _, _) => if tname == name {
-        found = true
+      STrait(_, tname, _, methods, _, _) => if tname == "Show" && !show_methods_have_to_string(methods) {
+        ok = false
       },
       _ => ()
+    }
+    i = i + 1
+  }
+  if ok {
+    match trait_definition(env, "Show") {
+      Some((_, methods, _, _)) => show_methods_have_to_string(methods),
+      None => true
+    }
+  } else {
+    false
+  }
+}
+
+fn show_methods_have_to_string(methods: Array[(String, Array[TypeExpr], TypeExpr)]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(methods) {
+    let (mname, _, _) = Array::get(methods, i)
+    if mname == "to_string" {
+      found = true
     }
     i = i + 1
   }
@@ -7293,7 +7317,7 @@ fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: Option[
   let seeded_raw_env = if trait_defined(EnvEmpty, "Eq") {
     EnvEmpty
   } else {
-    register_builtin_traits_for(EnvEmpty, !stmts_declare_trait(stmts, "Show"))
+    register_builtin_traits_for(EnvEmpty, builtin_show_seed_allowed(stmts, EnvEmpty))
   }
   let seeded_env = env_cache(seeded_raw_env)
   let tytab = array_empty()
@@ -9171,7 +9195,7 @@ export fn check_program_type_table(stmts: Array[Stmt]) -> (Array[(Int, Type)], S
   let seeded_raw_env = if trait_defined(EnvEmpty, "Eq") {
     EnvEmpty
   } else {
-    register_builtin_traits_for(EnvEmpty, !stmts_declare_trait(stmts, "Show"))
+    register_builtin_traits_for(EnvEmpty, builtin_show_seed_allowed(stmts, EnvEmpty))
   }
   let seeded_env = env_cache(seeded_raw_env)
   let errors = ArrayBuilder::new()
@@ -9238,7 +9262,7 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
       let seeded_raw_env = if trait_defined(cached_env, "Eq") {
         cached_env
       } else {
-        register_builtin_traits_for(cached_env, !stmts_declare_trait(stmts, "Show"))
+        register_builtin_traits_for(cached_env, builtin_show_seed_allowed(stmts, cached_env))
       }
       let seeded_env = env_cache(seeded_raw_env)
       let tytab = array_empty()
