@@ -4073,56 +4073,55 @@ fn effect_fresh_targs(etps: Array[String], c: Int) -> (Array[Type], Int) {
 let generic_fn_decls_cell: Array[(String, Array[String], Array[(String, Option[TypeExpr])], Option[TypeExpr])] = [
 ]
 
-/// #3027: (callee offset, instantiated type) for each call of a generic
-/// function, recorded where the call position instantiates the scheme.
-let callee_inst_types_cell: Array[(Int, Type)] = []
+/// #3027: (callee offset, scheme, instantiated type) for each call of a
+/// generic binding, recorded where the call position instantiates the scheme.
+let callee_inst_types_cell: Array[(Int, Type, Type)] = []
 
-/// Every scheme a top-level generic declaration was bound with (its hoisted
-/// signature, then its checked one). A call resolves the callee's formals
-/// through the declaration only when its environment still answers one of
-/// these: a local binding of the same name -- a lambda with formals of its
-/// own, in whatever order -- answers a scheme of its own, and pairing that
-/// against the top-level signature put its formals at the wrong positions
-/// (Codex on #3039).
-let toplevel_generic_schemes_cell: Array[(String, Type)] = []
+/// #3027: every generic binding's annotations, keyed by the scheme it was
+/// bound with -- a top-level declaration (its hoisted signature and its
+/// checked one) and a local generic lambda alike. A call finds its callee's
+/// declaration by the scheme it instantiated, never by name: a local lambda
+/// that shadows a top-level function of the same name has formals of its own,
+/// in its own order, and a name lookup paired them against the wrong
+/// signature (Codex on #3039); a local lambda with no declaration at all left
+/// its formal unresolved, and an open spelling is never judged, so a handler
+/// of the wrong type was accepted (Codex on #3047).
+let generic_scheme_decls_cell: Array[(Type, Array[String], Array[(String, Option[TypeExpr])], Option[TypeExpr])] = [
+]
 
 export fn note_toplevel_generic_binding(name: String, bound: Option[Type]) -> Unit {
   match bound {
     Some(CtForAll(vs, bs, body)) => {
-      let mut is_decl = false
       let mut i = 0
       while i < Array::length(generic_fn_decls_cell) {
-        let (dn, _, _, _) = Array::get(generic_fn_decls_cell, i)
+        let (dn, tps, params, ret) = Array::get(generic_fn_decls_cell, i)
         if dn == name {
-          is_decl = true
+          Array::push(generic_scheme_decls_cell, (CtForAll(vs, bs, body), tps, params, ret))
         }
         i = i + 1
-      }
-      if is_decl {
-        Array::push(toplevel_generic_schemes_cell, (name, CtForAll(vs, bs, body)))
       }
     },
     _ => ()
   }
 }
 
-fn is_toplevel_generic_scheme(name: String, t: Type) -> Bool {
-  let mut found = false
-  let mut i = 0
-  while i < Array::length(toplevel_generic_schemes_cell) {
-    let (n, st) = Array::get(toplevel_generic_schemes_cell, i)
-    if n == name && st == t {
-      found = true
-    }
-    i = i + 1
+/// A local `let` bound to a generic lambda: its scheme and its annotations.
+fn note_local_generic_binding(val: Expr, bound: Type) -> Unit {
+  match val {
+    EFn(tps, _, params, ret, _, _) => if Array::length(tps) > 0 {
+      match bound {
+        CtForAll(_, _, _) => Array::push(generic_scheme_decls_cell, (bound, tps, params, ret)),
+        _ => ()
+      }
+    },
+    _ => ()
   }
-  found
 }
 
 export fn set_generic_fn_decls(stmts: Array[Stmt]) -> Unit {
   Array::truncate(generic_fn_decls_cell, 0)
   Array::truncate(callee_inst_types_cell, 0)
-  Array::truncate(toplevel_generic_schemes_cell, 0)
+  Array::truncate(generic_scheme_decls_cell, 0)
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
@@ -4135,95 +4134,105 @@ export fn set_generic_fn_decls(stmts: Array[Stmt]) -> Unit {
   }
 }
 
-/// Each argument that is exactly one of `cname`'s type formals, replaced by
-/// the concrete type that formal takes at the call at `coff`; every other
-/// argument, and any formal that cannot be resolved, is left as written.
-fn resolve_callee_formal_args(wants: Array[String], cname: String, coff: Int, env: TypeEnv, defs: Array[TypeDef], s: Subst) -> Array[String] {
-  let mut decl_idx = 0 - 1
+fn generic_decl_of_scheme(scheme: Type) -> Option[(Array[String], Array[(String, Option[TypeExpr])], Option[TypeExpr])] {
+  let mut decl = None
   let mut di = 0
-  while di < Array::length(generic_fn_decls_cell) {
-    let (dn, _, _, _) = Array::get(generic_fn_decls_cell, di)
-    if dn == cname {
-      decl_idx = di
+  while di < Array::length(generic_scheme_decls_cell) {
+    let (dscheme, tps, dparams, dret) = Array::get(generic_scheme_decls_cell, di)
+    if dscheme == scheme {
+      decl = Some((tps, dparams, dret))
     }
     di = di + 1
   }
-  if decl_idx < 0 || coff < 0 {
-    wants
-  } else {
-    let (_, tps, dparams, dret) = Array::get(generic_fn_decls_cell, decl_idx)
-    match env_lookup(env, cname) {
-      Some(CtForAll(svs, sbs, CtFn(sparams, sret, seff))) => if !is_toplevel_generic_scheme(cname, CtForAll(svs, sbs, CtFn(sparams, sret, seff))) {
-        wants
-      } else {
-        let mut inst = None
-        let mut ti = 0
-        while ti < Array::length(callee_inst_types_cell) {
-          let (toff, tty) = Array::get(callee_inst_types_cell, ti)
-          if toff == coff {
-            inst = Some(tty)
-          }
-          ti = ti + 1
-        }
-        match inst {
-          Some(CtFn(iparams, iret, _)) => {
-            // formal name -> scheme variable id, from the declaration.
-            let name_ids: Array[(String, Int)] = []
-            let mut pi = 0
-            while pi < Array::length(dparams) && pi < Array::length(sparams) {
-              let (_, pann) = Array::get(dparams, pi)
-              match pann {
-                Some(te) => formal_ids_from(resolve_type_expr_shadowed(te, defs, tps), Array::get(sparams, pi), tps, name_ids),
-                None => ()
-              }
-              pi = pi + 1
-            }
-            match dret {
-              Some(te) => formal_ids_from(resolve_type_expr_shadowed(te, defs, tps), sret, tps, name_ids),
+  decl
+}
+
+/// Each argument that is exactly one of the callee's type formals, replaced by
+/// the concrete type that formal takes at the call at `coff`; every other
+/// argument, and any formal that cannot be resolved, is left as written.
+fn resolve_callee_formal_args(wants: Array[String], env_scheme: Option[Type], coff: Int, defs: Array[TypeDef], s: Subst) -> Array[String] {
+  let mut call = None
+  let mut ti = 0
+  while ti < Array::length(callee_inst_types_cell) {
+    let (toff, tscheme, tty) = Array::get(callee_inst_types_cell, ti)
+    if toff == coff {
+      call = Some((tscheme, tty))
+    }
+    ti = ti + 1
+  }
+  match call {
+    Some((call_scheme, inst)) => {
+      // The scheme the handle's environment answers for the callee comes
+      // first: it is what a top-level declaration was recorded with (the call
+      // position may read another binding of the same declaration), and a
+      // local lambda that shadows the declaration answers its own. A lambda
+      // declared inside the handled body is not in that environment, so the
+      // call's own scheme is the fallback.
+      let (decl, scheme) = match env_scheme {
+        Some(es) => match generic_decl_of_scheme(es) {
+          Some(d) => (Some(d), es),
+          None => (generic_decl_of_scheme(call_scheme), call_scheme)
+        },
+        None => (generic_decl_of_scheme(call_scheme), call_scheme)
+      }
+      match (decl, scheme, inst) {
+        (Some((tps, dparams, dret)), CtForAll(_, _, CtFn(sparams, sret, _)), CtFn(iparams, iret, _)) => {
+          // formal name -> scheme variable id, from the declaration.
+          let name_ids: Array[(String, Int)] = []
+          let mut pi = 0
+          while pi < Array::length(dparams) && pi < Array::length(sparams) {
+            let (_, pann) = Array::get(dparams, pi)
+            match pann {
+              Some(te) => formal_ids_from(resolve_type_expr_shadowed(te, defs, tps), Array::get(sparams, pi), tps, name_ids),
               None => ()
             }
-            // scheme variable id -> the type this call gives it.
-            let id_tys: Array[(Int, Type)] = []
-            let mut qi = 0
-            while qi < Array::length(sparams) && qi < Array::length(iparams) {
-              scheme_var_types_from(Array::get(sparams, qi), Array::get(iparams, qi), id_tys)
-              qi = qi + 1
-            }
-            scheme_var_types_from(sret, iret, id_tys)
-            let out = array_empty()
-            let mut wi = 0
-            while wi < Array::length(wants) {
-              let w = String::trim(Array::get(wants, wi))
-              let mut rep = w
-              let mut ni = 0
-              while ni < Array::length(name_ids) {
-                let (fname, fid) = Array::get(name_ids, ni)
-                if fname == w {
-                  let mut ki = 0
-                  while ki < Array::length(id_tys) {
-                    let (kid, kty) = Array::get(id_tys, ki)
-                    if kid == fid {
-                      let concrete = subst_apply(s, kty)
-                      let text = type_to_string(concrete)
-                      if !String::contains(text, "?") {
-                        rep = text
-                      }
+            pi = pi + 1
+          }
+          match dret {
+            Some(te) => formal_ids_from(resolve_type_expr_shadowed(te, defs, tps), sret, tps, name_ids),
+            None => ()
+          }
+          // scheme variable id -> the type this call gives it.
+          let id_tys: Array[(Int, Type)] = []
+          let mut qi = 0
+          while qi < Array::length(sparams) && qi < Array::length(iparams) {
+            scheme_var_types_from(Array::get(sparams, qi), Array::get(iparams, qi), id_tys)
+            qi = qi + 1
+          }
+          scheme_var_types_from(sret, iret, id_tys)
+          let out = array_empty()
+          let mut wi = 0
+          while wi < Array::length(wants) {
+            let w = String::trim(Array::get(wants, wi))
+            let mut rep = w
+            let mut ni = 0
+            while ni < Array::length(name_ids) {
+              let (fname, fid) = Array::get(name_ids, ni)
+              if fname == w {
+                let mut ki = 0
+                while ki < Array::length(id_tys) {
+                  let (kid, kty) = Array::get(id_tys, ki)
+                  if kid == fid {
+                    let concrete = subst_apply(s, kty)
+                    let text = type_to_string(concrete)
+                    if !String::contains(text, "?") {
+                      rep = text
                     }
-                    ki = ki + 1
                   }
+                  ki = ki + 1
                 }
-                ni = ni + 1
               }
-              Array::push(out, rep)
-              wi = wi + 1
+              ni = ni + 1
             }
-            out
-          },
-          _ => wants
-        }
-      },
-      _ => wants
-    }
+            Array::push(out, rep)
+            wi = wi + 1
+          }
+          out
+        },
+        _ => wants
+      }
+    },
+    None => wants
   }
 }
 
@@ -4370,16 +4379,9 @@ fn check_handle_inst_vs_callee_rows(body: Expr, insts: Array[(String, Array[Type
                 if iname == ename && !String::contains(shadowed, String::concat(" ", String::concat(ename, " "))) {
                   // #3027: an argument naming one of the callee's own type
                   // formals (`fn get[S]() -> S with State[S]`) means what that
-                  // formal is instantiated to at THIS call. Only a top-level
-                  // callee's declaration says which formal sits where: a local
-                  // lambda of the same name (`local_row`) has formals of its
-                  // own, and pairing them against the top-level signature
-                  // mapped them to the wrong positions (Codex on #3039).
-                  let wants = if String::length(local_row) > 0 {
-                    split_row_top_level(arg_text)
-                  } else {
-                    resolve_callee_formal_args(split_row_top_level(arg_text), cname, coff, env, defs, s)
-                  }
+                  // formal is instantiated to at THIS call, read through the
+                  // declaration of the scheme the call instantiated.
+                  let wants = resolve_callee_formal_args(split_row_top_level(arg_text), env_lookup(env, cname), coff, defs, s)
                   let have_text = if Array::length(haves) == 1 {
                     type_to_string(Array::get(haves, 0))
                   } else {
@@ -7338,6 +7340,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         refuse_generalized_field_reads(gen, ns, errors)
         let aliases_outer = spine_region_active && expression_aliases_outer_binding(val, cenv)
         cenv = env_bind(cenv, name, gen)
+        note_local_generic_binding(val, gen)
         cenv = bind_function_dependency_contracts(cenv, name, val)
         if aliases_outer {
           cenv = env_bind(cenv, String::concat("__region_outer_alias__", name), CtUnit)
@@ -10762,7 +10765,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                       // row names.
                       match t {
                         CtForAll(_, _, _) => if callee_off >= 0 {
-                          Array::push(callee_inst_types_cell, (callee_off, ti))
+                          Array::push(callee_inst_types_cell, (callee_off, t, ti))
                         },
                         _ => ()
                       }
