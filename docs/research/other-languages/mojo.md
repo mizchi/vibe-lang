@@ -127,8 +127,12 @@ performance is predictable because nothing is left to heuristics.
    the convention *declarable and checked*, so it survives a package boundary
    and becomes a contract.
 2. **Exclusivity is a call-site check, not a type system.** "A `mut`
-   argument may not alias any other argument" is checkable on identifiers
-   syntactically and needs no lifetime variables. It is also exactly the
+   argument may not alias any other argument" needs no lifetime variables.
+   In Mojo a syntactic check on identifiers suffices because `let b = a`
+   copies; in vibe it shares the heap object, so the check has to be
+   restricted to shallow buffers and backed by an identity compare at entry
+   ([borrowing-and-vectorization.md](borrowing-and-vectorization.md) §A3). It
+   is also exactly the
    property an SMT-based verifier needs (see [moonbit-veri.md](moonbit-veri.md):
    Why3 rejects aliased mutable arguments).
 3. **Origins are the upgrade path, not the starting point.** vibe already
