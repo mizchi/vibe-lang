@@ -85,7 +85,7 @@ fn finish(consume b: ArrayBuilder[Int]) -> Array[Int] { ... }         // ownersh
 |---|---|---|---|
 | *(none)* | anything (today's semantics) | inferred ABI, as now | nothing new |
 | `borrow` | read; pass it only to positions that do not write | no transfer dup, no drop; *unchanged contents* only under T1′'s premise (A5) | consume count = 0, no escape, and no write through it (A2) |
-| `mut` | write through it | the argument does not alias any other argument | exclusivity (A3) |
+| `mut` | write through it; never consume it or let it escape | the argument does not alias any other argument, and is not retained | exclusivity (A3) plus the same zero-consume and escape checks as `borrow` (A2) |
 | `consume` | keep, return, store, reuse in place | the binding is dead after the call | usage map at the call site (A4) |
 
 Unannotated code does not change. A mode is an opt-in promise that the checker
@@ -100,6 +100,24 @@ passed to its `mut` parameter, and then read the capture while writing through
 the parameter. The callee is neither an argument nor a global, so none of A3's
 checks would see that alias. A top-level `fn` captures nothing, and its reach
 into globals is covered by A3's environment rule.
+
+**Every moded `fn` has a transitive effect row that is empty or `Exception`
+only**, whichever modes it declares. Resumable operations break every mode
+separately:
+- A handler arm runs in the middle of the call and can capture another alias
+  of a buffer (A3, and T1′ for `borrow`).
+- A handler can **store `resume` and return without resuming**. First-class
+  continuations are part of the language (see the cheatsheet's section on
+  handlers). A continuation suspended inside the callee keeps its frame, and
+  therefore every `borrow` and `mut` parameter, alive past the call. That is
+  an escape that the region checks cannot see, because it happens in no
+  expression the callee wrote. T1 itself becomes false: the reference is
+  retained, and the caller's elided dup leaves it dangling.
+
+Raising `Exception` abandons the frame, so it is safe. A later slice can
+re-admit resumable effects together with a call-site check that no enclosing
+handler captures an alias or stores the continuation. Until then the rule is
+one line, and it applies to all three modes.
 
 ### A2. `borrow` is a region the length of the call
 
@@ -352,14 +370,14 @@ Two parts of the practice matter as much as the theorems:
   not through projections, one drops the identity check, one drops the
   buffer-free-argument rule, one checks only bare-buffer globals, one
   counts a loop body's consume once, one admits a `mut` call through a
-  capturing closure, one ignores call results in the borrow taint, one ignores aggregate construction in it, one trusts a root-only alias summary for a call result, one claims T1′ for a call that also passes the buffer to an unannotated writable parameter, one lets a borrow-derived value reach a `consume` position, one elides `rc == 1` on the strength of `mut` exclusivity alone, one claims T1′ for a `borrow` callee that performs a resumable effect, one moves a root-unique but non-shallow value into a task, one lets
+  capturing closure, one ignores call results in the borrow taint, one ignores aggregate construction in it, one trusts a root-only alias summary for a call result, one claims T1′ for a call that also passes the buffer to an unannotated writable parameter, one lets a borrow-derived value reach a `consume` position, one elides `rc == 1` on the strength of `mut` exclusivity alone, one claims T1′ for a `borrow` callee that performs a resumable effect, one moves a root-unique but non-shallow value into a task, one lets a `mut` parameter escape by return or capture, one lets a stored continuation retain a `borrow` frame, one computes the 2×i64 fallback untagged, one lets
   an opaque type count as buffer-free, and one lets a `mut` callee perform a
   user effect whose handler captures the buffer, and one lets it perform
   `Async` under a user handler that does the same. `formal/` already keeps such witnesses for the Error policy.
 
 **Why the model has to come first.** Review of this document found the
 same class of hole again and again, each one a path the prose rules had not
-enumerated. Twenty-three findings in eleven rounds so far:
+enumerated. Twenty-six findings in twelve rounds so far:
 - aliases hidden in an aggregate argument, in an aggregate global, and in a
   closure callee;
 - aliases reached through an effect handler (three times: user effects, then `Async`, then under a `borrow`) or an opaque type;
@@ -368,7 +386,9 @@ enumerated. Twenty-three findings in eleven rounds so far:
 - a caller-created alias between a `borrow` argument and a writable one;
 - a borrow-derived value passed to `consume`;
 - `rc == 1` elision justified by `mut` exclusivity, which ignores the caller's own references;
-- a task move justified by root-only uniqueness.
+- a task move justified by root-only uniqueness;
+- a `mut` parameter escaping by return, and a `borrow` frame retained by a stored continuation;
+- a vector fallback that wraps at 2⁶⁴ instead of 2⁶³.
 
 Enumerating exceptions in English does not converge. What does converge is an
 executable model whose checker is diffed against the implementation, together
@@ -512,7 +532,13 @@ include one variant per exception above.
 What happens at the output is a decision for the column API, and the lowering
 must reproduce it. If `I32ColumnBuilder::push` **traps** on a value out of i32
 range, the vector kernel has to compute in 2×i64 lanes and check the range, or
-stay scalar. A kernel that wraps where the scalar code traps is precisely the
+stay scalar. Those lanes must hold the **tagged** representation (`n << 1`)
+and use B2's tagged-lane lowering table. The table is not optional here: plain
+i64 arithmetic wraps at 2⁶⁴, not 2⁶³. With `x = 1 << 30`, the scalar
+`(x * x) * 8` wraps to `0` and the push succeeds, while untagged i64 lanes
+produce `-2⁶³` and the range check traps. In the tagged representation,
+every intermediate wraps exactly where the scalar `Int` does (ADR-0105), so
+the final untag-and-range-check sees the scalar value. A kernel that wraps where the scalar code traps is precisely the
 silent-wrong case. The recommendation is to make trapping the default and to
 provide an explicit `map_wrapping` whose name states the contract.
 
