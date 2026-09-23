@@ -370,14 +370,14 @@ Two parts of the practice matter as much as the theorems:
   not through projections, one drops the identity check, one drops the
   buffer-free-argument rule, one checks only bare-buffer globals, one
   counts a loop body's consume once, one admits a `mut` call through a
-  capturing closure, one ignores call results in the borrow taint, one ignores aggregate construction in it, one trusts a root-only alias summary for a call result, one claims T1′ for a call that also passes the buffer to an unannotated writable parameter, one lets a borrow-derived value reach a `consume` position, one elides `rc == 1` on the strength of `mut` exclusivity alone, one claims T1′ for a `borrow` callee that performs a resumable effect, one moves a root-unique but non-shallow value into a task, one lets a `mut` parameter escape by return or capture, one lets a stored continuation retain a `borrow` frame, one computes the 2×i64 fallback untagged, one lets
+  capturing closure, one ignores call results in the borrow taint, one ignores aggregate construction in it, one trusts a root-only alias summary for a call result, one claims T1′ for a call that also passes the buffer to an unannotated writable parameter, one lets a borrow-derived value reach a `consume` position, one elides `rc == 1` on the strength of `mut` exclusivity alone, one claims T1′ for a `borrow` callee that performs a resumable effect, one moves a root-unique but non-shallow value into a task, one lets a `mut` parameter escape by return or capture, one lets a stored continuation retain a `borrow` frame, one computes the 2×i64 fallback untagged, one accumulates an `Int`-valued `I32Column::sum` in i32x4 lanes, one canonicalizes the NaN of a pass-through kernel, one lets
   an opaque type count as buffer-free, and one lets a `mut` callee perform a
   user effect whose handler captures the buffer, and one lets it perform
   `Async` under a user handler that does the same. `formal/` already keeps such witnesses for the Error policy.
 
 **Why the model has to come first.** Review of this document found the
 same class of hole again and again, each one a path the prose rules had not
-enumerated. Twenty-six findings in twelve rounds so far:
+enumerated. Twenty-eight findings in thirteen rounds so far:
 - aliases hidden in an aggregate argument, in an aggregate global, and in a
   closure callee;
 - aliases reached through an effect handler (three times: user effects, then `Async`, then under a `borrow`) or an opaque type;
@@ -388,7 +388,8 @@ enumerated. Twenty-six findings in twelve rounds so far:
 - `rc == 1` elision justified by `mut` exclusivity, which ignores the caller's own references;
 - a task move justified by root-only uniqueness;
 - a `mut` parameter escaping by return, and a `borrow` frame retained by a stored continuation;
-- a vector fallback that wraps at 2⁶⁴ instead of 2⁶³.
+- a vector fallback that wraps at 2⁶⁴ instead of 2⁶³, and a reduction accumulator that wraps at 2³²;
+- NaN canonicalization applied to a bit-exact pass-through.
 
 Enumerating exceptions in English does not converge. What does converge is an
 executable model whose checker is diffed against the implementation, together
@@ -551,7 +552,9 @@ and backs with a negative control on subtraction.
 
 | reduction | vectorize? | why |
 |---|---|---|
-| `Int` / i32 wrapping sum, product, `& | ^` | yes | a commutative ring / monoid under wrap |
+| `Int` wrapping sum, product, `& \| ^` | yes, in tagged 2×i64 lanes | a commutative ring / monoid under the 63-bit wrap |
+| `I32Column::sum` / `product` (result is `Int`) | yes, **widening** each element to a tagged i64 lane (`i64x2.extend_*_i32x4`) and accumulating there | the result is an `Int`, so it wraps at 2⁶³. An i32x4 accumulator wraps a lane at 2³², before the horizontal reduction, and cannot recover the `Int` sum: five `2147483647` elements already disagree. Associativity is necessary but does not make the two rings the same |
+| an explicitly i32-wrapping sum (`sum_wrapping_i32`, if ever wanted) | yes, in i32x4 lanes | the name states that the result wraps at 2³² |
 | `Int` / i32 `min`, `max`, `count` | yes | associative, commutative, idempotent |
 | `Double` `min` / `max` | yes, with wasm `f64.min` semantics (NaN propagates, `-0 < +0`) **and a canonical NaN result in both paths** | associative and commutative on values, but not on NaN payloads: wasm leaves an arithmetic NaN's payload nondeterministic, so reassociating can change which payload comes out. Canonicalizing the result restores bit-exact parity |
 | `Double` sum | **no**, not by default | not associative, so reordering changes the result |
@@ -568,10 +571,17 @@ floating-point caveats remain:
   nondeterministic for scalar and vector operations alike. So "the scalar path
   is already nondeterministic" does not make a vector path bit-exact: the two
   may pick different payloads, and a reordered reduction certainly can. The
-  parity contract therefore canonicalizes. Every float kernel output and every
-  float reduction result that is a NaN is rewritten to the canonical NaN, on
-  **both** paths. For vectors that is one compare plus one `bitselect` per
-  output vector. The differential gate (B8) compares bit patterns, so it
+  parity contract therefore canonicalizes, **per operation, and only where
+  the payload is nondeterministic**. The result of each float arithmetic
+  operation (`+ - * /`, `sqrt`, `min`, `max`, and every reduction step)
+  that is a NaN is rewritten to the canonical NaN, on **both** paths. That
+  costs one compare plus one `bitselect` per vector. Operations that wasm
+  defines bit-exactly are *not* canonicalized: loads, stores, lane select,
+  `neg`, `abs` and `copysign`. A pass-through kernel such as
+  `F64Column::map(xs, (x) -> { x })` therefore keeps its input NaN payloads,
+  exactly as the scalar identity loop does. Those payloads are observable
+  through the bit-conversion APIs, so canonicalizing them would itself be a
+  silent change. The differential gate (B8) compares bit patterns, so it
   checks the canonicalization too. The alternative, a contract that is
   explicitly "equal modulo NaN payload", would be weaker than the rest of this
   document promises, and is not proposed.
