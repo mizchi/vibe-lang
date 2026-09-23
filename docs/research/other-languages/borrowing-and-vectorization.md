@@ -308,8 +308,13 @@ use so far is a `consume`. For such a value:
    repurposes only the root cell, and the decomposition already transfers each
    child, so uniqueness of the root is the whole requirement;
 2. `TaskGroup::spawn` can move the value into the task instead of making the
-   deep-copy snapshot ADR-0068 specifies, **but only for a shallow buffer**:
-   `Array[S]` with a scalar `S`, `Bytes`, or a packed column. Static
+   deep-copy snapshot ADR-0068 specifies, **but only for a pointer-free
+   buffer**: `Array[S]` where `S` is an immediate (`Int`, `Bool`, `Char`,
+   `Unit`), `Bytes`, or a packed column. "Scalar" is not enough.
+   `Array[Double]` holds heap boxes (#510), and `String` is a heap object. After
+   `let d = 1.5; let xs = [d]`, moving a root-unique `xs` would leave the
+   box reachable from the caller's `d` and from the child task at once,
+   with non-atomic reference counts on both sides. Static
    uniqueness is a fact about the *root* allocation. After
    `let inner = [1]; let outer = [inner]`, `outer` can be fresh and consumed
    exactly once while the caller still holds `inner`. Moving `outer` would let
@@ -370,14 +375,14 @@ Two parts of the practice matter as much as the theorems:
   not through projections, one drops the identity check, one drops the
   buffer-free-argument rule, one checks only bare-buffer globals, one
   counts a loop body's consume once, one admits a `mut` call through a
-  capturing closure, one ignores call results in the borrow taint, one ignores aggregate construction in it, one trusts a root-only alias summary for a call result, one claims T1′ for a call that also passes the buffer to an unannotated writable parameter, one lets a borrow-derived value reach a `consume` position, one elides `rc == 1` on the strength of `mut` exclusivity alone, one claims T1′ for a `borrow` callee that performs a resumable effect, one moves a root-unique but non-shallow value into a task, one lets a `mut` parameter escape by return or capture, one lets a stored continuation retain a `borrow` frame, one computes the 2×i64 fallback untagged, one accumulates an `Int`-valued `I32Column::sum` in i32x4 lanes, one canonicalizes the NaN of a pass-through kernel, one lets
+  capturing closure, one ignores call results in the borrow taint, one ignores aggregate construction in it, one trusts a root-only alias summary for a call result, one claims T1′ for a call that also passes the buffer to an unannotated writable parameter, one lets a borrow-derived value reach a `consume` position, one elides `rc == 1` on the strength of `mut` exclusivity alone, one claims T1′ for a `borrow` callee that performs a resumable effect, one moves a root-unique but non-shallow value into a task, one lets a `mut` parameter escape by return or capture, one lets a stored continuation retain a `borrow` frame, one computes the 2×i64 fallback untagged, one accumulates an `Int`-valued `I32Column::sum` in i32x4 lanes, one vectorizes `dst[i] = dst[i - 1]` in place, one moves an `Array[Double]` into a task, one canonicalizes the NaN of a pass-through kernel, one lets
   an opaque type count as buffer-free, and one lets a `mut` callee perform a
   user effect whose handler captures the buffer, and one lets it perform
   `Async` under a user handler that does the same. `formal/` already keeps such witnesses for the Error policy.
 
 **Why the model has to come first.** Review of this document found the
 same class of hole again and again, each one a path the prose rules had not
-enumerated. Twenty-eight findings in thirteen rounds so far:
+enumerated. Thirty findings in fourteen rounds so far:
 - aliases hidden in an aggregate argument, in an aggregate global, and in a
   closure callee;
 - aliases reached through an effect handler (three times: user effects, then `Async`, then under a `borrow`) or an opaque type;
@@ -389,7 +394,9 @@ enumerated. Twenty-eight findings in thirteen rounds so far:
 - a task move justified by root-only uniqueness;
 - a `mut` parameter escaping by return, and a `borrow` frame retained by a stored continuation;
 - a vector fallback that wraps at 2⁶⁴ instead of 2⁶³, and a reduction accumulator that wraps at 2³²;
-- NaN canonicalization applied to a bit-exact pass-through.
+- NaN canonicalization applied to a bit-exact pass-through;
+- a loop-carried dependence inside one buffer, which exclusivity does not see;
+- a task move of a buffer whose elements are heap boxes.
 
 Enumerating exceptions in English does not converge. What does converge is an
 executable model whose checker is diffed against the implementation, together
@@ -596,9 +603,18 @@ Aliasing, where Part A meets Part B:
 - an **in-place, same-index** kernel (`dst[i] = f(src[i])`) is correct even when
   `dst` and `src` are the same object, because each lane reads its element
   before it writes it;
-- a **shifted-index** kernel (stencils, `copy_within`-like moves) needs
-  `mut dst` with exclusivity (A3). That is the only place vectorization
-  requires the borrow subset.
+- a **shifted-index** kernel (stencils, `copy_within`-like moves) must
+  **never read its destination**. It reads only from a distinct `borrow src`
+  and writes only `mut dst`, and A3's exclusivity proves the two disjoint.
+  Exclusivity removes *external* aliases, but it says nothing about
+  dependences *within* one buffer. `dst[i] = dst[i - 1]` carries a value
+  across iterations: the scalar forward loop propagates the first element
+  through the whole range, while a vector loop that loads a chunk before
+  storing it propagates only at chunk boundaries. An in-place shifted
+  kernel therefore stays scalar. Admitting one would need a dependence
+  check (the shift's sign and distance against the lane count), which is a
+  later refinement. This is the only place vectorization requires the borrow
+  subset.
 
 ### B7. `#vectorize` is a checked assertion
 
@@ -690,13 +706,13 @@ code.
 | 1 | declared `borrow`, checked against the inferred mask plus a per-parameter write summary; written to `index.vpkg` | — | parameter mode |
 | 2 | Lean model + executable oracle for `borrow` / escape (T1), with a negative witness | 1 | none |
 | 3 | `mut` exclusivity on shallow buffers (after slice 2's model and witnesses): static place check, buffer-free other arguments, no non-buffer-free globals in the callee's reach, an effect row of at most `Exception` in the callee, entry identity check (T3) | 1, 2 | parameter mode |
-| 4 | `consume` with the local usage map (loop and closure bodies count as ω); static uniqueness skips the reuse `rc == 1` test and turns spawn of a shallow buffer into a move (T2) | 1 | parameter mode |
+| 4 | `consume` with the local usage map (loop and closure bodies count as ω); static uniqueness skips the reuse `rc == 1` test and turns spawn of a pointer-free buffer into a move (T2) | 1 | parameter mode |
 | 5 | i32x4 / i64x2 / f64x2 arithmetic and compare emitters in `codegen/wasm_emit/simd.vibe` | — | none |
 | 6 | kernel-subset recognizer + lowering for `Array[Int]` `map` / `count` / `sum` (2×i64, tag-transparent) with the differential gate | 5 | none |
 | 7 | `I32Column` (simd-data-structures Layer 3) with the B4 narrowing rule and trap-by-default output | 6 | a type |
 | 8 | `#vectorize` + `vibe vectorize-report` | 6 | annotation, query |
 | 9 | `F64Column` with `min` / `max` and `sum_unordered` | 7 | a type |
-| 10 | shifted-index in-place kernels under `mut` exclusivity | 3, 7 | none |
+| 10 | shifted-index kernels from a distinct `borrow src` into `mut dst` (never reading `dst`) | 3, 7 | none |
 | 11 | `where` Phase 3 on the QF_BV + arrays subset, with `old(e)` | 3 | `old`, `vibe prove` |
 
 Slices 1–4 and 5–8 are independent tracks, so they can proceed in parallel.
