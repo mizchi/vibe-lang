@@ -439,7 +439,8 @@ accepted function:
 - never writes a buffer its argument reaches, at any point of the run (every
   write is logged, so a write that is later undone still counts);
 - leaves each of those buffers with its original contents;
-- returns a value that reaches none of them.
+- returns a value that reaches none of them. The result variable must be
+  bound, so this conclusion is never vacuous.
 
 These are the no-write, frame and no-retain parts of T1 and T1′. The model has
 no reference counts, so T1's "RC unchanged" conjunct is **not** claimed.

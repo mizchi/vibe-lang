@@ -37,7 +37,14 @@ def checkStmtsWith (rule : CState → Stmt → Option CState) : CState → List 
 
 def checkWith (rule : CState → Stmt → Option CState) (escape : Bool) (f : Fn) : Bool :=
   match checkStmtsWith rule f.initCheck f.body with
-  | some c => !(escape && c.taint f.ret)
+  | some c => (c.ty f.ret).isSome && !(escape && c.taint f.ret)
+  | none => false
+
+/-- The checker as first written: the escape check reads the result's taint
+without asking whether the result variable was ever bound. -/
+def checkNoBound (f : Fn) : Bool :=
+  match checkStmts f.initCheck f.body with
+  | some c => !c.taint f.ret
   | none => false
 
 /-- The real rule, reassembled. -/
@@ -102,6 +109,9 @@ def writeThroughProjection : Fn :=
 
 /-- `fn f(borrow xs) -> Array[Int] { xs }` -/
 def returnTheBorrow : Fn := { param := 0, paramTy := .buf, body := [], ret := 0 }
+
+/-- The result variable is never bound, so its taint is the default `false`. -/
+def returnUnbound : Fn := { param := 0, paramTy := .buf, body := [], ret := 1 }
 
 /-- `fn f(borrow h: Holder) -> Int { h.n }`: the field is an `Int`, so the
 result is buffer-free and may be returned. -/
@@ -168,6 +178,13 @@ theorem noEscape_admits_return :
     checkWith realRule false returnTheBorrow = true ∧
     returnTheBorrow.check = false ∧
     resultReachesBorrow returnTheBorrow (.ref 0) = some true := by decide
+
+/-- Without the bound check, no-retain would hold only vacuously: the run
+returns no value at all. -/
+theorem noBound_admits_unbound_result :
+    checkNoBound returnUnbound = true ∧
+    returnUnbound.check = false ∧
+    resultOf returnUnbound (.ref 0) = some none := by decide
 
 /-! ### The exemption applies to projections -/
 

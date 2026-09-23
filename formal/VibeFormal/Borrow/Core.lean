@@ -242,12 +242,12 @@ borrow-derived unless its type is buffer-free. -/
 def Fn.initCheck (f : Fn) : CState :=
   CState.bind { ty := fun _ => none, taint := fun _ => false } f.param f.paramTy true
 
-/-- Accept `f` iff it is well typed, no statement writes through a
-borrow-derived value, and the result is not borrow-derived (the escape
-check). -/
+/-- Accept `f` iff it is well typed, its result variable is bound, no
+statement writes through a borrow-derived value, and the result is not
+borrow-derived (the escape check). -/
 def Fn.check (f : Fn) : Bool :=
   match checkStmts f.initCheck f.body with
-  | some c => !c.taint f.ret
+  | some c => (c.ty f.ret).isSome && !c.taint f.ret
   | none => false
 
 /-! ## Soundness -/
@@ -280,12 +280,14 @@ theorem not_bufferFree_of_reaches {P : List Loc} {v : Val} {T : Ty}
   · obtain ⟨l, hl, _⟩ := hr
     simp [h.locs_nil hbf] at hl
 
-/-- The invariant: every variable is well typed, every variable that can
+/-- The invariant: every variable is well typed, every typed variable is
+bound, every variable that can
 reach a borrowed buffer is tainted, every borrowed buffer is older than the
 allocation frontier, no borrowed buffer has been written, and every borrowed
 buffer still holds its original contents. -/
 structure Inv (P : List Loc) (h0 : Loc → Nat) (c : CState) (s : State) : Prop where
   typed : ∀ x v, s.env x = some v → ∃ T, c.ty x = some T ∧ HasTy v T
+  bound : ∀ x T, c.ty x = some T → ∃ v, s.env x = some v
   tainted : ∀ x v, s.env x = some v → Reaches P v → c.taint x = true
   old : ∀ l ∈ P, l < s.next
   untouched : ∀ l ∈ s.written, l ∉ P
@@ -304,9 +306,11 @@ taint `src` covers `w` whenever `w` reaches a borrowed buffer. -/
 theorem bind_typed_tainted {P : List Loc} {c : CState} {env : Var → Option Val}
     (hty : ∀ x v, env x = some v → ∃ T, c.ty x = some T ∧ HasTy v T)
     (htn : ∀ x v, env x = some v → Reaches P v → c.taint x = true)
+    (hbd : ∀ x T, c.ty x = some T → ∃ v, env x = some v)
     (x : Var) (w : Val) (T : Ty) (src : Bool) (hw : HasTy w T)
     (hsrc : Reaches P w → src = true) :
     (∀ y v, upd env x (some w) y = some v → ∃ U, (c.bind x T src).ty y = some U ∧ HasTy v U) ∧
+    (∀ y U, (c.bind x T src).ty y = some U → ∃ v, upd env x (some w) y = some v) ∧
     (∀ y v, upd env x (some w) y = some v → Reaches P v →
       (c.bind x T src).taint y = true) := by
   constructor
@@ -318,6 +322,13 @@ theorem bind_typed_tainted {P : List Loc} {c : CState} {env : Var → Option Val
       exact ⟨T, by simp [CState.bind], hw⟩
     · simp only [upd_other _ _ h] at hy
       simpa [CState.bind, upd_other _ _ h] using hty y v hy
+  constructor
+  · intro y U hU
+    by_cases h : y = x
+    · subst h
+      exact ⟨w, by simp⟩
+    · simp only [CState.bind, upd_other _ _ h] at hU
+      simpa [upd_other _ _ h] using hbd y U hU
   · intro y v hy hr
     by_cases h : y = x
     · subst h
@@ -331,8 +342,8 @@ theorem Inv.bind {P : List Loc} {h0 : Loc → Nat} {c : CState} {s : State}
     (inv : Inv P h0 c s) (x : Var) (w : Val) (T : Ty) (src : Bool) (hw : HasTy w T)
     (hsrc : Reaches P w → src = true) :
     Inv P h0 (c.bind x T src) { s with env := upd s.env x (some w) } := by
-  obtain ⟨h1, h2⟩ := bind_typed_tainted inv.typed inv.tainted x w T src hw hsrc
-  exact ⟨h1, h2, inv.old, inv.untouched, inv.frame⟩
+  obtain ⟨h1, hb, h2⟩ := bind_typed_tainted inv.typed inv.tainted inv.bound x w T src hw hsrc
+  exact ⟨h1, hb, h2, inv.old, inv.untouched, inv.frame⟩
 
 theorem Stmt.check_preserves {P : List Loc} {h0 : Loc → Nat} {c c' : CState} {s s' : State}
     (st : Stmt) (hc : st.check c = some c') (hs : st.step s = some s')
@@ -362,13 +373,14 @@ theorem Stmt.check_preserves {P : List Loc} {h0 : Loc → Nat} {c c' : CState} {
     simp only [Stmt.check, Option.some.injEq] at hc
     simp only [Stmt.step, Option.some.injEq] at hs
     subst hc hs
-    obtain ⟨h1, h2⟩ := bind_typed_tainted inv.typed inv.tainted x (.ref s.next) .buf false
+    obtain ⟨h1, hb, h2⟩ :=
+      bind_typed_tainted inv.typed inv.tainted inv.bound x (.ref s.next) .buf false
       (.ref _) (by
         rintro ⟨l, hl, hP⟩
         simp [Val.locs] at hl
         subst hl
         exact absurd (inv.old _ hP) (Nat.lt_irrefl _))
-    refine ⟨h1, h2, ?_, inv.untouched, ?_⟩
+    refine ⟨h1, hb, h2, ?_, inv.untouched, ?_⟩
     · intro l hl
       exact Nat.lt_succ_of_lt (inv.old l hl)
     · intro l hl
@@ -455,7 +467,7 @@ theorem Stmt.check_preserves {P : List Loc} {h0 : Loc → Nat} {c c' : CState} {
           have hl : l ∉ P := by
             intro hP
             exact hty (inv.tainted y _ hy ⟨l, by simp [Val.locs], hP⟩)
-          refine ⟨inv.typed, inv.tainted, inv.old, ?_, ?_⟩
+          refine ⟨inv.typed, inv.bound, inv.tainted, inv.old, ?_, ?_⟩
           · intro k hk
             simp only [List.mem_cons] at hk
             rcases hk with rfl | hk
@@ -492,14 +504,14 @@ calculus.** If `f` is accepted, then running it on a well-typed argument `v`
 (with every buffer `v` reaches older than the allocation frontier):
 - writes none of those buffers at any point of the run,
 - leaves each of them with its original contents, and
-- returns a value that reaches none of them.
+- returns a value (the result variable is bound) that reaches none of them.
 Reference counts are not modelled, so T1's "RC unchanged" is not claimed. -/
 theorem Fn.check_sound (f : Fn) (v : Val) (heap : Loc → Nat) (next : Loc)
     (hchk : f.check = true) (hty : HasTy v f.paramTy) (hold : ∀ l ∈ v.locs, l < next)
     {s : State} {r : Option Val} (hrun : f.run v heap next = some (s, r)) :
     (∀ l ∈ s.written, l ∉ v.locs) ∧
     (∀ l ∈ v.locs, s.heap l = heap l) ∧
-    (∀ w, r = some w → ∀ l ∈ w.locs, l ∉ v.locs) := by
+    (∃ w, r = some w ∧ ∀ l ∈ w.locs, l ∉ v.locs) := by
   unfold Fn.check at hchk
   split at hchk
   · rename_i c hc
@@ -510,16 +522,20 @@ theorem Fn.check_sound (f : Fn) (v : Val) (heap : Loc → Nat) (next : Loc)
       obtain ⟨rfl, rfl⟩ := hrun
       have inv0 : Inv v.locs heap f.initCheck
           { env := upd (fun _ => none) f.param (some v), heap, next, written := [] } := by
-        obtain ⟨h1, h2⟩ := bind_typed_tainted (P := v.locs)
+        obtain ⟨h1, hb, h2⟩ := bind_typed_tainted (P := v.locs)
           (c := { ty := fun _ => none, taint := fun _ => false })
-          (env := fun _ => none) (by simp) (by simp) f.param v f.paramTy true hty
+          (env := fun _ => none) (by simp) (by simp) (by simp) f.param v f.paramTy true hty
           (fun _ => rfl)
-        exact ⟨h1, h2, hold, by simp, fun _ _ => rfl⟩
+        exact ⟨h1, hb, h2, hold, by simp, fun _ _ => rfl⟩
       have inv := checkStmts_preserves f.body hc hs1 inv0
       refine ⟨inv.untouched, inv.frame, ?_⟩
-      intro w hw l hl hP
+      simp only [Bool.and_eq_true, Bool.not_eq_true', Option.isSome_iff_exists] at hchk
+      obtain ⟨⟨T, hT⟩, hnt⟩ := hchk
+      obtain ⟨w, hw⟩ := inv.bound f.ret T hT
+      refine ⟨w, hw, ?_⟩
+      intro l hl hP
       have := inv.tainted f.ret w hw ⟨l, hl, hP⟩
-      simp [this] at hchk
+      simp [this] at hnt
     · simp at hrun
   · simp at hchk
 
