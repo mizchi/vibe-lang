@@ -305,6 +305,18 @@ The checker is Bend's, and vibe already computes most of the counts:
 - a binding passed to a `consume` position must have quantity 1 counted from
   that point on; any later use is
   `xs was consumed at 12:9 by finish(); pass Array::copy(xs) there to keep using it`.
+- **within one call, a consumed argument shares its root with no other
+  argument**. The other arguments of the same call are evaluated before the
+  callee runs, so "later use" does not cover them. A `borrow` or `mut`
+  argument holds no reference of its own, because its dup was elided. So in
+  `bad(a, a)` against `fn bad(borrow xs, consume ys) { sink(ys); Array::length(xs) }`,
+  `xs` is read after `sink` has dropped the only reference, which is a use
+  after free. The same happens with a projection (`bad(h.buf, h)`). The
+  check therefore compares the *roots* of the argument places: if any other
+  argument's place starts at the root of a `consume` argument, the call is
+  rejected, and the diagnostic suggests passing a copy. Distinct bindings
+  that happen to alias the same object are fine: each holds its own counted
+  reference, so the consume releases only one of them.
 
 Statically unique means: freshly allocated in this function, and every owning
 use so far is a `consume`. For such a value:
@@ -401,19 +413,19 @@ Two parts of the practice matter as much as the theorems:
   not through projections, one drops the identity check, one drops the
   buffer-free-argument rule, one checks only bare-buffer globals, one
   counts a loop body's consume once, one admits a `mut` call through a
-  capturing closure, one ignores call results in the borrow taint, one ignores aggregate construction in it, one trusts a root-only alias summary for a call result, one claims T1′ for a call that also passes the buffer to an unannotated writable parameter, one lets a borrow-derived value reach a `consume` position, one elides `rc == 1` on the strength of `mut` exclusivity alone, one claims T1′ for a `borrow` callee that performs a resumable effect, one moves a root-unique but non-shallow value into a task, one lets a `mut` parameter escape by return or capture, one lets a stored continuation retain a `borrow` frame, one throws a borrowed value as an exception payload, one computes the 2×i64 fallback untagged, one accumulates an `Int`-valued `I32Column::sum` in i32x4 lanes, one vectorizes `dst[i] = dst[i - 1]` in place, one moves an `Array[Double]` into a task, one hands a buffer pointer to a worker on a separate linear memory, one canonicalizes the NaN of a pass-through kernel, one lets
+  capturing closure, one ignores call results in the borrow taint, one ignores aggregate construction in it, one trusts a root-only alias summary for a call result, one claims T1′ for a call that also passes the buffer to an unannotated writable parameter, one lets a borrow-derived value reach a `consume` position, one elides `rc == 1` on the strength of `mut` exclusivity alone, one claims T1′ for a `borrow` callee that performs a resumable effect, one moves a root-unique but non-shallow value into a task, one lets a `mut` parameter escape by return or capture, one lets a stored continuation retain a `borrow` frame, one throws a borrowed value as an exception payload, one passes the same root to `borrow` and `consume` in one call, one computes the 2×i64 fallback untagged, one accumulates an `Int`-valued `I32Column::sum` in i32x4 lanes, one vectorizes `dst[i] = dst[i - 1]` in place, one moves an `Array[Double]` into a task, one hands a buffer pointer to a worker on a separate linear memory, one canonicalizes the NaN of a pass-through kernel, one lets
   an opaque type count as buffer-free, and one lets a `mut` callee perform a
   user effect whose handler captures the buffer, and one lets it perform
   `Async` under a user handler that does the same. `formal/` already keeps such witnesses for the Error policy.
 
 **Why the model has to come first.** Review of this document found the
 same class of hole again and again, each one a path the prose rules had not
-enumerated. Thirty-three findings in sixteen rounds so far:
+enumerated. Thirty-four findings in seventeen rounds so far:
 - aliases hidden in an aggregate argument, in an aggregate global, and in a
   closure callee;
 - aliases reached through an effect handler (three times: user effects, then `Async`, then under a `borrow`) or an opaque type;
 - writes made through a projection, a call result (twice), and a constructed aggregate;
-- a consume inside a loop;
+- a consume inside a loop, and a consume whose root is also borrowed by another argument of the same call;
 - a caller-created alias between a `borrow` argument and a writable one;
 - a borrow-derived value passed to `consume`;
 - `rc == 1` elision justified by `mut` exclusivity, which ignores the caller's own references;
