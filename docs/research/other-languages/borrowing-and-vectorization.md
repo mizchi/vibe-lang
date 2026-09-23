@@ -745,10 +745,15 @@ Step 1 is `formal/VibeFormal/Borrow/`. Its core calculus is straight-line and
 first-order, with values made of integers, one-cell buffers and pairs, and a
 single `borrow` parameter. On that calculus it proves:
 
-- T1 and T1′ in the closed world;
+- the no-write, frame and no-retain parts of T1 and T1′ in the closed world.
+  No write reaches a borrowed buffer at any point of the run, not only in the
+  final heap. Reference counts are not modelled, so T1's "RC unchanged" is not
+  claimed;
+- that the buffer-free exemption is applied by type, so projecting an `Int`
+  field out of a borrowed aggregate is accepted;
 - that four broken checkers (name-only taint, no aggregate taint, no
-  projection taint, no escape check) each accept a program that overwrites
-  or returns the borrowed buffer.
+  projection taint, no escape check) each accept a program that writes or
+  returns the borrowed buffer.
 
 The next steps extend the calculus one construct at a time, and each
 construct brings the review findings that concern it:
