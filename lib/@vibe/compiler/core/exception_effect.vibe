@@ -183,6 +183,50 @@ export fn exception_kind_resolved(kind: String) -> String {
   }
 }
 
+/// The first kind written in `row` whose recorded resolution holds a comma
+/// (so `exception_row_resolved` leaves it spelled as written), as
+/// (written, resolved), or ("", "") when there is none. An EXPORTED row with
+/// one would publish a scope-dependent alias name that an importer can
+/// confuse with its own type of that name (Codex on #3021), so the checker
+/// refuses it.
+export fn exception_row_unpublishable_kind(row: String) -> (String, String) {
+  let n = String::length(row)
+  let mut found = ("", "")
+  let mut i = 0
+  while i < n {
+    let at = String::index_of(String::substring(row, i, n), "Exception[")
+    if at < 0 {
+      i = n
+    } else {
+      let kind_start = i + at + 10
+      let mut depth = 1
+      let mut j = kind_start
+      while j < n && depth > 0 {
+        let c = String::char_code_at(row, j)
+        if c == 91 {
+          depth = depth + 1
+        } else if c == 93 {
+          depth = depth - 1
+        }
+        j = j + 1
+      }
+      if depth == 0 {
+        let kind = String::substring(row, kind_start, j - 1)
+        let r = exception_kind_resolution_spelling(kind)
+        if String::contains(r, ",") {
+          found = (kind, r)
+          i = n
+        } else {
+          i = j
+        }
+      } else {
+        i = n
+      }
+    }
+  }
+  found
+}
+
 /// `row` with every `Exception[K]` whose kind has a recorded resolution
 /// rewritten to it. A function's PUBLISHED row goes through this, so a module
 /// importing it compares the resolved type even when it cannot see the alias

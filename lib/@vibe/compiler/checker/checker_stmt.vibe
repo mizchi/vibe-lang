@@ -119,6 +119,7 @@ import ./checker.vibe {
   trait_erased_type_param_env,
   trait_reference_display,
   ty_has_open_array_elem,
+  type_exception_row_unpublishable,
   type_exception_rows_resolved,
   typed_occurrence_capture_begin_statement,
   typed_occurrence_capture_end_statement,
@@ -3181,7 +3182,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
       _ => ()
     }
     let (new_env, s1, c1) = match stmt {
-      SLet(_, is_rec, name, ann, val) => {
+      SLet(exported, is_rec, name, ann, val) => {
         let err_before = Array::length(errors)
         // #2125: an `impl` method is parsed as `let <Type>::<method> = ..`
         // (parser.vibe's parse_impl_methods), and its signature may spell the
@@ -3277,6 +3278,19 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         // A published function row carries its exception kinds RESOLVED, so a
         // module importing it can compare them without seeing the alias they
         // were written with (Codex on #3021).
+        if exported {
+          // Codex on #3021: an exported row whose kind resolves to a spelling
+          // a row cannot hold (a tuple alias) would publish the alias NAME,
+          // which an importer could confuse with its own type of that name.
+          let (uw, ur) = type_exception_row_unpublishable(t)
+          if String::length(uw) > 0 {
+            Array::push(errors, String::concat(String::concat(String::concat(String::concat(String::concat(String::concat(String::concat(String::concat(String::concat(String::concat("`Exception[", uw), "]` in the row of exported `"), name), "`: `"), uw), "` is `"), ur), "`, which a published row cannot spell -- throw a struct or enum that wraps it instead [@fn="), name), "]"))
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
         let env1 = bind_function_dependency_contracts(env_bind(env, name, type_exception_rows_resolved(t)), name, val)
         capture_statement_root_type(capture, statement_path, "SLet", vt)
         (bind_value_or_annotation_return(env1, name, val, ann, defs), ns, nc)

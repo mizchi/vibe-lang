@@ -67,6 +67,7 @@ import @vibe/compiler/core {
   exception_effect_labels_equal,
   exception_label_kind,
   exception_row_resolved,
+  exception_row_unpublishable_kind,
   expr_children,
   find_enum_typedef,
   find_typedef,
@@ -569,6 +570,39 @@ fn checked_throw_kind(t: Type, s: Subst, env: TypeEnv) -> String {
       }
     },
     _ => ""
+  }
+}
+
+/// The first exception kind in any function row of `t` whose resolution a
+/// published row cannot spell (see `exception_row_unpublishable_kind`), as
+/// (written, resolved), or ("", "").
+export fn type_exception_row_unpublishable(t: Type) -> (String, String) {
+  match t {
+    CtFn(ps, ret, row) => {
+      let own = match row {
+        Some(r) => exception_row_unpublishable_kind(r),
+        None => ("", "")
+      }
+      let (ow, _) = own
+      if String::length(ow) > 0 {
+        own
+      } else {
+        let mut found = type_exception_row_unpublishable(ret)
+        let mut i = 0
+        while i < Array::length(ps) {
+          let (fw, _) = found
+          if String::length(fw) == 0 {
+            found = type_exception_row_unpublishable(Array::get(ps, i))
+          }
+          i = i + 1
+        }
+        found
+      }
+    },
+    CtForAll(_, _, body) => type_exception_row_unpublishable(body),
+    CtArray(e) => type_exception_row_unpublishable(e),
+    CtOption(e) => type_exception_row_unpublishable(e),
+    _ => ("", "")
   }
 }
 
