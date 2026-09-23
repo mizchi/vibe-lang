@@ -456,28 +456,10 @@ fn report_exception_kind(label: String, defs: Array[TypeDef], shadow: Array[Stri
     match parsed {
       Some(kind_te) => {
         let spelled = String::concat(String::concat("Exception[", kind), "]")
-        let effect_head = match kind_te {
-          // A formal in scope (this declaration's, or an enclosing one's
-          // bound in `env`) is a type, whatever an effect of the same name
-          // says (Codex on #3021).
-          TyName(head) => if exception_kind_name_is_formal(head, shadow, env) {
-            ""
-          } else {
-            // An effectset is registered in the env's type defs, not in
-            // `defs`, so both are asked.
-            match find_typedef(defs, head) {
-              Some(TDEffectSet(_, _)) => "an effectset",
-              Some(TDEffect(_, _, _)) => "an effect",
-              Some(_) => "",
-              None => match find_typedef(env_type_defs(env), head) {
-                Some(TDEffectSet(_, _)) => "an effectset",
-                Some(TDEffect(_, _, _)) => "an effect",
-                _ => ""
-              }
-            }
-          },
-          _ => ""
-        }
+        // An effect or effectset named anywhere in the kind -- at the top
+        // (`Exception[Ask]`) or below a constructor (`Exception[Array[Ask]]`,
+        // Codex on #3021) -- is not a type.
+        let (effect_name, effect_head) = exception_kind_effect_name(kind_te, defs, shadow, env)
         let formals = if in_row {
           exception_kind_formal_names(kind_te, shadow, env)
         } else {
@@ -490,7 +472,7 @@ fn report_exception_kind(label: String, defs: Array[TypeDef], shadow: Array[Stri
           // own formal as a missing effect. Refuse it where it is written.
           Array::push(errors, String::concat(String::concat(String::concat(String::concat(String::concat(String::concat("`", spelled), "`: the exception kind in a `with` row must be a concrete type -- `"), Array::get(formals, 0)), "` is a type formal, and a row does not substitute it at a call; throw a concrete type, or write the erased `Exception` (a handler arm `"), spelled), "::Throw(e)` inside the generic body is fine)"))
         } else if String::length(effect_head) > 0 {
-          Array::push(errors, String::concat(String::concat(String::concat(String::concat(String::concat(String::concat(String::concat(String::concat("`", spelled), "`: `"), kind), "` is "), effect_head), ", not a type -- write `with "), kind), "` to raise what it lists, and handle each exception kind by its own type"))
+          Array::push(errors, String::concat(String::concat(String::concat(String::concat(String::concat(String::concat(String::concat(String::concat("`", spelled), "`: `"), effect_name), "` is "), effect_head), ", not a type -- write `with "), effect_name), "` to raise what it lists, and handle each exception kind by its own type"))
         } else {
           report_unknown_type_names_only(kind_te, defs, shadow, env, array_empty(), String::concat(String::concat("the exception kind `", spelled), "` (declare it, or write the erased `Exception`)"), errors)
         }
@@ -615,6 +597,70 @@ fn checked_throw_kind_formal_name(id: Int, s: Subst, env: TypeEnv) -> String {
     }
   }
   found
+}
+
+/// The first effect or effectset named anywhere in an exception kind, as
+/// (name, "an effect" / "an effectset"), or ("", "") when there is none. A
+/// formal in scope (this declaration's, or an enclosing one's bound in `env`)
+/// is a type, whatever an effect of the same name says (Codex on #3021). An
+/// effectset is registered in the env's type defs, not in `defs`, so both are
+/// asked.
+fn exception_kind_effect_name(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], env: TypeEnv) -> (String, String) {
+  match te {
+    TyName(head) => exception_kind_head_effect(head, defs, shadow, env),
+    TyApp(head, targs) => {
+      let (hn, hw) = exception_kind_head_effect(head, defs, shadow, env)
+      if String::length(hw) > 0 {
+        (hn, hw)
+      } else {
+        let mut found = ("", "")
+        let mut i = 0
+        while i < Array::length(targs) {
+          let (n, w) = exception_kind_effect_name(Array::get(targs, i), defs, shadow, env)
+          if String::length(w) > 0 {
+            found = (n, w)
+            i = Array::length(targs)
+          } else {
+            i = i + 1
+          }
+        }
+        found
+      }
+    },
+    TyTuple(elems) => {
+      let mut found = ("", "")
+      let mut i = 0
+      while i < Array::length(elems) {
+        let (n, w) = exception_kind_effect_name(Array::get(elems, i), defs, shadow, env)
+        if String::length(w) > 0 {
+          found = (n, w)
+          i = Array::length(elems)
+        } else {
+          i = i + 1
+        }
+      }
+      found
+    },
+    _ => ("", "")
+  }
+}
+
+fn exception_kind_head_effect(head: String, defs: Array[TypeDef], shadow: Array[String], env: TypeEnv) -> (String, String) {
+  if exception_kind_name_is_formal(head, shadow, env) {
+    ("", "")
+  } else {
+    let what = match find_typedef(defs, head) {
+      Some(TDEffectSet(_, _)) => "an effectset",
+      Some(TDEffect(_, _, _)) => "an effect",
+      Some(_) => "",
+      None => match find_typedef(env_type_defs(env), head) {
+        Some(TDEffectSet(_, _)) => "an effectset",
+        Some(TDEffect(_, _, _)) => "an effect",
+        _ => ""
+      }
+    }
+    (head, what)
+  }
 }
 
 /// The names in `te` that are type formals in scope: this declaration's own

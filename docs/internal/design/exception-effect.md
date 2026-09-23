@@ -1,47 +1,50 @@
-# ADR-0085: `Error` を typed `Exception[E]` core effect へ移行する
+# ADR-0085: Migrate `Error` to the typed `Exception[E]` core effect
 
-Status: accepted (Phase 3 実装済み — #1344)
+Status: accepted (Phase 3 implemented — #1344)
 
 Date: 2026-07-30 (Phase 3 landed 2026-08-02)
 
 Related: #1218, #1136, #1344, ADR-0016(`handle`/`throw`), ADR-0050(generic effect
 handler), ADR-0071(effectset), ADR-0073(checked `Error`), ADR-0084(effect
-taxonomy)。
+taxonomy).
 
-> **綴りの追記 (#1461 / #1501, 2026-08-06):** この文書は当時の綴りのまま
-> `with Error` / `handle .. with Error` を書いている箇所がある。その後 #1461 と
-> #1501 が effect row とハンドラ名の `Error` を退役させたので、下記の
-> 「compatibility alias」は現在の surface では **parse error** である。どちらの
-> 位置でも `Exception` を使うこと (`vibe fmt` が旧綴りを書き換える)。operation
-> 修飾子 `perform Error::Throw` だけは row やハンドラ名ではないため、古い生成物を
-> 読む内部互換として今も受理する。新しいソースでは `perform Exception::Throw` を
-> 使う。
+> **Spelling addendum (#1461 / #1501, 2026-08-06):** parts of this document
+> still use the spelling of the time, `with Error` / `handle .. with Error`.
+> Since then #1461 and #1501 retired `Error` as an effect-row item and as a
+> handler name, so the "compatibility alias" described below is a **parse
+> error** on the current surface. Use `Exception` in both positions (`vibe fmt`
+> rewrites the old spelling). Only the operation qualifier `perform
+> Error::Throw` is still accepted, as internal compatibility for reading old
+> generated output, because it is neither a row item nor a handler name. New
+> source uses `perform Exception::Throw`.
 >
-> **実装状況 (2026-08-02, #1344):** typed `Exception[E]` の row は
-> **checker に入った**。`throw(v)` は `Exception[typeof(v)]` を要求し、
-> `Exception[E1]` は `Exception[E2]` を authorize も discharge もしない。
+> **Implementation status (2026-08-02, #1344):** the typed `Exception[E]` row
+> **is in the checker**. `throw(v)` requires `Exception[typeof(v)]`, and
+> `Exception[E1]` neither authorizes nor discharges `Exception[E2]`.
 > `with Exception[E]` / `handle .. with Exception[E]` /
-> `effectset { Exception[A], Exception[B] }` がすべて通る。
-> 何が検査され、何がまだ gradual なのかは
-> [実装状況 (Phase 3)](#実装状況-phase-3) を読むこと。
-> #1279 の非 generic な `Exception` alias は撤去していない —
-> **erased(kind なし)綴りとして残っている**(下記「`Error` の意味」)。
+> `effectset { Exception[A], Exception[B] }` are all accepted.
+> For what is checked and what is still gradual, read
+> [Implementation status (Phase 3)](#implementation-status-phase-3).
+> The non-generic `Exception` alias from #1279 has not been removed — **it
+> remains as the erased (kind-less) spelling** (see "What `Error` means"
+> below).
 
 ## Context
 
-ADR-0073 により、現在の `Error::Throw` は非再開・完全 checked の semantic
-effect であり、未処理 `Error` は明示 row を持つ entry boundary で診断付き失敗へ
-変換される。一方、payload は実質 `String` に固定され、異なる失敗領域を型と row
-で区別できない。
+Under ADR-0073, today's `Error::Throw` is a non-resumable, fully checked
+semantic effect, and an unhandled `Error` is turned into a diagnosed failure at
+an entry boundary that carries an explicit row. The payload, however, is
+effectively fixed to `String`, so distinct failure domains cannot be told apart
+by type and row.
 
-`IOException` のような型別例外を subclass hierarchy として追加すると、effectset
-の closed-world normalization、handler の exhaustiveness、package contract hash
-と別の subtype 機構が必要になる。既存の generic effect identity を使えば、この
-追加機構は不要である。
+Adding per-type exceptions such as `IOException` as a subclass hierarchy would
+require a subtype mechanism separate from effectset closed-world normalization,
+handler exhaustiveness, and the package contract hash. Reusing the existing
+generic effect identity makes that extra mechanism unnecessary.
 
 ## Decision
 
-言語予約の core ambient effect として、次を導入する。
+Introduce the following as a language-reserved core ambient effect.
 
 ```vibe skip
 effect Exception[E] {
@@ -49,17 +52,18 @@ effect Exception[E] {
 }
 ```
 
-`Nothing` は「正常には return しない」ことを表す便宜的表記である。現在の
-checker が `throw` を任意の式位置に置けるようにしている bottom-like な型付けを
-維持し、表面の bottom type 名は別途決める。
+`Nothing` is a notational convenience meaning "does not return normally". The
+bottom-like typing that lets today's checker place `throw` in any expression
+position is kept; the surface name of the bottom type is decided separately.
 
-- `throw(value)` は `perform Exception[E]::Throw(value)` の sugar とし、`E` は
-  `value` の静的型から決まる。
-- `Exception[IoError]` と `Exception[ParseError]` は別の normalized
-  `OperationRef` であり、一方の row/handler は他方を許可・放電しない。
-- `Exception[E]` は非再開 effect とする。handler arm 内の `resume` は
-  ADR-0073 と同じく reject する。
-- 複数の例外型を宣言する場合は subclass ではなく effectset union を使う。
+- `throw(value)` is sugar for `perform Exception[E]::Throw(value)`, where `E`
+  is determined by the static type of `value`.
+- `Exception[IoError]` and `Exception[ParseError]` are distinct normalized
+  `OperationRef`s; a row or handler for one neither authorizes nor discharges
+  the other.
+- `Exception[E]` is a non-resumable effect. `resume` inside a handler arm is
+  rejected, as in ADR-0073.
+- Declaring several exception types uses an effectset union, not subclassing.
 
 ```vibe skip
 enum IoError {
@@ -78,147 +82,160 @@ effectset ConfigExceptions = {
 }
 ```
 
-通常の例外 family は closed enum とし、payload の `match` で exhaustiveness を
-得る。`ExceptionKind` trait、open subclass、dynamic downcast は初期設計に含めない。
-将来、FFI adapter などに open-world escape hatch が必要だと実証された場合だけ
-別 ADR で追加する。
+An ordinary exception family is a closed enum, and exhaustiveness comes from a
+`match` on the payload. An `ExceptionKind` trait, open subclasses, and dynamic
+downcasts are not part of the initial design. They will be added by a separate
+ADR only if an open-world escape hatch is demonstrated to be necessary, for
+example for FFI adapters.
 
-### 決定: Option A (closed exhaustiveness) — #1344
+### Decision: Option A (closed exhaustiveness) — #1344
 
-#1344 は Option A / Option B の二択を決めることを最初の項目にしていた。
-**Option A (閉じた exhaustiveness) を採る。Option B (trait 境界の
-escape hatch) は採らない。**
+The first item of #1344 was to choose between Option A and Option B.
+**We take Option A (closed exhaustiveness). We do not take Option B (a
+trait-bounded escape hatch).**
 
-- **Option A**: 例外 family は closed enum。`E` ごとに別の row 要素で、
-  handler は exact kind だけを放電する。payload の網羅性は enum の `match`
-  がそのまま与える。
-- **Option B**: `ExceptionKind` のような trait 境界を置き、`Exception[T]`
-  を `T: ExceptionKind` の存在型的な口として開く。open-world で FFI や
-  plugin 由来の例外型を後付けできる。
+- **Option A**: an exception family is a closed enum. Each `E` is a separate
+  row element, and a handler discharges only the exact kind. Payload
+  exhaustiveness is provided directly by the enum's `match`.
+- **Option B**: introduce a trait bound such as `ExceptionKind` and open
+  `Exception[T]` as an existential-like entry point for `T: ExceptionKind`.
+  This is open-world: exception types coming from FFI or plugins can be added
+  after the fact.
 
-決め手は3つ。
+Three points decide it.
 
-1. **Option B は row の閉世界性と両立しない。** effectset の
-   normalization も package contract hash も「row 要素の集合が
-   compile time に確定する」ことに依存している (ADR-0071)。trait 境界で
-   開くと `Exception[T]` の row 要素が call site の instantiation でしか
-   決まらず、`decl_authorizes_effect` が比較すべき対象が実行時まで確定しない。
-   これは #1340 が閉じた「generic effect の instantiation が検査を素通り
-   する」穴と同じ形をしている。
-2. **Option B が要求する機構は既にある機構と重複する。** 「複数の失敗領域を
-   一つの row にまとめたい」は effectset union (`effectset ConfigExceptions
-   = { Exception[IoError], Exception[ParseError] }`) が既に表現できる。
-   trait 境界を足しても新しく書けるようになるのは *未知の* 例外型の受け入れ
-   だけで、それは least privilege の反対側にある。
-3. **開く決定は後からできるが、閉じる決定は後からできない。** Option A で
-   出発して escape hatch が実証的に要ると分かったら別 ADR で足せる。逆に
-   Option B で出発すると、既存コードが open-world に依存した後で閉じるのは
-   breaking change になる。
+1. **Option B is incompatible with the closed world of rows.** Both effectset
+   normalization and the package contract hash depend on "the set of row
+   elements is fixed at compile time" (ADR-0071). Opening it with a trait bound
+   means the row element of `Exception[T]` is determined only by the
+   instantiation at a call site, so what `decl_authorizes_effect` must compare
+   against is not fixed until run time. This has the same shape as the hole
+   #1340 closed, where "an instantiation of a generic effect slips past the
+   check".
+2. **The mechanism Option B requires duplicates one that already exists.**
+   "Group several failure domains into one row" is already expressible as an
+   effectset union (`effectset ConfigExceptions
+   = { Exception[IoError], Exception[ParseError] }`). The only thing a trait
+   bound would newly make writable is accepting *unknown* exception types, and
+   that is the opposite of least privilege.
+3. **A decision to open can be made later; a decision to close cannot.**
+   Starting with Option A, an escape hatch can be added by a separate ADR once
+   it is shown empirically to be needed. Starting with Option B, closing it
+   after existing code has come to depend on the open world would be a
+   breaking change.
 
-したがって `ExceptionKind` trait / open subclass / dynamic downcast は
-初期設計に入れない、という上の段落が **決定** であり、両論併記ではない。
+The paragraph above — no `ExceptionKind` trait / open subclasses / dynamic
+downcasts in the initial design — is therefore **the decision**, not a
+presentation of both sides.
 
-`.vibex` の `main` は、明示した `Exception[E]` を core ambient effect として
-残してよい。runtime entry handler は宣言された typed exception を診断付きの
-unsuccessful process outcome に変換し、生の Wasm exception を host へ漏らさない。
+A `.vibex` `main` may keep an explicitly declared `Exception[E]` as a core
+ambient effect. The runtime entry handler turns a declared typed exception into
+a diagnosed unsuccessful process outcome and does not leak a raw Wasm exception
+to the host.
 
-## WebAssembly exception handling との関係
+## Relationship to WebAssembly exception handling
 
-WebAssembly の exception handling は、typed tag、payload value、`throw` /
-`throw_ref`、matching catch を持つ `try_table` を定義する低レベル制御機構である。
-source-level の checked row、effectset union、enum exhaustiveness は定義しない。
+WebAssembly exception handling is a low-level control mechanism that defines
+typed tags, payload values, `throw` / `throw_ref`, and `try_table` with
+matching catches. It does not define source-level checked rows, effectset
+unions, or enum exhaustiveness.
 
-したがって Wasm EH は `Exception[E]` の型システム上の根拠ではなく、non-resumable
-transfer の lowering 候補である。vibe の linear/gc backend は既に
-`Error::Throw` を専用 Wasm tag へ lower しており、この意味論とは整合する。
+Wasm EH is therefore not the type-system foundation of `Exception[E]`, but a
+lowering candidate for non-resumable transfer. vibe's linear/gc backends
+already lower `Error::Throw` to a dedicated Wasm tag, which is consistent with
+these semantics.
 
-複数の `E` を ABI 上で「normalized `E` ごとの tag」にするか、「vibe exception
-tag + type id + payload」にするかは backend/ABI の選択として後続へ延期する。
-どちらを選んでも、checker 上の `Exception[E1] ≠ Exception[E2]` と entry boundary
-の診断契約を変えてはならない。
+Whether multiple `E`s become "one tag per normalized `E`" or "a vibe exception
+tag + type id + payload" at the ABI level is deferred as a backend/ABI choice.
+Whichever is chosen must not change the checker's
+`Exception[E1] ≠ Exception[E2]` or the entry boundary's diagnostic contract.
 
-### 突き合わせ結果 (#1344 で「要検証」を消化)
+### Reconciliation (the "needs verification" item, resolved in #1344)
 
-Phase 3 の実装は **kind を一切 lowering に出さない**。`Error::Throw` /
-`Exception::Throw` / `Exception[IoError]::Throw` はすべて
-`is_exception_throw_operation` (core/exception_effect.vibe) が同一視し、
-既存の1つの abortive Wasm tag へ落ちる。回帰ロックは
-fixtures/exception_typed_row.vibe が実際に 42 を返すこと
-(compiler_gate.sh 81)。
+The Phase 3 implementation **does not expose the kind to lowering at all**.
+`Error::Throw` / `Exception::Throw` / `Exception[IoError]::Throw` are all
+identified as the same operation by `is_exception_throw_operation`
+(core/exception_effect.vibe) and lower to the single existing abortive Wasm
+tag. The regression lock is that fixtures/exception_typed_row.vibe actually
+returns 42 (compiler_gate.sh 81).
 
-この「静的には kind 別、動的には単一 tag」が健全である条件を明示しておく。
+The conditions under which "kind-specific statically, a single tag
+dynamically" is sound are stated here.
 
-- `handle .. with Exception[IoError]` は runtime では **すべての** vibe
-  exception を捕まえる。これが正しいのは、その handle body の row に
-  `Exception[IoError]` 以外の kind が残っていれば checker が拒否するから
-  であって、tag が識別しているからではない。つまり **exact-kind の保証は
-  完全に checker 側の性質**であり、Wasm EH はそれを支えても否定してもいない。
+- At run time, `handle .. with Exception[IoError]` catches **every** vibe
+  exception. This is correct because the checker rejects the handle body if its
+  row still carries any kind other than `Exception[IoError]`, not because the
+  tag discriminates. In other words, **the exact-kind guarantee is entirely a
+  property of the checker**; Wasm EH neither supports nor contradicts it.
 - A throw whose payload kind does not resolve has kind `""` (erased). Only an
   erased declared label authorizes it: a row that names only kinds
   (`with Exception[K]`) refuses it, and so does a kinded handler arm (#2964,
   #3015, #2985). The one exception is a row that also carries an effect
   variable (`with Exception[K] + e`), where the erased requirement may be what
   `e` stands for. So a kinded row is a guarantee a caller can rely on.
-- したがって WebAssembly の typed tag / `try_table` を採用するかは
-  **source semantics に対して観測不能な最適化**である。採用すれば
-  「捕まえない」を tag で表現できるようになるが、それは上の checker 保証を
-  runtime にも複製するだけで、新しい保証を与えない。EH を持たない backend が
-  現行の effect/evidence lowering のままでよい、という ADR の主張はこの
-  実装で具体的に裏づけられた。
+- Whether to adopt WebAssembly typed tags / `try_table` is therefore **an
+  optimization unobservable to source semantics**. Adopting them would let
+  "does not catch" be expressed by the tag, but that only duplicates the
+  checker guarantee above at run time; it provides no new guarantee. This
+  implementation concretely backs the ADR's claim that a backend without EH can
+  keep the current effect/evidence lowering.
 
-per-kind tag が実際に要るのは、checker が kind を解決できない payload を
-**動的に** 選り分けたくなったときだけである。それは Option A の閉じた
-exhaustiveness では起きない (kind が分からない payload は enum の `match`
-でも分けられない) ので、現時点で per-kind tag を追う理由はない。
+Per-kind tags are actually needed only if we want to sort out, **dynamically**,
+payloads whose kind the checker cannot resolve. That does not happen under
+Option A's closed exhaustiveness (a payload whose kind is unknown cannot be
+split by an enum `match` either), so there is no reason to pursue per-kind tags
+at present.
 
-参照:
+References:
 
 - [WebAssembly 3.0 control instructions](https://webassembly.github.io/spec/core/syntax/instructions.html#syntax-instr-control)
 - [WebAssembly 3.0 exception validation](https://webassembly.github.io/spec/core/valid/instructions.html#valid-throw)
-- [旧 exception-handling proposal](https://github.com/WebAssembly/exception-handling/blob/master/proposals/exception-handling/Exceptions.md)
+- [Legacy exception-handling proposal](https://github.com/WebAssembly/exception-handling/blob/master/proposals/exception-handling/Exceptions.md)
 
 ## Compatibility and migration
 
-移行中は `Error` を `Exception[String]` の compatibility alias として扱う。
-既存の `throw("message")`、`with Error`、`handle ... with Error` の payload
-shape と entry diagnostic は維持する。
+During the migration, `Error` is treated as a compatibility alias for
+`Exception[String]`. The payload shape and entry diagnostics of existing
+`throw("message")`, `with Error`, and `handle ... with Error` are preserved.
 
-1. **Phase 0**: typed exception identity と exact-kind handler の Lean model を
-   固定する。既存 ADR-0073 のモデルは checked/ambient policy と entry boundary
-   の正本として残す。
-2. **Phase 1**: ADR-0071 の `NormalizedEffectArguments` を checker row の実表現に
-   導入し、generic effect の異なる instantiation を区別する。
-3. **Phase 2**: 予約済み `Exception[E]` と `Error = Exception[String]` alias を
-   導入する。compiler 内の `"Error::Throw"` 文字列判定を normalized core
-   exception predicate に集約する。
-4. **Phase 3**: `throw(value)` の payload type を検査し、row に
-   `Exception[typeof(value)]` を要求する。exact-kind handler と effectset union の
-   accept/reject fixture を先に追加する。
-5. **Phase 4**: stdlib/compiler/docs を `Exception[E]` へ移行し、`Error` alias を
-   deprecated にする。
-6. **Phase 5**: compatibility alias を削除する。これは明示的な breaking change
-   として扱う。
+1. **Phase 0**: pin down a Lean model of typed exception identity and
+   exact-kind handlers. The existing ADR-0073 model remains the source of
+   truth for the checked/ambient policy and the entry boundary.
+2. **Phase 1**: introduce ADR-0071's `NormalizedEffectArguments` as the real
+   representation of checker rows, distinguishing different instantiations of
+   a generic effect.
+3. **Phase 2**: introduce the reserved `Exception[E]` and the
+   `Error = Exception[String]` alias. Consolidate the compiler's
+   `"Error::Throw"` string checks into a normalized core exception predicate.
+4. **Phase 3**: check the payload type of `throw(value)` and require
+   `Exception[typeof(value)]` in the row. Add accept/reject fixtures for
+   exact-kind handlers and effectset unions first.
+5. **Phase 4**: migrate stdlib/compiler/docs to `Exception[E]` and deprecate
+   the `Error` alias.
+6. **Phase 5**: remove the compatibility alias. This is treated as an explicit
+   breaking change.
 
-Phase 2 までは compiler source 自身に新構文を使わない。Phase 3 以降で
-compiler source を移行する前に、seed compiler と stage2/stage3 fixpoint を
-更新する。
+Through Phase 2, the compiler source itself does not use the new syntax. Before
+migrating the compiler source in Phase 3 and later, update the seed compiler
+and the stage2/stage3 fixpoint.
 
-### `Error` の意味 — この ADR の当初記述に対する訂正
+### What `Error` means — a correction to this ADR's original text
 
-上の Phase 2 は `Error = Exception[String]` alias と書いている。**実装は
-そうしていない。`Error` は kind を持たない ERASED な exception row である。**
+Phase 2 above says `Error = Exception[String]` alias. **The implementation does
+not do that. `Error` is an ERASED exception row that carries no kind.**
 
-理由は #786 である。既存コードは `throw(KeyInvalid("x"))` のような suberror
-値を **plain な `with Error` の下で** 投げており、その数は数百に及ぶ。
-`Error` を `Exception[String]` と定義すると、この throw はすべて
-`missing { Exception[KeyInvalid] }` になる。移行の初手が既存コードベースの
-全面書き換えを要求する、という順序は成立しない。
+The reason is #786. Existing code throws suberror values such as
+`throw(KeyInvalid("x"))` **under a plain `with Error`**, and there are hundreds
+of them. Defining `Error` as `Exception[String]` would turn every one of those
+throws into `missing { Exception[KeyInvalid] }`. A migration whose first step
+demands rewriting the entire existing codebase is not a workable ordering.
 
-そこで実装上の `Error` は **どの kind とも compatible な最弱の label** とした
-(`exception_kinds_compatible`, core/exception_effect.vibe)。両方向に効く:
+So the implemented `Error` is **the weakest label, compatible with every kind**
+(`exception_kinds_compatible`, core/exception_effect.vibe). It works in both
+directions:
 
-- 宣言側が erased (`with Error`) → どの kind の throw も authorize する。
-  これが既存コード無変更の根拠。
+- Declared side erased (`with Error`): authorizes a throw of any kind. This is
+  why existing code needs no change.
 - Required side erased (a throw whose payload kind does not resolve, a callee
   or callback declared `with Exception`): authorized by an erased declared
   label only. It used to be authorized by every `Exception[K]` too; that let
@@ -226,316 +243,338 @@ compiler source を移行する前に、seed compiler と stage2/stage3 fixpoint
   claim a kind it did not keep, and a kinded handler around it read an Int as
   a String (#3015). `declared_exception_label_covers` owns the rule.
 
-結果として、この機能は **既存コードに対して証明可能に additive** である:
-宣言 row は (a) erased な exception label を持つ (= 全 kind と compatible)、
-(b) exception label を1つも持たない (= 変更前も同じ診断で reject 済み)、
-(c) kinded label を持つ (= コードベースに存在しない綴り) のいずれかで、
-新たに失敗しうるのは (c) だけである。
+As a result, this feature is **provably additive with respect to existing
+code**: a declared row either (a) carries an erased exception label
+(= compatible with every kind), (b) carries no exception label at all
+(= already rejected with the same diagnostic before the change), or (c) carries
+a kinded label (= a spelling that does not exist in the codebase), and only (c)
+can newly fail.
 
-この帰結として **Phase 5 (alias 削除) は単なる改名ではなく本物の breaking
-change** になる。`Error` を消すということは「kind 不明の throw を許す」逃げ道
-を消すことであり、下記の解決範囲を広げるほど安全に近づく (local binder と
-annotated parameter は follow-up で閉じた。pattern binder と field 射影は
-#3017 の typed channel で解決される)。
+A consequence is that **Phase 5 (removing the alias) is not a mere rename but
+a genuine breaking change**. Removing `Error` removes the escape hatch that
+"allows a throw of unknown kind", and it gets closer to safe the wider the
+resolution coverage below becomes (local binders and annotated parameters were
+closed in a follow-up; pattern binders and field projections are resolved by
+the typed channel of #3017).
 
-## 実装状況 (Phase 3)
+## Implementation status (Phase 3)
 
-#1344 で入ったもの:
+What landed in #1344:
 
-- `with Exception[E]` の row 検査 (`decl_authorizes_effect`,
-  checker/checker_effects.vibe)。`Exception[E]` は #1340 の
-  「base 名で比較する instantiation 非依存 v1」から **明示的に除外** されて
-  いる (`row_base_membership`) — そうしないと `State[Int] ~ State[String]`
-  と同じ規則で `Exception[IoError] ~ Exception[ParseError]` になり、
-  typed exception の唯一の保証が消える。
-- `handle .. with Exception[E]` (parser: `collect_row_item_targs` を
-  `with` 節でも使う)。arm は `Exception[E]::Throw` に qualify され、
-  `collect_handle_effects` がそれを discharge label として publish する。
-- `effectset { Exception[A], Exception[B] }` — union は既存の展開で通る。
-- fn 型の代入互換 (`row_contains_label` / `effect_label_base_name`):
-  `Exception[A]` の値を `Exception[B]` の口に渡すのは
-  "effect would be dropped"。erased との出入りは両方向とも許す。
-- entry boundary: `main` の row が kinded exception を宣言していても
-  `lc_row_has_error` が拾い、診断付き process failure へ変換する
-  (`lc_wrap_entry_error_boundary`)。
+- Row checking of `with Exception[E]` (`decl_authorizes_effect`,
+  checker/checker_effects.vibe). `Exception[E]` is **explicitly excluded**
+  from #1340's "instantiation-independent v1 that compares by base name"
+  (`row_base_membership`) — otherwise, by the same rule as
+  `State[Int] ~ State[String]`, `Exception[IoError] ~ Exception[ParseError]`
+  would hold, and the one guarantee of typed exceptions would vanish.
+- `handle .. with Exception[E]` (parser: `collect_row_item_targs` is also used
+  in the `with` clause). Arms are qualified as `Exception[E]::Throw`, and
+  `collect_handle_effects` publishes that as a discharge label.
+- `effectset { Exception[A], Exception[B] }` — the union goes through the
+  existing expansion.
+- Assignment compatibility of fn types (`row_contains_label` /
+  `effect_label_base_name`): passing an `Exception[A]` value into an
+  `Exception[B]` slot is "effect would be dropped". Conversion to and from
+  erased is allowed in both directions.
+- Entry boundary: even when `main`'s row declares a kinded exception,
+  `lc_row_has_error` picks it up and turns it into a diagnosed process failure
+  (`lc_wrap_entry_error_boundary`).
 
-**throw payload の kind 解決範囲**: effect pass は型付けを持たない AST walk
-なので、payload の kind はまず syntax と module 環境から復元する。syntax が
-答えられないときは、checker が throw site ごとに記録した payload の型
-(`typed_throw_kind_record`, keyed by the `throw` offset plus a payload
-fingerprint, #3017) を使う。これで builtin 呼び出しの結果、型注釈のない local、
-pattern binder、field 射影、そして generic body 内の formal (`Array[T]`) が
-解決される。checker の型がまだ推論変数のままなら kind は `""` のまま。
-syntax だけで解決できるのは:
+**Coverage of throw payload kind resolution**: the effect pass is an AST walk
+without typing, so the payload's kind is first recovered from syntax and the
+module environment. When syntax cannot answer, it uses the payload type the
+checker recorded for each throw site (`typed_throw_kind_record`, keyed by the
+`throw` offset plus a payload fingerprint, #3017). This resolves results of
+builtin calls, unannotated locals, pattern binders, field projections, and
+formals inside a generic body (`Array[T]`). If the checker's type is still an
+inference variable, the kind stays `""`. What syntax alone resolves:
 
 | payload | kind |
 | --- | --- |
-| `throw("boom")` / `throw(1)` / `throw(1.5)` / `throw(true)` | リテラルの型 |
-| `throw(NotFound("cfg"))` | constructor の結果型 |
+| `throw("boom")` / `throw(1)` / `throw(1.5)` / `throw(true)` | the literal's type |
+| `throw(NotFound("cfg"))` | the constructor's result type |
 | `throw(Eof)` | nullary constructor |
-| `throw(make_err(x))` | top-level 関数の戻り値型 |
-| `throw(Wrapped::{ .. })` | struct literal の型 |
-| `let e = NotFound("cfg"); throw(e)` | initializer から (再帰的に) |
-| `fn f(e: IoError) { throw(e) }` | parameter annotation の head 名 |
-| `match r { Err(e) => throw(e) }` | checker の型 (pattern binder, #3017) |
-| `throw(r.cause)` | checker の型 (field 射影, #3017) |
+| `throw(make_err(x))` | the top-level function's return type |
+| `throw(Wrapped::{ .. })` | the struct literal's type |
+| `let e = NotFound("cfg"); throw(e)` | from the initializer (recursively) |
+| `fn f(e: IoError) { throw(e) }` | head name of the parameter annotation |
+| `match r { Err(e) => throw(e) }` | the checker's type (pattern binder, #3017) |
+| `throw(r.cause)` | the checker's type (field projection, #3017) |
 
-local binder は #1344 の v1 では見えていなかったが、**#1324 の移行が生む形
-(`let e = ..; Err(e)` → `let e = ..; throw(e)`) がちょうどそれ**だったため
-follow-up で閉じた。実装は `(name, kind)` の scope を perform walk に通す形で、
-既に同じように walk に乗っている `ov_names`/`ov_effs` と同じ機構
-(`throw_kind_bind*`, checker/checker_effects.vibe)。
+Local binders were invisible in #1344's v1, but **the shape produced by the
+#1324 migration (`let e = ..; Err(e)` → `let e = ..; throw(e)`) was exactly
+that**, so a follow-up closed it. The implementation threads a `(name, kind)`
+scope through the perform walk, using the same mechanism as `ov_names`/`ov_effs`,
+which already ride the walk the same way (`throw_kind_bind*`,
+checker/checker_effects.vibe).
 
-kind 不明は「どの exception row でも通る」に倒してあるので、この隙間が
-**誤検出を生むことはなく、検出漏れだけを生む**。その性質を保つために、
-**解決できない binder も明示的に kind `""` で scope に載せる**: lookup は
-名前が scope に無いとき module 表へ落ちるので、載せないと同名の top-level
-binding が local の代わりに答えてしまう (それは誤検出になる)。pattern binder、
-`for` の要素・index、`loop` param、無注釈 parameter、`let rec`、適用された
-local (scope が持つのは値の kind であって結果の kind ではない) がこれに当たる。
+An unknown kind falls back to "accepted by any exception row", so this gap
+**produces only missed detections, never false positives**. To preserve that
+property, **binders that cannot be resolved are also put in scope explicitly
+with kind `""`**: when a name is not in scope, lookup falls through to the
+module table, so without that entry a top-level binding of the same name would
+answer in place of the local (which would be a false positive). This covers
+pattern binders, `for` elements and indices, `loop` params, unannotated
+parameters, `let rec`, and applied locals (the scope holds the kind of the
+value, not the kind of the result).
 
-同じ理由で、#1340 が残した「row 要素の完全な OperationRef 正規化」も
-`Exception[E]` に限って先取りしただけで、他の generic effect
-(`State[Int]` 等) は base 名比較の v1 のままである。
+For the same reason, the "full OperationRef normalization of row elements"
+that #1340 left open has been done early only for `Exception[E]`; other generic
+effects (`State[Int]` etc.) remain on the base-name comparison v1.
 
-### runtime に kind が無い (2026-08-03、PR #1372 review で顕在化)
+### No kind at run time (2026-08-03, surfaced in PR #1372 review)
 
-上の throw-site kind 解決 (#1377) は **compile time** の話である。以下は
-runtime 側に残っている、それとは独立な限界。
+The throw-site kind resolution above (#1377) is about **compile time**. What
+follows is a separate, independent limitation on the runtime side.
 
-上の「erased は全 kind と compatible」は **静的規律だけ**である。runtime は
-kind を出さず単一 abortive tag のままなので、**erased な
-`handle { .. } with Error { Throw(msg) => .. }` は typed な `Exception[E]` の
-throw も捕まえ、`msg` に enum 値が入る**。`msg` の静的型は `CtUnknown` なので、
-それを `String` として使うコードは型検査を通ってしまう。
+"Erased is compatible with every kind", above, is **only a static discipline**.
+The runtime emits no kind and keeps a single abortive tag, so **an erased
+`handle { .. } with Error { Throw(msg) => .. }` also catches a typed
+`Exception[E]` throw, and `msg` receives an enum value**. The static type of
+`msg` is `CtUnknown`, so code that uses it as a `String` passes type checking.
 
-#1324 slice 1 で `TaskGroup::run` / `TaskHandle::join` / `Sender::send` が
-enum payload を throw するようになり、既存の String 専用 sink 2 箇所で
-実際に踏んだ (どちらも計測で確認):
+With #1324 slice 1, `TaskGroup::run` / `TaskHandle::join` / `Sender::send`
+started throwing enum payloads, and two existing String-only sinks actually hit
+this (both confirmed by measurement):
 
-| sink | 症状 |
+| sink | symptom |
 | --- | --- |
-| entry boundary (`lc_wrap_entry_error_boundary`) | payload を packed `(ptr<<32)\|len` として解釈し、**data segment がまるごと stderr に出た** |
-| `TaskGroup::spawn` の child runner (`cell.fail_msg = msg`) | `TaskError::Failed(m)` の `String::length(m)` が **2129** (生ポインタ) |
+| entry boundary (`lc_wrap_entry_error_boundary`) | interpreted the payload as a packed `(ptr<<32)\|len`, and **dumped an entire data segment to stderr** |
+| `TaskGroup::spawn` child runner (`cell.fail_msg = msg`) | `String::length(m)` of `TaskError::Failed(m)` was **2129** (a raw pointer) |
 
-**第一段の緩和 (PR #1375)**: どちらも payload を `__to_string` 経由にした。
-ADR-0058 の int/string 判定 (`64 <= ptr && ptr + len <= memory_size`) は
-本物の文字列に対しては恒等で、それ以外は有界な10進数を返すので、任意メモリを
-読むことはなくなった。ただし**非 String payload は「メッセージに見える裸の
-10進数」になり、中身は失われた**。
+**First-stage mitigation (PR #1375)**: both now route the payload through
+`__to_string`. ADR-0058's int/string test
+(`64 <= ptr && ptr + len <= memory_size`) is the identity on a real string and
+returns a bounded decimal otherwise, so arbitrary memory is no longer read.
+However, **a non-String payload became "a bare decimal that looks like a
+message", and its content was lost**.
 
-### kind side channel (#1374、2026-08-03)
+### kind side channel (#1374, 2026-08-03)
 
-**入っている修正**: throw site が payload の静的型名を1スロットの module cell
-に記録し、handler 側が `__exn_kind()` で読む。**payload の表現は一切変えない**
-ので、既存の handler はすべてそのまま動く — 純粋に additive。
+**The fix in place**: the throw site records the payload's static type name
+into a one-slot module cell, and the handler side reads it with `__exn_kind()`.
+**The payload representation does not change at all**, so every existing
+handler keeps working unchanged — purely additive.
 
-| 層 | 実装 |
+| layer | implementation |
 | --- | --- |
-| 書き込み | `desugar_trait_dicts` が `perform <Exception>::Throw(v)` の直前に `Array::set(__exn_kind_cell, 0, "<Kind>")` を挿入する。kind は codegen 側の `infer_arg_type_name` で解決し、解決できなければ `""` を**必ず**書く (前の throw の kind が残らないように) |
-| 読み出し | `__exn_kind() -> String` は checker-only intrinsic (`checker/builtins_misc.vibe` の `lookup_exn_kind`)。desugar が cell 読み出しへ lower するので、どちらの backend にも新しい emission はない |
-| cell | `let __exn_kind_cell = ["", ""]` を必要な program にだけ append する (slot 0 = kind、slot 1 = #1392 slice 3 の rendered message)。module-level let の「一度だけ初期化・同一 identity・mutation が見える」性質は `fixtures/module_let_memo_test.vibe` が既に pin している |
+| write | `desugar_trait_dicts` inserts `Array::set(__exn_kind_cell, 0, "<Kind>")` immediately before `perform <Exception>::Throw(v)`. The kind is resolved by codegen's `infer_arg_type_name`, and if it cannot be resolved `""` is **always** written (so the previous throw's kind does not linger) |
+| read | `__exn_kind() -> String` is a checker-only intrinsic (`lookup_exn_kind` in `checker/builtins_misc.vibe`). Desugaring lowers it to a cell read, so neither backend has any new emission |
+| cell | `let __exn_kind_cell = ["", ""]` is appended only to programs that need it (slot 0 = kind, slot 1 = the rendered message of #1392 slice 3). The "initialized once, same identity, mutation visible" property of module-level lets is already pinned by `fixtures/module_let_memo_test.vibe` |
 
-**なぜ wasm global や新しい builtin ではないか**: cell を普通の vibe AST にして
-おけば、linear / wasm-gc の2つの backend で実装が分岐しない。新しい global の
-index 割り当ても memory layout の変更も要らない。
+**Why not a wasm global or a new builtin**: keeping the cell as ordinary vibe
+AST means the implementation does not fork between the two backends, linear
+and wasm-gc. No new global index allocation and no memory layout change are
+needed.
 
-**なぜ1スロットで足りるか**。書き込みから handler の読み出しまでの区間は単一の
-abortive unwind であり、その中で他のゲストコードは走らない:
+**Why one slot is enough**: the interval from the write to the handler's read
+is a single abortive unwind, and no other guest code runs within it:
 
-- `Error` は非 resumable (#640) なので、throw site へ戻ることはなく、書き込みの
-  後に handler 以外のコードが挟まらない。
-- ADR-0076 の task pump が task に再入するのは suspend 点だけで、unwind 途中では
-  ない。兄弟 task が書き込みを割り込ませることはできない。
-- handler arm の中の入れ子 throw は、内側が先に書き内側の handler が先に読む —
-  innermost-wins という正しい順序になる。
+- `Error` is non-resumable (#640), so control never returns to the throw site,
+  and no code other than the handler runs after the write.
+- ADR-0076's task pump re-enters a task only at suspend points, never
+  mid-unwind. A sibling task cannot interleave a write.
+- For a nested throw inside a handler arm, the inner one writes first and the
+  inner handler reads first — the correct innermost-wins order.
 
-payload を保存して**後で** kind を見る handler はこの区間の外なので、`__exn_kind()`
-は arm の中で読むこと。2つの sink はどちらもそうしている。
+A handler that stores the payload and inspects the kind **later** is outside
+this interval, so read `__exn_kind()` inside the arm. Both sinks do so.
 
-**sink の挙動**:
+**Sink behavior**:
 
-| kind | 出力 | 理由 |
+| kind | output | reason |
 | --- | --- | --- |
-| `String` / `Int` | `__to_string` の結果 (#1374 以前と同一) | ADR-0058 の判定が忠実 |
-| `""` (解決不能) | `__to_string` の結果 | String かもしれない。#1375 の保守的な挙動を維持 |
-| その他 | rendered message、無ければ `<Kind>` | 下の #1392 slice 3 参照 |
+| `String` / `Int` | result of `__to_string` (identical to before #1374) | ADR-0058's test is faithful |
+| `""` (unresolvable) | result of `__to_string` | it may be a String; keeps #1375's conservative behavior |
+| other | rendered message, or `<Kind>` if there is none | see #1392 slice 3 below |
 
 regression lock:
 
-- `fixtures/exn_kind_side_channel_test.vibe` — enum / String / Int / struct /
-  解決不能 / 入れ子 / 連続 throw の kind を直接 assert する
-- `fixtures/err_entry_boundary_typed_payload.vibe` (`<Boom>`) と
-  `fixtures/err_entry_boundary_string_payload.vibe` (verbatim) の対 +
+- `fixtures/exn_kind_side_channel_test.vibe` — directly asserts the kind for
+  enum / String / Int / struct / unresolvable / nested / consecutive throws
+- the pair `fixtures/err_entry_boundary_typed_payload.vibe` (`<Boom>`) and
+  `fixtures/err_entry_boundary_string_payload.vibe` (verbatim) +
   compiler_gate 44c
 
-### message side channel (#1392 slice 3、2026-08-03)
+### message side channel (#1392 slice 3, 2026-08-03)
 
-kind side channel の残りの限界は「非 String payload の**値**が出せない」ことだった。
-これには「kind ごとの formatting」が要ると書いていたが、**その dispatch を
-handler 側で解くことは原理的にできない**: erased な `with Error { Throw(m) => .. }`
-の `m` は静的に `CtUnknown` なので、`T::to_string` も `[T: Show]` の witness も
-そこでは解決しようがない。trait dispatch (`Show` をメソッド持ちにする) を入れても
-この地点は救われない。
+The remaining limitation of the kind side channel was that "the **value** of a
+non-String payload cannot be printed". We had written that this needed
+"per-kind formatting", but **that dispatch cannot, in principle, be solved on
+the handler side**: the `m` of an erased `with Error { Throw(m) => .. }` is
+statically `CtUnknown`, so neither `T::to_string` nor a `[T: Show]` witness can
+be resolved there. Adding trait dispatch (giving `Show` a method) would not
+rescue this point either.
 
-**型が分かっている唯一の場所は throw site**。なので rendering も throw site で
-やり、結果の String を kind と同じ cell の slot 1 に載せる。
+**The only place where the type is known is the throw site**. So rendering is
+done at the throw site too, and the resulting String is placed in slot 1 of the
+same cell as the kind.
 
-| 層 | 実装 |
+| layer | implementation |
 | --- | --- |
-| 書き込み | kind の書き込みと同じ場所。payload temp に対して #1392 slice 1/2 の補間 renderer を走らせる (`interp_show_target` → `T::to_string`、無ければ `interp_expand` の `Option`/`Result` 展開) |
-| 読み出し | `__exn_message() -> String`。`__exn_kind()` と同じ checker-only intrinsic |
+| write | at the same place as the kind write. Runs the interpolation renderer of #1392 slices 1/2 on the payload temp (`interp_show_target` → `T::to_string`, otherwise the `Option`/`Result` expansion of `interp_expand`) |
+| read | `__exn_message() -> String`. The same kind of checker-only intrinsic as `__exn_kind()` |
 
-**構造的な renderer が見つかったときだけ書く**。見つからなければ `""` を書いて
-slot をクリアする。これが要点で、reader 側は「空でなければ信用する」という単純な
-判定しかできない — `__to_string` のポインタ10進数はごく普通の非空文字列なので、
-それを書いてしまうと `derive(Show)` の無い enum が `<NoShow>` ではなく `192` に
-なる (#1374 より悪化する)。忠実かどうかは throw site の**静的**な性質なので、
-判断もそこでやる。
+**Write only when a structural renderer is found**. If none is found, write
+`""` to clear the slot. This is the crux: the reader can only apply the simple
+rule "trust it if non-empty" — `__to_string`'s pointer decimal is a perfectly
+ordinary non-empty string, so writing it would make an enum without
+`derive(Show)` come out as `192` instead of `<NoShow>` (worse than #1374).
+Whether the rendering is faithful is a **static** property of the throw site,
+so the decision is made there as well.
 
-sink の実測:
+Measured at the sinks:
 
 | payload | #1374 | #1392 slice 3 |
 | --- | --- | --- |
 | `Failed("io")` (`derive(Show)` enum) | `<AppError>` | `Failed(io)` |
-| `"plain message"` | verbatim | verbatim (不変) |
-| `Bang(5)` (renderer 無し) | `<NoShow>` | `<NoShow>` (不変) |
+| `"plain message"` | verbatim | verbatim (unchanged) |
+| `Bang(5)` (no renderer) | `<NoShow>` | `<NoShow>` (unchanged) |
 | `Some(7)` | `<Option>` | `Some(7)` |
-| `TaskGroup` の子の `Failed("child blew up")` | `<TaskError>` | `Failed(Failed(child blew up))` |
+| `Failed("child blew up")` from a `TaskGroup` child | `<TaskError>` | `Failed(Failed(child blew up))` |
 
-最後の行の二重 `Failed` は正しい: 外側が `TaskHandle::join` の wrapper、内側が
-子自身の payload。#1374 ではこの内側が丸ごと失われていた。
+The doubled `Failed` in the last row is correct: the outer one is
+`TaskHandle::join`'s wrapper and the inner one is the child's own payload. In
+#1374 this inner part was lost entirely.
 
-**呼ぶのは「このパスが生成した renderer」だけ** (#1398 review, Codex P1)。
-補間 `"\{v}"` はユーザがその呼び出しを書いているので任意の `T::to_string` を
-使ってよいが、throw site の呼び出しは**合成**であり、
+**Only renderers generated by this pass are called** (#1398 review, Codex P1).
+In an interpolation `"\{v}"` the user wrote the call, so any `T::to_string` may
+be used, but the call at the throw site is **synthesized**, and it
 
-- どの handler も message を読まなくても**毎回**走る
-- 型検査の後に挿入されるので、その effect は throwing function の checked row に
-  一切現れない
-- formatter 自身が throw すると、元の例外を差し替えるか formatting 中に再帰する
+- runs **every time**, even if no handler reads the message
+- is inserted after type checking, so its effects never appear in the throwing
+  function's checked row
+- if the formatter itself throws, it replaces the original exception or
+  recurses during formatting
 
-という性質を持つ。実測: `println` を含む `Boom::to_string` が、payload を無視する
-handler しか無い `throw(Bang(1))` で実行された。derive 由来の renderer は構造的・
-全域・effect-free なので、eager path をそれだけに絞ればこの危険は消える
-(`dtd_derived_renderers`)。
+Measured: a `Boom::to_string` containing `println` ran for a `throw(Bang(1))`
+whose only handler ignored the payload. Derived renderers are structural,
+total, and effect-free, so restricting the eager path to them removes this
+danger (`dtd_derived_renderers`).
 
-**`""` sentinel が健全な理由** (#1398 review, Codex P2)。ここから到達できる
-renderer の出力は構造上必ず非空である: derived struct renderer は型名で始まり
-(`P { ..`)、derived enum renderer は変種名そのもの、wrapper 展開は
-`Some(..)` / `Ok(..)` / `Err(..)` / `None`。「空文字列を返すのが正しい」
-ユーザ定義 formatter は上の P1 の制限により、そもそもここから呼ばれない。
+**Why the `""` sentinel is sound** (#1398 review, Codex P2). Every renderer
+reachable from here produces non-empty output by construction: a derived struct
+renderer starts with the type name (`P { ..`), a derived enum renderer is the
+variant name itself, and the wrapper expansions are `Some(..)` / `Ok(..)` /
+`Err(..)` / `None`. A user-defined formatter for which "returning the empty
+string is correct" is never called from here in the first place, because of
+the P1 restriction above.
 
 regression lock:
 
-- compiler_gate 87 — `derive(Show)` enum / String / renderer 無し / 手書き
-  formatter の4本。3本目が「#1374 より悪化していないこと」、4本目が
-  「手書き formatter は補間でだけ走る」の pin
-- `@vibe/concurrent` の "a typed child throw is reported by kind" は
-  `Failed("<SendError>")` から `Failed("Closed")` へ更新した (caller が switch
-  したいのは変種名の方)
-- `suspend_test.vibe` の "result_wait propagates a cancelled sibling to the
-  awaiter" — suspend lane を `Exception[E]` へ移した #1324 slice 2 が
-  この channel に依存している。cancel された sibling の `Cancelled` が
-  CPS 分割 callee の throw → erased runner arm → `fail_msg` → `join` の
-  再 throw まで variant 名のまま届くことを assert する
+- compiler_gate 87 — four cases: `derive(Show)` enum / String / no renderer /
+  hand-written formatter. The third pins "no worse than #1374", the fourth pins
+  "a hand-written formatter runs only in interpolation"
+- `@vibe/concurrent`'s "a typed child throw is reported by kind" was updated
+  from `Failed("<SendError>")` to `Failed("Closed")` (the variant name is what
+  a caller wants to switch on)
+- `suspend_test.vibe`'s "result_wait propagates a cancelled sibling to the
+  awaiter" — #1324 slice 2, which moved the suspend lane to `Exception[E]`,
+  depends on this channel. It asserts that a cancelled sibling's `Cancelled`
+  arrives still as the variant name through the CPS-split callee's throw →
+  erased runner arm → `fail_msg` → `join`'s re-throw
 
-## #1324 (Result 削除) との統合順序
+## Integration order with #1324 (removing Result)
 
-#1324 は `Result` を捨てて例外に一本化する提案で、この ADR の完成形の上に
-載る。**順序は #1344 → #1324 で確定**。理由:
+#1324 proposes dropping `Result` and unifying on exceptions; it builds on the
+completed form of this ADR. **The order is fixed as #1344 → #1324**, because:
 
-1. `Result[T, E]` を捨てられるのは、失敗の型 `E` が row 側で表現できる
-   ようになった後である。Phase 3 以前の `Error` は payload が実質 String
-   だったので、`Result[T, ParseError]` を `with Error` に置き換えると
-   `E` の情報が消えた。今は `with Exception[ParseError]` が同じ情報を
-   持つので、置き換えが情報を落とさない。
-2. `Result` を返していたコードは失敗値を local binding に持って回してから
-   返すことが多く (`let e = ...; Err(e)`)、それを throw に直すと
-   `throw(e)` — #1344 の v1 ではちょうどここが kind 不明に落ちていた。
-   **移行の主役が検査漏れする形だったため、#1344 の follow-up で local
-   binder と annotated parameter を解決可能にした** (上表)。残る解決不能形
-   (pattern binder / field 射影) は移行の主役ではないので、gradual のまま
-   でよい。
-3. Phase 4 (stdlib/compiler を `Exception[E]` へ移行) は #1324 と同じ
-   コードに触るので、別々に2回書き換えないよう #1324 と一体で行う。
+1. `Result[T, E]` can be dropped only after the failure type `E` can be
+   expressed in the row. Before Phase 3, `Error`'s payload was effectively a
+   String, so replacing `Result[T, ParseError]` with `with Error` lost the
+   information in `E`. Now `with Exception[ParseError]` carries the same
+   information, so the replacement loses nothing.
+2. Code that returned `Result` often carries the failure value around in a
+   local binding before returning it (`let e = ...; Err(e)`), and converting
+   that to a throw gives `throw(e)` — exactly the case that fell into
+   unknown kind in #1344's v1. **Because the main shape of the migration was
+   one that escaped checking, a #1344 follow-up made local binders and
+   annotated parameters resolvable** (table above). The remaining unresolvable
+   shapes (pattern binders / field projections) are not the main shape of the
+   migration, so they can stay gradual.
+3. Phase 4 (migrating stdlib/compiler to `Exception[E]`) touches the same code
+   as #1324, so it is done together with #1324 to avoid rewriting it twice.
 
-### 移行の進捗と、bundle 由来の制約 (2026-08-03)
+### Migration progress, and a constraint from the bundle (2026-08-03)
 
-| slice | 対象 | row |
+| slice | target | row |
 | --- | --- | --- |
-| 1 (#1372) | `@vibe/concurrent` の stack-driving 5本 | `Exception[TaskError]` ほか |
-| 2 (#1401) | `@vibe/concurrent` の suspend lane 3本 | `Exception[SendError]` / `Exception[TaskError]` |
-| 3 | `@vibe/json` (accessor 11 + `parse` + `parse_message` + `RpcMessage::parse`) | **erased `Error`** |
+| 1 (#1372) | 5 stack-driving functions in `@vibe/concurrent` | `Exception[TaskError]` and others |
+| 2 (#1401) | 3 suspend-lane functions in `@vibe/concurrent` | `Exception[SendError]` / `Exception[TaskError]` |
+| 3 | `@vibe/json` (11 accessors + `parse` + `parse_message` + `RpcMessage::parse`) | **erased `Error`** |
 
-**slice 3 だけ erased `Error` なのは bootstrap の制約による**。`@vibe/json` の
-7ファイルは `compiler_sources_manifest.tsv` に載っていて compiler の merged
-bundle に同梱される。`scripts/generate_bundle.sh` の
-`validate_module_source_compiles` (#979 sticky-failure guard) は候補 module
-source を **pin された seed compiler** でコンパイル検査するが、現在の seed
-(`vpkg-structured-header-2026-07-27`、source commit `08c4c58`) は ADR-0085 の
-`Exception[E]` より古く、**bracketed label を parse できない**:
+**Only slice 3 uses erased `Error`, because of a bootstrap constraint**. The 7
+files of `@vibe/json` are listed in `compiler_sources_manifest.tsv` and are
+included in the compiler's merged bundle. `validate_module_source_compiles` in
+`scripts/generate_bundle.sh` (#979 sticky-failure guard) compile-checks
+candidate module sources with the **pinned seed compiler**, but the current
+seed (`vpkg-structured-header-2026-07-27`, source commit `08c4c58`) predates
+ADR-0085's `Exception[E]` and **cannot parse bracketed labels**:
 
 ```
 vibe: uncaught error: expected ',' or '}' in effect list
 ```
 
-`fn` 宣言・closure literal どちらの位置でも再現する (現在の stage2 では
-どちらも通る)。これは CLAUDE.md / docs/internal/operations/bootstrap.md が書いている
-「新しい syntax を compiler source 自体で使う場合は先に bootstrap bump」
-そのもの。
+It reproduces in both positions, `fn` declarations and closure literals (the
+current stage2 accepts both). This is exactly the rule CLAUDE.md /
+docs/internal/operations/bootstrap.md describe: "when the compiler source
+itself uses new syntax, do the bootstrap bump first".
 
-payload が `String` である以上、erased `Error` でも**情報は落ちない** —
-ADR-0085 の migration section が `Error` を `Exception[String]` の
-compatibility alias と呼んでいるとおりで、ADR-0058 の判定は本物の文字列に
-対して恒等なので `handle .. with Error { Throw(msg) => msg }` は実際の
-メッセージを受け取る。失われるのは**静的な精度**だけ (binder が
-`CtUnknown` になるので、その handler の中で `msg` を String 以外として
-使っても検査が止めない)。
+Since the payload is a `String`, erased `Error` **loses no information** — as
+ADR-0085's migration section says in calling `Error` a compatibility alias for
+`Exception[String]`, ADR-0058's test is the identity on a real string, so
+`handle .. with Error { Throw(msg) => msg }` receives the actual message. What
+is lost is only **static precision** (the binder becomes `CtUnknown`, so the
+checker does not stop code inside that handler from using `msg` as something
+other than a String).
 
-**follow-up**: bootstrap bump 後に `@vibe/json` の row を
-`Exception[String]` へ締め直す。#1324 の残り (`@vibe/compiler` 本体、
-prelude `result.vibe` 削除) も全部 bundle 経由なので、**bump はそれらの
-前提でもある**。
+**follow-up**: after the bootstrap bump, tighten `@vibe/json`'s rows back to
+`Exception[String]`. The rest of #1324 (the `@vibe/compiler` body itself,
+deleting prelude `result.vibe`) also goes entirely through the bundle, so **the
+bump is a prerequisite for those as well**.
 
 ## Formal contract
 
-typed identity の実行可能な正本:
+The executable source of truth for typed identity:
 
 - `formal/VibeFormal/Effect/ExceptionPolicy.lean`
 - `formal/VibeFormal/Proofs/ExceptionPolicyCorrect.lean`
 
-モデルは `ExceptionKind` を normalized `E` の最小代替として使い、次を検証する。
+The model uses `ExceptionKind` as a minimal stand-in for a normalized `E` and
+verifies the following.
 
-- escaping `Exception[E]` は exact `E` の row requirement を必ず残す。
-- `handle Exception[E1]` は `Exception[E2]` (`E1 ≠ E2`) を捕捉しない。
-- capability requirement は typed exception handler で消えない。
-- kind identity を消す broken checker は、empty row を許可しながら別 kind の
-  exception を escape させる反例を持つ。
+- An escaping `Exception[E]` always leaves a row requirement for the exact `E`.
+- `handle Exception[E1]` does not catch `Exception[E2]` (`E1 ≠ E2`).
+- A capability requirement is not removed by a typed exception handler.
+- A broken checker that erases kind identity has a counterexample in which it
+  allows an empty row while letting an exception of another kind escape.
 
-entry boundary の「宣言された exception は process failure へ変換される」という
-保証は、移行中は ADR-0073 の `ErrorPolicy.lean` / `ErrorPolicyCorrect.lean` を
-再利用する。typed entry outcome への一般化は Phase 2 の runtime representation
-決定後に行う。
+During the migration, the entry boundary guarantee that "a declared exception
+is turned into a process failure" reuses ADR-0073's `ErrorPolicy.lean` /
+`ErrorPolicyCorrect.lean`. Generalizing to a typed entry outcome happens after
+Phase 2's runtime representation decision.
 
 ## Consequences
 
-- exception family ごとの least privilege と API compatibility diff が可能になる。
-- Java 型の open subclass hierarchy は持たず、effectset union と closed enum の
-  exhaustiveness を再利用できる。
-- 現行 codegen は `Error::Throw` を多数の string comparison で特別扱いしている。
-  alias だけを追加して一括 rename すると分岐漏れが起きるため、normalized predicate
-  への集約を migration gate とする。
-- Wasm EH の対応状況は source semantics を変えない。EH を使えない backend は
-  現行の effect/evidence lowering または等価な host boundary loweringを使える。
+- Least privilege and API compatibility diffs per exception family become
+  possible.
+- There is no Java-style open subclass hierarchy; effectset unions and
+  closed-enum exhaustiveness are reused.
+- Current codegen special-cases `Error::Throw` with many string comparisons.
+  Adding only an alias and renaming in bulk would miss branches, so
+  consolidation into a normalized predicate is the migration gate.
+- The state of Wasm EH support does not change source semantics. A backend
+  that cannot use EH may use the current effect/evidence lowering or an
+  equivalent host boundary lowering.
 
 ## Rejected / deferred alternatives
 
-- **`Error` の名前だけを `Exception` へ一括置換**: payload 型と row identity が
-  String のままで、#1136 の型別例外を解決しない。
-- **subclass hierarchy**: effectset normalization と別の subtype/dispatch 規則を
-  追加するため不採用。
-- **Wasm tag を source exception 型そのものとみなす**: tag は lowering identity
-  であり、source row/exhaustiveness の代替にならない。
-- **すべての exception を一つの erased row element にする**: formal model の
-  cross-kind witness が、別 kind の handler で requirement が消える不健全性を示す。
+- **Bulk-renaming only the name `Error` to `Exception`**: the payload type and
+  row identity stay String, so #1136's per-type exceptions are not solved.
+- **Subclass hierarchy**: rejected because it adds a subtype/dispatch rule
+  separate from effectset normalization.
+- **Treating the Wasm tag as the source exception type itself**: a tag is a
+  lowering identity and does not replace source rows/exhaustiveness.
+- **Making every exception a single erased row element**: the formal model's
+  cross-kind witness shows the unsoundness of a requirement disappearing under
+  a handler for another kind.

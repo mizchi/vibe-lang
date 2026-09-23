@@ -1,0 +1,39 @@
+// Codex on #3021: a row may spell a kind through a type alias while the
+// checker records the payload's expanded type. `type E = IoErr` makes
+// `Exception[E]` and `Exception[IoErr]` the same kind, whatever the throw's
+// payload shape (a field here, whose recorded kind is the expanded `IoErr`).
+enum IoErr {
+  NotFound(String)
+}
+
+type E = IoErr
+
+struct Holder {
+  cause: E
+}
+
+fn from_field(h: Holder) -> Int with Exception[E] {
+  throw(h.cause)
+}
+
+fn from_param(e: E) -> Int with Exception[IoErr] {
+  throw(e)
+}
+
+test "an alias kind in a row covers the expanded payload kind" {
+  let r = handle { from_field(Holder::{ cause: NotFound("abc") }) } with {
+    Exception[E]::Throw(e) => match e {
+      NotFound(s) => String::length(s)
+    }
+  }
+  inspect(r, content = "3")
+}
+
+test "an expanded kind in a row covers an alias-typed payload" {
+  let r = handle { from_param(NotFound("xy")) } with {
+    Exception[IoErr]::Throw(e) => match e {
+      NotFound(s) => String::length(s)
+    }
+  }
+  inspect(r, content = "2")
+}

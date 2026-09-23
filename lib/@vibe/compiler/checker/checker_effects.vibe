@@ -38,7 +38,8 @@ import @vibe/compiler/core {
   resolve_type_alias_params,
   standard_host_provider_names,
   test_bench_default_effects,
-  type_name_has_async_iterator_impl
+  type_name_has_async_iterator_impl,
+  type_to_string
 }
 
 import @vibe/core {
@@ -2556,13 +2557,77 @@ fn decl_authorizes_effect(labels: Array[String], eff_name: String) -> Bool {
 fn declared_exception_label_covers(labels: Array[String], declared_label: String, required_kind: String, strict: Bool) -> Bool {
   let declared_kind = exception_label_kind(declared_label)
   if strict {
-    String::length(required_kind) > 0 && declared_kind == required_kind
+    String::length(required_kind) > 0 && exception_kinds_same(declared_kind, required_kind)
   } else if String::length(declared_kind) == 0 {
     true
   } else if String::length(required_kind) == 0 {
     row_has_effect_variable(labels)
   } else {
-    declared_kind == required_kind
+    exception_kinds_same(declared_kind, required_kind)
+  }
+}
+
+/// Two non-empty kinds name the same type: equal once each is followed
+/// through the program's non-generic type aliases. A row may spell a kind
+/// through an alias (`type E = IoErr`, `with Exception[E]`) while the checker
+/// records the payload's expanded type (`IoErr`) -- Codex on #3021.
+fn exception_kinds_same(a: String, b: String) -> Bool {
+  a == b || exception_kind_canonical(a) == exception_kind_canonical(b)
+}
+
+/// `kind` followed through `alias_kind_cell` (bounded, so a cyclic alias
+/// cannot loop).
+fn exception_kind_canonical(kind: String) -> String {
+  let aliases = Array::get(alias_kind_cell, 0)
+  let mut cur = kind
+  let mut hops = 0
+  while hops < 8 {
+    match MutMap::get(aliases, cur) {
+      Some(target) => {
+        cur = target
+        hops = hops + 1
+      },
+      None => {
+        hops = 8
+      }
+    }
+  }
+  cur
+}
+
+/// Non-generic alias name -> the kind spelling of its target, rebuilt with the
+/// payload-kind table from the checked env.
+let alias_kind_cell: Array[MutMap[String, String]] = [MutMap::new_string()]
+
+fn set_alias_kind_table(env: TypeEnv) -> Unit {
+  let table = MutMap::new_string()
+  let defs = env_type_defs(env)
+  let mut i = 0
+  while i < Array::length(defs) {
+    match Array::get(defs, i) {
+      TDAlias(name, params, target) => if Array::length(params) == 0 && !MutMap::has(table, name) {
+        let k = alias_target_kind(target)
+        if String::length(k) > 0 && k != name {
+          MutMap::set(table, name, k)
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  Array::set(alias_kind_cell, 0, table)
+}
+
+fn alias_target_kind(t: Type) -> String {
+  match t {
+    CtNamed(_, targs) => if Array::length(targs) > 0 {
+      type_to_string(t)
+    } else {
+      type_kind_name(t)
+    },
+    CtArray(_) => type_to_string(t),
+    CtOption(_) => type_to_string(t),
+    _ => type_kind_name(t)
   }
 }
 
@@ -2805,6 +2870,7 @@ fn throw_kind_push(name: String, ty: Type) -> Unit {
 /// therefore CLEAR it -- so a table can never survive into the next module and
 /// misclassify a same-named binding there.
 fn set_throw_kind_table(env: TypeEnv) -> Unit {
+  set_alias_kind_table(env)
   Array::truncate(throw_kind_cell, 0)
   Array::set(throw_kind_index, 0, MutMap::new_string())
   let mut cur = env
