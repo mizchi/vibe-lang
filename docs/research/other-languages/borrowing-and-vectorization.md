@@ -9,8 +9,11 @@ auto-vectorizer?**
 
 Short answer: yes, for both, and the two subsets meet at one rule — **a
 mutable buffer argument does not alias any other argument**. That rule is what
-a verifier needs (veri's blit split), what an in-place vector kernel needs,
-and what Perceus needs to drop its run-time uniqueness test.
+a verifier needs (veri's blit split) and what an in-place vector kernel needs.
+It is **not** what Perceus needs in order to drop its run-time `rc == 1` test.
+Exclusivity constrains only what the *callee* can reach. The caller may still
+hold another reference (`let b = a; f(mut a)`), so the count can exceed one.
+Only A4's static uniqueness justifies skipping that test.
 
 Proposed syntax below is illustrative (` ```vibe skip `) and not decided.
 
@@ -156,6 +159,10 @@ therefore needs a separate **write check**:
   a write, whatever its ownership class. It is also never the target of a
   `mut` struct-field assignment (ADR-0052);
 - a borrow-derived value is never passed to a `mut` position;
+- a borrow-derived value is never passed to a `consume` position either, and
+  doing so counts as an escape. The `borrow` owns no reference to transfer,
+  so `fn f(borrow h: Holder) { sink(consume h.buf) }` would let `sink` retain
+  a buffer nobody gave it. That is a double drop or a use after free;
 - a borrow-derived value is passed to an unannotated position only if that
   callee's per-parameter **write summary** says "does not write". Summaries
   attribute writes to the **root** parameter, so a callee that writes
@@ -325,19 +332,21 @@ Two parts of the practice matter as much as the theorems:
   not through projections, one drops the identity check, one drops the
   buffer-free-argument rule, one checks only bare-buffer globals, one
   counts a loop body's consume once, one admits a `mut` call through a
-  capturing closure, one ignores call results in the borrow taint, one ignores aggregate construction in it, one trusts a root-only alias summary for a call result, one claims T1′ for a call that also passes the buffer to an unannotated writable parameter, one lets
+  capturing closure, one ignores call results in the borrow taint, one ignores aggregate construction in it, one trusts a root-only alias summary for a call result, one claims T1′ for a call that also passes the buffer to an unannotated writable parameter, one lets a borrow-derived value reach a `consume` position, one elides `rc == 1` on the strength of `mut` exclusivity alone, one lets
   an opaque type count as buffer-free, and one lets a `mut` callee perform a
   user effect whose handler captures the buffer. `formal/` already keeps such witnesses for the Error policy.
 
 **Why the model has to come first.** Review of this document found the
 same class of hole again and again, each one a path the prose rules had not
-enumerated. Eighteen findings in eight rounds so far:
+enumerated. Twenty findings in nine rounds so far:
 - aliases hidden in an aggregate argument, in an aggregate global, and in a
   closure callee;
 - aliases reached through an effect handler or an opaque type;
 - writes made through a projection, a call result (twice), and a constructed aggregate;
 - a consume inside a loop;
-- a caller-created alias between a `borrow` argument and a writable one.
+- a caller-created alias between a `borrow` argument and a writable one;
+- a borrow-derived value passed to `consume`;
+- `rc == 1` elision justified by `mut` exclusivity, which ignores the caller's own references.
 
 Enumerating exceptions in English does not converge. What does converge is an
 executable model whose checker is diffed against the implementation, together

@@ -28,14 +28,16 @@ ADR says so. The question behind them is this:
    existing region escape checks, since a borrow is a region the length of a
    call. `consume` uses Bend's usage map locally, and that gives *static*
    uniqueness, which Perceus today checks only at run time.
-2. **The rule that pays three times is exclusivity**: a `mut` buffer argument
+2. **The rule that pays twice is exclusivity**: a `mut` buffer argument
    never aliases another argument. It is restricted to shallow buffer types,
    so it is decidable: a static check on places, other arguments of
    buffer-free types only (no struct, closure or type variable that could hide
    the buffer), no globals of such types in the callee's reach, and one
    identity compare at entry. The verifier needs it, because Why3 rejects
    aliased mutable arguments and veri had to split `blit` in two. The vectorizer needs it for
-   shifted-index kernels. Perceus needs it to drop its `rc == 1` test.
+   shifted-index kernels. Perceus does **not** get its `rc == 1` elision from
+   it, because the caller may still hold another reference; that elision
+   needs `consume`'s static uniqueness.
 3. **Vectorization: yes, as a whitelist subset of combinator lambdas, not a
    loop auto-vectorizer.** On wasm the width is a constant 128 bits, so Mojo's
    width parameter disappears. What carries over is `vectorize`'s *shape*: a
