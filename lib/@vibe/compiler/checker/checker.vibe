@@ -4091,6 +4091,23 @@ fn handle_collect_direct_calls_scoped(e: Expr, shadowed: String, locals: String,
       }
       handle_collect_direct_calls_children(e, shadowed, locals, out)
     },
+    // An immediately invoked lambda runs its body right here, under this
+    // handler, unlike a stored one (#3022 review). Its parameters are locals.
+    ECall(EFn(_, _, fparams, _, _, fbody), fargs, _) => {
+      let mut ai = 0
+      while ai < Array::length(fargs) {
+        handle_collect_direct_calls_scoped(Array::get(fargs, ai), shadowed, locals, out)
+        ai = ai + 1
+      }
+      let mut inner = locals
+      let mut pi = 0
+      while pi < Array::length(fparams) {
+        let (pname, _) = Array::get(fparams, pi)
+        inner = handle_locals_with(inner, pname)
+        pi = pi + 1
+      }
+      handle_collect_direct_calls_scoped(fbody, shadowed, inner, out)
+    },
     ELet(name, value, rest, _) => {
       handle_collect_direct_calls_scoped(value, shadowed, locals, out)
       handle_collect_direct_calls_scoped(rest, shadowed, handle_locals_with(locals, name), out)
@@ -4159,6 +4176,7 @@ fn handle_collect_direct_calls_scoped(e: Expr, shadowed: String, locals: String,
       }
       handle_collect_direct_calls_scoped(hbody, inner, locals, out)
     },
+    // A lambda VALUE runs wherever it is later called, not necessarily here.
     EFn(_, _, _, _, _, _) => (),
     _ => handle_collect_direct_calls_children(e, shadowed, locals, out)
   }
@@ -5665,14 +5683,20 @@ fn check_builtin_arg_head(name: String, i: Int, arg_ty: Type, errors: Array[Stri
 
 /// #3006: unify an unresolved type-variable argument with the concrete type a
 /// builtin's parameter head names. Only heads that name ONE type are bound
-/// (`String`, `Bytes`, and `Array[_]` with a fresh element); every other head,
-/// and a head of 0 (a parameter the builtin leaves open), leaves the variable
-/// alone exactly as before. A failed unify (a bounded variable, say) also
-/// leaves it alone -- the head check above is the one that reports.
+/// (`Double`, `Bool`, `String`, `Bytes`, and `Array[_]` with a fresh
+/// element); every other head, and a head of 0 (a parameter the builtin leaves
+/// open), leaves the variable alone exactly as before. The Int head is not
+/// bound here because it also admits `Char`. A failed unify (a bounded
+/// variable, say) also leaves it alone -- the head check above is the one that
+/// reports.
 fn bind_builtin_arg_var(arg_ty: Type, want: Int, s: Subst, c: Int) -> (Subst, Int) {
   match arg_ty {
     CtVar(_) => {
-      let target = if want == 4 {
+      let target = if want == 2 {
+        Some(CtDouble)
+      } else if want == 3 {
+        Some(CtBool)
+      } else if want == 4 {
         Some(CtString)
       } else if want == 7 {
         Some(CtBytes)
