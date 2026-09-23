@@ -119,6 +119,7 @@ import ./checker.vibe {
   trait_erased_type_param_env,
   trait_reference_display,
   ty_has_open_array_elem,
+  type_exception_rows_resolved,
   typed_occurrence_capture_begin_statement,
   typed_occurrence_capture_end_statement,
   typed_throw_kinds_flush,
@@ -3197,9 +3198,6 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         } else {
           check_expr_capture(val, val_env, defs, s, c, errors, tytab, role_lane_capture, "Primary")
         }
-        // #3017 (Codex on #3021): a throw whose payload was still open when
-        // visited is resolved now that the whole value has been checked.
-        typed_throw_kinds_flush(ns0)
         attach_unlocated_decl_name_marker(errors, err_before, name)
         // The value must be assignable to a declared annotation (previously
         // unchecked — `let x: Int = "s"` was accepted).
@@ -3271,7 +3269,15 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
             (ns_self, gen)
           }
         }
-        let env1 = bind_function_dependency_contracts(env_bind(env, name, t), name, val)
+        // #3017 (Codex on #3021): a throw whose payload was still open when
+        // visited is resolved now that the value AND its annotation have been
+        // checked -- `let f: (Bool, Int) -> .. = (c, x) -> ..` pins `x` only
+        // through the annotation.
+        typed_throw_kinds_flush(ns)
+        // A published function row carries its exception kinds RESOLVED, so a
+        // module importing it can compare them without seeing the alias they
+        // were written with (Codex on #3021).
+        let env1 = bind_function_dependency_contracts(env_bind(env, name, type_exception_rows_resolved(t)), name, val)
         capture_statement_root_type(capture, statement_path, "SLet", vt)
         (bind_value_or_annotation_return(env1, name, val, ann, defs), ns, nc)
       },

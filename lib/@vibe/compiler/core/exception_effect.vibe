@@ -118,7 +118,119 @@ export fn exception_label_kind(label: String) -> String {
 ///   kinds does not cover an erased requirement (#2964, #3015 --
 ///   `declared_exception_label_covers`, checker_effects.vibe).
 export fn exception_kinds_compatible(declared_kind: String, required_kind: String) -> Bool {
-  String::length(declared_kind) == 0 || String::length(required_kind) == 0 || declared_kind == required_kind
+  String::length(declared_kind) == 0 || String::length(required_kind) == 0 || declared_kind == required_kind || exception_kind_resolved(declared_kind) == exception_kind_resolved(required_kind)
+}
+
+/// The kinds the checker has resolved while validating rows and arms in the
+/// module being checked: (written spelling without spaces, resolved type
+/// spelling). A kind is a string in the row, but it names a TYPE, and two
+/// spellings of one type (`Es[IoErr]` with `type Es[T] = Array[T]`, and
+/// `Array[IoErr]`) must compare equal -- in the effect pass, and in
+/// function-type assignability, which both compare through this module.
+let exception_kind_resolution_cell: Array[(String, String)] = Array::slice([
+  ("", "")
+], 0, 0)
+
+fn exception_kind_spaceless(kind: String) -> String {
+  let parts = String::split(kind, " ")
+  let mut acc = ""
+  let mut i = 0
+  while i < Array::length(parts) {
+    acc = String::concat(acc, Array::get(parts, i))
+    i = i + 1
+  }
+  acc
+}
+
+/// Record that the kind written `written` resolves to the type `resolved`.
+export fn exception_kind_resolution_record(written: String, resolved: String) -> Unit {
+  let w = exception_kind_spaceless(written)
+  if String::length(resolved) == 0 || w == exception_kind_spaceless(resolved) || String::length(exception_kind_resolution_spelling(w)) > 0 {
+    ()
+  } else {
+    Array::push(exception_kind_resolution_cell, (w, resolved))
+  }
+}
+
+/// Forget every recorded resolution (a new module's check starts).
+export fn exception_kind_resolutions_clear() -> Unit {
+  Array::truncate(exception_kind_resolution_cell, 0)
+}
+
+/// The recorded resolution of `kind`, as the type is spelled, or "".
+fn exception_kind_resolution_spelling(kind: String) -> String {
+  let k = exception_kind_spaceless(kind)
+  let mut found = ""
+  let mut i = 0
+  while i < Array::length(exception_kind_resolution_cell) && String::length(found) == 0 {
+    let (w, r) = Array::get(exception_kind_resolution_cell, i)
+    if w == k {
+      found = r
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// `kind` in the form kinds are compared in: its recorded resolution when
+/// there is one, whitespace dropped.
+export fn exception_kind_resolved(kind: String) -> String {
+  let r = exception_kind_resolution_spelling(kind)
+  if String::length(r) > 0 {
+    exception_kind_spaceless(r)
+  } else {
+    exception_kind_spaceless(kind)
+  }
+}
+
+/// `row` with every `Exception[K]` whose kind has a recorded resolution
+/// rewritten to it. A function's PUBLISHED row goes through this, so a module
+/// importing it compares the resolved type even when it cannot see the alias
+/// the row was written with.
+export fn exception_row_resolved(row: String) -> String {
+  if Array::length(exception_kind_resolution_cell) == 0 {
+    row
+  } else {
+    let n = String::length(row)
+    let mut out = ""
+    let mut i = 0
+    while i < n {
+      let at = String::index_of(String::substring(row, i, n), "Exception[")
+      if at < 0 {
+        out = String::concat(out, String::substring(row, i, n))
+        i = n
+      } else {
+        let kind_start = i + at + 10
+        out = String::concat(out, String::substring(row, i, kind_start))
+        // The matching `]` of this bracket.
+        let mut depth = 1
+        let mut j = kind_start
+        while j < n && depth > 0 {
+          let c = String::char_code_at(row, j)
+          if c == 91 {
+            depth = depth + 1
+          } else if c == 93 {
+            depth = depth - 1
+          }
+          j = j + 1
+        }
+        if depth == 0 {
+          let kind = String::substring(row, kind_start, j - 1)
+          let r = exception_kind_resolution_spelling(kind)
+          out = String::concat(out, String::concat(if String::length(r) > 0 {
+            r
+          } else {
+            kind
+          }, "]"))
+          i = j
+        } else {
+          out = String::concat(out, String::substring(row, kind_start, n))
+          i = n
+        }
+      }
+    }
+    out
+  }
 }
 
 /// Alias- and kind-aware equality for effect-row labels and qualified Throw

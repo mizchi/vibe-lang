@@ -19,6 +19,9 @@ import @vibe/compiler/core {
   env_type_definition_origin,
   env_type_defs,
   exception_effect_labels_equal,
+  exception_kind_resolution_record,
+  exception_kind_resolutions_clear,
+  exception_kind_resolved,
   exception_label_kind,
   exception_throw_label_for_kind,
   expr_child_at,
@@ -2575,20 +2578,11 @@ fn exception_kinds_same(a: String, b: String) -> Bool {
   a == b || exception_kind_canonical(a) == exception_kind_canonical(b)
 }
 
-/// The written spelling of a row or arm kind -> the checker's resolution of
-/// it (aliases expanded, nested and parameterized ones included), recorded
-/// while the kind is validated. Cleared with the throw-site table.
-let kind_resolution_cell: Array[MutMap[String, String]] = [MutMap::new_string()]
-
-/// Record that the kind written `written` resolves to `resolved`.
+/// Record that the kind written `written` resolves to `resolved` (the
+/// table lives in core/exception_effect.vibe, so function-type assignability
+/// compares through it too).
 export fn exception_kind_alias_record(written: String, resolved: String) -> Unit {
-  let w = kind_without_spaces(written)
-  let r = kind_without_spaces(resolved)
-  if String::length(r) > 0 && w != r {
-    MutMap::set(Array::get(kind_resolution_cell, 0), w, r)
-  } else {
-    ()
-  }
+  exception_kind_resolution_record(written, resolved)
 }
 
 /// `kind` with whitespace dropped, its recorded resolution applied, and then
@@ -2597,12 +2591,7 @@ export fn exception_kind_alias_record(written: String, resolved: String) -> Unit
 /// callee's row from another module gets, whose kinds were not validated in
 /// this module's check.
 fn exception_kind_canonical(kind: String) -> String {
-  let k0 = kind_without_spaces(kind)
-  let k1 = match MutMap::get(Array::get(kind_resolution_cell, 0), k0) {
-    Some(r) => r,
-    None => k0
-  }
-  let mut cur = k1
+  let mut cur = exception_kind_resolved(kind)
   let mut pass = 0
   while pass < 8 {
     let next = kind_substitute_aliases(cur)
@@ -2836,7 +2825,7 @@ let typed_throw_kind_cell: Array[MutMap[Int, (String, String)]] = [
 /// so one module's sites never answer for another's.
 export fn typed_throw_kinds_clear() -> Unit {
   Array::set(typed_throw_kind_cell, 0, MutMap::new_int())
-  Array::set(kind_resolution_cell, 0, MutMap::new_string())
+  exception_kind_resolutions_clear()
 }
 
 /// Record that the `throw` at `off` (payload `payload`) throws kind `kind`.
