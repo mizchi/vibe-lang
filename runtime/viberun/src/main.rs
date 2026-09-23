@@ -25,9 +25,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use wasmtime::{
-    bail, format_err, AsContext, CallHook, Caller, Config, Engine, ExternRef, ExternType,
-    GuestProfiler, Instance, Linker, Module, ResourceLimiter, Result, Rooted, Store, StoreLimits,
-    StoreLimitsBuilder, Strategy, Trap, TypedFunc, Val, ValType,
+    bail, format_err, AsContext, AsContextMut, CallHook, Caller, Config, Engine, ExnRef,
+    ExnRefPre, ExnType, ExternRef, ExternType, GuestProfiler, Instance, Linker, Module,
+    ResourceLimiter, Result, Rooted, Store, StoreLimits, StoreLimitsBuilder, Strategy, Trap,
+    TypedFunc, Val, ValType,
 };
 
 mod commands;
@@ -1679,6 +1680,31 @@ fn run(args: Vec<String>) -> Result<i32> {
             // the shell script waiting on `$out.diag`) used the real
             // positional one, silently losing the diagnostic all over again.
             // Match read_arg_or_env's precedence: positional arg first.
+            // #2988: a stack overflow in the USER's program is not the
+            // checker's. Only the compiler (the module exporting `cli_main`)
+            // gets the type-checking message and its `.diag` sidecar.
+            // The compiler is what the launcher vouches for with
+            // VIBE_CRASH_DIAG_OUT (`invoke_cli`); a direct adapter-protocol
+            // run is recognised by a `cli_main` export with no `main`. An
+            // unrelated `cli_main` export in a user program is not enough
+            // (#3022 review).
+            // A test or bench executable keeps its `__test_*` / `__bench_*`
+            // exports next to whatever else it defines, so it is never the
+            // compiler even when it exports `cli_main` and no `main`.
+            let has_test_exports = instance.exports(&mut store).any(|e| {
+                let n = e.name();
+                n.starts_with("__test_") || n.starts_with("__bench_")
+            });
+            let running_compiler = std::env::var_os("VIBE_CRASH_DIAG_OUT").is_some_and(|v| !v.is_empty())
+                || (instance.get_export(&mut store, "cli_main").is_some()
+                    && instance.get_export(&mut store, "main").is_none()
+                    && !has_test_exports);
+            if matches!(e.downcast_ref::<Trap>(), Some(Trap::StackOverflow)) && !running_compiler {
+                eprintln!(
+                    "viberun: stack overflow while running `{wasm_path}`: the program recursed too deeply -- make the recursion a loop, or bound its depth"
+                );
+                return Ok(1);
+            }
             if matches!(e.downcast_ref::<Trap>(), Some(Trap::StackOverflow)) {
                 // #2858: under the verb protocol (`cli check <file>`) the
                 // positional args are the verb's own words, so `args[2]` is
@@ -2577,6 +2603,35 @@ fn vibe_read_packed_bytes(caller: &mut Caller<'_, HostState>, value: i64) -> Res
 }
 
 // Bump-allocate `s` on the guest heap and return it packed as `(ptr << 32) | len`.
+/// #2966: a fallible host operation raises the program's OWN vibe exception
+/// (the `__exception_throw_tag` export, the message as its payload) -- what
+/// the node runner's `throwVibeHostError` does -- so a `handle .. with
+/// Exception` around the call catches it under both runners. It used to be a
+/// host trap here, uncatchable, while node raised a catchable exception. A
+/// module that exports no tag keeps the trap.
+fn vibe_host_error(caller: &mut Caller<'_, HostState>, msg: String) -> wasmtime::Error {
+    let tag = match caller.get_export("__exception_throw_tag").and_then(|e| e.into_tag()) {
+        Some(tag) => tag,
+        None => return format_err!("{msg}"),
+    };
+    let payload = match vibe_alloc_packed_str(caller, &msg) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
+    let exn_ty = match ExnType::from_tag_type(&tag.ty(&*caller)) {
+        Ok(t) => t,
+        Err(e) => return e,
+    };
+    let pre = ExnRefPre::new(&mut *caller, exn_ty);
+    match ExnRef::new(&mut *caller, &pre, &tag, &[Val::I64(payload)]) {
+        Ok(exn) => match caller.as_context_mut().throw::<()>(exn) {
+            Err(e) => e,
+            Ok(()) => format_err!("{msg}"),
+        },
+        Err(e) => e,
+    }
+}
+
 fn vibe_alloc_packed_str(caller: &mut Caller<'_, HostState>, s: &str) -> Result<i64> {
     let bytes = s.as_bytes();
     let mem = vibe_memory(caller)?;
@@ -3026,8 +3081,15 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
             if let Some(counters) = caller.data_mut().host_fs_scope_mut() {
                 counters.read_file_calls += 1;
             }
-            let content =
-                fs::read(&path).map_err(|e| format_err!("vibe fs_read_file '{path}': {e}"))?;
+            let content = match fs::read(&path) {
+                Ok(c) => c,
+                Err(e) => {
+                    return Err(vibe_host_error(
+                        &mut caller,
+                        format!("fs_read_file failed for '{path}': {e}"),
+                    ))
+                }
+            };
             let s = String::from_utf8_lossy(&content).into_owned();
             if let Some(counters) = caller.data_mut().host_fs_scope_mut() {
                 counters.read_file_returned_bytes += s.len() as u64;
@@ -3066,7 +3128,12 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
         "fs_remove",
         |mut caller: Caller<'_, HostState>, path: i64| -> Result<()> {
             let path = vibe_read_packed_str(&mut caller, path)?;
-            fs::remove_file(&path).map_err(|e| format_err!("vibe fs_remove '{path}': {e}"))?;
+            if let Err(e) = fs::remove_file(&path) {
+                return Err(vibe_host_error(
+                    &mut caller,
+                    format!("fs_remove failed for '{path}': {e}"),
+                ));
+            }
             Ok(())
         },
     )?;
@@ -3121,11 +3188,13 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
         "fs_remove_tree",
         |mut caller: Caller<'_, HostState>, path: i64| -> Result<()> {
             let path = vibe_read_packed_str(&mut caller, path)?;
-            match fs::symlink_metadata(&path) {
-                Ok(meta) if meta.is_dir() => fs::remove_dir_all(&path)
-                    .map_err(|e| format_err!("vibe fs_remove_tree '{path}': {e}"))?,
-                Ok(_) => fs::remove_file(&path)
-                    .map_err(|e| format_err!("vibe fs_remove_tree '{path}': {e}"))?,
+            let removed = match fs::symlink_metadata(&path) {
+                Ok(meta) if meta.is_dir() => fs::remove_dir_all(&path),
+                Ok(_) => fs::remove_file(&path),
+                Err(e) => Err(e),
+            };
+            match removed {
+                Ok(()) => {}
                 // ONLY NotFound is swallowed, because that is all `force: true`
                 // swallows on the JS side -- `rmSync` rethrows EACCES, EPERM
                 // and I/O errors. A blanket `Err(_) => {}` here reintroduced
@@ -3134,7 +3203,12 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
                 // success under viberun while throwing under the JS runner,
                 // with the tree still standing in both (Codex on #2823).
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(format_err!("vibe fs_remove_tree '{path}': {e}")),
+                Err(e) => {
+                    return Err(vibe_host_error(
+                        &mut caller,
+                        format!("fs_remove_tree failed for '{path}': {e}"),
+                    ))
+                }
             }
             Ok(())
         },
@@ -3282,8 +3356,15 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
             if let Some(counters) = caller.data_mut().host_fs_scope_mut() {
                 counters.read_bytes_calls += 1;
             }
-            let data =
-                fs::read(&path).map_err(|e| format_err!("vibe fs_read_bytes '{path}': {e}"))?;
+            let data = match fs::read(&path) {
+                Ok(d) => d,
+                Err(e) => {
+                    return Err(vibe_host_error(
+                        &mut caller,
+                        format!("fs_read_bytes failed for '{path}': {e}"),
+                    ))
+                }
+            };
             if let Some(counters) = caller.data_mut().host_fs_scope_mut() {
                 counters.read_bytes_returned_bytes += data.len() as u64;
             }
@@ -3300,8 +3381,16 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
         "fs_read_dir",
         |mut caller: Caller<'_, HostState>, path: i64| -> Result<i64> {
             let path = vibe_read_packed_str(&mut caller, path)?;
-            let mut names: Vec<String> = fs::read_dir(&path)
-                .map_err(|e| format_err!("vibe fs_read_dir '{path}': {e}"))?
+            let entries = match fs::read_dir(&path) {
+                Ok(it) => it,
+                Err(e) => {
+                    return Err(vibe_host_error(
+                        &mut caller,
+                        format!("fs_read_dir failed for '{path}': {e}"),
+                    ))
+                }
+            };
+            let mut names: Vec<String> = entries
                 .filter_map(|ent| ent.ok())
                 .map(|ent| ent.file_name().to_string_lossy().into_owned())
                 .collect();

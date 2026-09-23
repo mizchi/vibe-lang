@@ -60,6 +60,7 @@ import @vibe/compiler/contract {
   collect_impl_type_defs,
   contract_directory_shared_import_prefix_text,
   contract_duplicate_decl_index,
+  contract_effect_names_line,
   contract_effective_decls,
   contract_facade_marker,
   contract_facade_source,
@@ -85,6 +86,8 @@ import @vibe/compiler/contract {
   require_line_source_clause,
   semver_parts,
   verify_publish_bump,
+  vpkg_contract_effects_prefix,
+  vpkg_contract_effects_sibling_slot,
   vpkg_shared_import_marker,
   vpkg_types_contract_of_source,
   vpkg_types_decl_marker
@@ -1565,7 +1568,7 @@ fn vpkg_directory_shared_import_prefix_fs(path: String) -> String with Exception
       // types module live under different roots when VIBE_BUILD_CACHE_DIR
       // rebases the caches, so one can survive a clean of the other. A
       // missing file falls through to full regeneration (idempotent write).
-      let cached_hit = if String::starts_with(cached_prefix, "v3\n") {
+      let cached_hit = if String::starts_with(cached_prefix, "v5\n") {
         let rest = cached_prefix[3: String::length(cached_prefix)]
         let nl = String::index_of(rest, "\n")
         if nl < 0 {
@@ -1614,7 +1617,7 @@ fn vpkg_directory_shared_import_prefix_fs(path: String) -> String with Exception
       } else {
         ""
       }
-      if cached_hit != "" || String::starts_with(cached_prefix, "v3\n\n") {
+      if cached_hit != "" || String::starts_with(cached_prefix, "v5\n\n") {
         cached_hit
       } else {
         let vpkg_raw = cache_read_source_fs(vpkg_path)
@@ -1631,14 +1634,18 @@ fn vpkg_directory_shared_import_prefix_fs(path: String) -> String with Exception
         // a line:col computed here is the line:col in the real contract too.
         let vpkg_decl_pos = contract_type_family_decl_positions(vpkg_pin_blanked, vpkg_extra, vpkg_stmt_at, vpkg_starts)
         let types_path = ensure_vpkg_types_module_fs(vpkg_path, vpkg_extra, vpkg_opaques, vpkg_decl_pos)
-        let prefix_text = if types_path == "" {
+        // #2968: the contract's effect and effectset names, for the unknown-
+        // effect check in this sibling (v5 of this cache carries it, with ops).
+        let (_, vpkg_effect_defs) = classify_contract_stmts(vpkg_extra)
+        let effects_line = contract_effect_names_line(vpkg_effect_defs)
+        let prefix_text = String::concat(effects_line, if types_path == "" {
           shared_text
         } else {
           let (_, vpkg_type_defs) = classify_contract_stmts(vpkg_extra)
           let types_rel = relative_spelling_from_dir(dir_of_path(vpkg_path), types_path)
           String::concat(contract_types_module_line("import", types_rel, contract_type_family_defs(vpkg_type_defs)), shared_text)
-        }
-        Fs::write_file(prefix_cache_path, String::concat("v3\n", String::concat(types_path, String::concat("\n", prefix_text))))
+        })
+        Fs::write_file(prefix_cache_path, String::concat("v5\n", String::concat(types_path, String::concat("\n", prefix_text))))
         prefix_text
       }
     }
@@ -1649,6 +1656,24 @@ fn vpkg_directory_shared_import_prefix_fs(path: String) -> String with Exception
 /// `vpkg_shared_import_marker` so re-ingesting an already-ingested source
 /// (routine: `collect_source_groups_fs` re-ingests every source it collects,
 /// #740) does not prepend the inherited imports a second time.
+/// An identifier-safe, injective-enough suffix for a sibling path: its
+/// fingerprint with every non-identifier character replaced.
+fn vpkg_sibling_ident(path: String) -> String {
+  let fp = compact_string_fingerprint(path)
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < String::length(fp) {
+    let c = String::char_code_at(fp, i)
+    if (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+      StringBuilder::push(sb, fp[i: i + 1])
+    } else {
+      StringBuilder::push(sb, "_")
+    }
+    i = i + 1
+  }
+  StringBuilder::freeze(sb)
+}
+
 fn apply_vpkg_directory_shared_imports_fs(path: String, pin_blanked: String) -> String with Exception + Fs {
   if String::starts_with(pin_blanked, vpkg_shared_import_marker) {
     pin_blanked
@@ -1657,7 +1682,12 @@ fn apply_vpkg_directory_shared_imports_fs(path: String, pin_blanked: String) -> 
     if prefix == "" {
       pin_blanked
     } else {
-      String::concat(vpkg_shared_import_marker, String::concat(prefix, pin_blanked))
+      // #2968: the effect-names carrier is a private `let`; give it this
+      // sibling's own suffix so two siblings never collide in a merge.
+      let slot = String::concat(vpkg_contract_effects_prefix, String::concat(vpkg_contract_effects_sibling_slot, "__"))
+      let sib = String::concat(vpkg_contract_effects_prefix, String::concat(vpkg_sibling_ident(path), "__"))
+      let own_prefix = String::join(String::split(prefix, slot), sib)
+      String::concat(vpkg_shared_import_marker, String::concat(own_prefix, pin_blanked))
     }
   }
 }

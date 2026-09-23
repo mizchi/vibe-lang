@@ -716,7 +716,14 @@ export fn evidence_dict_pass(stmts: Array[Stmt], entry_name: String) -> Array[St
             m = String::concat(m, "` this handle covers has to be visible to it, and one of them is not. No call in the handled body itself is opaque to this pass, so look one level down -- in the functions the body calls that carry `with ")
             m = String::concat(m, String::concat(bad, "`, a `perform "))
             m = String::concat(m, String::concat(bad, "` reached through a parameter or through a binding that is not a top-level `fn` is invisible here. Give that parameter or binding an effect row (`with "))
-            String::concat(m, String::concat(bad, "`), or move the `handle` into the function that performs. (ADR-0076 evidence-passing migration.)"))
+            m = String::concat(m, String::concat(bad, "`), or move the `handle` into the function that performs."))
+            // #2994: name the edge to follow, so the message carries a position.
+            // The `(here: the call to 'X')` spelling is the one the culprit
+            // marker verification keys on (see the branch above).
+            if String::length(culprit) > 0 {
+              m = String::concat(m, String::concat(" Start from the handled body's first call (here: the call to '", String::concat(culprit, "').")))
+            }
+            String::concat(m, " (ADR-0076 evidence-passing migration.)")
           }
           let marked = if culprit_off >= 0 {
             if String::length(culprit) > 0 {
@@ -2093,6 +2100,31 @@ fn edp_nonerror_handle_desc_arms(arms: Array[(Pat, Expr)]) -> String {
 /// is "" when the callee is not a bare identifier (an arbitrary callee
 /// expression); offset is -1 when the node carries none (synthesized AST).
 
+/// #2994: the first call to a bare name with a source offset, depth-first.
+fn edp_first_named_call(expr: Expr) -> (String, Int) {
+  match expr {
+    ECall(EIdent(nm, ioff), _, _) => if ioff >= 0 {
+      (nm, ioff)
+    } else {
+      edp_first_named_call_in(expr_children(expr))
+    },
+    _ => edp_first_named_call_in(expr_children(expr))
+  }
+}
+
+fn edp_first_named_call_in(es: Array[Expr]) -> (String, Int) {
+  let mut i = 0
+  let mut nm = ""
+  let mut off = 0 - 1
+  while i < Array::length(es) && off < 0 {
+    let (n, o) = edp_first_named_call(Array::get(es, i))
+    nm = n
+    off = o
+    i = i + 1
+  }
+  (nm, off)
+}
+
 fn edp_first_opaque_call_info(expr: Expr, inert: MutSet[String], fn_names: MutSet[String]) -> (Bool, String, Int) {
   match expr {
     ECall(callee, args, off) => match callee {
@@ -2143,7 +2175,15 @@ fn edp_live_handle_opaque_info_expr(expr: Expr, ename: String, inert: MutSet[Str
   match expr {
     EHandle(body, arms) => if edp_handle_own_effect_desc(arms) == ename {
       let (opaque, nm, off) = edp_first_opaque_call_info(body, inert, fn_names)
-      (true, opaque, nm, off)
+      if opaque {
+        (true, opaque, nm, off)
+      } else {
+        // #2994: no call in the body is opaque, so the invisible perform is
+        // one level down. Anchor at the body's first named call -- the edge
+        // the reader has to follow -- instead of reporting no position.
+        let (dn, doff) = edp_first_named_call(body)
+        (true, false, dn, doff)
+      }
     } else {
       edp_live_handle_opaque_info_exprs(expr_children(expr), ename, inert, fn_names)
     },

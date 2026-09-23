@@ -688,11 +688,13 @@ import @vibe/builtin {
   AsyncIter::map
 }
 
-let values = [1, 2, 3, 4]
-  |> Array::iter
-  |> AsyncIter::filter((x: Int) -> Bool { x % 2 == 0 })
-  |> AsyncIter::map((x) -> { x * 10 })
-  |> AsyncIter::collect
+fn evens_times_ten() -> Array[Int] with Async {
+  [1, 2, 3, 4]
+    |> Array::iter
+    |> AsyncIter::filter((x: Int) -> Bool { x % 2 == 0 })
+    |> AsyncIter::map((x) -> { x * 10 })
+    |> AsyncIter::collect
+}
 ```
 
 `AsyncIter::map`, `filter`, `take`, and `take_while` are lazy. `collect`,
@@ -1265,7 +1267,10 @@ let w_check = {
 >   indexing** work standalone (#760/#960): `Map::get` / `has_key` / `set` /
 >   `keys` and the `m["k"]` index sugar all lower correctly -- but `set` is
 >   FUNCTIONAL (`let m2 = Map::set(m, k, v)`), so writing it as a statement
->   updates nothing and nothing warns. The old
+>   updates nothing and nothing warns. **`Map::get` / `m[k]` on a missing key
+>   traps** (#2990) -- it used to answer the zero bit pattern typed as the value
+>   type (`0`, `""`, an Array at address 0), indistinguishable from data. Guard
+>   with `Map::has_key`, or use `@vibe/core`'s `get` for an `Option`. The old
 >   `map { ... }` literal was removed in #960 (it now reports a located parse
 >   error naming the replacement API). (`lib/@vibe/core`'s `get`/`get_or`/
 >   `has_key`/`keys`/`values` remain available for a richer Map API, #766.)
@@ -1299,6 +1304,21 @@ its declarations and `handle` expressions.
 | host-provider metadata | host / provider outside the Wasm boundary | `Fs` `Http` `Socket` `Env` `Console` (`Stdin`/`Stdout`/`Stderr` = still-accepted legacy labels, same host imports) `Process` `Profiler` |
 | entry-boundary exception policy | entry boundary diagnoses an escaping exception | `Exception` / `Exception[E]` (`Error` was retired as a row spelling in #1461) |
 | runtime scheduling policy | runtime itself | `Async` |
+
+**`Async` is charged like any other label** (#2967): a caller of a `with Async`
+function declares `Async` in its own row (`main` writes `allows Async`), and a
+`test` / `bench` block has it in its ambient row. It used to be decorative: a
+row-less caller was accepted. Builtins carrying `Async` stay exempt from the
+row check, because the runtime discharges them.
+
+**Every row label must name an effect** (#2968): a declared or imported
+`effect`, an `effectset`, a standard provider, `Exception` / `Exception[K]`,
+`Async`, or a row variable. `with Excepton` is refused as an unknown effect that
+suggests `Exception`, `with Fs::no_such_op` names the missing operation, and
+a handler arm for an undeclared effect is refused the same way. An exception
+kind may not name a type parameter of its declaration (`with Exception[T]`,
+#3002): a row is never substituted at a call site, so throw the value inside the
+generic function's own `handle`, or return it as a `Result`.
 
 The ordered default and cache-safe owners preserve their existing output.
 At a program entry (`main` or `_start`), the checker admits only the union of
@@ -2148,6 +2168,27 @@ prelude wrappers: `add`, `sub`, `mul`, `div`, `eq`, `lt`, `not`, `and`, `or`.
 `257` → byte 1, `-1` → byte 255, `1000` → byte 232. A value above 127 is a
 raw byte, not a code point (ADR-0098); UTF-8-encoding a code point is a
 different, currently nonexistent function.
+
+**Slicing clamps; indexing traps** (#2997). `String::substring(s, start, end)`,
+`s[start:end]` and `Array::slice(xs, start, end)` clamp both bounds into
+`0..length`, and an `end` before `start` gives the empty slice -- nothing traps:
+`"abcdef"[2:10]` is `"cdef"`, `Array::slice([3, 1, 2], -1, 2)` is `[3, 1]`,
+`Array::slice([3, 1, 2], 2, 1)` is `[]`. A single-element read is the opposite:
+`Array::get(xs, -1)` traps with `index -1 out of bounds for length 3`.
+
+**A shift count saturates at 63** (#2978): `x << n` is `0` and `x >> n` is the
+sign (`0` or `-1`) for any `n >= 63` and for a negative `n`, on every lane. It
+used to follow wasm's mod-64 masking of the i64 representation, so `1 << 63`
+was `0` while `1 << 64` came back as `1`.
+
+**`Double::to_int` truncates toward zero and saturates** (#2978): a value above
+the `Int` range (and `+Infinity`) answers `Int::max_value`, below it (and
+`-Infinity`) `Int::min_value`, and `NaN` answers `0`, on every lane. It used to
+answer `0` for every out-of-range value.
+
+**`Env::get(name)` answers `""` for an UNSET variable** (#2995), so an unset
+variable and one set to the empty string read the same. A program that must
+tell them apart cannot do so through `Env::get` today.
 
 **Array** (builtin — callable bare, no import):
 

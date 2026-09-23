@@ -2298,7 +2298,7 @@ if [ -s "$eff639dir/partial.wasm" ]; then
   echo "[compiler-gate] FAIL: err_effect_handle_partial_discharge.vibe compiled successfully -- must be rejected" >&2
   exit 1
 fi
-if ! grep -qF "missing { Fs } (declared { Ask, Ask::Get }, requires { Ask, Ask::Get, Fs })" "$eff639dir/partial.wasm.diag" 2>/dev/null; then
+if ! grep -qF "missing { Fs } (no 'with' clause, requires { Fs })" "$eff639dir/partial.wasm.diag" 2>/dev/null; then
   echo "[compiler-gate] FAIL: err_effect_handle_partial_discharge.vibe did not produce the expected diagnostic" >&2
   cat "$eff639dir/partial.wasm.diag" >&2 2>/dev/null || true
   exit 1

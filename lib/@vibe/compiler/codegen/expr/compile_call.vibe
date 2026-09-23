@@ -381,7 +381,9 @@ fn cc_map_get_linear_scan(buf: Bytes, map_local: Int, key_local: Int, count_loca
   emit_br(buf, 0)
   emit_end(buf)
   emit_end(buf)
-  emit_i64_const(buf, 0)
+  // #2990: a miss traps instead of answering the zero bit pattern typed as the
+  // value type (`0`, `""`, an Array at address 0). `Map::has_key` is the guard.
+  bytebuf_push(buf, 0)
   emit_end(buf)
 }
 
@@ -4230,16 +4232,11 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       // CLAUDE.md), not trunc_f64_s's own +-2^63 domain, whenever the result
       // is going to be tagged. Anything the tag can't carry saturates to 0,
       // consistent with the NaN saturation below instead of trunc'ing.
-      let bound_hi = if ctx.enable_rc {
-        1136656384
-      } else {
-        1138753536
-      }
-      let neg_bound_hi = if ctx.enable_rc {
-        3284140032
-      } else {
-        3286237184
-      }
+      // #2978: the Int range is +-2^62 on every lane (#1877), so both bounds
+      // are 2^62; a value outside it saturates to Int::max_value /
+      // Int::min_value, and NaN answers 0.
+      let bound_hi = 1137704960
+      let neg_bound_hi = 3285188608
       // NaN: x != x is only true for NaN.
       emit_local_get(buf, val_l)
       emit_f64_reinterpret_i64(buf)
@@ -4265,10 +4262,10 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_f64_reinterpret_i64(buf)
       emit_i64_trunc_f64_s(buf)
       emit_else(buf)
-      emit_i64_const(buf, 0)
+      emit_i64_const(buf, 0 - 4611686018427387903 - 1)
       emit_end(buf)
       emit_else(buf)
-      emit_i64_const(buf, 0)
+      emit_i64_const(buf, 4611686018427387903)
       emit_end(buf)
       emit_end(buf)
       if ctx.enable_rc {
@@ -5535,7 +5532,8 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
         emit_i64_const(buf, 0)
         emit_i64_lt_s(buf)
         emit_if_i64(buf)
-        emit_i64_const(buf, 0)
+        // #2990: see `cc_map_get_linear_scan`.
+        bytebuf_push(buf, 0)
         emit_else(buf)
         emit_local_get(buf, map_local)
         emit_i32_wrap_i64(buf)

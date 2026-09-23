@@ -391,17 +391,33 @@ fn scan_interp_end(s: String, len: Int, idx: Int, depth: Int) -> Int with Except
   let mut found = -1
   while out < len && found < 0 {
     let c = String::char_code_at(s, out)
-    if c == '{' {
-      current_depth = current_depth + 1
-    } else if c == '}' {
-      if current_depth == 1 {
-        found = out
-      } else {
-        current_depth = current_depth - 1
+    if c == '"' {
+      // #2973: a string literal INSIDE the interpolated expression is skipped
+      // whole, so a brace in it (`"\{"{"}"`) does not count toward the
+      // interpolation's own braces.
+      out = skip_interp_string_literal(s, len, out + 1)
+    } else if c == 39 {
+      // A char literal (`'{'`) likewise.
+      out = skip_interp_char_literal(s, len, out + 1)
+    } else if c == '/' && out + 1 < len && String::char_code_at(s, out + 1) == '/' {
+      // A line comment in the expression runs to the newline; a quote or a
+      // brace inside it is comment text, not a nested string or a brace.
+      while out < len && String::char_code_at(s, out) != 10 {
+        out = out + 1
       }
-    }
-    if found < 0 {
-      out = out + 1
+    } else {
+      if c == '{' {
+        current_depth = current_depth + 1
+      } else if c == '}' {
+        if current_depth == 1 {
+          found = out
+        } else {
+          current_depth = current_depth - 1
+        }
+      }
+      if found < 0 {
+        out = out + 1
+      }
     }
   }
   if found >= 0 {
@@ -409,6 +425,50 @@ fn scan_interp_end(s: String, len: Int, idx: Int, depth: Int) -> Int with Except
   } else {
     throw("unterminated string interpolation")
   }
+}
+
+/// #2973: the index just past the string literal whose body starts at `idx`,
+/// honouring escapes and any interpolation nested in it.
+fn skip_interp_string_literal(s: String, len: Int, idx: Int) -> Int with Exception {
+  let mut i = idx
+  let mut done = false
+  while !done {
+    if i >= len {
+      throw("unterminated string interpolation")
+    }
+    let c = String::char_code_at(s, i)
+    if c == 92 {
+      if i + 1 < len && String::char_code_at(s, i + 1) == '{' {
+        i = scan_interp_end(s, len, i + 2, 1) + 1
+      } else {
+        i = i + 2
+      }
+    } else if c == '"' {
+      i = i + 1
+      done = true
+    } else {
+      i = i + 1
+    }
+  }
+  i
+}
+
+/// #2973: the index just past the char literal whose body starts at `idx`.
+fn skip_interp_char_literal(s: String, len: Int, idx: Int) -> Int {
+  let mut i = idx
+  let mut done = false
+  while !done && i < len {
+    let c = String::char_code_at(s, i)
+    if c == 92 {
+      i = i + 2
+    } else if c == 39 {
+      i = i + 1
+      done = true
+    } else {
+      i = i + 1
+    }
+  }
+  i
 }
 
 /// #997: 1-based "line L:C: " prefix for a 0-based char offset, matching the
@@ -955,8 +1015,81 @@ fn lex_decimal(s: String, len: Int, i: Int) -> (Token, Int) with Exception {
   } else {
     check_no_scientific_suffix(s, len, int_end)
     let int_str = s[i: int_end];
-    (TInt(parse_int_from_string(int_str)), int_end)
+    if int_str == "4611686018427387904" && minus_precedes(s, i) {
+      // #2996: `Int::min_value` is -2^62, one past the positive bound, so its
+      // magnitude alone overflows and `-4611686018427387904` was refused. The
+      // magnitude lexes as -2^62 when a `-` precedes it: negating that is
+      // -2^62 again under the 63-bit wrap (#1877), and a binary `a - 2^62` is
+      // the same value modulo 2^63, so both readings of the `-` are exact.
+      // Without the `-` it stays an overflow -- a bare 2^62 would be wrong.
+      (TInt(0 - 4611686018427387903 - 1), int_end)
+    } else {
+      (TInt(parse_int_from_string(int_str)), int_end)
+    }
   }
+}
+
+/// #2996: is the nearest code character before `i` a `-`? A line break does
+/// not end the expression after a prefix `-`, so it is skipped, and so is a
+/// whole `//` comment on an earlier line: the token stream holds neither. A
+/// `-` inside such a comment is comment text, and reading it as a sign would
+/// give a bare overflowing literal a value.
+fn minus_precedes(s: String, i: Int) -> Bool {
+  let mut j = i - 1
+  let mut done = false
+  let mut result = false
+  while !done {
+    if j < 0 {
+      done = true
+    } else {
+      let c = String::char_code_at(s, j)
+      if c == ' ' || c == '\t' || c == 13 {
+        j = j - 1
+      } else if c == 10 {
+        // Continue on the previous line, from the end of its code.
+        let mut ls = j - 1
+        while ls >= 0 && String::char_code_at(s, ls) != 10 {
+          ls = ls - 1
+        }
+        j = line_code_end(s, ls + 1, j) - 1
+      } else {
+        result = c == '-'
+        done = true
+      }
+    }
+  }
+  result
+}
+
+/// Where the line `[start, end)` stops being code: at its first `//` outside a
+/// string or char literal, else at `end`.
+fn line_code_end(s: String, start: Int, end: Int) -> Int {
+  let mut cut = end
+  let mut in_str = false
+  let mut k = start
+  while k < end && cut == end {
+    let c = String::char_code_at(s, k)
+    if in_str {
+      if c == '\\' {
+        k = k + 1
+      } else if c == '"' {
+        in_str = false
+      }
+    } else if c == '"' {
+      in_str = true
+    } else if c == '\'' {
+      // A char literal, so a quote inside it (`'"'`) opens no string.
+      if k + 1 < end && String::char_code_at(s, k + 1) == '\\' {
+        k = k + 3
+      } else {
+        k = k + 2
+      }
+    } else if c == '/' && k + 1 < end && String::char_code_at(s, k + 1) == '/' {
+      cut = k
+    }
+    k = k + 1
+  }
+  cut
 }
 
 fn lex_number(s: String, len: Int, i: Int) -> (Token, Int) with Exception {
@@ -1295,6 +1428,12 @@ let last_unexpected_token_pos_cell: Array[Int] = Array::slice([0], 0, 0)
 export fn remember_parse_source(source: String) -> Unit {
   Array::truncate(last_parse_source_cell, 0)
   Array::push(last_parse_source_cell, source)
+}
+
+/// #2974: the source text the current parse is reading, for a fragment parse
+/// (an interpolation's `\{..}`) that locates its own errors.
+export fn remembered_parse_source() -> String {
+  last_parse_source()
 }
 
 fn last_parse_source() -> String {

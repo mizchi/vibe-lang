@@ -2248,7 +2248,9 @@ let covWasmBytesGlobal = null;
 // staleness in a --daemon/long-running context isn't a concern here — the
 // stack-overflow catch only fires once, ending the process).
 let passthroughArgsGlobal = null;
-
+// #2988: the export being run, so a host-level failure can say whether it hit
+// the COMPILER (`cli_main`) or the user's program (`main` / `_start` / a test).
+let currentInvokeGlobal = null;
 // #cov: dump the function/branch hit bitmaps from the (possibly trapped)
 // instance's live memory to VIBE_COV_OUT. Called both after a clean run AND from
 // the top-level catch — a compile that throws (parse/type error) still exercised
@@ -3914,6 +3916,7 @@ async function main() {
     let result;
     let isSelfhost = false;
     for (const invoke of invokes) {
+      currentInvokeGlobal = invoke;
       ({ result, isSelfhost } = invokeExport(invoke));
     }
     const elapsedUs = Number(process.hrtime.bigint() - profileStartNs) / 1000;
@@ -4290,6 +4293,16 @@ main().catch((err) => {
   // one, silently losing the diagnostic all over again. Match
   // read_arg_or_env's precedence: positional arg (passthroughArgsGlobal[1])
   // first.
+  if (err instanceof RangeError && /call stack/i.test(err.message || "") && currentInvokeGlobal && currentInvokeGlobal !== "cli_main") {
+    // #2988: the overflow happened while RUNNING the user's program, not while
+    // compiling it. The compiler-side message below ("one expression nests too
+    // deeply ... split the file") sent the reader to a file that was fine.
+    console.error(`[vibe] stack overflow while running \`${currentInvokeGlobal}\`: the call depth exceeded the host stack -- usually unbounded or very deep recursion. Make the recursion iterative (a loop, or a tail call with an accumulator), or raise the host stack with VIBE_NODE_STACK_SIZE=<KB>.`);
+    try {
+      annotateTrapWithLinemap(err, covWasmBytesGlobal);
+    } catch (_) {}
+    process.exit(1);
+  }
   if (err instanceof RangeError && /call stack/i.test(err.message || "")) {
     // #2858: under the verb protocol the positional args are the verb's own
     // words, so the launcher names the crash sidecar explicitly

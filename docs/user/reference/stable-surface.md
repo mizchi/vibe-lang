@@ -78,7 +78,10 @@ of each item is [spec/syntax.md](syntax.md) and the
 
 ### 2.1 Values and types
 - Primitives: `Int` (63-bit tagged, literals up to 2^62-1, arithmetic wraps as
-  63-bit two's complement — ADR-0006, #1877), `Float` (32-bit), `Double`
+  63-bit two's complement — ADR-0006, #1877; a shift count of 63 or more, or a
+  negative one, saturates: `<<` gives `0`, `>>` gives the sign; `Double::to_int`
+  saturates to `Int::max_value` / `Int::min_value` and maps NaN to `0` — #2978),
+  `Float` (32-bit), `Double`
   (64-bit), `String` (a **byte** string with byte-offset indexing, ADR-0098),
   `Char` (an `Int` alias), `Bool`, `Unit`.
 - Literals: integers (decimal / `0x` hex), floats (`1.5f` / `3.14`), strings
@@ -127,7 +130,18 @@ of each item is [spec/syntax.md](syntax.md) and the
 ### 2.2 Bindings and mutability
 - `let` (immutable), `let rec` (recursive), `let mut` (block-scoped mutable,
   ADR-0017).
-- Destructuring `let (a, b) = ...` / `let Some(v) = e else { ... }`.
+- Destructuring `let (a, b) = ...`, and the refutable-binding form
+  `guard value is PAT else { .. }`, whose `else` must leave the function
+  (#1283). `let PAT = value else { .. }` (let-else) is **not** part of the
+  surface -- the parser refuses it and names `guard` as its replacement.
+
+```vibe
+let first_or: (Option[Int], Int) -> Int = (opt, fallback) -> {
+  let (a, b) = (1, 2)
+  guard opt is Some(v) else { return fallback }
+  a + b + v
+}
+```
 - The five mutation styles (see the cheatsheet's table), `struct { mut field }`
   (ADR-0052 — despite that ADR's wasm-gc framing, these run on the linear lane
   too; measured 2026-08-19).

@@ -253,34 +253,42 @@ annotated parameter は follow-up で閉じた。pattern binder と field 射影
   `lc_row_has_error` が拾い、診断付き process failure へ変換する
   (`lc_wrap_entry_error_boundary`)。
 
-**throw payload の kind 解決範囲**: effect pass は型付けを持たない AST walk
-なので、payload の kind は syntax と module 環境から復元する。解決できるのは:
+**How far a throw payload's kind resolves.** The effect pass is an untyped AST
+walk, so it rebuilds a payload's kind from syntax and the module environment.
+It resolves:
 
 | payload | kind |
 | --- | --- |
-| `throw("boom")` / `throw(1)` / `throw(1.5)` / `throw(true)` | リテラルの型 |
-| `throw(NotFound("cfg"))` | constructor の結果型 |
-| `throw(Eof)` | nullary constructor |
-| `throw(make_err(x))` | top-level 関数の戻り値型 |
-| `throw(Wrapped::{ .. })` | struct literal の型 |
-| `let e = NotFound("cfg"); throw(e)` | initializer から (再帰的に) |
-| `fn f(e: IoError) { throw(e) }` | parameter annotation の head 名 |
-| `match r { Err(e) => throw(e) }` | **解決不能** (pattern binder) |
-| `throw(r.cause)` | **解決不能** (field 射影) |
+| `throw("boom")` / `throw(1)` / `throw(1.5)` / `throw(true)` | the literal's type |
+| `throw(NotFound("cfg"))` | the constructor's result type |
+| `throw(Eof)` | a nullary constructor |
+| `throw(make_err(x))` | a top-level function's return type |
+| `throw(Wrapped::{ .. })` | the struct literal's type |
+| `let e = NotFound("cfg"); throw(e)` | from the initializer (recursively) |
+| `let e: IoError = v; throw(e)` | the annotation's head name (#2964) |
+| `fn f(e: IoError) { throw(e) }` | the parameter annotation's head name |
+| `match r { Err(e) => throw(e) }` | **unresolved** (pattern binder) |
+| `throw(r.cause)` | **unresolved** (field projection) |
 
-local binder は #1344 の v1 では見えていなかったが、**#1324 の移行が生む形
-(`let e = ..; Err(e)` → `let e = ..; throw(e)`) がちょうどそれ**だったため
-follow-up で閉じた。実装は `(name, kind)` の scope を perform walk に通す形で、
-既に同じように walk に乗っている `ov_names`/`ov_effs` と同じ機構
-(`throw_kind_bind*`, checker/checker_effects.vibe)。
+Local binders are carried as a `(name, kind)` scope threaded through the
+perform walk (`throw_kind_bind*`, checker/checker_effects.vibe). A binder the
+pass cannot resolve is still put in scope with kind `""`, because a name
+missing from the scope falls through to the module table, where a same-named
+top-level binding would answer for the local. Pattern binders, `for` elements
+and indices, `loop` params, unannotated parameters, `let rec`, and an APPLIED
+local (the scope records a local's value kind, not its result kind) are all of
+this kind.
 
-kind 不明は「どの exception row でも通る」に倒してあるので、この隙間が
-**誤検出を生むことはなく、検出漏れだけを生む**。その性質を保つために、
-**解決できない binder も明示的に kind `""` で scope に載せる**: lookup は
-名前が scope に無いとき module 表へ落ちるので、載せないと同名の top-level
-binding が local の代わりに答えてしまう (それは誤検出になる)。pattern binder、
-`for` の要素・index、`loop` param、無注釈 parameter、`let rec`、適用された
-local (scope が持つのは値の kind であって結果の kind ではない) がこれに当たる。
+**An unresolved kind is gradual only under the erased row** (#2964, #3015). A
+row that names exception kinds and no erased `Exception` is a promise about
+which kinds leave the function, so an unresolved requirement is refused there:
+a `throw` of an unresolved payload, a call to a callback typed `with Exception`,
+and a call to a callee declared `with Exception`. The message names the edits:
+annotate the payload (`let e: K = ..`), give the callback or callee a kinded
+row, or declare the erased `with Exception`. Before this, the unresolved kind
+was compatible with every row, and a function declared `with
+Exception[IoError]` could throw a `ParseError` past a caller that handled
+exactly `IoError`. The erased spelling keeps the old behaviour.
 
 同じ理由で、#1340 が残した「row 要素の完全な OperationRef 正規化」も
 `Exception[E]` に限って先取りしただけで、他の generic effect

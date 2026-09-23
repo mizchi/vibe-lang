@@ -175,6 +175,44 @@ fn row_as_source(row: String) -> String {
   acc
 }
 
+/// #2964: every missing label is the ERASED exception (`Exception` /
+/// `Exception::Throw`).
+fn missing_is_erased_exception_only(missing: String) -> Bool {
+  let parts = String::split(missing, ",")
+  let mut ok = Array::length(parts) > 0
+  let mut i = 0
+  while i < Array::length(parts) {
+    let p = String::trim(Array::get(parts, i))
+    if p != "Exception" && p != "Exception::Throw" {
+      ok = false
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ok
+}
+
+/// #2964: the declared row names a kinded exception and no erased one.
+fn declared_is_kinded_exception(declared: String) -> Bool {
+  let parts = String::split(declared, ",")
+  let mut kinded = false
+  let mut erased = false
+  let mut i = 0
+  while i < Array::length(parts) {
+    let p = String::trim(Array::get(parts, i))
+    if String::starts_with(p, "Exception[") {
+      kinded = true
+    } else if p == "Exception" || p == "Exception::Throw" {
+      erased = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  kinded && !erased
+}
+
 export fn effect_error_to_string(err: EffectError) -> String {
   match err {
     EEEffectfulCallOutsideEffect(name) => String::concat("effectful call outside effectful context: ", name),
@@ -223,7 +261,12 @@ export fn effect_error_to_string(err: EffectError) -> String {
       // `example` block) GRANTS its row, so the edit it is told is `allows`;
       // a called function requires, so its edit stays `with`.
       let entry_block = entry_block_display_name(fname)
-      let hint = if String::length(fname) == 0 {
+      let hint = if missing_is_erased_exception_only(missing) && declared_is_kinded_exception(declared) {
+        // #2964 / #3015: the requirement is an exception whose KIND this check
+        // could not resolve, under a row that promises kinds. Adding the erased
+        // label is one honest edit; the others keep the kinded promise.
+        "\nhint: the kind of this exception is not known here, and a kinded row promises exactly its kinds -- give the thrown value a type (`let e: K = ..` then `throw(e)`), give the callback or callee a kinded `with Exception[K]` row, or declare the erased `with Exception`"
+      } else if String::length(fname) == 0 {
         String::concat("\nhint: add 'with ", String::concat(row_as_source(required), "' to the enclosing function"))
       } else if String::length(entry_block) > 0 {
         String::concat("\nhint: add 'allows ", String::concat(row_as_source(required), String::concat("' to ", entry_block)))
@@ -2381,7 +2424,36 @@ fn exception_effect_labels(labels: Array[String]) -> Array[String] {
 fn closure_arg_declared(arg: Expr, declared: Array[String], callee: String, lexical_callee: Option[Array[String]], index: Int) -> Array[String] {
   match arg {
     EFn(_, _, _, _, _, _) => if !under_kinded_handle(declared) {
-      declared
+      // #3013: outside a kinded handle the literal inherited the ENCLOSING row,
+      // so `takes_int(() -> Int { throw("hello") })` inside a function declaring
+      // `Exception[String]` passed although `takes_int`'s parameter declares
+      // `Exception[Int]` -- the String landed in `takes_int`'s `Int` arm. A
+      // named argument is refused for this by the type checker. When the
+      // parameter's row names exception KINDS, those kinds are what the
+      // literal's body may throw; every other label still comes from the
+      // enclosing row, as before.
+      match lexical_callee {
+        Some(_) => declared,
+        None => match MutMap::get(Array::get(callee_sig_index, 0), callee) {
+          None => declared,
+          Some(si) => {
+            let prows = Array::get(callee_sig_param_effs, si)
+            if index >= Array::length(prows) {
+              declared
+            } else {
+              let prow = Array::get(prows, index)
+              let kinds = exception_effect_labels(prow)
+              if !row_has_erased_exception(prow) && Array::length(kinds) > 0 {
+                labels_union(labels_union(labels_without_exception_family(declared), [
+                  kinded_handle_marker()
+                ]), kinds)
+              } else {
+                declared
+              }
+            }
+          }
+        }
+      }
     } else {
       match lexical_callee {
         Some(_) => declared,
@@ -2414,6 +2486,12 @@ fn closure_arg_declared(arg: Expr, declared: Array[String], callee: String, lexi
     },
     _ => declared
   }
+}
+
+/// #2964 / #3015: does the row name exception kinds and no erased
+/// `Exception` label?
+fn row_is_kinded_exception_only(labels: Array[String]) -> Bool {
+  !row_has_erased_exception(labels) && Array::length(exception_effect_labels(labels)) > 0
 }
 
 /// Does a row carry the ERASED exception effect (`Exception` /
@@ -2504,7 +2582,13 @@ fn decl_authorizes_effect(labels: Array[String], eff_name: String) -> Bool {
     // only a requirement of exactly its kind is authorized; an unresolved
     // kind ("") is not, and neither is another kind (the outer row's
     // exception labels were stripped for the body, see the EHandle arm).
-    let strict = effect_row_has_label(Some(labels), kinded_handle_marker())
+    // #2964 / #3015: a row that declares ONLY kinded exception labels is a
+    // promise about which kinds leave the function, so it is strict too. The
+    // gradual rule admitted an unresolved requirement against it -- a `throw`
+    // of a pattern binder or a field, a callback typed `with Exception`, a
+    // callee declared `with Exception` -- and the function then raised a kind
+    // it does not declare. The erased spelling `with Exception` stays gradual.
+    let strict = effect_row_has_label(Some(labels), kinded_handle_marker()) || row_is_kinded_exception_only(labels)
     let mut alias_found = false
     let mut alias_i = 0
     while alias_i < Array::length(labels) {
@@ -2551,7 +2635,7 @@ fn decl_authorizes_op(labels: Array[String], op_name: String) -> Bool {
     // equality is off here too -- this branch is the one that admitted an
     // erased `Exception::Throw` requirement against an `Exception[String]`
     // arm after decl_authorizes_effect had already refused it.
-    let strict = under_kinded_handle(labels)
+    let strict = under_kinded_handle(labels) || row_is_kinded_exception_only(labels)
     let mut i = 0
     let mut found = false
     while i < Array::length(labels) {
@@ -2793,25 +2877,73 @@ fn throw_kind_bind_pat(binds: Array[(String, String)], pat: Pat) -> Array[(Strin
   cur
 }
 
-/// A parameter's kind comes from its ANNOTATION's head name (`e: IoError`).
-/// Un-annotated parameters bind unresolvable -- their type exists only in the
-/// inference substitution this pass does not carry.
+/// A parameter's kind comes from its whole ANNOTATION (`e: IoError`,
+/// `xs: Array[Int]`). Un-annotated parameters bind unresolvable -- their type
+/// exists only in the inference substitution this pass does not carry.
 fn throw_kind_bind_params(binds: Array[(String, String)], params: Array[(String, Option[TypeExpr])]) -> Array[(String, String)] {
   let mut cur = binds
   let mut i = 0
   while i < Array::length(params) {
     let (pname, ptype) = Array::get(params, i)
     let kind = match ptype {
-      Some(te) => match afe_texpr_head_name(te) {
-        Some(h) => h,
-        None => ""
-      },
+      Some(te) => throw_kind_of_texpr(te),
       None => ""
     }
     cur = throw_kind_bind(cur, pname, kind)
     i = i + 1
   }
   cur
+}
+
+/// The kind an annotation names, spelled the way a kinded row writes it:
+/// `Array[Int]`, not the head `Array` -- a row `Exception[Array[Int]]` is not
+/// satisfied by `Exception[Array]` (#3022 review). A function, tuple or unit
+/// type has no row spelling here and stays unresolved ("").
+fn throw_kind_of_texpr(te: TypeExpr) -> String {
+  match te {
+    TyName(n) => n,
+    TyApp(n, args) => {
+      let parts = array_empty()
+      let mut ok = true
+      let mut i = 0
+      while i < Array::length(args) {
+        let a = throw_kind_of_texpr(Array::get(args, i))
+        if String::length(a) == 0 {
+          ok = false
+        }
+        Array::push(parts, a)
+        i = i + 1
+      }
+      if ok {
+        String::concat(n, String::concat("[", String::concat(String::join(parts, ", "), "]")))
+      } else {
+        ""
+      }
+    },
+    _ => ""
+  }
+}
+
+/// #2964: the result kind of a callee the module table does not list -- a
+/// String builtin (an interpolation lowers to `String::concat`), or a QUALIFIED
+/// constructor `Type::Variant`, whose kind is the type it names. A qualified
+/// name whose last segment is lower-case is a function and stays unresolved.
+fn throw_kind_of_unlisted_callee(f: String) -> String {
+  if f == "String::concat" || f == "__to_string" || f == "Int::to_string" || f == "Double::to_string" || f == "String::substring" || f == "String::join" || f == "String::trim" || f == "String::from_char_code" {
+    "String"
+  } else {
+    let sep = String::last_index_of(f, "::")
+    if sep > 0 && sep + 2 < String::length(f) {
+      let first = String::char_code_at(f, sep + 2)
+      if first >= 65 && first <= 90 {
+        String::substring(f, 0, sep)
+      } else {
+        ""
+      }
+    } else {
+      ""
+    }
+  }
 }
 
 /// The exception kind of a `throw` payload expression, or "" when this pass
@@ -2833,6 +2965,30 @@ fn throw_payload_kind(payload: Expr, binds: Array[(String, String)]) -> String {
       Some(k) => k,
       None => throw_kind_lookup(n, false)
     },
+    // #2964: an array literal's kind is `Array[<its first element's kind>]`,
+    // the spelling a kinded row writes (`Exception[Array[Int]]`).
+    EArray(items) => if Array::length(items) > 0 {
+      let ek = throw_payload_kind(Array::get(items, 0), binds)
+      if String::length(ek) > 0 {
+        String::concat("Array[", String::concat(ek, "]"))
+      } else {
+        ""
+      }
+    } else {
+      ""
+    },
+    // #2964: `Some(v)` is `Option[<v's kind>]`, the spelling a kinded row
+    // writes (`Exception[Option[T]]`).
+    ECall(EIdent("Some", _), sargs, _) => if Array::length(sargs) == 1 {
+      let sk = throw_payload_kind(Array::get(sargs, 0), binds)
+      if String::length(sk) > 0 {
+        String::concat("Option[", String::concat(sk, "]"))
+      } else {
+        ""
+      }
+    } else {
+      ""
+    },
     ECall(callee, _, _) => match callee {
       // A LOCAL of this name is being APPLIED. The scope tracks a local's VALUE
       // kind, never the kind of its RESULT, so the call is unresolvable -- and
@@ -2840,7 +2996,37 @@ fn throw_payload_kind(payload: Expr, binds: Array[(String, String)]) -> String {
       // top-level function this local shadows.
       EIdent(f, _) => match afe_lookup_local(binds, f) {
         Some(_) => "",
-        None => throw_kind_lookup(f, true)
+        None => {
+          let from_table = throw_kind_lookup(f, true)
+          if String::length(from_table) > 0 {
+            from_table
+          } else {
+            throw_kind_of_unlisted_callee(f)
+          }
+        }
+      },
+      // #2964: a type ascription -- the parser spells `let e: K = v` as
+      // `((__asc: K) -> __asc)(v)` -- names its kind, which is the edit the
+      // unresolved-kind refusal tells the reader to make.
+      // Only the parser's own ascription wrapper -- the reserved `__asc`
+      // parameter returned unchanged -- names the payload's kind. Any other
+      // immediately-applied one-parameter lambda (`((x: String) -> Int { 1 })("s")`)
+      // annotates its ARGUMENT, not its result, and is left to the checker's
+      // inferred type (#3022 review).
+      EFn(_, _, aps, _, _, abody) => if Array::length(aps) == 1 {
+        match Array::get(aps, 0) {
+          (pname, Some(te)) => match abody {
+            EIdent(bname, _) => if pname == "__asc" && bname == "__asc" {
+              throw_kind_of_texpr(te)
+            } else {
+              ""
+            },
+            _ => ""
+          },
+          _ => ""
+        }
+      } else {
+        ""
       },
       _ => ""
     },
@@ -2848,12 +3034,65 @@ fn throw_payload_kind(payload: Expr, binds: Array[(String, String)]) -> String {
   }
 }
 
+/// #3017: the key a `throw` site is recorded under by the checker and looked up
+/// under here -- the `perform` call's offset plus a short spelling of the
+/// payload, so two throws sharing an offset (sources merged from different
+/// files, a desugar that copies an offset) rarely share a key; when they do and
+/// their kinds differ, `set_throw_site_kinds` drops the key.
+export fn throw_payload_site_key(off: Int, payload: Expr) -> String {
+  let tag = match payload {
+    EIdent(n, _) => n,
+    ECall(EIdent(f, _), _, _) => String::concat(f, "()"),
+    EDot(_, fname, _, _) => String::concat(".", fname),
+    _ => ""
+  }
+  String::concat(__to_string(off), String::concat(":", tag))
+}
+
+/// #3017: the checker's inferred kind per throw site (see
+/// `throw_payload_site_key`). Filled once per check before the effects walk,
+/// and consulted only when the payload's syntax does not name a kind. A key
+/// recorded with two different kinds maps to "" (unresolved), so a collision
+/// can only keep a refusal, never admit a wrong kind.
+let throw_site_kind_cell: Array[MutMap[String, String]] = [MutMap::new_string()]
+
+export fn set_throw_site_kinds(sites: Array[(String, String)]) -> Unit {
+  let m = MutMap::new_string()
+  let mut i = 0
+  while i < Array::length(sites) {
+    let (k, kind) = Array::get(sites, i)
+    match MutMap::get(m, k) {
+      Some(prev) => if prev != kind {
+        MutMap::set(m, k, "")
+      },
+      None => MutMap::set(m, k, kind)
+    }
+    i = i + 1
+  }
+  Array::set(throw_site_kind_cell, 0, m)
+}
+
+fn throw_site_kind(off: Int, payload: Expr) -> String {
+  let m = Array::get(throw_site_kind_cell, 0)
+  match MutMap::get(m, throw_payload_site_key(off, payload)) {
+    Some(kind) => kind,
+    None => ""
+  }
+}
+
 /// The row label a `throw` requires: the typed `Exception[K]::Throw` when the
 /// payload's kind is resolvable, and the pinned erased `Exception::Throw`
 /// otherwise. Non-exception operations pass through untouched.
-fn throw_required_label(op_name: String, opargs: Array[Expr], binds: Array[(String, String)]) -> String {
+fn throw_required_label(op_name: String, opargs: Array[Expr], binds: Array[(String, String)], call_off: Int) -> String {
   if is_exception_throw_operation(op_name) && Array::length(opargs) == 1 {
-    exception_throw_label_for_kind(throw_payload_kind(Array::get(opargs, 0), binds))
+    let payload = Array::get(opargs, 0)
+    let syntactic = throw_payload_kind(payload, binds)
+    let kind = if String::length(syntactic) > 0 {
+      syntactic
+    } else {
+      throw_site_kind(call_off, payload)
+    }
+    exception_throw_label_for_kind(kind)
   } else {
     op_name
   }
@@ -2865,19 +3104,12 @@ fn throw_required_label(op_name: String, opargs: Array[Expr], binds: Array[(Stri
 /// typed spelling is surfaced only once the row is already speaking in kinds,
 /// where it is the actionable fix-it.
 fn throw_report_label(op_name: String, required: String, declared: Array[String]) -> String {
-  let mut i = 0
-  let mut typed_row = false
-  while i < Array::length(declared) {
-    if is_exception_label(Array::get(declared, i)) {
-      typed_row = true
-    }
-    i = i + 1
-  }
-  if typed_row {
-    required
-  } else {
-    op_name
-  }
+  // #2982: report the RESOLVED kind whatever the declared row holds. This used
+  // to fall back to the erased `Exception::Throw` when the row had no exception
+  // label, so the hint told the reader to paste the erased spelling -- the one
+  // ADR-0085 calls transitional -- even though the kind was known.
+  // `required` is already the erased spelling when the kind is unresolved.
+  required
 }
 
 /// #1343 (ADR-0071 operation-level rows, builtin slice): the OPERATION-level
@@ -3081,10 +3313,39 @@ fn join_labels(xs: Array[String]) -> String {
 /// required effects are absent from the enclosing declaration's row. `missing`
 /// is the set difference (callee requires minus caller declares), rendered
 /// sorted; `required` is the sorted union the fix-it hint suggests declaring.
+/// #2975: the row the function being walked DECLARED, innermost walk last.
+/// Inside a `handle` the walk's `declared` also carries the labels the handle
+/// discharges, and the hint was built from that union: it told the reader to
+/// declare the kind they had just handled, spelled `Exception[A]::Throw`,
+/// which the row grammar does not parse. The report names the function's own
+/// row instead.
+let row_mismatch_roots: Array[Array[String]] = []
+
+/// Only row items the grammar accepts in a `with` row: `Eff[T]::Op` is not one.
+fn row_labels_pasteable(labels: Array[String]) -> Array[String] {
+  let out = no_str_labels()
+  let mut i = 0
+  while i < Array::length(labels) {
+    let l = Array::get(labels, i)
+    if String::contains(l, "]::") || l == kinded_handle_marker() {
+      ()
+    } else {
+      Array::push(out, l)
+    }
+    i = i + 1
+  }
+  out
+}
+
 fn make_row_mismatch(fn_name: String, declared: Array[String], missing: Array[String], off: Int) -> EffectError {
   let missing_sorted = sort_labels(labels_union(no_str_labels(), missing))
-  let required = sort_labels(labels_union(declared, missing))
-  EEEffectRowMismatch(fn_name, join_labels(missing_sorted), join_labels(declared), join_labels(required), off)
+  let own = if Array::length(row_mismatch_roots) > 0 {
+    row_labels_pasteable(Array::get(row_mismatch_roots, Array::length(row_mismatch_roots) - 1))
+  } else {
+    row_labels_pasteable(declared)
+  }
+  let required = sort_labels(labels_union(own, row_labels_pasteable(missing)))
+  EEEffectRowMismatch(fn_name, join_labels(missing_sorted), join_labels(own), join_labels(required), off)
 }
 
 fn is_program_entry_name(name: String) -> Bool {
@@ -3936,6 +4197,38 @@ fn no_param_row() -> Array[Array[String]] {
   array_empty()
 }
 
+/// #3016: union one label of a named argument's row into a row variable's
+/// instantiation -- unless a CONCRETE label of the same parameter row already
+/// authorizes it (`Exception` covers `Exception[String]`, `Fs` covers
+/// `Fs::read_file`). The callee handles or declares that label itself, so it
+/// never reaches the variable, and charging it to the caller asked `main` to
+/// declare an exception that could not reach it.
+fn rv_union_label(out: Array[String], lbl: String, concrete: Array[String]) -> Unit {
+  if effect_row_has_label(Some(out), lbl) {
+    ()
+  } else if Array::length(concrete) > 0 && decl_authorizes_op(concrete, lbl) {
+    ()
+  } else {
+    Array::push(out, lbl)
+  }
+}
+
+/// The labels of a parameter row that are not row variables.
+fn rv_concrete_labels(row: Array[String]) -> Array[String] {
+  let out = no_str_labels()
+  let mut i = 0
+  while i < Array::length(row) {
+    let lbl = Array::get(row, i)
+    if label_is_effect_var(lbl) {
+      ()
+    } else {
+      Array::push(out, lbl)
+    }
+    i = i + 1
+  }
+  out
+}
+
 /// #1485: what a callee's row VARIABLE is instantiated to at ONE call site.
 ///
 /// `row_var` is a row-variable label from the callee's declared row (e.g. `"e"` of
@@ -3962,6 +4255,7 @@ fn resolve_row_var_instantiation(row_var: String, callee_param_effs: Array[Array
   while i < Array::length(callee_param_effs) {
     if effect_row_has_label(Some(Array::get(callee_param_effs, i)), row_var) {
       saw_param = true
+      let concrete = rv_concrete_labels(Array::get(callee_param_effs, i))
       if i < Array::length(args) {
         match Array::get(args, i) {
           EIdent(argname, _) => {
@@ -3978,11 +4272,7 @@ fn resolve_row_var_instantiation(row_var: String, callee_param_effs: Array[Array
                 let mut k = 0
                 while k < Array::length(argeffs) {
                   let lbl = Array::get(argeffs, k)
-                  if effect_row_has_label(Some(out), lbl) {
-                    ()
-                  } else {
-                    Array::push(out, lbl)
-                  }
+                  rv_union_label(out, lbl, concrete)
                   k = k + 1
                 }
               },
@@ -3991,11 +4281,7 @@ fn resolve_row_var_instantiation(row_var: String, callee_param_effs: Array[Array
                   let mut k2 = 0
                   while k2 < Array::length(argeffs2) {
                     let lbl2 = Array::get(argeffs2, k2)
-                    if effect_row_has_label(Some(out), lbl2) {
-                      ()
-                    } else {
-                      Array::push(out, lbl2)
-                    }
+                    rv_union_label(out, lbl2, concrete)
                     k2 = k2 + 1
                   }
                 },
@@ -4020,11 +4306,7 @@ fn resolve_row_var_instantiation(row_var: String, callee_param_effs: Array[Array
               let mut li = 0
               while li < Array::length(lambda_effs) {
                 let llbl = Array::get(lambda_effs, li)
-                if effect_row_has_label(Some(out), llbl) {
-                  ()
-                } else {
-                  Array::push(out, llbl)
-                }
+                rv_union_label(out, llbl, concrete)
                 li = li + 1
               }
             },
@@ -4410,6 +4692,7 @@ fn check_perform_effects_expr_tx_indexed(root: Expr, root_declared: Array[String
 /// a plain parameter, not on the work stack.
 fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: Array[String], root_in_handle: Bool, fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], fn_param_effs: Array[Array[Array[String]]], root_ov_names: Array[String], root_ov_effs: Array[Array[String]], root_kinds: Array[(String, String)]) -> Array[EffectError] {
   let errors = array_empty()
+  Array::push(row_mismatch_roots, root_declared)
   let stack = Array::slice([
     (root, root_declared, root_in_handle, root_ov_names, root_ov_effs, root_kinds)
   ], 0, 1)
@@ -4472,7 +4755,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                     // label carries the payload's exception KIND
                     // (`Exception[IoError]::Throw`); every other operation
                     // keeps its own name verbatim.
-                    let required_op = throw_required_label(op_name, opargs, kinds)
+                    let required_op = throw_required_label(op_name, opargs, kinds, call_off)
                     // #640 Stage 2: `Error` is exempt from the DIRECT
                     // discipline, exactly like the transitive slice below
                     // (`teff != "Error"`) and builtin_call_effect's Error
@@ -4621,10 +4904,11 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                         while ii < Array::length(inst) {
                           let ieff = Array::get(inst, ii)
                           // Same discipline the concrete branch below applies:
-                          // the exception row and `Async` are row-transparent,
-                          // and a variable resolving to another variable is
-                          // still unresolved.
-                          if String::length(ieff) > 0 && (!is_exception_effect_name(ieff) || error_row_checked() || under_kinded_handle(declared)) && ieff != "Async" && !label_is_effect_var(ieff) && !in_handle && !decl_authorizes_op(declared, ieff) {
+                          // the exception row is row-transparent, and a
+                          // variable resolving to another variable is still
+                          // unresolved. #2967: `Async` is charged like any
+                          // other label.
+                          if String::length(ieff) > 0 && (!is_exception_effect_name(ieff) || error_row_checked() || under_kinded_handle(declared)) && !label_is_effect_var(ieff) && !in_handle && !decl_authorizes_op(declared, ieff) {
                             Array::push(missing, ieff)
                           } else {
                             ()
@@ -4634,7 +4918,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                       },
                       None => ()
                     }
-                  } else if String::length(teff) > 0 && (!is_exception_effect_name(teff) || error_row_checked() || under_kinded_handle(declared)) && teff != "Async" && !in_handle && !decl_authorizes_op(declared, teff) {
+                  } else if String::length(teff) > 0 && (!is_exception_effect_name(teff) || error_row_checked() || under_kinded_handle(declared)) && !in_handle && !decl_authorizes_op(declared, teff) {
                     Array::push(missing, teff)
                   } else {
                     ()
@@ -4668,7 +4952,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                   // #1343: same operation-awareness as the named-callee case
                   // above -- a callback parameter whose row names an operation
                   // is covered by a caller holding the whole effect.
-                  if String::length(peff) > 0 && (!is_exception_effect_name(peff) || error_row_checked() || under_kinded_handle(declared)) && peff != "Async" && !in_handle && !decl_authorizes_op(declared, peff) {
+                  if String::length(peff) > 0 && (!is_exception_effect_name(peff) || error_row_checked() || under_kinded_handle(declared)) && !in_handle && !decl_authorizes_op(declared, peff) {
                     Array::push(missing, peff)
                   } else {
                     ()
@@ -5006,6 +5290,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
       }
     }
   }
+  Array::truncate(row_mismatch_roots, Array::length(row_mismatch_roots) - 1)
   errors
 }
 
@@ -5615,18 +5900,69 @@ fn push_env_fn_eff(name: String, ty: Type, fn_names: Array[String], fn_effs: Arr
       } else if Array::length(labels) > 0 {
         Array::push(fn_names, name)
         Array::push(fn_effs, labels)
-        // #1485: an env-seeded (imported) binding carries a checked `Type`, not
-        // the `TypeExpr` the per-parameter table is built from, so it gets an
-        // empty entry and keeps the exemption. Pushing SOMETHING is required --
-        // the three arrays are index-aligned, and a skipped push would shift
-        // every later callee's parameter list onto the wrong name.
-        Array::push(fn_param_effs, no_param_row())
+        // #1485: the three arrays are index-aligned, so SOMETHING is pushed
+        // for every binding. #3014: an env-seeded (imported) binding's
+        // parameter rows come from its checked `Type` -- an empty entry
+        // exempted its row variable, so an unhandled effect passed by name
+        // through an imported row-polymorphic helper compiled and trapped.
+        Array::push(fn_param_effs, fn_type_param_effects(params))
       } else {
         ()
       }
     },
     _ => ()
   }
+}
+
+/// #2968: every label an env (imported) function's row or parameter rows
+/// write. A module may spell an effect it reaches only through an imported
+/// function's row without importing the effect declaration itself, so these
+/// count as known when a row label is validated.
+export fn env_row_labels(env: TypeEnv, local_names: Array[String]) -> Array[String] {
+  let names = no_str_labels()
+  let effs = array_empty()
+  let peffs = array_empty()
+  seed_env_fn_effs(env, names, effs, peffs, true)
+  let out = no_str_labels()
+  let mut i = 0
+  while i < Array::length(effs) {
+    // The checked env also binds this module's own declarations; their rows
+    // are what is being validated, so they cannot vouch for themselves.
+    let mut own = false
+    let mut oi = 0
+    while oi < Array::length(local_names) {
+      if Array::get(local_names, oi) == Array::get(names, i) {
+        own = true
+      }
+      oi = oi + 1
+    }
+    if !own {
+      let row = Array::get(effs, i)
+      let mut j = 0
+      while j < Array::length(row) {
+        Array::push(out, Array::get(row, j))
+        j = j + 1
+      }
+      let prow = Array::get(peffs, i)
+      let mut k = 0
+      while k < Array::length(prow) {
+        let pr = Array::get(prow, k)
+        let mut m = 0
+        while m < Array::length(pr) {
+          Array::push(out, Array::get(pr, m))
+          m = m + 1
+        }
+        k = k + 1
+      }
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// #2968: the labels of one written row (`Fs + Exception[E] + e`).
+export fn row_text_labels(row: String) -> Array[String] {
+  effect_row_labels(effect_row_parse(Some(row)))
 }
 
 fn seed_env_fn_effs(env: TypeEnv, fn_names: Array[String], fn_effs: Array[Array[String]], fn_param_effs: Array[Array[Array[String]]], every_fn: Bool) -> Unit {

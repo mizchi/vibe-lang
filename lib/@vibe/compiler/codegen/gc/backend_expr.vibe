@@ -51,6 +51,7 @@ import @vibe/compiler/codegen/common_base {
   emit_i32_sub,
   emit_i64_load,
   emit_i64_store,
+  emit_shift_count_clamp,
   emit_str_ref,
   expr_tag,
   find_func_stmt,
@@ -1298,8 +1299,15 @@ fn gc_compile_wrap_arith_loose(buf: Bytes, e: Expr, local_names: Array[String], 
     EBinOp(op, lhs, rhs, _) => {
       let nl1 = gc_compile_int_operand(buf, op, true, lhs, local_names, next_local, ctx, ld)
       let nl2 = gc_compile_int_operand(buf, op, false, rhs, local_names, nl1, ctx, ld)
+      let nl3 = if op == "<<" || op == ">>" {
+        Array::push(local_names, "[gc-temp]__shift_n")
+        emit_shift_count_clamp(buf, nl2)
+        nl2 + 1
+      } else {
+        nl2
+      }
       emit_binop_op(buf, op)
-      nl2
+      nl3
     },
     EUnaryOp(_, operand) => {
       emit_i64_const(buf, 0)
@@ -1556,9 +1564,16 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       // operand's own trailing renorm (gc_compile_int_operand above).
       let nl1 = gc_compile_int_operand(buf, op, true, lhs, local_names, next_local, ctx, ld)
       let nl2 = gc_compile_int_operand(buf, op, false, rhs, local_names, nl1, ctx, ld)
+      let nl3 = if op == "<<" || op == ">>" {
+        Array::push(local_names, "[gc-temp]__shift_n")
+        emit_shift_count_clamp(buf, nl2)
+        nl2 + 1
+      } else {
+        nl2
+      }
       emit_binop_op(buf, op)
       emit_arith_wrap_int(buf, false, op)
-      nl2
+      nl3
     },
     EUnaryOp(op, operand) => if op == "-" && gc_expr_is_floatish(operand, local_names, ctx) {
       // `0 - bits` integer-negates the f64 bit pattern; use f64.neg instead.

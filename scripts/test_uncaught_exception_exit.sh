@@ -125,4 +125,34 @@ EOF
   fi
 fi
 
-echo "[exception-exit] ok (linear/gc status+diagnostic, handled=0, explicit=7, component non-zero)"
+# #3022 review: the self-contained async wrap serves `process_exit` with a
+# trapping stub, which is right only for the boundary's failing exit. An exit
+# the program writes itself -- here beside its own stderr write, so the import
+# section looks exactly like the boundary's -- must be refused at build time
+# rather than turn `exit(0)` into a trap.
+cat >"$WORK/component_exit.vibe" <<'EOF'
+let run: () -> Int with Async + Process + Stderr = () -> {
+  if 1 == 2 {
+    Stderr::write_stream("bad\n")
+  } else {
+    ()
+  }
+  vibe_process_exit_raw(0)
+  0
+}
+EOF
+component_exit="$WORK/component_exit.wasm"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$COMPILER" \
+  "$WORK/component_exit.vibe" "$component_exit" run >/dev/null 2>&1 || true
+if [ -s "$component_exit" ]; then
+  echo "[exception-exit] async component with a program-written exit was built (its exit would trap)" >&2
+  exit 1
+fi
+if ! grep -q "the program calls the host exit" "$component_exit.diag" 2>/dev/null; then
+  echo "[exception-exit] async component exit refusal did not name the edit" >&2
+  cat "$component_exit.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+
+echo "[exception-exit] ok (linear/gc status+diagnostic, handled=0, explicit=7, component non-zero, component user exit refused)"

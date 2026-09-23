@@ -773,12 +773,12 @@ if [ ! -s "$gcdir/smoke.wasm" ]; then
   exit 1
 fi
 gc_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcdir/smoke.wasm" 2>&1 | tail -1)"
-if [ "$gc_out" != "101557" ]; then
-  echo "[compiler-gate] FAIL: gc backend smoke got '$gc_out' (want 101557)" >&2
+if [ "$gc_out" != "101556" ]; then
+  echo "[compiler-gate] FAIL: gc backend smoke got '$gc_out' (want 101556)" >&2
   exit 1
 fi
 rm -rf "$gcdir"
-echo "[compiler-gate] wasm-gc backend smoke ok (101557)"
+echo "[compiler-gate] wasm-gc backend smoke ok (101556)"
 
 # 40h-2. wasm-gc lane: a builtin called from INSIDE a closure must not be
 #        collected as a free variable of that closure. `compile_call_gc`

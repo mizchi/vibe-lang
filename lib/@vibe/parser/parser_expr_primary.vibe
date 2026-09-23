@@ -46,7 +46,7 @@ import ./parser_binder_context.vibe {
 }
 
 import ./lexer.vibe {
-  format_unexpected_token, lex_with_offsets
+  format_unexpected_token, last_unexpected_token_pos, lex_with_offsets, offset_to_line_col, remembered_parse_source
 }
 
 //# Functions
@@ -464,6 +464,41 @@ fn remap_frag_off(off: Int, outer_starts: Array[Int], frag_starts: Array[Int], f
   }
 }
 
+/// #2974: a parse error inside `\{..}` carries the FRAGMENT's token index
+/// (`at #N`), which the outer locator resolves against the file's own tokens --
+/// so it pointed at line 1. Locate it here, at the fragment's real byte offset,
+/// and hand the outer locator a message that already starts with `line `.
+fn locate_interp_fragment_error(msg: String, part: String, frag_starts: Array[Int], frag_base: Int) -> String {
+  let source = remembered_parse_source()
+  // The remembered source is only trusted when it spells this fragment at
+  // `frag_base`; anything else would locate the error in the wrong file.
+  let same_source = frag_base >= 0 && frag_base + String::length(part) <= String::length(source) && String::substring(source, frag_base, frag_base + String::length(part)) == part
+  if String::starts_with(msg, "line ") || !same_source {
+    msg
+  } else {
+    let mi = String::index_of(msg, " at #")
+    let (tok, cleaned) = if mi >= 0 {
+      let mut di = mi + 5
+      let mut n = 0
+      while di < String::length(msg) && String::char_code_at(msg, di) >= 48 && String::char_code_at(msg, di) <= 57 {
+        n = n * 10 + (String::char_code_at(msg, di) - 48)
+        di = di + 1
+      }
+      (n, String::concat(String::substring(msg, 0, mi), String::substring(msg, di, String::length(msg))))
+    } else if String::index_of(msg, "unexpected token") >= 0 {
+      (last_unexpected_token_pos(), msg)
+    } else {
+      (0 - 1, msg)
+    }
+    if tok < 0 || tok >= Array::length(frag_starts) {
+      msg
+    } else {
+      let (line, col) = offset_to_line_col(source, frag_base + Array::get(frag_starts, tok))
+      String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), String::concat(": ", cleaned)))))
+    }
+  }
+}
+
 /// Desugar a string-interpolation token's parts into a `String::concat` chain.
 /// Parts alternate literal/expression by index (even = literal chunk, odd =
 /// embedded expression SOURCE). The embedded expression is lexed and parsed as a
@@ -517,7 +552,13 @@ fn build_interp_expr(parts: Array[String], offsets: Array[Int], outer_starts: Ar
       } else {
         binder_capture_mark_ineligible(context)
       }
-      let (pe0, _) = parse_recur(ftoks, 0, 0, context)
+      let (pe0, _) = if frag_off >= 0 {
+        handle {
+          parse_recur(ftoks, 0, 0, context)
+        } with { Exception::Throw(msg) => throw(locate_interp_fragment_error(msg, part, fstarts, frag_off)) }
+      } else {
+        parse_recur(ftoks, 0, 0, context)
+      }
       if frag_off >= 0 {
         binder_capture_pop_fragment(context)
       } else {

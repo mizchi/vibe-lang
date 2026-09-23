@@ -2339,6 +2339,17 @@ ur_refused() {
 ur_refused fixtures/err_interp_unrenderable_bytes_refused.vibe 'cannot interpolate a `Bytes` value' 'Bytes::to_array(b)'
 ur_refused fixtures/err_interp_unrenderable_field_refused.vibe 'cannot interpolate field `tags`' 'bind it with a type annotation'
 ur_refused fixtures/err_interp_unrenderable_shadow_refused.vibe 'cannot interpolate `shadowed`' 'bind it with a type annotation'
+# #3019 rides the same helper: a lowering-time refusal asserted on its message
+# and its edit, not on the bare fact that the build failed.
+ur_refused fixtures/err_handle_resume_capture_loop_break_refused.vibe 'leaves a loop outside it' 'set a flag inside the handle'
+# #2994: `vibe check` reports the handle-eligibility refusal AT the handled
+# body's first call; it used to carry no position at all.
+hi_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  check fixtures/typecheck/handle_invisible_perform_located_reject.vibe 2>&1 || true)"
+if ! printf '%s\n' "$hi_out" | grep -qF "line 9:20-27: handle of effect 'Counter' cannot be compiled here"; then
+  echo "[compiler-gate] FAIL: the handle-eligibility refusal is not located at 9:20-27 (#2994)" >&2
+  printf '%s\n' "$hi_out" >&2; exit 1
+fi
 # The spellings the refusal message recommends, and the shapes normalize
 # already resolves, must still compile and still render BY CONTENT -- the
 # answer is written to stdout and compared, so a control that compiled but
@@ -2370,6 +2381,42 @@ for ur_ok in \
 done
 rm -rf "$urdir"
 echo "[compiler-gate] unrenderable render refusal ok (message names the edit; 5 resolvable spellings still render)"
+
+# #2990: `Map::get` on a missing key TRAPS on both lanes. It used to answer the
+# zero bit pattern typed as the value type (`0`, `""`, an Array at address 0).
+# The program prints the present key's value first, so a run that dies before
+# the lookup (or a build that fails) cannot satisfy this row.
+echo "[compiler-gate] Map::get on a missing key traps instead of answering zero (#2990)"
+mgdir="_build/_gate_map_get_miss"
+rm -rf "$mgdir"; mkdir -p "$mgdir"
+for mg_backend in linear gc; do
+  mg_wasm="$mgdir/miss_$mg_backend.wasm"
+  if [ "$mg_backend" = gc ]; then
+    VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+      bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+      fixtures/map_get_missing_key_trap.vibe "$mg_wasm" main >/dev/null 2>&1 || true
+  else
+    VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+      bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+      fixtures/map_get_missing_key_trap.vibe "$mg_wasm" main >/dev/null 2>&1 || true
+  fi
+  if [ ! -s "$mg_wasm" ]; then
+    echo "[compiler-gate] FAIL: fixtures/map_get_missing_key_trap.vibe did not compile on $mg_backend (#2990)" >&2
+    cat "$mg_wasm.diag" >&2 2>/dev/null; exit 1
+  fi
+  mg_status=0
+  mg_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_RUNNER_EXIT_WITH_RESULT=1 bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$mg_wasm" 2>&1)" || mg_status=$?
+  if ! printf '%s\n' "$mg_out" | grep -qF 'present: 1'; then
+    echo "[compiler-gate] FAIL: the present key did not answer on $mg_backend (#2990): $mg_out" >&2
+    exit 1
+  fi
+  if [ "$mg_status" -eq 0 ] || printf '%s\n' "$mg_out" | grep -qF 'missing:'; then
+    echo "[compiler-gate] FAIL: a missing key answered instead of trapping on $mg_backend (#2990): $mg_out" >&2
+    exit 1
+  fi
+done
+rm -rf "$mgdir"
+echo "[compiler-gate] Map::get missing-key trap ok (linear and gc)"
 
 # #2737: a witness dispatch on a bound declared by a LAMBDA binder is refused,
 # with a message that names the edit. The checks, the measurements behind them,

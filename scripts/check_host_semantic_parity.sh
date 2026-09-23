@@ -77,8 +77,12 @@ VIBE
 emit_probe missing   '  String::length(Fs::read_file("'"$WORK"'/does_not_exist.txt"))'
 emit_probe empty     '  String::length(Fs::read_file("'"$WORK"'/empty.txt"))'
 emit_probe multibyte '  String::length(Fs::read_file("'"$WORK"'/multi.txt"))'
+# #2966: the failure is a vibe exception on BOTH runners, so a `handle` around
+# the call catches it. The unhandled `missing` probe fails on both either way;
+# this one is where the runners used to disagree (node caught, viberun trapped).
+emit_probe handled   '  handle { String::length(Fs::read_file("'"$WORK"'/does_not_exist.txt")) } with { Exception::Throw(_m) => 77 }'
 
-PROBES="missing empty multibyte"
+PROBES="missing empty multibyte handled"
 
 for probe in $PROBES; do
   env -u VIBE_FS_COMPILE VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
@@ -134,8 +138,16 @@ else
   echo "host-semantic-parity: ok: the multibyte read is 18 bytes, not 6 codepoints (ADR-0098)"
 fi
 
+handled="$(observe rust handled)"
+if [ "$handled" != "ok:77" ]; then
+  echo "host-semantic-parity: FAIL: a handled missing-file read must answer 77 (#2966), got [$handled]" >&2
+  fail=1
+else
+  echo "host-semantic-parity: ok: a handled missing-file read is caught (#2966)"
+fi
+
 if [ "$fail" -ne 0 ]; then
   exit 1
 fi
 rm -rf "$WORK"
-echo "host-semantic-parity: ok (3 probes agree across both runners; byte-length pinned)"
+echo "host-semantic-parity: ok (4 probes agree across both runners; byte-length and handled read pinned)"

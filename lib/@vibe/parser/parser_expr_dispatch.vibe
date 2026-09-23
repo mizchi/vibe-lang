@@ -454,6 +454,14 @@ fn collect_match_arms(tokens: Array[Token], starts: Array[Int], pos: Int, b: Arr
       TRBrace => bn + 2,
       _ => collect_match_arms(tokens, starts, bn + 1, b, row_b, parse_recur, context)
     },
+    // #2972: the lexer ends a line with an internal `;` when the next line
+    // starts with `(` (so it is not read as a call on this line's value). In
+    // a match that `;` is an arm separator: `0 => 1` followed by `(1, _) => 2`
+    // on the next line failed with `unexpected in pattern: ;` at line 1:1.
+    TSemicolon => match peek(tokens, bn + 1) {
+      TRBrace => bn + 2,
+      _ => collect_match_arms(tokens, starts, bn + 1, b, row_b, parse_recur, context)
+    },
     TRBrace => bn + 1,
     _ => collect_match_arms(tokens, starts, bn, b, row_b, parse_recur, context)
   }
@@ -584,7 +592,15 @@ fn parse_qualified_handle_rest(tokens: Array[Token], starts: Array[Int], pos: In
       }
     },
     TRBrace => (EHandle(body, ArrayBuilder::freeze(b)), pos + 1),
-    _ => throw("expected ';' or '}' in handler set")
+    // #2981: arms separated by a newline, the way `match` arms are. An arm
+    // starts with the effect name, so an identifier here can only be the next
+    // arm; `;` stays accepted.
+    TIdent(_) => {
+      let (arm, next) = parse_qualified_handle_arm(tokens, starts, pos, parse_recur, context)
+      ArrayBuilder::push(b, arm)
+      parse_qualified_handle_rest(tokens, starts, next, body, b, parse_recur, context)
+    },
+    _ => throw("expected ';', a newline, or '}' between handler-set arms")
   }
 }
 

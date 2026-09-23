@@ -3784,9 +3784,13 @@ fn scps_transform_handle(body: Expr, arms: Array[(Pat, Expr)], ik: String, ctx: 
           // entries whose declared row carries Error, so a synthesized
           // throw in a program with no Error row would leak to the host
           // as a raw WebAssembly.Exception with no message at all).
-          let trap = ESeq(ECall(EIdent("Stderr::write_stream", -1), [
-            EString("vibe: resume one-shot continuation called twice (#817, ADR-0076 Phase 3a)\n", -1)
-          ], -1), ECall(EIdent("Array::get", -1), [EArray([EInt(0)]), EInt(1)], -1))
+          // #3009: `abort` (print, then trap) rather than
+          // `Stderr::write_stream`: the host stream import made every module
+          // with a capturing arm depend on the vibe host, so a gc test could
+          // not run under plain wasmtime.
+          let trap = ECall(EIdent("abort", -1), [
+            EString("vibe: resume one-shot continuation called twice", -1)
+          ], -1)
           let set_true = ECall(EIdent("Array::set", -1), [
             EIdent(once, -1),
             EInt(0),
@@ -5081,7 +5085,17 @@ fn scps_rewrite(e: Expr, ctx: (Array[Stmt], Array[(String, Array[(String, Array[
         // the implicit-resume wrap, so the recorded placeholder stays an
         // unwrapped tail (an abort of the driver) and the real return happens
         // after the handle.
-        if scps_body_has_return(rbody) || scps_body_arms_have_return(sarms) {
+        if scps_loop_ctl_remains(rbody) || scps_loop_arms_ctl_remain(sarms) {
+          // #3019: a `break` / `continue` in this handle that targets a loop
+          // OUTSIDE it. The handle runs inside the driver's step closure, so
+          // codegen emitted a branch to a label the closure does not have and
+          // the module failed validation (`expected 1 elements on the stack
+          // for branch`) after a clean `vibe check`. Refused with the edit
+          // until the record-and-transfer rewrite `return` gets exists for
+          // loop transfers too.
+          Array::push(scps_st_errs(st), "a `break` / `continue` inside this `handle` leaves a loop outside it, but a handler arm captures `resume` as a value, so the handle runs as a closure the transfer cannot leave -- set a flag inside the handle and `break` after it, or `return` from the function instead")
+          EHandle(rbody, rarms)
+        } else if scps_body_has_return(rbody) || scps_body_arms_have_return(sarms) {
           let hsite = scps_next_site(st)
           let probe = EHandle(rbody, sarms)
           let flag = scps_seq_float_fresh("hreturned", probe, EUnit, hsite)

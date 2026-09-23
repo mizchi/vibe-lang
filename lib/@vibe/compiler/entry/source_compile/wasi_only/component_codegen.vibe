@@ -1618,23 +1618,40 @@ fn comp_generate_wasi_fd_write_stub() -> Bytes {
 /// 4=trampoline. core funcs: 0=task.return, 1=main.run, 2=trampoline.run.
 export fn comp_emit_component_wasm_async_trampolined_p1(main_core_wasm: Bytes, export_name: String, comp_result_valtype: Int) -> Bytes {
   let needs_stderr = comp_core_imports_func(main_core_wasm, "vibe", "stderr_write_stream")
+  // #2976: the exception boundary exits through `vibe.process_exit` after
+  // writing its diagnosis, so the trapping stub serves it there -- the trap
+  // IS the boundary's non-zero outcome. An exit the program wrote itself is
+  // refused before this runs -- by comp_reject_unsatisfiable_selfcontained_imports
+  // when no stderr import accompanies it, and by the source lane's provenance
+  // check (`maybe_wrap_async_component`) when one does -- because a trapping
+  // stub would turn `exit(0)` into a failure.
+  let needs_exit = needs_stderr && comp_core_imports_func(main_core_wasm, "vibe", "process_exit")
+  let needs_vibe = needs_stderr
   let buf = bytebuf_new()
   emit_component_header(buf)
   emit_core_module_section(buf, main_core_wasm)
   emit_core_module_section(buf, comp_generate_async_trampoline(comp_valtype_to_core(comp_result_valtype)))
-  if needs_stderr {
-    // The exception boundary only needs this import on its failing path. A
+  if needs_vibe {
+    // The exception boundary only needs these imports on its failing path. A
     // local trapping stub keeps the self-contained component valid and
     // preserves the same non-zero outcome as core launchers; components that
-    // do not carry the boundary retain their exact pre-existing bytes.
-    emit_core_module_section(buf, comp_generate_host_stub_module([
-      "stderr_write_stream"
-    ], [[1, 126, 0]]))
+    // import neither retain their exact pre-existing bytes.
+    let stub_names = array_empty()
+    let stub_sigs = array_empty()
+    if needs_stderr {
+      Array::push(stub_names, "stderr_write_stream")
+      Array::push(stub_sigs, [1, 126, 0])
+    }
+    if needs_exit {
+      Array::push(stub_names, "process_exit")
+      Array::push(stub_sigs, [1, 126, 0])
+    }
+    emit_core_module_section(buf, comp_generate_host_stub_module(stub_names, stub_sigs))
   } else {
     emit_core_module_section(buf, comp_generate_wasi_fd_write_stub())
   }
   emit_core_instance_instantiate_section(buf, 2, array_empty())
-  if needs_stderr {
+  if needs_vibe {
     emit_core_instance_instantiate_args(buf, 0, [
       "wasi_snapshot_preview1",
       "vibe"
@@ -6704,13 +6721,25 @@ export fn comp_reject_unsatisfiable_selfcontained_imports(core_wasm: Bytes) -> U
   let type_indices = new_int_array()
   let type_sigs = array_empty()
   let count = parse_core_imports(core_wasm, modules, names, type_indices, type_sigs)
+  // `process_exit` is satisfiable only as the exception boundary's exit, which
+  // always comes with its stderr import (see the trampolined emitter). The
+  // import section cannot tell that exit from one the program wrote beside its
+  // own stderr write; the source lane refuses the latter before calling this.
+  let mut has_stderr = false
+  let mut si = 0
+  while si < count {
+    if Array::get(modules, si) == "vibe" && Array::get(names, si) == "stderr_write_stream" {
+      has_stderr = true
+    }
+    si = si + 1
+  }
   let mut i = 0
   while i < count {
     let im = Array::get(modules, i)
     let ifn = Array::get(names, i)
     if im == "wasi_snapshot_preview1" && ifn == "fd_write" {
       ()
-    } else if im == "vibe" && ifn == "stderr_write_stream" {
+    } else if im == "vibe" && (ifn == "stderr_write_stream" || (ifn == "process_exit" && has_stderr)) {
       ()
     } else {
       throw("component(async): core module uses host import '\{im}.\{ifn}', which nothing in this component provides -- an async component entry can use sleep, host futures and host streams; other host capabilities have no provider inside the component (#1342)")

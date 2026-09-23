@@ -1,0 +1,63 @@
+// #3022 review: a nested handle discharges its own body, so an inner
+// `State[String]` handler inside an outer `State[Int]` one is not checked
+// against the outer instantiation.
+effect State[S] {
+  Get() -> S
+}
+
+fn get_int() -> Int with State[Int] {
+  perform State::Get()
+}
+
+fn get_str() -> String with State[String] {
+  perform State::Get()
+}
+
+fn nested() -> Int {
+  handle {
+    let s = handle {
+      get_str()
+    } with { State::Get() => resume("abc") }
+    get_int() + String::length(s)
+  } with { State::Get() => resume(1) }
+}
+
+test "nested handles of one generic effect at two instantiations" {
+  inspect(nested(), "4")
+}
+
+// #3022 review: a name bound inside the handled body is that binding, not the
+// top-level function of the same spelling. The local `get_str` is pure, so
+// the top-level one's `State[String]` row says nothing about this handler.
+fn local_shadow() -> Int {
+  handle {
+    let get_str = () -> "hello"
+    String::length(get_str()) + get_int()
+  } with { State::Get() => resume(2) }
+}
+
+test "a local binding shadows a top-level callee under a handler" {
+  inspect(local_shadow(), "7")
+}
+
+// #3022 review: matching generic nominal instantiations still compile, and a
+// local closure whose calls agree with the handler runs under it.
+struct Box[T] {
+  value: T
+}
+
+fn get_box() -> Int with State[Box[Int]] {
+  let b = perform State::Get()
+  b.value
+}
+
+fn matching_box() -> Int {
+  handle {
+    let twice = () -> get_box() + get_box()
+    twice()
+  } with { State::Get() => resume(Box::{ value: 20 }) }
+}
+
+test "a generic nominal argument that agrees, through a local closure" {
+  inspect(matching_box(), "40")
+}

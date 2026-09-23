@@ -65,7 +65,11 @@ import @vibe/compiler/core {
   env_type_defs,
   exception_effect_kind,
   exception_effect_labels_equal,
+  expr_child_at,
   expr_children,
+  expr_children_pop,
+  expr_children_push,
+  expr_children_top,
   find_enum_typedef,
   find_typedef,
   fresh_var,
@@ -145,6 +149,10 @@ import ./checker_resolve.vibe {
 
 import ./checker_spawnable.vibe {
   check_spawnable_captures, closure_bare_callee_names, closure_free_names
+}
+
+import ./checker_effects.vibe {
+  throw_payload_site_key
 }
 
 import ./checker_escape.vibe {
@@ -2798,6 +2806,23 @@ export fn reset_return_provenance_index() -> Unit {
   Array::set(return_provenance_index, 0, MutMap::new_string())
 }
 
+/// #3017: every `throw` payload's inferred type, keyed by the `perform` call's
+/// offset plus a short spelling of the payload (`throw_payload_site_key`). The
+/// effects pass is syntactic, so a builtin call's result, an unannotated `let`
+/// and a field projection have no exception kind there; this table hands it
+/// the type the checker already inferred. Reset per check with the other
+/// per-run tables, and resolved under the final substitution by
+/// `checker_stmt.vibe` before the effects pass reads it.
+let throw_payload_sites: Array[(String, Type)] = []
+
+export fn reset_throw_payload_sites() -> Unit {
+  Array::truncate(throw_payload_sites, 0)
+}
+
+export fn throw_payload_site_types() -> Array[(String, Type)] {
+  throw_payload_sites
+}
+
 /// #2474 (a): the type-parameter variables bound so far in this check --
 /// `(var id, formal name)` for every `[T]` an `EFn` header introduced. A plain
 /// formal is a unification variable inside its body (#2130), so at a `==`
@@ -3961,6 +3986,554 @@ fn effect_fresh_targs(etps: Array[String], c: Int) -> (Array[Type], Int) {
 /// compiler-generated effect variables), so this never collides with a user
 /// binding, and riding the ordinary lexical env gives nested handles the right
 /// scoping for free: the innermost handle of an effect wins.
+/// #3010: a handle instantiates each generic effect it discharges ONCE
+/// (`henv_shared`), and a `perform` in the body reads that instantiation -- but
+/// a CALL whose declared row names the effect at a concrete argument
+/// (`counter() with State[Int]`) was never compared with it, so a `Get` arm
+/// answering a String discharged `State[Int]` and `+ 1` ran on the string.
+///
+/// Each direct callee's row item `Eff[Arg]` is compared with the handle's
+/// resolved argument. Only a scalar `Arg` spelled as its builtin name is
+/// compared (an alias or a structured argument could be spelled differently
+/// and still be the same type), and only when the handle's argument has
+/// resolved to a ground type -- this refuses nothing it cannot name exactly.
+fn check_handle_inst_vs_callee_rows(body: Expr, insts: Array[(String, Array[Type])], env: TypeEnv, defs: Array[TypeDef], errors: Array[String]) -> Unit {
+  if Array::length(insts) > 0 {
+    let calls: Array[(String, Int, String, String)] = []
+    handle_collect_direct_calls(body, " ", calls)
+    let mut ci = 0
+    while ci < Array::length(calls) {
+      let (cname, coff, shadowed, local_row) = Array::get(calls, ci)
+      let row = if String::length(local_row) > 0 {
+        Some(local_row)
+      } else {
+        match env_lookup(env, cname) {
+          Some(CtFn(_, _, r)) => r,
+          Some(CtForAll(_, _, CtFn(_, _, r))) => r,
+          _ => None
+        }
+      }
+      match row {
+        Some(rtext) => {
+          let items = split_row_top_level(rtext)
+          let mut ii = 0
+          while ii < Array::length(items) {
+            let item = String::trim(Array::get(items, ii))
+            let lb = String::index_of(item, "[")
+            if lb > 0 && String::ends_with(item, "]") {
+              let ename = String::substring(item, 0, lb)
+              let arg_text = String::substring(item, lb + 1, String::length(item) - 1)
+              let mut ki = 0
+              while ki < Array::length(insts) {
+                let (iname, haves) = Array::get(insts, ki)
+                // A nested handle of the same effect discharges this call
+                // itself; its own check compares it with its instantiation.
+                if iname == ename && !String::contains(shadowed, String::concat(" ", String::concat(ename, " "))) {
+                  let wants = split_row_top_level(arg_text)
+                  let have_text = if Array::length(haves) == 1 {
+                    type_to_string(Array::get(haves, 0))
+                  } else {
+                    let parts = array_empty()
+                    let mut hpi = 0
+                    while hpi < Array::length(haves) {
+                      Array::push(parts, type_to_string(Array::get(haves, hpi)))
+                      hpi = hpi + 1
+                    }
+                    String::join(parts, ", ")
+                  }
+                  let mut mismatch = false
+                  if Array::length(wants) == Array::length(haves) {
+                    let mut wi = 0
+                    while wi < Array::length(wants) {
+                      if effect_arg_mismatch(Array::get(haves, wi), Array::get(wants, wi), defs) {
+                        mismatch = true
+                      }
+                      wi = wi + 1
+                    }
+                  }
+                  if mismatch {
+                    Array::push(errors, String::concat("handler instantiates `", String::concat(ename, String::concat("[", String::concat(have_text, String::concat("]` but the handled body requires `", String::concat(item, String::concat("` (from `", String::concat(cname, String::concat("`) -- make the arms answer `", String::concat(arg_text, String::concat("`, or handle `", String::concat(cname, String::concat("` with a handler for `", String::concat(item, String::concat("`", off_marker(coff)))))))))))))))))
+                  }
+                } else {
+                  ()
+                }
+                ki = ki + 1
+              }
+            } else {
+              ()
+            }
+            ii = ii + 1
+          }
+        },
+        None => ()
+      }
+      ci = ci + 1
+    }
+  } else {
+    ()
+  }
+}
+
+/// Every direct call under `e`, with the effects a nested handle between it
+/// and this handle discharges (`shadowed`, space-delimited). A nested handle
+/// shadows only the effects its own arms name: a call inside it that needs
+/// another effect still reaches this handler (#3022 review). A lambda's body
+/// runs where the lambda is called, not here.
+fn handle_collect_direct_calls(e: Expr, shadowed: String, out: Array[(String, Int, String, String)]) -> Unit {
+  handle_collect_direct_calls_scoped(e, shadowed, " ", out)
+}
+
+/// `locals` holds every name bound between the handle and this node, space
+/// delimited. A call to one of them is not the top-level function the outer
+/// environment names, so its row is never read from the environment: it would
+/// be another binding's (#3022 review). A local LAMBDA is followed instead.
+fn handle_collect_direct_calls_scoped(e: Expr, shadowed: String, locals: String, out: Array[(String, Int, String, String)]) -> Unit {
+  match e {
+    ECall(EIdent(n, noff), _, _) => {
+      let key = String::concat(" ", String::concat(n, " "))
+      if !String::contains(locals, key) {
+        Array::push(out, (n, noff, shadowed, ""))
+      } else {
+        // A lambda bound inside the handled body runs HERE when called here:
+        // its declared row is compared, and its body is walked (#3022
+        // review). The innermost binding of `n` must be that lambda.
+        let pos = String::last_index_of(locals, key)
+        let targets = handle_local_lambdas_at(n, pos)
+        let mark = String::concat(n, String::concat("@", __to_string(pos)))
+        if Array::length(targets) > 0 && !handle_lambda_expanding(mark) {
+          Array::push(handle_lambda_expanding_cell, mark)
+          let mut ti = 0
+          while ti < Array::length(targets) {
+            match Array::get(targets, ti) {
+              EFn(_, _, fparams, _, feff, fbody) => {
+                match feff {
+                  Some(r) => Array::push(out, (n, noff, shadowed, r)),
+                  None => ()
+                }
+                let mut inner = locals
+                let mut pi = 0
+                while pi < Array::length(fparams) {
+                  let (pname, _) = Array::get(fparams, pi)
+                  inner = handle_locals_with(inner, pname)
+                  pi = pi + 1
+                }
+                handle_collect_direct_calls_scoped(fbody, shadowed, inner, out)
+              },
+              // `f = get_int` makes a call through `f` a call to `get_int`.
+              EIdent(g, _) => if !String::contains(locals, String::concat(" ", String::concat(g, " "))) {
+                Array::push(out, (g, noff, shadowed, ""))
+              },
+              _ => ()
+            }
+            ti = ti + 1
+          }
+          Array::truncate(handle_lambda_expanding_cell, Array::length(handle_lambda_expanding_cell) - 1)
+        }
+      }
+      handle_collect_direct_calls_children(e, shadowed, locals, out)
+    },
+    // An immediately invoked lambda runs its body right here, under this
+    // handler, unlike a stored one (#3022 review). Its parameters are locals.
+    ECall(EFn(_, _, fparams, _, _, fbody), fargs, _) => {
+      let mut ai = 0
+      while ai < Array::length(fargs) {
+        handle_collect_direct_calls_scoped(Array::get(fargs, ai), shadowed, locals, out)
+        ai = ai + 1
+      }
+      let mut inner = locals
+      let mut pi = 0
+      while pi < Array::length(fparams) {
+        let (pname, _) = Array::get(fparams, pi)
+        inner = handle_locals_with(inner, pname)
+        pi = pi + 1
+      }
+      handle_collect_direct_calls_scoped(fbody, shadowed, inner, out)
+    },
+    ELet(name, value, rest, _) => {
+      handle_collect_direct_calls_scoped(value, shadowed, locals, out)
+      let depth = handle_bind_local_lambda(name, locals, value)
+      handle_collect_direct_calls_scoped(rest, shadowed, handle_locals_with(locals, name), out)
+      Array::truncate(handle_local_lambdas_cell, depth)
+    },
+    ELetMut(name, value, rest, _) => {
+      handle_collect_direct_calls_scoped(value, shadowed, locals, out)
+      // A mutable local may be reassigned, so every value it is given in
+      // its scope is recorded, and a call follows each of them (#3022
+      // review).
+      let depth = handle_bind_local_lambda(name, locals, value)
+      let pos = String::length(locals) - 1
+      handle_bind_assigned_values(name, pos, rest)
+      handle_collect_direct_calls_scoped(rest, shadowed, handle_locals_with(locals, name), out)
+      Array::truncate(handle_local_lambdas_cell, depth)
+    },
+    ELetRec(name, value, rest) => {
+      let inner = handle_locals_with(locals, name)
+      let depth = handle_bind_local_lambda(name, locals, value)
+      handle_collect_direct_calls_scoped(value, shadowed, inner, out)
+      handle_collect_direct_calls_scoped(rest, shadowed, inner, out)
+      Array::truncate(handle_local_lambdas_cell, depth)
+    },
+    EForIn(name, second, iter, body) => {
+      handle_collect_direct_calls_scoped(iter, shadowed, locals, out)
+      let inner = match second {
+        Some(n2) => handle_locals_with(handle_locals_with(locals, name), n2),
+        None => handle_locals_with(locals, name)
+      }
+      handle_collect_direct_calls_scoped(body, shadowed, inner, out)
+    },
+    ELoop(binds, body) => {
+      let mut inner = locals
+      let mut bi = 0
+      while bi < Array::length(binds) {
+        let (bname, init) = Array::get(binds, bi)
+        handle_collect_direct_calls_scoped(init, shadowed, locals, out)
+        inner = handle_locals_with(inner, bname)
+        bi = bi + 1
+      }
+      handle_collect_direct_calls_scoped(body, shadowed, inner, out)
+    },
+    EMatch(scrut, arms) => {
+      handle_collect_direct_calls_scoped(scrut, shadowed, locals, out)
+      let mut ai = 0
+      while ai < Array::length(arms) {
+        let (apat, arm) = Array::get(arms, ai)
+        handle_collect_direct_calls_scoped(arm, shadowed, handle_locals_with_pat(locals, apat), out)
+        ai = ai + 1
+      }
+    },
+    EHandle(hbody, arms) => {
+      let mut inner = shadowed
+      let mut ai = 0
+      while ai < Array::length(arms) {
+        let (apat, arm) = Array::get(arms, ai)
+        match apat {
+          PCtor(pname, _) => {
+            let sep = String::index_of(pname, "::")
+            if sep > 0 {
+              let head = String::substring(pname, 0, sep)
+              let bi = String::index_of(head, "[")
+              let eff = if bi > 0 {
+                String::substring(head, 0, bi)
+              } else {
+                head
+              }
+              inner = String::concat(inner, String::concat(eff, " "))
+            }
+          },
+          _ => ()
+        }
+        // The arms run under THIS handler.
+        handle_collect_direct_calls_scoped(arm, shadowed, handle_locals_with_pat(locals, apat), out)
+        ai = ai + 1
+      }
+      handle_collect_direct_calls_scoped(hbody, inner, locals, out)
+    },
+    // A lambda VALUE runs wherever it is later called, not necessarily here.
+    EFn(_, _, _, _, _, _) => (),
+    _ => handle_collect_direct_calls_children(e, shadowed, locals, out)
+  }
+}
+
+fn handle_collect_direct_calls_children(e: Expr, shadowed: String, locals: String, out: Array[(String, Int, String, String)]) -> Unit {
+  let mark = expr_children_push(e)
+  let end = expr_children_top()
+  let mut i = mark
+  while i < end {
+    handle_collect_direct_calls_scoped(expr_child_at(i), shadowed, locals, out)
+    i = i + 1
+  }
+  expr_children_pop(mark)
+}
+
+/// Lambdas bound inside the handled body, as (name, position of ` name ` in
+/// `locals` when bound, the lambda). Pushed on entry to the binding's scope
+/// and truncated on exit, so a sibling scope never sees another's entry.
+let handle_local_lambdas_cell: Array[(String, Int, Expr)] = []
+
+/// `name@pos` marks for lambdas whose bodies are being walked, so a lambda
+/// that calls itself is walked once.
+let handle_lambda_expanding_cell: Array[String] = []
+
+/// Record `value` under `name` when it is a lambda or names a function
+/// (`let f = get_int`, #3022 review); returns the depth to truncate back to
+/// when the binding's scope ends.
+fn handle_bind_local_lambda(name: String, locals: String, value: Expr) -> Int {
+  let depth = Array::length(handle_local_lambdas_cell)
+  match value {
+    EFn(_, _, _, _, _, _) => Array::push(handle_local_lambdas_cell, (name, String::length(locals) - 1, value)),
+    EIdent(_, _) => Array::push(handle_local_lambdas_cell, (name, String::length(locals) - 1, value)),
+    _ => ()
+  }
+  depth
+}
+
+/// Every value recorded for the binding of `name` at `pos`: one for an
+/// immutable local, each assigned value for a `let mut`.
+fn handle_local_lambdas_at(name: String, pos: Int) -> Array[Expr] {
+  let found = array_empty()
+  let mut i = 0
+  while i < Array::length(handle_local_lambdas_cell) {
+    let (ln, lpos, lv) = Array::get(handle_local_lambdas_cell, i)
+    if ln == name && lpos == pos {
+      Array::push(found, lv)
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Record every value assigned to the `let mut` binding `name` (at `pos`)
+/// within its scope `e`: a lambda or a function name. A nested rebinding of
+/// the same name ends the search in that branch, since assignments below it
+/// target the inner binding.
+fn handle_bind_assigned_values(name: String, pos: Int, e: Expr) -> Unit {
+  match e {
+    EAssign(an, v, rest) => {
+      if an == name {
+        match v {
+          EFn(_, _, _, _, _, _) => Array::push(handle_local_lambdas_cell, (name, pos, v)),
+          EIdent(_, _) => Array::push(handle_local_lambdas_cell, (name, pos, v)),
+          _ => ()
+        }
+      }
+      handle_bind_assigned_values(name, pos, v)
+      handle_bind_assigned_values(name, pos, rest)
+    },
+    ELet(n2, v, rest, _) => {
+      handle_bind_assigned_values(name, pos, v)
+      if n2 != name {
+        handle_bind_assigned_values(name, pos, rest)
+      }
+    },
+    ELetMut(n2, v, rest, _) => {
+      handle_bind_assigned_values(name, pos, v)
+      if n2 != name {
+        handle_bind_assigned_values(name, pos, rest)
+      }
+    },
+    _ => {
+      let mark = expr_children_push(e)
+      let end = expr_children_top()
+      let mut i = mark
+      while i < end {
+        handle_bind_assigned_values(name, pos, expr_child_at(i))
+        i = i + 1
+      }
+      expr_children_pop(mark)
+    }
+  }
+}
+
+fn handle_lambda_expanding(mark: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(handle_lambda_expanding_cell) {
+    if Array::get(handle_lambda_expanding_cell, i) == mark {
+      found = true
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn handle_locals_with(locals: String, name: String) -> String {
+  String::concat(locals, String::concat(name, " "))
+}
+
+fn handle_locals_with_pat(locals: String, pat: Pat) -> String {
+  match pat {
+    PBind(name) => handle_locals_with(locals, name),
+    PCtor(_, subs) => {
+      let mut acc = locals
+      let mut i = 0
+      while i < Array::length(subs) {
+        acc = handle_locals_with_pat(acc, Array::get(subs, i))
+        i = i + 1
+      }
+      acc
+    },
+    PTuple(subs) => {
+      let mut acc = locals
+      let mut i = 0
+      while i < Array::length(subs) {
+        acc = handle_locals_with_pat(acc, Array::get(subs, i))
+        i = i + 1
+      }
+      acc
+    },
+    POr(l, r) => handle_locals_with_pat(handle_locals_with_pat(locals, l), r),
+    PStruct(_, fields) => {
+      let mut acc = locals
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fp) = Array::get(fields, i)
+        acc = handle_locals_with_pat(acc, fp)
+        i = i + 1
+      }
+      acc
+    },
+    _ => locals
+  }
+}
+
+/// Does the handler's resolved argument `have` disagree with the argument a
+/// callee's row spells as `want`? Compared: a spelling whose every name is a
+/// builtin or a struct or enum declared here -- `Int`, `Array[String]`, `B`,
+/// `Box[Int]` -- since such a spelling has one meaning. An alias, a type formal
+/// or an unresolved handler type is not judged (#3010, #3022 review).
+fn effect_arg_mismatch(have: Type, want0: String, defs: Array[TypeDef]) -> Bool {
+  // A non-generic alias means its target, so it is read through (#3022
+  // review): `with State[A]` for `type A = Int` compares as `State[Int]`.
+  let want = expand_alias_words(want0, defs, 0)
+  match builtin_scalar_type_of_name(want) {
+    Some(want_ty) => head_kind(have) != 0 && !scalar_types_same(have, want_ty),
+    None => {
+      let have_text = type_to_string(have)
+      if closed_type_spelling(want, defs) {
+        // The handler's type is judged only when it is itself closed.
+        !String::contains(have_text, "?") && closed_type_spelling(have_text, defs) && strip_spaces(have_text) != strip_spaces(want)
+      } else {
+        false
+      }
+    }
+  }
+}
+
+/// `t` with every name that is a non-generic alias declared here replaced by
+/// its target's spelling, repeatedly (bounded, so a malformed cycle stops).
+/// A generic alias is left as written, which keeps the spelling unjudged.
+fn expand_alias_words(t: String, defs: Array[TypeDef], depth: Int) -> String {
+  if depth > 8 {
+    t
+  } else {
+    let n = String::length(t)
+    let parts = array_empty()
+    let mut changed = false
+    let mut i = 0
+    while i < n {
+      let c = String::char_code_at(t, i)
+      if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+        let st = i
+        while i < n && is_type_name_char(String::char_code_at(t, i)) {
+          i = i + 1
+        }
+        let w = String::substring(t, st, i)
+        match find_typedef(defs, w) {
+          Some(TDAlias(_, aparams, target)) => if Array::length(aparams) == 0 {
+            Array::push(parts, type_to_string(target))
+            changed = true
+          } else {
+            Array::push(parts, w)
+          },
+          _ => Array::push(parts, w)
+        }
+      } else {
+        Array::push(parts, String::substring(t, i, i + 1))
+        i = i + 1
+      }
+    }
+    let out = String::join(parts, "")
+    if changed {
+      expand_alias_words(out, defs, depth + 1)
+    } else {
+      out
+    }
+  }
+}
+
+/// Is `t` spelled only with builtin type names, structs or enums declared
+/// here, brackets, parentheses and commas?
+fn closed_type_spelling(t: String, defs: Array[TypeDef]) -> Bool {
+  let n = String::length(t)
+  let mut ok = n > 0
+  let mut i = 0
+  while i < n && ok {
+    let c = String::char_code_at(t, i)
+    if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+      let st = i
+      while i < n && is_type_name_char(String::char_code_at(t, i)) {
+        i = i + 1
+      }
+      let w = String::substring(t, st, i)
+      if !(builtin_type_word(w) || declared_nominal(defs, w)) {
+        ok = false
+      }
+    } else if c == '[' || c == ']' || c == '(' || c == ')' || c == ',' || c == ' ' {
+      i = i + 1
+    } else {
+      ok = false
+    }
+  }
+  ok
+}
+
+fn is_type_name_char(c: Int) -> Bool {
+  (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
+}
+
+fn builtin_type_word(w: String) -> Bool {
+  w == "Int" || w == "String" || w == "Bool" || w == "Double" || w == "Char" || w == "Bytes" || w == "Array" || w == "Option"
+}
+
+/// Is `name` a struct or enum declared here? Such a name denotes one type
+/// constructor, so two different spellings of its applications never agree.
+fn declared_nominal(defs: Array[TypeDef], name: String) -> Bool {
+  match find_typedef(defs, name) {
+    Some(TDStruct(_, _, _, _)) => true,
+    Some(TDEnum(_, _, _)) => true,
+    _ => false
+  }
+}
+
+/// A row's items split at commas outside brackets and parentheses, trimmed.
+fn split_row_top_level(row: String) -> Array[String] {
+  let out = array_empty()
+  let mut depth = 0
+  let mut start = 0
+  let mut i = 0
+  let n = String::length(row)
+  while i < n {
+    let c = String::char_code_at(row, i)
+    if c == '[' || c == '(' {
+      depth = depth + 1
+    } else if c == ']' || c == ')' {
+      depth = depth - 1
+    } else if c == ',' && depth == 0 {
+      Array::push(out, String::trim(String::substring(row, start, i)))
+      start = i + 1
+    }
+    i = i + 1
+  }
+  Array::push(out, String::trim(String::substring(row, start, n)))
+  out
+}
+
+fn strip_spaces(t: String) -> String {
+  String::join(String::split(t, " "), "")
+}
+
+fn builtin_scalar_type_of_name(n: String) -> Option[Type] {
+  if n == "Int" {
+    Some(CtInt)
+  } else if n == "String" {
+    Some(CtString)
+  } else if n == "Bool" {
+    Some(CtBool)
+  } else if n == "Double" {
+    Some(CtDouble)
+  } else if n == "Unit" {
+    Some(CtUnit)
+  } else if n == "Bytes" {
+    Some(CtBytes)
+  } else {
+    None
+  }
+}
+
+fn scalar_types_same(a: Type, b: Type) -> Bool {
+  head_fold_char(head_kind(a)) == head_fold_char(head_kind(b)) && head_kind(a) != 0
+}
+
 fn effect_inst_env_key(eff: String) -> String {
   String::concat("$einst$", eff)
 }
@@ -5297,6 +5870,50 @@ fn check_builtin_arg_head(name: String, i: Int, arg_ty: Type, errors: Array[Stri
     }
   } else {
     ()
+  }
+}
+
+/// #3006: unify an unresolved type-variable argument with the concrete type a
+/// builtin's parameter head names. Only heads that name ONE type are bound
+/// (`Int`, `Double`, `Bool`, `String`, `Bytes`, and `Array[_]` with a fresh
+/// element); every other head, and a head of 0 (a parameter the builtin leaves
+/// open), leaves the variable alone exactly as before. The Int head also
+/// admits a concrete `Char`, but a variable is bound to `Int`: a generic
+/// wrapper then takes `Int` and a `Char` caller converts, instead of the
+/// formal staying open to a `String` read as an integer (#3022 review). A
+/// failed unify (a bounded variable, say) also leaves it alone -- the head
+/// check above is the one that reports.
+fn bind_builtin_arg_var(arg_ty: Type, want: Int, s: Subst, c: Int) -> (Subst, Int) {
+  match arg_ty {
+    CtVar(_) => {
+      let target = if want == 1 {
+        Some(CtInt)
+      } else if want == 2 {
+        Some(CtDouble)
+      } else if want == 3 {
+        Some(CtBool)
+      } else if want == 4 {
+        Some(CtString)
+      } else if want == 7 {
+        Some(CtBytes)
+      } else if want == 9 {
+        Some(CtArray(CtVar(c)))
+      } else {
+        None
+      }
+      match target {
+        Some(t) => match unify(arg_ty, t, s) {
+          Some(s2) => (s2, if want == 9 {
+            c + 1
+          } else {
+            c
+          }),
+          None => (s, c)
+        },
+        None => (s, c)
+      }
+    },
+    _ => (s, c)
   }
 }
 
@@ -6933,11 +7550,36 @@ fn resume_walk_param_base(pn: String) -> String {
 /// formal is a `CtVar`, a kinded one the `#hktformal.` marker (the EFn arm's
 /// `tp_env`). They are handed to `resolve_type_expr_shadowed` so a
 /// same-named import alias in `defs` cannot capture them (#1510).
+/// #3011: `own` (a declaration's own formals) plus every name in `te` that the
+/// env binds as an ENCLOSING declaration's formal -- the shadow set a
+/// body-level `TypeExpr` must resolve under, so an import alias spelled like a
+/// formal in scope cannot capture it.
+fn formal_shadow(te: TypeExpr, env: TypeEnv, own: Array[String]) -> Array[String] {
+  let acc: Array[String] = []
+  let mut i = 0
+  while i < Array::length(own) {
+    Array::push(acc, Array::get(own, i))
+    i = i + 1
+  }
+  exception_kind_formals_in_env(te, env, acc)
+}
+
 fn exception_kind_formals_in_env(te: TypeExpr, env: TypeEnv, acc: Array[String]) -> Array[String] {
   let note = (name: String) -> Unit {
+    // A CtVar is a TYPE formal only when a binder recorded it under this
+    // name; an unannotated VALUE parameter is a CtVar too, and treating it as
+    // a formal let `let y: T = 1` shadow a real `type T` (#3022 review).
     let is_formal = match env_lookup(env, name) {
       Some(t) => match t {
-        CtVar(_) => true,
+        CtVar(vid) => {
+          let row = eq_formal_row_of(vid)
+          if row >= 0 {
+            let (_, rname) = Array::get(eq_formal_vars, row)
+            rname == name
+          } else {
+            false
+          }
+        },
         CtNamed(n, _) => String::starts_with(n, "#hktformal."),
         _ => false
       },
@@ -8273,7 +8915,11 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                   let mut tc = c
                   let mut ti = 0
                   while ti < Array::length(opargs) {
-                    let (_, ns, nc) = check_expr_capture(Array::get(opargs, ti), env, defs, ts, tc, errors, tytab, capture, lane)
+                    let (pt, ns, nc) = check_expr_capture(Array::get(opargs, ti), env, defs, ts, tc, errors, tytab, capture, lane)
+                    // #3017: hand the payload's type to the effects pass.
+                    if ti == 0 && Array::length(opargs) == 1 && call_off >= 0 {
+                      Array::push(throw_payload_sites, (throw_payload_site_key(call_off, Array::get(opargs, 0)), pt))
+                    }
                     ts = ns
                     tc = nc
                     ti = ti + 1
@@ -9038,9 +9684,10 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           // #983: refine the result from bare CtUnknown to the receiver's value
           // slot, so a wrongly-typed consume of the looked-up value is caught
           // by the ordinary unify. NOTE: `Map::get` returns the RAW stored
-          // value (0 on a miss) — `declare Map::get(Map[T, U], T) -> U` in
-          // builtins/declarations.vibe and the linear codegen agree — NOT an
-          // Option. Untyped receivers keep the conservative CtUnknown.
+          // value and TRAPS on a miss (#2990) — `declare Map::get(Map[T, U],
+          // T) -> U` in builtins/declarations.vibe and both codegen lanes
+          // agree — NOT an Option. Untyped receivers keep the conservative
+          // CtUnknown.
           let (m_ty, s1, c1) = check_expr_capture(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
           let (k_ty, s2, c2) = check_expr_capture(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
           let s3 = check_assignable(CtString, subst_apply(s2, k_ty), s2, errors, "argument type mismatch for Map::get", call_off)
@@ -9609,8 +10256,20 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                 } else {
                   ()
                 }
-                s2 = ns
-                c2 = nc
+                // #3006: a type VARIABLE argument -- a generic body's formal, or
+                // an unannotated lambda parameter -- used to be tolerated
+                // without being bound, so `fn g[T](x: T) -> Int {
+                // String::length(x) }` stayed fully generic and `g(41)` read an
+                // Int as a string (`82`). Bind it to what the builtin reads, the
+                // way a user function's parameter would.
+                let want_any = if ai == 0 {
+                  want_head
+                } else {
+                  builtin_param_head(name, ai)
+                }
+                let (bound_s, bound_c) = bind_builtin_arg_var(subst_apply(ns, at), want_any, ns, nc)
+                s2 = bound_s
+                c2 = bound_c
                 ai = ai + 1
               }
               (tab_call_ty(tytab, call_off, subst_apply(s2, ret_ty), capture, lane), s2, c2)
@@ -10041,7 +10700,10 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             // looked like it worked because the rigid name matched by string
             // equality. `env` already binds each formal to a fresh `CtVar` (see
             // the EFn arm's `tp_env`), so the mapping is available right here.
-            let resolved = resolve_tparams_in(resolve_type_expr(ann_te, defs), env)
+            // #3011: the enclosing formals SHADOW a same-named import alias in
+            // `defs`; resolving with `defs` first turned `let y: T` into the
+            // alias's type before the env could map `T` to its variable.
+            let resolved = resolve_tparams_in(resolve_type_expr_shadowed(ann_te, defs, formal_shadow(ann_te, env, array_empty())), env)
             // #2125: a body-level `let y: Intt = ..` annotation. `shadow` is
             // empty here by construction (the ascription lambda carries no
             // formals of its own); the env is what knows the enclosing
@@ -10198,10 +10860,16 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       // separate, deliberately isolated change because pinned diagnostic
       // expectations reference these positions.
       let bin_left_off = railway_expr_off(left)
+      let bin_right_off = railway_expr_off(right)
       let bin_off = if bin_left_off >= 0 {
         bin_left_off
+      } else if bin_right_off >= 0 {
+        bin_right_off
       } else {
-        railway_expr_off(right)
+        // #2999: two literal operands (`1 == 1.0`, `true && 1`) carry no
+        // offset, and the mismatch was reported with no position at all. The
+        // operator's own offset (#2435) is where the reader looks.
+        boff
       }
       let left_applied = subst_apply(s2, left_ty)
       let right_applied = subst_apply(s2, right_ty)
@@ -10851,6 +11519,12 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                         // (Codex P0 on #2985, the #1510 shape). The names the
                         // env binds as type variables are shadowed first.
                         let kind_shadow = exception_kind_formals_in_env(kind_te, eaenv, array_empty())
+                        // #3018: the kind is a TYPE, and an undeclared one
+                        // (`Exception[IoError]` with no `IoError` in scope) was
+                        // bound as an opaque nominal the arm body could hand
+                        // to `String::length`. Refused like an unknown type in
+                        // a `let` annotation.
+                        report_unknown_type_names(kind_te, defs, kind_shadow, eaenv, array_empty(), "an exception kind", errors)
                         resolve_tparams_in(resolve_type_expr_shadowed(kind_te, defs, kind_shadow), eaenv)
                       } with { Exception::Throw(_unreadable) => CtUnknown }
                     } else {
@@ -10933,6 +11607,27 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       } else {
         ()
       }
+      // Every argument of each instantiation, so an effect with two or more
+      // parameters is compared position by position (#3022 review).
+      let hinst_resolved: Array[(String, Array[Type])] = []
+      let mut hri = 0
+      while hri < Array::length(hinst_seen) {
+        let hr_eff = Array::get(hinst_seen, hri)
+        match env_lookup(henv_shared, effect_inst_env_key(hr_eff)) {
+          Some(CtTuple(hr_targs)) => {
+            let resolved_args = array_empty()
+            let mut hai = 0
+            while hai < Array::length(hr_targs) {
+              Array::push(resolved_args, subst_apply(hs1, Array::get(hr_targs, hai)))
+              hai = hai + 1
+            }
+            Array::push(hinst_resolved, (hr_eff, resolved_args))
+          },
+          _ => ()
+        }
+        hri = hri + 1
+      }
+      check_handle_inst_vs_callee_rows(body, hinst_resolved, env, defs, errors)
       (hres, hs1, hc1)
     },
     EWhile(cond, body) => {
@@ -11398,7 +12093,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           Some(te) => {
             // #1512: `tparams` shadow `defs`, so `resolve_tparams_in` below
             // still finds `CtNamed(<tparam>, [])` to map onto the fresh var.
-            let resolved = resolve_type_expr_shadowed(te, defs, tparams)
+            let resolved = resolve_type_expr_shadowed(te, defs, formal_shadow(te, env, tparams))
             let pt2 = resolve_tparams_in(resolved, fn_env)
             // #2125: an unresolvable name here becomes a wildcard at every
             // call site, so `f("s")` and `f(1)` both pass the SAME slot.
@@ -11449,7 +12144,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           // #2125: see the parameter arm above.
           report_unknown_type_names(rte, defs, tparams, fn_env, declared_row_binders, "the return type", errors)
           report_formal_applications(rte, tparams, "the return type", errors)
-          env_bind(fn_env, "__return__", resolve_tparams_in(resolve_type_expr_shadowed(rte, defs, tparams), fn_env))
+          env_bind(fn_env, "__return__", resolve_tparams_in(resolve_type_expr_shadowed(rte, defs, formal_shadow(rte, env, tparams)), fn_env))
         },
         None => env_bind(fn_env, "__return__", CtUnknown)
       }
@@ -11482,7 +12177,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       }
       let (base_ret, s3) = match ret_ty {
         Some(te) => {
-          let resolved = resolve_type_expr_shadowed(te, defs, tparams)
+          let resolved = resolve_type_expr_shadowed(te, defs, formal_shadow(te, env, tparams))
           let resolved_ret = resolve_tparams_in(resolved, fn_env)
           // #1451: check_assignable, not a raw `unify`, so the IMPLICIT
           // tail-expression return follows the same rules as an EXPLICIT
@@ -11628,7 +12323,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       }
       let inferred_ret = subst_apply_except(s3, final_ret, keep_ids)
       let scheme_ret_raw = match ret_ty {
-        Some(te) => subst_apply_except(s3, resolve_tparams_in(resolve_type_expr_shadowed(te, defs, tparams), scheme_env), keep_ids),
+        Some(te) => subst_apply_except(s3, resolve_tparams_in(resolve_type_expr_shadowed(te, defs, formal_shadow(te, env, tparams)), scheme_env), keep_ids),
         None => inferred_ret
       }
       let scheme_ret = merge_capture_provenance(scheme_ret_raw, inferred_ret)
@@ -11637,7 +12332,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       while spi2 < plen {
         let inferred_pt = subst_apply_except(s3, Array::get(param_types, spi2), keep_ids)
         match Array::get(params, spi2) {
-          (_, Some(pte)) => Array::push(scheme_params, merge_capture_provenance(subst_apply_except(s3, resolve_tparams_in(resolve_type_expr_shadowed(pte, defs, tparams), scheme_env), keep_ids), inferred_pt)),
+          (_, Some(pte)) => Array::push(scheme_params, merge_capture_provenance(subst_apply_except(s3, resolve_tparams_in(resolve_type_expr_shadowed(pte, defs, formal_shadow(pte, env, tparams)), scheme_env), keep_ids), inferred_pt)),
           _ => Array::push(scheme_params, inferred_pt)
         }
         spi2 = spi2 + 1
@@ -11816,7 +12511,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                 let resolved = array_empty()
                 let mut tpi = 0
                 while tpi < tplen {
-                  Array::push(resolved, resolve_tparams_in(resolve_type_expr(Array::get(targs, tpi), defs), env))
+                  Array::push(resolved, resolve_tparams_in(resolve_type_expr_shadowed(Array::get(targs, tpi), defs, formal_shadow(Array::get(targs, tpi), env, array_empty())), env))
                   tpi = tpi + 1
                 }
                 let reified = resolve_type_constructor_args(s_tparams, targs, resolved, defs, array_empty())
