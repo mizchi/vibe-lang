@@ -19,7 +19,7 @@ import @vibe/compiler/codegen/wasi {
 }
 
 import @vibe/compiler/syntax {
-  lex_with_offsets, parse_program_located
+  Token, lex_with_offsets, parse_program_located
 }
 import ./preprocess_interp.vibe {
   expand_interp_stmts
@@ -156,7 +156,28 @@ export fn maybe_wrap_stdin_provider_core(bytes: Bytes, entry_name: String) -> By
   }
 }
 
-fn maybe_wrap_async_component(bytes: Bytes, wrap_async: Bool) -> Bytes with Exception {
+/// Does the program's own text call the host exit? Read from the TOKENS, which
+/// hold no comments, before normalization: the exception boundary's exit is
+/// generated later, so it never appears here, and anything that does is the
+/// program's own `exit`.
+fn source_tokens_call_process_exit(tokens: Array[Token]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(tokens) && !found {
+    match Array::get(tokens, i) {
+      TIdent(name) => if name == "vibe_process_exit_raw" {
+        found = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn maybe_wrap_async_component(bytes: Bytes, wrap_async: Bool, user_exits: Bool) -> Bytes with Exception {
   if wrap_async {
     // #1539: provider routing is first because its nominal stdin lifecycle
     // cannot be satisfied by (or safely mixed into) generic named streams.
@@ -176,6 +197,15 @@ fn maybe_wrap_async_component(bytes: Bytes, wrap_async: Bool) -> Bytes with Exce
     } else {
       // #1342: nothing below provides a host import, so prove there is none
       // before emitting an artifact that could not be instantiated.
+      // #2976: the self-contained wrap satisfies `process_exit` with a
+      // trapping stub, which is right only for the exception boundary's
+      // failing exit. An exit the program wrote itself would turn `exit(0)`
+      // into a trap, so refuse it here, where provenance is still known.
+      if user_exits {
+        throw("component(async): the program calls the host exit, which nothing in this component provides -- an async component entry reports its outcome through the `Int` it returns; return the status from `run` instead of exiting (#1342)")
+      } else {
+        ()
+      }
       comp_reject_unsatisfiable_selfcontained_imports(bytes)
       comp_emit_component_wasm_async_trampolined_p1(bytes, "run", 120)
     }
@@ -276,7 +306,7 @@ fn compile_source_wasi_only_impl(source: String, entry_name: String, trusted_gen
   validate_source_exports_if_user(stmts, checked_env, trusted_generated)
   let wrap_async = (entry_name == "run") && entry_declares_async_int(stmts, entry_name)
   strip_generic_type_params(stmts)
-  maybe_wrap_async_component(compile_wasi_module_impl_with_typed_offsets(stmts, entry_name, float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys), wrap_async)
+  maybe_wrap_async_component(compile_wasi_module_impl_with_typed_offsets(stmts, entry_name, float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys), wrap_async, source_tokens_call_process_exit(tokens))
 }
 
 export fn compile_source_wasi_only(source: String, entry_name: String) -> Bytes with Exception {
@@ -343,7 +373,7 @@ fn compile_source_wasi_only_rc_impl(source: String, entry_name: String, trusted_
   validate_source_exports_if_user(stmts, checked_env, trusted_generated)
   let wrap_async = (entry_name == "run") && entry_declares_async_int(stmts, entry_name)
   strip_generic_type_params(stmts)
-  maybe_wrap_async_component(compile_wasi_module_rc_impl_with_typed_offsets(stmts, entry_name, float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys), wrap_async)
+  maybe_wrap_async_component(compile_wasi_module_rc_impl_with_typed_offsets(stmts, entry_name, float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys), wrap_async, source_tokens_call_process_exit(tokens))
 }
 
 export fn compile_source_wasi_only_rc(source: String, entry_name: String) -> Bytes with Exception {
@@ -374,7 +404,7 @@ fn compile_source_wasi_only_rc_shadow_impl(source: String, entry_name: String, t
   validate_source_exports_if_user(stmts, checked_env, trusted_generated)
   let wrap_async = (entry_name == "run") && entry_declares_async_int(stmts, entry_name)
   strip_generic_type_params(stmts)
-  maybe_wrap_async_component(compile_wasi_module_rc_shadow_impl_with_typed_offsets(stmts, entry_name, float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys), wrap_async)
+  maybe_wrap_async_component(compile_wasi_module_rc_shadow_impl_with_typed_offsets(stmts, entry_name, float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys), wrap_async, source_tokens_call_process_exit(tokens))
 }
 
 export fn compile_source_wasi_only_rc_shadow(source: String, entry_name: String) -> Bytes with Exception {

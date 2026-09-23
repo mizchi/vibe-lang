@@ -1029,36 +1029,67 @@ fn lex_decimal(s: String, len: Int, i: Int) -> (Token, Int) with Exception {
   }
 }
 
-/// #2996: is the nearest non-whitespace character before `i` a `-`? A line
-/// break does not end the expression after a prefix `-`, so it is skipped too
-/// -- but a `-` that ends a `//` comment on an earlier line is comment text,
-/// and reading it as a sign would give a bare overflowing literal a value.
+/// #2996: is the nearest code character before `i` a `-`? A line break does
+/// not end the expression after a prefix `-`, so it is skipped, and so is a
+/// whole `//` comment on an earlier line: the token stream holds neither. A
+/// `-` inside such a comment is comment text, and reading it as a sign would
+/// give a bare overflowing literal a value.
 fn minus_precedes(s: String, i: Int) -> Bool {
   let mut j = i - 1
-  let mut crossed_line = false
-  while j >= 0 && (String::char_code_at(s, j) == ' ' || String::char_code_at(s, j) == '\t' || String::char_code_at(s, j) == 10 || String::char_code_at(s, j) == 13) {
-    if String::char_code_at(s, j) == 10 {
-      crossed_line = true
-    }
-    j = j - 1
-  }
-  if j >= 0 && String::char_code_at(s, j) == '-' {
-    if crossed_line {
-      let mut k = j - 1
-      let mut in_comment = false
-      while k >= 0 && String::char_code_at(s, k) != 10 {
-        if k > 0 && String::char_code_at(s, k) == '/' && String::char_code_at(s, k - 1) == '/' {
-          in_comment = true
-        }
-        k = k - 1
-      }
-      !in_comment
+  let mut done = false
+  let mut result = false
+  while !done {
+    if j < 0 {
+      done = true
     } else {
-      true
+      let c = String::char_code_at(s, j)
+      if c == ' ' || c == '\t' || c == 13 {
+        j = j - 1
+      } else if c == 10 {
+        // Continue on the previous line, from the end of its code.
+        let mut ls = j - 1
+        while ls >= 0 && String::char_code_at(s, ls) != 10 {
+          ls = ls - 1
+        }
+        j = line_code_end(s, ls + 1, j) - 1
+      } else {
+        result = c == '-'
+        done = true
+      }
     }
-  } else {
-    false
   }
+  result
+}
+
+/// Where the line `[start, end)` stops being code: at its first `//` outside a
+/// string or char literal, else at `end`.
+fn line_code_end(s: String, start: Int, end: Int) -> Int {
+  let mut cut = end
+  let mut in_str = false
+  let mut k = start
+  while k < end && cut == end {
+    let c = String::char_code_at(s, k)
+    if in_str {
+      if c == '\\' {
+        k = k + 1
+      } else if c == '"' {
+        in_str = false
+      }
+    } else if c == '"' {
+      in_str = true
+    } else if c == '\'' {
+      // A char literal, so a quote inside it (`'"'`) opens no string.
+      if k + 1 < end && String::char_code_at(s, k + 1) == '\\' {
+        k = k + 3
+      } else {
+        k = k + 2
+      }
+    } else if c == '/' && k + 1 < end && String::char_code_at(s, k + 1) == '/' {
+      cut = k
+    }
+    k = k + 1
+  }
+  cut
 }
 
 fn lex_number(s: String, len: Int, i: Int) -> (Token, Int) with Exception {

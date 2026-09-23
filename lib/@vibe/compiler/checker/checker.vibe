@@ -4076,10 +4076,61 @@ fn check_handle_inst_vs_callee_rows(body: Expr, insts: Array[(String, Array[Type
 /// another effect still reaches this handler (#3022 review). A lambda's body
 /// runs where the lambda is called, not here.
 fn handle_collect_direct_calls(e: Expr, shadowed: String, out: Array[(String, Int, String)]) -> Unit {
+  handle_collect_direct_calls_scoped(e, shadowed, " ", out)
+}
+
+/// `locals` holds every name bound between the handle and this node, space
+/// delimited. A call to one of them is not the top-level function the outer
+/// environment names, so it is not collected: the row read for it would be
+/// another binding's (#3022 review).
+fn handle_collect_direct_calls_scoped(e: Expr, shadowed: String, locals: String, out: Array[(String, Int, String)]) -> Unit {
   match e {
     ECall(EIdent(n, noff), _, _) => {
-      Array::push(out, (n, noff, shadowed))
-      handle_collect_direct_calls_children(e, shadowed, out)
+      if !String::contains(locals, String::concat(" ", String::concat(n, " "))) {
+        Array::push(out, (n, noff, shadowed))
+      }
+      handle_collect_direct_calls_children(e, shadowed, locals, out)
+    },
+    ELet(name, value, rest, _) => {
+      handle_collect_direct_calls_scoped(value, shadowed, locals, out)
+      handle_collect_direct_calls_scoped(rest, shadowed, handle_locals_with(locals, name), out)
+    },
+    ELetMut(name, value, rest, _) => {
+      handle_collect_direct_calls_scoped(value, shadowed, locals, out)
+      handle_collect_direct_calls_scoped(rest, shadowed, handle_locals_with(locals, name), out)
+    },
+    ELetRec(name, value, rest) => {
+      let inner = handle_locals_with(locals, name)
+      handle_collect_direct_calls_scoped(value, shadowed, inner, out)
+      handle_collect_direct_calls_scoped(rest, shadowed, inner, out)
+    },
+    EForIn(name, second, iter, body) => {
+      handle_collect_direct_calls_scoped(iter, shadowed, locals, out)
+      let inner = match second {
+        Some(n2) => handle_locals_with(handle_locals_with(locals, name), n2),
+        None => handle_locals_with(locals, name)
+      }
+      handle_collect_direct_calls_scoped(body, shadowed, inner, out)
+    },
+    ELoop(binds, body) => {
+      let mut inner = locals
+      let mut bi = 0
+      while bi < Array::length(binds) {
+        let (bname, init) = Array::get(binds, bi)
+        handle_collect_direct_calls_scoped(init, shadowed, locals, out)
+        inner = handle_locals_with(inner, bname)
+        bi = bi + 1
+      }
+      handle_collect_direct_calls_scoped(body, shadowed, inner, out)
+    },
+    EMatch(scrut, arms) => {
+      handle_collect_direct_calls_scoped(scrut, shadowed, locals, out)
+      let mut ai = 0
+      while ai < Array::length(arms) {
+        let (apat, arm) = Array::get(arms, ai)
+        handle_collect_direct_calls_scoped(arm, shadowed, handle_locals_with_pat(locals, apat), out)
+        ai = ai + 1
+      }
     },
     EHandle(hbody, arms) => {
       let mut inner = shadowed
@@ -4103,25 +4154,65 @@ fn handle_collect_direct_calls(e: Expr, shadowed: String, out: Array[(String, In
           _ => ()
         }
         // The arms run under THIS handler.
-        handle_collect_direct_calls(arm, shadowed, out)
+        handle_collect_direct_calls_scoped(arm, shadowed, handle_locals_with_pat(locals, apat), out)
         ai = ai + 1
       }
-      handle_collect_direct_calls(hbody, inner, out)
+      handle_collect_direct_calls_scoped(hbody, inner, locals, out)
     },
     EFn(_, _, _, _, _, _) => (),
-    _ => handle_collect_direct_calls_children(e, shadowed, out)
+    _ => handle_collect_direct_calls_children(e, shadowed, locals, out)
   }
 }
 
-fn handle_collect_direct_calls_children(e: Expr, shadowed: String, out: Array[(String, Int, String)]) -> Unit {
+fn handle_collect_direct_calls_children(e: Expr, shadowed: String, locals: String, out: Array[(String, Int, String)]) -> Unit {
   let mark = expr_children_push(e)
   let end = expr_children_top()
   let mut i = mark
   while i < end {
-    handle_collect_direct_calls(expr_child_at(i), shadowed, out)
+    handle_collect_direct_calls_scoped(expr_child_at(i), shadowed, locals, out)
     i = i + 1
   }
   expr_children_pop(mark)
+}
+
+fn handle_locals_with(locals: String, name: String) -> String {
+  String::concat(locals, String::concat(name, " "))
+}
+
+fn handle_locals_with_pat(locals: String, pat: Pat) -> String {
+  match pat {
+    PBind(name) => handle_locals_with(locals, name),
+    PCtor(_, subs) => {
+      let mut acc = locals
+      let mut i = 0
+      while i < Array::length(subs) {
+        acc = handle_locals_with_pat(acc, Array::get(subs, i))
+        i = i + 1
+      }
+      acc
+    },
+    PTuple(subs) => {
+      let mut acc = locals
+      let mut i = 0
+      while i < Array::length(subs) {
+        acc = handle_locals_with_pat(acc, Array::get(subs, i))
+        i = i + 1
+      }
+      acc
+    },
+    POr(l, r) => handle_locals_with_pat(handle_locals_with_pat(locals, l), r),
+    PStruct(_, fields) => {
+      let mut acc = locals
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fp) = Array::get(fields, i)
+        acc = handle_locals_with_pat(acc, fp)
+        i = i + 1
+      }
+      acc
+    },
+    _ => locals
+  }
 }
 
 /// Does the handler's resolved argument `have` disagree with the argument a

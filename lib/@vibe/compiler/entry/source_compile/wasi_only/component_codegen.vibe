@@ -1620,9 +1620,11 @@ export fn comp_emit_component_wasm_async_trampolined_p1(main_core_wasm: Bytes, e
   let needs_stderr = comp_core_imports_func(main_core_wasm, "vibe", "stderr_write_stream")
   // #2976: the exception boundary exits through `vibe.process_exit` after
   // writing its diagnosis, so the trapping stub serves it there -- the trap
-  // IS the boundary's non-zero outcome. A standalone `process_exit` (no
-  // boundary) is refused by comp_reject_unsatisfiable_selfcontained_imports:
-  // a trapping stub would turn `exit(0)` into a failure.
+  // IS the boundary's non-zero outcome. An exit the program wrote itself is
+  // refused before this runs -- by comp_reject_unsatisfiable_selfcontained_imports
+  // when no stderr import accompanies it, and by the source lane's provenance
+  // check (`maybe_wrap_async_component`) when one does -- because a trapping
+  // stub would turn `exit(0)` into a failure.
   let needs_exit = needs_stderr && comp_core_imports_func(main_core_wasm, "vibe", "process_exit")
   let needs_vibe = needs_stderr
   let buf = bytebuf_new()
@@ -6720,7 +6722,9 @@ export fn comp_reject_unsatisfiable_selfcontained_imports(core_wasm: Bytes) -> U
   let type_sigs = array_empty()
   let count = parse_core_imports(core_wasm, modules, names, type_indices, type_sigs)
   // `process_exit` is satisfiable only as the exception boundary's exit, which
-  // always comes with its stderr import (see the trampolined emitter).
+  // always comes with its stderr import (see the trampolined emitter). The
+  // import section cannot tell that exit from one the program wrote beside its
+  // own stderr write; the source lane refuses the latter before calling this.
   let mut has_stderr = false
   let mut si = 0
   while si < count {
