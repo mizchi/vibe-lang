@@ -81,7 +81,7 @@ export enum EffectError {
   // carried to the renderer as the ` [@off=N]` marker locate_type_error decodes.
   // Before this the row mismatch had no position at all -- measured as the worst
   // tier in eval/lang-review/repair (05).
-  EEEffectRowMismatch(String, String, String, String, Int);
+  EEEffectRowMismatch(String, String, String, String, String, Int);
   // #2985 review (Codex P0): a KINDED handler arm (`Exception[K]::Throw`)
   // is a catch-all at run time -- the abortive channel carries no kind -- so
   // a throw of another kind, or of an unresolved kind, that the checker
@@ -204,7 +204,7 @@ export fn effect_error_to_string(err: EffectError) -> String {
         body
       }
     },
-    EEEffectRowMismatch(fname, missing, declared, required, off) => {
+    EEEffectRowMismatch(fname, missing, declared, required, handled, off) => {
       let block = entry_block_display_name(fname)
       let head = if String::length(block) > 0 {
         String::concat("effect row mismatch for ", block)
@@ -235,7 +235,17 @@ export fn effect_error_to_string(err: EffectError) -> String {
       } else {
         String::concat("\nhint: add 'with ", String::concat(row_as_source(required), String::concat("' to '", String::concat(fname, "'"))))
       }
-      let body = String::concat(head, String::concat(": missing { ", String::concat(missing, String::concat(" }", String::concat(detail, hint)))))
+      // #639 / #2975: effects an enclosing `handle` discharges are named on
+      // their own, so "handled here, but this call needs more" stays
+      // distinguishable from "nothing declared" -- without folding them into
+      // the declared row or the hint, which would tell the reader to declare
+      // what they just handled.
+      let handled_note = if String::length(handled) > 0 {
+        String::concat(" (handled here by an enclosing `handle`: { ", String::concat(handled, " })"))
+      } else {
+        ""
+      }
+      let body = String::concat(head, String::concat(": missing { ", String::concat(missing, String::concat(" }", String::concat(detail, String::concat(handled_note, hint))))))
       // #1514: marker LAST so the hint line stays the visible tail; the decoder
       // strips it before the user ever sees the string.
       if off >= 0 {
@@ -3184,7 +3194,47 @@ fn make_row_mismatch(fn_name: String, declared: Array[String], missing: Array[St
   let own = labels_without_discharged(declared)
   let missing_sorted = sort_labels(labels_union(no_str_labels(), missing))
   let required = sort_labels(labels_union(own, missing))
-  EEEffectRowMismatch(fn_name, join_labels(missing_sorted), join_labels(own), join_labels(required), off)
+  EEEffectRowMismatch(fn_name, join_labels(missing_sorted), join_labels(own), join_labels(required), join_labels(sort_labels(discharged_labels(declared))), off)
+}
+
+fn outer_marker_prefix() -> String {
+  "#outer:"
+}
+
+/// A marker for every label of `declared` that a handle body's row drops
+/// (under a kinded handle the enclosing exception labels are stripped for the
+/// check), so the diagnostic can still name the function's own row.
+fn outer_markers_for(declared: Array[String], body: Array[String]) -> Array[String] {
+  let out = no_str_labels()
+  let mut i = 0
+  while i < Array::length(declared) {
+    let l = Array::get(declared, i)
+    if String::starts_with(l, "#") || effect_row_has_label(Some(body), l) {
+      ()
+    } else {
+      Array::push(out, String::concat(outer_marker_prefix(), l))
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// The labels the enclosing handles discharge, as recorded by their markers.
+fn discharged_labels(labels: Array[String]) -> Array[String] {
+  let out = no_str_labels()
+  let prefix = discharged_marker_prefix()
+  let mut i = 0
+  while i < Array::length(labels) {
+    let l = Array::get(labels, i)
+    if String::starts_with(l, prefix) {
+      let d = String::substring(l, String::length(prefix), String::length(l))
+      if !effect_row_has_label(Some(out), d) {
+        Array::push(out, d)
+      }
+    }
+    i = i + 1
+  }
+  out
 }
 
 fn discharged_marker_prefix() -> String {
@@ -3208,15 +3258,22 @@ fn discharged_markers_for(declared: Array[String], discharged: Array[String]) ->
   out
 }
 
-/// `labels` without the markers and without every label a marker names --
-/// the part of the row the enclosing FUNCTION wrote.
+/// `labels` without the markers and without every label a discharge marker
+/// names, plus the labels an outer marker restores -- the part of the row the
+/// enclosing FUNCTION wrote.
 fn labels_without_discharged(labels: Array[String]) -> Array[String] {
   let out = no_str_labels()
   let prefix = discharged_marker_prefix()
+  let outer = outer_marker_prefix()
   let mut i = 0
   while i < Array::length(labels) {
     let l = Array::get(labels, i)
-    if String::starts_with(l, "#") || effect_row_has_label(Some(labels), String::concat(prefix, l)) {
+    if String::starts_with(l, outer) {
+      let restored = String::substring(l, String::length(outer), String::length(l))
+      if !effect_row_has_label(Some(out), restored) {
+        Array::push(out, restored)
+      }
+    } else if String::starts_with(l, "#") || effect_row_has_label(Some(labels), String::concat(prefix, l)) || effect_row_has_label(Some(out), l) {
       ()
     } else {
       Array::push(out, l)
@@ -4966,7 +5023,10 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
         // #2975: remember which labels only this handle supplies, so a row
         // hint for its body names what the FUNCTION must declare -- not the
         // effects the handle already discharges.
-        let body_declared = labels_union(body_declared_core, discharged_markers_for(declared, discharged))
+        // Codex on #3021: a kinded handle strips the function's own exception
+        // labels from the body row; remember them so the hint still carries
+        // them.
+        let body_declared = labels_union(labels_union(body_declared_core, discharged_markers_for(declared, discharged)), outer_markers_for(declared, body_declared_core))
         // Unknown wildcard arms stay conservative for the legacy surface,
         // but a structurally empty handler must not gain that permission.
         // Known discharge stays out of `in_handle`: that flag also skips the

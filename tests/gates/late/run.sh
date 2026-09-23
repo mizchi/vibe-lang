@@ -2269,8 +2269,10 @@ echo "[compiler-gate] FrozenArray[T] Send-eligible immutable container ok"
 # 64/64. #639: effect-row mismatch diagnostic snapshots -- criterion 1 (no
 #        'with' clause at all) and criterion 2 (a `handle` locally
 #        discharges one effect while another stays genuinely missing; the
-#        message must show the handled one folded into "declared" rather
-#        than re-flagging it as missing). Pins the exact wording so it
+#        message must show the handled one as handled rather than
+#        re-flagging it as missing -- since #2975 in its own "handled here"
+#        clause, not folded into "declared" or the hint, which told the
+#        reader to declare what the handle had just discharged). Pins the exact wording so it
 #        can't silently drift; see #639's discussion for why the riskier
 #        "over-declared with () is itself a hard error" reading was
 #        deliberately NOT implemented.
@@ -2298,7 +2300,7 @@ if [ -s "$eff639dir/partial.wasm" ]; then
   echo "[compiler-gate] FAIL: err_effect_handle_partial_discharge.vibe compiled successfully -- must be rejected" >&2
   exit 1
 fi
-if ! grep -qF "missing { Fs } (declared { Ask, Ask::Get }, requires { Ask, Ask::Get, Fs })" "$eff639dir/partial.wasm.diag" 2>/dev/null; then
+if ! grep -qF "missing { Fs } (no 'with' clause, requires { Fs }) (handled here by an enclosing \`handle\`: { Ask, Ask::Get })" "$eff639dir/partial.wasm.diag" 2>/dev/null; then
   echo "[compiler-gate] FAIL: err_effect_handle_partial_discharge.vibe did not produce the expected diagnostic" >&2
   cat "$eff639dir/partial.wasm.diag" >&2 2>/dev/null || true
   exit 1
