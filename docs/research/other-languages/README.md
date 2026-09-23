@@ -32,7 +32,7 @@ ADR says so. The question behind them is this:
    never aliases another argument. It is restricted to shallow buffer types,
    so it is decidable: a static check on places, other arguments of
    buffer-free types only (no struct, closure or type variable that could hide
-   the buffer), no buffer-typed globals in the callee's reach, and one
+   the buffer), no globals of such types in the callee's reach, and one
    identity compare at entry. The verifier needs it, because Why3 rejects
    aliased mutable arguments and veri had to split `blit` in two. The vectorizer needs it for
    shifted-index kernels. Perceus needs it to drop its `rc == 1` test.

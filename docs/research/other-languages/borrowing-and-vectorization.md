@@ -46,7 +46,7 @@ already infers**, which is why it is cheaper than it sounds.
 |---|---|---|
 | per-parameter borrow mask, whole-program fixpoint | `compute_borrow_param_user_fns` in `codegen/common_analysis/common_analysis.vibe` | which parameters are never consumed |
 | `borrow_ret`, `view_ret`, `scalar_ret` sets | `runtime/rc_query.vibe` (`vibe rc-classify`) | which results alias a parameter |
-| consume counting | `md_consume_count` in `common_analysis.vibe` | the usage map Bend uses, already computed |
+| consume counting | `md_consume_count` in `common_analysis.vibe` | the usage map Bend uses, mostly computed (loop and closure bodies count once; A4 needs ω there) |
 | guarded constructor reuse | ADR-0092, [perceus-reuse.md](../../internal/design/perceus-reuse.md) | in-place reuse behind a run-time `rc == 1` test |
 | region tokens and escape errors | ADR-0090, `checker/checker.vibe` | return / outer-binding / container-write / capture escape checks |
 | `Send` as a compiler-judged marker | `checker/checker_trait.vibe` | a structural "shareable" classifier, like Bend's `Data` |
@@ -153,10 +153,16 @@ The subset that makes it tractable:
   aliases. The only other permitted arguments are shallow buffers themselves,
   which the identity check covers. Anything else is a compile error that
   names the edit: pass the buffer directly, or copy it first.
-- **No reach through the environment either.** The callee must not read a
-  buffer-typed top-level binding, either directly or through a callee. This
-  uses the same interprocedural summary as the `borrow` write check (A2).
-  Otherwise `f(mut table)` could read `table` again as a global.
+- **No reach through the environment either.** The callee must not read any
+  top-level binding whose type is **not buffer-free**, either directly or
+  through a callee. That covers a bare buffer global (`f(mut table)` reading
+  `table` again), and also an aggregate that holds one (`f(mut holder.buf)`
+  while `f` reads `holder.buf` through the global `holder`) and a top-level
+  closure whose captures reach one. This is the same recursive predicate as
+  the argument rule, applied to globals. It needs its own interprocedural
+  **reach summary** ("may read a non-buffer-free global"), computed and
+  imported like the A2 write summary. The write summary alone does not
+  record reads.
 
 With those rules the frame of a `mut` call is exactly its argument list, and
 the entry identity check covers the only aliasing the argument list can
@@ -178,9 +184,19 @@ The only thing global affinity would buy vibe is **static** uniqueness —
 Perceus already frees at last use. So affinity is applied only where it pays:
 to a binding passed to a `consume` position.
 
-The checker is Bend's, and vibe already computes the counts:
+The checker is Bend's, and vibe already computes most of the counts:
 
 - quantities {0, 1, ω}; sequential uses add; branches join by **max**;
+- **a use inside a body that can run more than once is ω**. That means the
+  body of a `while` or `for`, and the body of any lambda, because a closure
+  may be called repeatedly. So consuming a binding defined *outside* such a
+  body is an error: `while again() { finish(xs) }` would transfer the same
+  ownership on the second iteration, which is a double drop or a use after
+  free. A binding defined *inside* the body is fresh on each iteration and
+  unaffected. The fix the diagnostic suggests is to rebind inside the body,
+  or to move the consume after the loop. `md_consume_count` cannot be reused
+  unchanged: its `EWhile` / `EForIn` / `EFn` arms count the body once, which
+  is right for dup/drop placement and wrong for this check;
 - a binding passed to a `consume` position must have quantity 1 counted from
   that point on; any later use is
   `xs was consumed at 12:9 by finish(); pass Array::copy(xs) there to keep using it`.
@@ -202,7 +218,9 @@ counts, shallow buffers, and the three modes. Three theorems:
   arguments' reference counts **and contents** unchanged, and retains no
   reference to them. So eliding the caller's dup and the callee's drop is
   sound, and a caller may treat a `borrow` argument as read-only.
-- **T2 (consume).** After a `consume`, the binding is dead on every path, so
+- **T2 (consume).** After a `consume`, the binding is dead on every path,
+  including every later iteration of an enclosing loop and every later call of
+  an enclosing closure, so
   ownership moves exactly once: no double drop, no use after free.
 - **T3 (exclusivity).** A call admitted by the static-plus-dynamic check,
   with its buffer-free argument and environment rules, has disjoint `mut`
@@ -219,8 +237,9 @@ Two parts of the practice matter as much as the theorems:
   a second Bend `bend.lean`.
 - **Negative witnesses.** A deliberately broken checker must admit a concrete
   unsound program. One variant drops the escape rule, one drops the
-  `borrow` write check, one drops the identity check, and one drops the
-  buffer-free-argument rule. `formal/` already keeps such witnesses for the Error policy.
+  `borrow` write check, one drops the identity check, one drops the
+  buffer-free-argument rule, one checks only bare-buffer globals, and one
+  counts a loop body's consume once. `formal/` already keeps such witnesses for the Error policy.
 
 State the gap honestly as well: the model does not cover codegen. The claim
 "the emitted dup and drop sequence realizes T1" is a differential and
@@ -462,8 +481,8 @@ code.
 |---|---|---|---|
 | 1 | declared `borrow`, checked against the inferred mask plus a per-parameter write summary; written to `index.vpkg` | — | parameter mode |
 | 2 | Lean model + executable oracle for `borrow` / escape (T1), with a negative witness | 1 | none |
-| 3 | `mut` exclusivity on shallow buffers: static place check, buffer-free other arguments, no buffer globals in the callee's reach, entry identity check (T3) | 1 | parameter mode |
-| 4 | `consume` with the local usage map; static uniqueness skips the reuse `rc == 1` test and turns spawn into a move (T2) | 1 | parameter mode |
+| 3 | `mut` exclusivity on shallow buffers: static place check, buffer-free other arguments, no non-buffer-free globals in the callee's reach, entry identity check (T3) | 1 | parameter mode |
+| 4 | `consume` with the local usage map (loop and closure bodies count as ω); static uniqueness skips the reuse `rc == 1` test and turns spawn into a move (T2) | 1 | parameter mode |
 | 5 | i32x4 / i64x2 / f64x2 arithmetic and compare emitters in `codegen/wasm_emit/simd.vibe` | — | none |
 | 6 | kernel-subset recognizer + lowering for `Array[Int]` `map` / `count` / `sum` (2×i64, tag-transparent) with the differential gate | 5 | none |
 | 7 | `I32Column` (simd-data-structures Layer 3) with the B4 narrowing rule and trap-by-default output | 6 | a type |
