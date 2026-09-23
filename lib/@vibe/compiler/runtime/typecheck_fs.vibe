@@ -1650,31 +1650,51 @@ fn local_declared_type_names(stmts: Array[Stmt]) -> Array[String] {
   out
 }
 
-/// Type names written inside the brackets of an effect row -- the kind of an
-/// `Exception[K]` label, or the argument of a generic effect. A row is a
+/// Type names written inside the brackets of an effect row. A row is a
 /// string, so this reads the spelling: every identifier that starts with an
-/// uppercase letter at bracket depth > 0.
-fn row_bracketed_type_names_into(row: String, out: Array[String]) -> Unit {
+/// uppercase letter at bracket depth > 0. Inside an exception label's kind
+/// (`Exception[K]`) the name is always a type -- a kind that names a type
+/// parameter is refused where it is declared -- so it goes to `out`. Inside any
+/// other effect's brackets (`Read[G]`) it may be the scheme's own formal, so it
+/// goes to `named_out` for the caller's declared-type filter.
+fn row_bracketed_type_names_into(row: String, out: Array[String], named_out: Array[String]) -> Unit {
   let len = String::length(row)
   let mut depth = 0
+  // Depth at which the innermost enclosing `Exception[` opened; 0 = none.
+  let mut exception_depth = 0
+  let mut last_ident = ""
   let mut i = 0
   while i < len {
     let c = String::char_code_at(row, i)
     if c == 91 {
       depth = depth + 1
+      if exception_depth == 0 && (last_ident == "Exception" || last_ident == "Error") {
+        exception_depth = depth
+      }
+      last_ident = ""
       i = i + 1
     } else if c == 93 {
+      if depth == exception_depth {
+        exception_depth = 0
+      }
       depth = depth - 1
+      last_ident = ""
       i = i + 1
     } else if row_ident_char(c) {
       let start = i
       while i < len && row_ident_char(String::char_code_at(row, i)) {
         i = i + 1
       }
+      last_ident = String::substring(row, start, i)
       if depth > 0 && c >= 65 && c <= 90 {
-        Array::push(out, String::substring(row, start, i))
+        if exception_depth > 0 {
+          Array::push(out, last_ident)
+        } else {
+          Array::push(named_out, last_ident)
+        }
       }
     } else {
+      last_ident = ""
       i = i + 1
     }
   }
@@ -1710,7 +1730,7 @@ fn nominal_type_names_into(ty: Type, out: Array[String], named_out: Array[String
       }
       nominal_type_names_into(ret, out, named_out)
       match row {
-        Some(r) => row_bracketed_type_names_into(r, named_out),
+        Some(r) => row_bracketed_type_names_into(r, out, named_out),
         None => ()
       }
     },
@@ -1740,6 +1760,8 @@ fn nominal_type_names_into(ty: Type, out: Array[String], named_out: Array[String
         nominal_type_names_into(arg, out, named_out)
       }
     },
+    // A nominal type passed bare to a higher-kinded slot (`Holder[Box]`).
+    CtConstructor(name, _) => Array::push(named_out, name),
     CtForAll(_, _, body) => nominal_type_names_into(body, out, named_out),
     CtRecord(fields) => for field in fields {
       let (_, fty) = field
@@ -1794,6 +1816,43 @@ fn foreign_type_name_collisions(imported: String, raw_path: String, resolved: St
       if contains_str(local_types, name) && !contains_str(reported, name) {
         Array::push(reported, name)
         Array::push(unresolved, "rename this module's type `" + name + "`: imported `" + imported + "` from '" + raw_path + "' uses a different type also named `" + name + "`, and the two would be treated as one type")
+      }
+    }
+  }
+}
+
+/// #3026, the declaration half: importing a TYPE projects its declaration
+/// closure (`typedef_projection_add_named`) -- the selected declaration plus
+/// every dependency type its payload names -- and the checker keeps a local
+/// declaration over a projected one of the same name. So `import ./dep {
+/// Wrap }` with the dependency's `enum Wrap { Bad(Err) }` and a local
+/// `struct Err` reads `Bad`'s payload at the local `Err`. A closure entry
+/// that is not the selected declaration itself, named like a local type, is
+/// refused. The selected name shadowed by a local declaration stays legal
+/// (#2292), except under an alias to an enum or struct: that alias is
+/// projected as `CtNamed(<source name>)`, which the local declaration would
+/// then answer.
+fn foreign_type_declaration_collisions(item: ImportItem, raw_path: String, resolved: String, dep_env: TypeEnv, local_types: Array[String], unresolved: Array[String]) -> Unit {
+  if Array::length(local_types) > 0 && !is_vpkg_types_stub_path(resolved) {
+    let reported: Array[String] = []
+    for def in dependency_typedef_projection(dep_env, [item]) {
+      let n = typedef_projection_name(def)
+      let aliased_nominal = match item.alias {
+        Some(a) => a != item.name && match def {
+          TDEnum(_, _, _) => true,
+          TDStruct(_, _, _, _) => true,
+          _ => false
+        },
+        None => false
+      }
+      let is_alias_node = match item.alias {
+        Some(a) => n == a,
+        None => false
+      }
+      let collides = contains_str(local_types, n) && !is_alias_node && (n != item.name || aliased_nominal)
+      if collides && !contains_str(reported, n) {
+        Array::push(reported, n)
+        Array::push(unresolved, "rename this module's type `" + n + "`: imported `" + item.name + "` from '" + raw_path + "' uses a different type also named `" + n + "`, and the two would be treated as one type")
       }
     }
   }
@@ -1901,6 +1960,11 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
         }
       }
       bind_names(j + 1, with_companions)
+    }
+  }
+  for item in declaration_names {
+    if contains_str(dep_selectable_type_defs, item.name) {
+      foreign_type_declaration_collisions(item, raw_path, resolved, dep_env, local_types, unresolved)
     }
   }
   let declaration_trait_mappings = dependency_trait_projection_mappings(dep_env, dep_bindings, bi_trait_names, bi_upper_slots, declaration_names, array_empty())
