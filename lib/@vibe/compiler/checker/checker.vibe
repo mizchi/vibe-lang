@@ -4098,27 +4098,36 @@ fn handle_collect_direct_calls_scoped(e: Expr, shadowed: String, locals: String,
         // its declared row is compared, and its body is walked (#3022
         // review). The innermost binding of `n` must be that lambda.
         let pos = String::last_index_of(locals, key)
-        match handle_local_lambda_at(n, pos) {
-          Some(EFn(_, _, fparams, _, feff, fbody)) => {
-            match feff {
-              Some(r) => Array::push(out, (n, noff, shadowed, r)),
-              None => ()
+        let targets = handle_local_lambdas_at(n, pos)
+        let mark = String::concat(n, String::concat("@", __to_string(pos)))
+        if Array::length(targets) > 0 && !handle_lambda_expanding(mark) {
+          Array::push(handle_lambda_expanding_cell, mark)
+          let mut ti = 0
+          while ti < Array::length(targets) {
+            match Array::get(targets, ti) {
+              EFn(_, _, fparams, _, feff, fbody) => {
+                match feff {
+                  Some(r) => Array::push(out, (n, noff, shadowed, r)),
+                  None => ()
+                }
+                let mut inner = locals
+                let mut pi = 0
+                while pi < Array::length(fparams) {
+                  let (pname, _) = Array::get(fparams, pi)
+                  inner = handle_locals_with(inner, pname)
+                  pi = pi + 1
+                }
+                handle_collect_direct_calls_scoped(fbody, shadowed, inner, out)
+              },
+              // `f = get_int` makes a call through `f` a call to `get_int`.
+              EIdent(g, _) => if !String::contains(locals, String::concat(" ", String::concat(g, " "))) {
+                Array::push(out, (g, noff, shadowed, ""))
+              },
+              _ => ()
             }
-            let mark = String::concat(n, String::concat("@", __to_string(pos)))
-            if !handle_lambda_expanding(mark) {
-              Array::push(handle_lambda_expanding_cell, mark)
-              let mut inner = locals
-              let mut pi = 0
-              while pi < Array::length(fparams) {
-                let (pname, _) = Array::get(fparams, pi)
-                inner = handle_locals_with(inner, pname)
-                pi = pi + 1
-              }
-              handle_collect_direct_calls_scoped(fbody, shadowed, inner, out)
-              Array::truncate(handle_lambda_expanding_cell, Array::length(handle_lambda_expanding_cell) - 1)
-            }
-          },
-          _ => ()
+            ti = ti + 1
+          }
+          Array::truncate(handle_lambda_expanding_cell, Array::length(handle_lambda_expanding_cell) - 1)
         }
       }
       handle_collect_direct_calls_children(e, shadowed, locals, out)
@@ -4148,7 +4157,14 @@ fn handle_collect_direct_calls_scoped(e: Expr, shadowed: String, locals: String,
     },
     ELetMut(name, value, rest, _) => {
       handle_collect_direct_calls_scoped(value, shadowed, locals, out)
+      // A mutable local may be reassigned, so every value it is given in
+      // its scope is recorded, and a call follows each of them (#3022
+      // review).
+      let depth = handle_bind_local_lambda(name, locals, value)
+      let pos = String::length(locals) - 1
+      handle_bind_assigned_values(name, pos, rest)
       handle_collect_direct_calls_scoped(rest, shadowed, handle_locals_with(locals, name), out)
+      Array::truncate(handle_local_lambdas_cell, depth)
     },
     ELetRec(name, value, rest) => {
       let inner = handle_locals_with(locals, name)
@@ -4249,19 +4265,61 @@ fn handle_bind_local_lambda(name: String, locals: String, value: Expr) -> Int {
   depth
 }
 
-fn handle_local_lambda_at(name: String, pos: Int) -> Option[Expr] {
-  let mut found = None
-  let mut i = Array::length(handle_local_lambdas_cell) - 1
-  while i >= 0 {
+/// Every value recorded for the binding of `name` at `pos`: one for an
+/// immutable local, each assigned value for a `let mut`.
+fn handle_local_lambdas_at(name: String, pos: Int) -> Array[Expr] {
+  let found = array_empty()
+  let mut i = 0
+  while i < Array::length(handle_local_lambdas_cell) {
     let (ln, lpos, lv) = Array::get(handle_local_lambdas_cell, i)
     if ln == name && lpos == pos {
-      found = Some(lv)
-      i = 0 - 1
-    } else {
-      i = i - 1
+      Array::push(found, lv)
     }
+    i = i + 1
   }
   found
+}
+
+/// Record every value assigned to the `let mut` binding `name` (at `pos`)
+/// within its scope `e`: a lambda or a function name. A nested rebinding of
+/// the same name ends the search in that branch, since assignments below it
+/// target the inner binding.
+fn handle_bind_assigned_values(name: String, pos: Int, e: Expr) -> Unit {
+  match e {
+    EAssign(an, v, rest) => {
+      if an == name {
+        match v {
+          EFn(_, _, _, _, _, _) => Array::push(handle_local_lambdas_cell, (name, pos, v)),
+          EIdent(_, _) => Array::push(handle_local_lambdas_cell, (name, pos, v)),
+          _ => ()
+        }
+      }
+      handle_bind_assigned_values(name, pos, v)
+      handle_bind_assigned_values(name, pos, rest)
+    },
+    ELet(n2, v, rest, _) => {
+      handle_bind_assigned_values(name, pos, v)
+      if n2 != name {
+        handle_bind_assigned_values(name, pos, rest)
+      }
+    },
+    ELetMut(n2, v, rest, _) => {
+      handle_bind_assigned_values(name, pos, v)
+      if n2 != name {
+        handle_bind_assigned_values(name, pos, rest)
+      }
+    },
+    _ => {
+      let mark = expr_children_push(e)
+      let end = expr_children_top()
+      let mut i = mark
+      while i < end {
+        handle_bind_assigned_values(name, pos, expr_child_at(i))
+        i = i + 1
+      }
+      expr_children_pop(mark)
+    }
+  }
 }
 
 fn handle_lambda_expanding(mark: String) -> Bool {
@@ -4321,7 +4379,10 @@ fn handle_locals_with_pat(locals: String, pat: Pat) -> String {
 /// builtin or a struct or enum declared here -- `Int`, `Array[String]`, `B`,
 /// `Box[Int]` -- since such a spelling has one meaning. An alias, a type formal
 /// or an unresolved handler type is not judged (#3010, #3022 review).
-fn effect_arg_mismatch(have: Type, want: String, defs: Array[TypeDef]) -> Bool {
+fn effect_arg_mismatch(have: Type, want0: String, defs: Array[TypeDef]) -> Bool {
+  // A non-generic alias means its target, so it is read through (#3022
+  // review): `with State[A]` for `type A = Int` compares as `State[Int]`.
+  let want = expand_alias_words(want0, defs, 0)
   match builtin_scalar_type_of_name(want) {
     Some(want_ty) => head_kind(have) != 0 && !scalar_types_same(have, want_ty),
     None => {
@@ -4332,6 +4393,48 @@ fn effect_arg_mismatch(have: Type, want: String, defs: Array[TypeDef]) -> Bool {
       } else {
         false
       }
+    }
+  }
+}
+
+/// `t` with every name that is a non-generic alias declared here replaced by
+/// its target's spelling, repeatedly (bounded, so a malformed cycle stops).
+/// A generic alias is left as written, which keeps the spelling unjudged.
+fn expand_alias_words(t: String, defs: Array[TypeDef], depth: Int) -> String {
+  if depth > 8 {
+    t
+  } else {
+    let n = String::length(t)
+    let parts = array_empty()
+    let mut changed = false
+    let mut i = 0
+    while i < n {
+      let c = String::char_code_at(t, i)
+      if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+        let st = i
+        while i < n && is_type_name_char(String::char_code_at(t, i)) {
+          i = i + 1
+        }
+        let w = String::substring(t, st, i)
+        match find_typedef(defs, w) {
+          Some(TDAlias(_, aparams, target)) => if Array::length(aparams) == 0 {
+            Array::push(parts, type_to_string(target))
+            changed = true
+          } else {
+            Array::push(parts, w)
+          },
+          _ => Array::push(parts, w)
+        }
+      } else {
+        Array::push(parts, String::substring(t, i, i + 1))
+        i = i + 1
+      }
+    }
+    let out = String::join(parts, "")
+    if changed {
+      expand_alias_words(out, defs, depth + 1)
+    } else {
+      out
     }
   }
 }
