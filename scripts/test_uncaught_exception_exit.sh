@@ -63,7 +63,10 @@ fn main() -> Unit allows Process {
 EOF
 
 compile_core() {
-  local backend="$1" name="$2" out="$WORK/${name}_${backend}.wasm"
+  # Two statements: bash expands every word of one `local` before assigning
+  # any, so `out` would read the caller's `name`/`backend`, not these.
+  local backend="$1" name="$2"
+  local out="$WORK/${name}_${backend}.wasm"
   if [ "$backend" = "gc" ]; then
     env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_BACKEND=gc \
       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$COMPILER" \
@@ -101,6 +104,50 @@ for backend in linear gc; do
   run_core "$backend" uncaught 1
   run_core "$backend" handled 0
   run_core "$backend" explicit 7
+done
+
+# #3023: `vibe run` (scripts/vibe_run.sh) and the node runner invoke the entry
+# export DIRECTLY, without `_start`. The gc lane used to initialize computed
+# module-level values only in `_start`, so a direct `main` invoke read zero
+# globals: the entry boundary's exception-kind cell was address 0 and the
+# uncaught throw below trapped `memory access out of bounds` after `before`
+# instead of printing the diagnosis. `entry_module_value` pins the same init without an exception: it
+# printed `0` instead of `20`, silently.
+cat >"$WORK/entry_uncaught.vibe" <<'EOF'
+fn main() -> Unit allows Exception + Stdout {
+  println("before")
+  throw("boom")
+}
+EOF
+cat >"$WORK/entry_module_value.vibe" <<'EOF'
+let table = [10, 20, 30]
+
+fn main() -> Unit allows Stdout {
+  println("\{Array::get(table, 1)}")
+}
+EOF
+
+run_entry() {
+  local backend="$1" name="$2" expected="$3" want_out="$4" want_err="$5"
+  local out="$WORK/${name}_${backend}.entry.stdout" err="$WORK/${name}_${backend}.entry.stderr"
+  set +e
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$WORK/${name}_${backend}.wasm" >"$out" 2>"$err"
+  local code=$?
+  set -e
+  if [ "$code" -ne "$expected" ] || [ "$(head -n 1 "$out")" != "$want_out" ] ||
+    [ "$(head -n 1 "$err")" != "$want_err" ]; then
+    echo "[exception-exit] $backend/$name via --invoke main: status=$code (want $expected)" >&2
+    echo "  stdout: $(cat "$out")" >&2
+    sed -n '1,8p' "$err" >&2 || true
+    exit 1
+  fi
+}
+
+for backend in linear gc; do
+  compile_core "$backend" entry_uncaught
+  compile_core "$backend" entry_module_value
+  run_entry "$backend" entry_uncaught 1 "before" "vibe: uncaught error: boom"
+  run_entry "$backend" entry_module_value 0 "20" ""
 done
 
 if command -v wasmtime >/dev/null 2>&1; then
@@ -173,4 +220,4 @@ if [ ! -s "$component_exit_local" ]; then
   exit 1
 fi
 
-echo "[exception-exit] ok (linear/gc status+diagnostic, handled=0, explicit=7, component non-zero, component user exit refused, local of that name built)"
+echo "[exception-exit] ok (linear/gc status+diagnostic via _start and main, handled=0, explicit=7, component non-zero, component user exit refused, local of that name built)"
