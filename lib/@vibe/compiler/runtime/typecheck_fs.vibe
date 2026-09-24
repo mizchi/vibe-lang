@@ -2027,6 +2027,42 @@ fn note_imported_type_identity(name: String, identity: String, what: String, see
   }
 }
 
+/// #3036: every declaration an import projects into this module, not only
+/// the names it selected. Selecting `enum Left { A(Err) }` also projects the
+/// `Err` its payload names, under that bare name, so two selected roots whose
+/// closures hold different `Err`s unify them exactly as two direct imports
+/// would. An import alias does not separate them: the alias is a synonym for
+/// the projected bare name, so `struct X as A` and another module's `struct X
+/// as B` both resolve through one `X` (measured on main: `B::{ .. }` was
+/// checked against `A`'s declaration).
+fn note_imported_declaration_identities(dep_env: TypeEnv, resolved: String, raw_path: String, names: Array[ImportItem], seen: Array[(String, String, String)], unresolved: Array[String]) -> Unit {
+  let selected = array_empty()
+  let aliases = array_empty()
+  for item in names {
+    Array::push(selected, item.name)
+    match item.alias {
+      Some(local) => if local != item.name {
+        Array::push(aliases, local)
+      } else {
+        ()
+      },
+      None => ()
+    }
+  }
+  for def in dependency_typedef_projection(dep_env, names) {
+    let n = typedef_projection_name(def)
+    // An alias node is this import's own synonym, not a declaration.
+    if contains_str(selected, n) || !contains_str(aliases, n) {
+      let what = if contains_str(selected, n) {
+        String::concat("`", String::concat(n, String::concat("` imported from '", String::concat(raw_path, "'"))))
+      } else {
+        String::concat("`", String::concat(n, String::concat("` brought in by an import from '", String::concat(raw_path, "'"))))
+      }
+      note_imported_type_identity(n, imported_type_identity(dep_env, resolved, n), what, seen, unresolved)
+    }
+  }
+}
+
 fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_path: String, names: Array[ImportItem], declaration_names: Array[ImportItem], cache: Array[(String, TypeEnv)], unresolved: Array[String], trait_claims: Array[(String, String, Bool, String)], reexport_surface_only: Bool, local_types: Array[String], seen_types: Array[(String, String, String)]) -> TypeEnv {
   let cached = lookup_env_cache(cache, resolved)
   let dep_env = match cached {
@@ -2151,14 +2187,14 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
   for item in declaration_names {
     if contains_str(dep_selectable_type_defs, item.name) {
       foreign_type_declaration_collisions(item, raw_path, resolved, dep_env, dep_types, local_types, unresolved, collision_reported)
-      // A package contract's generated type stub is exempt, as in #3035: its
-      // deferred type IS the implementation's declaration, which a sibling
-      // reaches directly too (`index.vpkg` importing the stub's `ShResult`
-      // and `sh_capture` from `process.vibe`).
-      if !is_vpkg_types_stub_path(resolved) {
-        note_imported_type_identity(item.name, imported_type_identity(dep_env, resolved, item.name), String::concat("`", String::concat(item.name, String::concat("` imported from '", String::concat(raw_path, "'")))), seen_types, unresolved)
-      }
     }
+  }
+  // A package contract's generated type stub is exempt, as in #3035: its
+  // deferred type IS the implementation's declaration, which a sibling
+  // reaches directly too (`index.vpkg` importing the stub's `ShResult` and
+  // `sh_capture` from `process.vibe`).
+  if !is_vpkg_types_stub_path(resolved) {
+    note_imported_declaration_identities(dep_env, resolved, raw_path, declaration_names, seen_types, unresolved)
   }
   let declaration_trait_mappings = dependency_trait_projection_mappings(dep_env, dep_bindings, bi_trait_names, bi_upper_slots, declaration_names, array_empty())
   foreign_trait_impl_collisions(dep_env, declaration_trait_mappings, raw_path, resolved, dep_types, local_types, unresolved, collision_reported)
