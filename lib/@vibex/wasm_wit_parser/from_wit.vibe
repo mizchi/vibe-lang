@@ -155,7 +155,7 @@ export fn from_wit_typedef(typedef: WitTypeDef) -> String with Exception {
         Array::push(lines, "  \{fw_ident(fw_snake(fname), ctx)}: \{fw_type(fty, ctx)}")
         i = i + 1
       }
-      "export struct \{fw_pascal(name)} {\n\{String::join(lines, ";\n")}\n}"
+      "export struct \{fw_type_name(name)} {\n\{String::join(lines, ";\n")}\n}"
     },
     TDEnum(name, cases, _) => {
       let parts: Array[String] = []
@@ -164,7 +164,7 @@ export fn from_wit_typedef(typedef: WitTypeDef) -> String with Exception {
         Array::push(parts, "  \{fw_pascal(Array::get(cases, i))}")
         i = i + 1
       }
-      "export enum \{fw_pascal(name)} {\n\{String::join(parts, ";\n")}\n}"
+      "export enum \{fw_type_name(name)} {\n\{String::join(parts, ";\n")}\n}"
     },
     TDVariant(name, cases, _) => {
       let ctx = " (in variant `\{name}`)"
@@ -188,12 +188,12 @@ export fn from_wit_typedef(typedef: WitTypeDef) -> String with Exception {
         })
         i = i + 1
       }
-      "export enum \{fw_pascal(name)} {\n\{String::join(parts, ";\n")}\n}"
+      "export enum \{fw_type_name(name)} {\n\{String::join(parts, ";\n")}\n}"
     },
-    TDAlias(name, t, _) => "type \{fw_pascal(name)} = \{fw_type(t, " (in type `\{name}`)")}",
+    TDAlias(name, t, _) => "type \{fw_type_name(name)} = \{fw_type(t, " (in type `\{name}`)")}",
     TDFlags(name, _, _) => throw(fw_refusal("flags \{name}", "")),
     TDResource(name, funcs, _) => {
-      let ty = fw_pascal(name)
+      let ty = fw_type_name(name)
       // The explicit release is spelled `drop` (§7); a resource whose own
       // interface already has a `drop` would declare it twice (Codex on
       // #3059), so it is refused rather than silently renamed.
@@ -206,6 +206,30 @@ export fn from_wit_typedef(typedef: WitTypeDef) -> String with Exception {
           ()
         }
         fi = fi + 1
+      }
+      // The constructor is spelled `new`; a function of that name beside a
+      // constructor would declare `\{ty}::new` twice (Codex on #3059).
+      let mut has_ctor = false
+      let mut has_new = false
+      let mut ci = 0
+      while ci < Array::length(funcs) {
+        let (fname, kind, _, _, _, _) = Array::get(funcs, ci)
+        match kind {
+          FKConstructor(_) => {
+            has_ctor = true
+          },
+          _ => if fw_snake(fname) == "new" {
+            has_new = true
+          } else {
+            ()
+          }
+        }
+        ci = ci + 1
+      }
+      if has_ctor && has_new {
+        throw(fw_refusal("resource `\{name}` declaring both a constructor and a function named `new` (the derived constructor is `\{ty}::new`)", ""))
+      } else {
+        ()
       }
       let out: Array[String] = ["opaque type \{ty}"]
       let mut i = 0
@@ -290,8 +314,8 @@ fn fw_type(t: WitTypeExpr, ctx: String) -> String with Exception {
       }
       "(\{String::join(parts, ", ")})"
     },
-    TyId(name) => fw_pascal(name),
-    TyOwn(name) => fw_pascal(name),
+    TyId(name) => fw_type_name(name),
+    TyOwn(name) => fw_type_name(name),
     TyBorrow(name) => throw(fw_refusal("borrow<\{name}>", ctx)),
     TyU8 => throw(fw_refusal("u8 outside list<u8>", ctx)),
     TyU16 => throw(fw_refusal("u16", ctx)),
@@ -375,6 +399,41 @@ fn fw_ident(name: String, ctx: String) -> String with Exception {
     } else {
       name
     }
+  }
+}
+
+/// A WIT type name as a vibe type name, refused when it lands on a builtin
+/// spelling: `record int { value: s64 }` would read `export struct Int { value:
+/// Int }`, where the field's `Int` no longer means the scalar (Codex on #3059).
+fn fw_type_name(name: String) -> String with Exception {
+  let ty = fw_pascal(name)
+  let builtins = [
+    "Bool",
+    "Int",
+    "Double",
+    "Char",
+    "String",
+    "Bytes",
+    "Array",
+    "Option",
+    "Result",
+    "Unit",
+    "Map"
+  ]
+  let mut clash = false
+  let mut i = 0
+  while i < Array::length(builtins) {
+    if Array::get(builtins, i) == ty {
+      clash = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if clash {
+    throw(fw_refusal("type `\{name}` (its vibe name `\{ty}` is a builtin type)", ""))
+  } else {
+    ty
   }
 }
 
