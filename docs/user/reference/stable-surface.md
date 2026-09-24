@@ -314,17 +314,17 @@ spelling at all — `Option::Some` reports `unknown name`, so write `Some`.
   (`with Exception[IoError]` — `E` is any payload type: an enum, a
   `suberror`, or a primitive such as `String`), kinds compose by `effectset`
   union, and a kind missing from the row is a check-time diagnostic. The
-  exact-kind discharge is a **checker-side** guarantee over statically kinded
-  rows: `Exception[IoError]::Throw` discharges exactly `IoError` where the
-  handled expression's row is kinded. Where that row is **erased**, kinded
-  and erased are compatible in both directions and the runtime carries a
-  single abortive tag, so a kinded handler also discharges an erased throw
-  whose payload may be another kind. The gradual reading is likewise part of
-  the contract: a payload whose kind cannot be resolved (a pattern binder, a
-  field projection — an ordinary local binding IS resolved from its
-  initializer) is treated as erased and passes any `Exception[K]` — no false
-  positives, known misses. Tightening any of this rejects programs and is a
-  breaking change.
+  exact-kind discharge is a **checker-side** guarantee: the runtime carries a
+  single abortive tag, so a kinded handler arm is **strict** (#2985).
+  `Exception[IoError]::Throw(e)` catches every exception its body raises, so
+  the body may raise only `IoError`: an erased or unresolved throw, an erased
+  callee (`with Exception`), or a throw of another kind is refused there. The
+  erased `Exception::Throw(m)` arm catches everything, with an untyped
+  payload. At a function's own ROW the reading is gradual: a payload whose
+  kind cannot be resolved (a pattern binder, a field projection — an ordinary
+  local binding IS resolved from its initializer) is treated as erased and
+  passes any `Exception[K]` — no false positives, known misses. Tightening
+  any of this rejects programs and is a breaking change.
 - User-defined algebraic effects: `effect` / `perform` / `handle ... with` /
   `resume` (one-shot, lexically scoped — ADR-0050, ADR-0021 Phase 1
   tail-resumptive).
