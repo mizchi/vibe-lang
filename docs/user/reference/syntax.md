@@ -633,6 +633,35 @@ x /= 2
 x %= 2
 ```
 
+### Line breaks and operators
+
+A newline does not end an expression when the next line begins with a binary
+operator: the line continues the expression above it. The exception is a token
+that can also be a prefix operator (`-`, `!`, `~`). At the start of a line it
+is a **prefix** operator when no whitespace follows it, so a line `-1` begins
+a new expression (ADR-0115, #3041). Within one line the whitespace does not
+matter: `a -1` is still `a - 1`.
+
+```vibe skip
+// doctest-skip: form catalogue: three separate blocks, shown side by side
+{
+  log("x")
+  -1          // a new expression: the block's value is -1
+}
+{
+  a
+  - 1         // a space after `-`: binary, the block's value is a - 1
+}
+{
+  a -
+  1           // `-` ends the line: binary, the block's value is a - 1
+}
+```
+
+Every other operator at the start of a line (`+`, `*`, `|>`, `&&`, `==`, ...)
+continues the previous line. `->`, `-=` and `!=` are distinct tokens, not a
+prefix operator followed by something else.
+
 ## Pipe
 
 ```vibe skip
