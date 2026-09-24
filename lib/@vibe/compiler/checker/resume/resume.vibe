@@ -528,7 +528,17 @@ export fn arm_first_bare_tail(e: Expr, sh: Bool) -> Option[Expr] {
       hit
     },
     EHandle(body, harms) => {
-      let mut hit = arm_first_bare_tail(body, sh)
+      // A nested suspend arm (one that stores the INNER `resume`) makes its
+      // own value the nested handle's result, and that value is whatever the
+      // arm returns -- not something this walk can follow back to an outer
+      // `resume` (Codex P1 on #3049: `{ let k = resume; 7 }` next to a body
+      // that `return`s resumed the outer perform with 7). Such a handle in
+      // tail position is a bare tail: wrap it in the outer resume(...).
+      let mut hit = if handle_has_suspend_arm(harms) {
+        Some(e)
+      } else {
+        arm_first_bare_tail(body, sh)
+      }
       let mut i = 0
       while i < Array::length(harms) && hit is None {
         let (hp, hb) = Array::get(harms, i)
@@ -543,6 +553,24 @@ export fn arm_first_bare_tail(e: Expr, sh: Bool) -> Option[Expr] {
     },
     _ => Some(e)
   }
+}
+
+/// Does a `handle`'s arm set contain a declared-effect arm that stores its
+/// `resume` as a value (the suspend form, whose own value is the handle's
+/// result)? A payload binder named `resume` shadows it, as in the checker.
+fn handle_has_suspend_arm(harms: Array[(Pat, Expr)]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(harms) && !found {
+    let (hp, hb) = Array::get(harms, i)
+    if !handler_arm_pat_is_error(hp) && arm_refs_resume_value(hb, pat_binds_resume(hp)) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
 }
 
 /// `perform <op>(..)`'s operand names an exception operation

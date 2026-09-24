@@ -1,5 +1,5 @@
 import @vibe/compiler/core {
-  Expr
+  Expr, Pat
 }
 import @vibe/compiler/checker/resume {
   arm_first_bare_tail, reject_resume_outside_handler
@@ -43,4 +43,18 @@ test "#2969: a tail resume under a local binder named resume is bare" {
   let shadowed = ELet("resume", EIdent("callback", 12), resume_call, 4)
   inspect(arm_first_bare_tail(shadowed, false) is Some(_), content = "true")
   inspect(arm_first_bare_tail(resume_call, true) is Some(_), content = "true")
+}
+
+test "#2969: a tail nested handle with a suspend arm is bare" {
+  // Codex P1 on #3049: the suspend arm's own value is the nested handle's
+  // result, so it cannot be followed back to an outer resume.
+  let inner_body = EReturn(EInt(1))
+  let suspend_arm = ELet("k", EIdent("resume", 40), EInt(7), 30)
+  let pat = PCtor("Inner::Pause", [])
+  let nested = EHandle(inner_body, [(pat, suspend_arm)])
+  inspect(arm_first_bare_tail(nested, false) is Some(_), content = "true")
+  // A tail-resumptive inner arm leaves the nested handle's value to its body.
+  let tail_arm = ECall(EIdent("resume", 40), [EInt(7)], 41)
+  let plain = EHandle(inner_body, [(pat, tail_arm)])
+  inspect(arm_first_bare_tail(plain, false) is None, content = "true")
 }
