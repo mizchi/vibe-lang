@@ -35,6 +35,11 @@ fn inert_row_program(side_row: String) -> Array[Stmt] {
 /// parameter can carry the handled effect into the callee, so the row stays
 /// opaque here where the first-order shape above is now admitted.
 fn ho_row_program(side_row: String) -> Array[Stmt] {
+  ho_row_program_with(side_row, EFn([], [], [("y", Some(TyName("Int")))], Some(TyName("Int")), None, EIdent("y", 0)))
+}
+
+/// `ho_row_program` with `g_arg` in the function-typed position.
+fn ho_row_program_with(side_row: String, g_arg: Expr) -> Array[Stmt] {
   let ask = ECall(EIdent("ask", 0), [], 0)
   [
     SEffectDef(false, "Ask", [], [("Get", [], TyName("Int"))]),
@@ -47,9 +52,14 @@ fn ho_row_program(side_row: String) -> Array[Stmt] {
     ], Some(TyName("Int")), Some(side_row), ECall(EIdent("g", 0), [
       EIdent("n", 0)
     ], 0))),
+    SLet(false, false, "ask_plus", None, EFn([], [], [
+      ("v", Some(TyName("Int")))
+    ], Some(TyName("Int")), Some("Ask"), ECall(EIdent("perform", 0), [
+      ECall(EIdent("Ask::Get", 0), [], 0)
+    ], 0))),
     SLet(false, false, "main", None, EFn([], [], [], Some(TyName("Int")), Some("Stdout"), EHandle(ECall(EIdent("side", 0), [
       ask,
-      EFn([], [], [("y", Some(TyName("Int")))], Some(TyName("Int")), None, EIdent("y", 0))
+      g_arg
     ], 0), [(PCtor("Ask::Get", []), ECall(EIdent("resume", 0), [EInt(42)], 0))])))
   ]
 }
@@ -89,11 +99,39 @@ test "inert row membership does not suppress a later program's required dictiona
 /// of the row variable alone. Asserting only the first-order half would pass
 /// for a port that admitted everything; only the higher-order half, for one
 /// that admitted nothing.
-test "a first-order row-variable callee is admitted, a higher-order one stays opaque" {
+test "a first-order row-variable callee is admitted" {
+  inspect(Array::length(evidence_dict_pass(inert_row_program("e"), "main")) == 0, content = "true")
+}
+
+// #2065 wall 1: a HIGHER-ORDER row-variable callee is admitted exactly when
+// every function-typed argument is a literal that cannot perform the effect.
+test "a higher-order row-variable callee is admitted with an inert literal argument" {
+  inspect(Array::length(evidence_dict_pass(ho_row_program("e"), "main")) == 0, content = "true")
+}
+
+test "a higher-order row-variable callee stays opaque when the argument could perform" {
+  // A NAME in the function-typed position: its row is not readable here.
+  let named = ho_row_program_with("e", EIdent("ask_plus", 0))
+  // A literal whose body performs the handled effect.
+  let performing = ho_row_program_with("e", EFn([], [], [
+    ("y", Some(TyName("Int")))
+  ], Some(TyName("Int")), None, ECall(EIdent("perform", 0), [
+    ECall(EIdent("Ask::Get", 0), [], 0)
+  ], 0)))
+  // A literal that calls a function needing the handled effect.
+  let calling = ho_row_program_with("e", EFn([], [], [
+    ("y", Some(TyName("Int")))
+  ], Some(TyName("Int")), None, ECall(EIdent("ask_plus", 0), [EIdent("y", 0)], 0)))
+  // A literal whose declared row names the handled effect.
+  let declared = ho_row_program_with("e", EFn([], [], [
+    ("y", Some(TyName("Int")))
+  ], Some(TyName("Int")), Some("Ask"), EIdent("y", 0)))
   inspect([
-    Array::length(evidence_dict_pass(inert_row_program("e"), "main")) == 0,
-    Array::length(evidence_dict_pass(ho_row_program("e"), "main")) > 0
-  ], content = "[true, true]")
+    Array::length(evidence_dict_pass(named, "main")) > 0,
+    Array::length(evidence_dict_pass(performing, "main")) > 0,
+    Array::length(evidence_dict_pass(calling, "main")) > 0,
+    Array::length(evidence_dict_pass(declared, "main")) > 0
+  ], content = "[true, true, true, true]")
 }
 
 //# #2500: the self-discharge spine

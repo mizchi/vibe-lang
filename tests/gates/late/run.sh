@@ -3649,9 +3649,42 @@ if [ "$fo65_pos_out" != "42" ]; then
   echo "[compiler-gate] FAIL: async_first_order_rowvar_boundary_test.vibe got '$fo65_pos_out' (want 42)" >&2
   exit 1
 fi
-# The HIGHER-ORDER twin differs by exactly one function-typed parameter and
-# must stay refused: there an argument really can instantiate the row
-# variable to Async, and the perform would happen where the injected
+# The HIGHER-ORDER twin, called with a closure LITERAL that cannot perform
+# Async, is admitted by the call-site argument-inertness rule
+# (edp_argcond_admits) and must answer 42 too.
+cp fixtures/async_higher_order_rowvar_literal_boundary_test.vibe "$fo65dir/lit.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$fo65dir/lit.vibe" "$fo65dir/lit.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$fo65dir/lit.wasm" ]; then
+  echo "[compiler-gate] FAIL: async_higher_order_rowvar_literal_boundary_test.vibe did not compile -- the #2065 call-site argument-inertness admission regressed" >&2
+  cat "$fo65dir/lit.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+fo65_lit_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$fo65dir/lit.wasm" 2>/dev/null | tail -1)"
+if [ "$fo65_lit_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: async_higher_order_rowvar_literal_boundary_test.vibe got '$fo65_lit_out' (want 42)" >&2
+  exit 1
+fi
+# The shape that motivates it: a spawn-free `TaskGroup::run` under the same
+# injected Async boundary, whose body parameter sits under a row variable.
+cp fixtures/async_taskgroup_run_boundary_test.vibe "$fo65dir/tg.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$fo65dir/tg.vibe" "$fo65dir/tg.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$fo65dir/tg.wasm" ]; then
+  echo "[compiler-gate] FAIL: async_taskgroup_run_boundary_test.vibe did not compile -- TaskGroup::run under an Async entry is refused again (#2065)" >&2
+  cat "$fo65dir/tg.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+fo65_tg_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$fo65dir/tg.wasm" 2>/dev/null | tail -1)"
+if [ "$fo65_tg_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: async_taskgroup_run_boundary_test.vibe got '$fo65_tg_out' (want 42)" >&2
+  exit 1
+fi
+# ... and with a NAMED function in that position it must stay refused: the
+# argument's row is not readable at the call site, so it could instantiate the
+# row variable to Async and the perform would happen where the injected
 # boundary cannot see it.
 cp fixtures/err_async_rowvar_higher_order_refused.vibe "$fo65dir/neg.vibe"
 rm -f "$fo65dir/neg.wasm"

@@ -1140,6 +1140,11 @@ fn edp_has_unsafe_construct_sc(expr: Expr, needing: Array[String], ename: String
           edp_exprs_have_unsafe_construct(args, needing, ename, pure_fns, ls_names, ls_flags)
         } else if edp_str_array_contains(pure_fns, nm) {
           edp_exprs_have_unsafe_construct(args, needing, ename, pure_fns, ls_names, ls_flags)
+        } else if edp_argcond_admits(nm, args, ename, needing) {
+          // #2065: a higher-order row-variable callee, every one of whose
+          // function-typed parameters receives a literal that cannot perform
+          // `ename` here -- see edp_argcond_admits.
+          edp_exprs_have_unsafe_construct(args, needing, ename, pure_fns, ls_names, ls_flags)
         } else {
           true
         }
@@ -1182,6 +1187,154 @@ fn edp_has_unsafe_construct_sc(expr: Expr, needing: Array[String], ename: String
     // re-investigate from scratch.
     _ => false
   }
+}
+
+//# #2065 wall 1: the call-site argument-inertness rule (evidence side)
+//
+// A callee whose row carries a VARIABLE is withheld from `pure_fns`, because
+// the variable can be instantiated to the migrated effect at the call site
+// and the perform then happens inside the callee, out of this handle's
+// sight. `edp_callee_first_order` (evidence.vibe) admits the callees whose
+// parameters take no function: no argument can carry a row, so the variable
+// can only be the empty row. That leaves every HIGHER-ORDER one refused --
+// and `TaskGroup::run((g) -> { 42 })` is higher-order.
+//
+// Whether the variable can become `ename` is a property of what actually
+// arrives at THIS call, which is the argument the suspend pass has made
+// since #1727 (`scps_callee_fn_args_inert`). This is its evidence-side port:
+// when every function-typed parameter receives a closure LITERAL that cannot
+// perform `ename` -- its declared row names neither `ename` nor a variable,
+// and its body neither performs `ename` nor calls a function that needs it --
+// no argument can instantiate the variable to `ename`, so the call is
+// `ename`-free for the same reason a first-order one is. The literal's own
+// body is still scanned by the ordinary recursion over the arguments.
+//
+// Fails closed on everything else: a name, a call result or a field access in
+// a function-typed position (their rows are not readable here), a missing
+// argument, and any callee the evidence pass did not record -- it records only
+// callees whose every parameter is annotated.
+//
+// Pass state, written by the evidence pass (`edp_argcond_reset` /
+// `edp_argcond_note`) before it scans for an effect; consulted only for the
+// effect it names.
+let edp_argcond_effect: Array[String] = [""]
+let edp_argcond_names: Array[String] = []
+let edp_argcond_masks: Array[Array[Bool]] = []
+
+export fn edp_argcond_reset(ename: String) -> Unit {
+  Array::set(edp_argcond_effect, 0, ename)
+  Array::truncate(edp_argcond_names, 0)
+  Array::truncate(edp_argcond_masks, 0)
+}
+
+/// `fn_params[i]` is true when parameter `i` is function-typed.
+export fn edp_argcond_note(ename: String, name: String, fn_params: Array[Bool]) -> Unit {
+  if Array::get(edp_argcond_effect, 0) == ename && !edp_str_array_contains(edp_argcond_names, name) {
+    Array::push(edp_argcond_names, name)
+    Array::push(edp_argcond_masks, fn_params)
+  } else {
+    ()
+  }
+}
+
+fn edp_argcond_admits(nm: String, args: Array[Expr], ename: String, needing: Array[String]) -> Bool {
+  if Array::get(edp_argcond_effect, 0) != ename {
+    false
+  } else {
+    let mut slot = -1
+    let mut i = 0
+    while i < Array::length(edp_argcond_names) {
+      if slot < 0 && Array::get(edp_argcond_names, i) == nm {
+        slot = i
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    if slot < 0 {
+      false
+    } else {
+      let mask = Array::get(edp_argcond_masks, slot)
+      let mut ok = Array::length(args) >= Array::length(mask)
+      let mut p = 0
+      while ok && p < Array::length(mask) {
+        if Array::get(mask, p) && !edp_literal_cannot_perform(Array::get(args, p), ename, needing) {
+          ok = false
+        } else {
+          ()
+        }
+        p = p + 1
+      }
+      ok
+    }
+  }
+}
+
+fn edp_literal_cannot_perform(arg: Expr, ename: String, needing: Array[String]) -> Bool {
+  match arg {
+    EFn(_, _, _, _, eff, body) => {
+      let row_ok = match eff {
+        Some(row) => {
+          let parts = String::split(row, ",")
+          let mut clean = true
+          let mut i = 0
+          while i < Array::length(parts) {
+            let label = String::trim(Array::get(parts, i))
+            let first = if String::length(label) > 0 {
+              String::char_code_at(label, 0)
+            } else {
+              0
+            }
+            if edp_effect_name_of(label) == ename || (first >= 97 && first <= 122) {
+              clean = false
+            } else {
+              ()
+            }
+            i = i + 1
+          }
+          clean
+        },
+        None => true
+      }
+      row_ok && !edp_expr_reaches_effect(body, ename, needing)
+    },
+    _ => false
+  }
+}
+
+/// Does `e` perform `ename`, or call a function that needs it? Conservative:
+/// a nested closure counts wherever it sits.
+fn edp_expr_reaches_effect(e: Expr, ename: String, needing: Array[String]) -> Bool {
+  if edp_user_perform_effect_of(e) == ename {
+    true
+  } else {
+    match e {
+      ECall(EIdent(nm, _), args, _) => edp_str_array_contains(needing, nm) || edp_exprs_reach_effect(args, ename, needing),
+      EHandle(body, arms) => edp_expr_reaches_effect(body, ename, needing) || edp_arm_bodies_reach_effect(arms, ename, needing),
+      EMatch(scrut, arms) => edp_expr_reaches_effect(scrut, ename, needing) || edp_arm_bodies_reach_effect(arms, ename, needing),
+      _ => edp_exprs_reach_effect(expr_children(e), ename, needing)
+    }
+  }
+}
+
+fn edp_exprs_reach_effect(es: Array[Expr], ename: String, needing: Array[String]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(es) {
+    found = edp_expr_reaches_effect(Array::get(es, i), ename, needing)
+    i = i + 1
+  }
+  found
+}
+
+fn edp_arm_bodies_reach_effect(arms: Array[(Pat, Expr)], ename: String, needing: Array[String]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(arms) {
+    found = edp_expr_reaches_effect(Array::get(arms, i).1, ename, needing)
+    i = i + 1
+  }
+  found
 }
 
 /// #2109: is this builtin FIRST-ORDER -- does its signature take no function
