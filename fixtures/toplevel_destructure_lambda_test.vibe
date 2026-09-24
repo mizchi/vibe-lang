@@ -1,0 +1,48 @@
+// #3025: calling a top-level `let` whose value is a closure but not a
+// syntactic lambda. A destructuring `let` expands to one hidden binding plus
+// a projection per binder (`let f = __dst0.0`), so every binder is such a
+// value. The linear lane compiled the call as a direct call to the value's
+// lazy getter (invalid wasm with any argument, the closure returned un-called
+// with none); the gc lane stopped with an internal compiler error.
+
+let (f, o) = ((x: Int) -> x + 1, 5)
+
+let ((sub, k), m) = (((a: Int, b: Int) -> a - b, 10), 3)
+
+fn make_adder(n: Int) -> (Int) -> Int {
+  (x: Int) -> x + n
+}
+
+let add7 = make_adder(7)
+
+fn make_thunk(n: Int) -> () -> Int {
+  () -> n * 2
+}
+
+let twice21 = make_thunk(21)
+
+// A value may be named with a capital: on the gc lane it is a computed
+// global, not an unknown constructor (Codex on #3047).
+let Add1 = make_adder(1)
+
+test "a lambda bound by a top-level tuple pattern" {
+  inspect(f(41), content = "42")
+  inspect(f(41) + o, content = "47")
+}
+
+test "a nested pattern binder, argument order kept" {
+  inspect(sub(k, m), content = "7")
+  inspect(sub(m, k), content = "-7")
+}
+
+test "a top-level let holding a returned closure" {
+  inspect(add7(35), content = "42")
+}
+
+test "a zero-argument closure is called, not returned" {
+  inspect(twice21(), content = "42")
+}
+
+test "a capitalised top-level closure is called through its value" {
+  inspect(Add1(41), content = "42")
+}

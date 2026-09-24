@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# A `.vibex` entry's LEXER error names its file and its position (#2938).
+# A `.vibex` entry's LEXER error names its file and its position (#2938), and
+# so does its PARSE error (#2948).
 #
 # The same lexer error reached the reader three different ways depending on how
 # it was asked -- measured on stage2 `25a3b9f96`:
@@ -23,12 +24,19 @@
 #               the same function, outside the parse, and already named the
 #               file, so a careless handler would double-prefix them
 #   5. CONTROL  a valid .vibex still builds and RUNS
-#   6. CONTROL  a .vibex PARSE error gains the path and NO invented position.
-#               `parse_program_preserving` takes tokens only, so there is no
-#               starts table and `format_unexpected_token` deliberately
-#               declines to locate. Asserting the position is ABSENT here is
-#               the point: inventing one would satisfy group 1's shape while
-#               pointing the reader at the wrong place.
+#   6. RED      a .vibex PARSE error names the file and the SAME position
+#               the .vibe lane reports for identical bytes (#2948). The
+#               validation parse used to be the tokens-only
+#               `parse_program_preserving`, which has no starts table and so
+#               (rightly) declined to locate. It is now the located preserving
+#               parse. The row compares against the .vibe answer instead of a
+#               hard-coded position, so it cannot pass by inventing one. It
+#               also holds for `run` (the preflight parse) and `serve`, and a
+#               message built with an internal token index (`at #N`) must not
+#               reach the reader on either lane.
+#   6c. RED     a misplaced `#zero_alloc` throws from the directive loop of
+#               the located parse, not from a statement; it is located at
+#               its `#` on build, run, serve and the .vibe lane alike.
 #   7. RED      the other two verbs that read a user-named entry and lex it --
 #               `serve` and `build --wit` -- answer the same way. `run` does
 #               not reach `validate_vibex_entry_source` at all: it lexes the
@@ -65,7 +73,22 @@ note() { printf '%s\n' "$*"; }
 printf 'fn main allows Console {\n  let x = 1 \\ 2\n  println("hi")\n}\n' > "$WORK/lex.vibex"
 printf 'fn main allows Console {\n  let x = 1 \\ 2\n  println("hi")\n}\n' > "$WORK/lex.vibe"
 printf 'fn main allows Console {\n  let y = (\n  println("hi")\n}\n'       > "$WORK/parse.vibex"
+cp "$WORK/parse.vibex" "$WORK/parse.vibe"
+printf 'fn quiet() -> Int allows Console {\n  42\n}\n\nfn main allows Console {\n  println("\\{quiet()}")\n}\n' > "$WORK/allows.vibex"
+cp "$WORK/allows.vibex" "$WORK/allows.vibe"
 printf 'export fn helper() -> Int {\n  1\n}\n\nfn main allows Console {\n  println("hi")\n}\n' > "$WORK/shape.vibex"
+# The syntax error sits in a statement an INACTIVE `#cfg` guards: the parse
+# still reads it, so it is located like any other (Codex on #3047).
+printf '#cfg(nope_not_enabled)\nfn dead() -> Int {\n  let y = (\n}\n\nfn main allows Console {\n  println("hi")\n}\n' > "$WORK/cfgparse.vibex"
+# A malformed directive fails in the cfg pre-scan, before any per-statement
+# locator runs (Codex on #3047); it is located at its own `#`.
+printf 'fn helper() -> Int {\n  1\n}\n\n#cfg(\nfn main allows Console {\n  println("hi")\n}\n' > "$WORK/cfgbad.vibex"
+cp "$WORK/cfgbad.vibex" "$WORK/cfgbad.vibe"
+# A `#zero_alloc` that precedes no fn: the directive's own check throws in the
+# statement loop of the located parse, outside every per-statement locator
+# (Codex on #3047). Located at its `#`, line 5:1.
+printf 'fn helper() -> Int {\n  1\n}\n\n#zero_alloc\nlet x = 1\n\nfn main allows Console {\n  println("hi")\n}\n' > "$WORK/zabad.vibex"
+cp "$WORK/zabad.vibex" "$WORK/zabad.vibe"
 printf 'fn main allows Console {\n  println("ok-42")\n}\n'                 > "$WORK/good.vibex"
 printf 'export fn helper() -> Int {\n  let x = 1 \\ 2\n  x\n}\n'             > "$WORK/lexlib.vibe"
 printf 'export fn helper(x: Int) -> Int {\n  x + 1\n}\n'                   > "$WORK/goodlib.vibe"
@@ -135,17 +158,75 @@ got="$(printf '%s' "$OUT" | tail -1)"
 if [ "$got" = "ok-42" ]; then note "  ok   and answers: ok-42"
 else note "  FAIL want 'ok-42', got '$got'"; fail=1; fi
 
-note "=== 6. CONTROL: a .vibex PARSE error gains the path and no invented position ==="
-ask build parse.vibex -o "$WORK/parse.wasm"
-if ! printf '%s' "$OUT" | grep -qF "parse.vibex"; then
-  note "  FAIL the parse diagnostic does not name the file"
-  printf '%s\n' "$OUT" | head -2 | sed 's/^/        /'; fail=1
-elif [ "$(positions "$OUT")" != 0 ]; then
-  note "  FAIL a position was invented: parse_program_preserving has no starts table"
-  printf '%s\n' "$OUT" | head -2 | sed 's/^/        /'; fail=1
-else
-  note "  ok   named, and declines to guess a position"
-fi
+note "=== 6. RED: a .vibex PARSE error carries the position the .vibe lane reports (#2948) ==="
+# locpart <out> -> the first `line L:C: message` of a diagnostic, path stripped
+locpart() { printf '%s' "$1" | grep -o 'line [0-9][0-9]*:[0-9][0-9]*: .*' | head -1; }
+for pair in "parse:expected ')' or ','" "allows:grants authority" "cfgbad:expected flag name"; do
+  stem="${pair%%:*}"; what="${pair#*:}"
+  ask build "$stem.vibe" -o "$WORK/$stem.vibe.wasm"; want="$(locpart "$OUT")"
+  if [ -z "$want" ] || ! printf '%s' "$want" | grep -qF "$what"; then
+    note "  FAIL control: the .vibe lane gives no located '$what' for $stem"
+    printf '%s\n' "$OUT" | head -2 | sed 's/^/        /'; fail=1; continue
+  fi
+  for verb in build run serve; do
+    case "$verb" in
+      build) ask build "$stem.vibex" -o "$WORK/$stem.wasm" ;;
+      run)   ask run "$stem.vibex" ;;
+      serve) ask serve "$stem.vibex" -o "$WORK/$stem.component.wasm" ;;
+    esac
+    if ! printf '%s' "$OUT" | grep -qF "$stem.vibex"; then
+      note "  FAIL $verb $stem.vibex: the message does not name the file"
+      printf '%s\n' "$OUT" | head -2 | sed 's/^/        /'; fail=1
+    elif printf '%s' "$OUT" | grep -q ' at #[0-9]'; then
+      note "  FAIL $verb $stem.vibex: a parser token index reached the reader"
+      printf '%s\n' "$OUT" | head -2 | sed 's/^/        /'; fail=1
+    elif [ "$(locpart "$OUT")" != "$want" ]; then
+      note "  FAIL $verb $stem.vibex: want '$want' (the .vibe answer)"
+      printf '%s\n' "$OUT" | head -2 | sed 's/^/        /'; fail=1
+    elif [ "$(positions "$OUT")" != 1 ]; then
+      note "  FAIL $verb $stem.vibex: the position is doubled"
+      printf '%s\n' "$OUT" | head -2 | sed 's/^/        /'; fail=1
+    else
+      note "  ok   vibe $verb $stem.vibex: ${want%%: *}"
+    fi
+  done
+done
+
+note "=== 6b. RED: a parse error under an inactive #cfg is located too ==="
+for verb in build run; do
+  case "$verb" in
+    build) ask build cfgparse.vibex -o "$WORK/cfgparse.wasm" ;;
+    run)   ask run cfgparse.vibex ;;
+  esac
+  if printf '%s' "$OUT" | grep -q ' at #[0-9]'; then
+    note "  FAIL $verb cfgparse.vibex: a parser token index reached the reader"
+    printf '%s\n' "$OUT" | head -2 | sed 's/^/        /'; fail=1
+  elif ! printf '%s' "$OUT" | grep -qF "cfgparse.vibex" || [ -z "$(locpart "$OUT")" ]; then
+    note "  FAIL $verb cfgparse.vibex: want the file and a line:col"
+    printf '%s\n' "$OUT" | head -2 | sed 's/^/        /'; fail=1
+  else
+    note "  ok   vibe $verb cfgparse.vibex: $(locpart "$OUT" | cut -d: -f1-2)"
+  fi
+done
+
+note "=== 6c. RED: a misplaced #zero_alloc is located on every lane ==="
+for probe in "build zabad.vibex" "run zabad.vibex" "serve zabad.vibex" "build zabad.vibe"; do
+  verb="${probe%% *}"; f="${probe#* }"
+  case "$verb" in
+    build) ask build "$f" -o "$WORK/$f.wasm" ;;
+    run)   ask run "$f" ;;
+    serve) ask serve "$f" -o "$WORK/$f.component.wasm" ;;
+  esac
+  if ! printf '%s' "$OUT" | grep -qF "$f: line 5:1: #zero_alloc must immediately precede"; then
+    note "  FAIL $verb $f: want '$f: line 5:1: #zero_alloc must immediately precede ...'"
+    printf '%s\n' "$OUT" | head -2 | sed 's/^/        /'; fail=1
+  elif [ "$(positions "$OUT")" != 1 ]; then
+    note "  FAIL $verb $f: the position is doubled"
+    printf '%s\n' "$OUT" | head -2 | sed 's/^/        /'; fail=1
+  else
+    note "  ok   vibe $verb $f: line 5:1"
+  fi
+done
 
 note "=== 7. RED: serve and build --wit read an entry the same way ==="
 # `serve` lexes the entry in its own handler validation; `build --wit` lexes it

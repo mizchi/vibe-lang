@@ -2638,8 +2638,31 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, generated
   // #538: initialize computed module-level globals (statement order) before
   // the entry runs. Compiled with a fresh local frame; lambdas created here
   // land in lt_w like any other (num_lambdas is computed AFTER this).
+  //
+  // #3023: the initializers live in their own guarded function, not inline in
+  // `_start`. Hosts invoke the exported entry (`main` / `cli_main`) or a
+  // per-block `__test_*` / `__bench_*` export DIRECTLY, without `_start` --
+  // that is the node runner's and `vibe run`'s contract, because the linear
+  // lane initializes a module-level value lazily on first read. With the
+  // initializers only in `_start`, every such invoke read a zero global: the
+  // entry boundary's exception-kind cell became address 0 and an uncaught
+  // throw trapped `memory access out of bounds` instead of printing
+  // `vibe: uncaught error: ...`. Each exported function now calls this init
+  // first; a flag global (index 1 + #globals) makes the second call a no-op.
+  let has_global_init = Array::length(gc_global_names_l) > 0
+  let init_flag_global_idx = 1 + Array::length(gc_global_names_l)
+  let init_body = bytebuf_new()
   let mut start_extra_locals = 0
-  if Array::length(gc_global_names_l) > 0 {
+  if has_global_init {
+    emit_global_get(init_body, init_flag_global_idx)
+    emit_i32_eqz(init_body)
+    emit_if_void(init_body)
+    emit_i32_const(init_body, 1)
+    emit_global_set(init_body, init_flag_global_idx)
+  } else {
+    ()
+  }
+  if has_global_init {
     let init_ref_cells = array_empty()
     let init_ref_idx = array_empty()
     let init_ctx = CompileCtxGc::{
@@ -2741,8 +2764,8 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, generated
     let mut ginit = 0
     while ginit < Array::length(gc_global_names_l) {
       let gexpr = Array::get(gc_global_exprs_l, ginit)
-      let g_nl = compile_expr_gc(start_body, gexpr, init_locals, Array::length(init_locals), init_ctx, -1)
-      emit_global_set(start_body, 1 + ginit)
+      let g_nl = compile_expr_gc(init_body, gexpr, init_locals, Array::length(init_locals), init_ctx, -1)
+      emit_global_set(init_body, 1 + ginit)
       if g_nl > start_extra_locals {
         start_extra_locals = g_nl
       }
@@ -2751,6 +2774,8 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, generated
       }
       ginit = ginit + 1
     }
+    // Closes the flag guard opened above.
+    emit_end(init_body)
   }
   // Match the linear backend: an entry annotated `-> Unit` (including the
   // `fn main {}` desugaring) should discard its tagged Unit result, not pass
@@ -2786,6 +2811,32 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, generated
   emit_i32_const(start_body, 1)
   emit_array_new(start_body, gc_native_alloc_probe_array_type_idx)
   emit_drop(start_body)
+  // Lambdas are all created by now (the global initializers above were the
+  // last compile), so the init function's index -- placed after them -- is
+  // known here.
+  let num_lambdas = Array::length(lt_w.bodies)
+  let init_func_idx = func_offset + num_user_funcs + 1 + num_lambdas
+  if has_global_init {
+    emit_call(start_body, init_func_idx)
+    // #3023: every function a host can invoke without `_start` runs the
+    // guarded init first. User body `j` sits after the generated builtins.
+    let num_builtin_bodies = Array::length(gc_builtin_type_idxs)
+    let mut xi = 0
+    while xi < num_user_funcs {
+      let xname = Array::get(fn_names_list, xi)
+      if xi == entry_user_idx || String::starts_with(xname, "__bench_") || String::starts_with(xname, "__test_") {
+        let guarded = bytebuf_new()
+        emit_call(guarded, init_func_idx)
+        bytebuf_push_buf(guarded, Array::get(bodies, num_builtin_bodies + xi))
+        Array::set(bodies, num_builtin_bodies + xi, guarded)
+      } else {
+        ()
+      }
+      xi = xi + 1
+    }
+  } else {
+    ()
+  }
   emit_i64_const(start_body, 0)
   emit_call(start_body, entry_func_idx)
   if entry_returns_unit {
@@ -2793,10 +2844,9 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, generated
   } else {
     emit_call(start_body, 1 + hbo)
   }
-  let num_lambdas = Array::length(lt_w.bodies)
   Array::push(bodies, start_body)
   Array::push(meta_i32, 0)
-  Array::push(meta_i64, start_extra_locals)
+  Array::push(meta_i64, 0)
   Array::push(user_ref_local_indices_all, array_empty())
   Array::push(user_native_array_local_indices_all, array_empty())
   Array::push(user_native_struct_decl_all, array_empty())
@@ -2816,6 +2866,19 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, generated
     // lt_w.param_counts already counts the trailing `__env` parameter.
     Array::push(body_param_counts, Array::get(lt_w.param_counts, li))
     li = li + 1
+  }
+  if has_global_init {
+    // #3023: the guarded module init, at `init_func_idx` (after the lambdas).
+    // No parameters, so its extra locals begin at slot 0, as `_start`'s did.
+    Array::push(bodies, init_body)
+    Array::push(meta_i32, 0)
+    Array::push(meta_i64, start_extra_locals)
+    Array::push(user_ref_local_indices_all, array_empty())
+    Array::push(user_native_array_local_indices_all, array_empty())
+    Array::push(user_native_struct_decl_all, array_empty())
+    Array::push(body_param_counts, 0)
+  } else {
+    ()
   }
   let mut max_closure_arity = -1
   let mut lai = 0
@@ -3013,6 +3076,12 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, generated
     Array::push(func_type_indices, closure_type_base + lam_user_params)
     lfi = lfi + 1
   }
+  if has_global_init {
+    // The guarded module init: () -> ().
+    Array::push(func_type_indices, 2)
+  } else {
+    ()
+  }
   if Array::length(func_type_indices) != Array::length(bodies) {
     throw("gc codegen internal error: function section and code section count mismatch")
   } else {
@@ -3040,9 +3109,10 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, generated
   if Array::length(gc_global_names_l) == 0 {
     emit_global_section_i32_mut(out, gc_heap_start)
   } else {
-    // global 0: i32 mut heap pointer; globals 1..N: i64 mut computed values.
+    // global 0: i32 mut heap pointer; globals 1..N: i64 mut computed values;
+    // global N+1: i32 mut "module init ran" flag (#3023, init_flag_global_idx).
     let g_content = bytebuf_new()
-    bytebuf_push_vec_header(g_content, 1 + Array::length(gc_global_names_l))
+    bytebuf_push_vec_header(g_content, 2 + Array::length(gc_global_names_l))
     bytebuf_push(g_content, 127)
     bytebuf_push(g_content, 1)
     emit_i32_const(g_content, gc_heap_start)
@@ -3055,6 +3125,10 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, generated
       emit_end(g_content)
       ggi = ggi + 1
     }
+    bytebuf_push(g_content, 127)
+    bytebuf_push(g_content, 1)
+    emit_i32_const(g_content, 0)
+    emit_end(g_content)
     bytebuf_push_section(out, 6, g_content)
   }
   let start_func_idx = func_offset + num_user_funcs

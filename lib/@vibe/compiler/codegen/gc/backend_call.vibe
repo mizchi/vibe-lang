@@ -3734,15 +3734,35 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
           }
           nl
         } else {
+          // #3025: a computed module-level `let` holding a closure (`let g =
+          // mk()`, or a binder of a top-level destructuring `let`) lives in a
+          // global on this lane, not in a local; call through its value.
+          // Looked up BEFORE the constructor guard below: a value may be named
+          // with a capital (`let F = make_adder(1)`), and it is a global, not
+          // an unknown constructor (Codex on #3047).
+          let mut global_callee_idx = -1
+          if local_callee_idx < 0 {
+            let mut __gg = 0
+            while __gg < Array::length(ctx.gc_global_names) {
+              if Array::get(ctx.gc_global_names, __gg) == fname {
+                global_callee_idx = __gg
+                __gg = Array::length(ctx.gc_global_names)
+              } else {
+                __gg = __gg + 1
+              }
+            }
+          }
           // An uppercase-initial callee that missed the ctor table is an
           // unknown constructor, not a local closure -- fail with a clear
           // message instead of resolve_local's "undefined variable".
           let c0 = String::char_code_at(fname, 0)
-          if local_callee_idx < 0 && c0 >= 65 && c0 <= 90 {
+          if local_callee_idx < 0 && global_callee_idx < 0 && c0 >= 65 && c0 <= 90 {
             throw("GC codegen: unknown constructor or function: \{fname}")
           }
           let local_idx2 = if local_callee_idx >= 0 {
             local_callee_idx
+          } else if global_callee_idx >= 0 {
+            0 - 1
           } else {
             resolve_local(local_names, fname, "gc_call")
           }
@@ -3754,10 +3774,15 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
           Array::push(local_names, "[gc-temp]__fn_val")
           Array::push(local_names, "[gc-temp]__slot")
           Array::push(local_names, "[gc-temp]__env")
-          emit_local_get(buf, local_idx2)
+          if global_callee_idx >= 0 {
+            // Same read as backend_expr's computed-global arm.
+            emit_global_get(buf, 1 + global_callee_idx)
+          } else {
+            emit_local_get(buf, local_idx2)
+          }
           // #2012: see the linear compile_call path — boxed `let mut`
           // locals store a cell address.
-          if array_contains_str(ctx.ref_cell_names, fname) {
+          if global_callee_idx < 0 && array_contains_str(ctx.ref_cell_names, fname) {
             emit_i32_wrap_i64(buf)
             emit_i64_load(buf, 3, 0)
           } else {

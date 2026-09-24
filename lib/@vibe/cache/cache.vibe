@@ -49,7 +49,15 @@ export fn compact_string_fingerprint(source: String) -> String {
 /// needs (cache format version, codegen fingerprint, ...) — this package has
 /// no opinion on what belongs in it, it only mixes it into the key.
 export fn stable_cache_path(version_tag: String, prefix: String, seed: String, suffix: String) -> String {
-  let raw = compact_string_fingerprint(String::concat("persistent-cache-", String::concat(version_tag, String::concat("|", seed))))
+  // One copy of `seed`, not three (#2945): a nested `String::concat` copies
+  // both operands at every level, and a TDRE9 alias seed is a whole module
+  // source plus its dependencies' env texts. The hashed bytes are unchanged.
+  let key_sb = StringBuilder::new()
+  StringBuilder::push(key_sb, "persistent-cache-")
+  StringBuilder::push(key_sb, version_tag)
+  StringBuilder::push(key_sb, "|")
+  StringBuilder::push(key_sb, seed)
+  let raw = compact_string_fingerprint(StringBuilder::freeze(key_sb))
   // O(N) build via StringBuilder; the previous `token = String::concat(token, ...)`
   // per char was O(N²) over the fingerprint length (issue #366).
   let token_sb = StringBuilder::new()

@@ -880,6 +880,45 @@ fn cfg_scan_enabled(tokens: Array[Token]) -> Array[String] with Exception {
   out
 }
 
+/// `cfg_scan_enabled` for the located parsers: a malformed directive
+/// (`#cfg(`, an unknown `#name`) throws before any per-statement locator
+/// runs, and its message carries no position, so the locator is applied here
+/// at the directive's own `#` (Codex on #3047). A separate loop rather than a
+/// flag on the one above: that one runs on every tokens-only parse, and an
+/// extra argument there showed up in parser_bench's B/op.
+fn cfg_scan_enabled_located(tokens: Array[Token], starts: Array[Int], source: String) -> Array[String] with Exception {
+  let out = ArrayBuilder::freeze(ArrayBuilder::new())
+  let mut a = 0
+  while a < Array::length(cfg_ambient_flags) {
+    Array::push(out, Array::get(cfg_ambient_flags, a))
+    a = a + 1
+  }
+  let mut i = 0
+  let n = Array::length(tokens)
+  while i < n {
+    match Array::get(tokens, i) {
+      THash => {
+        let hash_pos = i
+        let (dname, flag, next) = handle {
+          parse_cfg_directive(tokens, i + 1)
+        } with { Exception::Throw(msg) => {
+          throw(locate_parse_error(msg, hash_pos, starts, source))
+        } }
+        if dname == "cfg_enable" {
+          Array::push(out, flag)
+        } else {
+          ()
+        }
+        i = next
+      },
+      _ => {
+        i = i + 1
+      }
+    }
+  }
+  out
+}
+
 #zero_alloc
 fn cfg_flag_active(active: Array[String], flag: String) -> Bool {
   let mut i = 0
@@ -924,6 +963,21 @@ fn zero_alloc_marker_ident(mode: String) -> String {
     "@zero_alloc_assume"
   } else {
     "@zero_alloc"
+  }
+}
+
+/// One top-level statement of the preserving parse: an `impl` block expands
+/// to its method statements, anything else is a single statement.
+fn parse_preserving_top_stmt(tokens: Array[Token], starts: Array[Int], pos: Int) -> (Array[Stmt], Int) with Exception {
+  match peek(tokens, pos) {
+    TImpl => {
+      let (simpl, hp) = parse_impl_stmt_dispatch(tokens, pos + 1)
+      parse_impl_methods(tokens, hp, simpl, None)
+    },
+    _ => {
+      let (stmt, n) = parse_stmt_preserving(tokens, starts, pos)
+      ([stmt], n)
+    }
   }
 }
 
@@ -992,6 +1046,130 @@ export fn parse_program_preserving(tokens: Array[Token]) -> Array[Stmt] with Exc
         let (stmt, next) = parse_stmt_preserving(tokens, [], pos)
         ArrayBuilder::push(b, stmt)
         pos = next
+      }
+    }
+  }
+  // Copied before the markers are appended, so the builder's frozen result
+  // is never pushed to -- and only when there is a marker to append: the
+  // common program has neither log, and the copy showed up as a +2% B/op
+  // drift on parser_bench's parse_deep_binop_chain.
+  let raw = ArrayBuilder::freeze(b)
+  if has_test_effect_rows() || has_qualified_pattern_refs() {
+    attach_qualified_pattern_refs(Array::slice(raw, 0, Array::length(raw)))
+  } else {
+    raw
+  }
+}
+
+/// `parse_program_preserving` with positions (#2948): the statements keep
+/// `fn` as SFnDecl, and a syntax error carries `line L:col C:` exactly as
+/// `parse_program_located` reports it. A `.vibex` entry is validated on the
+/// preserving shape (ADR-0075 inspects SFnDecl / SExport, which the located
+/// parser lowers away), and that validation parse used to take tokens only --
+/// so its parse errors had no position, and a token index encoded as `at #N`
+/// reached the reader verbatim.
+export fn parse_program_preserving_located(tokens: Array[Token], starts: Array[Int], source: String) -> Array[Stmt] with Exception {
+  parse_program_preserving_impl(tokens, starts, source, true)
+}
+
+/// One `#name` directive at `pos` for the located preserving parse: pushes
+/// what it keeps into `b` and answers the position after it (an inactive
+/// `#cfg` consumes -- and so parses -- the statement it guards).
+fn preserving_cfg_directive(tokens: Array[Token], starts: Array[Int], pos: Int, cfg_active: Array[String], b: ArrayBuilder[Stmt]) -> Int with Exception {
+  let (dname, flag, dnext) = parse_cfg_directive(tokens, pos + 1)
+  if dname == "zero_alloc" {
+    require_zero_alloc_target(tokens, dnext)
+    ArrayBuilder::push(b, SExpr(EIdent(zero_alloc_marker_ident(flag), 0)))
+    dnext
+  } else if dname == "deprecated" || dname == "cfg_enable" || cfg_flag_active(cfg_active, flag) {
+    dnext
+  } else {
+    match peek(tokens, dnext) {
+      TImpl => {
+        let (simpl_d, hp_d) = parse_impl_stmt_dispatch(tokens, dnext + 1)
+        let (_dropped, dn) = parse_impl_methods(tokens, hp_d, simpl_d, None)
+        dn
+      },
+      _ => {
+        let (_dropped, dn) = parse_stmt_preserving(tokens, starts, dnext)
+        dn
+      }
+    }
+  }
+}
+
+fn parse_program_preserving_impl(tokens: Array[Token], starts: Array[Int], source: String, located: Bool) -> Array[Stmt] with Exception {
+  if located {
+    remember_parse_source(source)
+  } else {
+    ()
+  }
+  let cfg_active = if located {
+    cfg_scan_enabled_located(tokens, starts, source)
+  } else {
+    cfg_scan_enabled(tokens)
+  }
+  let b = ArrayBuilder::new()
+  let mut pos = 0
+  let mut done = false
+  while !done {
+    match peek(tokens, pos) {
+      TEof => {
+        done = true
+      },
+      TSemicolon => {
+        pos = pos + 1
+      },
+      THash => {
+        // An inactive `#cfg` still parses the statement it guards, so its
+        // syntax error is located like any other statement's (Codex on
+        // #3047 -- it used to escape the wrapper with a bare `at #N`).
+        let start_pos = pos
+        pos = if located {
+          handle {
+            preserving_cfg_directive(tokens, starts, pos, cfg_active, b)
+          } with { Exception::Throw(msg) => {
+            throw(locate_parse_error(msg, start_pos, starts, source))
+          } }
+        } else {
+          preserving_cfg_directive(tokens, starts, pos, cfg_active, b)
+        }
+      },
+      _ => if located {
+        // Same per-statement wrapper as `parse_program_located`, so both
+        // lanes name the same position for the same error.
+        let start_pos = pos
+        let (stmts, next) = handle {
+          parse_preserving_top_stmt(tokens, starts, pos)
+        } with { Exception::Throw(msg) => {
+          throw(locate_parse_error(msg, start_pos, starts, source))
+        } }
+        let mut ii = 0
+        while ii < Array::length(stmts) {
+          ArrayBuilder::push(b, Array::get(stmts, ii))
+          ii = ii + 1
+        }
+        pos = next
+      } else {
+        // The tokens-only path (every `parse_program`) keeps its original
+        // shape: no handler and no per-statement array.
+        match peek(tokens, pos) {
+          TImpl => {
+            let (simpl, hp) = parse_impl_stmt_dispatch(tokens, pos + 1)
+            let (impl_stmts, next) = parse_impl_methods(tokens, hp, simpl, None)
+            let mut ii = 0
+            while ii < Array::length(impl_stmts) {
+              ArrayBuilder::push(b, Array::get(impl_stmts, ii))
+              ii = ii + 1
+            }
+            pos = next
+          },
+          _ => {
+            let (stmt, next) = parse_stmt_preserving(tokens, [], pos)
+            ArrayBuilder::push(b, stmt)
+            pos = next
+          }
+        }
       }
     }
   }
@@ -1135,7 +1313,7 @@ fn locate_parse_error(msg: String, fallback_pos: Int, starts: Array[Int], source
 
 fn parse_program_located_with_context_impl(tokens: Array[Token], starts: Array[Int], source: String, context: Option[ParserBinderContext]) -> (Array[Stmt], Int) with Exception {
   remember_parse_source(source)
-  let cfg_active = cfg_scan_enabled(tokens)
+  let cfg_active = cfg_scan_enabled_located(tokens, starts, source)
   let b = ArrayBuilder::new()
   let mut pos = 0
   let mut done = false
@@ -1148,35 +1326,44 @@ fn parse_program_located_with_context_impl(tokens: Array[Token], starts: Array[I
         pos = pos + 1
       },
       THash => {
-        let (dname, flag, dnext) = parse_cfg_directive(tokens, pos + 1)
-        if dname == "zero_alloc" {
-          require_zero_alloc_target(tokens, dnext)
-          let marker_offset = if pos < Array::length(starts) {
-            Array::get(starts, pos)
-          } else {
-            0
-          }
-          ArrayBuilder::push(b, SExpr(EIdent(zero_alloc_marker_ident(flag), marker_offset)))
-          pos = dnext
-        } else if dname == "deprecated" || dname == "cfg_enable" || cfg_flag_active(cfg_active, flag) {
-          pos = dnext
-        } else {
-          let capture_mark = binder_capture_mark(context)
-          let eligibility_mark = binder_capture_eligibility_mark(context)
-          match peek(tokens, dnext) {
-            TImpl => {
-              let (simpl_d, hp_d) = parse_impl_stmt_dispatch_with_binder_context(tokens, dnext + 1, context)
-              let (_dropped, dn) = parse_impl_methods(tokens, hp_d, simpl_d, context)
-              pos = dn
-            },
-            _ => {
-              let (_dropped, dn) = parse_stmt_with_binder_context(tokens, starts, dnext, context)
-              pos = dn
+        // A directive runs inside the same locator as a statement: a
+        // misplaced `#zero_alloc` (before a `let`, or at EOF) threw a bare
+        // message from here with no line:col (Codex on #3047).
+        let hash_pos = pos
+        pos = handle {
+          let (dname, flag, dnext) = parse_cfg_directive(tokens, pos + 1)
+          if dname == "zero_alloc" {
+            require_zero_alloc_target(tokens, dnext)
+            let marker_offset = if hash_pos < Array::length(starts) {
+              Array::get(starts, hash_pos)
+            } else {
+              0
             }
+            ArrayBuilder::push(b, SExpr(EIdent(zero_alloc_marker_ident(flag), marker_offset)))
+            dnext
+          } else if dname == "deprecated" || dname == "cfg_enable" || cfg_flag_active(cfg_active, flag) {
+            dnext
+          } else {
+            let capture_mark = binder_capture_mark(context)
+            let eligibility_mark = binder_capture_eligibility_mark(context)
+            let dn = match peek(tokens, dnext) {
+              TImpl => {
+                let (simpl_d, hp_d) = parse_impl_stmt_dispatch_with_binder_context(tokens, dnext + 1, context)
+                let (_dropped, dn_impl) = parse_impl_methods(tokens, hp_d, simpl_d, context)
+                dn_impl
+              },
+              _ => {
+                let (_dropped, dn_stmt) = parse_stmt_with_binder_context(tokens, starts, dnext, context)
+                dn_stmt
+              }
+            }
+            binder_capture_discard_from(context, capture_mark)
+            binder_capture_restore_eligibility(context, eligibility_mark)
+            dn
           }
-          binder_capture_discard_from(context, capture_mark)
-          binder_capture_restore_eligibility(context, eligibility_mark)
-        }
+        } with { Exception::Throw(msg) => {
+          throw(locate_parse_error(msg, hash_pos, starts, source))
+        } }
       },
       _ => {
         let start_pos = pos

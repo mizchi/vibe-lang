@@ -317,3 +317,30 @@ test "binding-at: nested let-star binders are distinct" {
   assert(type_at_source(src, 2, 8) != "")
   assert(type_at_source(src, 3, 8) != "")
 }
+
+// #3000: a binder's DECLARATION site answers with the same type as its uses.
+// Before the fix every one of these answered "" -- the AST stores a pattern
+// binder, a parameter and a local `let` name as a bare String, so the hover
+// walk never saw the place a name is introduced.
+test "type-at: match arm pattern binder answers at its declaration" {
+  let src = "fn f(o: Option[Int]) -> Int {\n  match o {\n    Some(v) => v + 1\n    None => 0\n  }\n}\n"
+  assert(type_at_source(src, 3, 10) == "Int")
+  assert(type_at_source(src, 3, 16) == "Int")
+}
+
+test "type-at: handler arm pattern binder answers at its declaration" {
+  let src = "effect Log {\n  Emit(String) -> Unit\n}\nfn run(sink: Array[String]) -> Unit {\n  handle {\n    perform Log::Emit(\"hi\")\n  } with { Log::Emit(msg) => {\n    Array::push(sink, msg)\n    resume(())\n  } }\n}\n"
+  assert(type_at_source(src, 7, 22) == "String")
+  assert(type_at_source(src, 8, 23) == "String")
+}
+
+test "type-at: lambda parameter and local let answer at their declarations" {
+  let src = "export let f = (n: Int) -> Int {\n  let g = n * 2\n  g\n}\n"
+  assert(type_at_source(src, 1, 17) == "Int")
+  assert(type_at_source(src, 2, 7) == "Int")
+}
+
+test "type-at: an unused pattern binder does not borrow a top-level name's type" {
+  let src = "fn v() -> String {\n  \"x\"\n}\nfn f(o: Option[Int]) -> Int {\n  match o {\n    Some(v) => 0\n    None => 1\n  }\n}\n"
+  assert(type_at_source(src, 6, 10) == "")
+}
