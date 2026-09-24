@@ -2359,6 +2359,7 @@ ur_refused fixtures/err_ordering_derive_imported_foreign_type_refused.vibe 'but 
 # An `Ordering` spelled like the prelude carries its derives; a hand-written
 # operation beside it could disagree with what an importer was checked against.
 ur_refused fixtures/err_ordering_exact_shape_hand_written_refused.vibe 'is spelled exactly like the prelude' 'remove it and derive it, or rename the type'
+ur_refused fixtures/err_ordering_exact_shape_derive_and_hand_refused.vibe 'is spelled exactly like the prelude' 'remove it and derive it, or rename the type'
 # #2994: `vibe check` reports the handle-eligibility refusal AT the handled
 # body's first call; it used to carry no position at all.
 hi_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \

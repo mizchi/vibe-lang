@@ -2464,6 +2464,12 @@ fn seed_prelude_ordering(stmts: Array[Stmt], env: TypeEnv, defs: Array[TypeDef],
     (env, local_defs_start, c)
   } else if !module_uses_prelude_ordering(stmts) {
     (env, local_defs_start, c)
+  } else if env_binds_foreign_ordering_value(env) {
+    // An import bound a VALUE named `Ordering` (a function, a constant, an
+    // alias): `module_uses_prelude_ordering` counted the reference to it, but
+    // it is not the type, and seeding the prelude would overwrite it.
+    report_ordering_conflict_with(stmts, errors, "but this module imports a `Less` / `Equal` / `Greater` constructor or an `Ordering` of another type; import that type qualified or rename it")
+    (env, local_defs_start, c)
   } else if env_binds_any_prelude_ordering_ctor(env) {
     // An import bound at least one of the constructor names. Only the
     // prelude-shaped enum may stand in for the prelude: an unrelated imported
@@ -2493,6 +2499,15 @@ fn seed_prelude_ordering(stmts: Array[Stmt], env: TypeEnv, defs: Array[TypeDef],
       let (seeded, _, next_c) = check_stmts_with_binders(prelude, 0, env, defs, type_def_binders, local_defs_start, SubstEmpty, c, errors, tytab, None, None, None, false, false)
       (seeded, Array::length(defs), next_c)
     }
+  }
+}
+
+/// #3042: does `env` bind the name `Ordering` to something other than the
+/// type itself -- an imported function or value spelled like it?
+fn env_binds_foreign_ordering_value(env: TypeEnv) -> Bool {
+  match env_lookup(env, "Ordering") {
+    Some(ty) => !type_is_ordering(ty),
+    None => false
   }
 }
 
@@ -2565,6 +2580,7 @@ fn type_is_ordering(ty: Type) -> Bool {
   match ty {
     CtEnum(name) => name == "Ordering",
     CtNamed(name, _) => name == "Ordering",
+    CtConstructor(name, _) => name == "Ordering",
     _ => false
   }
 }
