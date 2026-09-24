@@ -4743,7 +4743,11 @@ fn callee_formal_texts(decl: Option[(Array[String], Array[(String, Option[TypeEx
         while ki < Array::length(id_tys) {
           let (kid, kty) = Array::get(id_tys, ki)
           if kid == fid {
-            let text = type_to_string(subst_apply(s, kty))
+            let text = match subst_apply(s, kty) {
+              // A constructor is written by its name in a row (`Read[Array]`).
+              CtConstructor(cn, _) => cn,
+              other => type_to_string(other)
+            }
             if !String::contains(text, "?") {
               Array::push(out, (fname, text))
             }
@@ -4784,9 +4788,19 @@ export fn callee_formal_bindings(defs: Array[TypeDef], s: Subst) -> Array[(Int, 
 /// which a walk over the written `TyApp` could not see (Codex on #3039).
 fn formal_ids_from(rt: Type, t: Type, formals: Array[String], out: Array[(String, Int)]) -> Unit {
   match rt {
-    CtNamed(n, xs) => if Array::length(xs) == 0 && str_array_contains_name(formals, n) {
+    CtNamed(n, xs) => if Array::length(xs) == 0 && formal_named(formals, n) {
       match t {
         CtVar(id) => Array::push(out, (n, id)),
+        _ => ()
+      }
+    } else if formal_named(formals, n) {
+      // A higher-kinded formal applied to arguments (`F[Int]` for `F[_]`)
+      // meets the scheme's applied variable (Codex on #3055).
+      match t {
+        CtApplied(CtVar(id), ys) => {
+          Array::push(out, (n, id))
+          formal_ids_from_all(xs, ys, formals, out)
+        },
         _ => ()
       }
     } else {
@@ -4794,6 +4808,22 @@ fn formal_ids_from(rt: Type, t: Type, formals: Array[String], out: Array[(String
         CtNamed(_, ys) => formal_ids_from_all(xs, ys, formals, out),
         _ => ()
       }
+    },
+    // A higher-kinded formal (`F[_]`), applied as `F[Int]` (Codex on #3055).
+    CtApplied(h, xs) => match t {
+      CtApplied(th, ys) => {
+        match (h, th) {
+          (CtNamed(n, hargs), CtVar(id)) => if Array::length(hargs) == 0 && formal_named(formals, n) {
+            Array::push(out, (n, id))
+          },
+          (CtConstructor(n, _), CtVar(id)) => if formal_named(formals, n) {
+            Array::push(out, (n, id))
+          },
+          _ => ()
+        }
+        formal_ids_from_all(xs, ys, formals, out)
+      },
+      _ => ()
     },
     CtArray(e) => match t {
       CtArray(te) => formal_ids_from(e, te, formals, out),
@@ -4818,6 +4848,21 @@ fn formal_ids_from(rt: Type, t: Type, formals: Array[String], out: Array[(String
   }
 }
 
+/// Is `n` one of `formals`? A kinded binder (`F[_]`) is keyed by
+/// `type_param_key`, so the comparison reads the formal's spelled name.
+fn formal_named(formals: Array[String], n: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(formals) && !found {
+    let f = Array::get(formals, i)
+    if f == n || type_param_name(f) == n {
+      found = true
+    }
+    i = i + 1
+  }
+  found
+}
+
 fn formal_ids_from_all(xs: Array[Type], ys: Array[Type], formals: Array[String], out: Array[(String, Int)]) -> Unit {
   let mut i = 0
   while i < Array::length(xs) && i < Array::length(ys) {
@@ -4831,6 +4876,39 @@ fn formal_ids_from_all(xs: Array[Type], ys: Array[Type], formals: Array[String],
 fn scheme_var_types_from(st: Type, it: Type, out: Array[(Int, Type)]) -> Unit {
   match st {
     CtVar(id) => Array::push(out, (id, it)),
+    // A higher-kinded variable applied to arguments: the instantiation's
+    // head is the constructor it stands for (Codex on #3055).
+    CtApplied(CtVar(id), xs) => match it {
+      CtArray(e) => {
+        Array::push(out, (id, CtConstructor("Array", 1)))
+        if Array::length(xs) == 1 {
+          scheme_var_types_from(Array::get(xs, 0), e, out)
+        }
+      },
+      CtOption(e) => {
+        Array::push(out, (id, CtConstructor("Option", 1)))
+        if Array::length(xs) == 1 {
+          scheme_var_types_from(Array::get(xs, 0), e, out)
+        }
+      },
+      CtNamed(n, ys) => {
+        Array::push(out, (id, CtConstructor(n, Array::length(ys))))
+        let mut i = 0
+        while i < Array::length(xs) && i < Array::length(ys) {
+          scheme_var_types_from(Array::get(xs, i), Array::get(ys, i), out)
+          i = i + 1
+        }
+      },
+      CtApplied(h, ys) => {
+        Array::push(out, (id, h))
+        let mut i = 0
+        while i < Array::length(xs) && i < Array::length(ys) {
+          scheme_var_types_from(Array::get(xs, i), Array::get(ys, i), out)
+          i = i + 1
+        }
+      },
+      _ => ()
+    },
     CtArray(e) => match it {
       CtArray(ie) => scheme_var_types_from(e, ie, out),
       _ => ()

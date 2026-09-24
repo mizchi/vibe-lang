@@ -10,6 +10,10 @@ import @vibe/compiler/runtime {
 
 //# Misc
 
+fn diags_of_raw(src: String) -> Array[String] with Exception {
+  collect_all_diagnostics(src)
+}
+
 fn diags_of(body: String) -> Array[String] with Exception {
   let head = "effect State[S] {\n  Get() -> S\n}\n\n"
   collect_all_diagnostics(String::concat(head, body))
@@ -57,6 +61,17 @@ test "a local generic lambda and an alias are instantiated at the call" {
   assert(eq(Array::length(alias), 1))
   assert(String::contains(Array::get(alias, 0), "missing { State[String] }"))
   let right = diags_of("fn caller() -> Int with State[Int] {\n  let get = [S](x: S) -> Int with State[S] {\n    1\n  }\n  get(1)\n}\n")
+  assert(eq(Array::length(right), 0))
+}
+
+test "a higher-kinded formal is instantiated with its constructor" {
+  // Codex on #3055: `F[_]` applied as `F[Int]` resolves to the argument's
+  // constructor, so `use([1])` requires `Read[Array]`, not an open `Read[F]`.
+  let src = "effect Read[F[_]] {\n  Size() -> Int\n}\n\nfn use[F[_]](xs: F[Int]) -> Int with Read[F] {\n  1\n}\n\n"
+  let wrong = diags_of_raw(String::concat(src, "fn caller() -> Int with Read[Option] {\n  use([1])\n}\n"))
+  assert(eq(Array::length(wrong), 1))
+  assert(String::contains(Array::get(wrong, 0), "missing { Read[Array] }"))
+  let right = diags_of_raw(String::concat(src, "fn caller() -> Int with Read[Array] {\n  use([1])\n}\n"))
   assert(eq(Array::length(right), 0))
 }
 
