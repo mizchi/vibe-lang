@@ -740,6 +740,35 @@ the run, because Bend's `@unsafe` shows that taint without a gate is not safety.
 Each slice is shippable alone, and none changes the meaning of unannotated
 code.
 
+**Progress.** Slice 2 has started ahead of slice 1, as §A5 argues it should.
+Step 1 is `formal/VibeFormal/Borrow/`. Its core calculus is straight-line and
+first-order, with values made of integers, one-cell buffers and pairs, and a
+single `borrow` parameter. On that calculus it proves:
+
+- the no-write, frame and no-retain parts of T1 and T1′ in the closed world.
+  No write reaches a borrowed buffer at any point of the run, not only in the
+  final heap. Reference counts are not modelled, so T1's "RC unchanged" is not
+  claimed;
+- that the buffer-free exemption is applied by type, so projecting an `Int`
+  field out of a borrowed aggregate is accepted;
+- that four broken checkers (name-only taint, no aggregate taint, no
+  projection taint, no escape check) each accept a program that writes or
+  returns the borrowed buffer.
+
+The next steps extend the calculus one construct at a time, and each
+construct brings the review findings that concern it:
+
+| construct | findings it brings |
+|---|---|
+| calls with write and deep-alias summaries | call-result taint, root-only summaries |
+| a second parameter | the T1′ premises, and `consume` sharing a root with `borrow` |
+| loops | ω counting |
+| closures and effects | the effect-row rule, stored continuations |
+| `mut` | exclusivity, buffer-free arguments, reach through globals |
+
+The executable oracle against the selfhost compiler comes after slice 1 gives
+the compiler a mode to be compared with.
+
 | # | slice | depends on | new surface |
 |---|---|---|---|
 | 1 | declared `borrow`, checked against the inferred mask plus a per-parameter write summary; written to `index.vpkg` | — | parameter mode |

@@ -417,6 +417,55 @@ selfhost pass implements the rule. Channel *linearizability* needs a history
 model rather than this state model and is a separate slice. `Future`/`await`
 suspension is not covered here at all.
 
+## Verified borrow-mode properties (proposal, step 1)
+
+This section models a **proposed** rule, not an implemented one: the `borrow`
+parameter mode from
+[borrowing-and-vectorization.md](../docs/research/other-languages/borrowing-and-vectorization.md)
+§A2. The model is written before any compiler work so that the rule is checked
+by a proof rather than by prose review. Review of the prose found 34 holes.
+
+**Core** (`Borrow/Core.lean`). The calculus is straight-line and first-order,
+with one `borrow` parameter. Values are integers, one-cell buffers, and pairs;
+a pair stands for every aggregate. Types are `Int`, `Buf` and pairs, and a
+type is buffer-free when no `Buf` occurs in it. The checker taints any value
+built from a borrow-derived operand unless the value's type is buffer-free
+(closed by default, exempt by type, so an `Int` field projected out of a
+borrowed aggregate is exempt). It refuses writes through a tainted value and
+refuses returning one. `Fn.check_sound` covers the closed world, where the
+parameter is all the function can reach. On a well-typed argument, an
+accepted function:
+
+- never writes a buffer its argument reaches, at any point of the run (every
+  write is logged, so a write that is later undone still counts);
+- leaves each of those buffers with its original contents;
+- returns a value that reaches none of them. The result variable must be
+  bound, so this conclusion is never vacuous.
+
+These are the no-write, frame and no-retain parts of T1 and T1′. The model has
+no reference counts, so T1's "RC unchanged" conjunct is **not** claimed.
+
+**Negative witnesses** (`Borrow/Examples.lean`). There are four broken
+checkers:
+
+- taint by name only;
+- no taint through aggregate construction;
+- no taint through projection;
+- no escape check.
+
+Each one accepts a concrete program that `Fn.check` rejects. Running that
+program with `decide` shows the violation: the borrowed buffer is written, or
+the result reaches it. One witness writes the buffer and then restores it, so
+its final heap is unchanged and only the write log shows the violation. A
+fifth checker, with no buffer-free exemption, refuses a safe program that
+returns an `Int` field of the borrow. A positive control is accepted by every
+rule and leaves the buffer intact.
+
+Limits: no calls, loops, closures, effects, `mut` or `consume` yet. Each is a
+later step, and each has a recorded review finding waiting for it. Nothing
+here connects to the selfhost compiler, because the mode does not exist
+there.
+
 ## Epistemic status
 
 `lake build --wfail` proves the theorems about these Lean models and rejects

@@ -33,3 +33,5 @@ import VibeFormal.Typing.MatchExhaustive
 import VibeFormal.Typing.TraitCoherence
 import VibeFormal.Parallel.SpawnCapture
 import VibeFormal.Parallel.ChannelDelivery
+import VibeFormal.Borrow.Core
+import VibeFormal.Borrow.Examples
