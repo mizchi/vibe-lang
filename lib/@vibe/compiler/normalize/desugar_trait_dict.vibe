@@ -23576,6 +23576,11 @@ fn ihc_granted_everywhere(stmts: Array[Stmt], entry_name: String, op: String) ->
           _ => ()
         }
       },
+      // An exported module's exported functions are entries the host may
+      // call too, outside every provider.
+      SModule(true, _, _) => {
+        has_export = true
+      },
       STest(_, _) => {
         has_block = true
         if !ehp_test_grants(op) {
@@ -23652,26 +23657,41 @@ export fn intercept_handled_host_calls_everywhere(stmts: Array[Stmt], entry_name
   } else {
     let mut s = 0
     while s < Array::length(stmts) {
-      let rewritten = match Array::get(stmts, s) {
-        SLet(e, r, n, t, EFn(tps, tbs, params, ret, eff, body)) => {
-          let widened = match eff {
-            Some(row) => Some(ihc_widen_row(row, ops)),
-            None => None
-          }
-          SLet(e, r, n, t, EFn(tps, tbs, params, ret, widened, dhhc_expr(body, ops)))
-        },
-        SLet(e, r, n, t, body) => SLet(e, r, n, t, dhhc_expr(body, ops)),
-        SLetMut(n, t, body) => SLetMut(n, t, dhhc_expr(body, ops)),
-        SLetPat(p, body) => SLetPat(p, dhhc_expr(body, ops)),
-        STest(n, body) => STest(n, dhhc_expr(body, ops)),
-        SBench(n, body) => SBench(n, dhhc_expr(body, ops)),
-        SExample(n, body) => SExample(n, dhhc_expr(body, ops)),
-        SExpr(body) => SExpr(dhhc_expr(body, ops)),
-        other => other
-      }
-      Array::set(stmts, s, rewritten)
+      Array::set(stmts, s, ihc_rewrite_stmt(Array::get(stmts, s), ops))
       s = s + 1
     }
+  }
+}
+
+/// One statement of `intercept_handled_host_calls_everywhere`'s rewrite. A
+/// source `module M { .. }` is walked like the top level: a handled helper
+/// inside it is still reached through `M::reader()` (Codex on #3059).
+fn ihc_rewrite_stmt(stmt: Stmt, ops: Array[String]) -> Stmt {
+  match stmt {
+    SLet(e, r, n, t, EFn(tps, tbs, params, ret, eff, body)) => {
+      let widened = match eff {
+        Some(row) => Some(ihc_widen_row(row, ops)),
+        None => None
+      }
+      SLet(e, r, n, t, EFn(tps, tbs, params, ret, widened, dhhc_expr(body, ops)))
+    },
+    SLet(e, r, n, t, body) => SLet(e, r, n, t, dhhc_expr(body, ops)),
+    SLetMut(n, t, body) => SLetMut(n, t, dhhc_expr(body, ops)),
+    SLetPat(p, body) => SLetPat(p, dhhc_expr(body, ops)),
+    STest(n, body) => STest(n, dhhc_expr(body, ops)),
+    SBench(n, body) => SBench(n, dhhc_expr(body, ops)),
+    SExample(n, body) => SExample(n, dhhc_expr(body, ops)),
+    SExpr(body) => SExpr(dhhc_expr(body, ops)),
+    SModule(exported, name, body) => {
+      let inner: Array[Stmt] = []
+      let mut i = 0
+      while i < Array::length(body) {
+        Array::push(inner, ihc_rewrite_stmt(Array::get(body, i), ops))
+        i = i + 1
+      }
+      SModule(exported, name, inner)
+    },
+    other => other
   }
 }
 

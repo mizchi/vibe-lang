@@ -54,6 +54,31 @@ fn has_perform(e: Expr, op: String) -> Bool {
   }
 }
 
+/// `row|rewritten` for the named fn inside the first module node.
+fn module_fn_row(stmts: Array[Stmt], name: String, op: String) -> String {
+  let mut out = "<not found>"
+  for stmt in stmts {
+    match stmt {
+      SModule(_, _, body) => for inner in body {
+        match inner {
+          SLet(_, _, n, _, EFn(_, _, _, _, eff, fbody)) => if n == name {
+            let row = match eff {
+              Some(r) => r,
+              None => ""
+            }
+            out = "\{row}|\{has_perform(fbody, op)}"
+          } else {
+            ()
+          },
+          _ => ()
+        }
+      },
+      _ => ()
+    }
+  }
+  out
+}
+
 /// `row|rewritten` for the named top-level fn after the pass.
 fn after(source: String, entry: String, name: String, op: String) -> String with Exception {
   let stmts = parse_program(lex(source))
@@ -107,4 +132,17 @@ test "a granted main is rewritten, and so is a direct call in a handler arm" {
 test "an exported declaration is an entry outside the provider, so nothing changes" {
   let src = "export fn inner() -> String with Fs::read_file {\n  Fs::read_file(\"p\")\n}\n\ntest \"t\" {\n  let r = handle {\n    inner()\n  } with {\n    Fs::ReadFile(_p) => resume(\"m\")\n  }\n  inspect(r, \"m\")\n}\n"
   inspect(after(src, "__no_entry__", "inner", "Fs::ReadFile"), "Fs::read_file|false")
+}
+
+test "a helper inside a module node is rewritten too" {
+  // Source `module` blocks are gone (#728), so the node is built directly:
+  // the pass must still walk one wherever a lowering produces it.
+  let src = "fn reader() -> String with Fs::read_file {\n  Fs::read_file(\"p\")\n}\n\ntest \"t\" {\n  let r = handle {\n    reader()\n  } with {\n    Fs::ReadFile(_p) => resume(\"m\")\n  }\n  inspect(r, \"m\")\n}\n"
+  let parsed = parse_program(lex(src))
+  let stmts: Array[Stmt] = [
+    SModule(false, "m", [Array::get(parsed, 0)]),
+    Array::get(parsed, 1)
+  ]
+  intercept_handled_host_calls_everywhere(stmts, "__no_entry__")
+  inspect(module_fn_row(stmts, "reader", "Fs::ReadFile"), "Fs::read_file, Fs|true")
 }
