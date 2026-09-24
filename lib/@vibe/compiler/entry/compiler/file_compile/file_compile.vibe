@@ -257,7 +257,7 @@ fn lookup_source_stmts_by_path(sources: Array[(String, String)], source_stmts: A
 /// top-level array each call, which is what the in-place desugars downstream
 /// require. Interior-line breakpoints (span-arc step5) still get their real
 /// EIdent char-offsets: the memoized parse is the same located one.
-fn parse_program_for_path(path: String, source: String) -> Array[Stmt] with Exception {
+fn parse_program_for_path(path: String, source: String) -> Array[Stmt] with Env + Exception {
   parse_program_with_path(path, source)
 }
 
@@ -360,7 +360,7 @@ fn lookup_flat_base(flat_paths: Array[String], flat_bases: Array[Int], path: Str
 /// program (the merge output of one file depends on the export surfaces of ALL
 /// files: ambiguous exported names are renamed at their defs and at importing
 /// files' references).
-fn parse_sources_for_merge(sources: Array[(String, String)]) -> (Array[String], Array[Array[Stmt]]) with Exception {
+fn parse_sources_for_merge(sources: Array[(String, String)]) -> (Array[String], Array[Array[Stmt]]) with Env + Exception {
   let file_paths = array_empty()
   let file_stmts = array_empty()
   let mut si = 0
@@ -377,7 +377,7 @@ fn parse_sources_for_merge(sources: Array[(String, String)]) -> (Array[String], 
 /// statements, `is_entry_source` mirrors the pre-#716 per-group entry rule
 /// (entry keeps its private names), and `plan`/`sources` drive the export-name
 /// rewriting and the collision-def fallback.
-fn append_merged_stmts_for_file(merged: Array[Stmt], path: String, stmts: Array[Stmt], is_entry_source: Bool, plan: ExportRenamePlan, sources: Array[(String, String)], source_stmts: Array[Array[Stmt]], fallback_clone_offset_delta: Array[Int], fallback_clone_offset_span: Int, flat_paths: Array[String], flat_bases: Array[Int], clone_float_offsets_out: Array[Int]) -> Unit with Exception {
+fn append_merged_stmts_for_file(merged: Array[Stmt], path: String, stmts: Array[Stmt], is_entry_source: Bool, plan: ExportRenamePlan, sources: Array[(String, String)], source_stmts: Array[Array[Stmt]], fallback_clone_offset_delta: Array[Int], fallback_clone_offset_span: Int, flat_paths: Array[String], flat_bases: Array[Int], clone_float_offsets_out: Array[Int]) -> Unit with Env + Exception {
   // Preserve the proof that an optimized trait namespace came from the
   // standard module. Desugaring consumes this source-local marker before
   // codegen; it is not part of the runtime program.
@@ -409,7 +409,7 @@ fn append_merged_stmts_for_file(merged: Array[Stmt], path: String, stmts: Array[
   }
 }
 
-fn build_merged_stmts_from_sources(entry_path: String, sources: Array[(String, String)]) -> Array[Stmt] with Exception {
+fn build_merged_stmts_from_sources(entry_path: String, sources: Array[(String, String)]) -> Array[Stmt] with Env + Exception {
   // #2205: the rename table describes ONE merged program.
   namespace_rename_originals_reset()
   let merged = array_empty()
@@ -452,7 +452,7 @@ fn build_merged_stmts_from_sources(entry_path: String, sources: Array[(String, S
 /// comment -- "so `merged` stays identical to the normal merge" -- and
 /// enforced by nothing. That copy is now a thin wrapper over this one, so the
 /// assertion is a fact.
-fn build_grouped_merged_stmts_impl(source_groups: Array[(String, Array[(String, String)])], disjoint_offset_spaces: Bool, flat_paths_out: Array[String], flat_bases_out: Array[Int], clone_float_offsets_out: Array[Int], stmt_file_id_out: Array[Int]) -> Array[Stmt] with Exception {
+fn build_grouped_merged_stmts_impl(source_groups: Array[(String, Array[(String, String)])], disjoint_offset_spaces: Bool, flat_paths_out: Array[String], flat_bases_out: Array[Int], clone_float_offsets_out: Array[Int], stmt_file_id_out: Array[Int]) -> Array[Stmt] with Env + Exception {
   // #2205: the rename table describes ONE merged program.
   namespace_rename_originals_reset()
   let merged = array_empty()
@@ -532,11 +532,11 @@ fn build_grouped_merged_stmts_impl(source_groups: Array[(String, Array[(String, 
   merged
 }
 
-fn build_grouped_merged_stmts(source_groups: Array[(String, Array[(String, String)])]) -> Array[Stmt] with Exception {
+fn build_grouped_merged_stmts(source_groups: Array[(String, Array[(String, String)])]) -> Array[Stmt] with Env + Exception {
   build_grouped_merged_stmts_impl(source_groups, false, array_empty(), array_empty(), array_empty(), array_empty())
 }
 
-fn build_grouped_merged_stmts_gc(source_groups: Array[(String, Array[(String, String)])]) -> Array[Stmt] with Exception {
+fn build_grouped_merged_stmts_gc(source_groups: Array[(String, Array[(String, String)])]) -> Array[Stmt] with Env + Exception {
   build_grouped_merged_stmts_impl(source_groups, true, array_empty(), array_empty(), array_empty(), array_empty())
 }
 
@@ -545,7 +545,7 @@ fn build_grouped_merged_stmts_gc(source_groups: Array[(String, Array[(String, St
 /// pass whether the two render identically (prelude_pass_module_oracle_step).
 /// Same load, check and merge as compile_file_fs_mode_rc; the split side is
 /// re-merged fresh for every pass so the two programs never share a node.
-export fn prelude_module_oracle_report_fs(entry_path: String, entry_name: String, pass_limit: Int) -> String with Exception + Fs {
+export fn prelude_module_oracle_report_fs(entry_path: String, entry_name: String, pass_limit: Int) -> String with Env + Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
   let _ = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let (a, _, _, _) = prelude_oracle_merge(source_groups, lc_ignored_paths())
@@ -565,7 +565,7 @@ export fn prelude_module_oracle_report_fs(entry_path: String, entry_name: String
 /// state; this one splits once and runs every pass on each file alone, which is
 /// the property a real per-module driver needs. One `FULL ...` line plus the
 /// keyed comparison.
-export fn prelude_module_full_oracle_report_fs(entry_path: String, entry_name: String) -> String with Exception + Fs {
+export fn prelude_module_full_oracle_report_fs(entry_path: String, entry_name: String) -> String with Env + Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
   let _ = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let (a, _, _, _) = prelude_oracle_merge(source_groups, lc_ignored_paths())
@@ -709,7 +709,7 @@ fn lc_int_row_has(xs: Array[Int], v: Int) -> Bool {
 /// `empty_dbg_prov()`. Nothing said so. A per-module production driver is
 /// blocked on this and not on the driver, so it is worth a counter rather than
 /// a comment.
-export fn prelude_ordinary_lane_prov_report_fs(entry_path: String) -> String with Exception + Fs {
+export fn prelude_ordinary_lane_prov_report_fs(entry_path: String) -> String with Env + Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
   let _ = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let stmt_file_id: Array[Int] = []
@@ -728,7 +728,7 @@ export fn prelude_ordinary_lane_prov_report_fs(entry_path: String) -> String wit
 /// exactly the outcome worth reporting) would take the count with it, and a
 /// narrowing caused by dropped edges reads identically to one caused by the
 /// real import graph.
-export fn prelude_module_import_closure_report_fs(entry_path: String) -> String with Exception + Fs {
+export fn prelude_module_import_closure_report_fs(entry_path: String) -> String with Env + Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
   // #2633: the closure the full oracle ACTUALLY runs under, so this report
   // cannot describe a different one than the lane it is named for.
@@ -764,7 +764,7 @@ export fn prelude_module_import_closure_report_fs(entry_path: String) -> String 
 /// hide one -- but a caller that does not print it cannot tell a closure built
 /// from every edge from one built from half of them, and those two greens are
 /// not the same claim.
-fn oracle_import_closure(source_groups: Array[(String, Array[(String, String)])]) -> (Array[Array[Int]], Int) with Exception + Fs {
+fn oracle_import_closure(source_groups: Array[(String, Array[(String, String)])]) -> (Array[Array[Int]], Int) with Env + Exception + Fs {
   let flat = flatten_source_groups_local(source_groups)
   let n = Array::length(flat)
   // path -> EVERY flat index carrying it, and group key -> that group's flat
@@ -1019,7 +1019,7 @@ fn eic_add_reexport_reach(reexport_rows: Array[Array[Int]], start: Int, self_i: 
 /// The re-export subset comes from the LOADER (`module_reexport_deps_fs`),
 /// not from re-reading source text here, so it cannot drift from what the
 /// loader actually resolves.
-fn exact_import_closure(source_groups: Array[(String, Array[(String, String)])]) -> (Array[Array[Int]], Int) with Exception + Fs {
+fn exact_import_closure(source_groups: Array[(String, Array[(String, String)])]) -> (Array[Array[Int]], Int) with Env + Exception + Fs {
   let (direct, unresolved) = oracle_import_closure(source_groups)
   let flat = flatten_source_groups_local(source_groups)
   let n = Array::length(flat)
@@ -1078,7 +1078,7 @@ fn lc_ignored_paths() -> Array[String] {
   []
 }
 
-fn prelude_oracle_merge(source_groups: Array[(String, Array[(String, String)])], out_paths: Array[String]) -> (Array[Stmt], Array[String], Array[Int], (Array[Int], Array[String])) with Exception {
+fn prelude_oracle_merge(source_groups: Array[(String, Array[(String, String)])], out_paths: Array[String]) -> (Array[Stmt], Array[String], Array[Int], (Array[Int], Array[String])) with Env + Exception {
   let flat_paths: Array[String] = []
   let flat_bases: Array[Int] = []
   let clone_float_offsets: Array[Int] = []
@@ -1116,7 +1116,7 @@ fn prelude_oracle_merge(source_groups: Array[(String, Array[(String, String)])],
 /// codegen. The rewrite anchors with the checker's own channel anchor
 /// (typed_lowering_binop_anchor), so
 /// both sides compute the anchor identically by construction.
-fn merged_stmts_and_offsets(source_groups: Array[(String, Array[(String, String)])]) -> (Array[Stmt], Array[Int], Array[Int], Array[Int], Array[Int], Array[String]) with Exception {
+fn merged_stmts_and_offsets(source_groups: Array[(String, Array[(String, String)])]) -> (Array[Stmt], Array[Int], Array[Int], Array[Int], Array[Int], Array[String]) with Env + Exception {
   merged_stmts_and_offsets_prov(source_groups, array_empty())
 }
 
@@ -1135,7 +1135,7 @@ fn merged_stmts_and_offsets(source_groups: Array[(String, Array[(String, String)
 ///
 /// The binop rewrite below does not change the statement count (the oracle's
 /// merge asserts exactly that), so the ids stay aligned with what it returns.
-fn merged_stmts_and_offsets_prov(source_groups: Array[(String, Array[(String, String)])], stmt_file_id_out: Array[Int]) -> (Array[Stmt], Array[Int], Array[Int], Array[Int], Array[Int], Array[String]) with Exception {
+fn merged_stmts_and_offsets_prov(source_groups: Array[(String, Array[(String, String)])], stmt_file_id_out: Array[Int]) -> (Array[Stmt], Array[Int], Array[Int], Array[Int], Array[Int], Array[String]) with Env + Exception {
   let flat_paths: Array[String] = []
   let flat_bases: Array[Int] = []
   let clone_float_offsets: Array[Int] = []
@@ -1280,7 +1280,7 @@ fn file_newline_offsets(src: String) -> Array[Int] {
 /// per-source offset bases, recorded before the append loop runs (the
 /// alias-collision fallback appends further entries after those, which is why
 /// the count is taken from the sources and not from the array's length).
-fn build_grouped_merged_stmts_prov(source_groups: Array[(String, Array[(String, String)])], flat_paths_out: Array[String], flat_bases_out: Array[Int], clone_float_offsets_out: Array[Int]) -> (Array[Stmt], Array[String], Array[Array[Int]], Array[Int]) with Exception {
+fn build_grouped_merged_stmts_prov(source_groups: Array[(String, Array[(String, String)])], flat_paths_out: Array[String], flat_bases_out: Array[Int], clone_float_offsets_out: Array[Int]) -> (Array[Stmt], Array[String], Array[Array[Int]], Array[Int]) with Env + Exception {
   let stmt_file_id = array_empty()
   let merged = build_grouped_merged_stmts_impl(source_groups, true, flat_paths_out, flat_bases_out, clone_float_offsets_out, stmt_file_id)
   let flat_sources = flatten_source_groups_local(source_groups)
@@ -1307,17 +1307,17 @@ fn build_grouped_merged_stmts_prov(source_groups: Array[(String, Array[(String, 
   (merged, files, file_nls, stmt_file_id)
 }
 
-fn prepare_file_fs_from_source_groups_cached(db: TypeDb, entry_path: String, source_groups: Array[(String, Array[(String, String)])]) -> TypeDb with Exception {
+fn prepare_file_fs_from_source_groups_cached(db: TypeDb, entry_path: String, source_groups: Array[(String, Array[(String, String)])]) -> TypeDb with Env + Exception {
   let seeded = seed_type_db_from_source_groups(db, source_groups)
   db_typecheck(seeded, entry_path)
 }
 
-fn prepare_file_fs_from_source_groups_persistent_cached(db: TypeDb, entry_path: String, source_groups: Array[(String, Array[(String, String)])]) -> TypeDb with Exception + Fs {
+fn prepare_file_fs_from_source_groups_persistent_cached(db: TypeDb, entry_path: String, source_groups: Array[(String, Array[(String, String)])]) -> TypeDb with Env + Exception + Fs {
   let seeded = seed_type_db_from_source_groups(db, source_groups)
   db_typecheck_fs(seeded, entry_path)
 }
 
-export fn prepare_file_fs_cached(db: TypeDb, entry_path: String) -> TypeDb with Exception + Fs {
+export fn prepare_file_fs_cached(db: TypeDb, entry_path: String) -> TypeDb with Env + Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
   prepare_file_fs_from_source_groups_persistent_cached(db, entry_path, source_groups)
 }
@@ -1332,7 +1332,7 @@ export fn prepare_file_fs_cached(db: TypeDb, entry_path: String) -> TypeDb with 
 /// fs-mode source-group + db_typecheck_fs pipeline instead -- the same one
 /// compile_file_fs_mode already relies on for a real compile's (working)
 /// typecheck pass -- and stop before build_grouped_merged_stmts/codegen.
-export fn check_file_fs_mode_from_source_groups(entry_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Int with Exception + Fs {
+export fn check_file_fs_mode_from_source_groups(entry_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Int with Env + Exception + Fs {
   let _ = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   // #1536(c) / #1511(b): after the typecheck passes, run the ADR-0076
   // effect-lowering eligibility passes (suspend CPS split + evidence-passing
@@ -1355,7 +1355,7 @@ export fn check_file_fs_mode_from_source_groups(entry_path: String, source_group
   0
 }
 
-export fn check_file_fs_mode(entry_path: String) -> Int with Exception + Fs {
+export fn check_file_fs_mode(entry_path: String) -> Int with Env + Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
   check_file_fs_mode_from_source_groups(entry_path, source_groups)
 }
@@ -1461,12 +1461,12 @@ fn persistent_artifact_kind_for_mode(mode: String) -> String with Exception {
 }
 
 /// Pre-#2828-rung-2 arity: no launcher grants (fail-closed).
-export fn compile_file_fs_mode(entry_path: String, entry_name: String, mode: String) -> Bytes with Exception + Fs {
+export fn compile_file_fs_mode(entry_path: String, entry_name: String, mode: String) -> Bytes with Env + Exception + Fs {
   compile_file_fs_mode_grants(entry_path, entry_name, mode, array_empty())
 }
 
 /// #2828 rung 2: the grant-carrying arity.
-export fn compile_file_fs_mode_grants(entry_path: String, entry_name: String, mode: String, grants: Array[(String, String)]) -> Bytes with Exception + Fs {
+export fn compile_file_fs_mode_grants(entry_path: String, entry_name: String, mode: String, grants: Array[(String, String)]) -> Bytes with Env + Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let _ = next_db
@@ -1480,7 +1480,7 @@ export fn compile_file_fs_mode_grants(entry_path: String, entry_name: String, mo
 /// located AST into a disjoint offset range before merging. The checker and
 /// codegen can then share a call-result table without either transferring a
 /// Double classification to an Int call or discarding a valid Double hint.
-export fn compile_file_fs_mode_gc(entry_path: String, entry_name: String) -> Bytes with Exception + Fs {
+export fn compile_file_fs_mode_gc(entry_path: String, entry_name: String) -> Bytes with Env + Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let _ = next_db
@@ -1494,13 +1494,13 @@ export fn compile_file_fs_mode_gc(entry_path: String, entry_name: String) -> Byt
 /// the FS-compile path silently used the bump allocator regardless of VIBE_RC.
 /// Pre-#2828-rung-2 arity: no launcher grants, so `perform?` resolves
 /// `NotGranted` exactly as before. Every caller but `vibe run` uses this.
-export fn compile_file_fs_mode_rc(entry_path: String, entry_name: String) -> Bytes with Exception + Fs {
+export fn compile_file_fs_mode_rc(entry_path: String, entry_name: String) -> Bytes with Env + Exception + Fs {
   compile_file_fs_mode_rc_grants(entry_path, entry_name, array_empty())
 }
 
 /// #2828 rung 2: ADR-0088's L1 grants, frozen by the launcher before the
 /// artifact is built, reach the optional-capability lowering through here.
-export fn compile_file_fs_mode_rc_grants(entry_path: String, entry_name: String, grants: Array[(String, String)]) -> Bytes with Exception + Fs {
+export fn compile_file_fs_mode_rc_grants(entry_path: String, entry_name: String, grants: Array[(String, String)]) -> Bytes with Env + Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let _ = next_db
@@ -1537,7 +1537,7 @@ export fn compile_file_fs_mode_rc_grants(entry_path: String, entry_name: String,
 /// stay aligned however many statements a file contributes -- and (#2391) its
 /// disjoint offset base for the float-offset union. `merged` is identical to
 /// the ordinary rc lane's (merged_stmts_and_float_offsets).
-fn build_grouped_merged_stmts_counted(source_groups: Array[(String, Array[(String, String)])]) -> (Array[Stmt], Array[String], Array[String], Array[Int], Array[Int], Array[Int]) with Exception {
+fn build_grouped_merged_stmts_counted(source_groups: Array[(String, Array[(String, String)])]) -> (Array[Stmt], Array[String], Array[String], Array[Int], Array[Int], Array[Int]) with Env + Exception {
   namespace_rename_originals_reset()
   let merged = array_empty()
   let out_paths = array_empty()
@@ -2033,7 +2033,7 @@ fn ordinary_lane_dbg_prov(file_paths: Array[String], file_counts: Array[Int], so
 /// `use_split` is a parameter rather than an env read: production lanes stay
 /// Env-free (the #634 layering note), and `cache_mode` is the established shape
 /// for a decision the CLI adapter makes and passes down.
-fn ordinary_lane_module_split(file_paths: Array[String], file_counts: Array[Int], source_groups: Array[(String, Array[(String, String)])], use_split: Bool) -> ModuleSplit with Exception + Fs {
+fn ordinary_lane_module_split(file_paths: Array[String], file_counts: Array[Int], source_groups: Array[(String, Array[(String, String)])], use_split: Bool) -> ModuleSplit with Env + Exception + Fs {
   if !use_split {
     module_split_none()
   } else {
@@ -2066,7 +2066,7 @@ fn ordinary_lane_module_split(file_paths: Array[String], file_counts: Array[Int]
 /// (#2658). Exported so a test can tell an exact re-export closure from a
 /// direct-edges-only one, which byte comparison cannot: both fail open to the
 /// same program, so only the SHAPE distinguishes them.
-export fn ordinary_lane_closure_edges(entry_path: String) -> Int with Exception + Fs {
+export fn ordinary_lane_closure_edges(entry_path: String) -> Int with Env + Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
   let (closure, unresolved) = exact_import_closure(source_groups)
   if unresolved > 0 {
@@ -2121,7 +2121,7 @@ fn eic_index_of_suffix(flat: Array[(String, String)], suffix: String) -> Int {
 /// Answers `false` for a path that is not in the program or is not unique, so
 /// a caller must pin every name it asserts `false` for with a `true` assertion
 /// elsewhere -- otherwise a typo reads as "correctly excluded".
-export fn ordinary_lane_closure_admits(entry_path: String, owner: String, member: String) -> Bool with Exception + Fs {
+export fn ordinary_lane_closure_admits(entry_path: String, owner: String, member: String) -> Bool with Env + Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
   let (closure, unresolved) = exact_import_closure(source_groups)
   if unresolved > 0 {
@@ -2146,7 +2146,7 @@ export fn ordinary_lane_closure_admits(entry_path: String, owner: String, member
 /// the split path is never taken, and "I checked by mutating the source" is not
 /// a property a test can keep. A caller can also use it to ask whether a given
 /// root would split at all.
-export fn ordinary_lane_split_shape(entry_path: String) -> (Int, Int) with Exception + Fs {
+export fn ordinary_lane_split_shape(entry_path: String) -> (Int, Int) with Env + Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
   let (_, file_paths, _, file_counts, _, _) = build_grouped_merged_stmts_counted(source_groups)
   let split = ordinary_lane_module_split(file_paths, file_counts, source_groups, true)
@@ -2155,11 +2155,11 @@ export fn ordinary_lane_split_shape(entry_path: String) -> (Int, Int) with Excep
 
 /// The ordinary RC lane with the per-module prelude selectable (#2575 item 2
 /// step 3b). `use_split` false is byte-for-byte the lane below it.
-export fn compile_file_fs_mode_rc_body_cached_split(entry_path: String, entry_name: String, cache_mode: String, use_split: Bool) -> Bytes with Exception + Fs {
+export fn compile_file_fs_mode_rc_body_cached_split(entry_path: String, entry_name: String, cache_mode: String, use_split: Bool) -> Bytes with Env + Exception + Fs {
   compile_file_fs_mode_rc_body_cached_impl(entry_path, entry_name, cache_mode, use_split, array_empty())
 }
 
-export fn compile_file_fs_mode_rc_body_cached(entry_path: String, entry_name: String, cache_mode: String) -> Bytes with Exception + Fs {
+export fn compile_file_fs_mode_rc_body_cached(entry_path: String, entry_name: String, cache_mode: String) -> Bytes with Env + Exception + Fs {
   compile_file_fs_mode_rc_body_cached_impl(entry_path, entry_name, cache_mode, false, array_empty())
 }
 
@@ -2174,7 +2174,7 @@ export fn compile_file_fs_mode_rc_body_cached(entry_path: String, entry_name: St
 /// returned bytes, which are identical either way. That is what this entry
 /// point exists for; `ordinary_lane_split_shape` above is the same kind of
 /// observation seam for the same reason.
-export fn compile_file_fs_mode_rc_body_cached_counted(entry_path: String, entry_name: String, cache_mode: String, counts_out: Array[Int]) -> Bytes with Exception + Fs {
+export fn compile_file_fs_mode_rc_body_cached_counted(entry_path: String, entry_name: String, cache_mode: String, counts_out: Array[Int]) -> Bytes with Env + Exception + Fs {
   compile_file_fs_mode_rc_body_cached_impl(entry_path, entry_name, cache_mode, false, counts_out)
 }
 
@@ -2202,7 +2202,7 @@ fn body_cache_harvest_is_replayable(cache: CodegenBodyCache) -> Bool {
   Array::length(cache.guard_meta) == 5
 }
 
-fn compile_file_fs_mode_rc_body_cached_impl(entry_path: String, entry_name: String, cache_mode: String, use_split: Bool, counts_out: Array[Int]) -> Bytes with Exception + Fs {
+fn compile_file_fs_mode_rc_body_cached_impl(entry_path: String, entry_name: String, cache_mode: String, use_split: Bool, counts_out: Array[Int]) -> Bytes with Env + Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let _ = next_db
@@ -2460,12 +2460,12 @@ export fn compile_file_fs_mode_bump_heap_marked(entry_path: String, entry_name: 
 /// import-resolving test build's "moving target" free-list corruption becomes a
 /// deterministic trap at the first bad dup/drop.
 /// Pre-#2828-rung-2 arity: no launcher grants (fail-closed).
-export fn compile_file_fs_mode_rc_shadow(entry_path: String, entry_name: String) -> Bytes with Exception + Fs {
+export fn compile_file_fs_mode_rc_shadow(entry_path: String, entry_name: String) -> Bytes with Env + Exception + Fs {
   compile_file_fs_mode_rc_shadow_grants(entry_path, entry_name, array_empty())
 }
 
 /// #2828 rung 2: the grant-carrying arity.
-export fn compile_file_fs_mode_rc_shadow_grants(entry_path: String, entry_name: String, grants: Array[(String, String)]) -> Bytes with Exception + Fs {
+export fn compile_file_fs_mode_rc_shadow_grants(entry_path: String, entry_name: String, grants: Array[(String, String)]) -> Bytes with Env + Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let _ = next_db
@@ -2480,7 +2480,7 @@ export fn compile_file_fs_mode_rc_shadow_grants(entry_path: String, entry_name: 
 /// Reached only on a successful compile (the program type-checks), so reading the
 /// declared effect rows is sound. Env is read by the caller (the CLI adapter),
 /// keeping this layer free of the Env effect.
-export fn compile_file_fs_mode_testmeta(entry_path: String, entry_name: String, mode: String, meta_out: String) -> Bytes with Exception + Fs {
+export fn compile_file_fs_mode_testmeta(entry_path: String, entry_name: String, mode: String, meta_out: String) -> Bytes with Env + Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let _ = next_db
@@ -2514,7 +2514,7 @@ export fn compile_file_fs_mode_testmeta(entry_path: String, entry_name: String, 
 /// this can never affect which bytes an actual compile emits, at the cost
 /// of a redundant frontend pass (negligible next to the child-process
 /// compile/execute round trips vibe_md.vibex already pays per block).
-export fn entry_cacheable_for_fs(entry_path: String, entry_name: String) -> Bool with Exception + Fs {
+export fn entry_cacheable_for_fs(entry_path: String, entry_name: String) -> Bool with Env + Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let _ = next_db
@@ -2526,7 +2526,7 @@ export fn entry_cacheable_for_fs(entry_path: String, entry_name: String) -> Bool
 /// Same load/merge as compile_file_fs_mode "no-dce" but routes through the
 /// coverage codegen so the output wasm carries the hit bitmap + `vibe_cov`
 /// section. Used by `cli_main` under VIBE_COVERAGE=1.
-export fn compile_file_fs_mode_coverage(entry_path: String, entry_name: String) -> Bytes with Exception + Fs {
+export fn compile_file_fs_mode_coverage(entry_path: String, entry_name: String) -> Bytes with Env + Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let _ = next_db
@@ -2539,7 +2539,7 @@ export fn compile_file_fs_mode_coverage(entry_path: String, entry_name: String) 
 /// "no-dce" but routes through the trace codegen so the output wasm carries the
 /// in-memory trace log + `vibe.trace` custom section. Used by `cli_main` under
 /// VIBE_DEBUG=1.
-export fn compile_file_fs_mode_trace(entry_path: String, entry_name: String) -> Bytes with Exception + Fs {
+export fn compile_file_fs_mode_trace(entry_path: String, entry_name: String) -> Bytes with Env + Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let _ = next_db
@@ -2552,7 +2552,7 @@ export fn compile_file_fs_mode_trace(entry_path: String, entry_name: String) -> 
 /// compile_file_fs_mode "no-dce" but routes through the break codegen so the
 /// output wasm imports + calls `vibe::dbg_break`. Used by `cli_main` under
 /// VIBE_DEBUG_BREAK=1.
-export fn compile_file_fs_mode_break(entry_path: String, entry_name: String) -> Bytes with Exception + Fs {
+export fn compile_file_fs_mode_break(entry_path: String, entry_name: String) -> Bytes with Env + Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let _ = next_db
@@ -2578,7 +2578,7 @@ export fn compile_file_fs_mode_break(entry_path: String, entry_name: String) -> 
   }, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
 }
 
-export fn compile_file_fs_mode_profiled(entry_path: String, entry_name: String, mode: String) -> (Bytes, Int, Int, Int, Int, Int, Int) with Exception + Fs + Profiler {
+export fn compile_file_fs_mode_profiled(entry_path: String, entry_name: String, mode: String) -> (Bytes, Int, Int, Int, Int, Int, Int) with Env + Exception + Fs + Profiler {
   let total_start = profiler_now_us()
   let load_start = profiler_now_us()
   let source_groups = collect_source_groups_fs(entry_path)
@@ -2599,7 +2599,7 @@ export fn compile_file_fs_mode_profiled(entry_path: String, entry_name: String, 
   (bytes, load_us, type_us, bundle_us, parse_us, compile_us, elapsed_us_since(total_start))
 }
 
-fn compile_file_fs_mode_cached_slow_profiled(db: TypeDb, entry_path: String, entry_name: String, mode: String, persistent_artifact_kind: String) -> (Bytes, TypeDb, Int, Int, Int, Int, Int) with Exception + Fs + Profiler {
+fn compile_file_fs_mode_cached_slow_profiled(db: TypeDb, entry_path: String, entry_name: String, mode: String, persistent_artifact_kind: String) -> (Bytes, TypeDb, Int, Int, Int, Int, Int) with Env + Exception + Fs + Profiler {
   let load_start = profiler_now_us()
   let source_groups = collect_source_groups_fs(entry_path)
   // The ingested source-group fingerprint is the authoritative identity for
@@ -2642,7 +2642,7 @@ fn compile_file_fs_mode_cached_slow_profiled(db: TypeDb, entry_path: String, ent
 /// observation fields are derived at the lookup that returns bytes (or proceeds
 /// to compile them), so the trace lane cannot preflight then delegate to a
 /// second production lookup.
-fn compile_file_fs_mode_cached_slow_observed(db: TypeDb, entry_path: String, entry_name: String, mode: String, persistent_artifact_kind: String) -> (Bytes, TypeDb, String, String, String) with Exception + Fs {
+fn compile_file_fs_mode_cached_slow_observed(db: TypeDb, entry_path: String, entry_name: String, mode: String, persistent_artifact_kind: String) -> (Bytes, TypeDb, String, String, String) with Env + Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
   let source_groups_fingerprint = build_source_groups_fingerprint(source_groups)
   let persistent_artifact_fingerprint = build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint_for_entry_path(source_groups_fingerprint, entry_path, entry_name, mode)
@@ -2665,7 +2665,7 @@ fn compile_file_fs_mode_cached_slow_observed(db: TypeDb, entry_path: String, ent
   }
 }
 
-fn compile_file_fs_mode_cached_observed(db: TypeDb, entry_path: String, entry_name: String, mode: String) -> (Bytes, TypeDb, String, String, String) with Exception + Fs {
+fn compile_file_fs_mode_cached_observed(db: TypeDb, entry_path: String, entry_name: String, mode: String) -> (Bytes, TypeDb, String, String, String) with Env + Exception + Fs {
   let persistent_artifact_kind = persistent_artifact_kind_for_mode(mode)
   match load_persistent_source_group_fingerprint_if_valid(entry_path) {
     Some(source_groups_fingerprint) => {
@@ -2681,12 +2681,12 @@ fn compile_file_fs_mode_cached_observed(db: TypeDb, entry_path: String, entry_na
   }
 }
 
-export fn compile_file_fs_mode_cached(db: TypeDb, entry_path: String, entry_name: String, mode: String) -> (Bytes, TypeDb) with Exception + Fs {
+export fn compile_file_fs_mode_cached(db: TypeDb, entry_path: String, entry_name: String, mode: String) -> (Bytes, TypeDb) with Env + Exception + Fs {
   let (bytes, next_db, _, _, _) = compile_file_fs_mode_cached_observed(db, entry_path, entry_name, mode)
   (bytes, next_db)
 }
 
-export fn compile_file_fs_cached(db: TypeDb, entry_path: String, entry_name: String) -> (Bytes, TypeDb) with Exception + Fs {
+export fn compile_file_fs_cached(db: TypeDb, entry_path: String, entry_name: String) -> (Bytes, TypeDb) with Env + Exception + Fs {
   compile_file_fs_mode_cached(db, entry_path, entry_name, "no-dce")
 }
 
@@ -2755,7 +2755,7 @@ fn artifact_input_trace_shadow_fingerprint(production_fingerprint: String, sourc
 /// bump lane. Production compilation/lookup happens first and is unchanged.
 /// The graph/context reads below are trace-only extra I/O and never select
 /// cache namespaces, lookup/store keys, or reuse decisions.
-export fn compile_file_fs_mode_cached_artifact_input_trace(entry_path: String, entry_name: String, mode: String, run_nonce: String, checked_error_row_mode: String, diagnostics_mode: String, dep_order_seed: String) -> (Bytes, String) with Exception + Fs {
+export fn compile_file_fs_mode_cached_artifact_input_trace(entry_path: String, entry_name: String, mode: String, run_nonce: String, checked_error_row_mode: String, diagnostics_mode: String, dep_order_seed: String) -> (Bytes, String) with Env + Exception + Fs {
   if mode != "no-dce" {
     throw("artifact-input trace only supports file_compile WASI no-dce")
   } else if run_nonce == "" {
@@ -2814,12 +2814,12 @@ export fn compile_file_fs_mode_cached_artifact_input_trace(entry_path: String, e
   }
 }
 
-export fn compile_file_fs(entry_path: String, entry_name: String) -> Bytes with Exception + Fs {
+export fn compile_file_fs(entry_path: String, entry_name: String) -> Bytes with Env + Exception + Fs {
   let (bytes, _) = compile_file_fs_cached(db_new(), entry_path, entry_name)
   bytes
 }
 
-export fn compile_file_fs_mode_cached_profiled(db: TypeDb, entry_path: String, entry_name: String, mode: String) -> (Bytes, TypeDb, Int, Int, Int, Int, Int, Int) with Exception + Fs + Profiler {
+export fn compile_file_fs_mode_cached_profiled(db: TypeDb, entry_path: String, entry_name: String, mode: String) -> (Bytes, TypeDb, Int, Int, Int, Int, Int, Int) with Env + Exception + Fs + Profiler {
   let total_start = profiler_now_us()
   let persistent_artifact_kind = persistent_artifact_kind_for_mode(mode)
   let load_start = profiler_now_us()
@@ -2892,7 +2892,7 @@ export fn compile_file_fs_mode_cached_profiled(db: TypeDb, entry_path: String, e
 /// call's bytes. Printing here costs one print of a program that used to be
 /// printed TWICE -- and unlike before, nothing REPARSES that text, so the
 /// offsets survive.
-fn compile_file_fs_module_cached_slow(db: TypeDb, entry_path: String) -> (Bytes, TypeDb) with Exception + Fs {
+fn compile_file_fs_module_cached_slow(db: TypeDb, entry_path: String) -> (Bytes, TypeDb) with Env + Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
   let persistent_artifact_fingerprint = build_file_compile_module_artifact_fingerprint_for_entry_path(source_groups, entry_path)
   match load_persistent_artifact("file-compile-module", "", persistent_artifact_fingerprint) {
@@ -2914,7 +2914,7 @@ fn compile_file_fs_module_cached_slow(db: TypeDb, entry_path: String) -> (Bytes,
   }
 }
 
-export fn compile_file_fs_module_cached(db: TypeDb, entry_path: String) -> (Bytes, TypeDb) with Exception + Fs {
+export fn compile_file_fs_module_cached(db: TypeDb, entry_path: String) -> (Bytes, TypeDb) with Env + Exception + Fs {
   match load_persistent_source_group_fingerprint_if_valid(entry_path) {
     Some(source_groups_fingerprint) =>
     match load_persistent_artifact("file-compile-module", "", build_file_compile_module_artifact_fingerprint_from_group_fingerprint_for_entry_path(source_groups_fingerprint, entry_path)) {
@@ -2925,7 +2925,7 @@ export fn compile_file_fs_module_cached(db: TypeDb, entry_path: String) -> (Byte
   }
 }
 
-export fn compile_file_fs_module(entry_path: String) -> Bytes with Exception + Fs {
+export fn compile_file_fs_module(entry_path: String) -> Bytes with Env + Exception + Fs {
   let (bytes, _) = compile_file_fs_module_cached(db_new(), entry_path)
   bytes
 }

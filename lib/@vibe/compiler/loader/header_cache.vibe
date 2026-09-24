@@ -52,7 +52,7 @@ import @vibe/compiler/contract {
 
 //# Functions
 
-fn resolve_path_fs(base_dir: String, raw_path: String, self_path: String) -> String with Fs {
+fn resolve_path_fs(base_dir: String, raw_path: String, self_path: String) -> String with Env + Fs {
   // #1872 pilot: probe loop unified in core (resolve_import_path_probe,
   // `with Source` -- carries this copy's self-import skip and first-non-self
   // fallback); this wrapper only discharges Source with the real builtins.
@@ -187,7 +187,7 @@ fn enforce_relative_import_package_boundary_fs(raw_path: String, self_path: Stri
   } else ()
 }
 
-fn resolve_checked_path_fs(base_dir: String, raw_path: String, self_path: String, source: String, keyword: String) -> String with Exception + Fs {
+fn resolve_checked_path_fs(base_dir: String, raw_path: String, self_path: String, source: String, keyword: String) -> String with Env + Exception + Fs {
   let resolved = resolve_path_fs(base_dir, raw_path, self_path)
   if String::starts_with(raw_path, "@") || Fs::exists(resolved) {
     enforce_relative_import_package_boundary_fs(raw_path, self_path, resolved, source, keyword)
@@ -434,7 +434,7 @@ fn validate_import_names_fs(source: String, keyword: String, raw_path: String, r
 /// Name validation is deliberately NOT repeated: the dep scan already ran it
 /// over the same statements, and a second pass would report the same error
 /// twice or, worse, differ from it.
-export fn module_reexport_deps_fs(path: String, source: String) -> Array[String] with Exception + Fs {
+export fn module_reexport_deps_fs(path: String, source: String) -> Array[String] with Env + Exception + Fs {
   let stmts = parse_program_located_shared_fs(path, source)
   let base_dir = dir_of_path(path)
   let out = array_empty()
@@ -449,7 +449,7 @@ export fn module_reexport_deps_fs(path: String, source: String) -> Array[String]
   out
 }
 
-fn collect_import_deps_from_stmts(stmts: Array[Stmt], base_dir: String, self_path: String, source: String) -> Array[String] with Exception + Fs {
+fn collect_import_deps_from_stmts(stmts: Array[Stmt], base_dir: String, self_path: String, source: String) -> Array[String] with Env + Exception + Fs {
   let deps = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
@@ -773,7 +773,7 @@ export fn parse_program_located_shared(path: String, source: String) -> Array[St
 /// cold lane in `load_or_parse_module_header_fs_impl` dispatches on a plain
 /// `mut` Bool too. The match lives here, where no parser call does, and the
 /// caller asks `Array::length`.
-fn ast_cache_slot_fs(path: String, source_fingerprint: String) -> Array[Array[Stmt]] with Exception + Fs {
+fn ast_cache_slot_fs(path: String, source_fingerprint: String) -> Array[Array[Stmt]] with Env + Exception + Fs {
   match load_persistent_ast(path, source_fingerprint) {
     Some(stmts) => [stmts],
     None => array_empty()
@@ -833,11 +833,11 @@ fn ast_cache_slot_fs(path: String, source_fingerprint: String) -> Array[Array[St
 /// load, and the store. Written at one of them and not the others, the cache
 /// half-runs: the first version of this guard sat at the planner's prefetch
 /// call, and the header pass went on prefetching anyway.
-fn ast_cache_active() -> Bool {
+fn ast_cache_active() -> Bool with Env {
   ast_cache_enabled() && checked_module_cache_mode() != "on"
 }
 
-export fn ast_cache_prefetch_fs(path: String, source: String) -> Bool with Exception + Fs {
+export fn ast_cache_prefetch_fs(path: String, source: String) -> Bool with Env + Exception + Fs {
   if !ast_cache_active() {
     false
   } else {
@@ -876,7 +876,7 @@ export fn ast_cache_prefetch_fs(path: String, source: String) -> Bool with Excep
 /// A decoded AST is the array the parser would have produced, which is the
 /// property `ast_binary_parse_equivalence_test.vibe` asserts against real
 /// compiler sources rather than against the codec itself.
-export fn parse_program_located_shared_fs(path: String, source: String) -> Array[Stmt] with Exception + Fs {
+export fn parse_program_located_shared_fs(path: String, source: String) -> Array[Stmt] with Env + Exception + Fs {
   let seen_sources = located_parse_versions(Array::get(located_parse_memo_sources, 0), path)
   let seen_cfgs = located_parse_versions(Array::get(located_parse_memo_cfgs, 0), path)
   let memo_hit = located_parse_version_index(seen_sources, seen_cfgs, source, cfg_ambient_flags_csv()) >= 0
@@ -901,7 +901,7 @@ export fn parse_program_located_shared_fs(path: String, source: String) -> Array
   }
 }
 
-export fn load_or_parse_module_header_fs_impl(path: String, source: String, parse_count: Int) -> (Array[String], Array[String], Int) with Exception + Fs {
+export fn load_or_parse_module_header_fs_impl(path: String, source: String, parse_count: Int) -> (Array[String], Array[String], Int) with Env + Exception + Fs {
   ingestion_pipeline_telemetry_add(10, 1)
   let cache_path = persistent_module_header_cache_path(path, compact_source_fingerprint_memo(path, source))
   // #801 follow-up: a warm header whose package-index deps no longer match
@@ -1062,7 +1062,7 @@ export fn load_or_parse_module_header_fs_impl(path: String, source: String, pars
 /// compares what was recorded, and a contract that APPEARS later changes
 /// resolution winners, which the #801 package_index_deps_are_current gate
 /// already catches.
-fn contract_dep_fingerprints_now(deps: Array[String]) -> Array[(String, String)] with Fs {
+fn contract_dep_fingerprints_now(deps: Array[String]) -> Array[(String, String)] with Env + Fs {
   let out = array_empty()
   let mut i = 0
   while i < Array::length(deps) {
@@ -1080,7 +1080,7 @@ fn contract_dep_fingerprints_now(deps: Array[String]) -> Array[(String, String)]
 /// Warm-gate check: every recorded contract fingerprint must still match the
 /// on-disk contract text. A vanished or edited contract fails the gate and
 /// forces a cold re-parse + re-validation of the importer's names.
-fn contract_dep_fingerprints_current(cdeps: Array[(String, String)]) -> Bool with Fs {
+fn contract_dep_fingerprints_current(cdeps: Array[(String, String)]) -> Bool with Env + Fs {
   let mut i = 0
   let mut ok = true
   while i < Array::length(cdeps) {
