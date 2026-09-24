@@ -2487,6 +2487,39 @@ export fn cc_host_stream_named_raw_prefix() -> String {
   "vibe_hs_get_raw$"
 }
 
+/// #2064: a WIT function address, `<ns>:<pkg>/<iface>@<version>#<func>` --
+/// the versioned interface the function lives in, then its name. Such a
+/// future is imported from that INTERFACE rather than as a root function:
+/// linked_compile emits it as `vibe.wit_future_get$<address>`, which the
+/// composer turns into the versioned instance import. The interface half is
+/// what the composer requires (`:`, `/` and `@`, lower case, digits, `-`, `.`);
+/// the function half is a label like any other import name.
+export fn cc_is_wit_future_address(s: String) -> Bool {
+  let hash = String::index_of(s, "#")
+  if hash <= 0 || hash != String::last_index_of(s, "#") {
+    false
+  } else {
+    let iface = String::substring(s, 0, hash)
+    let func = String::substring(s, hash + 1, String::length(s))
+    let colon = String::index_of(iface, ":")
+    let slash = String::index_of(iface, "/")
+    let at = String::index_of(iface, "@")
+    let mut ok = colon > 0 && slash > colon + 1 && at > slash + 1 && at < String::length(iface) - 1
+    let mut i = 0
+    while ok && i < String::length(iface) {
+      let c = String::char_code_at(iface, i)
+      let allowed = (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 45 || c == 46 || c == 58 || c == 47 || c == 64
+      if !allowed {
+        ok = false
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    ok && cc_is_valid_host_future_name(func)
+  }
+}
+
 /// A component import name must be a lower kebab-case identifier
 /// (`[a-z][a-z0-9-]*`) -- the component-model's own `label` shape, and what
 /// keeps the derived core import name unambiguous when component_codegen
@@ -3444,8 +3477,8 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
         EString(s, _) => s,
         _ => throw("host_future_named: the import name must be a string literal (it becomes a component import name, so it is fixed at compile time)")
       }
-      if !cc_is_valid_host_future_name(hf_name) {
-        throw("host_future_named: invalid import name '\{hf_name}' -- must be lower kebab-case ([a-z][a-z0-9-]*), the component-model label shape")
+      if !cc_is_valid_host_future_name(hf_name) && !cc_is_wit_future_address(hf_name) {
+        throw("host_future_named: invalid import name '\{hf_name}' -- must be lower kebab-case ([a-z][a-z0-9-]*), the component-model label shape, or a WIT function address like 'example:prices/api@1.0.0#get-price'")
       } else {
         ()
       }

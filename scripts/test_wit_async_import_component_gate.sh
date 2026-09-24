@@ -133,4 +133,79 @@ grep -Fq '(type (;3;) (own 1))' "$OUT/http-client.wat"
 grep -Fq '(type (;4;) (result 3 (error 2)))' "$OUT/http-client.wat"
 grep -Fq '(type (;5;) (own 0))' "$OUT/http-client.wat"
 grep -Fq '(func async (param "request" 5) (result 4))' "$OUT/http-client.wat"
+
+# --- a REAL program on the same route (#2064) -------------------------------
+# Everything above composes a hand-built core. Here the import set comes from
+# WIT text: fixtures/wit_future_import/prices_bindings.vibe is the
+# `from_wit_future_imports` derivation of prices.wit (from_wit_test.vibe pins
+# that), and main.vibe awaits both bindings. linked_compile must emit the
+# `wit_future_get$` metadata imports and the composer must import both
+# functions from ONE versioned `example:prices/api@1.0.0` instance.
+#
+# The checkout's compiler, not the seed: the route is new, and a seed that
+# predates it would refuse the address (`invalid import name`) -- which is
+# the answer about a different compiler, not a pass or fail about this one.
+COMPILER="${VIBE_WIT_ASYNC_IMPORT_GATE_COMPILER:-}"
+if [ -z "$COMPILER" ]; then
+  COMPILER="$(ls -td "$ROOT"/_build/selfhost/generations/*/ 2>/dev/null | head -1 || true)stage2.wasm"
+fi
+if [ ! -f "$COMPILER" ]; then
+  echo "WIT async import gate FAILED: no stage2 compiler (set VIBE_WIT_ASYNC_IMPORT_GATE_COMPILER or run pkf run generation)" >&2
+  exit 1
+fi
+PROG_DIR="$OUT/program"
+rm -rf "$PROG_DIR"
+mkdir -p "$PROG_DIR"
+cp fixtures/wit_future_import/main.vibe fixtures/wit_future_import/prices_bindings.vibe "$PROG_DIR/"
+# The program imports its bindings, so it compiles on the FS lane, which
+# emits the core module; the async-component wrap is applied on the
+# single-file lane only, so the production composer is invoked here directly
+# on that core -- the same `comp_emit_component_wasm_async_hostfuture` the
+# single-file lane calls.
+VIBE_PREOPEN_DIR="$ROOT" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \
+  "$COMPILER" "$PROG_DIR/main.vibe" "$PROG_DIR/core.wasm" run >/dev/null 2>&1 || true
+if [ ! -s "$PROG_DIR/core.wasm" ]; then
+  echo "WIT async import gate FAILED: fixtures/wit_future_import/main.vibe did not compile" >&2
+  cat "$PROG_DIR/core.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+# The core must carry the WIT-addressed metadata imports and no root ones.
+for want in 'wit_future_get$example:prices/api@1.0.0#get-price' 'wit_future_get$example:prices/api@1.0.0#get-tax'; do
+  grep -aFq "$want" "$PROG_DIR/core.wasm" || {
+    echo "WIT async import gate FAILED: the core lacks the metadata import $want" >&2
+    exit 1
+  }
+done
+if grep -aFq 'host_future_get$' "$PROG_DIR/core.wasm"; then
+  echo "WIT async import gate FAILED: a WIT-addressed future was emitted as a root host_future_get import" >&2
+  exit 1
+fi
+cat >"$PROG_DIR/compose_test.vibe" <<'EOF'
+import @vibe/compiler/entry/source_compile/wasi_only {
+  comp_emit_component_wasm_async_hostfuture
+}
+
+test "compose the program core" {
+  let core = Fs::read_bytes("_build/wit_async_import_component_gate/program/core.wasm")
+  Fs::write_bytes("_build/wit_async_import_component_gate/program/main.wasm", comp_emit_component_wasm_async_hostfuture(core, "run"))
+}
+EOF
+bash scripts/vibe_test.sh "$PROG_DIR/compose_test.vibe"
+if ! od -A n -t x1 -N 8 "$PROG_DIR/main.wasm" | tr -d ' \n' | grep -q '^0061736d0d000100$'; then
+  echo "WIT async import gate FAILED: the composer did not produce a component" >&2
+  exit 1
+fi
+wasm-tools validate --features all "$PROG_DIR/main.wasm"
+wasm-tools print "$PROG_DIR/main.wasm" >"$PROG_DIR/main.wat"
+[ "$(grep -Fc '(import "example:prices/api@1.0.0" (instance' "$PROG_DIR/main.wat")" = 1 ] || {
+  echo "WIT async import gate FAILED: the program does not import exactly one example:prices/api@1.0.0 instance" >&2
+  exit 1
+}
+grep -Fq '"get-price" (func' "$PROG_DIR/main.wat"
+grep -Fq '"get-tax" (func' "$PROG_DIR/main.wat"
+if grep -Eq '\(import "(get-price|get-tax)" \(func' "$PROG_DIR/main.wat"; then
+  echo "WIT async import gate FAILED: a WIT-addressed future became a root function import" >&2
+  exit 1
+fi
 echo "WIT async import component gate OK"

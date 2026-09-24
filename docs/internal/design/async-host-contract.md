@@ -210,6 +210,23 @@ override silently contradicting a module that says `raw` is the hazard #2903's
   row, since the anonymous routing is a different path through the wrap even
   though `__aw_settle` is shared.
 
+- **A future addressed by WIT imports from its interface** (#2064). A
+  `host_future_named` argument of the form
+  `<ns>:<pkg>/<iface>@<version>#<func>` (`cc_is_wit_future_address`) is
+  emitted by linked_compile as `vibe.wit_future_get$<address>` instead of
+  `vibe.host_future_get$<name>`, with the same `() -> i64` type and the same
+  wait half. The composer imports every such function from ONE instance of its
+  versioned interface, and each is a `future<s64>`. The addresses come from WIT text:
+  `from_wit_future_imports` (`@vibex/wasm_wit_parser`) derives a binding per
+  `async func() -> s64` and refuses any other function rather than skipping
+  it. `scripts/test_wit_async_import_component_gate.sh` compiles
+  `fixtures/wit_future_import/main.vibe` against those derived bindings and
+  checks for the single `example:prices/api@1.0.0` instance import. Two limits
+  remain. The async-component wrap runs on the single-file lane only, so a
+  program that imports its bindings is composed by the gate calling the
+  composer on the FS lane's core. And no runner yet links an interface
+  instance of `future<s64>`, so the route is validated but not executed.
+
 ### Host streams
 
 - **Getter** (`host_stream_get$<name>`) does **no** eager read and keeps no

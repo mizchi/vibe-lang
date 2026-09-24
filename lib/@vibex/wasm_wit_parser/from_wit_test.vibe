@@ -8,7 +8,7 @@ import ./wit_parser.vibe {
 }
 
 import ./from_wit.vibe {
-  from_wit_func, from_wit_type, from_wit_typedef, from_wit_typedefs
+  from_wit_func, from_wit_future_imports, from_wit_type, from_wit_typedef, from_wit_typedefs
 }
 
 /// The vibe declaration of the one function `sig` declares, or the refusal.
@@ -181,4 +181,35 @@ test "shapes that would collide or change once spelled in vibe are refused" {
 
 test "sibling types without a shared case convert together" {
   inspect(typedefs_of("enum a { ok }\n  enum b { fine }"), content = "export enum A {\n  Ok\n}\n\nexport enum B {\n  Fine\n}")
+}
+
+// #2064: the import half, derived from WIT text. Each admitted function is a
+// binding whose body names its versioned interface address, which
+// linked_compile turns into a `wit_future_get$` metadata import.
+test "an interface's async s64 functions become host-future bindings" {
+  let wit = "package example:prices@1.0.0;\ninterface api {\n  get-price: async func() -> s64;\n  get-tax: async func() -> s64;\n}\n"
+  inspect(from_wit_future_imports(wit), content = "/// `example:prices/api@1.0.0#get-price`, imported as a host future (#2064).\nexport fn get_price() -> Future[Int] {\n  host_future_named(\"example:prices/api@1.0.0#get-price\")\n}\n\n/// `example:prices/api@1.0.0#get-tax`, imported as a host future (#2064).\nexport fn get_tax() -> Future[Int] {\n  host_future_named(\"example:prices/api@1.0.0#get-tax\")\n}")
+}
+
+test "a host-future import vibe cannot bind is refused, not skipped" {
+  let refused = (src: String) -> String {
+    handle {
+      from_wit_future_imports(src)
+    } with { Exception::Throw(msg) => "REFUSED: \{msg}" }
+  }
+  inspect([
+    refused("package example:prices;\ninterface api {\n  get-price: async func() -> s64;\n}\n"),
+    refused("package example:prices@1.0.0;\ninterface api {\n  get-price: func() -> s64;\n}\n"),
+    refused("package example:prices@1.0.0;\ninterface a {\n  get: async func() -> s64;\n}\ninterface b {\n  get: async func() -> s64;\n}\n")
+  ], content = "[REFUSED: wit: `package `example:prices` without a version` has no vibe mapping (the composer imports a versioned interface), REFUSED: wit: `function `get-price` as a host-future import (only `async func() -> s64` is admitted)` has no vibe mapping (in interface `api`), REFUSED: wit: `function `get` declared by two interfaces (both would be the binding `get`)` has no vibe mapping (in interface `b`)]")
+}
+
+// The committed bindings of fixtures/wit_future_import are exactly the
+// derivation from its WIT, so the program there reaches the WIT route through
+// bindings no one wrote by hand.
+test "the committed prices bindings are the derivation from prices.wit" {
+  let derived = from_wit_future_imports(Fs::read_file("fixtures/wit_future_import/prices.wit"))
+  let committed = Fs::read_file("fixtures/wit_future_import/prices_bindings.vibe")
+  let start = String::index_of(committed, "///")
+  inspect(String::substring(committed, start, String::length(committed)) == String::concat(derived, "\n"), content = "true")
 }

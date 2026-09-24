@@ -31,6 +31,7 @@ import ./wit_parser.vibe {
   FKFreestanding,
   FKMethod,
   FKStatic,
+  IIFunction,
   TDAlias,
   TDEnum,
   TDFlags,
@@ -60,7 +61,8 @@ import ./wit_parser.vibe {
   TyU64,
   TyU8,
   WitTypeDef,
-  WitTypeExpr
+  WitTypeExpr,
+  wit_parse
 }
 
 /// The vibe type spelling of a WIT type, or a refusal naming it.
@@ -337,6 +339,79 @@ export fn from_wit_typedefs(defs: Array[WitTypeDef]) -> String with Exception {
       c = c + 1
     }
     Array::push(out, from_wit_typedef(def))
+    i = i + 1
+  }
+  String::join(out, "\n\n")
+}
+
+/// #2064: the vibe bindings for every function a WIT package's interfaces
+/// import as a host future -- the IMPORT half of ADR-0113, derived from the
+/// WIT text rather than written by hand.
+///
+/// Each `f: async func() -> s64` in interface `i` of package `ns:pkg@v`
+/// becomes
+///
+///     export fn f() -> Future[Int] {
+///       host_future_named("ns:pkg/i@v#f")
+///     }
+///
+/// and the address is what linked_compile turns into the
+/// `vibe.wit_future_get$ns:pkg/i@v#f` metadata import, which the composer
+/// imports from that versioned interface. Only that shape is admitted today --
+/// the composer's WIT future is `future<s64>` with no parameters -- so any
+/// other function, an unversioned package, or two interfaces exporting the
+/// same function name is refused, named, rather than skipped: a binding file
+/// that silently lacks a function the interface declares is worse than none.
+export fn from_wit_future_imports(source: String) -> String with Exception {
+  let (pkg, ifaces, _) = wit_parse(source)
+  let (ns, pname, version) = match pkg {
+    Some(p) => p,
+    None => throw(fw_refusal("a WIT file without a `package` line", " (the import address needs the package)"))
+  }
+  let ver = match version {
+    Some(v) => v,
+    None => throw(fw_refusal("package `\{ns}:\{pname}` without a version", " (the composer imports a versioned interface)"))
+  }
+  let out: Array[String] = []
+  let seen: Array[String] = []
+  let mut i = 0
+  while i < Array::length(ifaces) {
+    let (iname, _, items) = Array::get(ifaces, i)
+    let iface_id = "\{ns}:\{pname}/\{iname}@\{ver}"
+    let mut k = 0
+    while k < Array::length(items) {
+      match Array::get(items, k) {
+        IIFunction(fname, kind, is_async, params, result, _) => {
+          let ctx = " (in interface `\{iname}`)"
+          let admitted = match kind {
+            FKFreestanding => is_async && Array::length(params) == 0 && match result {
+              Some(TyS64) => true,
+              _ => false
+            },
+            _ => false
+          }
+          if !admitted {
+            throw(fw_refusal("function `\{fname}` as a host-future import (only `async func() -> s64` is admitted)", ctx))
+          } else {
+            ()
+          }
+          let vname = fw_ident(fw_snake(fname), ctx)
+          let mut j = 0
+          while j < Array::length(seen) {
+            if Array::get(seen, j) == vname {
+              throw(fw_refusal("function `\{fname}` declared by two interfaces (both would be the binding `\{vname}`)", ctx))
+            } else {
+              ()
+            }
+            j = j + 1
+          }
+          Array::push(seen, vname)
+          Array::push(out, "/// `\{iface_id}#\{fname}`, imported as a host future (#2064).\nexport fn \{vname}() -> Future[Int] {\n  host_future_named(\"\{iface_id}#\{fname}\")\n}")
+        },
+        _ => ()
+      }
+      k = k + 1
+    }
     i = i + 1
   }
   String::join(out, "\n\n")
