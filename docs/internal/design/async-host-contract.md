@@ -111,13 +111,17 @@ half of this paragraph can go stale without a gate noticing.
 ### A third dynamic prefix the manifest does not know
 
 `vibe.wit_future_get$<versioned-interface>#<func>` is parsed and routed by the
-composer (`component_codegen.vibe:5616-5689`, `:5783-5793`, `:7065`) but
-`grep -c wit_future` is **0** in `linked_compile.vibe`,
+composer in `component_codegen.vibe` (`comp_is_wit_future_get_import`,
+`comp_wit_future_interface` / `comp_wit_future_func`, `comp_hostfuture_import_label`,
+and the instance-import emission in `comp_emit_component_wasm_async_hostfuture`)
+but `grep -c wit_future` is **0** in `linked_compile.vibe`,
 `core/builtin_registry.vibe` and `checker/builtins_async.vibe`. Nothing
 produces it from source today; it reaches the composer only from the synthetic
-fixture at `component_codegen.vibe:7411-7419`.
+fixture core, `comp_generate_async_wit_future_fixture_core`. (Cited by name:
+this paragraph used to give line numbers, and they had drifted by 15-45 lines
+within a week.)
 
-This matters for sequencing #2064: `check_host_runtime_contract.py:115`
+This matters for sequencing #2064: `check_host_runtime_contract.py`'s `validate_emitter_contract`
 compares the emitter's dynamic prefixes against the manifest's
 `componentAdapterPatterns` by **exact dict equality**, so the first commit that
 makes `linked_compile.vibe` emit `wit_future_get$` turns a green required gate
