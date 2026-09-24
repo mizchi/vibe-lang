@@ -161,19 +161,105 @@ export enum EffectError {
 /// The set-valued parts of the message (`missing { .. }`, `requires { .. }`)
 /// deliberately keep braces: those render a SET difference, not source.
 fn row_as_source(row: String) -> String {
-  let parts = String::split(row, ", ")
+  let parts = row_items_top_level(row)
   let n = Array::length(parts)
   let mut acc = ""
+  let mut k = 0
   let mut i = 0
   while i < n {
-    acc = if i == 0 {
-      Array::get(parts, i)
+    let item = Array::get(parts, i)
+    let shown = if row_item_kind_is_unspellable(item) {
+      k = k + 1
+      String::concat("Exception[", String::concat(unspellable_kind_alias(k), "]"))
     } else {
-      String::concat(acc, String::concat(" + ", Array::get(parts, i)))
+      item
+    }
+    acc = if i == 0 {
+      shown
+    } else {
+      String::concat(acc, String::concat(" + ", shown))
     }
     i = i + 1
   }
   acc
+}
+
+/// A stored row's items, split at the commas that separate items. A kind
+/// such as `(Int, Int) -> Int` holds a comma of its own, inside brackets.
+fn row_items_top_level(row: String) -> Array[String] {
+  let out = array_empty()
+  let n = String::length(row)
+  let mut depth = 0
+  let mut start = 0
+  let mut i = 0
+  while i < n {
+    let c = String::char_code_at(row, i)
+    if c == 40 || c == 91 {
+      depth = depth + 1
+    } else if c == 41 || c == 93 {
+      depth = depth - 1
+    } else if c == 44 && depth == 0 {
+      let item = String::trim(String::substring(row, start, i))
+      if String::length(item) > 0 {
+        Array::push(out, item)
+      } else {
+        ()
+      }
+      start = i + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  let last = String::trim(String::substring(row, start, n))
+  if String::length(last) > 0 {
+    Array::push(out, last)
+  } else {
+    ()
+  }
+  out
+}
+
+/// #3033 follow-up: a row item's type arguments are type NAMES
+/// (`collect_row_item_targs`), so a kind the checker spells from a function
+/// type, `Exception[(Int) -> Int]`, cannot be pasted into a row. A hint names
+/// such a kind through an alias it asks the reader to declare.
+fn row_item_kind_is_unspellable(item: String) -> Bool {
+  String::starts_with(item, "Exception[") && (String::contains(item, "(") || String::contains(item, "->"))
+}
+
+fn unspellable_kind_alias(k: Int) -> String {
+  if k == 1 {
+    "Kind"
+  } else {
+    String::concat("Kind", __to_string(k))
+  }
+}
+
+/// The alias declarations `row_as_source` relies on, in its numbering:
+/// "declare `type Kind = (Int) -> Int`, then " -- or "" when every kind in the
+/// row is already a type name.
+fn row_unspellable_kind_decls(row: String) -> String {
+  let parts = row_items_top_level(row)
+  let decls = array_empty()
+  let mut k = 0
+  let mut i = 0
+  while i < Array::length(parts) {
+    let item = Array::get(parts, i)
+    if row_item_kind_is_unspellable(item) {
+      k = k + 1
+      let inner = String::substring(item, 10, String::length(item) - 1)
+      Array::push(decls, String::concat("`type ", String::concat(unspellable_kind_alias(k), String::concat(" = ", String::concat(inner, "`")))))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if Array::length(decls) == 0 {
+    ""
+  } else {
+    String::concat("a row names an exception kind by a type name, so declare ", String::concat(String::join(decls, " and "), ", then "))
+  }
 }
 
 /// #2964: every missing label is the ERASED exception (`Exception` /
@@ -280,6 +366,14 @@ export fn effect_error_to_string(err: EffectError) -> String {
       } else {
         String::concat("\nhint: add 'with ", String::concat(row_as_source(required), String::concat("' to '", String::concat(fname, "'"))))
       }
+      // A kind the row syntax cannot spell is pasted through an alias, whose
+      // declaration leads the hint.
+      let decls = row_unspellable_kind_decls(required)
+      let hint = if String::length(decls) > 0 && String::starts_with(hint, "\nhint: ") {
+        String::concat("\nhint: ", String::concat(decls, String::substring(hint, 7, String::length(hint))))
+      } else {
+        hint
+      }
       let body = String::concat(head, String::concat(": missing { ", String::concat(missing, String::concat(" }", String::concat(detail, hint)))))
       // #1514: marker LAST so the hint line stays the visible tail; the decoder
       // strips it before the user ever sees the string.
@@ -290,7 +384,7 @@ export fn effect_error_to_string(err: EffectError) -> String {
       }
     },
     EEUndischargedEntryEffect(entry_name, effects, handlers, off) => {
-      let body = String::concat("entry point ", String::concat(entry_display_name(entry_name), String::concat(" cannot discharge { ", String::concat(effects, String::concat(" }: no host provider or runtime handler owns this effect\nhint: wrap the operation in `handle ... with ", String::concat(row_as_source(handlers), " { ... }` before it reaches the entry boundary"))))))
+      let body = String::concat("entry point ", String::concat(entry_display_name(entry_name), String::concat(" cannot discharge { ", String::concat(effects, String::concat(" }: no host provider or runtime handler owns this effect\nhint: ", String::concat(row_unspellable_kind_decls(handlers), String::concat("wrap the operation in `handle ... with ", String::concat(row_as_source(handlers), " { ... }` before it reaches the entry boundary"))))))))
       if off >= 0 {
         String::concat(body, String::concat(" [@off=", String::concat(__to_string(off), "]")))
       } else {
