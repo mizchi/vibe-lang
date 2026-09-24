@@ -1431,7 +1431,11 @@ fn edp_expr_reaches_effect(e: Expr, ename: String, needing: Array[String], pure_
   } else {
     match e {
       ECall(EIdent(nm, _), args, _) => {
-        let callee_ok = nm == "perform" || nm == "resume" || edp_is_pure_builtin_call(nm) || edp_builtin_is_first_order(nm) || (edp_str_array_contains(pure_fns, nm) && !edp_str_array_contains(needing, nm) && !edp_str_array_contains(edp_argcond_binders, nm))
+        // A builtin's spelling reaches the builtin only when no binder in the
+        // program has it: `not: (Bool) -> Bool with Async` captured by the
+        // literal makes `not(true)` perform (Codex on #3059).
+        let unshadowed = !edp_str_array_contains(edp_argcond_binders, nm)
+        let callee_ok = nm == "perform" || nm == "resume" || (unshadowed && (edp_is_pure_builtin_call(nm) || edp_builtin_is_first_order(nm) || (edp_str_array_contains(pure_fns, nm) && !edp_str_array_contains(needing, nm))))
         !callee_ok || edp_exprs_reach_effect(args, ename, needing, pure_fns)
       },
       ECall(_, _, _) => true,
