@@ -2688,6 +2688,30 @@ fn type_expr_reference_names_into(te: TypeExpr, binders: Array[String], out: Arr
   }
 }
 
+/// #3036: every type an implementation names -- its target, the arguments of
+/// an applied trait (`impl Decoder[Err] for Token`) and its bounds
+/// (`impl [T: Builds[Err]] Use for Box[T]`) -- less the implementation's own
+/// formals. The one reader both publication and import use, so a route one
+/// of them reads cannot be missed by the other.
+fn trait_impl_reference_names(name: String, params: Array[String], bounds: Array[(String, Array[String])], target: Type) -> Array[String] {
+  let names: Array[String] = []
+  push_reference_names(target, params, names)
+  match trait_ref_from_key(name) {
+    Some(te) => type_expr_reference_names_into(te, params, names),
+    None => ()
+  }
+  for b in bounds {
+    let (_, refs) = b
+    for r in refs {
+      match trait_ref_from_key(r) {
+        Some(te) => type_expr_reference_names_into(te, params, names),
+        None => ()
+      }
+    }
+  }
+  names
+}
+
 /// #3036: an imported trait brings its dependency's definition and
 /// implementations along, and both name types by their bare spelling. A
 /// method signature's `Err` is resolved in THIS module, so an imported
@@ -2709,19 +2733,11 @@ fn note_trait_identities(dep_env: TypeEnv, mappings: Array[(String, String)], ra
           None => (array_empty(), "", rest)
         },
         EnvTraitImpl(name, target, rest) => match trait_projection_mapping(mappings, trait_ref_name(name)) {
-          Some(_) => {
-            let names: Array[String] = []
-            push_reference_names(target, array_empty(), names)
-            (names, String::concat("(the target of `", String::concat(trait_ref_name(name), String::concat("`'s implementation from '", String::concat(raw_path, "')")))), rest)
-          },
+          Some(_) => (trait_impl_reference_names(name, array_empty(), array_empty(), target), String::concat("(`", String::concat(trait_ref_name(name), String::concat("`'s implementation from '", String::concat(raw_path, "')")))), rest),
           None => (array_empty(), "", rest)
         },
-        EnvTraitImplGen(name, params, _, target, rest) => match trait_projection_mapping(mappings, trait_ref_name(name)) {
-          Some(_) => {
-            let names: Array[String] = []
-            push_reference_names(target, params, names)
-            (names, String::concat("(the target of `", String::concat(trait_ref_name(name), String::concat("`'s implementation from '", String::concat(raw_path, "')")))), rest)
-          },
+        EnvTraitImplGen(name, params, bounds, target, rest) => match trait_projection_mapping(mappings, trait_ref_name(name)) {
+          Some(_) => (trait_impl_reference_names(name, params, bounds, target), String::concat("(`", String::concat(trait_ref_name(name), String::concat("`'s implementation from '", String::concat(raw_path, "')")))), rest),
           None => (array_empty(), "", rest)
         },
         EnvBind(_, _, rest) => (array_empty(), "", rest),
@@ -2813,12 +2829,16 @@ fn bind_type_reference_definitions(value_surface: Array[String], publication_env
         }
         cur = rest
       },
-      EnvTraitImpl(_, target, rest) => {
-        push_reference_names(target, array_empty(), roots)
+      EnvTraitImpl(name, target, rest) => {
+        for n in trait_impl_reference_names(name, array_empty(), array_empty(), target) {
+          push_reference_name(n, array_empty(), roots)
+        }
         cur = rest
       },
-      EnvTraitImplGen(_, params, _, target, rest) => {
-        push_reference_names(target, params, roots)
+      EnvTraitImplGen(name, params, bounds, target, rest) => {
+        for n in trait_impl_reference_names(name, params, bounds, target) {
+          push_reference_name(n, array_empty(), roots)
+        }
         cur = rest
       },
       EnvBind(_, _, rest) => {
