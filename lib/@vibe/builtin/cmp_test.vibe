@@ -1,5 +1,9 @@
 //# Imports
 
+import ./ordering.vibe {
+  Ordering, Ordering::reverse, Ordering::to_int
+}
+
 import ./cmp.vibe {
   int_compare, maximum, maximum_by, maximum_by_key, minimum, minimum_by, minimum_by_key, minmax, minmax_by, minmax_by_key, string_compare
 }
@@ -7,9 +11,9 @@ import ./cmp.vibe {
 //# Misc
 
 test "cmp_int_primitives" {
-  assert(eq(int_compare(1, 2), -1))
-  assert(eq(int_compare(2, 2), 0))
-  assert(eq(int_compare(3, 2), 1))
+  inspect(int_compare(1, 2), "Less")
+  inspect(int_compare(2, 2), "Equal")
+  inspect(int_compare(3, 2), "Greater")
   assert(eq(maximum(3, 9), 9))
   assert(eq(minimum(3, 9), 3))
   let p = minmax(9, 3)
@@ -18,7 +22,7 @@ test "cmp_int_primitives" {
 }
 
 test "cmp_by_comparator" {
-  let by_abs = (a: Int, b: Int) -> Int {
+  let by_abs = (a: Int, b: Int) -> Ordering {
     let abs_a = if a < 0 {
       0 - a
     } else a
@@ -49,25 +53,38 @@ test "cmp_by_key" {
 }
 
 test "cmp_string_compare" {
-  assert(eq(string_compare("a", "b"), -1))
-  assert(eq(string_compare("b", "b"), 0))
-  assert(eq(string_compare("c", "b"), 1))
+  inspect(string_compare("a", "b"), "Less")
+  inspect(string_compare("b", "b"), "Equal")
+  inspect(string_compare("c", "b"), "Greater")
   // length tie-break: a prefix is lexicographically smaller.
-  assert(eq(string_compare("ab", "abc"), -1))
-  assert(eq(string_compare("abc", "ab"), 1))
+  inspect(string_compare("ab", "abc"), "Less")
+  inspect(string_compare("abc", "ab"), "Greater")
 }
 
-/// string_compare now lowers to a single-pass SIMD lex scan returning the
-/// signum of the lexicographic difference (ADR-0054), instead of scanning the
-/// common prefix twice via `a < b` then `a > b`. Exercise the 16-byte SIMD
-/// chunk-skip path (>16 equal leading bytes) end-to-end.
+/// `<` / `>` on strings lower to a single-pass SIMD lex scan (ADR-0054).
+/// Exercise the 16-byte SIMD chunk-skip path (>16 equal leading bytes)
+/// end-to-end through `string_compare`.
 test "cmp_string_compare_simd_chunk" {
   let p20 = "aaaaaaaaaaaaaaaaaaaa"
   // 20 equal leading bytes (> 1 chunk)
-  assert(eq(string_compare(p20 + "X", p20 + "Y"), -1))
-  assert(eq(string_compare(p20 + "Y", p20 + "X"), 1))
-  assert(eq(string_compare(p20 + "Z", p20 + "Z"), 0))
+  inspect(string_compare(p20 + "X", p20 + "Y"), "Less")
+  inspect(string_compare(p20 + "Y", p20 + "X"), "Greater")
+  inspect(string_compare(p20 + "Z", p20 + "Z"), "Equal")
   // equal multi-chunk prefix, one is a prefix of the other.
-  assert(eq(string_compare(p20, p20 + "tail"), -1))
-  assert(eq(string_compare(p20 + "tail", p20), 1))
+  inspect(string_compare(p20, p20 + "tail"), "Less")
+  inspect(string_compare(p20 + "tail", p20), "Greater")
+}
+
+/// #3042: the arithmetic form and the reversal of an `Ordering`.
+test "ordering_to_int_and_reverse" {
+  inspect(Ordering::to_int(int_compare(1, 2)), "-1")
+  inspect(Ordering::to_int(int_compare(2, 2)), "0")
+  inspect(Ordering::to_int(int_compare(3, 2)), "1")
+  inspect(Ordering::reverse(int_compare(1, 2)), "Greater")
+  inspect(Ordering::reverse(int_compare(2, 2)), "Equal")
+  inspect(Ordering::reverse(int_compare(3, 2)), "Less")
+  let descending = (a: Int, b: Int) -> Ordering {
+    Ordering::reverse(int_compare(a, b))
+  }
+  inspect(maximum_by(3, 9, descending), "3")
 }
