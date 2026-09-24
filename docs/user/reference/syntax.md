@@ -352,6 +352,11 @@ suberror AppError {
 }
 ```
 
+A `suberror` is sugar for an enum used as an exception kind (#2983): the
+single-constructor form declares a type and a constructor of the same name,
+the braced form a type with one constructor per member, and the type name is
+the kind (`with Exception[AppError]`).
+
 ### Modules
 
 Source files are modules. Module blocks such as `module Math { ... }` are

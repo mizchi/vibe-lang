@@ -1688,6 +1688,48 @@ spelling at a function body's top level; `let*` is for a nested block (see
 ```vibe
 suberror NotFound(String)
 suberror InvalidInput(Int, String)   // tuple payload only
+
+suberror AppError {
+  Io(String);
+  Parse(Int)
+}
+```
+
+**`suberror` is sugar for an enum that is used as an exception kind** (#2983).
+`suberror NotFound(String)` declares the type `NotFound` with one constructor
+`NotFound(String)`; the braced form declares the type `AppError` with the
+constructors `Io` and `Parse`. The type name is the kind:
+`throw(Io("disk"))` needs `with Exception[AppError]`, and
+`Exception[AppError]::Throw(e)` binds `e : AppError`. An `enum` works the
+same way; `suberror` only says what the type is for.
+
+**Catching a family at once** (measured, `fixtures/exception_family_catch_test.vibe`):
+
+- **Make the family ONE kind.** A braced `suberror` (or an `enum`) with a
+  constructor per member is caught by a single kinded arm, and the `match` on
+  its payload is exhaustive (example below).
+- **An `effectset` of kinds is for ROWS, not handlers.** `effectset IoErrors =
+  { Exception[NotFound], Exception[Denied] }` lets a function declare `with
+  IoErrors`. A handle cannot catch one of those kinds and let the other
+  propagate -- a kinded arm catches everything its body raises, so an arm for
+  `Exception[NotFound]` over a body that can also raise `Denied` is refused --
+  and a handle has only one exception arm. The arm that takes every kind at
+  once is the erased `Exception::Throw(_)`, whose payload is untyped.
+- `Exception[K]` requires `K` to be a TYPE in scope, in a row and in a handler
+  arm alike: an undeclared name and an effectset name are both refused
+  (``unknown type `IoErrors` in an exception kind``; write `with IoErrors` to
+  throw the set's kinds).
+
+<!-- doctest-skip: continues the AppError declaration above (load is not defined here) -->
+```vibe skip
+fn load_or_code(x: Int) -> Int {
+  handle { load(x) } with {
+    Exception[AppError]::Throw(e) => match e {
+      Io(_) => 1,
+      Parse(n) => n + 10
+    }
+  }
+}
 ```
 
 ### User-defined effects (algebraic)
