@@ -1,0 +1,110 @@
+// #1962: once a `handle` names a host operation, a direct call of it in a
+// CALLEE must be intercepted too. The pass rewrites every direct call of the
+// operation into its perform and widens each declared row that names the
+// capability with the effect itself -- but only when every entry is granted
+// the operation, so the entry provider is guaranteed to catch the rest.
+
+import @vibe/compiler/core {
+  Expr, Stmt
+}
+
+import @vibe/parser {
+  lex, parse_program
+}
+
+import ./desugar_trait_dict.vibe {
+  intercept_handled_host_calls_everywhere
+}
+
+fn has_perform(e: Expr, op: String) -> Bool {
+  match e {
+    ECall(EIdent("perform", _), args, _) => match Array::get(args, 0) {
+      ECall(EIdent(n, _), _, _) => n == op,
+      _ => false
+    },
+    ECall(callee, args, _) => {
+      let mut found = has_perform(callee, op)
+      let mut i = 0
+      while i < Array::length(args) {
+        if has_perform(Array::get(args, i), op) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    ELet(_, v, b, _) => has_perform(v, op) || has_perform(b, op),
+    ESeq(a, b) => has_perform(a, op) || has_perform(b, op),
+    EHandle(b, arms) => {
+      let mut found = has_perform(b, op)
+      let mut i = 0
+      while i < Array::length(arms) {
+        if has_perform(Array::get(arms, i).1, op) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+/// `row|rewritten` for the named top-level fn after the pass.
+fn after(source: String, entry: String, name: String, op: String) -> String with Exception {
+  let stmts = parse_program(lex(source))
+  intercept_handled_host_calls_everywhere(stmts, entry)
+  let mut out = "<not found>"
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, n, _, EFn(_, _, _, _, eff, body)) => if n == name {
+        let row = match eff {
+          Some(r) => r,
+          None => ""
+        }
+        out = "\{row}|\{has_perform(body, op)}"
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+let callee_program = "fn inner() -> String with Fs::read_file {\n  Fs::read_file(\"p\")\n}\n\nfn other() -> Int {\n  1\n}\n\ntest \"t\" {\n  let r = handle {\n    inner()\n  } with {\n    Fs::ReadFile(_p) => resume(\"m\")\n  }\n  inspect(r, \"m\")\n}\n"
+
+test "a callee's direct call is rewritten and its row gains the effect" {
+  inspect(after(callee_program, "__no_entry__", "inner", "Fs::ReadFile"), "Fs::read_file, Fs|true")
+}
+
+test "a function that does not name the operation keeps its row" {
+  inspect(after(callee_program, "__no_entry__", "other", "Fs::ReadFile"), "|false")
+}
+
+test "with no handler naming the operation nothing changes" {
+  let src = "fn inner() -> String with Fs::read_file {\n  Fs::read_file(\"p\")\n}\n\ntest \"t\" {\n  inspect(inner(), \"x\")\n}\n"
+  inspect(after(src, "__no_entry__", "inner", "Fs::ReadFile"), "Fs::read_file|false")
+}
+
+test "an entry that is not granted the operation leaves the direct spelling alone" {
+  let src = "fn inner() -> String with Fs::read_file {\n  Fs::read_file(\"p\")\n}\n\nfn main() -> Unit allows Stdout {\n  let r = handle {\n    \"x\"\n  } with {\n    Fs::ReadFile(_p) => resume(\"m\")\n  }\n  println(r)\n}\n"
+  inspect(after(src, "main", "inner", "Fs::ReadFile"), "Fs::read_file|false")
+}
+
+test "a granted main is rewritten, and so is a direct call in a handler arm" {
+  let src = "fn inner() -> String with Fs::read_file {\n  Fs::read_file(\"p\")\n}\n\nfn main() -> Unit allows Stdout + Fs::read_file {\n  let r = handle {\n    inner()\n  } with {\n    Fs::ReadFile(p) => resume(Fs::read_file(p))\n  }\n  println(r)\n}\n"
+  inspect(after(src, "main", "inner", "Fs::ReadFile"), "Fs::read_file, Fs|true")
+  inspect(after(src, "main", "main", "Fs::ReadFile"), "Stdout, Fs::read_file, Fs|true")
+}
+
+test "an exported declaration is an entry outside the provider, so nothing changes" {
+  let src = "export fn inner() -> String with Fs::read_file {\n  Fs::read_file(\"p\")\n}\n\ntest \"t\" {\n  let r = handle {\n    inner()\n  } with {\n    Fs::ReadFile(_p) => resume(\"m\")\n  }\n  inspect(r, \"m\")\n}\n"
+  inspect(after(src, "__no_entry__", "inner", "Fs::ReadFile"), "Fs::read_file|false")
+}

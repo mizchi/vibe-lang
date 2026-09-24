@@ -1,0 +1,36 @@
+// #1962: a handler for a host operation also sees the DIRECT spelling in a
+// function the handled body calls.
+//
+// `desugar_handled_host_calls` used to rewrite a direct `Fs::read_file(p)`
+// into `perform Fs::ReadFile(p)` only when a `handle` naming the operation was
+// LEXICALLY around it. A direct call one function away still reached the
+// host, while a `perform` in that same position was intercepted. Measured on
+// main at 0f0ba36, `read_config()` below answered the file's real contents
+// and the handler never ran.
+//
+// Now every direct call of a handled operation becomes the perform, and the
+// entry's standard provider answers the ones no user handler covers -- so the
+// unhandled call at the end still reads the real file.
+
+fn read_config() -> String with Fs::read_file {
+  Fs::read_file("fixtures/host_callee_interception_test.vibe")
+}
+
+fn first_line_of_config() -> String with Fs::read_file {
+  let text = read_config()
+  let lines = String::split(text, "\n")
+  Array::get(lines, 0)
+}
+
+test "a handler intercepts a direct call two functions away" {
+  let r = handle {
+    first_line_of_config()
+  } with {
+    Fs::ReadFile(_p) => resume("MOCKED\nsecond")
+  }
+  inspect(r, "MOCKED")
+}
+
+test "outside the handler the same call reaches the host" {
+  inspect(first_line_of_config(), "// #1962: a handler for a host operation also sees the DIRECT spelling in a")
+}

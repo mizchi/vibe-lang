@@ -23347,7 +23347,7 @@ fn ehp_effect_decl_indices(stmts: Array[Stmt], effect: String) -> Array[Int] {
   out
 }
 
-/// Does the program perform a host operation anywhere -- i.e. could
+/// Does the program perform, or handle, a host operation anywhere -- i.e. could
 /// `wrap_entry_host_provider` change it? The module-split prelude asks this
 /// before partitioning: the provider needs the WHOLE program's performs (an
 /// entry's partition sees an imported helper only through its interface), so
@@ -23356,7 +23356,199 @@ export fn program_performs_host_operation(stmts: Array[Stmt]) -> Bool {
   let performed: Array[(String, Int)] = []
   let handled: Array[(String, Int)] = []
   ehp_collect_stmts(stmts, performed, handled)
-  Array::length(performed) > 0
+  // A handle naming a host operation counts too: the callee interception
+  // (`intercept_handled_host_calls_everywhere`) rewrites direct calls in
+  // OTHER modules into performs, so it must see the whole program.
+  Array::length(performed) > 0 || Array::length(handled) > 0
+}
+
+//# #1962: a handler for a host operation sees the direct spelling in CALLEES
+//
+// `desugar_handled_host_calls` rewrites a direct `Fs::read_file(p)` into
+// `perform Fs::ReadFile(p)` only where a `handle` naming the operation is
+// LEXICALLY around it. A direct call in a function the handled body merely
+// calls still reached the host, while a `perform` in that same position was
+// intercepted -- the split this issue says must not be retained. Measured on
+// a stage2 from main at 0f0ba36:
+//
+//   fn inner() -> String with Fs::read_file { Fs::read_file("data.txt") }
+//   test { handle { inner() } with { Fs::ReadFile(_p) => resume("MOCKED") } }
+//
+//   actual: REAL   (the file's contents; the handler never ran)
+//
+// That rewrite could not be widened before the entry had a provider: an
+// unhandled host perform threw, so turning every direct call into one would
+// have broken every call site no handler covers. `wrap_entry_host_provider`
+// removed that obstacle, and this pass is the rest of it.
+//
+// WHEN IT FIRES. Only for an operation some `handle` in the program names --
+// a program that never handles a host operation (the compiler's own sources,
+// and most programs) is untouched. And only when EVERY entry in the artifact
+// is granted the operation, so the provider is guaranteed to catch whatever
+// no user handler does; otherwise the direct spelling is left alone rather
+// than turned into a perform nothing may handle.
+//
+// WHAT IT DOES. Every direct call of the operation becomes the perform --
+// handler arm bodies included: an arm runs outside its own handler, so its
+// perform reaches the next one out, which is exactly where the direct call
+// was going. Every top-level function whose declared row names the operation
+// (its capability spelling, its operation spelling) gains the effect itself,
+// so evidence passing threads the handler down to it. The checker already
+// required every function that reaches the call to carry that label, so the
+// widened rows are exactly the call chain.
+//
+// It runs after checking: the rows it widens are the checked rows, and the
+// checker keeps seeing the program as written.
+
+fn ihc_arm_ops_stmts(stmts: Array[Stmt], out: Array[String]) -> Unit {
+  let performed: Array[(String, Int)] = []
+  let handled: Array[(String, Int)] = []
+  ehp_collect_stmts(stmts, performed, handled)
+  let mut i = 0
+  while i < Array::length(handled) {
+    Array::push(out, Array::get(handled, i).0)
+    i = i + 1
+  }
+}
+
+/// Is `op` granted at every entry this artifact has -- `entry_name`'s
+/// function, and every `test` / `bench` block -- and are those ALL of its
+/// entries?
+///
+/// The second half is what makes the rewrite sound. The provider is installed
+/// only around those entries, so a direct call turned into a perform must be
+/// unreachable from anywhere else. With no `entry_name` function
+/// (`__no_entry__`), an exported declaration is an entry the host may call
+/// directly, outside every provider, so the program is left alone. With no
+/// entry at all, it is left alone too.
+fn ihc_granted_everywhere(stmts: Array[Stmt], entry_name: String, op: String) -> Bool {
+  let mut ok = true
+  let mut has_entry_fn = false
+  let mut has_block = false
+  let mut has_export = false
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(exported, _, name, _, value) => {
+        if exported {
+          has_export = true
+        } else {
+          ()
+        }
+        match value {
+          EFn(_, _, _, _, eff, _) => if name == entry_name {
+            has_entry_fn = true
+            let row = match eff {
+              Some(r) => r,
+              None => ""
+            }
+            if !ehp_row_grants(row, op) {
+              ok = false
+            } else {
+              ()
+            }
+          } else {
+            ()
+          },
+          _ => ()
+        }
+      },
+      STest(_, _) => {
+        has_block = true
+        if !ehp_test_grants(op) {
+          ok = false
+        } else {
+          ()
+        }
+      },
+      SBench(_, _) => {
+        has_block = true
+        if !ehp_test_grants(op) {
+          ok = false
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  ok && (has_entry_fn || (has_block && !has_export))
+}
+
+/// `row` with `effect` appended when one of its labels names an operation in
+/// `ops` (either spelling) and the effect itself is absent.
+fn ihc_widen_row(row: String, ops: Array[String]) -> String {
+  let parts = String::split(row, ",")
+  let labels: Array[String] = []
+  let mut i = 0
+  while i < Array::length(parts) {
+    Array::push(labels, String::trim(Array::get(parts, i)))
+    i = i + 1
+  }
+  let mut out = row
+  let mut j = 0
+  while j < Array::length(ops) {
+    let op = Array::get(ops, j)
+    let effect = ehp_effect_of(op)
+    let names_op = str_array_contains(labels, op) || str_array_contains(labels, canonical_builtin_name(op))
+    if names_op && !str_array_contains(labels, effect) {
+      Array::push(labels, effect)
+      out = if String::length(String::trim(out)) == 0 {
+        effect
+      } else {
+        String::concat(out, String::concat(", ", effect))
+      }
+    } else {
+      ()
+    }
+    j = j + 1
+  }
+  out
+}
+
+/// In place, over the whole program. `entry_name` is the artifact's entry
+/// (`__no_entry__` on the unit-test lane, which has only test blocks).
+export fn intercept_handled_host_calls_everywhere(stmts: Array[Stmt], entry_name: String) -> Unit {
+  let named: Array[String] = []
+  ihc_arm_ops_stmts(stmts, named)
+  let ops: Array[String] = []
+  let mut i = 0
+  while i < Array::length(named) {
+    let op = Array::get(named, i)
+    if ihc_granted_everywhere(stmts, entry_name, op) && !str_array_contains(ops, op) {
+      Array::push(ops, op)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if Array::length(ops) == 0 {
+    ()
+  } else {
+    let mut s = 0
+    while s < Array::length(stmts) {
+      let rewritten = match Array::get(stmts, s) {
+        SLet(e, r, n, t, EFn(tps, tbs, params, ret, eff, body)) => {
+          let widened = match eff {
+            Some(row) => Some(ihc_widen_row(row, ops)),
+            None => None
+          }
+          SLet(e, r, n, t, EFn(tps, tbs, params, ret, widened, dhhc_expr(body, ops)))
+        },
+        SLet(e, r, n, t, body) => SLet(e, r, n, t, dhhc_expr(body, ops)),
+        SLetMut(n, t, body) => SLetMut(n, t, dhhc_expr(body, ops)),
+        SLetPat(p, body) => SLetPat(p, dhhc_expr(body, ops)),
+        STest(n, body) => STest(n, dhhc_expr(body, ops)),
+        SBench(n, body) => SBench(n, dhhc_expr(body, ops)),
+        SExample(n, body) => SExample(n, dhhc_expr(body, ops)),
+        SExpr(body) => SExpr(dhhc_expr(body, ops)),
+        other => other
+      }
+      Array::set(stmts, s, rewritten)
+      s = s + 1
+    }
+  }
 }
 
 /// Install the standard host provider around every entry: `entry_name`'s
@@ -23373,6 +23565,9 @@ export fn program_performs_host_operation(stmts: Array[Stmt]) -> Bool {
 /// migration -- measured, the stage1 -> stage2 self-compile then fails. A
 /// handler for an undeclared host effect keeps today's refusal.
 export fn wrap_entry_host_provider(stmts: Array[Stmt], entry_name: String) -> Unit {
+  // The provider is what makes the callee interception sound: every direct
+  // call it turns into a perform is caught here when no user handler is.
+  intercept_handled_host_calls_everywhere(stmts, entry_name)
   let performed: Array[(String, Int)] = []
   let handled: Array[(String, Int)] = []
   ehp_collect_stmts(stmts, performed, handled)
