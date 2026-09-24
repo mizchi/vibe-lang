@@ -1,5 +1,5 @@
 import @vibe/compiler/core {
-  Expr, Pat, Type, TypeEnv, TypeExpr, env_bind, is_exception_throw_handler_name
+  Expr, Pat, Type, TypeEnv, TypeExpr, env_bind, is_exception_operation_name, is_exception_throw_handler_name
 }
 
 import @vibe/compiler/checker/diagnostics {
@@ -467,6 +467,118 @@ export fn arm_tail_all_return(e: Expr) -> Bool {
       }
       all
     },
+    _ => false
+  }
+}
+
+/// #2969: a handler arm for a resumable operation must hand its value back to
+/// the `perform` with `resume(...)`. Returns the first TAIL of `e` that does
+/// not: a bare value, which used to be delivered to the `perform` as an
+/// implicit resume -- a reading nobody could see in the source, and one a
+/// reader from Koka / OCaml 5 takes for an abort. `None` = every tail resumes
+/// or leaves.
+///
+/// Tail position distributes exactly as in check_arm_resume_tail below
+/// (let / seq / assignment continuations, both `if` branches, every `match`
+/// arm). A tail that LEAVES the arm is fine: `return`, `break`, `continue`,
+/// `throw(...)` and `perform` of an exception operation never deliver a value
+/// to this `perform`. A nested `handle` in tail position is its handled
+/// body's value, or -- when the body throws -- its exception arms' value, so
+/// both are walked; its declared-effect arms resume the INNER perform and are
+/// checked on their own when the checker reaches that handle.
+///
+/// `sh` = `resume` is shadowed by a local binder (`let resume = ..`, a match
+/// binder), so a tail `resume(v)` calls that binding rather than the
+/// continuation and counts as a bare value.
+export fn arm_first_bare_tail(e: Expr, sh: Bool) -> Option[Expr] {
+  match e {
+    ECall(callee, args, _) => match callee {
+      EIdent(nm, _) => if nm == "resume" && !sh {
+        None
+      } else if nm == "throw" {
+        None
+      } else if nm == "perform" && Array::length(args) == 1 && performs_exception(Array::get(args, 0)) {
+        None
+      } else {
+        Some(e)
+      },
+      _ => Some(e)
+    },
+    EReturn(_) => None,
+    EBreak(_) => None,
+    EContinue(_) => None,
+    ELet(ln, _, b, _) => arm_first_bare_tail(b, sh || ln == "resume"),
+    ELetMut(ln, _, b, _) => arm_first_bare_tail(b, sh || ln == "resume"),
+    ELetRec(ln, _, b) => arm_first_bare_tail(b, sh || ln == "resume"),
+    ESeq(_, b) => arm_first_bare_tail(b, sh),
+    EAssign(_, _, b) => arm_first_bare_tail(b, sh),
+    EAssignOp(_, _, _, b) => arm_first_bare_tail(b, sh),
+    EIf(_, t, el) => match arm_first_bare_tail(t, sh) {
+      Some(hit) => Some(hit),
+      None => arm_first_bare_tail(el, sh)
+    },
+    EMatch(_, arms) => {
+      let mut hit = None
+      let mut i = 0
+      while i < Array::length(arms) && hit is None {
+        let (mp, ex) = Array::get(arms, i)
+        hit = arm_first_bare_tail(ex, sh || pat_binds_resume(mp))
+        i = i + 1
+      }
+      hit
+    },
+    EHandle(body, harms) => {
+      // A nested suspend arm (one that stores the INNER `resume`) makes its
+      // own value the nested handle's result, and that value is whatever the
+      // arm returns -- not something this walk can follow back to an outer
+      // `resume` (Codex P1 on #3049: `{ let k = resume; 7 }` next to a body
+      // that `return`s resumed the outer perform with 7). Such a handle in
+      // tail position is a bare tail: wrap it in the outer resume(...).
+      let mut hit = if handle_has_suspend_arm(harms) {
+        Some(e)
+      } else {
+        arm_first_bare_tail(body, sh)
+      }
+      let mut i = 0
+      while i < Array::length(harms) && hit is None {
+        let (hp, hb) = Array::get(harms, i)
+        if handler_arm_pat_is_error(hp) {
+          hit = arm_first_bare_tail(hb, sh || pat_binds_resume(hp))
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    _ => Some(e)
+  }
+}
+
+/// Does a `handle`'s arm set contain a declared-effect arm that stores its
+/// `resume` as a value (the suspend form, whose own value is the handle's
+/// result)? A payload binder named `resume` shadows it, as in the checker.
+fn handle_has_suspend_arm(harms: Array[(Pat, Expr)]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(harms) && !found {
+    let (hp, hb) = Array::get(harms, i)
+    if !handler_arm_pat_is_error(hp) && arm_refs_resume_value(hb, pat_binds_resume(hp)) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// `perform <op>(..)`'s operand names an exception operation
+/// (`Exception::Throw`, `Error::Throw`, `Exception[K]::Throw`).
+fn performs_exception(op: Expr) -> Bool {
+  match op {
+    ECall(EIdent(opname, _), _, _) => is_exception_operation_name(opname),
+    EIdent(opname, _) => is_exception_operation_name(opname),
     _ => false
   }
 }

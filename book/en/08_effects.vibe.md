@@ -108,7 +108,11 @@ so `answer_of` returns `42`. Unlike `Exception`, `Ask` **is** resumable:
 on.
 
 Resumption is one-shot and tail-resumptive: a handler arm resumes at most
-once, as its last act.
+once, as its last act. And it has to say so: every way out of the arm ends
+in `resume(v)`, or leaves with `return` or `throw`. An arm that just produces
+a value — `Ask::Value(_q) => 41` — is refused, because nothing in it says
+whether the function should carry on with `41` or stop there. A `Unit`
+operation resumes with `resume(())`.
 
 Reach for your own effect when the caller genuinely has to swap the
 implementation — a clock in tests, a different source for a value. For

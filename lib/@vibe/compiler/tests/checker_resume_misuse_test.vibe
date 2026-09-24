@@ -119,8 +119,14 @@ test "non-tail resume inside a nested handle's arm is rejected too" {
   assert(String::contains(msg, "tail position"))
 }
 
-test "arm without resume stays accepted" {
+test "#2969: an arm whose tail is a bare value is refused and names resume" {
   let src = "effect Ask { Get() -> Int }\nfn main() -> Int { handle { perform Ask::Get() + 100 } with { Ask::Get() => 42 } }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "handler arm `Ask::Get` must pass its value back with resume(...)"))
+}
+
+test "#2969: the same arm ending in resume is accepted" {
+  let src = "effect Ask { Get() -> Int }\nfn main() -> Int { handle { perform Ask::Get() + 100 } with { Ask::Get() => resume(42) } }\n"
   assert(first_check_error(src) == "")
 }
 
@@ -150,7 +156,10 @@ test "local binding named resume stays callable outside handlers" {
 }
 
 test "shadowing binding named resume inside an arm escapes the tail rule" {
-  let src = "effect Ask { Get() -> Int }\nfn main() -> Int { handle { perform Ask::Get() + 100 } with { Ask::Get() => { let resume = (x: Int) -> { x + 5 }\n  let y = resume(3)\n  y } } }\n"
+  // The shadowing sits in an inner block so the arm can still end in a real
+  // resume (#2969 refuses a bare tail, and an arm-level `let resume` would
+  // make the tail resume call the local function).
+  let src = "effect Ask { Get() -> Int }\nfn main() -> Int { handle { perform Ask::Get() + 100 } with { Ask::Get() => { let y = { let resume = (x: Int) -> { x + 5 }\n  let z = resume(3)\n  z + 1 }\n  resume(y) } } }\n"
   assert(first_check_error(src) == "")
 }
 
@@ -188,7 +197,7 @@ test "Exception alias arm also rejects resume" {
 /// tail-position check — env_lookup(env, "resume") in check_resume_values now
 /// sees the same lexical shadow the checker itself uses everywhere else.
 test "local resume binding inside an arm escapes the resume-value check" {
-  let src = "effect Ask { Get() -> String }\nfn go() -> String { handle { perform Ask::Get() } with { Ask::Get() => { let resume = (x: Int) -> Int { x }\n  let n = resume(1)\n  \"ok\" } } }\nfn main() -> Int { String::length(go()) }\n"
+  let src = "effect Ask { Get() -> String }\nfn go() -> String { handle { perform Ask::Get() } with { Ask::Get() => { let s = { let resume = (x: Int) -> Int { x }\n  let n = resume(1)\n  \"ok\" }\n  resume(s) } } }\nfn main() -> Int { String::length(go()) }\n"
   assert(first_check_error(src) == "")
 }
 

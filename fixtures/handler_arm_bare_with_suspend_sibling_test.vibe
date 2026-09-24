@@ -1,10 +1,10 @@
-// #2962 (Codex P0 on #2985): a bare arm next to a sibling that captures
-// `resume` as a value. The capturing sibling sends the whole handle through
-// the suspend driver, where an arm's value used to be the driver's FINAL
-// result -- so `Get() => "abcd"` aborted the handle with the string, and an
-// Int-valued handle answered `296352743426` (the string read as an Int).
-// The checker, and the same arm with no capturing sibling, read a bare
-// tail value as an implicit resume; the driver now does too.
+// #2962 (Codex P0 on #2985): a tail-resuming arm next to a sibling that
+// captures `resume` as a value. The capturing sibling sends the whole handle
+// through the suspend driver, where an arm's value used to be the driver's
+// FINAL result -- so `Get() => "abcd"` aborted the handle with the string,
+// and an Int-valued handle answered `296352743426` (the string read as an
+// Int). Since #2969 such an arm must write `resume(..)` (a bare tail value is
+// refused), and the driver resumes the perform with it.
 
 effect Ask {
   Get() -> String;
@@ -16,28 +16,28 @@ effect Log {
   Tick() -> Int
 }
 
-test "a bare arm resumes when a sibling captures resume (capture unused)" {
+test "a resuming arm resumes when a sibling captures resume (capture unused)" {
   let r = handle {
     String::length(perform Ask::Get()) + 1
-  } with { Ask::Get() => "abcd"; Ask::Other() => {
+  } with { Ask::Get() => resume("abcd"); Ask::Other() => {
     let k = resume
     k(1)
   } }
   assert_eq(r, 5)
 }
 
-test "a bare arm resumes when the capturing sibling is performed too" {
+test "a resuming arm resumes when the capturing sibling is performed too" {
   let r = handle {
     let n = perform Ask::Other()
     String::length(perform Ask::Get()) + n
-  } with { Ask::Get() => "abcd"; Ask::Other() => {
+  } with { Ask::Get() => resume("abcd"); Ask::Other() => {
     let k = resume
     k(10)
   } }
   assert_eq(r, 14)
 }
 
-test "a bare arm's branch tails all resume" {
+test "a resuming arm's branch tails all resume" {
   let seen = [0]
   let r = handle {
     let a = String::length(perform Ask::Get())
@@ -45,9 +45,9 @@ test "a bare arm's branch tails all resume" {
     let b = String::length(perform Ask::Get())
     a * 10 + b
   } with { Ask::Get() => if Array::get(seen, 0) == 1 {
-    "xy"
+    resume("xy")
   } else {
-    "abc"
+    resume("abc")
   }; Ask::Other() => {
     let k = resume
     k(0)
@@ -55,13 +55,16 @@ test "a bare arm's branch tails all resume" {
   assert_eq(r, 32)
 }
 
-test "a bare Unit arm resumes and the body continues" {
+test "a Unit arm resumes and the body continues" {
   let seen = []
   let r = handle {
     perform Log::Note("one")
     perform Log::Note("two")
     Array::length(seen)
-  } with { Log::Note(m) => Array::push(seen, m); Log::Tick() => {
+  } with { Log::Note(m) => {
+    Array::push(seen, m)
+    resume(())
+  }; Log::Tick() => {
     let k = resume
     k(0)
   } }
@@ -77,37 +80,6 @@ test "an explicit tail resume next to a capturing sibling still resumes" {
     k(3)
   } }
   assert_eq(r, 5)
-}
-
-effect Named {
-  Get(resume: String) -> String;
-  Other() -> Int
-}
-
-test "a payload binder named resume still resumes next to a capturing sibling" {
-  // The arm's `resume` is its PAYLOAD; the implicit resume goes through the
-  // driver's own continuation, not through that name (Codex P0 on #2985:
-  // `344`, the string's pointer, was the answer before).
-  let r = handle {
-    String::length(perform Named::Get("abcd")) + 1
-  } with { Named::Get(resume) => resume; Named::Other() => {
-    let k = resume
-    k(1)
-  } }
-  assert_eq(r, 5)
-}
-
-test "a local let named resume still resumes next to a capturing sibling" {
-  let r = handle {
-    String::length(perform Ask::Get()) + 1
-  } with { Ask::Get() => {
-    let resume = (s: String) -> String::concat(s, "!")
-    resume("abcd")
-  }; Ask::Other() => {
-    let k = resume
-    k(1)
-  } }
-  assert_eq(r, 6)
 }
 
 fn leave_early() -> Int {
@@ -127,7 +99,7 @@ test "an arm that only returns leaves the function next to a capturing sibling" 
 }
 
 fn leave_when(flag: Bool) -> Int {
-  // A `return` inside one branch of a bare arm, the other branch resuming
+  // A `return` inside one branch of a resuming arm, the other branch resuming
   // with a value. The arm runs inside the suspend driver's step closure, so
   // the `return` used to hand `99` to the driver as the HANDLE's value
   // (`990` after `r * 10`) instead of leaving the function.
@@ -139,7 +111,7 @@ fn leave_when(flag: Bool) -> Int {
     } else {
       ()
     }
-    "abcd"
+    resume("abcd")
   }; Ask::Other() => {
     let k = resume
     k(1)
@@ -147,7 +119,7 @@ fn leave_when(flag: Bool) -> Int {
   r * 10
 }
 
-test "a return in one branch of a bare arm leaves the function; the other branch resumes" {
+test "a return in one branch of a resuming arm leaves the function; the other branch resumes" {
   assert_eq(leave_when(false), 50)
   assert_eq(leave_when(true), 99)
 }
@@ -158,7 +130,7 @@ fn leave_from_capture(flag: Bool) -> Int {
   let r = handle {
     let n = perform Ask::Other()
     String::length(perform Ask::Get()) + n
-  } with { Ask::Get() => "abcd"; Ask::Other() => {
+  } with { Ask::Get() => resume("abcd"); Ask::Other() => {
     let k = resume
     if flag {
       return 7
