@@ -104,22 +104,22 @@ same: an unannotated `let xs = []` takes its element type from the
 says what it is. A literal does, and so does an array, tuple or struct
 of literals, or an `if` whose branches agree.
 
-Push a **name** or a **call result** instead and the binding gets no
-element type. Comparing two such arrays once both are non-empty **fails
-at run time** rather than answering by address or by length. The
-annotation is the fix, and it is the reason `xs` and `ys` above carry
-one.
+Push a **name** or a **call result** instead and that binding's syntax
+does not say the element type. `vibe run` and `vibe test` still type it,
+and the comparison answers by content when the element is one `==` can
+compare: `Int`, `String`, `Double`, `Bytes`, an array, an option, a
+tuple, or a declared struct. What does not compare is an element with no
+structural comparator, such as a closure field. That comparison is a
+build error that names the edit, not an address comparison and not a
+trap you meet at run time. `vibe check` does not run this pass. The
+annotation on `xs` and `ys` above states the element type in the
+binding itself.
 
-A struct that takes type parameters says what it is only for some type
-arguments. One `Box::equals` is generated for the whole struct, and it
-compares the field that came from `T` without knowing what `T` was — so
-whether that is content equality depends entirely on `T`. It is, for
-`Int`, `Bool`, `Unit` and `String`; it is address equality for `Double`,
-`Bytes`, and for any array or struct. So `Box[Int]::{ value: 1 }`
-resolves and `Box[Double]::{ value: x }` does not. Annotating does not
-help with the second group — that is a known defect being fixed
-separately, and the run-time failure is there to keep you from meeting it
-by accident.
+A generic struct is compared at each concrete instantiation.
+`Box[Double]`, `Box[Bytes]` and `Box[Array[Int]]` compare by content,
+the same as `Box[Int]`. What still fails closed is an instantiation
+whose argument is a type parameter of an enclosing function, and a
+recursion that never closes, such as `Nest[T]` holding `Nest[Array[T]]`.
 
 ## The compile-time edge: a generic `T` with no witness
 
@@ -160,8 +160,8 @@ fn main allows Console {
 no impl `Eq` for `Array[Int]`
 ```
 
-That is the whole of it. Between the two edges you are always told —
-at compile time for the missing witness, and by a trap for the
-unannotated empty array — and neither one silently answers by address.
+That is the whole of it. A missing `Eq` witness is a compile error. A
+comparison the language cannot answer is a build error that names the
+edit. Neither one silently answers by address.
 
 Next: [Concurrency](17_concurrency.vibe.md).

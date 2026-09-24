@@ -16,9 +16,15 @@ compiler answer well when a reader strays from the happy path).
 ```
 eval/book-review/
   README.md        # this file (how to run a round)
+  rubric.md        # five frozen dimensions and the score file schema
+  coverage.md      # which chapters have been read under the rubric
   probes/          # one .vibe file per measured question, self-describing header
   run_probes.sh    # compile/run every probe against the CURRENT stage2
   rounds/          # findings per round: <date>-rN.md
+  scores/          # book-level <date>-rN.json, plus chapters/ and passes/
+  loop.py          # chapter check, status, pass aggregate
+  run_loop.sh      # wrapper
+  run_loop_test.sh # fails if the loop cannot see a broken chapter
 ```
 
 ## Running a round
@@ -53,14 +59,31 @@ eval/book-review/
    - **actionable** — the message names the edit that fixes it
    - **located** — it points at the right file position
    - **honest** — it does not claim something false about the program
-5. **File and fix.** Real findings become GitHub issues (triaged per
-   `docs/issue-triage.md`) or direct doc fixes. A book sentence
-   contradicted by measurement is a bug in the book (its own
-   introduction says so).
-6. **Next round.** Re-read the chapters that changed, re-run the
+5. **Score.** Grade the round on [rubric.md](rubric.md). Write
+   `scores/<date>-rN.json`. Update [coverage.md](coverage.md) for the
+   chapters actually read. A dimension that was not measured is
+   `"score": null`, `"measured": false`. Rounds 1–4 have no scores on
+   this rubric. Do not backfill them.
+6. **File and fix.** Real findings become GitHub issues (triaged per
+   `docs/internal/project/issue-triage.md`) or direct doc fixes. A book
+   sentence contradicted by measurement is a bug in the book (its own
+   introduction says so). Fix both languages in the same change. The
+   score file describes the text the round read. If the round also
+   edits that text, say so, and do not raise the score in that file.
+7. **Next round.** Re-read the chapters that changed, re-run the
    probes, append a new round file. Keep probe filenames stable across
    rounds so outcomes are comparable; add new probes rather than
-   repurposing old ones.
+   repurposing old ones. The suite index is [../README.md](../README.md).
+
+A round may be one chapter or the whole book. The commands and the rule
+that a pass does not average unread chapters are in
+[rubric.md](rubric.md) under "Two loops".
+
+```bash
+bash eval/book-review/run_loop.sh check 08_effects
+bash eval/book-review/run_loop.sh status
+bash eval/book-review/run_loop.sh pass
+```
 
 ## Probe conventions
 

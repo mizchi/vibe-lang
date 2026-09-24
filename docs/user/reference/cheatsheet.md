@@ -508,10 +508,10 @@ ADR-0097's contract does not depend on the spelling or on the route a value
 took. An annotated `Array[T]` parameter, a function's return value, a tuple
 return, an `Option[Array[T]]` payload, a nested array reached through a name
 and `Array[Float]` all get the same structural comparison. An erased type
-variable (`[T: Eq]`) is the one place it does not hold — see "the bound is
-required, and it is not yet enough" below.
+variable (`[T: Eq]`) is answered by the `Eq` witness, not by a second
+erasure — see "the bound is required, and a real `Eq` dispatches" below.
 
-#### The bound is required, and it is not yet enough
+#### The bound is required, and a real `Eq` dispatches
 
 **Required** (#2474). A generic body is lowered once for every
 instantiation, so `==` / `!=` on an operand whose type mentions a type
@@ -537,24 +537,20 @@ fn same_some[T: Eq](x: T, y: T) -> Bool {
 }
 ```
 
-**Not yet enough** (#2523, open P0). The bound above buys a content answer for
-the five scalar types `Eq` is registered for — `Int`, `Double`, `Bool`, `Char`,
-`String` — and nothing else, because `Eq` is a **marker trait**
-(`lib/@vibe/builtin/builtin_traits.vibe` declares a bare `export trait Eq` with
-no methods). There is no dictionary to dispatch through, so a user aggregate
-under `[T: Eq]` is compared by reference identity, bare or as a payload. Both
-routes into it end badly, measured:
+**The builtin `Eq` dispatches** (#2523). `builtin_traits.vibe` still spells
+`export trait Eq` with no methods, but the checker registers that trait as
+method-bearing and the lowering injects `equals(Self, Self) -> Bool` when a
+program carries the bound. `derive (Eq)` registers the impl. `[T: Eq]` at a
+`derive (Eq)` struct compares by content, and so does `Double` — the scalar
+whose erased comparison used to read the box. Pinned by
+`fixtures/eq_bound_derive_test.vibe`, including `Box[Double]` /
+`Box[Array[Int]]` through the bound.
 
-| what you write | what happens |
-|---|---|
-| `struct Pt { v: Int } derive (Eq)`, then `same_some(p1, p2)` | rejected: ``no impl `Eq` for `Pt` `` — `derive (Eq)` does not satisfy the bound |
-| add `impl Eq for Pt`, then `bare[T: Eq](p1, p2)` where the two are equal but distinct | **`false`** — reference identity, no diagnostic |
-| the same, same object | `true` |
-| `p1 == p2` at a concrete site, or `Pt::equals(p1, p2)` | `true` — the comparator exists, it is simply never reached |
-
-So `[T: Eq]` is safe today for scalars. For an aggregate, compare at a concrete
-type or call the derived `T::equals` directly until #2523 gives `Eq` a real
-method.
+A program may still declare its **own** marker `trait Eq` with no methods.
+That bound is refused, and `Ord` is still a marker. Those refusals stay in
+`lib/@vibe/compiler/tests/marker_cmp_bound_test.vibe`. Writing both
+`derive (Eq)` and `impl Eq for T` for the same type is an overlap: the derive
+already supplied the impl.
 
 An unannotated `let xs = []` is structural too **when the pushed value
 describes itself** (#2157, narrowed by #2192). The element type comes from the
@@ -624,13 +620,17 @@ instantiations, and since #2467 a generic enum's. `Map` was the one measured out
 comparator; any head nobody has measured still costs its owner a trap rather
 than the benefit of the doubt.
 
-**What does not resolve fails at run time** once BOTH sides are non-empty —
-it does not fall back to reference equality or to a length-only answer. On the
-`vibe test` / `vibe run` lane that is an element the allow-list rejects (a
-closure field, an opaque nominal field); a lane without the checker's rows
-(the flat single-source lane) fails for the syntactic residual too. Annotate
-those bindings (`let xs: Array[Int] = []`). While either side is still empty the
-lengths decide the answer, annotation or not.
+**What does not resolve is a build error** once BOTH sides are non-empty.
+`vibe build` / `vibe run` / `vibe test` name the edit. They do not fall back
+to reference equality or to a length-only answer, and they do not leave a
+trap for run time. `vibe check` does not run this pass. On the lane those
+three commands use, a pushed name whose element is on the allow-list above
+already answers by content (#2391). The build error is an element the
+allow-list rejects (a closure field, an opaque nominal field). A lane
+without the checker's rows (the flat single-source lane) still fails for
+the syntactic residual. Annotate those bindings
+(`let xs: Array[Int] = []`). While either side is still empty the lengths
+decide the answer, annotation or not.
 
 ## Pipe Operator
 
@@ -2783,66 +2783,22 @@ Pinned by `fixtures/builtin_value_form_test.vibe` (the runtime answers, all
 three lanes) and `lib/@vibe/compiler/tests/builtin_ident_value_test.vibe` (the
 admission rule and every diagnostic quoted above).
 
-### A lambda binder's trait BOUND is not honoured (#2737)
+### A lambda binder's trait bound is its own witness (#2778)
 
-A binder on a lambda works (previous entry). A **bound** on one does not: only a
-top-level `fn` / `let` generic gets a witness dictionary threaded, so
-`[T: Eq]` on a lambda binder declares something nothing implements. Each rung is
-refused against ITS OWN bound — interpolation needs a `Show` that declares
-`to_string`, so an `Eq` bound does not make the interpolation below fail
-(measured: with an `Eq` bound it compiles and prints `284`, the tagged pointer):
+A bound on a nested lambda is honoured. The lambda's bounds are dictionaries
+of its own, laid over the enclosing ones, and a formal this binder rebinds
+hides the outer dictionary. An inner `[U: Eq]` still sees an outer
+`[T: Show]`. An inner `[T: Eq]` uses its own `T`, not the enclosing binder's.
 
-```vibe skip
-trait Eq {
-  equals(Self, Self) -> Bool
-}
+That covers a qualified call (`T::equals`), a UFCS call (`a.equals(b)`),
+taking the method as a value (`let cmp = T::equals`), and a kinded binder
+(`F[_]`). An inner `[T: Show]` that shadows an outer one renders through its
+own witness. Pinned by `fixtures/lambda_bound_nested_witness_test.vibe`.
 
-trait Show {
-  to_string(Self) -> String
-}
-
-fn outer[T: Eq + Show](x: T, y: T) -> Bool {
-  // -- all four rejected: the bound is on a LAMBDA binder
-  let by_name = [T: Eq](a: T, b: T) -> Bool { T::equals(a, b) }
-  let by_ufcs = [T: Eq](a: T, b: T) -> Bool { a.equals(b) }
-  let by_value = [T: Eq](a: T, b: T) -> Bool { let cmp = T::equals; cmp(a, b) }
-  let by_interp = [T: Show](a: T) -> String { "\{a}" }
-  true
-}
-
-// -- accepted: at a TOP-LEVEL binder the bound is threaded
-fn lifted_by_name[T: Eq](a: T, b: T) -> Bool {
-  T::equals(a, b)
-}
-
-fn lifted_by_interp[T: Show](a: T) -> String {
-  "\{a}"
-}
-```
-
-Lifting the lambda to a top-level declaration is the edit the message leads with,
-and it is the whole fix. Note that the binder's spelling is irrelevant — `[U: Eq]`
-is refused exactly like the `[T: Eq]` that shadows the outer one, because the
-condition is which binder declared the bound, not whether a spelling repeats. A
-**kinded** binder is the same: `[F[_]: Mappable[F]]` on a lambda is refused, while
-that bound on a top-level `fn` works and dispatches `F::map` through the witness.
-
-Interpolation is refused on a nested binder too (#2745), including an **unbounded**
-one — `let f = [U](a: U) -> String { "\{a}" }`. A dispatch needs a bound to
-promise the method; interpolation only needs the type to be known, and a nested
-binder's formal is erased, so `"\{a}"` printed the tagged pointer (`272`). At a
-top-level binder it still works: `fn show_any[T](a: T) { "\{a}" }` prints `7` at
-`Int`, and a renderless struct is refused by name (#1445). A nested binder applied
-only at a scalar is refused as well — it rendered correctly by accident of the
-instantiation, and one lowering serves every application.
-
-The refusal lands on `vibe build` / `vibe run` / `vibe test`, not on
-`vibe check`: the pass that knows a dictionary is missing is a normalize pass
-the check lane does not run (same lane as #2475's refusal).
-
-`==` is NOT refused under such a bound — it falls back to reference identity for
-an aggregate, which is #2523's subject. What is refused is the dispatch that
-would otherwise reach codegen as an unresolved name.
+What still has no renderer is an unbounded formal, at either level:
+`let f = [U](a: U) -> String { "\{a}" }`. The checker rejects it. Give the
+formal a method-bearing `Show` bound, or interpolate at a concrete type.
+A renderless struct is still refused by name (#1445).
 
 ### A generic binder may not quantify a slot the lambda CAPTURED
 

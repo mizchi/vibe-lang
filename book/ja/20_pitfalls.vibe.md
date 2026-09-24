@@ -110,12 +110,13 @@ effect は `Exception`。effect の綴りとしての `Error` は deprecated
 ただし **push する値が自分で型を語る場合に限る** — リテラル、リテラルだけ
 からなる配列・tuple・struct、両分岐が一致する `if` がそれにあたる。
 
-名前や呼び出しの結果を push した束縛には要素型が付かず、両側とも非空になった
-状態で比較すると、答えを返さず実行時に失敗する。`let xs: Array[Int] = []` が
-その解決策。型引数を取る struct が「自分で型を語る」と見なされるのは、
-`==` が内容で比較する型引数のときだけ — `Box[Int]` / `Box[Bool]` /
-`Box[Unit]` / `Box[String]` は解決し、`Box[Double]` / `Box[Bytes]` と
-配列や struct の型引数は解決しない。
+名前や呼び出しの結果を push した束縛は、構文だけでは要素型を語らない。
+`vibe run` と `vibe test` は、その要素が `==` で比較できるなら内容で答える。
+`Double` も `Bytes` も配列もそうである。`let xs: Array[Int] = []` は、
+それに頼らない書き方である。generic な struct は具体的な型引数ごとに
+比較されるので、`Box[Double]` も `Box[Array[Int]]` も内容で比較される。
+失敗するのは構造的な比較子を持たない要素で、実行時ではなくビルドエラーに
+なる。`vibe check` はそれを報告しない。
 
 知っておく価値のある境界は `Eq` の witness を持たない generic な `T` で、
 こちらは不意打ちではなくコンパイルエラーになる —
@@ -155,4 +156,4 @@ line 3:5: type mismatch in '-': operands must be Int or Double (the left operand
 `let xs = for x in arr { x * 2 }` は `Array` なら通る。同じ位置に pull
 イテレータを置くと位置付きのエラーになる。`ArrayBuilder` で溜めること。
 
-次: [付録](../en/99_appendix.md)。
+次: [付録](99_appendix.md)。

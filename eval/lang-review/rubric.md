@@ -88,12 +88,17 @@ effect (Fs/Env/...) の transitive 強制、`Error`/`Async` の設計判断の
 > しない。compile+run の方法は eval/lang-review/README.md の検証コマンド。
 
 - **writability** — 担当: syntax_clarity, writability。
-  `eval/lang-review/tasks/*.md` を順に、docs/user/reference/cheatsheet.md (+ docs/user/reference/vibe.md)
-  だけを頼りに解く。golden/ は見ない。タスクごとにコンパイルエラー回数と
+  `eval/lang-review/tasks/*.md` を順に、docs/user/reference/cheatsheet.md
+  （必要なら docs/user/reference/vibe.md）だけを頼りに解く。golden/ は見ない。
+  cheatsheet の「落とし穴」は過去の測定が残っていることがある。fixture と
+  矛盾する文を現行の仕様として使わない。タスクごとにコンパイルエラー回数と
   friction を記録。全タスク終了後にスコア。解答ファイルは残す
   (golden 候補になる)。
 - **semantics** — 担当: semantics_consistency, diagnostics。
-  docs/user/reference/cheatsheet.md・docs/internal/design/decisions.md を読み、意味論のコーナー
+  docs/user/reference/cheatsheet.md と docs/internal/design/adr.md を読む。
+  `docs/internal/design/decisions.md` の「trait は marker-only でメソッドが
+  無い」は現行の `Eq` について偽（#2523 で witness を通る）。現行の記述として
+  使わない。意味論のコーナー
   ケース (評価順序、mut、==、match、文字列、effect resume) を 10 個以上
   プローブし、「予想と違う」「docs と違う」を全部記録。診断の質も
   エラーを意図的に起こして評価。

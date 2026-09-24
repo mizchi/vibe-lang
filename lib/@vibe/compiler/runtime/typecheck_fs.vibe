@@ -2014,7 +2014,7 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
     }
     kii = kii + 1
   }
-  let kind_errors = import_item_kind_errors(kind_items, dep_env, raw_path == "@vibe/builtin")
+  let kind_errors = import_item_kind_errors(kind_items, dep_env, raw_path == "@vibe/builtin", raw_path)
   let mut kei = 0
   while kei < Array::length(kind_errors) {
     Array::push(unresolved, Array::get(kind_errors, kei))
@@ -5143,6 +5143,70 @@ fn location_shape_at(msg: String, start: Int) -> Bool {
   }
 }
 
+/// `import kind mismatch: `Name` from 'path' is ...`. The name is
+/// backticked, so a comment that says the same name before the import
+/// cannot be the anchor: the path is in the message, and the name is
+/// read only after that path's own occurrence.
+fn locate_import_kind_msg(source: String, msg: String) -> String {
+  let marker = "import kind mismatch: `"
+  if String::index_of(msg, marker) < 0 {
+    msg
+  } else {
+    let sym = extract_until_code(msg, marker, 96)
+    let path = extract_quoted_after(msg, " (from '")
+    if sym == "" || path == "" {
+      msg
+    } else {
+      // A comment may quote the package path. Only an `import` / `export`
+      // of that path is the statement the diagnostic is about.
+      let imported = index_of_after(source, String::concat("import ", path), 0)
+      let exported = index_of_after(source, String::concat("export ", path), 0)
+      let p = if imported >= 0 {
+        imported
+      } else {
+        exported
+      }
+      if p < 0 {
+        msg
+      } else {
+        let off = index_word_after(source, sym, p)
+        if off < 0 {
+          msg
+        } else {
+          String::concat(offset_line_col_prefix(source, off), msg)
+        }
+      }
+    }
+  }
+}
+
+fn extract_until_code(msg: String, marker: String, end_code: Int) -> String {
+  let mi = String::index_of(msg, marker)
+  if mi < 0 {
+    ""
+  } else {
+    let start = mi + String::length(marker)
+    let mut i = start
+    let total = String::length(msg)
+    while i < total && String::char_code_at(msg, i) != end_code {
+      i = i + 1
+    }
+    if i <= start || i >= total {
+      ""
+    } else {
+      String::substring(msg, start, i)
+    }
+  }
+}
+
+fn index_word_after(source: String, sym: String, from: Int) -> Int {
+  let mut off = index_of_after(source, sym, from)
+  while off >= 0 && !loc_word_at(source, off, sym) {
+    off = index_of_after(source, sym, off + 1)
+  }
+  off
+}
+
 /// First-occurrence heuristic locator (the original behavior). Kept separate so
 /// the offset-marker path can fall through to it on the marker-stripped message.
 fn locate_type_error_heuristic(source: String, msg: String) -> String {
@@ -5173,21 +5237,26 @@ fn locate_type_error_heuristic(source: String, msg: String) -> String {
             if with_import != msg {
               with_import
             } else {
-              let with_inline_wasm = locate_by_marker(source, msg, "inline wasm (fn ")
-              if with_inline_wasm != msg {
-                // #946(4): inline-wasm codegen errors ("inline wasm (fn
-                // <name>): ...") carry no [@off=] marker (the offset they DO
-                // carry is a WAT-text offset, not a source char offset) --
-                // locate by the enclosing fn's name instead, same
-                // first-occurrence heuristic as the other markers.
-                with_inline_wasm
+              let with_kind = locate_import_kind_msg(source, msg)
+              if with_kind != msg {
+                with_kind
               } else {
-                // #2762: `declare or import <name> in this module, ...`. The
-                // first-occurrence heuristic is EXACT here rather than a
-                // guess: the message is emitted only when nothing in the
-                // module declares or imports the name, so its first
-                // occurrence in the source is its `export { }` entry.
-                locate_by_marker(source, msg, "declare or import ")
+                let with_inline_wasm = locate_by_marker(source, msg, "inline wasm (fn ")
+                if with_inline_wasm != msg {
+                  // #946(4): inline-wasm codegen errors ("inline wasm (fn
+                  // <name>): ...") carry no [@off=] marker (the offset they DO
+                  // carry is a WAT-text offset, not a source char offset) --
+                  // locate by the enclosing fn's name instead, same
+                  // first-occurrence heuristic as the other markers.
+                  with_inline_wasm
+                } else {
+                  // #2762: `declare or import <name> in this module, ...`. The
+                  // first-occurrence heuristic is EXACT here rather than a
+                  // guess: the message is emitted only when nothing in the
+                  // module declares or imports the name, so its first
+                  // occurrence in the source is its `export { }` entry.
+                  locate_by_marker(source, msg, "declare or import ")
+                }
               }
             }
           }

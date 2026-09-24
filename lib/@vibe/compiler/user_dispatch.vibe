@@ -21,6 +21,10 @@ import @vibe/compiler/cache {
   ingestion_fingerprint_telemetry_json, set_ingestion_fingerprint_telemetry_enabled
 }
 
+import @vibe/compiler/contract {
+  extract_require_pins
+}
+
 import @vibe/compiler/entry/compiler/file_compile {
   compile_file_fs_mode,
   compile_file_fs_mode_break,
@@ -2512,7 +2516,14 @@ fn host_granted_from_flags(allows: Array[String], denies: Array[String]) -> Arra
 /// anything already carrying `line ` untouched; it declines to invent a
 /// position for a throw the recovering lexer cannot place.
 fn parse_user_entry_file(src: String) -> Array[Stmt] with Exception + Fs {
-  let source = Fs::read_file(src)
+  let raw = Fs::read_file(src)
+  // A `require ... = #pkg:` line is a header, not a statement. check and
+  // the build lane blank it before parse (#2227). This preflight parsed
+  // the raw bytes, so `vibe run` / `vibe serve` / `vibe build --wit`
+  // answered `unknown # directive: pkg` for a file those two accept.
+  // The blank keeps byte length, so a later diagnostic stays on the same
+  // column.
+  let (_, source) = extract_require_pins(raw)
   // #2948: the located parse, so a PARSE error carries `line L:col C:` too
   // (and never the raw `at #N` token index a tokens-only parse leaves in).
   handle {

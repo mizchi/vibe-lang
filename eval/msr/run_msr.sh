@@ -21,6 +21,18 @@ set -uo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 
+# A survival rate is a number about one compiler. The committed seed, and
+# whatever stage2 happens to be newest on disk, are different compilers.
+# resolve_stage2_strict takes HEAD's generation or an explicit override.
+# An already-set VIBE_TEST_CLI_WASM is the caller's choice (vibe_test.sh
+# reads it). Otherwise name the artifact with VIBE_STAGE2_WASM.
+# shellcheck source=scripts/resolve_stage2.sh
+. "$ROOT_DIR/scripts/resolve_stage2.sh"
+if [ -z "${VIBE_TEST_CLI_WASM:-}" ]; then
+  VIBE_TEST_CLI_WASM="$(resolve_stage2_strict msr "${VIBE_STAGE2_WASM:-}")" || exit 2
+  export VIBE_TEST_CLI_WASM
+fi
+
 judge_one() {
   # judge_one <label> <dir> -> prints PASS/FAIL/MISSING, returns 0 for PASS
   local label="$1" dir="$2"

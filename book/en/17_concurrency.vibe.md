@@ -9,7 +9,9 @@ into it, and join the results — and the group does not outlive the call
 that opened it. Everything is scoped, which is what makes the rest
 checkable.
 
-The package is `@vibe/concurrent`.
+The package is `@vibe/concurrent`. Importing it is refused unless the
+build is run with `VIBE_UNSTABLE=1`. The message names that flag. The
+examples below were run with it set.
 
 **This chapter is the one unstable surface in the book.** Everything here is
 ADR-0068, which is still `proposed`: `Nursery`, `Task`, `Sender`/`Receiver`,
@@ -55,9 +57,10 @@ have to remember to clean up.
 The `+ Exception` on `main` is not decoration: a spawned task can fail,
 and `join` rethrows that failure as a `TaskError`, so `join`'s own row
 carries `Exception[TaskError]`. Leave it off `main` and the compiler
-tells you the exact edit — `` hint: add 'with Console +
+tells you the exact edit — `` hint: add 'allows Console +
 Exception[TaskError]' to 'main' `` (the plain `Exception` written above
-covers it).
+covers it). That hint is the one you get after `VIBE_UNSTABLE=1`.
+Without the flag you never reach it.
 
 ## What may cross a spawn
 

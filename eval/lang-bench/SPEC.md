@@ -2,7 +2,7 @@
 
 Language-agnostic spec for a toy version-control CLI, modeled on almide's
 "minigit" benchmark (`docs/BENCHMARKS.md` upstream, 233 LOC winning
-implementation — see `docs/pl-survey-2026-07.md`). The **same prompt below**
+implementation — see `docs/internal/reports/pl-survey-2026-07.md`). The **same prompt below**
 is given to the same model in each target language; implementations are
 compared on pass rate, LOC, and (where applicable) binary size / build
 time — see `README.md`.
