@@ -135,7 +135,7 @@ import ./builtins.vibe {
 }
 
 import @vibe/core {
-  array_empty, struct MutMap
+  array_empty, str_lt, struct MutMap
 }
 
 import ./checker_exhaustive.vibe {
@@ -160,7 +160,7 @@ import ./checker_spawnable.vibe {
 }
 
 import ./checker_effects.vibe {
-  throw_payload_site_key
+  row_items_top_level, throw_payload_site_key
 }
 
 import ./checker_escape.vibe {
@@ -592,15 +592,18 @@ export fn throw_kind_of_type(t: Type) -> String {
         let head = String::concat("(", String::concat(String::join(parts, ", "), String::concat(") -> ", rk)))
         // The checker's own provenance labels (`#param[0]`, `#capture[..]`)
         // are not part of the type a row names.
+        // A row is a SET: `with Fs + Env` and `with Env + Fs` name one type,
+        // so the labels are sorted. They are joined the way a row is WRITTEN,
+        // so the kind stays the spelling of a type a reader could declare.
         let labels = array_empty()
         match row {
           Some(r) => {
-            let parts = String::split(r, ",")
+            let parts = row_items_top_level(r)
             let mut li = 0
             while li < Array::length(parts) {
-              let l = String::trim(Array::get(parts, li))
-              if String::length(l) > 0 && !String::starts_with(l, "#") {
-                Array::push(labels, l)
+              let l = Array::get(parts, li)
+              if !String::starts_with(l, "#") {
+                insert_sorted_label(labels, l)
               } else {
                 ()
               }
@@ -610,7 +613,7 @@ export fn throw_kind_of_type(t: Type) -> String {
           None => ()
         }
         if Array::length(labels) > 0 {
-          String::concat(head, String::concat(" with ", String::join(labels, ", ")))
+          String::concat(head, String::concat(" with ", String::join(labels, " + ")))
         } else {
           head
         }
@@ -627,8 +630,39 @@ export fn throw_kind_of_type(t: Type) -> String {
 fn throw_kind_of_fn_slot(t: Type) -> String {
   match t {
     CtUnit => "Unit",
+    // A tuple is no kind on its own (a row cannot spell one), but it is a
+    // parameter or result a function-type kind has to spell, or two aliases
+    // of `((Int, Int)) -> Int` never meet.
+    CtTuple(elems) => {
+      let parts = array_empty()
+      let mut ok = Array::length(elems) > 0
+      let mut i = 0
+      while i < Array::length(elems) {
+        let k = throw_kind_of_fn_slot(Array::get(elems, i))
+        if String::length(k) == 0 {
+          ok = false
+        }
+        Array::push(parts, k)
+        i = i + 1
+      }
+      if ok {
+        String::concat("(", String::concat(String::join(parts, ", "), ")"))
+      } else {
+        ""
+      }
+    },
     _ => throw_kind_of_type(t)
   }
+}
+
+fn insert_sorted_label(labels: Array[String], l: String) -> Unit {
+  Array::push(labels, l)
+  let mut i = Array::length(labels) - 1
+  while i > 0 && str_lt(l, Array::get(labels, i - 1)) {
+    Array::set(labels, i, Array::get(labels, i - 1))
+    i = i - 1
+  }
+  Array::set(labels, i, l)
 }
 
 /// The KIND of an exception label names a type, so it gets the unknown-name
