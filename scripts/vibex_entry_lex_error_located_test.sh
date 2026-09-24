@@ -34,6 +34,9 @@
 #               also holds for `run` (the preflight parse) and `serve`, and a
 #               message built with an internal token index (`at #N`) must not
 #               reach the reader on either lane.
+#   6c. RED     a misplaced `#zero_alloc` throws from the directive loop of
+#               the located parse, not from a statement; it is located at
+#               its `#` on build, run, serve and the .vibe lane alike.
 #   7. RED      the other two verbs that read a user-named entry and lex it --
 #               `serve` and `build --wit` -- answer the same way. `run` does
 #               not reach `validate_vibex_entry_source` at all: it lexes the
@@ -81,6 +84,11 @@ printf '#cfg(nope_not_enabled)\nfn dead() -> Int {\n  let y = (\n}\n\nfn main al
 # locator runs (Codex on #3047); it is located at its own `#`.
 printf 'fn helper() -> Int {\n  1\n}\n\n#cfg(\nfn main allows Console {\n  println("hi")\n}\n' > "$WORK/cfgbad.vibex"
 cp "$WORK/cfgbad.vibex" "$WORK/cfgbad.vibe"
+# A `#zero_alloc` that precedes no fn: the directive's own check throws in the
+# statement loop of the located parse, outside every per-statement locator
+# (Codex on #3047). Located at its `#`, line 5:1.
+printf 'fn helper() -> Int {\n  1\n}\n\n#zero_alloc\nlet x = 1\n\nfn main allows Console {\n  println("hi")\n}\n' > "$WORK/zabad.vibex"
+cp "$WORK/zabad.vibex" "$WORK/zabad.vibe"
 printf 'fn main allows Console {\n  println("ok-42")\n}\n'                 > "$WORK/good.vibex"
 printf 'export fn helper() -> Int {\n  let x = 1 \\ 2\n  x\n}\n'             > "$WORK/lexlib.vibe"
 printf 'export fn helper(x: Int) -> Int {\n  x + 1\n}\n'                   > "$WORK/goodlib.vibe"
@@ -198,6 +206,25 @@ for verb in build run; do
     printf '%s\n' "$OUT" | head -2 | sed 's/^/        /'; fail=1
   else
     note "  ok   vibe $verb cfgparse.vibex: $(locpart "$OUT" | cut -d: -f1-2)"
+  fi
+done
+
+note "=== 6c. RED: a misplaced #zero_alloc is located on every lane ==="
+for probe in "build zabad.vibex" "run zabad.vibex" "serve zabad.vibex" "build zabad.vibe"; do
+  verb="${probe%% *}"; f="${probe#* }"
+  case "$verb" in
+    build) ask build "$f" -o "$WORK/$f.wasm" ;;
+    run)   ask run "$f" ;;
+    serve) ask serve "$f" -o "$WORK/$f.component.wasm" ;;
+  esac
+  if ! printf '%s' "$OUT" | grep -qF "$f: line 5:1: #zero_alloc must immediately precede"; then
+    note "  FAIL $verb $f: want '$f: line 5:1: #zero_alloc must immediately precede ...'"
+    printf '%s\n' "$OUT" | head -2 | sed 's/^/        /'; fail=1
+  elif [ "$(positions "$OUT")" != 1 ]; then
+    note "  FAIL $verb $f: the position is doubled"
+    printf '%s\n' "$OUT" | head -2 | sed 's/^/        /'; fail=1
+  else
+    note "  ok   vibe $verb $f: line 5:1"
   fi
 done
 

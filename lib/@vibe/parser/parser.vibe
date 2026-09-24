@@ -1326,35 +1326,44 @@ fn parse_program_located_with_context_impl(tokens: Array[Token], starts: Array[I
         pos = pos + 1
       },
       THash => {
-        let (dname, flag, dnext) = parse_cfg_directive(tokens, pos + 1)
-        if dname == "zero_alloc" {
-          require_zero_alloc_target(tokens, dnext)
-          let marker_offset = if pos < Array::length(starts) {
-            Array::get(starts, pos)
-          } else {
-            0
-          }
-          ArrayBuilder::push(b, SExpr(EIdent(zero_alloc_marker_ident(flag), marker_offset)))
-          pos = dnext
-        } else if dname == "deprecated" || dname == "cfg_enable" || cfg_flag_active(cfg_active, flag) {
-          pos = dnext
-        } else {
-          let capture_mark = binder_capture_mark(context)
-          let eligibility_mark = binder_capture_eligibility_mark(context)
-          match peek(tokens, dnext) {
-            TImpl => {
-              let (simpl_d, hp_d) = parse_impl_stmt_dispatch_with_binder_context(tokens, dnext + 1, context)
-              let (_dropped, dn) = parse_impl_methods(tokens, hp_d, simpl_d, context)
-              pos = dn
-            },
-            _ => {
-              let (_dropped, dn) = parse_stmt_with_binder_context(tokens, starts, dnext, context)
-              pos = dn
+        // A directive runs inside the same locator as a statement: a
+        // misplaced `#zero_alloc` (before a `let`, or at EOF) threw a bare
+        // message from here with no line:col (Codex on #3047).
+        let hash_pos = pos
+        pos = handle {
+          let (dname, flag, dnext) = parse_cfg_directive(tokens, pos + 1)
+          if dname == "zero_alloc" {
+            require_zero_alloc_target(tokens, dnext)
+            let marker_offset = if hash_pos < Array::length(starts) {
+              Array::get(starts, hash_pos)
+            } else {
+              0
             }
+            ArrayBuilder::push(b, SExpr(EIdent(zero_alloc_marker_ident(flag), marker_offset)))
+            dnext
+          } else if dname == "deprecated" || dname == "cfg_enable" || cfg_flag_active(cfg_active, flag) {
+            dnext
+          } else {
+            let capture_mark = binder_capture_mark(context)
+            let eligibility_mark = binder_capture_eligibility_mark(context)
+            let dn = match peek(tokens, dnext) {
+              TImpl => {
+                let (simpl_d, hp_d) = parse_impl_stmt_dispatch_with_binder_context(tokens, dnext + 1, context)
+                let (_dropped, dn_impl) = parse_impl_methods(tokens, hp_d, simpl_d, context)
+                dn_impl
+              },
+              _ => {
+                let (_dropped, dn_stmt) = parse_stmt_with_binder_context(tokens, starts, dnext, context)
+                dn_stmt
+              }
+            }
+            binder_capture_discard_from(context, capture_mark)
+            binder_capture_restore_eligibility(context, eligibility_mark)
+            dn
           }
-          binder_capture_discard_from(context, capture_mark)
-          binder_capture_restore_eligibility(context, eligibility_mark)
-        }
+        } with { Exception::Throw(msg) => {
+          throw(locate_parse_error(msg, hash_pos, starts, source))
+        } }
       },
       _ => {
         let start_pos = pos
