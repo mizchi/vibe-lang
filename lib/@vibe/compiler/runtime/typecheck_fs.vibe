@@ -2128,14 +2128,38 @@ fn identity_formals(params: Array[String]) -> Array[Type] {
   let out: Array[Type] = []
   let mut i = 0
   while i < Array::length(params) {
-    Array::push(out, identity_formal(i))
+    // A constructor binder (`F[_]`) keeps its arity: `Box[F[_]]` and
+    // `Box[T]` are different declarations even with one formal each.
+    let arity = type_param_arity(Array::get(params, i))
+    let name = if arity > 0 {
+      String::concat(identity_formal_name(i), String::concat("/", Int::to_string(arity)))
+    } else {
+      identity_formal_name(i)
+    }
+    Array::push(out, CtNamed(name, array_empty()))
     i = i + 1
   }
   out
 }
 
-fn identity_formal(i: Int) -> Type {
-  CtNamed(String::concat("#formal.", Int::to_string(i)), array_empty())
+fn identity_formal_name(i: Int) -> String {
+  String::concat("#formal.", Int::to_string(i))
+}
+
+/// The position of the formal that `n` spells, or -1. A formal is stored as
+/// its `type_param_key` (a constructor binder's arity is encoded in it), and
+/// an occurrence spells the bare name or its constructor tag (`#ctor.F`).
+fn identity_formal_index(params: Array[String], n: String) -> Int {
+  let mut hit = 0 - 1
+  let mut i = 0
+  while i < Array::length(params) {
+    let pn = type_param_name(Array::get(params, i))
+    if hit < 0 && (n == pn || n == String::concat("#ctor.", pn)) {
+      hit = i
+    }
+    i = i + 1
+  }
+  hit
 }
 
 /// `ty` with every occurrence of a formal in `params` replaced by its
@@ -2149,16 +2173,11 @@ fn identity_rename_formals(ty: Type, params: Array[String]) -> Type {
         let renamed = for a in args {
           identity_rename_formals(a, params)
         }
-        let mut hit = 0 - 1
-        let mut i = 0
-        while i < Array::length(params) {
-          if hit < 0 && Array::get(params, i) == n {
-            hit = i
-          }
-          i = i + 1
-        }
-        if hit >= 0 && Array::length(args) == 0 {
-          identity_formal(hit)
+        let hit = identity_formal_index(params, n)
+        if hit >= 0 {
+          // Applied or not (`F[Int]` keeps its arguments), only the head is
+          // the binder.
+          CtNamed(identity_formal_name(hit), renamed)
         } else {
           CtNamed(n, renamed)
         }
@@ -2253,7 +2272,7 @@ fn push_reference_names(ty: Type, binders: Array[String], out: Array[String]) ->
   let mut j = 0
   while j < Array::length(named) {
     let n = Array::get(named, j)
-    if !contains_str(binders, n) && !contains_str(out, n) {
+    if identity_formal_index(binders, n) < 0 && !contains_str(out, n) {
       Array::push(out, n)
     } else {
       ()
@@ -2302,17 +2321,43 @@ fn typedef_reference_names(def: TypeDef) -> Array[String] {
       }
     },
     TDEffectSet(_, members) => {
+      // A member is a row entry's spelling (`Exception[Err]`, `Log`): every
+      // name in it may be a declaration, the kind argument included.
       let mut mi = 0
       while mi < Array::length(members) {
-        let m = Array::get(members, mi)
-        if !contains_str(out, m) {
-          Array::push(out, m)
-        } else {
-          ()
+        for n in row_member_names(Array::get(members, mi)) {
+          if !contains_str(out, n) {
+            Array::push(out, n)
+          }
         }
         mi = mi + 1
       }
     }
+  }
+  out
+}
+
+/// The identifiers in an effect-set member's spelling: `Exception[Err]` gives
+/// `Exception` and `Err`, `Pkg::Err` stays one name.
+fn row_member_names(member: String) -> Array[String] {
+  let out: Array[String] = []
+  let len = String::length(member)
+  let mut start = 0 - 1
+  let mut i = 0
+  while i <= len {
+    let c = if i < len {
+      String::char_code_at(member, i)
+    } else {
+      32
+    }
+    let ident = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 95 || c == 58
+    if ident && start < 0 {
+      start = i
+    } else if !ident && start >= 0 {
+      Array::push(out, String::substring(member, start, i))
+      start = 0 - 1
+    }
+    i = i + 1
   }
   out
 }
@@ -2347,10 +2392,10 @@ fn identity_reference_names(identity: Type) -> Array[String] {
       let mut mi = 0
       while mi < Array::length(members) {
         match Array::get(members, mi) {
-          CtNamed(m, _) => if !contains_str(out, m) {
-            Array::push(out, m)
-          } else {
-            ()
+          CtNamed(m, _) => for n in row_member_names(m) {
+            if !contains_str(out, n) {
+              Array::push(out, n)
+            }
           },
           _ => ()
         }
