@@ -1,0 +1,73 @@
+// #3043: `for x in xs { body }` is an expression that collects the body's
+// results into an Array -- and a `for` whose value is DISCARDED allocates no
+// result array. The collecting rule stays (ADR-0115); the no-allocation
+// promise is what makes a statement-position loop cost what a `while` costs.
+//
+// Discard positions exercised here, each once per iteration of the outer
+// `while`:
+//   - a block statement followed by more statements (sequence head),
+//   - both branches of an `if` in statement position,
+//   - both arms of a `match` in statement position,
+//   - a statement in a called function's body,
+//   - the last statement of a `while` body.
+//
+// The gate (tests/gates/mid/run.sh, step 40e3) compiles this on the bump lane
+// (VIBE_RC=0), where nothing is ever reclaimed, so every byte a loop allocates
+// stays in `heap_used`. Only `xs` itself is allocated: 252 B measured. If any
+// of these loops materialised its result array, the 2000 iterations would add
+// hundreds of KB (the same loop written `let ys = for x in xs { x }` measured
+// 504,252 B).
+let xs: Array[Int] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+
+fn step(t: Int) -> Int {
+  let mut total = t
+  for x in xs {
+    total = total + x
+  }
+  total
+}
+
+let main = () -> Int {
+  let mut total = 0
+  let mut k = 0
+  while k < 2000 {
+    k = k + 1
+    for x in xs {
+      total = total + x
+    }
+    if k % 2 == 0 {
+      for x in xs {
+        total = total + x
+      }
+    } else {
+      for x in xs {
+        total = total + 2 * x
+      }
+    }
+    match k % 2 {
+      0 => for x in xs {
+        total = total + x
+      },
+      _ => for x in xs {
+        total = total + 2 * x
+      }
+    }
+    total = step(total)
+    for x in xs {
+      total = total + x
+    }
+  }
+  total
+}
+
+test "every discarded for-in still runs its body" {
+  inspect(main(), content = "1632000")
+}
+
+test "a for-in whose value is used still collects" {
+  let ys = for x in xs {
+    x * 2
+  }
+  inspect(Array::length(ys), content = "16")
+  inspect(Array::get(ys, 15), content = "32")
+}

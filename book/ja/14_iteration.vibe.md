@@ -39,6 +39,8 @@ doubled[3] = 8
 `for x in xs { body }` は**集める**。`xs` が `Array`（または他の組み込み
 コレクション）なら、このループは式で、その値は `Array[T]` になる。だから
 `doubled` は添字で引ける。`for i, x in xs` と書けば添字も束縛される。
+値が捨てられる `for` は配列をまったく作らないので、副作用のために回す
+ループのコストは `while` と変わらない。
 
 `Iterator::map` / `Iterator::filter` / `Iterator::fold` は import した
 trait が提供する eager operation。`Array` は `Iterator` を実装しており、
