@@ -13,7 +13,7 @@ import @vibe/ast {
 }
 
 import ./module_graph_path.vibe {
-  dir_of_path, is_contract_ext, resolve_import_path_candidates
+  dir_of_path, is_contract_ext, resolve_import_path_candidates_with_roots
 }
 
 import ./inline_wasm_marker.vibe {
@@ -3080,8 +3080,47 @@ fn plan_rename_key(path: String, name: String) -> String {
 /// Resolve a raw import path against the set of files in this merge; a
 /// directory import (`import ./codegen/wasi { .. }`) has two candidates and we
 /// pick the one that is actually part of the program.
-fn resolve_known_import_path(known_paths: Array[String], base_dir: String, raw_path: String, self_path: String) -> String with Env {
-  let candidates = resolve_import_path_candidates(base_dir, raw_path)
+/// The external roots under which `known_paths` already hold the package
+/// `raw_path` names: `<root>/<raw_path>/index.vpkg` (or `.vibei`) gives
+/// `<root>`. Empty for a non-package import.
+fn known_package_roots(known_paths: Array[String], raw_path: String) -> Array[String] {
+  let roots: Array[String] = []
+  if String::starts_with(raw_path, "@") {
+    let suffixes = [
+      String::concat("/", String::concat(raw_path, "/index.vpkg")),
+      String::concat("/", String::concat(raw_path, "/index.vibei"))
+    ]
+    let mut i = 0
+    while i < Array::length(known_paths) {
+      let p = Array::get(known_paths, i)
+      let mut k = 0
+      while k < Array::length(suffixes) {
+        let suffix = Array::get(suffixes, k)
+        if String::ends_with(p, suffix) {
+          let root = String::substring(p, 0, String::length(p) - String::length(suffix))
+          if String::length(root) > 0 && !string_array_contains(roots, root) {
+            Array::push(roots, root)
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+        k = k + 1
+      }
+      i = i + 1
+    }
+  } else {
+    ()
+  }
+  roots
+}
+
+fn resolve_known_import_path(known_paths: Array[String], base_dir: String, raw_path: String, self_path: String) -> String {
+  // The external library roots are not read here: a package that resolved
+  // through one is already in `known_paths` under its root, so its own path
+  // is the root. That keeps this resolver pure (#1962).
+  let candidates = resolve_import_path_candidates_with_roots(base_dir, raw_path, known_package_roots(known_paths, raw_path))
   let mut chosen = ""
   let mut i = 0
   let mut found = false
@@ -3116,7 +3155,7 @@ fn resolve_known_import_path(known_paths: Array[String], base_dir: String, raw_p
 /// `import { x } ... export { x }` facade idiom (an `export {}` item with no
 /// local declaration but a matching import). Pushed as parallel arrays
 /// (from-path, public-name, target-path, target-name).
-fn collect_reexport_edges_into(path: String, stmts: Array[Stmt], known_paths: Array[String], edge_from: Array[String], edge_pub: Array[String], edge_tpath: Array[String], edge_tname: Array[String], builtin_iterator_paths: Array[String]) -> Unit with Env {
+fn collect_reexport_edges_into(path: String, stmts: Array[Stmt], known_paths: Array[String], edge_from: Array[String], edge_pub: Array[String], edge_tpath: Array[String], edge_tname: Array[String], builtin_iterator_paths: Array[String]) -> Unit {
   let base_dir = dir_of_path(path)
   let local_names = empty_strings()
   let mut i = 0
@@ -3219,7 +3258,7 @@ fn collect_reexport_edges_into(path: String, stmts: Array[Stmt], known_paths: Ar
   }
 }
 
-export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array[Stmt]], entry_path: String) -> ExportRenamePlan with Env {
+export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array[Stmt]], entry_path: String) -> ExportRenamePlan {
   let file_count = Array::length(paths)
   let def_names_list = array_empty()
   let mut fi = 0
@@ -3651,7 +3690,7 @@ fn append_import_value_renames(plan: ExportRenamePlan, target: String, items: Ar
 /// (local -> mangled) reference renames for one importing file, derived from
 /// ordinary imports and locally visible plain re-exports. Aliased re-exports
 /// remain publication-only and deliberately contribute no local rewrite.
-export fn collect_import_value_renames(plan: ExportRenamePlan, path: String, stmts: Array[Stmt]) -> Array[(String, String)] with Env {
+export fn collect_import_value_renames(plan: ExportRenamePlan, path: String, stmts: Array[Stmt]) -> Array[(String, String)] {
   let out = empty_aliases()
   let locals_seen = empty_strings()
   let rename_paths = plan.rename_paths
