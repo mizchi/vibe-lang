@@ -2464,29 +2464,61 @@ fn seed_prelude_ordering(stmts: Array[Stmt], env: TypeEnv, defs: Array[TypeDef],
     (env, local_defs_start, c)
   } else if !module_uses_prelude_ordering(stmts) {
     (env, local_defs_start, c)
-  } else match env_lookup(env, "Less") {
-    // An import bound the constructors. Only the prelude-shaped enum may
-    // stand in for the prelude: an unrelated imported enum with a `Less`
-    // would otherwise be what a derived `compare` builds.
-    Some(_) => {
-      if !env_binds_prelude_ordering_ctors(env) {
-        report_ordering_conflict_with(stmts, errors, "but this module imports a `Less` / `Equal` / `Greater` constructor of another enum; import that enum qualified or rename its constructors")
-      }
+  } else if env_binds_any_prelude_ordering_ctor(env) {
+    // An import bound at least one of the constructor names. Only the
+    // prelude-shaped enum may stand in for the prelude: an unrelated imported
+    // enum with a `Less`, an `Equal` or a `Greater` would otherwise be what a
+    // derived `compare` builds, or be overwritten by the prelude's binding.
+    if !(env_binds_prelude_ordering_ctors(env) && defs_ordering_is_prelude_shaped(defs)) {
+      report_ordering_conflict_with(stmts, errors, "but this module imports a `Less` / `Equal` / `Greater` constructor or an `Ordering` of another type; import that type qualified or rename it")
+    }
+    (env, local_defs_start, c)
+  } else match find_typedef(defs, "Ordering") {
+    // An import carried the declaration in only to make a signature
+    // intelligible (`import @vibe/builtin { int_compare }`): the type is
+    // known, its constructors and derived operations are not bound yet. That
+    // holds only for the prelude-shaped enum; any other imported `Ordering`
+    // has no `Less` / `Equal` / `Greater` to bind.
+    Some(_) => if defs_ordering_is_prelude_shaped(defs) {
+      (bind_prelude_ordering_values(env), local_defs_start, c)
+    } else {
+      report_ordering_conflict_with(stmts, errors, "but this module imports a `Less` / `Equal` / `Greater` constructor or an `Ordering` of another type; import that type qualified or rename it")
       (env, local_defs_start, c)
     },
-    None => match find_typedef(defs, "Ordering") {
-      // An import carried the declaration in only to make a signature
-      // intelligible (`import @vibe/builtin { int_compare }`): the type is
-      // known, its constructors and derived operations are not bound yet.
-      Some(_) => (bind_prelude_ordering_values(env), local_defs_start, c),
-      None => {
-        let prelude = array_empty()
-        Array::push(prelude, prelude_ordering_stmt())
-        let (seeded, _, next_c) = check_stmts_with_binders(prelude, 0, env, defs, type_def_binders, local_defs_start, SubstEmpty, c, errors, tytab, None, None, None, false, false)
-        (seeded, Array::length(defs), next_c)
-      }
+    None => {
+      let prelude = array_empty()
+      Array::push(prelude, prelude_ordering_stmt())
+      let (seeded, _, next_c) = check_stmts_with_binders(prelude, 0, env, defs, type_def_binders, local_defs_start, SubstEmpty, c, errors, tytab, None, None, None, false, false)
+      (seeded, Array::length(defs), next_c)
     }
   }
+}
+
+/// #3042: is any of `Less` / `Equal` / `Greater` already bound in `env`?
+fn env_binds_any_prelude_ordering_ctor(env: TypeEnv) -> Bool {
+  let mut any = false
+  for name in ["Less", "Equal", "Greater"] {
+    match env_lookup(env, name) {
+      Some(_) => any = true,
+      None => ()
+    }
+  }
+  any
+}
+
+/// #3042: is the `Ordering` in `defs` exactly the prelude's
+/// `enum Ordering { Less; Equal; Greater }` -- no parameters, three payloadless
+/// variants in that order?
+fn defs_ordering_is_prelude_shaped(defs: Array[TypeDef]) -> Bool {
+  match find_typedef(defs, "Ordering") {
+    Some(TDEnum(_, params, variants)) => Array::length(params) == 0 && Array::length(variants) == 3 && typedef_variant_is(variants, 0, "Less") && typedef_variant_is(variants, 1, "Equal") && typedef_variant_is(variants, 2, "Greater"),
+    _ => false
+  }
+}
+
+fn typedef_variant_is(variants: Array[(String, Array[Type])], i: Int, expected: String) -> Bool {
+  let (name, fields) = Array::get(variants, i)
+  name == expected && Array::length(fields) == 0
 }
 
 /// Does this module mention the prelude `Ordering` at all -- by syntax
@@ -2542,9 +2574,8 @@ fn report_prelude_ordering_conflict(stmts: Array[Stmt], errors: Array[String]) -
 /// #3042: do `Less` / `Equal` / `Greater` all name the prelude-shaped
 /// `Ordering` in `env`? False when any of them resolves to another type.
 fn env_binds_prelude_ordering_ctors(env: TypeEnv) -> Bool {
-  let names = ["Less", "Equal", "Greater"]
   let mut ok = true
-  for name in names {
+  for name in ["Less", "Equal", "Greater"] {
     match env_lookup(env, name) {
       Some(CtEnum(owner)) => if owner != "Ordering" {
         ok = false
