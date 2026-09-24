@@ -14,6 +14,7 @@ import ./checker_effects.vibe {
   check_perform_effects_stmts_env,
   check_stdin_provider_direct_calls_stmts,
   effect_error_to_string,
+  effect_shadow_key,
   env_row_labels,
   row_text_labels,
   set_shadowed_builtin_type_names,
@@ -6427,36 +6428,47 @@ fn fek_formal_kind_in_row(row: String, formals: Array[String]) -> (String, Strin
   (kind_out, formal_out)
 }
 
-/// #3053 (Codex on #3054): the builtin type names some binder here reuses as
-/// a type parameter. `tps_scan_stmts` already walks every binder's formals
-/// for #2141; asked about the builtin names instead of the declared ones, its
-/// reports name exactly the shadowed spellings.
-fn builtin_named_type_params(stmts: Array[Stmt]) -> Array[String] {
-  let hits = array_empty()
-  tps_scan_stmts(stmts, [
-    "Int",
-    "String",
-    "Bool",
-    "Double",
-    "Char",
-    "Bytes",
-    "Unit",
-    "Array",
-    "Option"
-  ], hits)
+/// #3053 (Codex on #3054): per top-level declaration, the builtin type names
+/// a binder inside it reuses as a type parameter. `tps_scan_stmts` already
+/// walks every binder's formals for #2141; asked about the builtin names
+/// instead of the declared ones, its reports name exactly the shadowed
+/// spellings. Keyed by `effect_shadow_key`, so the effects pass applies each
+/// declaration's set to that declaration alone.
+fn builtin_named_type_params(stmts: Array[Stmt]) -> Array[(String, Array[String])] {
   let out = array_empty()
-  let mut i = 0
-  while i < Array::length(hits) {
-    let msg = Array::get(hits, i)
-    let a = String::index_of(msg, "`")
-    if a >= 0 {
-      let rest = String::substring(msg, a + 1, String::length(msg))
-      let b = String::index_of(rest, "`")
-      if b > 0 {
-        Array::push(out, String::substring(rest, 0, b))
+  let mut si = 0
+  while si < Array::length(stmts) {
+    let stmt = Array::get(stmts, si)
+    let hits = array_empty()
+    tps_scan_stmts([stmt], [
+      "Int",
+      "String",
+      "Bool",
+      "Double",
+      "Char",
+      "Bytes",
+      "Unit",
+      "Array",
+      "Option"
+    ], hits)
+    if Array::length(hits) > 0 {
+      let names = array_empty()
+      let mut i = 0
+      while i < Array::length(hits) {
+        let msg = Array::get(hits, i)
+        let a = String::index_of(msg, "`")
+        if a >= 0 {
+          let rest = String::substring(msg, a + 1, String::length(msg))
+          let b = String::index_of(rest, "`")
+          if b > 0 {
+            Array::push(names, String::substring(rest, 0, b))
+          }
+        }
+        i = i + 1
       }
+      Array::push(out, (effect_shadow_key(stmt), names))
     }
-    i = i + 1
+    si = si + 1
   }
   out
 }

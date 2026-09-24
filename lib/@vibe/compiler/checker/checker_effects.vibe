@@ -2438,14 +2438,64 @@ fn row_label_args(label: String) -> String {
   }
 }
 
-/// Builtin type names some binder in the module being checked reuses as a
-/// type parameter (`fn f[Int](..)`, Codex on #3054). Such a spelling may name
-/// a formal, so `builtin_closed_type_text` does not judge it. Set once per
-/// check, before the effects walk.
-let shadowed_builtin_type_names_cell: Array[Array[String]] = [[]]
+/// Builtin type names a binder reuses as a type parameter (`fn f[Int](..)`,
+/// Codex on #3054). Such a spelling may name a formal, so
+/// `builtin_closed_type_text` does not judge it. The set is LEXICAL: it is
+/// recorded per top-level declaration (`effect_shadow_key`), and the effects
+/// walk selects the declaration's own set before walking it, so a shadowing
+/// formal in one declaration does not switch the check off in another (Codex
+/// on #3054). Slot 0 is the set in force; slot 1 is the module-wide union,
+/// used for a statement no key names -- the lenient answer, never a refusal.
+let shadowed_builtin_type_names_cell: Array[Array[String]] = [[], []]
+let shadowed_builtin_type_names_by_decl: Array[MutMap[String, Array[String]]] = [
+  MutMap::new_string()
+]
 
-export fn set_shadowed_builtin_type_names(names: Array[String]) -> Unit {
-  Array::set(shadowed_builtin_type_names_cell, 0, names)
+export fn set_shadowed_builtin_type_names(by_decl: Array[(String, Array[String])]) -> Unit {
+  let m = MutMap::new_string()
+  let all = array_empty()
+  let mut i = 0
+  while i < Array::length(by_decl) {
+    let (k, names) = Array::get(by_decl, i)
+    MutMap::set(m, k, names)
+    let mut j = 0
+    while j < Array::length(names) {
+      if !str_labels_contain(all, Array::get(names, j)) {
+        Array::push(all, Array::get(names, j))
+      }
+      j = j + 1
+    }
+    i = i + 1
+  }
+  Array::set(shadowed_builtin_type_names_by_decl, 0, m)
+  Array::set(shadowed_builtin_type_names_cell, 1, all)
+  Array::set(shadowed_builtin_type_names_cell, 0, all)
+}
+
+/// The key a top-level statement's shadow set is recorded and selected under;
+/// "" for a statement that names nothing (it takes the module-wide set).
+export fn effect_shadow_key(stmt: Stmt) -> String {
+  match stmt {
+    SLet(_, _, name, _, _) => String::concat("let:", name),
+    SLetMut(name, _, _) => String::concat("let:", name),
+    STest(name, _) => String::concat("test:", name),
+    SBench(name, _) => String::concat("bench:", name),
+    _ => ""
+  }
+}
+
+fn select_shadowed_builtin_type_names(stmt: Stmt) -> Unit {
+  let k = effect_shadow_key(stmt)
+  let chosen = if String::length(k) == 0 {
+    Array::get(shadowed_builtin_type_names_cell, 1)
+  } else {
+    // A declaration with no entry shadows nothing.
+    match MutMap::get(Array::get(shadowed_builtin_type_names_by_decl, 0), k) {
+      Some(names) => names,
+      None => []
+    }
+  }
+  Array::set(shadowed_builtin_type_names_cell, 0, chosen)
 }
 
 fn str_labels_contain(xs: Array[String], x: String) -> Bool {
@@ -6298,9 +6348,11 @@ export fn check_perform_effects_stmts_env(stmts: Array[Stmt], env: TypeEnv) -> A
         }
       }
     }
+    select_shadowed_builtin_type_names(stmt)
     append_eff_errs(errors, check_perform_effects_stmt_tx(stmt, fn_names, fn_effs, fn_index, fn_param_effs))
     i = i + 1
   }
+  Array::set(shadowed_builtin_type_names_cell, 0, Array::get(shadowed_builtin_type_names_cell, 1))
   // #1347: only once the rows themselves check out — on a program with real
   // row errors every reachability answer is suspect, and a second diagnostic
   // per handle would bury the first.
