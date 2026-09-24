@@ -121,29 +121,38 @@ effect は `Exception`。effect の綴りとしての `Error` は deprecated
 こちらは不意打ちではなくコンパイルエラーになる —
 `no impl `Eq` for `Array[Int]`。[等価性](16_equality.vibe.md) を参照。
 
-## 演算子で始まる行は前の行の続き
+## 行頭の `-` は被演算子に接しているときだけ前置
 
-次の行が演算子で始まるとき、改行は式を終わらせない。ブロックの最終値の
-つもりで書いた負のリテラルが、上の行に貼り付く:
+次の行が演算子で始まるとき、改行は式を終わらせない。ただし例外が一つある:
+行頭の `-` / `!` / `~` は、被演算子との間に空白が無ければ**前置**演算子に
+なる (#3041)。だから単独の行の `-1` は新しい式を始め、`- 1` (`-` の後に
+空白) は上の行の続きとして引き算になる:
 
-```vibe skip
-// skip: 出る診断を見せるための例 — `-1` は `println(...) - 1` とパースされる
+```vibe run
 fn main allows Console {
-  let v = {
-    println("failing")
+  let a = 10
+  let fresh = {
+    println("computing")
     -1
   }
-  println("\{v}")
+  let continued = a
+    - 1
+  let trailing = a -
+    1
+  println("\{fresh} \{continued} \{trailing}")
 }
 ```
 
-```
-line 3:5: type mismatch in '-': operands must be Int or Double (the left operand is Unit -- a `-` at the start of a line continues the previous line's expression instead of starting a new one; parenthesize the negated value, e.g. `(-1)` or `(-x)`, or bind it with `let` if you meant a negative value)
+```output
+computing
+-1 9 9
 ```
 
-`(-1)` と書くか、先に束縛する。match 腕の直接の本体としての負リテラル
-(`None => -1`) は問題ない。#2206 以降、診断は上に引用したとおり行継続と
-修正方法を名指しする。位置は引き続き結合された式の先頭を指す。
+決め手は `-` の後の空白なので、折り返す引き算は 1 行で `a - 1` と書くか、
+次の行頭に `- 1` と書くか、`-` を前の行の末尾に置く。それ以外の行頭の演算子
+(`+`, `*`, `|>`, `&&` など) は常に前の行の続きになる。`Unit` を返す文の後に
+空白付きの `- 1` を書くと型エラーになり、メッセージは二つの直し方 —
+空白を消す、または `(-1)` と書く — を名指しする。
 
 ## `fn` はキーワード
 

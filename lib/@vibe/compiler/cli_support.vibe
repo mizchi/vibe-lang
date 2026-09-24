@@ -25,7 +25,7 @@ import @vibe/parser {
 }
 
 import @vibe/compiler/checker {
-  collect_builtin_shadowing_names, detect_redundant_namespace_imports
+  collect_builtin_shadowing_names, detect_redundant_namespace_imports, detect_top_level_let_star
 }
 
 import @vibe/compiler/contract {
@@ -909,6 +909,30 @@ export fn check_redundant_import_warnings_from_source_groups(input_path: String,
   match checked_warning_stmts(input_path, source) {
     Some(stmts) => {
       let rows = detect_redundant_namespace_imports(stmts)
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(rows) {
+        let (_, _, msg) = Array::get(rows, i)
+        Array::push(out, locate_type_error(source, String::concat("warning: ", msg)))
+        i = i + 1
+      }
+      out
+    },
+    None => array_empty()
+  }
+}
+
+/// #3044: a `let*` in a function body's top-level block, where `?` is the
+/// one spelling. Same snapshot discipline as the redundant-import warnings:
+/// entry file only, fail-closed when the checked snapshot cannot be located.
+export fn check_let_star_warnings_from_source_groups(input_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Array[String] with Env + Exception + Fs {
+  let source = match checked_entry_source(input_path, source_groups) {
+    Some(snapshot) => snapshot,
+    None => return array_empty()
+  }
+  match checked_warning_stmts(input_path, source) {
+    Some(stmts) => {
+      let rows = detect_top_level_let_star(stmts)
       let out = array_empty()
       let mut i = 0
       while i < Array::length(rows) {

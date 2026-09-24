@@ -100,6 +100,7 @@ import @vibe/compiler/core {
   resolve_builtin,
   resolve_type_alias_params,
   resolve_type_constructor_args,
+  strip_published_formal_suffixes,
   subst_add_bound,
   subst_apply,
   subst_apply_except,
@@ -2020,6 +2021,14 @@ fn railway_not_option_msg(kind: Int, got: String, off: Int) -> String {
   String::concat(head, String::concat(mid, tail))
 }
 
+/// #3044: `let*` leaves its enclosing BLOCK, so in a function that does not
+/// return an Option the edit depends on where the block sits, which this
+/// check cannot see: a nested block wraps its own result, the function body
+/// needs the function to return an Option (Codex on #3061).
+fn railway_let_star_block_msg(off: Int) -> String {
+  String::concat("`let*` leaves its enclosing block with None, so that block must produce an Option — wrap the block's result in Some(...); if the block is the function body, make the function return Option[...] and write `let x = e?` instead", off_marker(off))
+}
+
 fn railway_wrap_some_msg(off: Int) -> String {
   String::concat("`let*` short-circuits with None, so the rest of the block must also produce an Option — wrap the result in Some(...)", off_marker(off))
 }
@@ -2036,19 +2045,24 @@ fn report_railway_after_arms(kind: Int, env: TypeEnv, s: Subst, result_ty: Type,
       None => ()
     }
   } else if kind == 2 {
-    match env_lookup(env, "__return__") {
-      Some(rt) => if type_is_concrete_non_option(subst_apply(s, rt)) {
-        Array::push(errors, railway_wrong_context_msg(2, off))
-      } else if type_is_concrete_non_option(subst_apply(s, result_ty)) {
-        Array::push(errors, railway_wrap_some_msg(off))
-      } else {
-        ()
-      },
-      None => if type_is_concrete_non_option(subst_apply(s, result_ty)) {
-        Array::push(errors, railway_wrap_some_msg(off))
-      } else {
-        ()
+    // #3044: `let*` leaves its enclosing BLOCK, not the function, so an
+    // Option-valued block inside a function returning `Int` is legal -- the
+    // reason `let*` exists next to `?`. Only a block whose own value is not an
+    // Option is a railway error here; which message fits depends on whether
+    // the function could return the `None` either. A top-level block that is
+    // an Option in a non-Option function is the ordinary return mismatch.
+    if type_is_concrete_non_option(subst_apply(s, result_ty)) {
+      let fn_not_option = match env_lookup(env, "__return__") {
+        Some(rt) => type_is_concrete_non_option(subst_apply(s, rt)),
+        None => false
       }
+      if fn_not_option {
+        Array::push(errors, railway_let_star_block_msg(off))
+      } else {
+        Array::push(errors, railway_wrap_some_msg(off))
+      }
+    } else {
+      ()
     }
   } else {
     ()
@@ -4711,23 +4725,19 @@ fn resolve_callee_formal_args(wants: Array[String], env_scheme: Option[Type], co
 /// reader keeps it open rather than judging it.
 fn callee_formal_texts(decl: Option[(Array[String], Array[(String, Option[TypeExpr])], Option[TypeExpr])], scheme: Type, inst: Type, defs: Array[TypeDef], s: Subst) -> Array[(String, String)] {
   let out: Array[(String, String)] = []
-  match (decl, scheme, inst) {
-    (Some((tps, dparams, dret)), CtForAll(_, _, CtFn(sparams, sret, _)), CtFn(iparams, iret, _)) => {
-      // formal name -> scheme variable id, from the declaration.
+  match (scheme, inst) {
+    (CtForAll(vars, _, CtFn(sparams, sret, srow)), CtFn(iparams, iret, _)) => {
+      // formal name -> scheme variable id, from the declaration when this
+      // module has one ...
       let name_ids: Array[(String, Int)] = []
-      let mut pi = 0
-      while pi < Array::length(dparams) && pi < Array::length(sparams) {
-        let (_, pann) = Array::get(dparams, pi)
-        match pann {
-          Some(te) => formal_ids_from(resolve_type_expr_shadowed(te, defs, tps), Array::get(sparams, pi), tps, name_ids),
-          None => ()
-        }
-        pi = pi + 1
-      }
-      match dret {
-        Some(te) => formal_ids_from(resolve_type_expr_shadowed(te, defs, tps), sret, tps, name_ids),
+      match decl {
+        Some((tps, dparams, dret)) => decl_formal_ids(tps, dparams, dret, sparams, sret, defs, name_ids),
         None => ()
       }
+      // ... and from the scheme's own row, where a published binding spells
+      // each formal by its quantifier index (#3051, `publish_row_formals`), so
+      // an IMPORTED callee needs no declaration.
+      published_row_formal_ids(srow, vars, name_ids)
       // scheme variable id -> the type this call gives it.
       let id_tys: Array[(Int, Type)] = []
       let mut qi = 0
@@ -4760,6 +4770,247 @@ fn callee_formal_texts(decl: Option[(Array[String], Array[(String, Option[TypeEx
     _ => ()
   }
   out
+}
+
+/// Pair each formal the declaration annotates with the scheme variable at the
+/// same position.
+fn decl_formal_ids(tps: Array[String], dparams: Array[(String, Option[TypeExpr])], dret: Option[TypeExpr], sparams: Array[Type], sret: Type, defs: Array[TypeDef], out: Array[(String, Int)]) -> Unit {
+  let mut pi = 0
+  while pi < Array::length(dparams) && pi < Array::length(sparams) {
+    let (_, pann) = Array::get(dparams, pi)
+    match pann {
+      Some(te) => formal_ids_from(resolve_type_expr_shadowed(te, defs, tps), Array::get(sparams, pi), tps, out),
+      None => ()
+    }
+    pi = pi + 1
+  }
+  match dret {
+    Some(te) => formal_ids_from(resolve_type_expr_shadowed(te, defs, tps), sret, tps, out),
+    None => ()
+  }
+}
+
+/// #3051: an exported generic binding is published with each formal its row
+/// names spelled `NAME$K`, K being the formal's index in the scheme's
+/// quantifier list. The row is the one part of a published type that names a
+/// formal by spelling rather than by variable, and it reaches the importer
+/// verbatim, so this is the whole transport: no interface field, no codec
+/// change. `type_to_string` renders the spelling back as `NAME`.
+export fn publish_row_formals(t: Type, val: Expr, env: TypeEnv, defs: Array[TypeDef]) -> Type {
+  // The declaration whose formals the row names: the value itself, or -- for
+  // `export let get = get0` -- the aliased binding's, whose formals sit at the
+  // same positions (Codex on #3056).
+  let decl = match val {
+    EFn(tps, _, params, ret, _, _) => if Array::length(tps) == 0 {
+      None
+    } else {
+      Some((tps, params, ret))
+    },
+    EIdent(src, _) => match env_lookup(env, src) {
+      Some(src_scheme) => generic_decl_of_scheme(src_scheme),
+      None => None
+    },
+    _ => None
+  }
+  match (t, decl) {
+    (CtForAll(vars, bounds, CtFn(sparams, sret, Some(row0))), Some((tps, params, ret))) => {
+      // An aliased row may already carry markers indexed against its source's
+      // quantifier list; they are respelled against this scheme's.
+      let row = strip_published_formal_suffixes(row0)
+      let name_ids: Array[(String, Int)] = []
+      decl_formal_ids(tps, params, ret, sparams, sret, defs, name_ids)
+      let renames: Array[(String, String)] = []
+      let mut ni = 0
+      while ni < Array::length(name_ids) {
+        let (n, id) = Array::get(name_ids, ni)
+        let mut vi = 0
+        while vi < Array::length(vars) {
+          if Array::get(vars, vi) == id {
+            Array::push(renames, (n, String::concat(n, String::concat("$", __to_string(vi)))))
+          }
+          vi = vi + 1
+        }
+        ni = ni + 1
+      }
+      if Array::length(renames) == 0 {
+        t
+      } else {
+        CtForAll(vars, bounds, CtFn(sparams, sret, Some(rename_row_bracket_words(row, renames))))
+      }
+    },
+    // An alias of an IMPORTED generic has no declaration here, only the
+    // source's published scheme, whose markers index the SOURCE's quantifier
+    // list. `let_generalize` quantifies the alias afresh, possibly in another
+    // order (`f[A, B](b: B, a: A)` aliased generalizes as `B, A`), so each
+    // marker is respelled against the variable it now stands for, found by
+    // position in the two signatures (Codex on #3056).
+    (CtForAll(vars, bounds, CtFn(sparams, sret, Some(row0))), None) => match val {
+      EIdent(src, _) => match env_lookup(env, src) {
+        Some(CtForAll(src_vars, _, src_body)) => CtForAll(vars, bounds, CtFn(sparams, sret, Some(respell_imported_markers(row0, src_vars, src_body, vars, CtFn(sparams, sret, None))))),
+        _ => t
+      },
+      _ => t
+    },
+    _ => t
+  }
+}
+
+/// `row` with each published marker `NAME$K`, K indexing `src_vars`, respelled
+/// `NAME$K2`, K2 indexing `vars` at the variable found in the same position of
+/// `body` as the source variable's in `src_body`. A marker with no such
+/// variable keeps its base name only.
+fn respell_imported_markers(row: String, src_vars: Array[Int], src_body: Type, vars: Array[Int], body: Type) -> String {
+  let marked: Array[(String, Int)] = []
+  published_row_formal_ids(Some(row), src_vars, marked)
+  if Array::length(marked) == 0 {
+    row
+  } else {
+    let pairs: Array[(Int, Type)] = []
+    scheme_var_types_from(src_body, body, pairs)
+    let renames: Array[(String, String)] = []
+    let mut mi = 0
+    while mi < Array::length(marked) {
+      let (w, src_id) = Array::get(marked, mi)
+      let base = String::substring(w, 0, String::last_index_of(w, "$"))
+      let mut pi = 0
+      while pi < Array::length(pairs) {
+        match Array::get(pairs, pi) {
+          (sid, CtVar(aid)) => if sid == src_id {
+            let mut vi = 0
+            while vi < Array::length(vars) {
+              if Array::get(vars, vi) == aid {
+                Array::push(renames, (base, String::concat(base, String::concat("$", __to_string(vi)))))
+              }
+              vi = vi + 1
+            }
+          },
+          _ => ()
+        }
+        pi = pi + 1
+      }
+      mi = mi + 1
+    }
+    rename_row_bracket_words(strip_published_formal_suffixes(row), renames)
+  }
+}
+
+/// `row` with every whole word inside a label's brackets renamed per
+/// `renames`; the effect names outside brackets are left alone.
+fn rename_row_bracket_words(row: String, renames: Array[(String, String)]) -> String {
+  let n = String::length(row)
+  let sb = StringBuilder::new()
+  let mut depth = 0
+  let mut start = 0 - 1
+  let mut i = 0
+  while i <= n {
+    let c = if i < n {
+      String::char_code_at(row, i)
+    } else {
+      0
+    }
+    let word_char = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 95
+    if word_char {
+      if start < 0 {
+        start = i
+      }
+    } else {
+      if start >= 0 {
+        let w = String::substring(row, start, i)
+        let mut rep = w
+        if depth > 0 {
+          let mut k = 0
+          while k < Array::length(renames) {
+            let (from, to) = Array::get(renames, k)
+            if from == w {
+              rep = to
+            }
+            k = k + 1
+          }
+        }
+        StringBuilder::push(sb, rep)
+        start = 0 - 1
+      }
+      if c == 91 {
+        depth = depth + 1
+      } else if c == 93 {
+        depth = depth - 1
+      }
+      if i < n {
+        StringBuilder::push(sb, String::substring(row, i, i + 1))
+      }
+    }
+    i = i + 1
+  }
+  StringBuilder::freeze(sb)
+}
+
+/// Each `NAME$K` word in a published row, paired with the scheme's K-th
+/// quantified variable.
+fn published_row_formal_ids(row: Option[String], vars: Array[Int], out: Array[(String, Int)]) -> Unit {
+  match row {
+    Some(r) => {
+      let n = String::length(r)
+      let mut start = 0 - 1
+      let mut i = 0
+      while i <= n {
+        let c = if i < n {
+          String::char_code_at(r, i)
+        } else {
+          0
+        }
+        let word_char = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 95 || c == 36
+        if word_char {
+          if start < 0 {
+            start = i
+          }
+        } else if start >= 0 {
+          let w = String::substring(r, start, i)
+          let k = published_formal_index(w)
+          if k >= 0 && k < Array::length(vars) {
+            Array::push(out, (w, Array::get(vars, k)))
+          }
+          start = 0 - 1
+        }
+        i = i + 1
+      }
+    },
+    None => ()
+  }
+}
+
+/// K for a word spelled `NAME$K` (NAME non-empty, K all digits), else -1.
+/// `$` cannot occur in a source identifier (the lexer's identifier class is
+/// letters, digits and `_`), so no user-written type name can be read as a
+/// published formal (Codex on #3056).
+fn published_formal_index(w: String) -> Int {
+  let at = String::last_index_of(w, "$")
+  if at <= 0 {
+    0 - 1
+  } else {
+    let digits = String::substring(w, at + 1, String::length(w))
+    let nd = String::length(digits)
+    if nd == 0 {
+      0 - 1
+    } else {
+      let mut k = 0
+      let mut ok = true
+      let mut i = 0
+      while i < nd {
+        let c = String::char_code_at(digits, i)
+        if c >= 48 && c <= 57 {
+          k = k * 10 + (c - 48)
+        } else {
+          ok = false
+        }
+        i = i + 1
+      }
+      if ok {
+        k
+      } else {
+        0 - 1
+      }
+    }
+  }
 }
 
 /// The key a call's formal bindings travel under: the callee identifier's
@@ -7412,12 +7663,14 @@ fn infer_binop_type(op: String, left_ty: Type, right_ty: Type, env: TypeEnv, s: 
         None => match infer_named_trait_binop(env, left_ty, right_ty, trait_name, s) {
           Some((resolved, s1)) => (resolved, s1),
           None => {
-            // #2206: a Unit LHS under `-` is almost always a line-leading
-            // `-` glued onto the previous statement (a newline does not end
-            // an expression when the next line starts with an operator).
-            // The checker never sees line layout, so the clause states the
-            // language rule rather than claiming this line started with
-            // `-`; the base text stays a prefix so substring pins hold.
+            // #2206, #3041: a Unit LHS under `-` is almost always a
+            // line-leading `- x` (minus, then a space) glued onto the
+            // previous statement. Since #3041 a line-leading `-x` with no
+            // space is a prefix minus that starts a new expression, so only
+            // the spaced spelling still continues the line. The checker never
+            // sees line layout, so the clause states the language rule
+            // rather than claiming this line started with `-`; the base text
+            // stays a prefix so substring pins hold.
             let minus_unit_lhs = if op == "-" {
               match subst_apply(s, left_ty) {
                 CtUnit => true,
@@ -7427,7 +7680,7 @@ fn infer_binop_type(op: String, left_ty: Type, right_ty: Type, env: TypeEnv, s: 
               false
             }
             let tail = if minus_unit_lhs {
-              "': operands must be Int or Double (the left operand is Unit -- a `-` at the start of a line continues the previous line's expression instead of starting a new one; parenthesize the negated value, e.g. `(-1)` or `(-x)`, or bind it with `let` if you meant a negative value)"
+              "': operands must be Int or Double (the left operand is Unit -- a `-` followed by a space at the start of a line continues the previous line's expression; to start a new expression with a negative value, remove the space (`-1`, `-x`) or parenthesize the negated value, e.g. `(-1)`)"
             } else {
               "': operands must be Int or Double"
             }
@@ -12618,7 +12871,24 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                     }
                     eaenv = env_bind(eaenv, eabname, eaty)
                   },
-                  _ => ()
+                  // #2983: an arm that does not bind its payload
+                  // (`Exception[Nope]::Throw(_)`) still names its kind, and
+                  // the kind must be a type in scope exactly as above -- an
+                  // undeclared name or an effectset was accepted here.
+                  _ => {
+                    let wkind = exception_effect_kind(String::substring(hqname, 0, hci))
+                    if String::length(wkind) > 0 {
+                      handle {
+                        let (wkind_te, _) = parse_type(lex(wkind), 0)
+                        let wshadow = exception_kind_formals_in_env(wkind_te, eaenv, array_empty())
+                        report_unknown_type_names(wkind_te, defs, wshadow, eaenv, array_empty(), "an exception kind", errors)
+                        // #3033: compared as the type it names, as a binding
+                        // arm's is -- `Exception[E]::Throw(_)` with `type E =
+                        // IoErr` catches `IoErr` (Codex on #3061).
+                        record_exception_kind_resolution(wkind, wkind_te, defs, wshadow)
+                      } with { Exception::Throw(_unreadable) => () }
+                    }
+                  }
                 }
               } else {
                 ()

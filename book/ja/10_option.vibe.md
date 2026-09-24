@@ -76,10 +76,10 @@ sum_halves(4, 3) = None
 その関数自身も `Option` を返す必要があります。そこがこの取引の誠実な部分です
 — `?` は「無い」を消すのではなく、呼び出し側に渡します。
 
-## `let*` — 同じ考えをブロック全体に
+## `let*` — 関数ではなくブロックを抜ける
 
 `let* x = e` は `Some` の中身を束縛し、`None` のときはそれが置かれた
-ブロックが `None` に評価されます:
+**ブロック**が `None` に評価されます。関数はそのブロックの後も続きます:
 
 ```vibe run
 fn half(n: Int) -> Option[Int] {
@@ -90,25 +90,34 @@ fn half(n: Int) -> Option[Int] {
   }
 }
 
-fn sum_halves(a: Int, b: Int) -> Option[Int] {
-  let* x = half(a)
-  let* y = half(b)
-  Some(x + y)
+fn halves_or_zero(a: Int, b: Int) -> Int {
+  let total = {
+    let* x = half(a)
+    let* y = half(b)
+    Some(x + y)
+  }
+  match total {
+    Some(t) => t,
+    None => 0
+  }
 }
 
 fn main allows Console {
-  println("sum_halves(4, 6) = \{sum_halves(4, 6)}")
-  println("sum_halves(4, 3) = \{sum_halves(4, 3)}")
+  println("halves_or_zero(4, 6) = \{halves_or_zero(4, 6)}")
+  println("halves_or_zero(4, 3) = \{halves_or_zero(4, 3)}")
 }
 ```
 
 ```output
-sum_halves(4, 6) = Some(5)
-sum_halves(4, 3) = None
+halves_or_zero(4, 6) = 5
+halves_or_zero(4, 3) = 0
 ```
 
-ここでは `?` と `let*` は同じ仕事をします。行の途中の1つの式には `?` が、
-すべて成功しなければならない一連の手順には `let*` が向きます。
+これが2つの違いのすべてで、両方がある理由です: `?` は外側の**関数**を
+抜け、`let*` は外側の**ブロック**を抜けます。`halves_or_zero` は `Int` を
+返すので、そもそも `?` は書けません。関数本体そのもののブロックでは2つは
+同じ場所へ抜けるので、そこでは `?` が唯一の綴りです: 関数本体の最上位に
+書いた `let*` には `vibe check` が警告を出し、`?` への書き換えを示します。
 
 ## `guard` — 束縛する、さもなくば抜ける
 

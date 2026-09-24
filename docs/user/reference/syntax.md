@@ -352,6 +352,11 @@ suberror AppError {
 }
 ```
 
+A `suberror` is sugar for an enum used as an exception kind (#2983): the
+single-constructor form declares a type and a constructor of the same name,
+the braced form a type with one constructor per member, and the type name is
+the kind (`with Exception[AppError]`).
+
 ### Modules
 
 Source files are modules. Module blocks such as `module Math { ... }` are
@@ -465,7 +470,22 @@ Rules:
 
 - `if` and `match` are expressions.
 - `while` is statement-like and returns `Unit`.
-- `for-in` collects body results into an array.
+- `for-in` over an `Array` or another builtin collection is an expression: it
+  collects the body's results into an array (ADR-0116).
+- **A `for-in` whose value is discarded allocates no result array.** A value
+  is discarded when the loop is a block statement followed by more
+  statements, the last statement of a `while` body, or a branch of an
+  `if` / `match` that is itself in one of those positions. A `handle` in such
+  a position passes it on to each handler arm, and to the handled body when no
+  arm names `resume` -- a resumed handler receives the body's value, so there
+  the body keeps it. Binding the value, including `let _ = for ...`,
+  keeps the array. The tail of a function declared `-> Unit` is not a discard
+  position: the loop's value there is `Array[Unit]`, a return-type mismatch,
+  so end such a body with `()`. This promise holds on the default linear
+  backend (with or without RC; pinned by `fixtures/for_discard_no_alloc_test.vibe`
+  in the mid gate). The opt-in wasm-gc backend (`VIBE_BACKEND=gc`) still
+  builds and drops the array -- measured, the same 2000-iteration loop
+  allocates 408,204 B there.
 - `while`, bare `loop { ... }`, and `for-in` accept only bare `break`. A payload
   is rejected rather than evaluated and discarded. `while` and bare `loop`
   return `Unit`; `for-in` returns the results collected before the break.
@@ -529,6 +549,26 @@ the `T` in `Array[T]`). An omitted start means `0`, and an omitted end means the
 receiver's length. Both explicit bounds are `Int`. String bounds are byte
 offsets, not Unicode code-point or grapheme offsets.
 
+### `_`: pipe slot and lambda section
+
+`_` has two roles, decided by syntax alone (ADR-0117). This rule is frozen:
+
+1. A bare `_` that is a whole argument of the call directly on the right of
+   `|>` is the **pipe slot**. The piped value is passed there and nothing is
+   prepended; every such `_` receives it (`7 |> pair(_, _)` is `pair(7, 7)`).
+2. A `_` that is an operand of an operator is a **lambda section**. The
+   operator expression it sits in, up to the nearest enclosing call argument,
+   becomes a lambda with one parameter per `_`, in order: `_ * 10 + 1` is
+   `(v) -> v * 10 + 1`, `_ + _` is `(a, b) -> a + b`, and `f(_ * 10)` passes
+   `(v) -> v * 10` to `f`.
+3. With no bare `_` argument, the piped value is the call's first argument.
+4. Any other bare `_` in expression position is rejected (`` `_` is not a
+   value here``), including `f(_)` outside a pipe and a bare `_` argument of a
+   call nested inside the piped call.
+
+`xs |> Iterator::map(_, _ * 2)` is therefore `Iterator::map(xs, (v) -> v * 2)`.
+Pinned by `fixtures/underscore_pipe_slot_section_test.vibe`.
+
 ### Collections
 
 ```vibe skip
@@ -546,6 +586,20 @@ spellings above are parse-level desugars into the same map node, and the old
 literal reports a located parse error naming the replacement.
 
 ### Effects And Error Boundaries
+
+Option short-circuit has two spellings because it has two exit targets
+(ADR-0117):
+
+- `e?` on `e: Option[T]` yields the `T`, or returns `None` from the enclosing
+  **function** (a closure's body is its own function).
+- `let* x = e` binds the `T`, or makes the enclosing **block** evaluate to
+  `None`; the code after that block still runs. The block must evaluate to an
+  `Option`; the function need not return one.
+
+In a function body's own top-level block both exit to the same place, and
+there `?` is the one spelling: a `let*` directly in a function or closure body
+is a warning naming the `let x = e?` rewrite. `let*` belongs in a nested block
+(`let r = { let* x = e; Some(x) }`, an `if` branch).
 
 ```vibe skip
 // doctest-skip: form catalogue: bare surface forms, not a compilable program
@@ -632,6 +686,35 @@ x *= 2
 x /= 2
 x %= 2
 ```
+
+### Line breaks and operators
+
+A newline does not end an expression when the next line begins with a binary
+operator: the line continues the expression above it. The exception is a token
+that can also be a prefix operator (`-`, `!`, `~`). At the start of a line it
+is a **prefix** operator when no whitespace follows it, so a line `-1` begins
+a new expression (ADR-0115, #3041). Within one line the whitespace does not
+matter: `a -1` is still `a - 1`.
+
+```vibe skip
+// doctest-skip: form catalogue: three separate blocks, shown side by side
+{
+  log("x")
+  -1          // a new expression: the block's value is -1
+}
+{
+  a
+  - 1         // a space after `-`: binary, the block's value is a - 1
+}
+{
+  a -
+  1           // `-` ends the line: binary, the block's value is a - 1
+}
+```
+
+Every other operator at the start of a line (`+`, `*`, `|>`, `&&`, `==`, ...)
+continues the previous line. `->`, `-=` and `!=` are distinct tokens, not a
+prefix operator followed by something else.
 
 ## Pipe
 

@@ -201,7 +201,9 @@ fold sum = 6
 ```
 
 `_ * 2` is `(v) -> v * 2`, and `_ + _` is `(acc, v) -> acc + v` — each
-`_` takes the next argument.
+`_` takes the next argument. The lambda covers the operator expression the
+`_` sits in, so `_ * 10 + 1` is `(v) -> v * 10 + 1`. A `_` must be an
+operand of an operator to make a lambda: `f(_)` on its own is refused.
 
 ## Comments
 

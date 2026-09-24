@@ -17,6 +17,13 @@ Most languages leave these facts in the body, where you find them by
 reading carefully or by being surprised in production. Here they are in
 the type, they are checked, and they compose.
 
+What an empty row promises is exactly that list: no host capability
+(printing, files, the network) and no algebraic effect, failure
+included. It does not promise that the function leaves its arguments
+alone — `fn grow(xs: Array[Int]) -> Unit` may push onto the caller's
+array ([Mutation](06_mutation.vibe.md) shows it). The row label `Mut` is
+reserved for a future marker of that.
+
 ## Why you might want this
 
 **You can tell what a function does without reading it.** The row is

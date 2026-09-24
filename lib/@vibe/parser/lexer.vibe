@@ -759,15 +759,16 @@ fn skip_ws_with_newline(s: String, len: Int, i: Int) -> Int {
   }
 }
 
-/// Newlines are normally trivia, but two expression boundaries need a
+/// Newlines are normally trivia, but three expression boundaries need a
 /// synthetic statement separator:
 /// - before `(`/`[` after an expression, so they do not become postfix syntax;
+/// - before a line-leading PREFIX operator after an expression (#3041, below);
 /// - after `break`, whose optional payload is deliberately same-line only.
 ///
 /// Keeping this decision in one helper prevents `lex`, offset lexing, and the
 /// recovering lexer from drifting apart.
 #zero_alloc
-fn needs_synthetic_semicolon(c: Int, nl_before: Bool, prev_tok: Token) -> Bool {
+fn needs_synthetic_semicolon(c: Int, nl_before: Bool, prev_tok: Token, tight_prefix: Bool) -> Bool {
   if !nl_before {
     false
   } else {
@@ -777,9 +778,28 @@ fn needs_synthetic_semicolon(c: Int, nl_before: Bool, prev_tok: Token) -> Bool {
       // separator look like the next pattern). Only separate a real token
       // that could otherwise become the optional payload.
       TBreak => c != '}' && c != ')' && c != ']' && c != ',' && c != ';',
-      _ => (c == '[' || c == '(') && is_expr_ending_tok(prev_tok)
+      _ => (c == '[' || c == '(' || tight_prefix) && is_expr_ending_tok(prev_tok)
     }
   }
+}
+
+/// #3041 (Swift's rule, ADR-0115): a token that can be a prefix operator
+/// (`-`, `!`, `~`) is a PREFIX operator when whitespace precedes it and none
+/// follows it. The caller asks only at the start of a line (the newline is
+/// that whitespace), so `-1` on its own line begins a new expression instead
+/// of continuing the previous line as `<previous> - 1`; on one line `a -1`
+/// stays a subtraction. A binary `-` still continues the line when it is
+/// written `- 1` (whitespace after) or placed at the end of the previous
+/// line. `->`, `-=` and `!=` are other tokens and never qualify.
+#zero_alloc
+fn is_tight_prefix_op(tok: Token, source: String, len: Int, next: Int) -> Bool {
+  let prefixable = match tok {
+    TMinus => true,
+    TNot => true,
+    TTilde => true,
+    _ => false
+  }
+  prefixable && next < len && !is_ws(String::char_code_at(source, next))
 }
 
 fn concat_string_parts(parts: Array[String], tail: String) -> String {
@@ -1288,7 +1308,7 @@ export fn lex_with_offsets(source: String) -> (Array[Token], Array[Int], Array[I
     while pos < len {
       let c = String::char_code_at(source, pos)
       let (tok, next) = lex_one_token(source, len, pos)
-      if needs_synthetic_semicolon(c, nl_before, prev_tok) {
+      if needs_synthetic_semicolon(c, nl_before, prev_tok, is_tight_prefix_op(tok, source, len, next)) {
         ArrayBuilder::push(b, TSemicolon)
         ArrayBuilder::push(starts, pos)
         ArrayBuilder::push(ends, pos)
@@ -1341,7 +1361,7 @@ export fn lex_with_offsets_recovering(source: String) -> (Array[Token], Array[In
     } }
     match res {
       Some((tok, next)) => {
-        if needs_synthetic_semicolon(c, nl_before, prev_tok) {
+        if needs_synthetic_semicolon(c, nl_before, prev_tok, is_tight_prefix_op(tok, source, len, next)) {
           ArrayBuilder::push(b, TSemicolon)
           ArrayBuilder::push(starts, pos)
           ArrayBuilder::push(ends, pos)
@@ -1576,7 +1596,7 @@ export fn lex(source: String) -> Array[Token] with Exception {
       // newline-preceded and follows an expression-ending token; the statement
       // parser already treats `;` as a separator. A same-line `(`/`[` (no
       // newline) still attaches as a call/subscript suffix.
-      if needs_synthetic_semicolon(c, nl_before, prev_tok) {
+      if needs_synthetic_semicolon(c, nl_before, prev_tok, is_tight_prefix_op(tok, source, len, next)) {
         ArrayBuilder::push(b, TSemicolon)
       } else {
         ()

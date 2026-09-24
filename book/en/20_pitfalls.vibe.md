@@ -123,31 +123,40 @@ A generic `T` with no `Eq` witness is the boundary worth knowing, and it
 is a compile error rather than a surprise — `no impl `Eq` for
 `Array[Int]``. See [Equality](16_equality.vibe.md).
 
-## A line that starts with an operator continues the previous line
+## A line-leading `-` is a prefix only when it touches its operand
 
 A newline does not end an expression when the next line begins with an
-operator, so a negative literal meant as a block's final value glues
-onto the line above:
+operator, with one exception: `-`, `!` and `~` at the start of a line
+are **prefix** operators when nothing separates them from their operand
+(#3041). So `-1` on its own line starts a new expression, while `- 1`
+(a space after the `-`) continues the line above as a subtraction:
 
-```vibe skip
-// skip: shown for the diagnostic — the `-1` parses as `println(...) - 1`
+```vibe run
 fn main allows Console {
-  let v = {
-    println("failing")
+  let a = 10
+  let fresh = {
+    println("computing")
     -1
   }
-  println("\{v}")
+  let continued = a
+    - 1
+  let trailing = a -
+    1
+  println("\{fresh} \{continued} \{trailing}")
 }
 ```
 
-```
-line 3:5: type mismatch in '-': operands must be Int or Double (the left operand is Unit -- a `-` at the start of a line continues the previous line's expression instead of starting a new one; parenthesize the negated value, e.g. `(-1)` or `(-x)`, or bind it with `let` if you meant a negative value)
+```output
+computing
+-1 9 9
 ```
 
-Write `(-1)`, or bind it first. A negative literal as a match arm's
-direct body (`None => -1`) is fine. Since #2206 the diagnostic names
-the continuation and the edit, as quoted above; the position still
-anchors at the start of the glued expression.
+The space after the `-` is what decides, so write a subtraction that
+wraps as `a - 1` on one line, as `- 1` at the start of the next, or with
+the `-` ending the previous line. Every other line-leading operator
+(`+`, `*`, `|>`, `&&`, ...) always continues the previous line. A spaced
+`- 1` after a statement that returns `Unit` is a type error whose
+message names both edits: drop the space, or write `(-1)`.
 
 ## `fn` is a keyword
 

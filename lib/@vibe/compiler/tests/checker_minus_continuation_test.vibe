@@ -6,17 +6,19 @@ import ./checker_parity_test_support.vibe {
 
 //# Misc
 
-// #2206: a line-leading `-` glues onto the previous expression (a newline
-// does not end an expression when the next line starts with an operator),
-// so the checker sees `f() - 1` with a Unit LHS. The diagnostic must name
-// the continuation rule and the `(-1)` edit; the base text stays a prefix
-// so existing substring pins keep matching.
+// #2206, #3041: a line-leading `- 1` (minus, then a space) is a binary minus
+// that continues the previous expression, so the checker sees `f() - 1` with
+// a Unit LHS. The diagnostic must name the continuation rule and the edits
+// (drop the space, or `(-1)`); the base text stays a prefix so existing
+// substring pins keep matching. A line-leading `-1` with no space is a
+// prefix minus that starts a new expression (#3041), so it type-checks.
 
 test "unit lhs minus names the line continuation" {
-  let src = "fn f() -> Unit { () }\nfn main() -> Int {\n  let v = {\n    f()\n    -1\n  }\n  v\n}"
+  let src = "fn f() -> Unit { () }\nfn main() -> Int {\n  let v = {\n    f()\n    - 1\n  }\n  v\n}"
   assert(check_source_err_contains(src, "type mismatch in '-': operands must be Int or Double"))
   assert(check_source_err_contains(src, "the left operand is Unit"))
   assert(check_source_err_contains(src, "continues the previous line's expression"))
+  assert(check_source_err_contains(src, "remove the space"))
   assert(check_source_err_contains(src, "parenthesize the negated value"))
 }
 
@@ -27,6 +29,11 @@ test "non-unit lhs minus keeps the plain message" {
   assert(check_source_err_contains(src, "type mismatch in '-': operands must be Int or Double"))
   let msg = check_source_error_message(src)
   assert(!String::contains(msg, "the left operand is Unit"))
+}
+
+test "line-leading tight negative literal starts a new expression" {
+  let src = "fn f() -> Unit { () }\nfn main() -> Int {\n  let v = {\n    f()\n    -1\n  }\n  v\n}"
+  assert(check_source_ok(src))
 }
 
 test "parenthesized negative literal repairs the glue" {

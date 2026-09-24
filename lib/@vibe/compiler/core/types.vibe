@@ -2407,10 +2407,68 @@ export fn type_to_string(ty: Type) -> String {
         // #1429: this text lands in type-mismatch messages, so it has to be
         // the spelling the reader would type. Rows are stored comma-joined;
         // the syntax is `+`-separated.
-        Some(name) => String::concat(base, String::concat(" with ", row_to_source_spelling(name))),
+        // #3051: a published row spells a formal `NAME$K`; the reader
+        // wrote `NAME`.
+        Some(name) => String::concat(base, String::concat(" with ", strip_published_formal_suffixes(row_to_source_spelling(name)))),
         None => base
       }
     }
+  }
+}
+
+/// `text` with every `NAME$K` word (K all digits) written `NAME` -- the
+/// spelling a published row gives a formal (`publish_row_formals`, #3051).
+export fn strip_published_formal_suffixes(text: String) -> String {
+  if !String::contains(text, "$") {
+    text
+  } else {
+    let n = String::length(text)
+    let sb = StringBuilder::new()
+    let mut start = 0 - 1
+    let mut i = 0
+    while i <= n {
+      let c = if i < n {
+        String::char_code_at(text, i)
+      } else {
+        0
+      }
+      let word_char = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 95 || c == 36
+      if word_char {
+        if start < 0 {
+          start = i
+        }
+      } else {
+        if start >= 0 {
+          let w = String::substring(text, start, i)
+          let at = String::last_index_of(w, "$")
+          let digits = if at > 0 {
+            String::substring(w, at + 1, String::length(w))
+          } else {
+            ""
+          }
+          let mut all_digits = String::length(digits) > 0
+          let mut di = 0
+          while di < String::length(digits) {
+            let dc = String::char_code_at(digits, di)
+            if dc < 48 || dc > 57 {
+              all_digits = false
+            }
+            di = di + 1
+          }
+          if all_digits {
+            StringBuilder::push(sb, String::substring(w, 0, at))
+          } else {
+            StringBuilder::push(sb, w)
+          }
+          start = 0 - 1
+        }
+        if i < n {
+          StringBuilder::push(sb, String::substring(text, i, i + 1))
+        }
+      }
+      i = i + 1
+    }
+    StringBuilder::freeze(sb)
   }
 }
 
