@@ -2165,44 +2165,64 @@ fn identity_formal_index(params: Array[String], n: String) -> Int {
 /// `ty` with every occurrence of a formal in `params` replaced by its
 /// positional placeholder (`identity_formal`).
 fn identity_rename_formals(ty: Type, params: Array[String]) -> Type {
-  if Array::length(params) == 0 {
-    ty
-  } else {
-    match ty {
-      CtNamed(n, args) => {
-        let renamed = for a in args {
-          identity_rename_formals(a, params)
+  // No early exit on an empty `params`: an alias constructor below carries a
+  // binder scope of its own, even inside a declaration with no formals.
+  match ty {
+    CtNamed(n, args) => {
+      let renamed = for a in args {
+        identity_rename_formals(a, params)
+      }
+      let hit = identity_formal_index(params, n)
+      if hit >= 0 {
+        // Applied or not (`F[Int]` keeps its arguments), only the head is
+        // the binder.
+        CtNamed(identity_formal_name(hit), renamed)
+      } else {
+        CtNamed(n, renamed)
+      }
+    },
+    CtTuple(items) => CtTuple(for t in items {
+      identity_rename_formals(t, params)
+    }),
+    CtArray(t) => CtArray(identity_rename_formals(t, params)),
+    CtOption(t) => CtOption(identity_rename_formals(t, params)),
+    CtFn(args, ret, label) => CtFn(for t in args {
+      identity_rename_formals(t, params)
+    }, identity_rename_formals(ret, params), match label {
+      Some(row) => Some(identity_rename_row(row, params)),
+      None => None
+    }),
+    CtApplied(head, args) => if is_alias_constructor(ty) {
+      // A bare parameterized alias in a constructor slot carries its body
+      // and its OWN binder names, a scope apart from `params`: normalize
+      // that scope by position on its own (`Inner[X]` = `Inner[Y]`).
+      let own: Array[String] = []
+      let mut ai = 1
+      while ai < Array::length(args) {
+        match Array::get(args, ai) {
+          CtNamed(b, _) => Array::push(own, b),
+          _ => ()
         }
-        let hit = identity_formal_index(params, n)
-        if hit >= 0 {
-          // Applied or not (`F[Int]` keeps its arguments), only the head is
-          // the binder.
-          CtNamed(identity_formal_name(hit), renamed)
-        } else {
-          CtNamed(n, renamed)
-        }
-      },
-      CtTuple(items) => CtTuple(for t in items {
+        ai = ai + 1
+      }
+      let meta: Array[Type] = [
+        identity_rename_formals(Array::get(args, 0), own)
+      ]
+      for f in identity_formals(own) {
+        Array::push(meta, f)
+      }
+      CtApplied(head, meta)
+    } else {
+      CtApplied(identity_rename_formals(head, params), for t in args {
         identity_rename_formals(t, params)
-      }),
-      CtArray(t) => CtArray(identity_rename_formals(t, params)),
-      CtOption(t) => CtOption(identity_rename_formals(t, params)),
-      CtFn(args, ret, label) => CtFn(for t in args {
-        identity_rename_formals(t, params)
-      }, identity_rename_formals(ret, params), match label {
-        Some(row) => Some(identity_rename_row(row, params)),
-        None => None
-      }),
-      CtApplied(head, args) => CtApplied(identity_rename_formals(head, params), for t in args {
-        identity_rename_formals(t, params)
-      }),
-      CtForAll(ids, bounds, body) => CtForAll(ids, bounds, identity_rename_formals(body, params)),
-      CtRecord(fields) => CtRecord(for f in fields {
-        let (fname, fty) = f
-        (fname, identity_rename_formals(fty, params))
-      }),
-      _ => ty
-    }
+      })
+    },
+    CtForAll(ids, bounds, body) => CtForAll(ids, bounds, identity_rename_formals(body, params)),
+    CtRecord(fields) => CtRecord(for f in fields {
+      let (fname, fty) = f
+      (fname, identity_rename_formals(fty, params))
+    }),
+    _ => ty
   }
 }
 
@@ -2917,7 +2937,10 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
   // exempt, as in #3035: its deferred type IS the implementation's
   // declaration, which a sibling reaches directly too (`index.vpkg`
   // importing the stub's `ShResult` and `sh_capture` from `process.vibe`).
-  let identity_tracked = !is_vpkg_types_stub_path(resolved)
+  // The EXACT generated-stub shape (`is_generated_vpkg_types_path`), not the
+  // substring test: an ordinary module under a directory of that name is
+  // user code and is tracked like any other.
+  let identity_tracked = !is_generated_vpkg_types_path(resolved)
   let id_defs = if identity_tracked {
     env_type_defs(dep_env)
   } else {
