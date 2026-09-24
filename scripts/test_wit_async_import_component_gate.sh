@@ -195,4 +195,40 @@ if grep -Eq '\(import "(get-price|get-tax)" \(func' "$PROG_DIR/main.wat"; then
   echo "WIT async import gate FAILED: a WIT-addressed future became a root function import" >&2
   exit 1
 fi
+# --- and EXECUTED (#2064) -----------------------------------------------------
+# viberun links a WIT-addressed VIBE_ASYNC_FUTURES entry inside its versioned
+# interface instance as `future<s64>`. Both producers wait LONG_MS; awaited
+# concurrently the run takes about LONG_MS, sequentially about twice that, so
+# the wall clock is what shows the two imports were in flight together.
+RUNNER="${VIBE_WIT_ASYNC_IMPORT_GATE_RUNNER:-$ROOT/runtime/viberun/target/release/viberun}"
+if [ "$RUNNER" = "$ROOT/runtime/viberun/target/release/viberun" ]; then
+  if [ ! -x "$RUNNER" ] || find "$ROOT/runtime/viberun/src" "$ROOT/runtime/viberun/Cargo.toml" \
+      "$ROOT/runtime/viberun/Cargo.lock" -newer "$RUNNER" -print -quit 2>/dev/null | grep -q .; then
+    (cd "$ROOT/runtime/viberun" && cargo build --release >/dev/null 2>&1) || {
+      echo "WIT async import gate FAILED: could not build runtime/viberun" >&2
+      exit 1
+    }
+  fi
+fi
+LONG_MS=300
+IFACE='example:prices/api@1.0.0'
+START_NS=$(date +%s%N)
+GOT="$(VIBE_ASYNC_FUTURES="$IFACE#get-price=40:$LONG_MS,$IFACE#get-tax=2:$LONG_MS" timeout 60 "$RUNNER" "$PROG_DIR/main.wasm" 2>&1)" || {
+  echo "WIT async import gate FAILED: viberun did not exit 0: $GOT" >&2
+  exit 1
+}
+ELAPSED_MS=$(( ( $(date +%s%N) - START_NS ) / 1000000 ))
+[ "$GOT" = "42" ] || {
+  echo "WIT async import gate FAILED: expected 42 (40 from get-price + 2 from get-tax), got: $GOT" >&2
+  exit 1
+}
+if [ "$ELAPSED_MS" -ge $(( LONG_MS * 3 / 2 )) ]; then
+  echo "WIT async import gate FAILED: ${ELAPSED_MS}ms for two ${LONG_MS}ms futures -- they were not in flight together" >&2
+  exit 1
+fi
+if [ "$ELAPSED_MS" -lt $(( LONG_MS * 4 / 5 )) ]; then
+  echo "WIT async import gate FAILED: ${ELAPSED_MS}ms is shorter than one ${LONG_MS}ms future -- the task did not park" >&2
+  exit 1
+fi
+echo "[wit-async-import] executed: 42 in ${ELAPSED_MS}ms (two ${LONG_MS}ms futures)"
 echo "WIT async import component gate OK"

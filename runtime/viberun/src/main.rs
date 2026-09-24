@@ -915,6 +915,10 @@ fn run_async_component(path: &str) -> Result<i32> {
     // call order, and the total wall clock must be the max of the two delays
     // rather than their sum. The delay is scaled like every other suspend
     // here, so VIBE_ASYNC_DELAY_SCALE_PCT keeps working.
+    // #2064: WIT-addressed entries, grouped by interface so each versioned
+    // instance is linked once with all of its functions.
+    let mut wit_futures: std::collections::BTreeMap<String, Vec<(&'static str, i64, u64)>> =
+        std::collections::BTreeMap::new();
     if let Ok(spec) = std::env::var("VIBE_ASYNC_FUTURES") {
         for ent in spec.split(',').filter(|s| !s.trim().is_empty()) {
             let (name, rest) = ent.split_once('=').ok_or_else(|| {
@@ -924,6 +928,26 @@ fn run_async_component(path: &str) -> Result<i32> {
                 format_err!("VIBE_ASYNC_FUTURES entry '{ent}': expected name=value:delay_ms")
             })?;
             let name = name.trim().to_string();
+            // #2064: a WIT function address (`example:prices/api@1.0.0#get-price`)
+            // is linked inside that versioned INTERFACE instance, as the
+            // `future<s64>` the composer declares for a `wit_future_get$`
+            // import, instead of as a root `future<u32>` function.
+            if let Some((iface, func)) = name.split_once('#') {
+                let value: i64 = val_s
+                    .trim()
+                    .parse()
+                    .map_err(|e| format_err!("VIBE_ASYNC_FUTURES '{name}': bad value: {e}"))?;
+                let entry_delay: u64 = delay_s
+                    .trim()
+                    .parse()
+                    .map_err(|e| format_err!("VIBE_ASYNC_FUTURES '{name}': bad delay: {e}"))?;
+                let func_name: &'static str = Box::leak(func.to_string().into_boxed_str());
+                wit_futures
+                    .entry(iface.to_string())
+                    .or_insert_with(Vec::new)
+                    .push((func_name, value, entry_delay));
+                continue;
+            }
             // #1337 Codex review: `get-future` / `get-async` / `get-after` are
             // already registered unconditionally above, and the component
             // linker has shadowing disabled -- registering one of them here
@@ -980,6 +1004,35 @@ fn run_async_component(path: &str) -> Result<i32> {
                     },
                 )
                 .map_err(|e| format_err!("link {name}: {e}"))?;
+        }
+    }
+    for (iface, funcs) in wit_futures {
+        let mut inst = linker
+            .instance(&iface)
+            .map_err(|e| format_err!("link instance {iface}: {e}"))?;
+        for (func_name, value, entry_delay) in funcs {
+            inst.func_wrap_concurrent(
+                func_name,
+                move |acc: &Accessor<StoreLimits>, _params: ()| {
+                    let ms = scale(entry_delay);
+                    Box::pin(async move {
+                        let reader = acc.with(|mut access| {
+                            wasmtime::component::FutureReader::<i64>::new(
+                                &mut access,
+                                async move {
+                                    if ms > 0 {
+                                        tokio::time::sleep(std::time::Duration::from_millis(ms))
+                                            .await;
+                                    }
+                                    Ok::<i64, wasmtime::Error>(value)
+                                },
+                            )
+                        })?;
+                        Ok((reader,))
+                    })
+                },
+            )
+            .map_err(|e| format_err!("link {iface}#{func_name}: {e}"))?;
         }
     }
     // ADR-0089 Decision 3 (#1218): host-supplied `stream<u8>`. Every entry

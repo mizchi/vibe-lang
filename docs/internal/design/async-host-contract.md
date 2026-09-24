@@ -225,8 +225,12 @@ override silently contradicting a module that says `raw` is the hazard #2903's
   lane composes the adapter for a `run` entry whose core imports a host future
   or stream (`maybe_wrap_stdin_provider_core`), as the single-file lane
   already did, so a program that imports its bindings builds to a component
-  directly. What remains is the runner: none yet links an interface instance
-  of `future<s64>`, so the route is validated but not executed.
+  directly. viberun links a `VIBE_ASYNC_FUTURES` entry whose name is such an
+  address (`example:prices/api@1.0.0#get-price=40:300`) inside that versioned
+  instance as `future<s64>`, so the gate also executes the program. It
+  measures 42 in about one producer delay for two concurrent futures, and
+  bounds that from above (they were in flight together) and below (the task
+  parked).
 
 ### Host streams
 
