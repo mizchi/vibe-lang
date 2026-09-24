@@ -2883,7 +2883,21 @@ fn cc_compile_resolved_call(buf: Bytes, fname: String, args: Array[Expr], local_
       ci = ci + 1
     }
     emit_closure_call_tail(buf, env_local, slot_local, 9, num_args)
-    nl
+    if is_thunk_value && ctx.enable_rc && ctx.rc_drop_func_idx >= 0 {
+      // #3025: the thunk getter hands its caller a guarded-dup'd reference
+      // to the cached closure (linked_compile's thunk memoization), which
+      // this call owns. Release it once the call has returned, keeping the
+      // result -- otherwise every call leaked one reference (Codex on #3047).
+      let result_local = nl
+      Array::push(local_names, "__thunk_call_result")
+      emit_local_set(buf, result_local)
+      emit_local_get(buf, fn_val_local)
+      emit_call(buf, ctx.rc_drop_func_idx)
+      emit_local_get(buf, result_local)
+      nl + 1
+    } else {
+      nl
+    }
   }
 }
 
