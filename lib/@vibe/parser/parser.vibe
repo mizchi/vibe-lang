@@ -880,6 +880,45 @@ fn cfg_scan_enabled(tokens: Array[Token]) -> Array[String] with Exception {
   out
 }
 
+/// `cfg_scan_enabled` for the located parsers: a malformed directive
+/// (`#cfg(`, an unknown `#name`) throws before any per-statement locator
+/// runs, and its message carries no position, so the locator is applied here
+/// at the directive's own `#` (Codex on #3047). A separate loop rather than a
+/// flag on the one above: that one runs on every tokens-only parse, and an
+/// extra argument there showed up in parser_bench's B/op.
+fn cfg_scan_enabled_located(tokens: Array[Token], starts: Array[Int], source: String) -> Array[String] with Exception {
+  let out = ArrayBuilder::freeze(ArrayBuilder::new())
+  let mut a = 0
+  while a < Array::length(cfg_ambient_flags) {
+    Array::push(out, Array::get(cfg_ambient_flags, a))
+    a = a + 1
+  }
+  let mut i = 0
+  let n = Array::length(tokens)
+  while i < n {
+    match Array::get(tokens, i) {
+      THash => {
+        let hash_pos = i
+        let (dname, flag, next) = handle {
+          parse_cfg_directive(tokens, i + 1)
+        } with { Exception::Throw(msg) => {
+          throw(locate_parse_error(msg, hash_pos, starts, source))
+        } }
+        if dname == "cfg_enable" {
+          Array::push(out, flag)
+        } else {
+          ()
+        }
+        i = next
+      },
+      _ => {
+        i = i + 1
+      }
+    }
+  }
+  out
+}
+
 #zero_alloc
 fn cfg_flag_active(active: Array[String], flag: String) -> Bool {
   let mut i = 0
@@ -1065,7 +1104,11 @@ fn parse_program_preserving_impl(tokens: Array[Token], starts: Array[Int], sourc
   } else {
     ()
   }
-  let cfg_active = cfg_scan_enabled(tokens)
+  let cfg_active = if located {
+    cfg_scan_enabled_located(tokens, starts, source)
+  } else {
+    cfg_scan_enabled(tokens)
+  }
   let b = ArrayBuilder::new()
   let mut pos = 0
   let mut done = false
@@ -1270,7 +1313,7 @@ fn locate_parse_error(msg: String, fallback_pos: Int, starts: Array[Int], source
 
 fn parse_program_located_with_context_impl(tokens: Array[Token], starts: Array[Int], source: String, context: Option[ParserBinderContext]) -> (Array[Stmt], Int) with Exception {
   remember_parse_source(source)
-  let cfg_active = cfg_scan_enabled(tokens)
+  let cfg_active = cfg_scan_enabled_located(tokens, starts, source)
   let b = ArrayBuilder::new()
   let mut pos = 0
   let mut done = false

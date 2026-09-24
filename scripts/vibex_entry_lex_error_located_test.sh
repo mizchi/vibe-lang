@@ -77,6 +77,10 @@ printf 'export fn helper() -> Int {\n  1\n}\n\nfn main allows Console {\n  print
 # The syntax error sits in a statement an INACTIVE `#cfg` guards: the parse
 # still reads it, so it is located like any other (Codex on #3047).
 printf '#cfg(nope_not_enabled)\nfn dead() -> Int {\n  let y = (\n}\n\nfn main allows Console {\n  println("hi")\n}\n' > "$WORK/cfgparse.vibex"
+# A malformed directive fails in the cfg pre-scan, before any per-statement
+# locator runs (Codex on #3047); it is located at its own `#`.
+printf 'fn helper() -> Int {\n  1\n}\n\n#cfg(\nfn main allows Console {\n  println("hi")\n}\n' > "$WORK/cfgbad.vibex"
+cp "$WORK/cfgbad.vibex" "$WORK/cfgbad.vibe"
 printf 'fn main allows Console {\n  println("ok-42")\n}\n'                 > "$WORK/good.vibex"
 printf 'export fn helper() -> Int {\n  let x = 1 \\ 2\n  x\n}\n'             > "$WORK/lexlib.vibe"
 printf 'export fn helper(x: Int) -> Int {\n  x + 1\n}\n'                   > "$WORK/goodlib.vibe"
@@ -149,7 +153,7 @@ else note "  FAIL want 'ok-42', got '$got'"; fail=1; fi
 note "=== 6. RED: a .vibex PARSE error carries the position the .vibe lane reports (#2948) ==="
 # locpart <out> -> the first `line L:C: message` of a diagnostic, path stripped
 locpart() { printf '%s' "$1" | grep -o 'line [0-9][0-9]*:[0-9][0-9]*: .*' | head -1; }
-for pair in "parse:expected ')' or ','" "allows:grants authority"; do
+for pair in "parse:expected ')' or ','" "allows:grants authority" "cfgbad:expected flag name"; do
   stem="${pair%%:*}"; what="${pair#*:}"
   ask build "$stem.vibe" -o "$WORK/$stem.vibe.wasm"; want="$(locpart "$OUT")"
   if [ -z "$want" ] || ! printf '%s' "$want" | grep -qF "$what"; then
