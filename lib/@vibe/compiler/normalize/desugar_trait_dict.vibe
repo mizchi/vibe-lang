@@ -23548,11 +23548,11 @@ fn ehp_declared_incompatibly(stmts: Array[Stmt], op: String) -> Bool {
           let (name, params, ret) = Array::get(ops, k)
           if name == short {
             let same = match host {
-              Some((_, hparams, hret)) => Array::length(hparams) == Array::length(params) && impl_target_key(hret) == impl_target_key(ret) && {
+              Some((_, hparams, hret)) => Array::length(hparams) == Array::length(params) && ehp_type_key(stmts, hret) == ehp_type_key(stmts, ret) && {
                 let mut eq = true
                 let mut j = 0
                 while j < Array::length(params) {
-                  if impl_target_key(Array::get(params, j)) != impl_target_key(Array::get(hparams, j)) {
+                  if ehp_type_key(stmts, Array::get(params, j)) != ehp_type_key(stmts, Array::get(hparams, j)) {
                     eq = false
                   } else {
                     ()
@@ -23579,6 +23579,59 @@ fn ehp_declared_incompatibly(stmts: Array[Stmt], op: String) -> Bool {
     si = si + 1
   }
   bad
+}
+
+/// `impl_target_key` of `ty` with the program's type aliases expanded, so a
+/// transparent `type Path = String` in a host operation's declaration still
+/// matches the host's `String` (Codex on #3059).
+fn ehp_type_key(stmts: Array[Stmt], ty: TypeExpr) -> String {
+  impl_target_key(ehp_expand_aliases(stmts, ty, 32))
+}
+
+fn ehp_expand_aliases(stmts: Array[Stmt], ty: TypeExpr, fuel: Int) -> TypeExpr {
+  if fuel <= 0 {
+    ty
+  } else {
+    match ty {
+      TyName(name) => match ehp_find_alias(stmts, name, 0) {
+        Some((_, target)) => ehp_expand_aliases(stmts, target, fuel - 1),
+        None => ty
+      },
+      TyApp(head, args) => {
+        let expanded = for arg in args {
+          ehp_expand_aliases(stmts, arg, fuel - 1)
+        }
+        match ehp_find_alias(stmts, head, Array::length(args)) {
+          Some((formals, target)) => ehp_expand_aliases(stmts, eq_subst_ty(target, formals, expanded), fuel - 1),
+          None => TyApp(head, expanded)
+        }
+      },
+      TyFn(params, result, row) => TyFn(for param in params {
+        ehp_expand_aliases(stmts, param, fuel - 1)
+      }, ehp_expand_aliases(stmts, result, fuel - 1), row),
+      TyTuple(items) => TyTuple(for item in items {
+        ehp_expand_aliases(stmts, item, fuel - 1)
+      }),
+      TyUnit => TyUnit
+    }
+  }
+}
+
+fn ehp_find_alias(stmts: Array[Stmt], name: String, arity: Int) -> Option[(Array[String], TypeExpr)] {
+  let mut found: Option[(Array[String], TypeExpr)] = None
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      STypeAlias(_, n, formals, target) => if n == name && Array::length(formals) == arity {
+        found = Some((formals, target))
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
 }
 
 fn ehp_effect_decl_indices(stmts: Array[Stmt], effect: String) -> Array[Int] {
