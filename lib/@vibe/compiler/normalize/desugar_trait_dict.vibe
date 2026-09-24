@@ -22997,15 +22997,22 @@ fn dhhc_stmt(stmt: Stmt) -> Stmt {
 /// that is the same evidence-passing rule `perform` itself follows
 /// (ADR-0076), so the two spellings agree on scope as well as on effect.
 /// Fill `dhhc_shadowed_names` from `stmts`: every top-level binding whose
-/// name is a qualified builtin spelling, except a value alias
-/// (`let Fs::exists = exists`), which forwards to a function that performs the
-/// operation anyway.
+/// name is a qualified builtin spelling, except a value alias to a PERFORM
+/// WRAPPER (`let Fs::exists = exists` over `fn exists(p) { perform
+/// Fs::Exists(p) }`, @vibe/fs's shape), whose call performs the operation
+/// anyway. Any other alias (`let Fs::exists = fake`) is a shadow: rewriting
+/// its call into the perform would replace `fake`'s answer with the
+/// handler's (Codex on #3059).
 fn dhhc_note_shadowed_names(stmts: Array[Stmt]) -> Unit {
   Array::truncate(dhhc_shadowed_names, 0)
   let mut i = 0
   while i < Array::length(stmts) {
     let name = match Array::get(stmts, i) {
-      SLet(_, _, _, _, EIdent(_, _)) => "",
+      SLet(_, _, n, _, EIdent(target, _)) => if dhhc_is_perform_wrapper(stmts, target, n) {
+        ""
+      } else {
+        n
+      },
       SLet(_, _, n, _, _) => n,
       SFnDecl(_, n, _, _, _) => n,
       _ => ""
@@ -23017,6 +23024,70 @@ fn dhhc_note_shadowed_names(stmts: Array[Stmt]) -> Unit {
     }
     i = i + 1
   }
+}
+
+/// Is `target` a top-level function whose whole body is `perform Op(params)`,
+/// its own parameters in order, for the operation whose capability spelling
+/// is `alias`?
+fn dhhc_is_perform_wrapper(stmts: Array[Stmt], target: String, alias: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let fn_value = match Array::get(stmts, i) {
+      SLet(_, _, n, _, value) => if n == target {
+        Some(value)
+      } else {
+        None
+      },
+      SFnDecl(_, n, value, _, _) => if n == target {
+        Some(value)
+      } else {
+        None
+      },
+      _ => None
+    }
+    match fn_value {
+      Some(EFn(_, _, params, _, _, body)) => {
+        let (op, args) = match body {
+          ECall(EIdent("perform", _), perform_args, _) => if Array::length(perform_args) == 1 {
+            match Array::get(perform_args, 0) {
+              ECall(EIdent(o, _), a, _) => (o, a),
+              EIdent(o, _) => (o, empty_expr_array()),
+              _ => ("", empty_expr_array())
+            }
+          } else {
+            ("", empty_expr_array())
+          },
+          _ => ("", empty_expr_array())
+        }
+        if op != "" && canonical_builtin_name(op) == alias && Array::length(args) == Array::length(params) {
+          let mut same = true
+          let mut a = 0
+          while a < Array::length(args) {
+            match Array::get(args, a) {
+              EIdent(arg, _) => if arg != Array::get(params, a).0 {
+                same = false
+              } else {
+                ()
+              },
+              _ => same = false
+            }
+            a = a + 1
+          }
+          if same {
+            found = true
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
 }
 
 export fn desugar_handled_host_calls_reporting_change(stmts: Array[Stmt]) -> Bool {
@@ -23618,7 +23689,7 @@ fn ihc_granted_everywhere(stmts: Array[Stmt], entry_name: String, op: String) ->
         match value {
           EFn(_, _, _, _, eff, _) => if name == entry_name {
             has_entry_fn = true
-            let row = ehp_entry_row(binding_ty, eff)
+            let row = ehp_entry_row(stmts, binding_ty, eff)
             if !ehp_row_grants(row, op) {
               ok = false
             } else {
@@ -23723,11 +23794,24 @@ export fn intercept_handled_host_calls_everywhere(stmts: Array[Stmt], entry_name
 fn ihc_rewrite_stmt(stmt: Stmt, ops: Array[String]) -> Stmt {
   match stmt {
     SLet(e, r, n, t, EFn(tps, tbs, params, ret, eff, body)) => {
+      // The signature may sit on the BINDING instead (`let read: () -> String
+      // with Fs::read_file = () -> ..`); the checker reads that annotation as
+      // the row, and the evidence pass reads only the EFn slot. So the
+      // annotation is widened too, and its widened row is materialized into
+      // an empty EFn slot -- else the helper gets no handler dictionary and a
+      // caller's handler is bypassed (Codex on #3059).
+      let widened_ty = match t {
+        Some(TyFn(pts, rt, Some(row))) => Some(TyFn(pts, rt, Some(ihc_widen_row(row, ops)))),
+        _ => t
+      }
       let widened = match eff {
         Some(row) => Some(ihc_widen_row(row, ops)),
-        None => None
+        None => match widened_ty {
+          Some(TyFn(_, _, Some(row))) => Some(row),
+          _ => None
+        }
       }
-      SLet(e, r, n, t, EFn(tps, tbs, params, ret, widened, dhhc_expr(body, ops)))
+      SLet(e, r, n, widened_ty, EFn(tps, tbs, params, ret, widened, dhhc_expr(body, ops)))
     },
     SLet(e, r, n, t, body) => SLet(e, r, n, t, dhhc_expr(body, ops)),
     SLetMut(n, t, body) => SLetMut(n, t, dhhc_expr(body, ops)),
@@ -23782,7 +23866,7 @@ export fn wrap_entry_host_provider(stmts: Array[Stmt], entry_name: String) -> Un
     while i < Array::length(stmts) {
       match Array::get(stmts, i) {
         SLet(exported, is_rec, name, ty, EFn(tps, tbs, params, ret, eff, body)) => if name == entry_name {
-          let row = ehp_entry_row(ty, eff)
+          let row = ehp_entry_row(stmts, ty, eff)
           let wrapped = ehp_wrap(body, performed, (op) -> {
             ehp_row_grants(row, op) && !ehp_declared_incompatibly(stmts, op) && ehp_unshadowed(fn_bound, op, provided_ops)
           }, effects)
@@ -23825,7 +23909,7 @@ export fn wrap_entry_host_provider(stmts: Array[Stmt], entry_name: String) -> Un
 /// checker treats the annotation's row as the grant too (`fn_binding_effects`),
 /// so reading only the `EFn` row left such an entry's performs unprovided
 /// (Codex on #3059).
-fn ehp_entry_row(ty: Option[TypeExpr], eff: Option[String]) -> String {
+fn ehp_entry_row(stmts: Array[Stmt], ty: Option[TypeExpr], eff: Option[String]) -> String {
   let own = match eff {
     Some(r) => r,
     None => ""
@@ -23834,13 +23918,76 @@ fn ehp_entry_row(ty: Option[TypeExpr], eff: Option[String]) -> String {
     Some(TyFn(_, _, Some(r))) => r,
     _ => ""
   }
-  if String::length(String::trim(annotated)) == 0 {
+  let row = if String::length(String::trim(annotated)) == 0 {
     own
   } else if String::length(String::trim(own)) == 0 {
     annotated
   } else {
     String::concat(own, String::concat(", ", annotated))
   }
+  ehp_expand_effectsets(stmts, row)
+}
+
+/// `row` with every label that names an `effectset` replaced by its members,
+/// transitively. The checker expands `allows AppCaps` the same way, so an
+/// entry granted `Fs` through a set must get the provider an entry granted
+/// `Fs` directly gets (Codex on #3059).
+fn ehp_expand_effectsets(stmts: Array[Stmt], row: String) -> String {
+  let pending: Array[String] = []
+  let parts = String::split(row, ",")
+  let mut i = 0
+  while i < Array::length(parts) {
+    let label = String::trim(Array::get(parts, i))
+    if String::length(label) > 0 {
+      Array::push(pending, label)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  let seen_sets: Array[String] = []
+  let out: Array[String] = []
+  let mut k = 0
+  while k < Array::length(pending) {
+    let label = Array::get(pending, k)
+    let members = ehp_effectset_members(stmts, label)
+    match members {
+      Some(ms) => if !str_array_contains(seen_sets, label) {
+        Array::push(seen_sets, label)
+        let mut m = 0
+        while m < Array::length(ms) {
+          Array::push(pending, String::trim(Array::get(ms, m)))
+          m = m + 1
+        }
+      } else {
+        ()
+      },
+      None => if !str_array_contains(out, label) {
+        Array::push(out, label)
+      } else {
+        ()
+      }
+    }
+    k = k + 1
+  }
+  String::join(out, ", ")
+}
+
+fn ehp_effectset_members(stmts: Array[Stmt], name: String) -> Option[Array[String]] {
+  let mut found: Option[Array[String]] = None
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SEffectSet(_, n, members) => if n == name {
+        found = Some(members)
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
 }
 
 /// True when no top-level function occupies `op`'s builtin name; notes the

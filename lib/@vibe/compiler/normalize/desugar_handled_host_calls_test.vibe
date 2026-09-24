@@ -53,3 +53,18 @@ test "a program's own declaration of the builtin spelling is not rewritten" {
   // with the handler's (Codex on #3059).
   assert(!rewrote("fn Fs::exists(p: String) -> Bool {\n  true\n}\n\nfn f() -> Bool {\n  handle {\n    Fs::exists(\"p\")\n  } with {\n    Fs::Exists(_p) => resume(false)\n  }\n}\n"))
 }
+
+test "a value alias to an arbitrary function is a shadow too" {
+  // `Fs::exists(p)` calls `fake`; rewriting it into the perform would replace
+  // `fake`'s answer with the handler's (Codex on #3059).
+  assert(!rewrote("fn fake(p: String) -> Bool {\n  true\n}\n\nlet Fs::exists = fake\n\nfn f() -> Bool {\n  handle {\n    Fs::exists(\"p\")\n  } with {\n    Fs::Exists(_p) => resume(false)\n  }\n}\n"))
+}
+
+test "a value alias to a wrapper performing the same operation is not a shadow" {
+  // @vibe/fs's shape: the call performs `Fs::Exists` either way.
+  assert(rewrote("fn exists(p: String) -> Bool with Fs {\n  perform Fs::Exists(p)\n}\n\nlet Fs::exists = exists\n\nfn f() -> Bool {\n  handle {\n    Fs::exists(\"p\")\n  } with {\n    Fs::Exists(_p) => resume(false)\n  }\n}\n"))
+}
+
+test "a wrapper performing a DIFFERENT operation does not exempt its alias" {
+  assert(!rewrote("fn other(p: String) -> Bool with Fs {\n  perform Fs::IsDir(p)\n}\n\nlet Fs::exists = other\n\nfn f() -> Bool {\n  handle {\n    Fs::exists(\"p\")\n  } with {\n    Fs::Exists(_p) => resume(false)\n  }\n}\n"))
+}

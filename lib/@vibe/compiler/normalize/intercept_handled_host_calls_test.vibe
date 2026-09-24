@@ -5,7 +5,7 @@
 // the operation, so the entry provider is guaranteed to catch the rest.
 
 import @vibe/compiler/core {
-  Expr, Stmt
+  Expr, Stmt, TypeExpr
 }
 
 import @vibe/parser {
@@ -150,4 +150,31 @@ test "a helper inside a module node is rewritten too" {
 test "a direct call is not rewritten into an operation declared with another signature" {
   let src = "effect Fs {\n  Exists(Int, Int) -> Bool\n}\n\nfn inner() -> Bool with Fs::exists {\n  Fs::exists(\"p\")\n}\n\ntest \"t\" {\n  let r = handle {\n    inner()\n  } with {\n    Fs::Exists(_a, _b) => resume(true)\n  }\n  inspect(r, \"true\")\n}\n"
   inspect(after(src, "__no_entry__", "inner", "Fs::Exists"), "Fs::exists|false")
+}
+
+/// The row of the named top-level binding's TYPE ANNOTATION after the pass.
+fn annotated_row(source: String, name: String) -> String with Exception {
+  let stmts = parse_program(lex(source))
+  intercept_handled_host_calls_everywhere(stmts, "__no_entry__")
+  let mut out = "<not found>"
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, n, Some(TyFn(_, _, Some(r))), _) => if n == name {
+        out = r
+      } else {
+        ()
+      },
+      _ => ()
+    }
+  }
+  out
+}
+
+test "a row written only on the binding's annotation is widened, and reaches the fn" {
+  // The checker reads `let f: () -> R with row = ..` as f's row; the
+  // evidence pass reads only the EFn slot, so both must carry the effect
+  // (Codex on #3059).
+  let src = "let inner: () -> String with Fs::read_file = () -> Fs::read_file(\"p\")\n\ntest \"t\" {\n  let r = handle {\n    inner()\n  } with {\n    Fs::ReadFile(_p) => resume(\"m\")\n  }\n  inspect(r, \"m\")\n}\n"
+  inspect(after(src, "__no_entry__", "inner", "Fs::ReadFile"), "Fs::read_file, Fs|true")
+  inspect(annotated_row(src, "inner"), "Fs::read_file, Fs")
 }

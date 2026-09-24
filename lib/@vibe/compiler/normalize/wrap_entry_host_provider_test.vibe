@@ -105,6 +105,15 @@ test "an ungranted operation acquires no provider" {
   inspect(provided(optional, "main"), "")
 }
 
+test "an effectset in the entry row grants its members" {
+  // The checker expands `allows AppCaps`; the provider must see the same
+  // grant, or the perform unwinds to the top (Codex on #3059).
+  let src = "effectset AppCaps = { Fs }\n\nfn r() -> Bool with Fs {\n  perform Fs::Exists(\"p\")\n}\n\nfn main() -> Unit allows AppCaps {\n  let _b = r()\n}\n"
+  inspect(provided(src, "main"), "Fs::Exists/1")
+  let nested = "effectset Io = { Fs }\n\neffectset AppCaps = { Stdout, Io }\n\nfn r() -> Bool with Fs {\n  perform Fs::Exists(\"p\")\n}\n\nfn main() -> Unit allows AppCaps {\n  let _b = r()\n}\n"
+  inspect(provided(nested, "main"), "Fs::Exists/1")
+}
+
 test "a test block is provided from its ambient row" {
   let src = "fn r() -> String with Env {\n  perform Env::Get(\"HOME\")\n}\n\ntest \"t\" {\n  let _v = r()\n}\n"
   inspect(provided(src, "test:t"), "Env::Get/1")

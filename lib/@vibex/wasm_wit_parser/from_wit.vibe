@@ -32,6 +32,7 @@ import ./wit_parser.vibe {
   FKMethod,
   FKStatic,
   IIFunction,
+  IITypeDef,
   TDAlias,
   TDEnum,
   TDFlags,
@@ -414,6 +415,15 @@ export fn from_wit_future_imports(source: String) -> String with Exception {
           }
           Array::push(seen, vname)
           Array::push(out, "/// `\{iface_id}#\{fname}`, imported as a host future (#2064).\nexport fn \{vname}() -> Future[Int] {\n  host_future_named(\"\{iface_id}#\{fname}\")\n}")
+        },
+        // A resource's functions are functions of the interface too; none is
+        // a host-future import, so they are refused rather than silently
+        // missing from the bindings (Codex on #3059).
+        IITypeDef(TDResource(rname, funcs, _)) => if Array::length(funcs) > 0 {
+          let (fname, _, _, _, _, _) = Array::get(funcs, 0)
+          throw(fw_refusal("function `\{fname}` of resource `\{rname}` as a host-future import (only a freestanding `async func() -> s64` is admitted)", " (in interface `\{iname}`)"))
+        } else {
+          ()
         },
         _ => ()
       }
