@@ -2540,7 +2540,9 @@ fn trait_method_reference_names(methods: Array[(String, Array[TypeExpr], TypeExp
 }
 
 fn push_reference_name(name: String, binders: Array[String], out: Array[String]) -> Unit {
-  if !contains_str(binders, name) && !contains_str(out, name) {
+  // Binders are `type_param_key`s: a kinded one (`F[_]`) is encoded, while
+  // the source spells it `F`.
+  if identity_formal_index(binders, name) < 0 && !contains_str(out, name) {
     Array::push(out, name)
   } else {
     ()
@@ -2690,14 +2692,11 @@ fn bind_type_reference_definitions(value_surface: Array[String], publication_env
   }
   let published_defs = env_type_defs(published)
   let markers = type_reference_markers(publication_env)
-  // A kept declaration's closure is kept with it
-  // (`restrict_env_to_export_surface_with_defs`), so the only member it can
-  // lack a node for is one this module holds as a marker itself.
-  let mut di = if Array::length(markers) == 0 {
-    Array::length(published_defs)
-  } else {
-    0
-  }
+  // Every kept declaration is scanned, markers or not: the projection keeps
+  // a declaration's closure by its members' literal spellings, so a type
+  // named only inside an effect-set member (`Exception[Err]`) can be left
+  // without a node even when this module declares it.
+  let mut di = 0
   while di < Array::length(published_defs) {
     let def = Array::get(published_defs, di)
     let refs = typedef_reference_names(def)
