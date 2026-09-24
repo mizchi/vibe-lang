@@ -368,98 +368,41 @@ fn manifest_shared_import_owner_fs(path: String) -> String with Exception + Fs {
 /// The raw `@scope/pkg` paths of a contract's directory-shared imports: the
 /// statements `contract_directory_shared_imports` keeps, a top-level `import
 /// @scope/pkg { .. }` -- not the namespaced `as <mod> only` form and not an
-/// `@alias` declaration. Read by a line scan and a lex of each import
-/// statement rather than a parse of the whole contract: this runs for every
-/// package a manifest closure reaches, and only the import lines matter.
-/// `text` is the contract with its header directives blanked.
+/// `@alias` declaration. Read from the contract's tokens rather than a parse:
+/// this runs for every package a manifest closure reaches, and only the
+/// import statements matter. The contract grammar is token-based, so an
+/// import is found wherever it sits -- indented, after a `;`, after another
+/// declaration on the same line, or split across lines (Codex on #3076) --
+/// as long as it is outside braces. `text` is the contract with its header
+/// directives blanked.
 export fn contract_shared_import_raws_scan(text: String) -> Array[String] with Exception {
-  let len = String::length(text)
   let raws: Array[String] = []
-  let mut pos = 0
-  while pos < len {
-    // A statement starts a line or follows a `;` separator (the grammar is
-    // token-based, so `import @a/x { A }; import @b/y { B }` is two
-    // statements on one line, and `scan_header_stmt_end` stops at the `;`).
-    let at_line_start = pos == 0 || String::char_code_at(text, pos - 1) == 10 || String::char_code_at(text, pos - 1) == 59
-    // A statement may be indented: the contract parser accepts leading
-    // horizontal whitespace, so the keyword is tested after it.
-    let mut kw = pos
-    if at_line_start {
-      // `;` is a statement separator the parser skips, so an empty statement
-      // before the import is skipped here too.
-      while kw < len && (String::char_code_at(text, kw) == 32 || String::char_code_at(text, kw) == 9 || String::char_code_at(text, kw) == 59) {
-        kw = kw + 1
-      }
-    }
-    if at_line_start && starts_with_keyword_at(text, kw, "import") {
-      pos = kw
-      let mut stmt_end = scan_header_stmt_end(text, len, pos)
-      let mut tokens = lex(text[pos: stmt_end])
-      // A newline outside braces is not a statement end in a token-based
-      // grammar when the import is still waiting for its path or its `{`
-      // (`import @scope/pkg` / `{ Thing }` on the next line), so the span is
-      // extended one line at a time until the prefix is complete.
-      while stmt_end < len && String::char_code_at(text, stmt_end) == 10 && shared_import_prefix_open(tokens) {
-        stmt_end = scan_header_stmt_end(text, len, stmt_end + 1)
-        tokens = lex(text[pos: stmt_end])
-      }
-      // Every `import @scope/pkg {` in the span, not only the first: the
-      // contract grammar is token-based, so two shared imports may share a
-      // line, and `scan_header_stmt_end` returns the end of that line.
-      let mut ti = 0
-      while ti + 2 < Array::length(tokens) {
-        match peek(tokens, ti) {
-          TImport => match peek(tokens, ti + 1) {
-            TIdent(path) => if String::length(path) > 1 && String::char_code_at(path, 0) == 64 {
-              match peek(tokens, ti + 2) {
-                TLBrace => Array::push(raws, path),
-                _ => ()
-              }
-            } else {
-              ()
-            },
-            _ => ()
+  let tokens = lex(text)
+  let n = Array::length(tokens)
+  let mut depth = 0
+  let mut ti = 0
+  while ti < n {
+    match peek(tokens, ti) {
+      TLBrace => depth = depth + 1,
+      TRBrace => if depth > 0 {
+        depth = depth - 1
+      },
+      TImport => if depth == 0 && ti + 2 < n {
+        match peek(tokens, ti + 1) {
+          TIdent(path) => if String::length(path) > 1 && String::char_code_at(path, 0) == 64 {
+            match peek(tokens, ti + 2) {
+              TLBrace => Array::push(raws, path),
+              _ => ()
+            }
           },
           _ => ()
         }
-        ti = ti + 1
-      }
-      pos = if stmt_end > pos {
-        stmt_end
-      } else {
-        pos + 1
-      }
-    } else {
-      pos = pos + 1
+      },
+      _ => ()
     }
+    ti = ti + 1
   }
   raws
-}
-
-/// Whether `tokens` end inside an import that has not reached its `{` yet:
-/// `import` alone, or `import @scope/pkg` with nothing after the path.
-fn shared_import_prefix_open(tokens: Array[Token]) -> Bool {
-  let mut n = Array::length(tokens)
-  let mut trailing = true
-  while trailing && n > 0 {
-    match Array::get(tokens, n - 1) {
-      TEof => n = n - 1,
-      TSemicolon => n = n - 1,
-      _ => trailing = false
-    }
-  }
-  if n == 0 {
-    false
-  } else {
-    match Array::get(tokens, n - 1) {
-      TImport => true,
-      TIdent(path) => n >= 2 && String::length(path) > 1 && String::char_code_at(path, 0) == 64 && match Array::get(tokens, n - 2) {
-        TImport => true,
-        _ => false
-      },
-      _ => false
-    }
-  }
 }
 
 /// Per-process memo of each contract's directory-shared import spellings,
