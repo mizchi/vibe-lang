@@ -30,7 +30,8 @@ import @vibe/compiler/core {
   sorted_names_of,
   typed_lowering_arg_offset,
   typed_lowering_float_key,
-  typed_render_refuse_key
+  typed_render_refuse_key,
+  unrenderable_render_message
 }
 
 import @vibe/compiler/codegen/common_analysis {
@@ -2190,16 +2191,6 @@ fn ts_offset_refuses_render(e: Expr, ctx: CompileCtx) -> Bool {
   off >= 0 && array_contains_int(ctx.int_render_offsets, typed_render_refuse_key(off))
 }
 
-fn ts_unrenderable_msg(e: Expr) -> String {
-  let what = match e {
-    EIdent(n, _) => String::concat("`", String::concat(n, "`")),
-    EDot(_, f, _, _) => String::concat("field `", String::concat(f, "`")),
-    ECall(EIdent(cn, _), _, _) => String::concat("the result of `", String::concat(cn, "`")),
-    _ => "this value"
-  }
-  String::concat("cannot interpolate ", String::concat(what, ": its type is an Option, Array, tuple, Bytes or record whose shape the renderer could not resolve here, so it would print a memory address -- bind it with a type annotation first (e.g. `let v: Option[Int] = ...`, then interpolate `v`) (#2987)"))
-}
-
 fn ts_known_int(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
   let tag = expr_tag(e)
   if ts_offset_says_int(e, ctx) {
@@ -4038,7 +4029,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
     else if fname == "__to_string" {
       let ts_arg0 = Array::get(args, 0)
       if ts_offset_refuses_render(ts_arg0, ctx) {
-        throw(ts_unrenderable_msg(ts_arg0))
+        throw(unrenderable_render_message(ts_arg0))
       }
       let ts_arg_is_int = ts_known_int(ts_arg0, local_names, ctx)
       let mut nl = ce(buf, ts_arg0, local_names, next_local, ctx, ld)

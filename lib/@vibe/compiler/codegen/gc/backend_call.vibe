@@ -17,7 +17,9 @@ import @vibe/compiler/core {
   leb128_encode_s64,
   leb128_encode_u32,
   typed_lowering_arg_offset,
-  typed_lowering_float_key
+  typed_lowering_float_key,
+  typed_render_refuse_key,
+  unrenderable_render_message
 }
 
 import @vibe/core {
@@ -314,6 +316,17 @@ export fn gc_fn_returns_float(local_names: Array[String], ctx: CompileCtxGc, fna
 fn bc_offset_says_int(e: Expr, ctx: CompileCtxGc) -> Bool {
   let off = typed_lowering_arg_offset(e)
   off >= 0 && array_contains_int(ctx.gc_int_render_offsets, off)
+}
+
+/// #3068: gc mirror of the linear lane's `ts_offset_refuses_render`
+/// (compile_call.vibe). The checker filed this render argument as a shape the
+/// runtime renderer cannot print (#2987, tag 6, folded into the Int channel
+/// under `typed_render_refuse_key`). The linear lane refused the build while
+/// this lane had no such arm and sent the argument to the runtime-dispatching
+/// `__to_string`, which printed its allocation address.
+fn bc_offset_refuses_render(e: Expr, ctx: CompileCtxGc) -> Bool {
+  let off = typed_lowering_arg_offset(e)
+  off >= 0 && array_contains_int(ctx.gc_int_render_offsets, typed_render_refuse_key(off))
 }
 
 fn bc_expr_is_intish(e: Expr, local_names: Array[String], ctx: CompileCtxGc) -> Bool {
@@ -2552,6 +2565,11 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         emit_i64_const(buf, 4294967295)
         emit_i64_and(buf)
         nl
+      }
+      else if fname == "__to_string" && Array::length(args) == 1 && bc_offset_refuses_render(Array::get(args, 0), ctx) {
+        // #3068: refuse exactly where the linear lane refuses (#2987), with
+        // the same message, rather than print an address.
+        throw(unrenderable_render_message(Array::get(args, 0)))
       }
       else if fname == "__to_string" && Array::length(args) == 1 && bc_expr_is_floatish(Array::get(args, 0), local_names, ctx) {
         // #744 (gc mirror of the linear fix): a statically-floatish argument
