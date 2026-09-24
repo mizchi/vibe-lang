@@ -5147,9 +5147,33 @@ fn unknown_effect_arm_in_expr(expr: Expr, es_names: Array[String], ed_names: Arr
         }
       },
       // #3045: the reserved `Mut` label is refused on a closure's own row
-      // too, not only on a top-level declaration's.
-      EFn(_, _, _, _, Some(row), _) => if row_names_reserved_mut(row) {
-        out = String::concat(reserved_mut_row_message, " (in a closure's row)")
+      // too, not only on a top-level declaration's -- and in the function
+      // types its parameters and result are annotated with (Codex on #3061).
+      EFn(_, _, cparams, cret, crow, _) => {
+        let crows = array_empty()
+        match crow {
+          Some(r) => Array::push(crows, r),
+          None => ()
+        }
+        let mut cpi = 0
+        while cpi < Array::length(cparams) {
+          match Array::get(cparams, cpi) {
+            (_, Some(cpte)) => fek_rows_in_texpr(cpte, crows),
+            _ => ()
+          }
+          cpi = cpi + 1
+        }
+        match cret {
+          Some(crte) => fek_rows_in_texpr(crte, crows),
+          None => ()
+        }
+        let mut cri = 0
+        while cri < Array::length(crows) && String::length(out) == 0 {
+          if row_names_reserved_mut(Array::get(crows, cri)) {
+            out = String::concat(reserved_mut_row_message, " (in a closure's row)")
+          }
+          cri = cri + 1
+        }
       },
       _ => ()
     }
