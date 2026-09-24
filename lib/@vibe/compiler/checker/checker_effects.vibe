@@ -2390,6 +2390,97 @@ fn row_label_base(label: String) -> String {
   }
 }
 
+/// #3053: `E[A]` and `E[B]` stay interchangeable (#1340 v1) EXCEPT when both
+/// sides spell closed builtin types that differ: `with State[Int]` does not
+/// authorize a callee's `State[String]`. The test is syntactic, so it only
+/// judges spellings made of builtin type names -- a formal, an alias or a
+/// declared type is not a builtin name, so it keeps the old base-name answer
+/// rather than being mistaken for a different type.
+fn row_label_args_closed_and_differ(a: String, b: String) -> Bool {
+  let aa = row_label_args(a)
+  let ba = row_label_args(b)
+  String::length(aa) > 0 && String::length(ba) > 0 && builtin_closed_type_text(aa) && builtin_closed_type_text(ba) && aa != ba
+}
+
+/// The text between a label's first `[` and its matching `]`, spaces removed;
+/// "" when the label carries no brackets.
+fn row_label_args(label: String) -> String {
+  let bi = String::index_of(label, "[")
+  if bi < 0 {
+    ""
+  } else {
+    let n = String::length(label)
+    let mut depth = 0
+    let mut end = 0 - 1
+    let mut i = bi
+    while i < n && end < 0 {
+      let c = String::char_code_at(label, i)
+      if c == 91 {
+        depth = depth + 1
+      } else if c == 93 {
+        depth = depth - 1
+        if depth == 0 {
+          end = i
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    if end < 0 {
+      ""
+    } else {
+      let inner = String::substring(label, bi + 1, end)
+      String::join(String::split(inner, " "), "")
+    }
+  }
+}
+
+/// Is `t` (spaces already removed) built only from builtin type names,
+/// `Array[..]` / `Option[..]` and commas?
+fn builtin_closed_type_text(t: String) -> Bool {
+  let n = String::length(t)
+  let mut ok = n > 0
+  let mut start = 0 - 1
+  let mut i = 0
+  while i <= n && ok {
+    let c = if i < n {
+      String::char_code_at(t, i)
+    } else {
+      0
+    }
+    let is_letter = (c >= 65 && c <= 90) || (c >= 97 && c <= 122)
+    if is_letter {
+      if start < 0 {
+        start = i
+      } else {
+        ()
+      }
+    } else {
+      if start >= 0 {
+        let w = String::substring(t, start, i)
+        if w != "Int" && w != "String" && w != "Bool" && w != "Double" && w != "Char" && w != "Bytes" && w != "Unit" && w != "Array" && w != "Option" {
+          ok = false
+        } else {
+          ()
+        }
+        start = 0 - 1
+      } else {
+        ()
+      }
+      if i < n && c != 91 && c != 93 && c != 44 {
+        ok = false
+      } else {
+        ()
+      }
+    }
+    i = i + 1
+  }
+  ok
+}
+
 /// #1340: base-aware membership — true when some declared label and the
 /// required name share a base AND at least one side actually carries a
 /// bracket (so this never fires for pre-#1340 rows, where the exact check
@@ -2415,7 +2506,7 @@ fn row_base_membership(labels: Array[String], eff_name: String) -> Bool {
       let l = Array::get(labels, i)
       let lb = row_label_base(l)
       let lhas = String::length(lb) < String::length(l)
-      if (ehas || lhas) && lb == eb && !is_exception_label(l) {
+      if (ehas || lhas) && lb == eb && !is_exception_label(l) && !row_label_args_closed_and_differ(l, eff_name) {
         found = true
       } else {
         ()
