@@ -2465,7 +2465,15 @@ fn seed_prelude_ordering(stmts: Array[Stmt], env: TypeEnv, defs: Array[TypeDef],
   } else if !module_uses_prelude_ordering(stmts) {
     (env, local_defs_start, c)
   } else match env_lookup(env, "Less") {
-    Some(_) => (env, local_defs_start, c),
+    // An import bound the constructors. Only the prelude-shaped enum may
+    // stand in for the prelude: an unrelated imported enum with a `Less`
+    // would otherwise be what a derived `compare` builds.
+    Some(_) => {
+      if !env_binds_prelude_ordering_ctors(env) {
+        report_ordering_conflict_with(stmts, errors, "but this module imports a `Less` / `Equal` / `Greater` constructor of another enum; import that enum qualified or rename its constructors")
+      }
+      (env, local_defs_start, c)
+    },
     None => match find_typedef(defs, "Ordering") {
       // An import carried the declaration in only to make a signature
       // intelligible (`import @vibe/builtin { int_compare }`): the type is
@@ -2527,27 +2535,49 @@ fn report_prelude_ordering_conflict(stmts: Array[Stmt], errors: Array[String]) -
   if stmts_declare_prelude_ordering_shape(stmts) {
     ()
   } else {
-    let mut i = 0
-    let mut reported = false
-    while !reported && i < Array::length(stmts) {
-      let derived_ord = match Array::get(stmts, i) {
-        SStruct(_, name, _, derives, _, _) => if struct_derives_has(derives, "Ord") {
-          Some(name)
-        } else None,
-        SEnum(_, name, _, _, derives) => if struct_derives_has(derives, "Ord") {
-          Some(name)
-        } else None,
-        _ => None
-      }
-      match derived_ord {
-        Some(name) => {
-          Array::push(errors, String::concat("`derive (Ord)` on `", String::concat(name, "` generates `compare` returning the prelude `Ordering` (`Less` / `Equal` / `Greater`), but this module declares its own `Ordering` or one of those constructors; rename that declaration")))
-          reported = true
-        },
-        None => ()
-      }
-      i = i + 1
+    report_ordering_conflict_with(stmts, errors, "but this module declares its own `Ordering` or one of those constructors; rename that declaration")
+  }
+}
+
+/// #3042: do `Less` / `Equal` / `Greater` all name the prelude-shaped
+/// `Ordering` in `env`? False when any of them resolves to another type.
+fn env_binds_prelude_ordering_ctors(env: TypeEnv) -> Bool {
+  let names = ["Less", "Equal", "Greater"]
+  let mut ok = true
+  for name in names {
+    match env_lookup(env, name) {
+      Some(CtEnum(owner)) => if owner != "Ordering" {
+        ok = false
+      },
+      _ => ok = false
     }
+  }
+  ok
+}
+
+/// Refuse the first `derive (Ord)` in `stmts`, naming why the prelude
+/// `Ordering` it needs is unavailable (`why` finishes the sentence).
+fn report_ordering_conflict_with(stmts: Array[Stmt], errors: Array[String], why: String) -> Unit {
+  let mut i = 0
+  let mut reported = false
+  while !reported && i < Array::length(stmts) {
+    let derived_ord = match Array::get(stmts, i) {
+      SStruct(_, name, _, derives, _, _) => if struct_derives_has(derives, "Ord") {
+        Some(name)
+      } else None,
+      SEnum(_, name, _, _, derives) => if struct_derives_has(derives, "Ord") {
+        Some(name)
+      } else None,
+      _ => None
+    }
+    match derived_ord {
+      Some(name) => {
+        Array::push(errors, String::concat("`derive (Ord)` on `", String::concat(name, String::concat("` generates `compare` returning the prelude `Ordering` (`Less` / `Equal` / `Greater`), ", why))))
+        reported = true
+      },
+      None => ()
+    }
+    i = i + 1
   }
 }
 
