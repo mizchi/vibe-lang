@@ -53,6 +53,7 @@ import @vibe/compiler/core {
   env_type_defs,
   env_value_binding_with_origin,
   env_with_reexport_surface_blockers,
+  exception_row_resolved,
   expr_child_at,
   expr_children,
   expr_children_pop,
@@ -109,7 +110,9 @@ import ./checker.vibe {
   note_toplevel_generic_binding,
   pat_binds_resume,
   preserve_generic_instantiation,
+  record_decl_exception_kinds,
   refuse_generalized_field_reads,
+  refuse_unpublishable_exception_row,
   reject_resume_outside_handler,
   report_formal_applications,
   report_formal_applications_across,
@@ -123,10 +126,12 @@ import ./checker.vibe {
   resolve_impl_self_field_reads,
   resolve_trait_bound_self_reference,
   set_generic_fn_decls,
+  throw_kind_of_type,
   throw_payload_site_types,
   trait_erased_type_param_env,
   trait_reference_display,
   ty_has_open_array_elem,
+  type_exception_rows_resolved,
   typed_occurrence_capture_begin_statement,
   typed_occurrence_capture_end_statement,
   validate_trait_reference
@@ -3188,7 +3193,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
       _ => ()
     }
     let (new_env, s1, c1) = match stmt {
-      SLet(_, is_rec, name, ann, val) => {
+      SLet(exported, is_rec, name, ann, val) => {
         let err_before = Array::length(errors)
         // #2125: an `impl` method is parsed as `let <Type>::<method> = ..`
         // (parser.vibe's parse_impl_methods), and its signature may spell the
@@ -3276,7 +3281,16 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
             (ns_self, gen)
           }
         }
-        let env1 = bind_function_dependency_contracts(env_bind(env, name, t), name, val)
+        // #3033: the binding is published with its rows' exception kinds
+        // resolved, so an importer compares the types they name rather than
+        // an alias it cannot see. An exported row whose kind no row can spell
+        // is refused instead.
+        if exported {
+          refuse_unpublishable_exception_row(t, name, name, defs, errors)
+        } else {
+          ()
+        }
+        let env1 = bind_function_dependency_contracts(env_bind(env, name, type_exception_rows_resolved(t)), name, val)
         capture_statement_root_type(capture, statement_path, "SLet", vt)
         (bind_value_or_annotation_return(env1, name, val, ann, defs), ns, nc)
       },
@@ -3426,6 +3440,9 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         // already saw the resolved form; the two disagreed.
         let self_def_index = own_typedef_slot(defs, type_def_binders, taken_type_def_slots, name, preclaim_from, TDEnum(name, params, array_empty()))
         Array::set(type_def_binders, self_def_index, param_var_ids)
+        // #3028: the payload rows' exception kinds resolve before the
+        // payloads and the constructor signatures below are built from them.
+        record_decl_exception_kinds([stmt], defs, env, errors, false)
         let mut vi = 0
         while vi < Array::length(variants) {
           let (vname, vtypes) = Array::get(variants, vi)
@@ -3438,7 +3455,9 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
             report_unknown_type_names_deferred_validation(Array::get(vtypes, ti), defs, decl_report_shadow(params, array_empty(), deferred_names_for_decl(deferred_type_names, name)), env, array_empty(), String::concat(String::concat(String::concat("the payload of `", name), String::concat("::", vname)), "`"), errors)
             // #1512: `params` shadow `defs`, so the substitution below still
             // finds `CtNamed(<param>, [])` when an import bound that name.
-            let named_vt = resolve_type_expr_shadowed(Array::get(vtypes, ti), defs, params)
+            // #3028: a function row in a payload is published with its
+            // exception kinds resolved, as a binding's is.
+            let named_vt = type_exception_rows_resolved(resolve_type_expr_shadowed(Array::get(vtypes, ti), defs, params))
             Array::push(named_vtypes, named_vt)
             Array::push(resolved_vtypes, subst_type_params(named_vt, params, param_var_types))
             ti = ti + 1
@@ -3476,7 +3495,9 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
               // #1512: shadow `params` here too -- this resolves the SAME
               // variant payloads as the `TDEnum` above, independently, and the
               // `subst_type_params` right here needs the rigid formal to survive.
-              let arg_ty = subst_type_params(resolve_type_expr_shadowed(Array::get(vtypes, ai), defs, params), params, param_var_types)
+              // #3028: the constructor's signature carries the payload's
+              // resolved exception kinds, the ones the TDEnum above holds.
+              let arg_ty = subst_type_params(type_exception_rows_resolved(resolve_type_expr_shadowed(Array::get(vtypes, ai), defs, params)), params, param_var_types)
               Array::push(resolved_args, arg_ty)
               ai = ai + 1
             }
@@ -3636,6 +3657,8 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         // types are resolved, so a recursive occurrence resolves to
         // `CtStruct(name)`.
         let self_struct_index = own_typedef_slot(defs, type_def_binders, taken_type_def_slots, name, preclaim_from, TDStruct(name, array_empty(), mut_fields, tparams))
+        // #3033: the field rows' exception kinds resolve before the fields are.
+        record_decl_exception_kinds([stmt], defs, env, errors, false)
         let mut fi = 0
         while fi < Array::length(field_defs) {
           let (fname, ftype_expr) = Array::get(field_defs, fi)
@@ -3652,7 +3675,9 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
           // #1512: `tparams` shadow `defs` -- the #829 comment below assumes a
           // param name resolves to a rigid `CtNamed(param, [])` because no
           // typedef/builtin claims it, which an import alias otherwise breaks.
-          let ftype = resolve_type_expr_shadowed(ftype_expr, defs, tparams)
+          // #3033: a function row in a field is published with its exception
+          // kinds resolved, as a binding's is.
+          let ftype = type_exception_rows_resolved(resolve_type_expr_shadowed(ftype_expr, defs, tparams))
           Array::push(resolved_fields, (fname, ftype))
           fi = fi + 1
         }
@@ -3756,7 +3781,12 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
           report_alias_expansion_limit(name, errors)
           CtNamed(name, array_empty())
         } else {
-          resolve_type_expr_shadowed(te, defs, params)
+          // #3028: the body's function rows are published with their
+          // exception kinds resolved, as a binding's are. The kinds are
+          // checked and recorded once the declarations are complete
+          // (`record_decl_exception_kinds`), and the body is re-resolved then.
+          record_decl_exception_kinds([stmt], defs, env, errors, false)
+          type_exception_rows_resolved(resolve_type_expr_shadowed(te, defs, params))
         }
         // Record the alias (with its formal params) so an applied use
         // `Name[Arg]` expands via subst in resolve_type_expr's TyApp case.
@@ -4034,6 +4064,9 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
     // yet. A type-only list validates after its final declaration.
     if stmt_is_type_decl(stmt) && (idx + 1 >= Array::length(stmts) || !stmt_is_type_decl(Array::get(stmts, idx + 1))) {
       local_defs_end = Array::length(defs)
+      // #3028 / #3033: the exception kinds in declaration rows resolve now,
+      // so the refreshes below publish them resolved.
+      record_decl_exception_kinds(stmts, defs, cur_env, errors, true)
       refresh_completed_alias_defs(stmts, defs, preclaim_from, local_defs_end, errors)
       refresh_completed_payload_defs(stmts, defs, type_def_binders, preclaim_from, local_defs_end)
       cur_env = refresh_completed_suberror_env(stmts, cur_env, defs, preclaim_from, local_defs_end)
@@ -4049,6 +4082,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
           let visible_defs_end = Array::length(defs)
           if visible_defs_end > defs_before_stmt {
             nested_defs_extended = true
+            record_decl_exception_kinds(visible_types, defs, cur_env, array_empty(), false)
             refresh_completed_alias_defs(visible_types, defs, preclaim_from, visible_defs_end, errors)
             refresh_completed_payload_defs(visible_types, defs, type_def_binders, preclaim_from, visible_defs_end)
             cur_env = refresh_completed_suberror_env(stmts, cur_env, defs, preclaim_from, local_defs_end)
@@ -4608,65 +4642,6 @@ fn collect_stdin_provider_direct_call_errors(stmts: Array[Stmt], errors: Array[S
   while i < Array::length(direct_errors) {
     Array::push(errors, effect_error_to_string(Array::get(direct_errors, i)))
     i = i + 1
-  }
-}
-
-/// #3017: the exception kind a resolved payload type names, spelled the way a
-/// kinded row writes it (`Int`, `Array[Int]`, `Option[P]`, `P`). "" for
-/// anything else -- an unresolved variable, a type formal, a tuple, a
-/// function -- which leaves the syntactic answer standing. A generic nominal
-/// keeps its arguments (`Box[Int]`, #3029).
-fn throw_kind_of_type(t: Type) -> String {
-  match t {
-    CtNamed(n, args) => if Array::length(args) == 0 || String::starts_with(n, "#") || String::starts_with(n, "__") {
-      ""
-    } else {
-      let parts = array_empty()
-      let mut ok = true
-      let mut ai = 0
-      while ai < Array::length(args) {
-        let k = throw_kind_of_type(Array::get(args, ai))
-        if String::length(k) == 0 {
-          ok = false
-        }
-        Array::push(parts, k)
-        ai = ai + 1
-      }
-      if ok {
-        String::concat(n, String::concat("[", String::concat(String::join(parts, ", "), "]")))
-      } else {
-        ""
-      }
-    },
-    CtInt => "Int",
-    CtDouble => "Double",
-    CtBool => "Bool",
-    CtString => "String",
-    CtChar => "Char",
-    CtBytes => "Bytes",
-    CtStruct(n) => if String::starts_with(n, "#") {
-      ""
-    } else {
-      n
-    },
-    CtEnum(n) => n,
-    CtArray(e) => {
-      let k = throw_kind_of_type(e)
-      if String::length(k) > 0 {
-        String::concat("Array[", String::concat(k, "]"))
-      } else {
-        ""
-      }
-    },
-    CtOption(e) => {
-      let k = throw_kind_of_type(e)
-      if String::length(k) > 0 {
-        String::concat("Option[", String::concat(k, "]"))
-      } else {
-        ""
-      }
-    },
-    _ => ""
   }
 }
 
@@ -6900,7 +6875,7 @@ fn refresh_completed_alias_defs(stmts: Array[Stmt], defs: Array[TypeDef], from: 
               Array::push(capped_aliases, idx)
               report_alias_expansion_limit(name, errors)
             } else {
-              Array::set(defs, idx, TDAlias(name, params, resolve_type_expr_shadowed(te, defs, params)))
+              Array::set(defs, idx, TDAlias(name, params, type_exception_rows_resolved(resolve_type_expr_shadowed(te, defs, params))))
             }
           } else {
             ()
@@ -6928,7 +6903,7 @@ fn refresh_completed_payload_defs(stmts: Array[Stmt], defs: Array[TypeDef], type
         if idx >= 0 {
           let resolved = for field in fields {
             let (field_name, field_type) = field
-            (field_name, resolve_type_expr_shadowed(field_type, defs, params))
+            (field_name, type_exception_rows_resolved(resolve_type_expr_shadowed(field_type, defs, params)))
           }
           Array::set(defs, idx, TDStruct(name, resolved, mut_fields, params))
         } else {
@@ -6948,7 +6923,7 @@ fn refresh_completed_payload_defs(stmts: Array[Stmt], defs: Array[TypeDef], type
           let resolved = for variant in variants {
             let (variant_name, payloads) = variant
             (variant_name, for payload in payloads {
-              subst_type_params(resolve_type_expr_shadowed(payload, defs, params), params, binder_types)
+              subst_type_params(type_exception_rows_resolved(resolve_type_expr_shadowed(payload, defs, params)), params, binder_types)
             })
           }
           Array::set(defs, idx, TDEnum(name, params, resolved))
@@ -7216,7 +7191,12 @@ fn refresh_completed_type(ty: Type, defs: Array[TypeDef], shadow: Array[String],
     }),
     CtFn(params, ret, row) => CtFn(for param in params {
       refresh_completed_type(param, defs, shadow, seen)
-    }, refresh_completed_type(ret, defs, shadow, seen), row),
+    }, refresh_completed_type(ret, defs, shadow, seen), match row {
+      // #3028: a constructor's signature is refreshed here once the
+      // declarations are complete; its rows' kinds resolve with its payloads.
+      Some(r) => Some(exception_row_resolved(r)),
+      None => None
+    }),
     CtForAll(vars, bounds, body) => CtForAll(vars, bounds, refresh_completed_type(body, defs, shadow, seen)),
     CtRecord(fields) => CtRecord(for field in fields {
       let (name, field_ty) = field

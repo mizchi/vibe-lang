@@ -294,3 +294,25 @@ test "struct-literal and float payloads carry their own kinds" {
   assert(eq(Array::length(float_diags), 1))
   assert(String::contains(Array::get(float_diags, 0), "missing { Exception[Double] }"))
 }
+
+// --- function-type kinds (Codex on #3052)
+
+test "a tuple parameter keeps a function kind, so two aliases of it meet" {
+  let src = "type A = ((Int, Int)) -> Int\n\ntype B = ((Int, Int)) -> Int\n\nstruct Holder {\n  cb: A\n}\n\nfn boom(h: Holder) -> Int with Exception[B] {\n  throw(h.cb)\n}\n"
+  assert(eq(Array::length(checked_diags(src)), 0))
+  // The kind is still exact: a different tuple is a different type.
+  let bad = "type A = ((Int, Int)) -> Int\n\ntype B = ((Int, String)) -> Int\n\nstruct Holder {\n  cb: A\n}\n\nfn boom(h: Holder) -> Int with Exception[B] {\n  throw(h.cb)\n}\n"
+  let diags = checked_diags(bad)
+  assert(eq(Array::length(diags), 1))
+  assert(String::contains(Array::get(diags, 0), "missing { Exception[((Int, Int)) -> Int] }"))
+}
+
+test "a function kind's effect row is a set, so its order does not matter" {
+  let src = "type A = () -> Int with Fs + Env\n\ntype B = () -> Int with Env + Fs\n\nstruct Holder {\n  cb: A\n}\n\nfn boom(h: Holder) -> Int with Exception[B] {\n  throw(h.cb)\n}\n"
+  assert(eq(Array::length(checked_diags(src)), 0))
+  // A different row is a different type, spelled the way a row is written.
+  let bad = "type A = () -> Int with Fs + Env\n\ntype B = () -> Int with Env\n\nstruct Holder {\n  cb: A\n}\n\nfn boom(h: Holder) -> Int with Exception[B] {\n  throw(h.cb)\n}\n"
+  let diags = checked_diags(bad)
+  assert(eq(Array::length(diags), 1))
+  assert(String::contains(Array::get(diags, 0), "missing { Exception[() -> Int with Env + Fs] }"))
+}

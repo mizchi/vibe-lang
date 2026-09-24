@@ -42,6 +42,31 @@ test "undeclared-effect error formatting includes op, effect and fix hint" {
   assert(String::contains(s, "`with` row"))
 }
 
+test "effect row mismatch hint: a function kind is pasted through an alias (#3052)" {
+  // A row item's type arguments are type names, so `Exception[(Int, Int) ->
+  // Int]` cannot be pasted; the kind's own comma must not split it either.
+  let e = EEEffectRowMismatch("boom", "Exception[(Int, Int) -> Int]", "Exception[IoErr]", "Exception[(Int, Int) -> Int], Exception[IoErr]", 0 - 1)
+  let s = effect_error_to_string(e)
+  assert(String::contains(s, "missing { Exception[(Int, Int) -> Int] }"))
+  assert(String::contains(s, "hint: a row names an exception kind by a type name, so declare `type Kind = (Int, Int) -> Int` (any name this module does not already declare -- use it in the row too), then add 'with Exception[Kind] + Exception[IoErr]' to 'boom'"))
+  assert(!String::contains(s, "(Int + Int)"))
+  assert(!String::contains(s, "with Exception[("))
+}
+
+test "effect row mismatch hint: two unspellable kinds get two aliases (#3052)" {
+  let e = EEEffectRowMismatch("f", "Exception[(Int) -> Int], Exception[() -> String]", "", "Exception[(Int) -> Int], Exception[() -> String]", 0 - 1)
+  let s = effect_error_to_string(e)
+  assert(String::contains(s, "declare `type Kind = (Int) -> Int` and `type Kind2 = () -> String`"))
+  assert(String::contains(s, "with Exception[Kind] + Exception[Kind2]'"))
+}
+
+test "effect row mismatch hint: spellable kinds keep the plain hint (#3052)" {
+  let e = EEEffectRowMismatch("f", "Exception[Array[IoErr]]", "Fs", "Exception[Array[IoErr]], Fs", 0 - 1)
+  let s = effect_error_to_string(e)
+  assert(String::contains(s, "hint: add 'with Exception[Array[IoErr]] + Fs' to 'f'"))
+  assert(!String::contains(s, "type Kind"))
+}
+
 test "effect row mismatch formatting: declared row present" {
   let e = EEEffectRowMismatch("f", "Fs", "Error", "Error, Fs", 0 - 1)
   let s = effect_error_to_string(e)
