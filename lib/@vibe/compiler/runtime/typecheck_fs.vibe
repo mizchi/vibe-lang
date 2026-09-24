@@ -2103,7 +2103,11 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
       let ty = match imported_ty {
         Some(t) => {
           foreign_type_name_collisions(name, raw_path, resolved, t, dep_types, local_types, unresolved, collision_reported)
-          for tn in collision_type_names(t, array_empty(), dep_types_all) {
+          for tn in if is_vpkg_types_stub_path(resolved) {
+            array_empty()
+          } else {
+            collision_type_names(t, array_empty(), dep_types_all)
+          } {
             note_imported_type_identity(tn, imported_type_identity(dep_env, resolved, tn), String::concat("`", String::concat(tn, String::concat("` used by `", String::concat(name, String::concat("` from '", String::concat(raw_path, "'")))))), seen_types, unresolved)
           }
           trait_projection_map_type_bounds(t, trait_mappings)
@@ -2146,7 +2150,13 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
   for item in declaration_names {
     if contains_str(dep_selectable_type_defs, item.name) {
       foreign_type_declaration_collisions(item, raw_path, resolved, dep_env, dep_types, local_types, unresolved, collision_reported)
-      note_imported_type_identity(item.name, imported_type_identity(dep_env, resolved, item.name), String::concat("`", String::concat(item.name, String::concat("` imported from '", String::concat(raw_path, "'")))), seen_types, unresolved)
+      // A package contract's generated type stub is exempt, as in #3035: its
+      // deferred type IS the implementation's declaration, which a sibling
+      // reaches directly too (`index.vpkg` importing the stub's `ShResult`
+      // and `sh_capture` from `process.vibe`).
+      if !is_vpkg_types_stub_path(resolved) {
+        note_imported_type_identity(item.name, imported_type_identity(dep_env, resolved, item.name), String::concat("`", String::concat(item.name, String::concat("` imported from '", String::concat(raw_path, "'")))), seen_types, unresolved)
+      }
     }
   }
   let declaration_trait_mappings = dependency_trait_projection_mappings(dep_env, dep_bindings, bi_trait_names, bi_upper_slots, declaration_names, array_empty())
