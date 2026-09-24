@@ -127,13 +127,19 @@ for src in $FIXTURE_GLOB; do
   # instance of the same rule.
   #
   # So the property itself: the payload BEGINS with the edit. An optional
-  # `<path>:` prefix is stripped first -- this lane's diag carries none, but a lane
-  # that adds one must not silently turn "begins with" into "contains".
+  # `<path>:` prefix is stripped first, then an optional `line L:C:` /
+  # `line L:C-E:` header. Both are location transport. Leaving either on
+  # turns "begins with" into "contains", which is the proxy this gate
+  # exists to refuse. The range form is stripped first so `line 3:4-8:`
+  # is not left as `-8:`.
   leads_ok="$(awk -v edit="$edit" '
     {
       line = $0
       sub(/^[[:space:]]+/, "", line)
       sub(/^[^[:space:]]*\.vibe[^[:space:]]*:[[:space:]]*/, "", line)
+      if (sub(/^line [0-9]+:[0-9]+-[0-9]+:[[:space:]]*/, "", line) == 0) {
+        sub(/^line [0-9]+:[0-9]+:[[:space:]]*/, "", line)
+      }
       if (index(line, edit) == 1) { print "ok"; exit }
     }
   ' "$out.diag" 2>/dev/null || true)"
