@@ -1,0 +1,90 @@
+// #3066: an unannotated NESTED literal describes its own type, so
+// interpolating it must render every position BY CONTENT. Before the fix the
+// interpolation pass read `Some(x)` as the bare head `Option` and rendered the
+// payload through the pointer heuristic:
+//   let a = Some(Some(false))    -> Some(Some(0))
+//   let b = [Some(true)]         -> [Some(1)]
+//   let c = [Some([1]), None]    -> [Some(<address>), None]
+//   let f = (Some(true), 1)      -> (Some(1), 1)
+//   let xs = [None, Some(true)]  -> [None, Some(1)]
+// with an annotation each one rendered correctly. A payload the syntax cannot
+// type -- a local lambda's or a generic function's result -- is rendered from
+// the type the checker gave the interpolated value (`Some(k())` printed
+// `Some(0)` for `Some(false)`, `wrap(true)` printed `Some(1)`).
+
+fn flag() -> Bool {
+  true
+}
+
+fn wrap[T](x: T) -> Option[T] {
+  Some(x)
+}
+
+test "nested option of bool" {
+  let a = Some(Some(false))
+  inspect("\{a}", content = "Some(Some(false))")
+}
+
+test "array of option of bool" {
+  let b = [Some(true)]
+  inspect("\{b}", content = "[Some(true)]")
+}
+
+test "array of option of array" {
+  let c = [Some([1]), None]
+  inspect("\{c}", content = "[Some([1]), None]")
+}
+
+test "option of array" {
+  let d = Some([1])
+  inspect("\{d}", content = "Some([1])")
+}
+
+test "array of array of option" {
+  let e = [[Some(1)]]
+  inspect("\{e}", content = "[[Some(1)]]")
+}
+
+test "tuple of option of bool" {
+  let f = (Some(true), 1)
+  inspect("\{f}", content = "(Some(true), 1)")
+}
+
+test "option of double" {
+  let g = Some(1.5)
+  inspect("\{g}", content = "Some(1.5)")
+}
+
+test "a leading None does not hide the payload type" {
+  let xs = [None, Some(true)]
+  inspect("\{xs}", content = "[None, Some(true)]")
+}
+
+test "inline nested literals" {
+  inspect("\{Some(Some(false))} \{[Some(true)]}", content = "Some(Some(false)) [Some(true)]")
+}
+
+test "payload from a declared function" {
+  let h = Some(flag())
+  inspect("\{h}", content = "Some(true)")
+}
+
+test "payload from a local lambda" {
+  let k = () -> false
+  let m = Some(k())
+  inspect("\{m}", content = "Some(false)")
+}
+
+test "payload from a generic function" {
+  let o = wrap(true)
+  let n = Some(wrap(false))
+  let xs = [wrap(true)]
+  inspect("\{o} \{n} \{xs}", content = "Some(true) Some(Some(false)) [Some(true)]")
+}
+
+test "annotated controls are unchanged" {
+  let a: Option[Option[Bool]] = Some(Some(false))
+  let b: Array[Option[Bool]] = [Some(true)]
+  let c: Array[Option[Array[Int]]] = [Some([1]), None]
+  inspect("\{a} \{b} \{c}", content = "Some(Some(false)) [Some(true)] [Some([1]), None]")
+}

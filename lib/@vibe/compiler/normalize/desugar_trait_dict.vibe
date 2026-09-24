@@ -53,7 +53,9 @@ import @vibe/compiler/core {
   stmts_use_prelude_ordering,
   str_lt,
   trait_definition,
-  trait_method_sig_binders_deep
+  trait_method_sig_binders_deep,
+  typed_lowering_arg_offset,
+  typed_render_row_head
 }
 
 import @vibe/ast {
@@ -5882,10 +5884,34 @@ fn infer_shape_by_syntax(e: Expr, struct_sets: Array[(String, Array[String])], v
     },
     // The first element stands for all of them: this pass has no unifier, and
     // a heterogeneous array literal does not type-check anyway.
+    // #3066: except when the first element says nothing about the payload --
+    // a `None` (head `Option`, no payload) or an element this pass cannot
+    // type -- and a later one does: `[None, Some(true)]` is an
+    // `Array[Option[Bool]]`, and reading only the `None` rendered the `true`
+    // through the pointer heuristic as `1`. Every element has the same type
+    // (the checker rejects anything else), so the first COMPOSITE shape is
+    // the element type. The scan runs only for those two heads, so a large
+    // literal of scalars costs what it did.
     EArray(items) => if Array::length(items) == 0 {
       ""
     } else {
-      String::concat("[", String::concat(infer_shape(Array::get(items, 0), struct_sets, var_types, fn_returns), "]"))
+      let first = infer_shape(Array::get(items, 0), struct_sets, var_types, fn_returns)
+      let mut best = first
+      if String::length(first) == 0 || first == "Option" {
+        let mut i = 1
+        while i < Array::length(items) && !shape_is_composite(best) {
+          let later = infer_shape(Array::get(items, i), struct_sets, var_types, fn_returns)
+          if shape_is_composite(later) {
+            best = later
+          } else {
+            ()
+          }
+          i = i + 1
+        }
+      } else {
+        ()
+      }
+      String::concat("[", String::concat(best, "]"))
     },
     // #1880: `for x in xs { .. }` is an EXPRESSION that evaluates to the mapped
     // array, and it was the single most common way to reach the bug -- the
@@ -5946,8 +5972,17 @@ fn infer_shape_by_syntax(e: Expr, struct_sets: Array[(String, Array[String])], v
         }
       }
     },
+    // #3066: `Some(x)` describes its own type, `Option[<x's type>]`. With no
+    // arm here it answered the bare head `Option`, so the payload of a NESTED
+    // literal was rendered by the pointer heuristic: `Some(Some(false))`
+    // printed `Some(Some(0))`, `[Some(true)]` printed `[Some(1)]`, and
+    // `[Some([1]), None]` printed an address. Equality's `infer_eq_shape`
+    // already spells the same encoding. A payload this pass cannot type keeps
+    // the old answer (the head), never a guessed shape.
     ECall(callee, cargs, _) => match callee {
-      EIdent(fname, _) => match lookup_var_type(var_types, eq_shape_key(fname)) {
+      EIdent(fname, _) => if (fname == "Some" || fname == "Option::Some") && Array::length(cargs) == 1 && String::length(infer_shape(Array::get(cargs, 0), struct_sets, var_types, fn_returns)) > 0 {
+        String::concat("{o:", String::concat(infer_shape(Array::get(cargs, 0), struct_sets, var_types, fn_returns), "}"))
+      } else match lookup_var_type(var_types, eq_shape_key(fname)) {
         Some(sh) => interp_shape(sh),
         None => match fn_return_type(fn_returns, fn_eq_shape_key(fname)) {
           Some(sh) => interp_shape(sh),
@@ -10073,7 +10108,22 @@ fn interp_expand_checked(arg: Expr, derived_only: Bool, gens: Array[DictGen], tr
     Some(h) => h,
     None => ""
   }
-  let sh = interp_shape(infer_shape(arg, struct_sets, var_types, fn_returns))
+  let syn_sh = interp_shape(infer_shape(arg, struct_sets, var_types, fn_returns))
+  // #3066: where this pass expands the argument itself, the checker's type
+  // (a render row) outranks the syntactic shape. The syntax is exact for a
+  // literal, but a payload it cannot type -- `Some(k())` through a local
+  // lambda -- was rendered by the pointer heuristic (`Some(0)` for
+  // `Some(false)`); the checker knows it.
+  let typed_sh = if dtd_interp_expands_itself(syn_sh, head) {
+    dtd_typed_render_shape_for(arg)
+  } else {
+    ""
+  }
+  let sh = if String::length(typed_sh) > 0 {
+    typed_sh
+  } else {
+    syn_sh
+  }
   if String::length(sh) > 0 {
     Some(interp_expand_shape(arg, sh, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns))
   } else {
@@ -22043,6 +22093,57 @@ fn dtd_trait_declared_here(stmts: Array[Stmt], trait_name: String) -> Bool {
 
 let dtd_typed_eq_keys: Array[String] = []
 
+/// #3066: the checker's render rows for THIS program -- (render argument
+/// offset, `impl_target_key(__render[T])`), split out of the typed-`==` rows
+/// they ride in and repopulated at every `dtd_run` like the table above.
+let dtd_typed_render_offs: Array[Int] = []
+
+let dtd_typed_render_keys: Array[String] = []
+
+/// #3066: the interpolation shape of the type the checker gave this render
+/// argument, or "" when it filed none. A type naming a formal in scope here is
+/// "" too: a formal renders through its witness, which the syntactic path
+/// already finds.
+fn dtd_typed_render_shape_for(arg: Expr) -> String {
+  let off = typed_lowering_arg_offset(arg)
+  let mut key = ""
+  if off >= 0 {
+    let mut i = 0
+    while i < Array::length(dtd_typed_render_offs) {
+      if Array::get(dtd_typed_render_offs, i) == off {
+        key = Array::get(dtd_typed_render_keys, i)
+        i = Array::length(dtd_typed_render_offs)
+      } else {
+        i = i + 1
+      }
+    }
+  } else {
+    ()
+  }
+  if String::length(key) == 0 {
+    ""
+  } else {
+    match impl_target_from_key(key) {
+      Some(TyApp(head, args)) => if head == typed_render_row_head() && Array::length(args) == 1 && !eq_ty_mentions_scope_formal(Array::get(args, 0)) {
+        interp_shape(ty_to_eq_shape(Array::get(args, 0)))
+      } else {
+        ""
+      },
+      _ => ""
+    }
+  }
+}
+
+/// #3066: does the interpolation pass EXPAND this argument itself, reading the
+/// payload positions from syntax? Those are the renders a render row corrects:
+/// a composite shape it inferred, or an `Option` / `Result` head (`Some(v)` with
+/// `v` untyped here). An argument it does not expand keeps reaching codegen,
+/// where the checker's own refusal (#2987) still answers -- a row never turns a
+/// refusal into a render.
+fn dtd_interp_expands_itself(sh: String, head: String) -> Bool {
+  String::length(sh) > 0 || head == "Option" || head == "Result"
+}
+
 fn dtd_typed_eq_key_for(boff: Int) -> String {
   if boff < 0 {
     ""
@@ -22541,10 +22642,26 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
   // rewrite can read it.
   Array::truncate(dtd_typed_eq_offs, 0)
   Array::truncate(dtd_typed_eq_keys, 0)
+  // #3066: the render rows ride the same channel under the
+  // `typed_render_row_head` wrapper; they are split off here so a `==` lookup
+  // never reads one.
+  Array::truncate(dtd_typed_render_offs, 0)
+  Array::truncate(dtd_typed_render_keys, 0)
+  let render_prefix = impl_target_key(TyApp(typed_render_row_head(), [
+    TyName("Int")
+  ]))
+  let render_head_len = String::index_of(render_prefix, impl_target_key(TyName("Int")))
+  let render_head = String::substring(render_prefix, 0, render_head_len)
   let mut teq_i = 0
   while teq_i < Array::length(typed_eq_offsets) {
-    Array::push(dtd_typed_eq_offs, Array::get(typed_eq_offsets, teq_i))
-    Array::push(dtd_typed_eq_keys, Array::get(typed_eq_keys, teq_i))
+    let tkey = Array::get(typed_eq_keys, teq_i)
+    if render_head_len > 0 && String::starts_with(tkey, render_head) {
+      Array::push(dtd_typed_render_offs, Array::get(typed_eq_offsets, teq_i))
+      Array::push(dtd_typed_render_keys, tkey)
+    } else {
+      Array::push(dtd_typed_eq_offs, Array::get(typed_eq_offsets, teq_i))
+      Array::push(dtd_typed_eq_keys, tkey)
+    }
     teq_i = teq_i + 1
   }
   // #2286: the record describes THIS program. The unit-test batch compiles
