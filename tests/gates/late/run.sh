@@ -3696,6 +3696,22 @@ if [ "$fo65_tg_out" != "42" ]; then
   echo "[compiler-gate] FAIL: async_taskgroup_run_boundary_test.vibe got '$fo65_tg_out' (want 42)" >&2
   exit 1
 fi
+# #1962 (Codex on #3059): an entry granted through its binding annotation
+# (`let main: () -> Int with Fs = () -> { .. }`) gets the host provider too.
+cp fixtures/host_provider_annotated_entry.vibe "$fo65dir/annot.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$fo65dir/annot.vibe" "$fo65dir/annot.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$fo65dir/annot.wasm" ]; then
+  echo "[compiler-gate] FAIL: host_provider_annotated_entry.vibe did not compile" >&2
+  cat "$fo65dir/annot.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+fo65_annot_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$fo65dir/annot.wasm" 2>/dev/null | tail -1)"
+if [ "$fo65_annot_out" != "1" ]; then
+  echo "[compiler-gate] FAIL: host_provider_annotated_entry.vibe got '$fo65_annot_out' (want 1) -- an annotation-granted entry lost the host provider" >&2
+  exit 1
+fi
 # ... and with a NAMED function in that position it must stay refused: the
 # argument's row is not readable at the call site, so it could instantiate the
 # row variable to Async and the perform would happen where the injected

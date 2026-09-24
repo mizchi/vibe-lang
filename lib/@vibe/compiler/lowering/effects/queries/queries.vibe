@@ -1,5 +1,5 @@
 import @vibe/compiler/core {
-  Expr, Pat, Type, TypeExpr, expr_children, lookup_registry_builtin
+  Expr, Pat, Stmt, Type, TypeExpr, expr_children, lookup_registry_builtin
 }
 
 import @vibe/core {
@@ -1220,6 +1220,108 @@ fn edp_has_unsafe_construct_sc(expr: Expr, needing: Array[String], ename: String
 let edp_argcond_effect: Array[String] = [""]
 let edp_argcond_names: Array[String] = []
 let edp_argcond_masks: Array[Array[Bool]] = []
+// Every name the program binds locally (a parameter, a `let`, a pattern), so
+// a callee spelled like a pure top-level function is trusted only when no
+// local binding could be what it resolves to (Codex on #3059).
+let edp_argcond_binders: Array[String] = []
+
+/// Record every locally bound name in `stmts` for `edp_expr_reaches_effect`.
+export fn edp_argcond_note_binders(stmts: Array[Stmt]) -> Unit {
+  Array::truncate(edp_argcond_binders, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, e) => edp_collect_binders(e),
+      SLetMut(_, _, e) => edp_collect_binders(e),
+      STest(_, e) => edp_collect_binders(e),
+      SBench(_, e) => edp_collect_binders(e),
+      SExpr(e) => edp_collect_binders(e),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+/// Does some local binding in the program last passed to
+/// `edp_argcond_note_binders` have this spelling?
+export fn edp_is_program_binder(name: String) -> Bool {
+  edp_str_array_contains(edp_argcond_binders, name)
+}
+
+fn edp_note_binder(name: String) -> Unit {
+  if !edp_str_array_contains(edp_argcond_binders, name) {
+    Array::push(edp_argcond_binders, name)
+  } else {
+    ()
+  }
+}
+
+fn edp_note_pat_binders(p: Pat) -> Unit {
+  match p {
+    PBind(n) => edp_note_binder(n),
+    PCtor(_, ps) => {
+      for q in ps {
+        edp_note_pat_binders(q)
+      }
+      ()
+    },
+    PTuple(ps) => {
+      for q in ps {
+        edp_note_pat_binders(q)
+      }
+      ()
+    },
+    POr(a, b) => {
+      edp_note_pat_binders(a)
+      edp_note_pat_binders(b)
+    },
+    PStruct(_, fields) => {
+      for f in fields {
+        edp_note_pat_binders(f.1)
+      }
+      ()
+    },
+    _ => ()
+  }
+}
+
+fn edp_collect_binders(e: Expr) -> Unit {
+  match e {
+    EFn(_, _, params, _, _, _) => {
+      for param in params {
+        edp_note_binder(param.0)
+      }
+      ()
+    },
+    ELet(nm, _, _, _) => edp_note_binder(nm),
+    ELetMut(nm, _, _, _) => edp_note_binder(nm),
+    ELetRec(nm, _, _) => edp_note_binder(nm),
+    EForIn(nm, idx, _, _) => {
+      edp_note_binder(nm)
+      match idx {
+        Some(n) => edp_note_binder(n),
+        None => ()
+      }
+    },
+    EMatch(_, arms) => {
+      for arm in arms {
+        edp_note_pat_binders(arm.0)
+      }
+      ()
+    },
+    EHandle(_, arms) => {
+      for arm in arms {
+        edp_note_pat_binders(arm.0)
+      }
+      ()
+    },
+    _ => ()
+  }
+  for child in expr_children(e) {
+    edp_collect_binders(child)
+  }
+  ()
+}
 
 export fn edp_argcond_reset(ename: String) -> Unit {
   Array::set(edp_argcond_effect, 0, ename)
@@ -1317,7 +1419,7 @@ fn edp_expr_reaches_effect(e: Expr, ename: String, needing: Array[String], pure_
   } else {
     match e {
       ECall(EIdent(nm, _), args, _) => {
-        let callee_ok = nm == "perform" || nm == "resume" || edp_is_pure_builtin_call(nm) || edp_builtin_is_first_order(nm) || (edp_str_array_contains(pure_fns, nm) && !edp_str_array_contains(needing, nm))
+        let callee_ok = nm == "perform" || nm == "resume" || edp_is_pure_builtin_call(nm) || edp_builtin_is_first_order(nm) || (edp_str_array_contains(pure_fns, nm) && !edp_str_array_contains(needing, nm) && !edp_str_array_contains(edp_argcond_binders, nm))
         !callee_ok || edp_exprs_reach_effect(args, ename, needing, pure_fns)
       },
       ECall(_, _, _) => true,
@@ -1391,6 +1493,13 @@ fn edp_types_have_fn(ts: Array[Type]) -> Bool {
 }
 
 fn edp_builtin_is_first_order(nm: String) -> Bool {
+  // `Fs::readdir` (String -> Array[String]) is checker/codegen-special and has
+  // no registry row, but it is exactly as first order as its raw half. The
+  // entry host provider's `Fs::ReadDir` arm calls it (#1962), and without
+  // this an enclosing handle could not see through that arm.
+  if nm == "Fs::readdir" {
+    return true
+  }
   match lookup_registry_builtin(nm) {
     Some(ty) => match ty {
       CtFn(params, _, _) => !edp_types_have_fn(params),

@@ -175,6 +175,14 @@ export fn from_wit_typedef(typedef: WitTypeDef) -> String with Exception {
         let head = fw_pascal(cname)
         Array::push(parts, match payload {
           Some(TyTuple(items)) => {
+            if Array::length(items) == 1 {
+              // `c(tuple<T>)` would read back as `C(T)`, which projects to
+              // `c(T)`: a different ABI shape (Codex on #3059), like the
+              // one-element tuple `fw_type` refuses.
+              throw(fw_refusal("tuple<..> with one element", ctx))
+            } else {
+              ()
+            }
             let tys: Array[String] = []
             let mut k = 0
             while k < Array::length(items) {
@@ -241,6 +249,17 @@ export fn from_wit_typedef(typedef: WitTypeDef) -> String with Exception {
         let decl = match kind {
           FKConstructor(_) => fw_signature("\{ty}::new", is_async, params, Some(TyOwn(name)), qualified),
           FKMethod(_) => {
+            // The receiver is spelled `self`; a method whose own parameter is
+            // also `self` would declare it twice (Codex on #3059).
+            let mut sp = 0
+            while sp < Array::length(params) {
+              if fw_snake(Array::get(params, sp).0) == "self" {
+                throw(fw_refusal("method `\{fname}` with a parameter named `self` (the receiver is `self`)", res_ctx))
+              } else {
+                ()
+              }
+              sp = sp + 1
+            }
             let with_self: Array[(String, WitTypeExpr)] = [
               ("self", TyOwn(name))
             ]
@@ -271,6 +290,56 @@ export fn WitTypeExpr::from_wit_type(recv: WitTypeExpr) -> String with Exception
 /// Method-style spelling of `from_wit_typedef`.
 export fn WitTypeDef::from_wit_typedef(recv: WitTypeDef) -> String with Exception {
   from_wit_typedef(recv)
+}
+
+/// Every type definition of one interface, in order, as one declaration block.
+///
+/// WIT scopes a case name by its type, so `enum a { ok }` and `enum b { ok }`
+/// may sit side by side; vibe constructors share one namespace, so both would
+/// become `Ok` and the contract would fail to check (Codex on #3059). The
+/// collision is refused here, naming both types, rather than renamed -- a
+/// renamed constructor would no longer be the name the interface publishes.
+export fn from_wit_typedefs(defs: Array[WitTypeDef]) -> String with Exception {
+  let seen_ctor: Array[String] = []
+  let seen_owner: Array[String] = []
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(defs) {
+    let def = Array::get(defs, i)
+    let (owner, cases) = match def {
+      TDEnum(name, cs, _) => (name, cs),
+      TDVariant(name, cs, _) => {
+        let names: Array[String] = []
+        let mut k = 0
+        while k < Array::length(cs) {
+          Array::push(names, Array::get(cs, k).0)
+          k = k + 1
+        }
+        (name, names)
+      },
+      _ => ("", [])
+    }
+    let mut c = 0
+    while c < Array::length(cases) {
+      let ctor = fw_pascal(Array::get(cases, c))
+      let mut j = 0
+      while j < Array::length(seen_ctor) {
+        if Array::get(seen_ctor, j) == ctor {
+          let first = Array::get(seen_owner, j)
+          throw(fw_refusal("case `\{Array::get(cases, c)}` in both `\{first}` and `\{owner}` (both would be the constructor `\{ctor}`)", ""))
+        } else {
+          ()
+        }
+        j = j + 1
+      }
+      Array::push(seen_ctor, ctor)
+      Array::push(seen_owner, owner)
+      c = c + 1
+    }
+    Array::push(out, from_wit_typedef(def))
+    i = i + 1
+  }
+  String::join(out, "\n\n")
 }
 
 fn fw_refusal(what: String, ctx: String) -> String {
@@ -405,6 +474,8 @@ fn fw_ident(name: String, ctx: String) -> String with Exception {
 /// A WIT type name as a vibe type name, refused when it lands on a builtin
 /// spelling: `record int { value: s64 }` would read `export struct Int { value:
 /// Int }`, where the field's `Int` no longer means the scalar (Codex on #3059).
+/// `Future` and `HostStream` are what `future<T>` / `stream<u8>` project to,
+/// so a foreign type of that name would collide the same way.
 fn fw_type_name(name: String) -> String with Exception {
   let ty = fw_pascal(name)
   let builtins = [
@@ -418,7 +489,9 @@ fn fw_type_name(name: String) -> String with Exception {
     "Option",
     "Result",
     "Unit",
-    "Map"
+    "Map",
+    "Future",
+    "HostStream"
   ]
   let mut clash = false
   let mut i = 0

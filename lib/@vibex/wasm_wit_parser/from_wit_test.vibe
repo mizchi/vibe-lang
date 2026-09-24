@@ -4,11 +4,11 @@
 // `wit_type_text` is pinned in lib/@vibe/compiler/tests/wit_inverse_law_test.vibe.
 
 import ./wit_parser.vibe {
-  IIFunction, IITypeDef, wit_parse
+  IIFunction, IITypeDef, WitTypeDef, wit_parse
 }
 
 import ./from_wit.vibe {
-  from_wit_func, from_wit_type, from_wit_typedef
+  from_wit_func, from_wit_type, from_wit_typedef, from_wit_typedefs
 }
 
 /// The vibe declaration of the one function `sig` declares, or the refusal.
@@ -100,6 +100,22 @@ fn typedef_of(def: String) -> String {
   } with { Exception::Throw(msg) => "REFUSED: \{msg}" }
 }
 
+fn typedefs_of(defs: String) -> String {
+  let src = "package a:b@1.0.0;\ninterface api {\n  \{defs}\n}\n"
+  handle {
+    let (_, ifaces, _) = wit_parse(src)
+    let (_, _, items) = Array::get(ifaces, 0)
+    let out: Array[WitTypeDef] = []
+    for item in items {
+      match item {
+        IITypeDef(d) => Array::push(out, d),
+        _ => ()
+      }
+    }
+    from_wit_typedefs(out)
+  } with { Exception::Throw(msg) => "REFUSED: \{msg}" }
+}
+
 test "a record becomes an export struct" {
   inspect(typedef_of("record price-info { ticker: string, last-price: f64 }"), content = "export struct PriceInfo {\n  ticker: String;\n  last_price: Double\n}")
 }
@@ -151,4 +167,18 @@ test "a type name that lands on a builtin, and a constructor beside new, are ref
     typedef_of("record int { value: s64 }"),
     typedef_of("resource conn { constructor(); new: static func() -> conn; }")
   ], content = "[REFUSED: wit: `type `int` (its vibe name `Int` is a builtin type)` has no vibe mapping, REFUSED: wit: `resource `conn` declaring both a constructor and a function named `new` (the derived constructor is `Conn::new`)` has no vibe mapping]")
+}
+
+test "shapes that would collide or change once spelled in vibe are refused" {
+  inspect([
+    typedef_of("variant v { c(tuple<s64>) }"),
+    typedef_of("record %future { value: s64 }"),
+    typedef_of("record host-stream { value: s64 }"),
+    typedef_of("resource conn { send: func(self: s64); }"),
+    typedefs_of("enum a { ok }\n  enum b { ok }")
+  ], content = "[REFUSED: wit: `tuple<..> with one element` has no vibe mapping (in variant `v`), REFUSED: wit: `type `future` (its vibe name `Future` is a builtin type)` has no vibe mapping, REFUSED: wit: `type `host-stream` (its vibe name `HostStream` is a builtin type)` has no vibe mapping, REFUSED: wit: `method `send` with a parameter named `self` (the receiver is `self`)` has no vibe mapping (in resource `conn`), REFUSED: wit: `case `ok` in both `a` and `b` (both would be the constructor `Ok`)` has no vibe mapping]")
+}
+
+test "sibling types without a shared case convert together" {
+  inspect(typedefs_of("enum a { ok }\n  enum b { fine }"), content = "export enum A {\n  Ok\n}\n\nexport enum B {\n  Fine\n}")
 }

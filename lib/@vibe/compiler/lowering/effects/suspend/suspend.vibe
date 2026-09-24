@@ -16,6 +16,8 @@ import @vibe/compiler/lowering/effects/evidence {
 
 import @vibe/compiler/lowering/effects/queries {
   EdpReadQuery,
+  edp_argcond_note_binders,
+  edp_is_program_binder,
   edp_row_is_exactly,
   edp_rq_arms,
   edp_rq_exprs,
@@ -184,6 +186,8 @@ export fn suspend_cps_pass(stmts: Array[Stmt]) -> Array[String] {
     let es_members_list = array_empty()
     edp_es_collect_into(stmts, es_names, es_members_list)
     let ctor_names = scps_collect_ctor_names(stmts)
+    // Locally bound names, for `scps_inert_taint`'s callee test.
+    edp_argcond_note_binders(stmts)
     let ctx = (stmts, effect_defs, fn_defs, es_names, es_members_list, ctor_names)
     let st = (scps_ctr_box(), array_empty_str(), array_empty_str(), array_empty_str(), array_empty_str(), scps_empty_stmts(), errs)
     // closure-CPS (追記31 Vertical B) phase 1: the CPS-mode effect set.
@@ -4394,6 +4398,11 @@ fn scps_inert_taint(e: Expr, eff: String, needing: Array[String], locals: Array[
         true
       } else if idp_is_pure_builtin_call(nm) || scps_is_safe_mut_builtin(nm) || scps_is_ctor_name(ctx, nm) {
         scps_inert_taint_exprs(args, eff, needing, locals, ctx)
+      } else if edp_is_program_binder(nm) {
+        // Some local binding in the program has this spelling -- an enclosing
+        // parameter the literal captures, say -- so the call may not reach
+        // the top-level function of that name at all (Codex on #3059).
+        true
       } else {
         let (is_fn, row) = scps_fn_row_of(ctx, nm)
         if is_fn && !scps_row_contains(ctx, row, eff) && !scps_row_has_var(row) {

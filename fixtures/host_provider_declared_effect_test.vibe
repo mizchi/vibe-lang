@@ -35,3 +35,24 @@ test "an operation the declaration omits is provided too" {
   remove_via_perform(path)
   inspect(exists(path), "false")
 }
+
+// Codex on #3059: a user handler written against `@vibe/fs`'s four operations
+// answers only those. `Fs::Remove` joined the declaration after checking, so
+// the handler's evidence dictionary held a trapping slot for it, and a callee
+// performing it inside the handler aborted. The provider now gives such a
+// handler a forwarding arm, so the perform reaches the entry provider as if
+// the handler were not there.
+test "an operation added after checking passes through a handler that omits it" {
+  let path = "_build/host_provider_declared_effect_test_fwd.txt"
+  write_via_perform(path, "x")
+  let seen = handle {
+    remove_via_perform(path)
+    exists(path)
+  } with {
+    Fs::ReadFile(_p) => resume("");
+    Fs::WriteFile(_p, _c) => resume(());
+    Fs::Exists(p) => resume(Fs::exists(p));
+    Fs::Mkdir(_p) => resume(())
+  }
+  inspect(seen, "false")
+}
