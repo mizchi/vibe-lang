@@ -1,7 +1,11 @@
 //# Imports
 
 import ./ast.vibe {
-  TypeExpr
+  Expr, Pat, Stmt, TypeExpr
+}
+
+import ./expr_children.vibe {
+  expr_child_at, expr_children_pop, expr_children_push, expr_children_top
 }
 
 import @vibe/ast {
@@ -5502,4 +5506,241 @@ export fn type_implements_trait(env: TypeEnv, s: Subst, ty: Type, trait_name: St
     // plain struct), i.e. supertrait-satisfied bounds never worked at all.
     type_implements_check_super(env, env, s, trait_name, resolved)
   }
+}
+
+//# #3042: the prelude `Ordering`
+
+/// #3042 (ADR-0118): the result type of `compare`. `derive (Ord)` generates
+/// `T::compare(a, b) -> Ordering`, and every program sees `Ordering` and its
+/// constructors `Less` / `Equal` / `Greater` without an import, the way it
+/// sees `Option`. It is an ordinary enum, not a checker-owned type: the checker
+/// checks this declaration ahead of a module that does not declare its own
+/// (`seed_prelude_ordering`), and the lowering appends it to a program that
+/// constructs one (`dtd_append_prelude_ordering`), so exhaustiveness, `==`,
+/// `Show` and codegen all treat it exactly like a declared enum. The variant
+/// order is the order `derive (Ord)` compares in: `Less < Equal < Greater`.
+export fn prelude_ordering_stmt() -> Stmt {
+  let variants: Array[(String, Array[TypeExpr])] = array_empty()
+  let less_payload: Array[TypeExpr] = array_empty()
+  let equal_payload: Array[TypeExpr] = array_empty()
+  let greater_payload: Array[TypeExpr] = array_empty()
+  Array::push(variants, ("Less", less_payload))
+  Array::push(variants, ("Equal", equal_payload))
+  Array::push(variants, ("Greater", greater_payload))
+  let derives: Array[String] = array_empty()
+  Array::push(derives, "Eq")
+  Array::push(derives, "Ord")
+  Array::push(derives, "Show")
+  let params: Array[String] = array_empty()
+  SEnum(false, "Ordering", params, variants, derives)
+}
+
+/// #3042: is `name` one of the prelude `Ordering`'s constructor spellings?
+export fn is_prelude_ordering_variant(name: String) -> Bool {
+  name == "Less" || name == "Equal" || name == "Greater"
+}
+
+/// #3042: does `stmts` declare the type name `Ordering`, or a constructor or
+/// value spelled like one of its variants, at top level? Such a program keeps its
+/// own declaration: the prelude enum is neither checked ahead of it nor
+/// appended to it, because constructors are global across a merged program
+/// and two `Less` would make every bare reference ambiguous.
+export fn stmts_shadow_prelude_ordering(stmts: Array[Stmt]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(stmts) {
+    found = match Array::get(stmts, i) {
+      SEnum(_, name, _, variants, _) => name == "Ordering" || variants_shadow_prelude_ordering(variants),
+      SSuberror(_, name, variants) => name == "Ordering" || variants_shadow_prelude_ordering(variants),
+      SStruct(_, name, _, _, _, _) => name == "Ordering",
+      STypeAlias(_, name, _, _) => name == "Ordering",
+      // A top-level value spelled like a constructor wins over it where the
+      // two meet, so a derived `compare` would build that value.
+      SLet(_, _, name, _, _) => name == "Ordering" || is_prelude_ordering_variant(name),
+      SLetMut(name, _, _) => name == "Ordering" || is_prelude_ordering_variant(name),
+      SExternLet(name, _) => name == "Ordering" || is_prelude_ordering_variant(name),
+      SLetPat(pat, _) => pat_binds_prelude_ordering_name(pat),
+      _ => false
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn variants_shadow_prelude_ordering(variants: Array[(String, Array[TypeExpr])]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(variants) {
+    let (vname, _) = Array::get(variants, i)
+    found = is_prelude_ordering_variant(vname)
+    i = i + 1
+  }
+  found
+}
+
+/// #3042: does `stmts` declare an `enum Ordering { Less; Equal; Greater }` of
+/// exactly the prelude's shape (nullary variants, in that order)? A program
+/// that re-declares the prelude enum verbatim -- `@vibe/builtin`'s
+/// `ordering.vibe` is one -- still gets a working `derive (Ord)`; any other
+/// declaration of those names cannot, and the checker says so rather than let
+/// the generated `compare` build values of the wrong type.
+export fn stmts_declare_prelude_ordering_shape(stmts: Array[Stmt]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(stmts) {
+    found = match Array::get(stmts, i) {
+      SEnum(_, name, params, variants, _) => name == "Ordering" && Array::length(params) == 0 && Array::length(variants) == 3 && ordering_variant_is(variants, 0, "Less") && ordering_variant_is(variants, 1, "Equal") && ordering_variant_is(variants, 2, "Greater"),
+      _ => false
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// #3042: does `stmts` build or take apart an `Ordering` by syntax -- derive
+/// `Ord`, name `Less` / `Equal` / `Greater` (bare or `Ordering::`-qualified)
+/// as a value, or match on one as a pattern? The lowering appends the prelude
+/// declaration only to such a program; the checker additionally counts a
+/// type annotation that mentions `Ordering`.
+export fn stmts_use_prelude_ordering(stmts: Array[Stmt]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(stmts) {
+    found = match Array::get(stmts, i) {
+      SStruct(_, _, _, derives, _, _) => strings_contain_ord(derives),
+      SEnum(_, _, _, _, derives) => strings_contain_ord(derives),
+      SLet(_, _, _, _, body) => expr_uses_prelude_ordering(body),
+      SLetMut(_, _, body) => expr_uses_prelude_ordering(body),
+      SLetPat(pat, body) => pat_names_prelude_ordering(pat) || expr_uses_prelude_ordering(body),
+      STest(_, body) => expr_uses_prelude_ordering(body),
+      SBench(_, body) => expr_uses_prelude_ordering(body),
+      SExample(_, body) => expr_uses_prelude_ordering(body),
+      SExpr(body) => expr_uses_prelude_ordering(body),
+      SModule(_, _, body) => stmts_use_prelude_ordering(body),
+      SQualifiedPatternRefs(refs) => qualified_refs_name_ordering(refs),
+      _ => false
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn strings_contain_ord(names: Array[String]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(names) {
+    found = Array::get(names, i) == "Ord"
+    i = i + 1
+  }
+  found
+}
+
+fn qualified_refs_name_ordering(refs: Array[(String, String)]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(refs) {
+    let (owner, _) = Array::get(refs, i)
+    found = owner == "Ordering"
+    i = i + 1
+  }
+  found
+}
+
+fn name_is_prelude_ordering_ctor(name: String) -> Bool {
+  is_prelude_ordering_variant(name) || String::starts_with(name, "Ordering::")
+}
+
+fn expr_uses_prelude_ordering(e: Expr) -> Bool {
+  match e {
+    EIdent(name, _) => name_is_prelude_ordering_ctor(name),
+    EMatch(scrutinee, arms) => {
+      let mut found = expr_uses_prelude_ordering(scrutinee)
+      let mut i = 0
+      while !found && i < Array::length(arms) {
+        let (pat, body) = Array::get(arms, i)
+        found = pat_names_prelude_ordering(pat) || expr_uses_prelude_ordering(body)
+        i = i + 1
+      }
+      found
+    },
+    _ => {
+      let mark = expr_children_push(e)
+      let top = expr_children_top()
+      let mut i = mark
+      let mut found = false
+      while !found && i < top {
+        found = expr_uses_prelude_ordering(expr_child_at(i))
+        i = i + 1
+      }
+      expr_children_pop(mark)
+      found
+    }
+  }
+}
+
+fn pat_names_prelude_ordering(pat: Pat) -> Bool {
+  match pat {
+    PCtor(name, subs) => name_is_prelude_ordering_ctor(name) || pats_name_prelude_ordering(subs),
+    PTuple(subs) => pats_name_prelude_ordering(subs),
+    POr(left, right) => pat_names_prelude_ordering(left) || pat_names_prelude_ordering(right),
+    PStruct(_, fields) => {
+      let mut found = false
+      let mut i = 0
+      while !found && i < Array::length(fields) {
+        let (_, sub) = Array::get(fields, i)
+        found = pat_names_prelude_ordering(sub)
+        i = i + 1
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+/// Does a destructuring pattern BIND a value named `Less` / `Equal` /
+/// `Greater` (a field pun such as `let Holder::{ Less } = h`)? That value
+/// shadows the constructor as a top-level `let Less` does.
+fn pat_binds_prelude_ordering_name(pat: Pat) -> Bool {
+  match pat {
+    PBind(name) => is_prelude_ordering_variant(name),
+    PCtor(_, subs) => pats_bind_prelude_ordering_name(subs),
+    PTuple(subs) => pats_bind_prelude_ordering_name(subs),
+    POr(left, right) => pat_binds_prelude_ordering_name(left) || pat_binds_prelude_ordering_name(right),
+    PStruct(_, fields) => {
+      let mut found = false
+      for field in fields {
+        let (_, sub) = field
+        if pat_binds_prelude_ordering_name(sub) {
+          found = true
+        }
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+fn pats_bind_prelude_ordering_name(pats: Array[Pat]) -> Bool {
+  let mut found = false
+  for p in pats {
+    if pat_binds_prelude_ordering_name(p) {
+      found = true
+    }
+  }
+  found
+}
+
+fn pats_name_prelude_ordering(pats: Array[Pat]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(pats) {
+    found = pat_names_prelude_ordering(Array::get(pats, i))
+    i = i + 1
+  }
+  found
+}
+
+fn ordering_variant_is(variants: Array[(String, Array[TypeExpr])], i: Int, expected: String) -> Bool {
+  let (vname, payload) = Array::get(variants, i)
+  vname == expected && Array::length(payload) == 0
 }

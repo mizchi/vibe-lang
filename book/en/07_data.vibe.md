@@ -78,12 +78,14 @@ fn main allows Console {
 
 ```output
 p.x = 1
-compare(p, {x:1,y:3}) = -1
+compare(p, {x:1,y:3}) = Less
 to_string(p) = Point { x: 1, y: 2 }
 ```
 
-`Eq` gives `==`, `Ord` gives `compare` (returning -1, 0 or 1), and
-`Show` gives `to_string` and therefore interpolation. Write them out by
+`Eq` gives `==`, `Ord` gives `compare`, and `Show` gives `to_string` and
+therefore interpolation. `compare` answers an `Ordering` -- `Less`, `Equal`
+or `Greater` -- an enum every program sees without an import, so a `match`
+on the result has to handle all three. Write them out by
 hand only when the derived meaning is not the one you want.
 [Generics, traits, and derive](15_generics.vibe.md) goes further.
 

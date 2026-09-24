@@ -1007,7 +1007,17 @@ let b2 = Box[Int]::{ v: 2 }               // explicit type args PIN the instanti
 // arity-checked: Box[Int, Int]::{ .. } は checker error; pinning resolves
 // inference-ambiguous fields (e.g. struct Bag[T] { xs: Array[T] } の
 // Bag[Int]::{ xs: [] })
-// struct derive(Ord) -> Point::compare(a, b) : Int   (-1 / 0 / 1, lexicographic)
+// struct derive(Ord) -> Point::compare(a, b) : Ordering   (lexicographic)
+// enum derive(Ord) -> E::compare(a, b) : Ordering   (variant order, then payload)
+// `Ordering` is a prelude enum { Less; Equal; Greater } (#3042, ADR-0118):
+// no import, and a `match` on it must cover all three. `@vibe/builtin` adds
+// `Ordering::to_int` (-1 / 0 / 1) and `Ordering::reverse`.
+let ord = Point::compare(p, Point::{ x: 1, y: 3 })     // Less
+let ord_text = match ord {
+  Less => "before",
+  Equal => "same",
+  Greater => "after"
+}
 // struct derive(Show) -> Point::to_string(p) : String ("Point { x: 1, y: 2 }")
 // enum derive(Show) -> E::to_string(v) : String ("B(3)" / "A")
 // derive(Hash) -> T::hash_key(v) (構造キー、to_string も併せて生成)

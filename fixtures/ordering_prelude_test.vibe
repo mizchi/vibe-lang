@@ -1,0 +1,66 @@
+// #3042 (ADR-0118): `compare` answers the prelude `enum Ordering { Less;
+// Equal; Greater }` instead of an `Int` of -1 / 0 / 1. The enum needs no
+// import, `derive (Ord)` builds it, and a `match` over it is exhaustive over
+// exactly three cases (the refusal side is
+// fixtures/typecheck/ordering_match_non_exhaustive.vibe).
+
+//# Types
+
+struct Point { x: Int; y: Int } derive (Eq, Ord, Show)
+
+// A struct field of a declared type compares through that type's `compare`,
+// not through `<` on the two references.
+struct Segment { from: Point; to: Point } derive (Ord)
+
+enum Priority {
+  Low;
+  High(Int)
+} derive (Ord)
+
+//# Functions
+
+fn describe(a: Point, b: Point) -> String {
+  match Point::compare(a, b) {
+    Less => "before",
+    Equal => "same",
+    Greater => "after"
+  }
+}
+
+fn origin(x: Int) -> Point {
+  Point::{ x: x, y: 0 }
+}
+
+//# Tests
+
+test "derive (Ord) on a struct answers an Ordering" {
+  inspect(Point::compare(Point::{ x: 1, y: 1 }, Point::{ x: 1, y: 2 }), "Less")
+  inspect(Point::compare(Point::{ x: 1, y: 2 }, Point::{ x: 1, y: 2 }), "Equal")
+  inspect(Point::compare(Point::{ x: 2, y: 0 }, Point::{ x: 1, y: 9 }), "Greater")
+  inspect(describe(Point::{ x: 1, y: 2 }, Point::{ x: 1, y: 2 }), "same")
+  inspect(describe(Point::{ x: 0, y: 9 }, Point::{ x: 1, y: 0 }), "before")
+}
+
+test "a nested declared field compares by content" {
+  let a = Segment::{ from: origin(1), to: origin(5) }
+  let b = Segment::{ from: origin(1), to: origin(7) }
+  let c = Segment::{ from: origin(1), to: origin(5) }
+  inspect(Segment::compare(a, b), "Less")
+  inspect(Segment::compare(b, a), "Greater")
+  inspect(Segment::compare(a, c), "Equal")
+}
+
+test "derive (Ord) on an enum: variant order, then payload" {
+  inspect(Priority::compare(Low, High(0)), "Less")
+  inspect(Priority::compare(High(3), High(2)), "Greater")
+  inspect(Priority::compare(High(2), High(2)), "Equal")
+}
+
+test "Ordering is a prelude enum with ==, Show and its own compare" {
+  let o: Ordering = Less
+  inspect(o == Less, "true")
+  inspect(o == Greater, "false")
+  inspect("\{Equal}", "Equal")
+  inspect(Ordering::compare(Less, Greater), "Less")
+  inspect(Ordering::compare(Greater, Equal), "Greater")
+}

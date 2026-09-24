@@ -75,12 +75,14 @@ fn main allows Console {
 
 ```output
 p.x = 1
-compare(p, {x:1,y:3}) = -1
+compare(p, {x:1,y:3}) = Less
 to_string(p) = Point { x: 1, y: 2 }
 ```
 
-`Eq` は `==` を、`Ord` は `compare`（-1 / 0 / 1 を返す）を、`Show` は
-`to_string` とそれによる補間を与えます。手で書くのは、導出された意味が
+`Eq` は `==` を、`Ord` は `compare` を、`Show` は `to_string` とそれによる
+補間を与えます。`compare` が返すのは `Ordering`（`Less` / `Equal` /
+`Greater`）で、import なしでどのプログラムからも見える enum です。結果を
+`match` するときは3つすべてを扱う必要があります。手で書くのは、導出された意味が
 欲しいものと違うときだけです。
 [ジェネリクス・trait・derive](15_generics.vibe.md)で先へ進みます。
 

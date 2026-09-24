@@ -45,7 +45,11 @@ import @vibe/compiler/core {
   is_exception_throw_operation,
   namespace_rename_original,
   namespace_rename_originals_reset,
+  prelude_ordering_stmt,
   sort_perm_by_names,
+  stmts_declare_prelude_ordering_shape,
+  stmts_shadow_prelude_ordering,
+  stmts_use_prelude_ordering,
   str_lt,
   trait_definition,
   trait_method_sig_binders_deep
@@ -15700,16 +15704,17 @@ fn gen_enum_eq_fn(ename: String, variants: Array[(String, Array[TypeExpr])], kno
   SLet(false, false, qualified_name(ename, "equals"), None, EFn(no_tp, no_tb, params, Some(TyName("Bool")), None, EMatch(EIdent("a", -1), outer_arms)))
 }
 
-/// `let P::compare = (a: P, b: P) -> Int { lexicographic over fields -> -1/0/1 }`
-fn gen_compare_fn(tname: String, fields: Array[(String, TypeExpr)]) -> Stmt {
-  let neg_one = 0 - 1
-  let mut body = EInt(0)
+/// `let P::compare = (a: P, b: P) -> Ordering { lexicographic over fields }`
+/// (#3042, ADR-0118). The first field that is not `Equal` decides; a struct
+/// with no fields, or with every field `Equal`, answers `Equal`.
+fn gen_compare_fn(tname: String, fields: Array[(String, TypeExpr)], known_types: Array[String]) -> Stmt {
+  let mut body = ordering_ctor("Equal")
   let mut i = Array::length(fields) - 1
   while i >= 0 {
-    let (fname, _) = Array::get(fields, i)
+    let (fname, fty) = Array::get(fields, i)
     let af = EDot(EIdent("a", -1), fname, -1, -1)
     let bf = EDot(EIdent("b", -1), fname, -1, -1)
-    body = EIf(EBinOp("<", af, bf, -1), EInt(neg_one), EIf(EBinOp(">", af, bf, -1), EInt(1), body))
+    body = compare_then_typed(fty, af, bf, body, known_types)
     i = i - 1
   }
   let params = Array::slice([
@@ -15718,7 +15723,12 @@ fn gen_compare_fn(tname: String, fields: Array[(String, TypeExpr)]) -> Stmt {
   ], 0, 2)
   let no_tp = array_empty()
   let no_tb = array_empty()
-  SLet(false, false, qualified_name(tname, "compare"), None, EFn(no_tp, no_tb, params, Some(TyName("Int")), None, body))
+  SLet(false, false, qualified_name(tname, "compare"), None, EFn(no_tp, no_tb, params, Some(TyName("Ordering")), None, body))
+}
+
+/// #3042: a reference to one of the prelude `Ordering`'s constructors.
+fn ordering_ctor(name: String) -> Expr {
+  EIdent(name, -1)
 }
 
 /// Show an arbitrary value expression by its declared type (#694: type-directed
@@ -15822,28 +15832,36 @@ fn collect_show_array_elems(ty: TypeExpr, acc: Array[TypeExpr], keys: Array[Stri
   }
 }
 
-/// Compare two operands of declared type `fty`, returning -1/0/1. Aggregate
-/// (declared struct/enum) operands recurse through `T::compare`; scalars and type
+/// Compare two operands of declared type `fty` and answer `rest` when they are
+/// `Equal`, otherwise their `Ordering` (#3042). Aggregate (declared
+/// struct/enum) operands recurse through `T::compare`; scalars and type
 /// parameters use the runtime structural `<` / `>` (codegen handles them).
-fn compare_for_typed(fty: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]) -> Expr {
-  let neg_one = 0 - 1
+fn compare_then_typed(fty: TypeExpr, lhs: Expr, rhs: Expr, rest: Expr, known_types: Array[String]) -> Expr {
+  let by_operator = EIf(EBinOp("<", lhs, rhs, -1), ordering_ctor("Less"), EIf(EBinOp(">", lhs, rhs, -1), ordering_ctor("Greater"), rest))
   match fty {
     TyName(n) => if !is_scalar_type_name(n) && str_array_contains(known_types, n) {
-      ECall(EIdent(qualified_name(n, "compare"), -1), Array::slice([lhs, rhs], 0, 2), -1)
-    } else {
-      EIf(EBinOp("<", lhs, rhs, -1), EInt(neg_one), EIf(EBinOp(">", lhs, rhs, -1), EInt(1), EInt(0)))
-    },
-    _ => EIf(EBinOp("<", lhs, rhs, -1), EInt(neg_one), EIf(EBinOp(">", lhs, rhs, -1), EInt(1), EInt(0)))
+      let arms = array_empty()
+      let equal_binds = array_empty()
+      Array::push(arms, (PCtor("Equal", equal_binds), rest))
+      // Fresh per comparison: a nested field's arm must not capture an
+      // enclosing field's binder.
+      let decided = String::concat("__ord", idx_str(eq_tuple_uid_next()))
+      Array::push(arms, (PBind(decided), EIdent(decided, -1)))
+      EMatch(ECall(EIdent(qualified_name(n, "compare"), -1), Array::slice([
+        lhs,
+        rhs
+      ], 0, 2), -1), arms)
+    } else by_operator,
+    _ => by_operator
   }
 }
 
-/// `let E::compare = (a: E, b: E) -> Int { ... }`
+/// `let E::compare = (a: E, b: E) -> Ordering { ... }` (#3042, ADR-0118)
 /// Lexicographic: first by variant order (a's tag index vs b's tag index), then
 /// (same variant) by payload, recursively. The variant index of `a` is computed
 /// by matching `a`; for each `a` variant the inner match on `b` either compares
-/// payloads (same variant) or returns the sign of (a_index - b_index).
+/// payloads (same variant) or answers `Less` / `Greater` from the two indices.
 fn gen_enum_compare_fn(ename: String, variants: Array[(String, Array[TypeExpr])], known_types: Array[String]) -> Stmt {
-  let neg_one = 0 - 1
   let outer_arms = array_empty()
   let mut ai = 0
   while ai < Array::length(variants) {
@@ -15869,20 +15887,18 @@ fn gen_enum_compare_fn(ename: String, variants: Array[(String, Array[TypeExpr])]
         bfi = bfi + 1
       }
       let arm_body = if ai == bi {
-        // same variant: lexicographic over payloads, 0 if no payload.
-        let mut body = EInt(0)
+        // same variant: lexicographic over payloads, `Equal` if no payload.
+        let mut body = ordering_ctor("Equal")
         let mut pi = anf - 1
         while pi >= 0 {
-          let cmp = compare_for_typed(Array::get(aftypes, pi), EIdent(String::concat("__a", idx_str(pi)), -1), EIdent(String::concat("__b", idx_str(pi)), -1), known_types)
-          let prev = body
-          body = EIf(EBinOp("<", cmp, EInt(0), -1), EInt(neg_one), EIf(EBinOp(">", cmp, EInt(0), -1), EInt(1), prev))
+          body = compare_then_typed(Array::get(aftypes, pi), EIdent(String::concat("__a", idx_str(pi)), -1), EIdent(String::concat("__b", idx_str(pi)), -1), body, known_types)
           pi = pi - 1
         }
         body
       } else if ai < bi {
-        EInt(neg_one)
+        ordering_ctor("Less")
       } else {
-        EInt(1)
+        ordering_ctor("Greater")
       }
       Array::push(inner_arms, (PCtor(bvname, bbinds), arm_body))
       bi = bi + 1
@@ -15896,7 +15912,7 @@ fn gen_enum_compare_fn(ename: String, variants: Array[(String, Array[TypeExpr])]
   ], 0, 2)
   let no_tp = array_empty()
   let no_tb = array_empty()
-  SLet(false, false, qualified_name(ename, "compare"), None, EFn(no_tp, no_tb, params, Some(TyName("Int")), None, EMatch(EIdent("a", -1), outer_arms)))
+  SLet(false, false, qualified_name(ename, "compare"), None, EFn(no_tp, no_tb, params, Some(TyName("Ordering")), None, EMatch(EIdent("a", -1), outer_arms)))
 }
 
 /// The default value expression for a declared field type. Per-type rules:
@@ -17030,7 +17046,7 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
         }
         if str_array_contains(derives, "Ord") && !dtd_source_op_defined(stmts, qualified_name(name, "compare")) {
           dtd_fresh_reset_for_decl()
-          Array::push(gen, gen_compare_fn(name, fields))
+          Array::push(gen, gen_compare_fn(name, fields, known_types))
         } else {
           ()
         }
@@ -22355,6 +22371,129 @@ export fn desugar_trait_dicts_module_with_facts(own: Array[Stmt], ctx: Array[Stm
   synthesized
 }
 
+/// #3042 (ADR-0118): append the prelude `enum Ordering { Less; Equal;
+/// Greater } derive (Eq, Ord, Show)` to a program that builds an `Ordering`
+/// -- one that derives `Ord`, or names one of its constructors as a value or a
+/// pattern (`stmts_use_prelude_ordering`) -- and does not
+/// declare those names itself. The checker checked every module against the
+/// same declaration (`seed_prelude_ordering`); this is the one copy the merged
+/// program is compiled with, so every module's `Less` is the same constructor.
+/// A program that already carries a declaration (a second run of this pass,
+/// or `@vibe/builtin`'s `ordering.vibe` linked in) is left as it is.
+///
+/// A program that derives `Ord` while one of its modules declares an
+/// `Ordering`, or a `Less` / `Equal` / `Greater` constructor or value, of
+/// another shape has no constructor the derived `compare` may build, so it is
+/// refused. The checker refuses the module-local and imported-constructor
+/// shapes first; this catches a foreign `Ordering` that reached a module only
+/// through an imported signature, whose declaration that module never saw.
+///
+/// An exact-shaped `enum Ordering { Less; Equal; Greater }` declared by some
+/// module IS the prelude for the modules that import a signature mentioning
+/// it, and the checker binds the prelude's `equals` / `compare` /
+/// `to_string` for them. A declaration written without those derives gains
+/// them here; one that defines such an operation by hand instead is refused,
+/// since its signature need not be the one the importers were checked against.
+fn dtd_append_prelude_ordering(stmts: Array[Stmt]) -> Unit with Exception {
+  if dtd_stmts_derive_ord(stmts) && dtd_ordering_foreign_shadow(stmts) {
+    throw("`derive (Ord)` generates `compare` returning the prelude `Ordering` (`Less` / `Equal` / `Greater`), but a module in this program declares its own `Ordering` or one of those constructors; rename that declaration")
+  } else if !stmts_shadow_prelude_ordering(stmts) {
+    if stmts_use_prelude_ordering(stmts) {
+      Array::push(stmts, prelude_ordering_stmt())
+    }
+  } else {
+    dtd_complete_prelude_ordering_derives(stmts)
+  }
+}
+
+/// Does some top-level statement shadow the prelude `Ordering` other than an
+/// exact-shaped `enum Ordering { Less; Equal; Greater }` declaration?
+fn dtd_ordering_foreign_shadow(stmts: Array[Stmt]) -> Bool {
+  let mut found = false
+  for stmt in stmts {
+    let one = [stmt]
+    if stmts_shadow_prelude_ordering(one) && !stmts_declare_prelude_ordering_shape(one) {
+      found = true
+    }
+  }
+  found
+}
+
+/// Give an exact-shaped `Ordering` declaration the prelude's `Eq` / `Ord` /
+/// `Show` derives it lacks, refusing one whose operation the program defines.
+fn dtd_complete_prelude_ordering_derives(stmts: Array[Stmt]) -> Unit with Exception {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let stmt = Array::get(stmts, i)
+    if stmts_declare_prelude_ordering_shape([stmt]) {
+      match stmt {
+        SEnum(exported, name, params, variants, derives) => {
+          let completed = array_empty()
+          for d in derives {
+            Array::push(completed, d)
+          }
+          for pair in [
+            ("Eq", "Ordering::equals"),
+            ("Ord", "Ordering::compare"),
+            ("Show", "Ordering::to_string")
+          ] {
+            let (wanted, op) = pair
+            let mut present = false
+            for d in completed {
+              if d == wanted {
+                present = true
+              }
+            }
+            // A hand-written operation is refused whether or not the derive is
+            // listed: `desugar_derives` lets a source definition replace the
+            // generated one, and its signature need not be the prelude's.
+            if dtd_stmts_define_value(stmts, op) {
+              throw(String::concat("`enum Ordering { Less; Equal; Greater }` is spelled exactly like the prelude, so it carries the prelude's `derive (Eq, Ord, Show)`; `", String::concat(op, "` is also written by hand -- remove it and derive it, or rename the type")))
+            }
+            if !present {
+              Array::push(completed, wanted)
+            }
+          }
+          Array::set(stmts, i, SEnum(exported, name, params, variants, completed))
+        },
+        _ => ()
+      }
+    }
+    i = i + 1
+  }
+}
+
+fn dtd_stmts_define_value(stmts: Array[Stmt], wanted: String) -> Bool {
+  let mut found = false
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, name, _, _) => if name == wanted {
+        found = true
+      },
+      _ => ()
+    }
+  }
+  found
+}
+
+/// Does any struct or enum in `stmts` derive `Ord`?
+fn dtd_stmts_derive_ord(stmts: Array[Stmt]) -> Bool {
+  let mut found = false
+  for stmt in stmts {
+    let derives = match stmt {
+      SStruct(_, _, _, ds, _, _) => ds,
+      SEnum(_, _, _, _, ds) => ds,
+      _ => array_empty()
+    }
+    for d in derives {
+      if d == "Ord" {
+        found = true
+      }
+    }
+  }
+  found
+}
+
 fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Array[String]) -> Unit with Exception {
   // #2441: (re)populate the typed-`==` table for THIS program before any
   // rewrite can read it.
@@ -22373,6 +22512,9 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
   // #790: lower array-literal spreads first, so no downstream pass or codegen
   // ever sees a raw ESpread.
   desugar_array_spread(stmts)
+  // #3042: the prelude `Ordering` joins a program that builds one, before
+  // any pass below collects the program's declared types.
+  dtd_append_prelude_ordering(stmts)
   // #1070 (narrow slice): inline a trivial pass-through wrapper
   // (`let apply = (f) -> { f() }`, body EXACTLY a same-arity direct call to
   // its own sole parameter, nothing else) at each matching call site
