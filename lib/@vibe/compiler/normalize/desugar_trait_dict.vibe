@@ -47,6 +47,7 @@ import @vibe/compiler/core {
   namespace_rename_originals_reset,
   prelude_ordering_stmt,
   sort_perm_by_names,
+  stmts_declare_prelude_ordering_shape,
   stmts_shadow_prelude_ordering,
   stmts_use_prelude_ordering,
   str_lt,
@@ -22379,12 +22380,39 @@ export fn desugar_trait_dicts_module_with_facts(own: Array[Stmt], ctx: Array[Stm
 /// program is compiled with, so every module's `Less` is the same constructor.
 /// A program that already carries a declaration (a second run of this pass,
 /// or `@vibe/builtin`'s `ordering.vibe` linked in) is left as it is.
-fn dtd_append_prelude_ordering(stmts: Array[Stmt]) -> Unit {
-  if !stmts_shadow_prelude_ordering(stmts) && stmts_use_prelude_ordering(stmts) {
-    Array::push(stmts, prelude_ordering_stmt())
-  } else {
-    ()
+///
+/// A program that derives `Ord` while one of its modules declares an
+/// `Ordering` or a `Less` / `Equal` / `Greater` of another shape has no
+/// prelude to append and no constructor the derived `compare` may build, so it
+/// is refused. The checker refuses the module-local and imported-constructor
+/// shapes first; this catches a foreign `Ordering` that reached a module only
+/// through an imported signature, whose declaration that module never saw.
+fn dtd_append_prelude_ordering(stmts: Array[Stmt]) -> Unit with Exception {
+  if !stmts_shadow_prelude_ordering(stmts) {
+    if stmts_use_prelude_ordering(stmts) {
+      Array::push(stmts, prelude_ordering_stmt())
+    }
+  } else if dtd_stmts_derive_ord(stmts) && !stmts_declare_prelude_ordering_shape(stmts) {
+    throw("`derive (Ord)` generates `compare` returning the prelude `Ordering` (`Less` / `Equal` / `Greater`), but a module in this program declares its own `Ordering` or one of those constructors; rename that declaration")
   }
+}
+
+/// Does any struct or enum in `stmts` derive `Ord`?
+fn dtd_stmts_derive_ord(stmts: Array[Stmt]) -> Bool {
+  let mut found = false
+  for stmt in stmts {
+    let derives = match stmt {
+      SStruct(_, _, _, ds, _, _) => ds,
+      SEnum(_, _, _, _, ds) => ds,
+      _ => array_empty()
+    }
+    for d in derives {
+      if d == "Ord" {
+        found = true
+      }
+    }
+  }
+  found
 }
 
 fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Array[String]) -> Unit with Exception {

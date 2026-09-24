@@ -2352,6 +2352,10 @@ ur_refused fixtures/err_interp_unrenderable_shadow_refused.vibe 'cannot interpol
 # #3019 rides the same helper: a lowering-time refusal asserted on its message
 # and its edit, not on the bare fact that the build failed.
 ur_refused fixtures/err_handle_resume_capture_loop_break_refused.vibe 'leaves a loop outside it' 'set a flag inside the handle'
+# #3042: an `Ordering` of another shape that reached a module only through an
+# imported signature. The module's checker never saw the declaration, so the
+# merged program is refused instead of stopping with an internal error.
+ur_refused fixtures/err_ordering_derive_imported_foreign_type_refused.vibe 'but a module in this program declares its own `Ordering`' 'rename that declaration'
 # #2994: `vibe check` reports the handle-eligibility refusal AT the handled
 # body's first call; it used to carry no position at all.
 hi_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
