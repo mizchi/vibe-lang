@@ -194,6 +194,19 @@ export fn from_wit_typedef(typedef: WitTypeDef) -> String with Exception {
     TDFlags(name, _, _) => throw(fw_refusal("flags \{name}", "")),
     TDResource(name, funcs, _) => {
       let ty = fw_pascal(name)
+      // The explicit release is spelled `drop` (§7); a resource whose own
+      // interface already has a `drop` would declare it twice (Codex on
+      // #3059), so it is refused rather than silently renamed.
+      let mut fi = 0
+      while fi < Array::length(funcs) {
+        let (fname, _, _, _, _, _) = Array::get(funcs, fi)
+        if fname == "drop" {
+          throw(fw_refusal("resource `\{name}` declaring its own `drop` (the derived handle release is `\{ty}::drop`)", ""))
+        } else {
+          ()
+        }
+        fi = fi + 1
+      }
       let out: Array[String] = ["opaque type \{ty}"]
       let mut i = 0
       while i < Array::length(funcs) {
@@ -264,6 +277,10 @@ fn fw_type(t: WitTypeExpr, ctx: String) -> String with Exception {
     // could not hold -- refuse it rather than emit `()`.
     TyTuple(items) => if Array::length(items) == 0 {
       throw(fw_refusal("_ (no value) inside another type", ctx))
+    } else if Array::length(items) == 1 {
+      // vibe reads `(T)` as grouping, not a one-element tuple, so `tuple<T>`
+      // would come back as `T` -- a different ABI shape (Codex on #3059).
+      throw(fw_refusal("tuple<..> with one element", ctx))
     } else {
       let parts: Array[String] = []
       let mut i = 0
@@ -338,6 +355,10 @@ let fw_vibe_keywords: Array[String] = [
 fn fw_ident(name: String, ctx: String) -> String with Exception {
   if name == "fn" {
     throw(fw_refusal("identifier `fn` (a vibe keyword with no raw form)", ctx))
+  } else if name == "true" || name == "false" {
+    // `r#true` lexes to the identifier `true`, but the parser still reads
+    // that as the boolean literal (Codex on #3059), so there is no spelling.
+    throw(fw_refusal("identifier `\{name}` (a vibe literal with no raw form)", ctx))
   } else {
     let mut keyword = false
     let mut i = 0
