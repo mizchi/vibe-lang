@@ -46,7 +46,10 @@ declarations the compiler checks the implementation against.
 
 The interesting part is `allows Console`. It is the program's permission
 to write to the terminal, and it is required: delete it and the program
-does not compile. That is the language's one big idea, showing up in the
+does not compile. The message names `Stdout`, an older label for the
+output `println` uses, and tells you to write `allows Stdout`. Write
+`allows Console`. It covers `Stdout`; `Stdout` does not cover a later
+`Console::` operation. That is the language's one big idea, showing up in the
 smallest program it has — a program states what it is allowed to do,
 and the compiler holds it to that.
 

@@ -53,9 +53,11 @@ committed seed) で compile+run できる:
 
 ```bash
 cd <repo-root>
-# stage2 (gate 実行後に存在すれば最新の言語) or seed (常に存在、少し古い)
-S2=$(ls -td _build/selfhost/generations/*/ 2>/dev/null | head -1)stage2.wasm
-[ -f "$S2" ] || S2=bootstrap/seed/compiler.wasm
+# スコアを付けるラウンドは seed にも「ディスク上で一番新しい stage2」にも
+# 落ちてはいけない。scripts/resolve_stage2.sh の resolve_stage2_strict が
+# HEAD の generation か、明示した wasm だけを返す。
+. scripts/resolve_stage2.sh
+S2=$(resolve_stage2_strict lang-review "${VIBE_STAGE2_WASM:-}") || exit 1
 
 # compile (entry が let main の場合は main、test ブロックだけなら __no_entry__)
 VIBE_PREOPEN_DIR=$PWD VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
@@ -69,8 +71,10 @@ bash scripts/run_wasm_vibe_host_runner.sh --invoke _start path/to/prog.wasm
 - compile 失敗時は `<out>.diag` サイドカーに診断が書かれる。
 - **ソースは repo ツリー内に置く** (prelude 等の相対 import が repo 相対の
   ため)。probe は `_build/evalprobe*/` を使う (gitignored)。
-- 型検査だけなら `vibe diagnostics` 相当は未配線のため、compile の
-  成功/失敗 + `.diag` で代用する。
+- 型検査だけなら `vibe check <file.vibe>`（空出力 = clean、診断は 1 件 1 行、
+  exit 1）。`vibe diagnostics` は deprecated の別名で、ラウンドの手順には
+  使わない。compile の成否と `.diag` は、check が走らせない pass（構造的
+  等価の拒否など）を見るときだけ使う。
 
 ## スコア記録形式
 
@@ -140,6 +144,12 @@ concurrency に加えて **`maintenance-session`** を取る (r3 がこれ): 1 �
 
 ## tasks に golden の無いものがある場合
 
-`tasks/11_*`〜`13_*` は **現在の言語では解けない**ことが所見なので golden が
-無い。`run_golden.sh` は `golden/*.vibe` だけを見るので gate は緑のまま。
-解けるようになった時点で golden を作る。
+`tasks/11_*`〜`13_*` には golden が無い。`run_golden.sh` は `golden/*.vibe`
+だけを見るので、golden が無いこと自体では gate は落ちない。
+
+「今の言語では解けない」は 2026-08-06 (r3) の測定であり、この checkout の
+記述ではない。cheatsheet は top-level の `x?` (#1500) と、bare file からの
+`Http::request` (#1508 の第二の壁) を着地済みと書いている。task 12 の
+「test に row を足せない」と task 11 の handle 形状は、そこから再測定して
+いない。解けたことを確認してから golden を足す。未測定のまま「解けない」
+とも「解けた」とも書かない。

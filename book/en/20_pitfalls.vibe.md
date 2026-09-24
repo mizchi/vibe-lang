@@ -111,13 +111,14 @@ An unannotated `let xs = []` takes its element type from the
 says what it is**: a literal, an array / tuple / struct of literals, or
 an `if` whose branches agree.
 
-Push a name or a call result and the binding gets no element type, and
-comparing two such arrays once both are non-empty fails at run time
-rather than answering. `let xs: Array[Int] = []` is the fix. A struct
-that takes type parameters counts as saying what it is only for the type
-arguments whose `==` compares content — `Box[Int]` / `Box[Bool]` /
-`Box[Unit]` / `Box[String]` resolve; `Box[Double]`, `Box[Bytes]` and any
-array or struct argument do not.
+Push a name or a call result and the binding's syntax does not say the
+element type. `vibe run` and `vibe test` still answer by content when
+that element is one `==` can compare, including `Double`, `Bytes` and
+arrays. `let xs: Array[Int] = []` is the form that does not depend on
+that. A generic struct is compared at each concrete instantiation, so
+`Box[Double]` and `Box[Array[Int]]` compare by content too. What fails
+is an element with no structural comparator, and it fails as a build
+error, not at run time. `vibe check` does not report it.
 
 A generic `T` with no `Eq` witness is the boundary worth knowing, and it
 is a compile error rather than a surprise — `no impl `Eq` for

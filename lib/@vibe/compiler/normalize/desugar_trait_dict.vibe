@@ -9546,25 +9546,28 @@ fn interp_missing_show_type(arg: Expr, struct_sets: Array[(String, Array[String]
   }
 }
 
-/// #2198: the synthesized `__to_string` call has no offset (the interp
-/// snippet is re-lexed without offsets), so `[@off=]` cannot help -- but the
-/// enclosing top-level binding's name is in `dtd_show_self_fn`, so the
-/// message carries `[@fn=name]` and `locate_type_error` recovers the
-/// `fn name` / `let name` token in both check lanes. The compile lane
-/// strips unresolved side markers (`strip_side_marker` via
-/// `emit_compile_diag`), so nothing leaks there; wiring a real position
-/// through the compile path stays #1514's job. An interpolation inside a
-/// `test { }` block has no self_fn and stays positionless. Known accepted
-/// hazard (same as every `[@fn=]` use, #1941/#1596): a dep-file culprit
-/// whose binder name also exists in the entry text anchors on the entry's
-/// spelling.
-fn interp_missing_show_msg(tn: String) -> String {
+/// #2198: the synthesized `__to_string` call carries the backslash of
+/// `\{`, not the expression's first byte -- that byte is the argument's
+/// own offset, and sharing it collides in the typed-lowering key space
+/// (#2427). The message carries `[@off=N]` and `locate_type_error` reports
+/// that byte. `[@fn=]` remains only when the
+/// call has no offset (a synthetic re-entry, or a fragment lexed without
+/// one): it names the enclosing binding, which is coarser and wrong for the
+/// fragment, but it is a position rather than none. An interpolation inside
+/// a `test { }` block has no self_fn and, without an offset, stays
+/// positionless. Do not emit both markers: `locate_type_error` resolves
+/// `[@off=]` and would leave `[@fn=]` in the text the reader sees.
+fn interp_missing_show_msg(tn: String, off: Int) -> String {
   let base = String::concat("cannot interpolate a value of type `", String::concat(tn, String::concat("`: it has no Show renderer -- add `derive(Show)` to `", String::concat(tn, String::concat("`, or define `fn ", String::concat(tn, "::to_string(v) -> String` (#1445)"))))))
-  let self_fn = Array::get(dtd_show_self_fn, 0)
-  if String::length(self_fn) > 0 {
-    String::concat(base, String::concat(" [@fn=", String::concat(self_fn, "]")))
+  if off >= 0 {
+    String::concat(base, String::concat(" [@off=", String::concat(__to_string(off), "]")))
   } else {
-    base
+    let self_fn = Array::get(dtd_show_self_fn, 0)
+    if String::length(self_fn) > 0 {
+      String::concat(base, String::concat(" [@fn=", String::concat(self_fn, "]")))
+    } else {
+      base
+    }
   }
 }
 
@@ -10683,7 +10686,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
             let missing = interp_missing_show_type(Array::get(args, 0), struct_sets, var_types, fn_returns)
             let unresolved_array = interp_unresolved_array_call(Array::get(args, 0), struct_sets, var_types, fn_returns)
             if missing != "" {
-              throw(interp_missing_show_msg(missing))
+              throw(interp_missing_show_msg(missing, off))
             } else if String::length(unresolved_array) > 0 {
               // #2912: the same reasoning as #1445 one line up, for an array
               // instead of a declared aggregate. Both reach here having failed

@@ -104,8 +104,10 @@ r = (3, 3)
 
 ## `for ... in` collects
 
-A `for-in` is an expression too, and it evaluates to the `Array` of its
-body's results. Add a name before the element to get the index:
+A `for-in` over an `Array` is an expression too, and it evaluates to the
+`Array` of its body's results. Add a name before the element to get the
+index. A pull iterator in that same position is an error, not another
+collection — [Pitfalls](20_pitfalls.vibe.md) has that case.
 
 ```vibe run
 fn main allows Console {

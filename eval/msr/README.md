@@ -1,7 +1,7 @@
 # msr — Modification Survival Rate
 
 almide (github.com/almide/almide) の評価指標のひとつを vibe に移植した評価
-ループ。`docs/pl-survey-2026-07.md` の almide 調査、issue #1056 の Phase B/C
+ループ。`docs/internal/reports/pl-survey-2026-07.md` の almide 調査、issue #1056 の Phase B/C
 に続く取り込み。`eval/lang-review/` (rubric ベースの言語設計レビュー) とは
 別軸: lang-review が「ゼロから書いたときの摩擦」を測るのに対し、MSR は
 **「AI が書いたコードに、別の AI (または人) が後から変更を加えても、
@@ -68,8 +68,12 @@ bash eval/msr/run_msr.sh <task> attempts/<round>/<task>/initial attempts/<round>
 bash eval/msr/run_msr.sh --round <round>
 ```
 
-検証コンパイラは `eval/lang-review/README.md` と同じ規約 (stage2 が
-あればそれ、無ければ committed seed)。
+検証コンパイラは seed に黙って落ちない。`run_msr.sh` は
+`scripts/resolve_stage2.sh` の `resolve_stage2_strict` で HEAD の
+generation を取り、`VIBE_TEST_CLI_WASM` に渡してから `vibe_test.sh` を
+走らせる。別の wasm を測るときは `VIBE_STAGE2_WASM` か
+`VIBE_TEST_CLI_WASM` でパスを渡す。generation が無いと exit 2 で、
+seed の結果を MSR として記録しない。
 
 ## ラウンドの回し方
 

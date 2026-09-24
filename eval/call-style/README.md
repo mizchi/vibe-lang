@@ -10,8 +10,7 @@
 
 - vibe は今 `Module::fn(recv, args...)` を基本形とし、連鎖は `recv |> Module::fn(args...)`
   という pipe で書く設計 (ADR-0020 §3)。
-- ただし `docs/method-bearing-traits-plan.md` の 2026-07-04 追記にある通り、
-  **`recv.method(args)` の dot 呼び出しは既に部分着地している** — `desugar_trait_dict.vibe`
+- **`recv.method(args)` の dot 呼び出しは部分着地している** — `desugar_trait_dict.vibe`
   が EDot の receiver 型を推論できて `Tn::method` がトップレベル関数として存在すれば
   `Tn::method(recv, args)` に書き換える。つまり #1189 は「UFCS を入れるか」ではなく
   「既にある dot 記法をどこまで積極的に採用・推奨するか」という問題に近い。
@@ -84,4 +83,6 @@ eval/call-style/
 - dot 記法 (B) は現行コンパイラで全パターンが通るとは限らない (#641 は
   「トップレベル関数として存在する場合」限定、ビルトイン全般が対象か未確認)。
   このハーネスは可読性のみを見る純粋な読解実験であり、実装可否の検証では
-  ない — 実装可否は別途 `vibe diagnostics` で probe する。
+  ない — 実装可否は別途 `vibe check` で probe する。
+  `docs/method-bearing-traits-plan.md` は 2026-09-24 時点でリポジトリに無い。
+  当時の引用は `findings/2026-07-28-r1.md` に残している。
