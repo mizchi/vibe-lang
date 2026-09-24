@@ -8,6 +8,10 @@ import @vibe/compiler/runtime {
   collect_all_diagnostics
 }
 
+import @vibe/compiler/checker {
+  instantiate_callee_label_at, set_call_formal_bindings
+}
+
 //# Misc
 
 fn diags_of_raw(src: String) -> Array[String] with Exception {
@@ -96,4 +100,22 @@ test "a shadowing formal elsewhere does not switch the check off here" {
   let d = diags_of("fn id[Int](x: Int) -> Int {\n  x\n}\n\nfn g(x: String) -> Int with State[String] {\n  1\n}\n\nfn caller() -> Int with State[Int] {\n  g(\"abc\")\n}\n")
   assert(eq(Array::length(d), 1))
   assert(String::contains(Array::get(d, 0), "missing { State[String] }"))
+}
+
+test "two calls under one key that instantiate differently fail closed" {
+  // Codex on #3055: sources merged without rebased offsets can record two
+  // calls at one offset. Their formals become `?S`, which no row authorizes,
+  // rather than staying open for the base-name match.
+  set_call_formal_bindings([
+    ("7:get", [("S", "String")]),
+    ("7:get", [("S", "Int")]),
+    ("9:get", [("S", "Int")]),
+    ("9:get", [("S", "Int")])
+  ])
+  assert(eq(instantiate_callee_label_at("State[S]", "7:get"), "State[?S]"))
+  // The same binding recorded twice is not a conflict.
+  assert(eq(instantiate_callee_label_at("State[S]", "9:get"), "State[Int]"))
+  // An unrecorded key leaves the label as written.
+  assert(eq(instantiate_callee_label_at("State[S]", "11:get"), "State[S]"))
+  set_call_formal_bindings([])
 }

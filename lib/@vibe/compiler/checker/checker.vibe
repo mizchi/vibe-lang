@@ -4558,7 +4558,7 @@ let generic_fn_decls_cell: Array[(String, Array[String], Array[(String, Option[T
 
 /// #3027: (callee offset, scheme, instantiated type) for each call of a
 /// generic binding, recorded where the call position instantiates the scheme.
-let callee_inst_types_cell: Array[(Int, Type, Type)] = []
+let callee_inst_types_cell: Array[(Int, Type, Type, String)] = []
 
 /// #3027: every generic binding's annotations, keyed by the scheme it was
 /// bound with -- a top-level declaration (its hoisted signature and its
@@ -4660,7 +4660,7 @@ fn resolve_callee_formal_args(wants: Array[String], env_scheme: Option[Type], co
   let mut call = None
   let mut ti = 0
   while ti < Array::length(callee_inst_types_cell) {
-    let (toff, tscheme, tty) = Array::get(callee_inst_types_cell, ti)
+    let (toff, tscheme, tty, _) = Array::get(callee_inst_types_cell, ti)
     if toff == coff {
       call = Some((tscheme, tty))
     }
@@ -4762,19 +4762,26 @@ fn callee_formal_texts(decl: Option[(Array[String], Array[(String, Option[TypeEx
   out
 }
 
+/// The key a call's formal bindings travel under: the callee identifier's
+/// offset AND its spelling, so two merged sources' calls at the same offset
+/// collide only when they also name the same callee (Codex on #3055).
+export fn call_formal_key(off: Int, name: String) -> String {
+  String::concat(__to_string(off), String::concat(":", name))
+}
+
 /// #3053: every recorded generic call's formal bindings under the final
-/// substitution, keyed by the callee identifier's offset, for the effects pass
+/// substitution, keyed by `call_formal_key`, for the effects pass
 /// to instantiate the callee's row at that call. Only the call's own scheme is
 /// read here: a call whose scheme has no recorded declaration contributes
 /// nothing, so its row stays as written (open) rather than being guessed.
-export fn callee_formal_bindings(defs: Array[TypeDef], s: Subst) -> Array[(Int, Array[(String, String)])] {
-  let out: Array[(Int, Array[(String, String)])] = []
+export fn callee_formal_bindings(defs: Array[TypeDef], s: Subst) -> Array[(String, Array[(String, String)])] {
+  let out: Array[(String, Array[(String, String)])] = []
   let mut i = 0
   while i < Array::length(callee_inst_types_cell) {
-    let (off, scheme, inst) = Array::get(callee_inst_types_cell, i)
+    let (off, scheme, inst, cname) = Array::get(callee_inst_types_cell, i)
     let texts = callee_formal_texts(generic_decl_of_scheme(scheme), scheme, inst, defs, s)
     if Array::length(texts) > 0 {
-      Array::push(out, (off, texts))
+      Array::push(out, (call_formal_key(off, cname), texts))
     }
     i = i + 1
   }
@@ -11385,7 +11392,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                       // row names.
                       match t {
                         CtForAll(_, _, _) => if callee_off >= 0 {
-                          Array::push(callee_inst_types_cell, (callee_off, t, ti))
+                          Array::push(callee_inst_types_cell, (callee_off, t, ti, name))
                         },
                         _ => ()
                       }
