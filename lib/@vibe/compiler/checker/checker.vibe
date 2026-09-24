@@ -4089,30 +4089,53 @@ let callee_inst_types_cell: Array[(Int, Type, Type)] = []
 let generic_scheme_decls_cell: Array[(Type, Array[String], Array[(String, Option[TypeExpr])], Option[TypeExpr])] = [
 ]
 
-export fn note_toplevel_generic_binding(name: String, bound: Option[Type]) -> Unit {
+export fn note_toplevel_generic_binding(name: String, val: Expr, bound: Option[Type], env: TypeEnv) -> Unit {
   match bound {
     Some(CtForAll(vs, bs, body)) => {
+      let mut declared = false
       let mut i = 0
       while i < Array::length(generic_fn_decls_cell) {
         let (dn, tps, params, ret) = Array::get(generic_fn_decls_cell, i)
         if dn == name {
+          declared = true
           Array::push(generic_scheme_decls_cell, (CtForAll(vs, bs, body), tps, params, ret))
         }
         i = i + 1
+      }
+      if !declared {
+        note_generic_alias(val, CtForAll(vs, bs, body), env)
       }
     },
     _ => ()
   }
 }
 
-/// A local `let` bound to a generic lambda: its scheme and its annotations.
-fn note_local_generic_binding(val: Expr, bound: Type) -> Unit {
+/// A local `let` bound to a generic lambda, or to an alias of one: its scheme
+/// and the declaration its formals are read through.
+fn note_local_generic_binding(val: Expr, bound: Type, env: TypeEnv) -> Unit {
   match val {
     EFn(tps, _, params, ret, _, _) => if Array::length(tps) > 0 {
       match bound {
         CtForAll(_, _, _) => Array::push(generic_scheme_decls_cell, (bound, tps, params, ret)),
         _ => ()
       }
+    },
+    _ => note_generic_alias(val, bound, env)
+  }
+}
+
+/// `let get = get0` generalizes `get0`'s scheme afresh, so the new scheme has
+/// no declaration of its own; it takes its source's, whose formals sit at the
+/// same positions (Codex on #3047 -- the alias left the row formal open, and
+/// an open spelling is never judged).
+fn note_generic_alias(val: Expr, bound: Type, env: TypeEnv) -> Unit {
+  match (val, bound) {
+    (EIdent(src, _), CtForAll(_, _, _)) => match env_lookup(env, src) {
+      Some(src_scheme) => match generic_decl_of_scheme(src_scheme) {
+        Some((tps, params, ret)) => Array::push(generic_scheme_decls_cell, (bound, tps, params, ret)),
+        None => ()
+      },
+      None => ()
     },
     _ => ()
   }
@@ -7339,8 +7362,8 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         // #2848: a field read on a parameter this binding just quantified.
         refuse_generalized_field_reads(gen, ns, errors)
         let aliases_outer = spine_region_active && expression_aliases_outer_binding(val, cenv)
+        note_local_generic_binding(val, gen, cenv)
         cenv = env_bind(cenv, name, gen)
-        note_local_generic_binding(val, gen)
         cenv = bind_function_dependency_contracts(cenv, name, val)
         if aliases_outer {
           cenv = env_bind(cenv, String::concat("__region_outer_alias__", name), CtUnit)
@@ -7406,8 +7429,8 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         let gen = let_generalize(val, subst_apply(s2, tv), cenv, s2, Some(name))
         // #2848: see the ELet arm.
         refuse_generalized_field_reads(gen, s2, errors)
+        note_local_generic_binding(val, gen, cenv)
         cenv = env_bind(cenv, name, gen)
-        note_local_generic_binding(val, gen)
         cenv = bind_function_dependency_contracts(cenv, name, val)
         s1 = s2
         c1 = nc
