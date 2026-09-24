@@ -427,7 +427,12 @@ test("B2 top-level helper bodies carry context and ordinary entries pass None", 
     "parse_expr(tokens,",
     "parse_impl(tokens,",
   ]);
-  for (const ordinaryProgram of ["parse_program_preserving", "parse_program_preserving_impl", "parse_program_recovering"]) {
+  // #2948: the located preserving parse splits its loop into two helpers --
+  // the `#cfg` directive and the top-level statement -- and both are ordinary
+  // entries too.
+  assertBody(parserSource, "preserving_cfg_directive", ["parse_impl_methods(tokens, hp_d, simpl_d, None)"], ["parse_impl_methods(tokens, hp_d, simpl_d, context)"]);
+  assertBody(parserSource, "parse_preserving_top_stmt", ["parse_impl_methods(tokens, hp, simpl, None)"], ["parse_impl_methods(tokens, hp, simpl, context)"]);
+  for (const ordinaryProgram of ["parse_program_preserving", "parse_program_recovering"]) {
     assertBody(parserSource, ordinaryProgram, [
       "parse_impl_methods(tokens, hp_d, simpl_d, None)",
       "parse_impl_methods(tokens, hp, simpl, None)",

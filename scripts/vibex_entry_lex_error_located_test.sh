@@ -74,6 +74,9 @@ cp "$WORK/parse.vibex" "$WORK/parse.vibe"
 printf 'fn quiet() -> Int allows Console {\n  42\n}\n\nfn main allows Console {\n  println("\\{quiet()}")\n}\n' > "$WORK/allows.vibex"
 cp "$WORK/allows.vibex" "$WORK/allows.vibe"
 printf 'export fn helper() -> Int {\n  1\n}\n\nfn main allows Console {\n  println("hi")\n}\n' > "$WORK/shape.vibex"
+# The syntax error sits in a statement an INACTIVE `#cfg` guards: the parse
+# still reads it, so it is located like any other (Codex on #3047).
+printf '#cfg(nope_not_enabled)\nfn dead() -> Int {\n  let y = (\n}\n\nfn main allows Console {\n  println("hi")\n}\n' > "$WORK/cfgparse.vibex"
 printf 'fn main allows Console {\n  println("ok-42")\n}\n'                 > "$WORK/good.vibex"
 printf 'export fn helper() -> Int {\n  let x = 1 \\ 2\n  x\n}\n'             > "$WORK/lexlib.vibe"
 printf 'export fn helper(x: Int) -> Int {\n  x + 1\n}\n'                   > "$WORK/goodlib.vibe"
@@ -175,6 +178,23 @@ for pair in "parse:expected ')' or ','" "allows:grants authority"; do
       note "  ok   vibe $verb $stem.vibex: ${want%%: *}"
     fi
   done
+done
+
+note "=== 6b. RED: a parse error under an inactive #cfg is located too ==="
+for verb in build run; do
+  case "$verb" in
+    build) ask build cfgparse.vibex -o "$WORK/cfgparse.wasm" ;;
+    run)   ask run cfgparse.vibex ;;
+  esac
+  if printf '%s' "$OUT" | grep -q ' at #[0-9]'; then
+    note "  FAIL $verb cfgparse.vibex: a parser token index reached the reader"
+    printf '%s\n' "$OUT" | head -2 | sed 's/^/        /'; fail=1
+  elif ! printf '%s' "$OUT" | grep -qF "cfgparse.vibex" || [ -z "$(locpart "$OUT")" ]; then
+    note "  FAIL $verb cfgparse.vibex: want the file and a line:col"
+    printf '%s\n' "$OUT" | head -2 | sed 's/^/        /'; fail=1
+  else
+    note "  ok   vibe $verb cfgparse.vibex: $(locpart "$OUT" | cut -d: -f1-2)"
+  fi
 done
 
 note "=== 7. RED: serve and build --wit read an entry the same way ==="

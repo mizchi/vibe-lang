@@ -1033,6 +1033,32 @@ export fn parse_program_preserving_located(tokens: Array[Token], starts: Array[I
   parse_program_preserving_impl(tokens, starts, source, true)
 }
 
+/// One `#name` directive at `pos` for the located preserving parse: pushes
+/// what it keeps into `b` and answers the position after it (an inactive
+/// `#cfg` consumes -- and so parses -- the statement it guards).
+fn preserving_cfg_directive(tokens: Array[Token], starts: Array[Int], pos: Int, cfg_active: Array[String], b: ArrayBuilder[Stmt]) -> Int with Exception {
+  let (dname, flag, dnext) = parse_cfg_directive(tokens, pos + 1)
+  if dname == "zero_alloc" {
+    require_zero_alloc_target(tokens, dnext)
+    ArrayBuilder::push(b, SExpr(EIdent(zero_alloc_marker_ident(flag), 0)))
+    dnext
+  } else if dname == "deprecated" || dname == "cfg_enable" || cfg_flag_active(cfg_active, flag) {
+    dnext
+  } else {
+    match peek(tokens, dnext) {
+      TImpl => {
+        let (simpl_d, hp_d) = parse_impl_stmt_dispatch(tokens, dnext + 1)
+        let (_dropped, dn) = parse_impl_methods(tokens, hp_d, simpl_d, None)
+        dn
+      },
+      _ => {
+        let (_dropped, dn) = parse_stmt_preserving(tokens, starts, dnext)
+        dn
+      }
+    }
+  }
+}
+
 fn parse_program_preserving_impl(tokens: Array[Token], starts: Array[Int], source: String, located: Bool) -> Array[Stmt] with Exception {
   if located {
     remember_parse_source(source)
@@ -1052,27 +1078,18 @@ fn parse_program_preserving_impl(tokens: Array[Token], starts: Array[Int], sourc
         pos = pos + 1
       },
       THash => {
-        let (dname, flag, dnext) = parse_cfg_directive(tokens, pos + 1)
-        if dname == "zero_alloc" {
-          require_zero_alloc_target(tokens, dnext)
-          ArrayBuilder::push(b, SExpr(EIdent(zero_alloc_marker_ident(flag), 0)))
-          pos = dnext
-        } else if dname == "deprecated" || dname == "cfg_enable" || cfg_flag_active(cfg_active, flag) {
-          // enable directive consumed, or active #cfg: keep the next stmt.
-          pos = dnext
+        // An inactive `#cfg` still parses the statement it guards, so its
+        // syntax error is located like any other statement's (Codex on
+        // #3047 -- it used to escape the wrapper with a bare `at #N`).
+        let start_pos = pos
+        pos = if located {
+          handle {
+            preserving_cfg_directive(tokens, starts, pos, cfg_active, b)
+          } with { Exception::Throw(msg) => {
+            throw(locate_parse_error(msg, start_pos, starts, source))
+          } }
         } else {
-          // Inactive #cfg: parse the guarded statement and discard it.
-          match peek(tokens, dnext) {
-            TImpl => {
-              let (simpl_d, hp_d) = parse_impl_stmt_dispatch(tokens, dnext + 1)
-              let (_dropped, dn) = parse_impl_methods(tokens, hp_d, simpl_d, None)
-              pos = dn
-            },
-            _ => {
-              let (_dropped, dn) = parse_stmt_preserving(tokens, [], dnext)
-              pos = dn
-            }
-          }
+          preserving_cfg_directive(tokens, starts, pos, cfg_active, b)
         }
       },
       _ => if located {
