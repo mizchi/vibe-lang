@@ -2109,7 +2109,10 @@ fn identity_definition_type(def: Option[TypeDef], ty: Type) -> Type {
 fn same_type_definition(a_def: Option[TypeDef], a_ty: Type, b_def: Option[TypeDef], b_ty: Type) -> Bool {
   match a_def {
     Some(a) => match b_def {
-      Some(b) => a == b,
+      // Structural equality first (no allocation); two declarations that
+      // differ only in their formals' spellings (`Box[T]` / `Box[U]`) are
+      // the same declaration, which the positional identity sees.
+      Some(b) => a == b || typedef_identity(a) == typedef_identity(b),
       None => typedef_identity(a) == b_ty
     },
     None => match b_def {
@@ -2119,9 +2122,71 @@ fn same_type_definition(a_def: Option[TypeDef], a_ty: Type, b_def: Option[TypeDe
   }
 }
 
+/// A declaration's formals by POSITION: a binder's spelling is not part of
+/// its identity (`Box[T]` and `Box[U]` are one declaration).
 fn identity_formals(params: Array[String]) -> Array[Type] {
-  for p in params {
-    CtNamed(p, array_empty())
+  let out: Array[Type] = []
+  let mut i = 0
+  while i < Array::length(params) {
+    Array::push(out, identity_formal(i))
+    i = i + 1
+  }
+  out
+}
+
+fn identity_formal(i: Int) -> Type {
+  CtNamed(String::concat("#formal.", Int::to_string(i)), array_empty())
+}
+
+/// `ty` with every occurrence of a formal in `params` replaced by its
+/// positional placeholder (`identity_formal`).
+fn identity_rename_formals(ty: Type, params: Array[String]) -> Type {
+  if Array::length(params) == 0 {
+    ty
+  } else {
+    match ty {
+      CtNamed(n, args) => {
+        let renamed = for a in args {
+          identity_rename_formals(a, params)
+        }
+        let mut hit = 0 - 1
+        let mut i = 0
+        while i < Array::length(params) {
+          if hit < 0 && Array::get(params, i) == n {
+            hit = i
+          }
+          i = i + 1
+        }
+        if hit >= 0 && Array::length(args) == 0 {
+          identity_formal(hit)
+        } else {
+          CtNamed(n, renamed)
+        }
+      },
+      CtTuple(items) => CtTuple(for t in items {
+        identity_rename_formals(t, params)
+      }),
+      CtArray(t) => CtArray(identity_rename_formals(t, params)),
+      CtOption(t) => CtOption(identity_rename_formals(t, params)),
+      CtFn(args, ret, label) => CtFn(for t in args {
+        identity_rename_formals(t, params)
+      }, identity_rename_formals(ret, params), label),
+      CtApplied(head, args) => CtApplied(identity_rename_formals(head, params), for t in args {
+        identity_rename_formals(t, params)
+      }),
+      CtForAll(ids, bounds, body) => CtForAll(ids, bounds, identity_rename_formals(body, params)),
+      CtRecord(fields) => CtRecord(for f in fields {
+        let (fname, fty) = f
+        (fname, identity_rename_formals(fty, params))
+      }),
+      _ => ty
+    }
+  }
+}
+
+fn identity_rename_all(tys: Array[Type], params: Array[String]) -> Array[Type] {
+  for t in tys {
+    identity_rename_formals(t, params)
   }
 }
 
@@ -2140,26 +2205,30 @@ fn typedef_identity(def: TypeDef) -> Type {
       CtNamed(String::concat("#typeid.enum.", name), identity_formals(params)),
       CtRecord(for v in variants {
         let (vname, payload) = v
-        (vname, CtTuple(payload))
+        (vname, CtTuple(identity_rename_all(payload, params)))
       })
     ]),
     TDStruct(name, fields, muts, params) => CtTuple([
       CtNamed(String::concat("#typeid.struct.", name), identity_formals(params)),
-      CtRecord(fields),
-      CtTuple(identity_formals(muts))
+      identity_rename_formals(CtRecord(fields), params),
+      CtTuple(for m in muts {
+        CtNamed(m, array_empty())
+      })
     ]),
     TDAlias(name, params, target) => CtTuple([
       CtNamed(String::concat("#typeid.type.", name), identity_formals(params)),
-      target
+      identity_rename_formals(target, params)
     ]),
     TDEffect(name, ops, params) => CtTuple([
       CtNamed(String::concat("#typeid.effect.", name), identity_formals(params)),
       CtRecord(for op in ops {
         let (oname, args, ret) = op
-        (oname, CtFn(args, ret, None))
+        (oname, CtFn(identity_rename_all(args, params), identity_rename_formals(ret, params), None))
       })
     ]),
-    TDEffectSet(name, members) => CtNamed(String::concat("#typeid.effectset.", name), identity_formals(members))
+    TDEffectSet(name, members) => CtNamed(String::concat("#typeid.effectset.", name), for m in members {
+      CtNamed(m, array_empty())
+    })
   }
 }
 
@@ -2384,7 +2453,7 @@ fn note_identity_closure(roots: Array[String], route: String, defs: Array[TypeDe
 }
 
 /// The type names a trait's method signatures mention, less the trait's own
-/// formals, every method's own formals, and `Self`.
+/// formals, each method's own formals within that method, and `Self`.
 fn trait_method_reference_names(methods: Array[(String, Array[TypeExpr], TypeExpr)], params: Array[String], method_gens: Array[(String, Array[String], Array[(String, Array[String])])]) -> Array[String] {
   let binders: Array[String] = ["Self"]
   let mut pi = 0
@@ -2392,26 +2461,32 @@ fn trait_method_reference_names(methods: Array[(String, Array[TypeExpr], TypeExp
     Array::push(binders, Array::get(params, pi))
     pi = pi + 1
   }
-  let mut gi = 0
-  while gi < Array::length(method_gens) {
-    let (_, formals, _) = Array::get(method_gens, gi)
-    let mut fi = 0
-    while fi < Array::length(formals) {
-      Array::push(binders, Array::get(formals, fi))
-      fi = fi + 1
-    }
-    gi = gi + 1
-  }
   let out: Array[String] = []
   let mut mi = 0
   while mi < Array::length(methods) {
-    let (_, args, ret) = Array::get(methods, mi)
+    let (mname, args, ret) = Array::get(methods, mi)
+    // A method's own formals bind only in ITS signature: another method may
+    // spell a concrete imported type the same way.
+    let own: Array[String] = []
+    for b in binders {
+      Array::push(own, b)
+    }
+    let mut gi = 0
+    while gi < Array::length(method_gens) {
+      let (gname, formals, _) = Array::get(method_gens, gi)
+      if gname == mname {
+        for f in formals {
+          Array::push(own, f)
+        }
+      }
+      gi = gi + 1
+    }
     let mut ai = 0
     while ai < Array::length(args) {
-      type_expr_reference_names_into(Array::get(args, ai), binders, out)
+      type_expr_reference_names_into(Array::get(args, ai), own, out)
       ai = ai + 1
     }
-    type_expr_reference_names_into(ret, binders, out)
+    type_expr_reference_names_into(ret, own, out)
     mi = mi + 1
   }
   out
