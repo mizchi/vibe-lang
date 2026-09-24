@@ -4776,6 +4776,52 @@ fn collect_unknown_effect_label_errors(stmts: Array[Stmt], env: TypeEnv, es_name
     }
     di = di + 1
   }
+  // #3045: a row inside a TYPE -- an alias target, a struct field, an enum
+  // payload -- reaches every value of that type, so the reservation covers it
+  // too (Codex on #3061). Only the reserved label is reported here; unknown
+  // labels in declarations keep their existing handling.
+  let mut ti = 0
+  while ti < Array::length(stmts) && !reported {
+    let decl_rows = array_empty()
+    let decl_name = match Array::get(stmts, ti) {
+      STypeAlias(_, aname, _, target) => {
+        fek_rows_in_texpr(target, decl_rows)
+        aname
+      },
+      SStruct(_, sname, fields, _, _, _) => {
+        let mut fi = 0
+        while fi < Array::length(fields) {
+          let (_, fte) = Array::get(fields, fi)
+          fek_rows_in_texpr(fte, decl_rows)
+          fi = fi + 1
+        }
+        sname
+      },
+      SEnum(_, ename, _, variants, _) => {
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (_, payloads) = Array::get(variants, vi)
+          let mut pj = 0
+          while pj < Array::length(payloads) {
+            fek_rows_in_texpr(Array::get(payloads, pj), decl_rows)
+            pj = pj + 1
+          }
+          vi = vi + 1
+        }
+        ename
+      },
+      _ => ""
+    }
+    let mut dri = 0
+    while dri < Array::length(decl_rows) && !reported {
+      if row_names_reserved_mut(Array::get(decl_rows, dri)) {
+        reported = true
+        Array::push(errors, String::concat(reserved_mut_row_message, String::concat(" (in the declaration of '", String::concat(decl_name, String::concat("')", String::concat(" [@fn=", String::concat(decl_name, "]")))))))
+      }
+      dri = dri + 1
+    }
+    ti = ti + 1
+  }
   let mut i = 0
   while i < Array::length(stmts) && !reported {
     match Array::get(stmts, i) {
