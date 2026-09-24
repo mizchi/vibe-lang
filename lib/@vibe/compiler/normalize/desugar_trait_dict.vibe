@@ -23035,6 +23035,13 @@ fn ehp_collect_expr(e: Expr, performed: Array[(String, Int)], handled: Array[(St
           } else {
             ()
           },
+          // The bare spelling of a zero-argument operation:
+          // `perform Env::ArgsLen`, `perform Profiler::NowUs`.
+          EIdent(op, _) => if ehp_is_host_operation(op) {
+            ehp_note(performed, op, 0)
+          } else {
+            ()
+          },
           _ => ()
         }
       } else {
@@ -23225,23 +23232,6 @@ fn ehp_op_signature(op: String) -> Option[(String, Array[TypeExpr], TypeExpr)] {
   }
 }
 
-fn ehp_declares_effect(stmts: Array[Stmt], effect: String) -> Bool {
-  let mut i = 0
-  let mut found = false
-  while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SEffectDef(_, name, _, _) => if name == effect {
-        found = true
-      } else {
-        ()
-      },
-      _ => ()
-    }
-    i = i + 1
-  }
-  found
-}
-
 /// A host effect is a builtin: a program can perform `Fs::Exists` without
 /// importing `@vibe/fs`, which is where `effect Fs { .. }` is declared. The
 /// effect passes only lower a `handle` for an effect the program DECLARES --
@@ -23252,45 +23242,121 @@ fn ehp_declare_missing_effects(stmts: Array[Stmt], effects: Array[String], perfo
   let mut ei = 0
   while ei < Array::length(effects) {
     let effect = Array::get(effects, ei)
-    if ehp_declares_effect(stmts, effect) {
-      ()
-    } else {
-      let ops: Array[(String, Array[TypeExpr], TypeExpr)] = []
-      let names: Array[String] = []
-      let mut pass = 0
-      while pass < 2 {
-        let src = if pass == 0 {
-          performed
-        } else {
-          handled
-        }
-        let mut i = 0
-        while i < Array::length(src) {
-          let (op, _) = Array::get(src, i)
-          if ehp_effect_of(op) == effect && !str_array_contains(names, op) {
-            match ehp_op_signature(op) {
-              Some(sig) => {
-                Array::push(names, op)
-                Array::push(ops, sig)
-              },
-              None => ()
-            }
-          } else {
-            ()
-          }
-          i = i + 1
-        }
-        pass = pass + 1
+    // The operations this program performs or handles, each once.
+    let wanted: Array[(String, Array[TypeExpr], TypeExpr)] = []
+    let names: Array[String] = []
+    let mut pass = 0
+    while pass < 2 {
+      let src = if pass == 0 {
+        performed
+      } else {
+        handled
       }
-      if Array::length(ops) > 0 {
+      let mut i = 0
+      while i < Array::length(src) {
+        let (op, _) = Array::get(src, i)
+        if ehp_effect_of(op) == effect && !str_array_contains(names, op) {
+          match ehp_op_signature(op) {
+            Some(sig) => {
+              Array::push(names, op)
+              Array::push(wanted, sig)
+            },
+            None => ()
+          }
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      pass = pass + 1
+    }
+    let slots = ehp_effect_decl_indices(stmts, effect)
+    if Array::length(slots) == 0 {
+      if Array::length(wanted) > 0 {
         let no_params: Array[String] = []
-        Array::push(stmts, SEffectDef(false, effect, no_params, ops))
+        Array::push(stmts, SEffectDef(false, effect, no_params, wanted))
       } else {
         ()
+      }
+    } else {
+      // A declaration that omits an operation the provider now handles --
+      // `@vibe/fs` declares four `Fs` operations, and a program may perform any
+      // registered one (`Fs::Remove`). The evidence dictionary is built from
+      // the declaration, so the missing operation would have no slot
+      // (measured: `unknown struct field: Remove`). Append it to every
+      // declaration of the effect, keeping the program's own operations and
+      // their order.
+      let mut si = 0
+      while si < Array::length(slots) {
+        let slot = Array::get(slots, si)
+        match Array::get(stmts, slot) {
+          SEffectDef(exported, name, tparams, ops) => {
+            let merged: Array[(String, Array[TypeExpr], TypeExpr)] = []
+            let mut k = 0
+            while k < Array::length(ops) {
+              Array::push(merged, Array::get(ops, k))
+              k = k + 1
+            }
+            let mut w = 0
+            while w < Array::length(wanted) {
+              let (short, _, _) = Array::get(wanted, w)
+              let mut present = false
+              let mut j = 0
+              while j < Array::length(ops) {
+                let (have, _, _) = Array::get(ops, j)
+                if have == short {
+                  present = true
+                } else {
+                  ()
+                }
+                j = j + 1
+              }
+              if !present {
+                Array::push(merged, Array::get(wanted, w))
+              } else {
+                ()
+              }
+              w = w + 1
+            }
+            Array::set(stmts, slot, SEffectDef(exported, name, tparams, merged))
+          },
+          _ => ()
+        }
+        si = si + 1
       }
     }
     ei = ei + 1
   }
+}
+
+/// The indices of every top-level declaration of `effect`.
+fn ehp_effect_decl_indices(stmts: Array[Stmt], effect: String) -> Array[Int] {
+  let out: Array[Int] = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SEffectDef(_, name, _, _) => if name == effect {
+        Array::push(out, i)
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Does the program perform a host operation anywhere -- i.e. could
+/// `wrap_entry_host_provider` change it? The module-split prelude asks this
+/// before partitioning: the provider needs the WHOLE program's performs (an
+/// entry's partition sees an imported helper only through its interface), so
+/// such a program takes the whole-program prelude instead.
+export fn program_performs_host_operation(stmts: Array[Stmt]) -> Bool {
+  let performed: Array[(String, Int)] = []
+  let handled: Array[(String, Int)] = []
+  ehp_collect_stmts(stmts, performed, handled)
+  Array::length(performed) > 0
 }
 
 /// Install the standard host provider around every entry: `entry_name`'s

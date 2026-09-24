@@ -13,7 +13,7 @@ import @vibe/parser {
 }
 
 import ./desugar_trait_dict.vibe {
-  wrap_entry_host_provider
+  program_performs_host_operation, wrap_entry_host_provider
 }
 
 /// The provider arms, innermost handle first; handles separated by `;`.
@@ -206,4 +206,21 @@ test "a value alias occupying the builtin's name is moved aside" {
 test "a function occupying the builtin's name leaves that operation unprovided" {
   let src = "fn Fs::exists(p: String) -> Bool {\n  false\n}\n\nfn r() -> Bool with Fs {\n  perform Fs::Exists(\"p\")\n}\n\ntest \"t\" {\n  let _b = r()\n}\n"
   inspect(provided(src, "test:t"), "")
+}
+
+test "the bare spelling of a zero-argument operation is provided too" {
+  let src = "fn n() -> Int with Env {\n  perform Env::ArgsLen\n}\n\ntest \"t\" {\n  let _n = n()\n}\n"
+  inspect(provided(src, "test:t"), "Env::ArgsLen/0")
+}
+
+test "an existing declaration gains the performed operations it omits" {
+  let src = "effect Fs {\n  Exists(String) -> Bool\n}\n\nfn rm(p: String) -> Unit with Fs {\n  perform Fs::Remove(p)\n}\n\ntest \"t\" {\n  rm(\"p\")\n}\n"
+  inspect(declared(src, "test:t", "Fs"), "Exists/1,Remove/1")
+}
+
+test "a program that performs no host operation reports so" {
+  inspect([
+    program_performs_host_operation(parse_program(lex("fn main() -> Unit {\n  ()\n}\n"))),
+    program_performs_host_operation(parse_program(lex("fn f() -> Bool with Fs {\n  perform Fs::Exists(\"p\")\n}\n")))
+  ], "[false, true]")
 }

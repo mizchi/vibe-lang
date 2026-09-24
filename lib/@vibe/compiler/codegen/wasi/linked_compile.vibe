@@ -65,6 +65,7 @@ import @vibe/compiler/normalize {
   hoisted_lambda_owner_of_stmt,
   lift_match_scrutinees,
   module_trait_facts_none,
+  program_performs_host_operation,
   unbox_tuple_loop_params,
   uniquify_shadowed_bindings_fresh
 }
@@ -4585,7 +4586,12 @@ export fn prelude_split_last_module_count() -> Int {
 /// unchanged and still fail-closed.
 export fn effect_lowering_prelude_split_grants(stmts: Array[Stmt], entry_name: String, linked_imports: Array[(String, String, Int, Int)], iw_names: Array[String], iw_wats: Array[String], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], split: ModuleSplit, render: (Stmt) -> String, grants: Array[(String, String)]) -> Array[String] with Exception {
   Array::set(prelude_split_completed_modules, 0, 0)
-  if module_split_usable(split, Array::length(stmts)) && !lc_exported_fn_without_return_annotation(stmts) {
+  // #1962: a program that performs a host operation takes the whole-program
+  // prelude. The entry host provider (pass 11) must see every perform, and a
+  // partition sees an imported helper only through its interface -- split, the
+  // entry would get no arm for a perform in the helper and the program would
+  // die unhandled exactly as before the provider existed (Codex on #3059).
+  if module_split_usable(split, Array::length(stmts)) && !lc_exported_fn_without_return_annotation(stmts) && !program_performs_host_operation(stmts) {
     // WHOLE-PROGRAM, and first, exactly as `effect_lowering_prelude` runs it:
     // the check is interprocedural, and it short-circuits the entire prelude
     // when it fires. Running it per module instead REJECTS VALID CODE -- a
