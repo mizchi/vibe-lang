@@ -117,9 +117,11 @@ binding itself.
 
 A generic struct is compared at each concrete instantiation.
 `Box[Double]`, `Box[Bytes]` and `Box[Array[Int]]` compare by content,
-the same as `Box[Int]`. What still fails closed is an instantiation
-whose argument is a type parameter of an enclosing function, and a
-recursion that never closes, such as `Nest[T]` holding `Nest[Array[T]]`.
+the same as `Box[Int]`. Two shapes still have no comparator: an
+instantiation whose argument is a type parameter of an enclosing
+function, and a recursion that never closes, such as `Nest[T]` holding
+`Nest[Array[T]]`. Those two still compile. The comparison traps if it
+runs. They are not the build error below.
 
 ## The compile-time edge: a generic `T` with no witness
 
@@ -160,8 +162,10 @@ fn main allows Console {
 no impl `Eq` for `Array[Int]`
 ```
 
-That is the whole of it. A missing `Eq` witness is a compile error. A
-comparison the language cannot answer is a build error that names the
-edit. Neither one silently answers by address.
+That is the whole of it for a missing witness: the call is a compile
+error. An element with no structural comparator is a build error that
+names the edit. Neither answers by address. The enclosing-parameter
+and never-closing recursion above are the exception: they still compile,
+and the comparison traps if it runs.
 
 Next: [Concurrency](17_concurrency.vibe.md).

@@ -168,5 +168,29 @@ grep -q "chapters 2/2" /tmp/book-review-pass-ok.txt || fail "pass did not count 
 grep -q '"score": 4' "$TMP/eval/book-review/scores/passes/2026-01-02-r1.json" \
   || fail "recorded pass has no mean"
 
+# r10 sorts before r9 as text. Only r10's blobs match the chapter.
+mkdir -p "$TMP/eval/book-review/scores/chapters/01_ok"
+write_score 01_ok "$bad_blobs" "$TMP/eval/book-review/scores/chapters/01_ok/2026-01-03-r9.json"
+write_score 01_ok "$ok_blobs" "$TMP/eval/book-review/scores/chapters/01_ok/2026-01-03-r10.json"
+status="$(BOOK_REVIEW_ROOT="$TMP" python3 "$LOOP" status)"
+echo "$status" | awk '$1=="01_ok"{print $3}' | grep -qx "current" \
+  || fail "r10 was not the current score: $status"
+
+# A gap must not reuse an existing round. r1 and r3 are present, so the
+# next record is r4, and r3 stays.
+mkdir -p "$TMP/eval/book-review/scores/passes"
+printf '{}\n' > "$TMP/eval/book-review/scores/passes/2026-01-04-r1.json"
+printf '{}\n' > "$TMP/eval/book-review/scores/passes/2026-01-04-r3.json"
+# The chapters are already current from the files above, but 02_bad's
+# latest file is 2026-01-02-r2. Record needs a complete pass.
+BOOK_REVIEW_DATE=2026-01-04 BOOK_REVIEW_ROOT="$TMP" python3 "$LOOP" pass --record \
+  >/tmp/book-review-pass-gap-round.txt || fail "pass --record with a gap failed"
+[ -f "$TMP/eval/book-review/scores/passes/2026-01-04-r4.json" ] \
+  || fail "pass --record did not allocate one past the max round"
+grep -q '"unit": "pass"' "$TMP/eval/book-review/scores/passes/2026-01-04-r3.json" \
+  && fail "pass --record overwrote r3" || true
+grep -qx '{}' "$TMP/eval/book-review/scores/passes/2026-01-04-r3.json" \
+  || fail "r3 was not left as the placeholder"
+
 echo "ok"
 exit 0

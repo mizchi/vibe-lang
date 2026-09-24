@@ -5143,10 +5143,103 @@ fn location_shape_at(msg: String, start: Int) -> Bool {
   }
 }
 
-/// `import kind mismatch: `Name` from 'path' is ...`. The name is
-/// backticked, so a comment that says the same name before the import
-/// cannot be the anchor: the path is in the message, and the name is
-/// read only after that path's own occurrence.
+/// A path character. `.` `/` `@` `-` continue a path; a space or `{` ends it.
+/// `import @vibe/core` must not match inside `import @vibe/core/checker`.
+fn import_path_char(c: Int) -> Bool {
+  loc_ident_char(c) || c == '/' || c == '.' || c == '@' || c == '-'
+}
+
+fn import_stmt_end(source: String, from: Int) -> Int {
+  let slen = String::length(source)
+  let mut i = from
+  while i < slen && (String::char_code_at(source, i) == ' ' || String::char_code_at(source, i) == '\t') {
+    i = i + 1
+  }
+  if i < slen && String::char_code_at(source, i) == '{' {
+    let mut j = i + 1
+    while j < slen && String::char_code_at(source, j) != '}' {
+      j = j + 1
+    }
+    if j < slen {
+      j + 1
+    } else {
+      slen
+    }
+  } else {
+    let mut j = from
+    while j < slen && String::char_code_at(source, j) != '\n' {
+      j = j + 1
+    }
+    j
+  }
+}
+
+/// Name offsets of `kw path` statements that are not inside a comment or a
+/// string. Zero or several means the diagnostic stays unlocated: a comment
+/// that quotes the import, a longer path that only starts with this one, and
+/// an import plus a re-export of the same path are all confident wrong
+/// columns if the first hit wins.
+fn import_kind_name_offs(source: String, kw: String, path: String, sym: String) -> Array[Int] {
+  let out: Array[Int] = []
+  let slen = String::length(source)
+  let klen = String::length(kw)
+  let plen = String::length(path)
+  let mut i = 0
+  let mut in_line = false
+  let mut in_str = false
+  while i < slen {
+    let c = String::char_code_at(source, i)
+    if in_line {
+      if c == '\n' {
+        in_line = false
+      } else {
+        ()
+      }
+      i = i + 1
+    } else if in_str {
+      if c == '\\' {
+        i = i + 2
+      } else if c == '"' {
+        in_str = false
+        i = i + 1
+      } else {
+        i = i + 1
+      }
+    } else if c == '"' {
+      in_str = true
+      i = i + 1
+    } else if c == '/' && i + 1 < slen && String::char_code_at(source, i + 1) == '/' {
+      in_line = true
+      i = i + 2
+    } else if loc_word_at(source, i, kw) {
+      let mut path_at = i + klen
+      while path_at < slen && (String::char_code_at(source, path_at) == ' ' || String::char_code_at(source, path_at) == '\t') {
+        path_at = path_at + 1
+      }
+      let path_end = path_at + plen
+      if path_at + plen <= slen && String::substring(source, path_at, path_end) == path && (path_end >= slen || !import_path_char(String::char_code_at(source, path_end))) {
+        let stmt_end = import_stmt_end(source, path_end)
+        let off = index_word_after(source, sym, path_end)
+        if off >= 0 && off < stmt_end {
+          Array::push(out, off)
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      i = i + 1
+    } else {
+      i = i + 1
+    }
+  }
+  out
+}
+
+/// `import kind mismatch: `Name` ... (from 'path')`. The name is searched
+/// only inside the one `import` / `export` of that path. A comment, a longer
+/// path, or two statements that both contain the name leave the message
+/// unlocated.
 fn locate_import_kind_msg(source: String, msg: String) -> String {
   let marker = "import kind mismatch: `"
   if String::index_of(msg, marker) < 0 {
@@ -5157,24 +5250,18 @@ fn locate_import_kind_msg(source: String, msg: String) -> String {
     if sym == "" || path == "" {
       msg
     } else {
-      // A comment may quote the package path. Only an `import` / `export`
-      // of that path is the statement the diagnostic is about.
-      let imported = index_of_after(source, String::concat("import ", path), 0)
-      let exported = index_of_after(source, String::concat("export ", path), 0)
-      let p = if imported >= 0 {
-        imported
-      } else {
-        exported
+      let imported = import_kind_name_offs(source, "import", path, sym)
+      let exported = import_kind_name_offs(source, "export", path, sym)
+      let mut offs = imported
+      let mut ei = 0
+      while ei < Array::length(exported) {
+        Array::push(offs, Array::get(exported, ei))
+        ei = ei + 1
       }
-      if p < 0 {
+      if Array::length(offs) != 1 {
         msg
       } else {
-        let off = index_word_after(source, sym, p)
-        if off < 0 {
-          msg
-        } else {
-          String::concat(offset_line_col_prefix(source, off), msg)
-        }
+        String::concat(offset_line_col_prefix(source, Array::get(offs, 0)), msg)
       }
     }
   }

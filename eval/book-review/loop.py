@@ -196,14 +196,31 @@ def score_dir(root, cid):
     return root / "eval" / "book-review" / "scores" / "chapters" / cid
 
 
+ROUND_NAME = re.compile(r"^(\d{4}-\d{2}-\d{2})-r(\d+)\.json$")
+
+
+def round_key(path):
+    match = ROUND_NAME.fullmatch(path.name)
+    if match is None:
+        return None
+    return (match.group(1), int(match.group(2)))
+
+
 def latest_score(root, cid):
     directory = score_dir(root, cid)
     if not directory.is_dir():
         return None
-    files = sorted(p for p in directory.glob("*.json") if p.is_file())
-    if not files:
+    ranked = []
+    for path in directory.glob("*.json"):
+        if not path.is_file():
+            continue
+        key = round_key(path)
+        if key is not None:
+            ranked.append((key, path))
+    if not ranked:
         return None
-    return files[-1]
+    ranked.sort()
+    return ranked[-1][1]
 
 
 def load_score(path):
@@ -371,9 +388,16 @@ def cmd_pass(root, record):
             return 2
         out_dir = root / "eval" / "book-review" / "scores" / "passes"
         out_dir.mkdir(parents=True, exist_ok=True)
-        existing = sorted(out_dir.glob(f"{day}-r*.json"))
-        n = len(existing) + 1
+        rounds = []
+        for path in out_dir.glob(f"{day}-r*.json"):
+            key = round_key(path)
+            if key is not None and key[0] == day:
+                rounds.append(key[1])
+        n = (max(rounds) if rounds else 0) + 1
         out = out_dir / f"{day}-r{n}.json"
+        if out.exists():
+            print(f"loop: refusing to overwrite {out}", file=sys.stderr)
+            return 2
         payload = {
             "unit": "pass",
             "date": day,
