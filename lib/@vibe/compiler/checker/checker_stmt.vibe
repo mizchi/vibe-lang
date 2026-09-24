@@ -2469,10 +2469,12 @@ fn seed_prelude_ordering(stmts: Array[Stmt], env: TypeEnv, defs: Array[TypeDef],
     // prelude-shaped enum may stand in for the prelude: an unrelated imported
     // enum with a `Less`, an `Equal` or a `Greater` would otherwise be what a
     // derived `compare` builds, or be overwritten by the prelude's binding.
-    if !(env_binds_prelude_ordering_ctors(env) && defs_ordering_is_prelude_shaped(defs)) {
+    if env_binds_prelude_ordering_ctors(env) && defs_ordering_is_prelude_shaped(defs) {
+      (bind_prelude_ordering_values(env), local_defs_start, c)
+    } else {
       report_ordering_conflict_with(stmts, errors, "but this module imports a `Less` / `Equal` / `Greater` constructor or an `Ordering` of another type; import that type qualified or rename it")
+      (env, local_defs_start, c)
     }
-    (env, local_defs_start, c)
   } else match find_typedef(defs, "Ordering") {
     // An import carried the declaration in only to make a signature
     // intelligible (`import @vibe/builtin { int_compare }`): the type is
@@ -2544,18 +2546,59 @@ fn module_uses_prelude_ordering(stmts: Array[Stmt]) -> Bool {
   }
 }
 
+/// Does `env` already record an impl of `trait_name` for `Ordering`?
+fn env_has_ordering_impl(env: TypeEnv, trait_name: String) -> Bool {
+  match env {
+    EnvEmpty => false,
+    EnvBind(_, _, rest) => env_has_ordering_impl(rest, trait_name),
+    EnvTraitDef(_, _, _, _, rest, _, _) => env_has_ordering_impl(rest, trait_name),
+    EnvTraitImpl(tn, target, rest) => (tn == trait_name && type_is_ordering(target)) || env_has_ordering_impl(rest, trait_name),
+    EnvTraitImplGen(tn, _, _, target, rest) => (tn == trait_name && type_is_ordering(target)) || env_has_ordering_impl(rest, trait_name),
+    EnvMutCell(_, _, rest) => env_has_ordering_impl(rest, trait_name),
+    EnvTypeDefs(_, _, rest) => env_has_ordering_impl(rest, trait_name),
+    EnvCached(_, _, rest) => env_has_ordering_impl(rest, trait_name),
+    EnvFlat(_) => false
+  }
+}
+
+fn type_is_ordering(ty: Type) -> Bool {
+  match ty {
+    CtEnum(name) => name == "Ordering",
+    CtNamed(name, _) => name == "Ordering",
+    _ => false
+  }
+}
+
 fn bind_prelude_ordering_values(env: TypeEnv) -> TypeEnv {
   let ordering = CtEnum("Ordering")
-  let with_ctors = env_bind(env_bind(env_bind(env_bind(env, "Ordering", ordering), "Less", ordering), "Equal", ordering), "Greater", ordering)
-  let with_eq = env_bind(with_ctors, "Ordering::equals", CtFn([
-    ordering,
-    ordering
-  ], CtBool, None))
-  let with_cmp = env_bind(with_eq, "Ordering::compare", CtFn([
-    ordering,
-    ordering
-  ], ordering, None))
-  env_bind(with_cmp, "Ordering::to_string", CtFn([ordering], CtString, None))
+  let mut out = env
+  // Only what the import left unbound: an operation the dependency exported
+  // keeps its own signature (the lowering refuses a hand-written one on a
+  // prelude-shaped `Ordering`, so the two cannot disagree at run time).
+  for pair in [
+    ("Ordering", ordering),
+    ("Less", ordering),
+    ("Equal", ordering),
+    ("Greater", ordering),
+    ("Ordering::equals", CtFn([ordering, ordering], CtBool, None)),
+    ("Ordering::compare", CtFn([ordering, ordering], ordering, None)),
+    ("Ordering::to_string", CtFn([ordering], CtString, None))
+  ] {
+    let (name, ty) = pair
+    match env_lookup(out, name) {
+      Some(_) => (),
+      None => out = env_bind(out, name, ty)
+    }
+  }
+  // The prelude derives `Eq` and `Show`, so the type satisfies those bounds
+  // here exactly as the seeded declaration would.
+  if !env_has_ordering_impl(out, "Eq") {
+    out = EnvTraitImpl("Eq", ordering, out)
+  }
+  if !env_has_ordering_impl(out, "Show") {
+    out = EnvTraitImpl("Show", ordering, out)
+  }
+  out
 }
 
 /// #3042: `derive (Ord)` generates `compare` returning the prelude `Ordering`

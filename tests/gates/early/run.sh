@@ -2356,6 +2356,9 @@ ur_refused fixtures/err_handle_resume_capture_loop_break_refused.vibe 'leaves a 
 # imported signature. The module's checker never saw the declaration, so the
 # merged program is refused instead of stopping with an internal error.
 ur_refused fixtures/err_ordering_derive_imported_foreign_type_refused.vibe 'but a module in this program declares its own `Ordering`' 'rename that declaration'
+# An `Ordering` spelled like the prelude carries its derives; a hand-written
+# operation beside it could disagree with what an importer was checked against.
+ur_refused fixtures/err_ordering_exact_shape_hand_written_refused.vibe 'is spelled exactly like the prelude' 'remove it and derive it, or rename the type'
 # #2994: `vibe check` reports the handle-eligibility refusal AT the handled
 # body's first call; it used to carry no position at all.
 hi_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \

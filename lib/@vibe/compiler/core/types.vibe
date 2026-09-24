@@ -5559,6 +5559,7 @@ export fn stmts_shadow_prelude_ordering(stmts: Array[Stmt]) -> Bool {
       SLet(_, _, name, _, _) => is_prelude_ordering_variant(name),
       SLetMut(name, _, _) => is_prelude_ordering_variant(name),
       SExternLet(name, _) => is_prelude_ordering_variant(name),
+      SLetPat(pat, _) => pat_binds_prelude_ordering_name(pat),
       _ => false
     }
     i = i + 1
@@ -5694,6 +5695,39 @@ fn pat_names_prelude_ordering(pat: Pat) -> Bool {
     },
     _ => false
   }
+}
+
+/// Does a destructuring pattern BIND a value named `Less` / `Equal` /
+/// `Greater` (a field pun such as `let Holder::{ Less } = h`)? That value
+/// shadows the constructor as a top-level `let Less` does.
+fn pat_binds_prelude_ordering_name(pat: Pat) -> Bool {
+  match pat {
+    PBind(name) => is_prelude_ordering_variant(name),
+    PCtor(_, subs) => pats_bind_prelude_ordering_name(subs),
+    PTuple(subs) => pats_bind_prelude_ordering_name(subs),
+    POr(left, right) => pat_binds_prelude_ordering_name(left) || pat_binds_prelude_ordering_name(right),
+    PStruct(_, fields) => {
+      let mut found = false
+      for field in fields {
+        let (_, sub) = field
+        if pat_binds_prelude_ordering_name(sub) {
+          found = true
+        }
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+fn pats_bind_prelude_ordering_name(pats: Array[Pat]) -> Bool {
+  let mut found = false
+  for p in pats {
+    if pat_binds_prelude_ordering_name(p) {
+      found = true
+    }
+  }
+  found
 }
 
 fn pats_name_prelude_ordering(pats: Array[Pat]) -> Bool {

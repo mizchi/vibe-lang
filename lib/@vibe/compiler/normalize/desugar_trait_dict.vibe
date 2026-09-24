@@ -22392,7 +22392,8 @@ export fn desugar_trait_dicts_module_with_facts(own: Array[Stmt], ctx: Array[Stm
 /// module IS the prelude for the modules that import a signature mentioning
 /// it, and the checker binds the prelude's `equals` / `compare` /
 /// `to_string` for them. A declaration written without those derives gains
-/// them here, unless the program defines that operation by hand.
+/// them here; one that defines such an operation by hand instead is refused,
+/// since its signature need not be the one the importers were checked against.
 fn dtd_append_prelude_ordering(stmts: Array[Stmt]) -> Unit with Exception {
   if dtd_stmts_derive_ord(stmts) && dtd_ordering_foreign_shadow(stmts) {
     throw("`derive (Ord)` generates `compare` returning the prelude `Ordering` (`Less` / `Equal` / `Greater`), but a module in this program declares its own `Ordering` or one of those constructors; rename that declaration")
@@ -22419,8 +22420,8 @@ fn dtd_ordering_foreign_shadow(stmts: Array[Stmt]) -> Bool {
 }
 
 /// Give an exact-shaped `Ordering` declaration the prelude's `Eq` / `Ord` /
-/// `Show` derives it lacks, skipping one whose operation the program defines.
-fn dtd_complete_prelude_ordering_derives(stmts: Array[Stmt]) -> Unit {
+/// `Show` derives it lacks, refusing one whose operation the program defines.
+fn dtd_complete_prelude_ordering_derives(stmts: Array[Stmt]) -> Unit with Exception {
   let mut i = 0
   while i < Array::length(stmts) {
     let stmt = Array::get(stmts, i)
@@ -22443,7 +22444,10 @@ fn dtd_complete_prelude_ordering_derives(stmts: Array[Stmt]) -> Unit {
                 present = true
               }
             }
-            if !present && !dtd_stmts_define_value(stmts, op) {
+            if !present {
+              if dtd_stmts_define_value(stmts, op) {
+                throw(String::concat("`enum Ordering { Less; Equal; Greater }` is spelled exactly like the prelude, so it carries the prelude's `derive (Eq, Ord, Show)`; `", String::concat(op, "` is also written by hand -- remove it and derive it, or rename the type")))
+              }
               Array::push(completed, wanted)
             }
           }
