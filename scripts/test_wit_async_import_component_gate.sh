@@ -231,4 +231,65 @@ if [ "$ELAPSED_MS" -lt $(( LONG_MS * 4 / 5 )) ]; then
   exit 1
 fi
 echo "[wit-async-import] executed: 42 in ${ELAPSED_MS}ms (two ${LONG_MS}ms futures)"
+
+# --- WIT RESPONSES: future<record{status, body: stream<u8>}> (#2066) ---------
+# fixtures/wit_response_import/client_bindings.vibe is the derivation of
+# client.wit (from_wit_test.vibe pins it). Each function returns the `types`
+# interface's `response` record, so the core carries `wit_response_get$`
+# metadata imports and the component imports the `types` instance (for the
+# record) and the `client` instance (for the functions). The body is a
+# host stream the guest reads byte by byte.
+RESP_DIR="$OUT/response"
+rm -rf "$RESP_DIR"
+mkdir -p "$RESP_DIR"
+cp fixtures/wit_response_import/main.vibe fixtures/wit_response_import/client_bindings.vibe "$RESP_DIR/"
+VIBE_PREOPEN_DIR="$ROOT" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \
+  "$COMPILER" "$RESP_DIR/main.vibe" "$RESP_DIR/main.wasm" run >/dev/null 2>&1 || true
+if [ ! -s "$RESP_DIR/main.wasm" ]; then
+  echo "WIT async import gate FAILED: fixtures/wit_response_import/main.vibe did not compile" >&2
+  cat "$RESP_DIR/main.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+for want in 'wit_response_get$example:http-lite/client@1.0.0#fetch-a' 'wit_response_get$example:http-lite/client@1.0.0#fetch-b'; do
+  grep -aFq "$want" "$RESP_DIR/main.wasm" || {
+    echo "WIT async import gate FAILED: the core lacks the response metadata import $want" >&2
+    exit 1
+  }
+done
+wasm-tools validate --features all "$RESP_DIR/main.wasm"
+wasm-tools print "$RESP_DIR/main.wasm" >"$RESP_DIR/main.wat"
+for iface in 'example:http-lite/types@1.0.0' 'example:http-lite/client@1.0.0'; do
+  [ "$(grep -Fc "(import \"$iface\" (instance" "$RESP_DIR/main.wat")" = 1 ] || {
+    echo "WIT async import gate FAILED: the response program does not import exactly one $iface instance" >&2
+    exit 1
+  }
+done
+grep -Fq '(record (field "status" s32) (field "body"' "$RESP_DIR/main.wat" || {
+  echo "WIT async import gate FAILED: the response record is not {status: s32, body: stream<u8>}" >&2
+  exit 1
+}
+# Both responses resolve after LONG_MS. 200 + 204 + (1+2+3) + (10+20) = 440:
+# each status and every body byte reached the guest, and the wall clock shows
+# the two requests were in flight together.
+IFACE='example:http-lite/client@1.0.0'
+START_NS=$(date +%s%N)
+GOT="$(VIBE_ASYNC_RESPONSES="$IFACE#fetch-a=200:$LONG_MS:1|2|3,$IFACE#fetch-b=204:$LONG_MS:10|20" timeout 60 "$RUNNER" "$RESP_DIR/main.wasm" 2>&1)" || {
+  echo "WIT async import gate FAILED: viberun did not exit 0 on the response program: $GOT" >&2
+  exit 1
+}
+ELAPSED_MS=$(( ( $(date +%s%N) - START_NS ) / 1000000 ))
+[ "$GOT" = "440" ] || {
+  echo "WIT async import gate FAILED: expected 440 (statuses 200 + 204, body bytes 6 + 30), got: $GOT" >&2
+  exit 1
+}
+if [ "$ELAPSED_MS" -ge $(( LONG_MS * 3 / 2 )) ]; then
+  echo "WIT async import gate FAILED: ${ELAPSED_MS}ms for two ${LONG_MS}ms responses -- they were not in flight together" >&2
+  exit 1
+fi
+if [ "$ELAPSED_MS" -lt $(( LONG_MS * 4 / 5 )) ]; then
+  echo "WIT async import gate FAILED: ${ELAPSED_MS}ms is shorter than one ${LONG_MS}ms response -- the task did not park" >&2
+  exit 1
+fi
+echo "[wit-async-import] responses executed: 440 in ${ELAPSED_MS}ms (two ${LONG_MS}ms responses, bodies streamed)"
 echo "WIT async import component gate OK"

@@ -108,25 +108,19 @@ So the two lanes fail at different MOMENTS, and that is stated rather than
 averaged. `scripts/host_async_import_unsupported_test.sh` asks both, so neither
 half of this paragraph can go stale without a gate noticing.
 
-### A third dynamic prefix the manifest does not know
+### Dynamic import prefixes
 
-`vibe.wit_future_get$<versioned-interface>#<func>` is parsed and routed by the
-composer in `component_codegen.vibe` (`comp_is_wit_future_get_import`,
-`comp_wit_future_interface` / `comp_wit_future_func`, `comp_hostfuture_import_label`,
-and the instance-import emission in `comp_emit_component_wasm_async_hostfuture`)
-but `grep -c wit_future` is **0** in `linked_compile.vibe`,
-`core/builtin_registry.vibe` and `checker/builtins_async.vibe`. Nothing
-produces it from source today; it reaches the composer only from the synthetic
-fixture core, `comp_generate_async_wit_future_fixture_core`. (Cited by name:
-this paragraph used to give line numbers, and they had drifted by 15-45 lines
-within a week.)
-
-This matters for sequencing #2064: `check_host_runtime_contract.py`'s `validate_emitter_contract`
-compares the emitter's dynamic prefixes against the manifest's
-`componentAdapterPatterns` by **exact dict equality**, so the first commit that
-makes `linked_compile.vibe` emit `wit_future_get$` turns a green required gate
-red unless the manifest row lands in the same change. That is a consequence of
-the gate working, not a defect in it.
+Four import families are minted per program rather than listed:
+`vibe.host_future_get$<name>`, `vibe.wit_future_get$<address>` (#2064),
+`vibe.wit_response_get$<address>` (#2066) and `vibe.host_stream_get$<name>`.
+Each has its own emission loop in `linked_compile.vibe` and its own
+`componentAdapterPatterns` row in `docs/generated/host-runtime-contract.json`.
+`check_host_runtime_contract.py`'s `validate_emitter_contract` compares the two
+by **exact dict equality**, so a loop added without its row (or a row without
+its loop) turns the required gate red in the same change. The composer reads
+the prefixes back in `component_codegen.vibe` (`comp_is_wit_future_get_import`,
+`comp_is_wit_response_get_import`, `comp_wit_future_interface` /
+`comp_wit_future_func`).
 
 ## What the values mean
 
@@ -231,6 +225,32 @@ override silently contradicting a module that says `raw` is the hazard #2903's
   measures 42 in about one producer delay for two concurrent futures, and
   bounds that from above (they were in flight together) and below (the task
   parked).
+
+- **A WIT response carries a status and a streaming body** (#2066).
+  `host_response_named(<address>)` is `Future[HostResponse]`, for a WIT
+  function `async func() -> response` whose `response` is the package `types`
+  interface's `record response { status: s32, body: stream<u8> }`.
+  linked_compile emits `vibe.wit_response_get$<address>` (same `() -> i64`
+  type, same wait half). The composer imports the `types` instance for the
+  record and the API instance for the functions, and declares
+  `future<response>` over the imported record. The adapter lands the record
+  in the future's 8-byte slot, `{status: s32 @0, body: stream<u8> @4}`, and
+  the wait returns it as one scalar, `(status << 32) | body`: the record's
+  flat lowering side by side. A status outside `[-2^30, 2^30)` does not fit
+  the tagged value and traps in the adapter. `HostResponse::status` and
+  `HostResponse::body` take the scalar apart; `body` wraps the stream handle
+  in a host-stream cell, which the shared stream read half reads (present
+  whenever a response is, even with no named stream). Each `body` call wraps
+  the same end, so read it through one cell: once one reaches end of stream
+  the end is dropped, and reading through another traps. The first slice
+  composes responses on their own: every future in the component is a
+  response and they share one interface, and anything else is refused by
+  name. `from_wit_future_imports` derives the bindings (it admits the
+  function only with `use types.{response};` and exactly that record).
+  viberun's `VIBE_ASYNC_RESPONSES="<address>=<status>:<delay_ms>:<b1>|<b2>"`
+  links each function inside its interface. The gate runs
+  `fixtures/wit_response_import/main.vibe` with two 300ms responses, gets 440
+  (both statuses plus every body byte) and bounds the wall clock the same way.
 
 ### Host streams
 

@@ -2069,7 +2069,7 @@ wasmtime 46.0.1 リリースに合わせて ratified `wasi:http@0.3.0` への cu
 | **実 provider = `wasi:http` incoming-body** (#1540) | serve composition と host-stream composition の統合が要る (§3.19 に構造的な理由と 3 点の分解) | — |
 | **M-conc-2: 真の subtask spawn** (#1537) | waitable-set / `future.cancel-*` による実並行・キャンセル。ADR-0068 の nursery を backend へ落とす | ADR-0076 CPS/suspend lowering |
 | **M1b-3c-1c: interleaving spawn の emitter** (#1537) | ABI 側の問いは §3.11 で解決済み (`waitable-set.wait` の完了順ディスパッチだけで足りる)。残るのは await をまたぐ task 状態の表現 = ADR-0076 の CPS/suspend lowering | 同上 |
-| **M3** | outbound async HTTP client (`Future[Response]` + streaming body)、`wasi:http/service` + `middleware` world | 上の provider |
+| **M3** (#2066) | **Landed:** `Future[HostResponse]` from a WIT `async func() -> response` (`record { status: s32, body: stream<u8> }` from the package `types` interface): `host_response_named`, derived by `from_wit_future_imports`, composed as a `types` + API instance import pair, the body read through the shared host-stream half, two responses in flight in one producer delay (`scripts/test_wit_async_import_component_gate.sh`, contract in `async-host-contract.md`). **Remaining:** request parameters (method, URL, headers need `string` lowering into the call and a realloc-capable read), mixing responses with other futures or named streams in one component, `wasi:http/outgoing-handler` itself as the provider, and the `wasi:http/service` + `middleware` worlds | the provider above |
 | **M4** | parity/gate/CI、docs、ADR-0012 → accepted | 全部 |
 
 ## 7. 未解決事項

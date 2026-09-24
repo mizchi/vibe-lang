@@ -2765,6 +2765,13 @@ fn lc_expr_collect_hf_names(e: Expr, active: Bool, out: Array[String]) -> Unit {
             EString(s, _) => Array::push(out, s),
             _ => ()
           }
+        } else if active && nm == "host_response_named" && Array::length(args) == 1 {
+          // #2066: a response rides the named-future list under a `!` marker
+          // (compile_call mints `vibe_hf_get_raw$!<address>` for it).
+          match Array::get(args, 0) {
+            EString(s, _) => Array::push(out, String::concat("!", s)),
+            _ => ()
+          }
         } else {
           ()
         },
@@ -3174,10 +3181,15 @@ fn lc_collect_host_stream_names_go(stmts: Array[Stmt]) -> Array[String] {
 /// need the key BEFORE lc_inject_async_sleep_boundary's own scan runs
 /// (await_poll_pass selects the waitable-aware __aw_poll form with it).
 fn lc_stmts_call_host_future(stmts: Array[Stmt]) -> Bool {
-  // #2386: the two names in one walk per statement (lc_mark_calls); ADR-0089
-  // (c): `host_future_named` fires the same machinery as `host_future_get`.
-  let hf_targets: Array[String] = ["host_future_get", "host_future_named"]
-  let hf_hits: Array[Bool] = [false, false]
+  // #2386: the names in one walk per statement (lc_mark_calls); ADR-0089
+  // (c): `host_future_named` fires the same machinery as `host_future_get`,
+  // and so does a WIT response (#2066) -- its future is the same cell.
+  let hf_targets: Array[String] = [
+    "host_future_get",
+    "host_future_named",
+    "host_response_named"
+  ]
+  let hf_hits: Array[Bool] = [false, false, false]
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
@@ -3190,7 +3202,7 @@ fn lc_stmts_call_host_future(stmts: Array[Stmt]) -> Bool {
     }
     i = i + 1
   }
-  Array::get(hf_hits, 0) || Array::get(hf_hits, 1)
+  Array::get(hf_hits, 0) || Array::get(hf_hits, 1) || Array::get(hf_hits, 2)
 }
 
 /// True when `target` appears as a binder or identifier reference. The
@@ -3809,9 +3821,11 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
     "host_stream_next",
     "host_stream_close",
     "HostStream::next",
-    "HostStream::close"
+    "HostStream::close",
+    "host_response_named"
   ]
   let boundary_hits: Array[Bool] = [
+    false,
     false,
     false,
     false,
@@ -3847,7 +3861,7 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
           ()
         }
         lc_mark_calls(fbody, boundary_targets, boundary_hits, false)
-        if name == "host_future_get" || name == "host_future_named" {
+        if name == "host_future_get" || name == "host_future_named" || name == "host_response_named" {
           user_defines_host_future = true
         } else {
           ()
@@ -3869,7 +3883,7 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
         } else {
           ()
         }
-        if name == "host_future_get" || name == "host_future_named" {
+        if name == "host_future_get" || name == "host_future_named" || name == "host_response_named" {
           user_defines_host_future = true
         } else {
           ()
@@ -3930,7 +3944,7 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
     i = i + 1
   }
   let calls_sleep = Array::get(boundary_hits, 0)
-  let calls_host_future = Array::get(boundary_hits, 1) || Array::get(boundary_hits, 2)
+  let calls_host_future = Array::get(boundary_hits, 1) || Array::get(boundary_hits, 2) || Array::get(boundary_hits, 8)
   let calls_host_stream = Array::get(boundary_hits, 3) || Array::get(boundary_hits, 4) || Array::get(boundary_hits, 5) || Array::get(boundary_hits, 6) || Array::get(boundary_hits, 7)
   let calls_host_stream_close = Array::get(boundary_hits, 5) || Array::get(boundary_hits, 7)
   let calls_host_stream_option_next = Array::get(boundary_hits, 6)
@@ -9735,17 +9749,24 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
   let hf_collected_names = lc_collect_host_future_names(stmts)
   let hf_named_names = lc_fresh_string_array()
   let hf_wit_names = lc_fresh_string_array()
+  // #2066: WIT responses, still carrying their `!` marker (the builtin name
+  // compile_call minted includes it); the emission loop strips it.
+  let hf_response_names = lc_fresh_string_array()
+  let hf_response_addresses = lc_fresh_string_array()
   let mut hf_split_i = 0
   while hf_split_i < Array::length(hf_collected_names) {
     let hf_split_name = Array::get(hf_collected_names, hf_split_i)
-    if String::index_of(hf_split_name, "#") > 0 {
+    if String::starts_with(hf_split_name, "!") {
+      Array::push(hf_response_names, hf_split_name)
+      Array::push(hf_response_addresses, String::substring(hf_split_name, 1, String::length(hf_split_name)))
+    } else if String::index_of(hf_split_name, "#") > 0 {
       Array::push(hf_wit_names, hf_split_name)
     } else {
       Array::push(hf_named_names, hf_split_name)
     }
     hf_split_i = hf_split_i + 1
   }
-  let hf_all_names = Array::concat(hf_named_names, hf_wit_names)
+  let hf_all_names = Array::concat(Array::concat(hf_named_names, hf_wit_names), hf_response_names)
   // The ANONYMOUS `vibe.host_future_get` import is reserved only for the
   // anonymous surface: a program that awaits `host_future_named("price")`
   // alone must import `price`, not a `get-future` nothing calls (an unused
@@ -13707,6 +13728,17 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
     bytebuf_push(import_content, 0)
     leb128_encode_u32(import_content, 5)
     hf_wit_emit_i = hf_wit_emit_i + 1
+  }
+  // #2066: then `vibe.wit_response_get$<address>` (type 5) per WIT response,
+  // the metadata import the composer turns into a `types` + API interface
+  // pair whose function returns `future<response>`. Same wait half.
+  let mut hf_resp_emit_i = 0
+  while hf_resp_emit_i < Array::length(hf_response_addresses) {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, String::concat("wit_response_get$", Array::get(hf_response_addresses, hf_resp_emit_i)))
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 5)
+    hf_resp_emit_i = hf_resp_emit_i + 1
   }
   // ADR-0089 Decision 3 (#1218): `vibe.host_stream_read (i64) -> i64` (type
   // 3), then `vibe.host_stream_get$<name> () -> i64` (type 5) per named

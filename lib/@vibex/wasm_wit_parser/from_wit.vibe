@@ -33,6 +33,7 @@ import ./wit_parser.vibe {
   FKStatic,
   IIFunction,
   IITypeDef,
+  IIUse,
   TDAlias,
   TDEnum,
   TDFlags,
@@ -61,6 +62,7 @@ import ./wit_parser.vibe {
   TyU32,
   TyU64,
   TyU8,
+  WitInterfaceItem,
   WitTypeDef,
   WitTypeExpr,
   wit_parse
@@ -391,8 +393,17 @@ export fn from_wit_future_imports(source: String) -> String with Exception {
             },
             _ => false
           }
-          if !admitted {
-            throw(fw_refusal("function `\{fname}` as a host-future import (only `async func() -> s64` is admitted)", ctx))
+          // #2066: `async func() -> response`, the `types` interface's
+          // `record response { status: s32, body: stream<u8> }`.
+          let response = match kind {
+            FKFreestanding => is_async && Array::length(params) == 0 && match result {
+              Some(TyId(rname)) => rname == "response" && fw_uses_types_response(items) && fw_types_declares_response(ifaces),
+              _ => false
+            },
+            _ => false
+          }
+          if !admitted && !response {
+            throw(fw_refusal("function `\{fname}` as a host-future import (only `async func() -> s64`, or `async func() -> response` over the `types` interface's `record response { status: s32, body: stream<u8> }`, is admitted)", ctx))
           } else {
             ()
           }
@@ -418,7 +429,11 @@ export fn from_wit_future_imports(source: String) -> String with Exception {
             j = j + 1
           }
           Array::push(seen, vname)
-          Array::push(out, "/// `\{iface_id}#\{fname}`, imported as a host future (#2064).\nexport fn \{vname}() -> Future[Int] {\n  host_future_named(\"\{iface_id}#\{fname}\")\n}")
+          if response {
+            Array::push(out, "/// `\{iface_id}#\{fname}`, imported as a host response (#2066).\nexport fn \{vname}() -> Future[HostResponse] {\n  host_response_named(\"\{iface_id}#\{fname}\")\n}")
+          } else {
+            Array::push(out, "/// `\{iface_id}#\{fname}`, imported as a host future (#2064).\nexport fn \{vname}() -> Future[Int] {\n  host_future_named(\"\{iface_id}#\{fname}\")\n}")
+          }
         },
         // A resource's functions are functions of the interface too; none is
         // a host-future import, so they are refused rather than silently
@@ -436,6 +451,74 @@ export fn from_wit_future_imports(source: String) -> String with Exception {
     i = i + 1
   }
   String::join(out, "\n\n")
+}
+
+/// Does this interface bring `response` in from its package's `types`
+/// interface (`use types.{response};`)? The composer imports the record from
+/// exactly that sibling, so no other spelling is admitted.
+fn fw_uses_types_response(items: Array[WitInterfaceItem]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(items) {
+    match Array::get(items, i) {
+      IIUse(ns, _, _, from, names) => if ns == "" && from == "types" {
+        let mut n = 0
+        while n < Array::length(names) {
+          if Array::get(names, n) == "response" {
+            found = true
+          } else {
+            ()
+          }
+          n = n + 1
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Does the package's `types` interface declare exactly
+/// `record response { status: s32, body: stream<u8> }`?
+fn fw_types_declares_response(ifaces: Array[(String, Option[String], Array[WitInterfaceItem])]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(ifaces) {
+    let (iname, _, items) = Array::get(ifaces, i)
+    if iname == "types" {
+      let mut k = 0
+      while k < Array::length(items) {
+        match Array::get(items, k) {
+          IITypeDef(TDRecord("response", fields, _)) => if Array::length(fields) == 2 {
+            let status_ok = match Array::get(fields, 0) {
+              ("status", TyS32) => true,
+              _ => false
+            }
+            let body_ok = match Array::get(fields, 1) {
+              ("body", TyStream(TyU8)) => true,
+              _ => false
+            }
+            if status_ok && body_ok {
+              found = true
+            } else {
+              ()
+            }
+          } else {
+            ()
+          },
+          _ => ()
+        }
+        k = k + 1
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
 }
 
 fn fw_refusal(what: String, ctx: String) -> String {

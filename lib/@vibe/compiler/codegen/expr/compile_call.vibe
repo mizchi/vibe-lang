@@ -591,6 +591,10 @@ fn cc_ladder_names() -> Array[String] {
       "host_stream_close",
       "host_stream_named",
       "host_stream_next",
+      // #2066: the response surface, lowered inline beside host_future_named.
+      "host_response_named",
+      "HostResponse::body",
+      "HostResponse::status",
       "lt",
       "map",
       // #2913: the bare deprecated alias for `Map::has_key`. It was in
@@ -3486,6 +3490,39 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       ce(buf, EArray([
         EInt(2),
         ECall(EIdent(String::concat(cc_host_future_named_raw_prefix(), hf_name), -1), named_no_args, -1)
+      ]), local_names, next_local, ctx, ld)
+    }
+    else if !prefer_bound_call && fname == "host_response_named" {
+      // #2066: the host_future_named cell over a WIT RESPONSE. The raw getter
+      // is the named-future one with a `!` in front of the address, which
+      // linked_compile reads back as "this is a response" and imports as
+      // `vibe.wit_response_get$<address>`; the wait half is shared.
+      let hr_name_arg = Array::get(args, 0)
+      let hr_name = match hr_name_arg {
+        EString(s, _) => s,
+        _ => throw("host_response_named: the WIT function address must be a string literal (it becomes a component import, so it is fixed at compile time)")
+      }
+      if !cc_is_wit_future_address(hr_name) {
+        throw("host_response_named: invalid address '\{hr_name}' -- must be a WIT function address like 'example:http/client@1.0.0#fetch'")
+      } else {
+        ()
+      }
+      let hr_no_args = Array::slice([EInt(0)], 0, 0)
+      ce(buf, EArray([
+        EInt(2),
+        ECall(EIdent(String::concat(cc_host_future_named_raw_prefix(), String::concat("!", hr_name)), -1), hr_no_args, -1)
+      ]), local_names, next_local, ctx, ld)
+    }
+    else if !prefer_bound_call && fname == "HostResponse::status" {
+      // #2066: a response is `(status << 32) | body` -- the record's flat
+      // lowering in one scalar (the component adapter packs it).
+      ce(buf, EBinOp(">>", Array::get(args, 0), EInt(32), -1), local_names, next_local, ctx, ld)
+    }
+    else if !prefer_bound_call && fname == "HostResponse::body" {
+      // The body's readable end as a host-stream cell (state 3).
+      ce(buf, EArray([
+        EInt(3),
+        EBinOp("&", Array::get(args, 0), EInt(4294967295), -1)
       ]), local_names, next_local, ctx, ld)
     }
     else if !prefer_bound_call && fname == "host_stream_named" {

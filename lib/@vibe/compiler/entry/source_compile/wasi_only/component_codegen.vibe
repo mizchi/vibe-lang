@@ -50,6 +50,7 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_i32_sub,
   emit_i32_wrap_i64,
   emit_i64_const,
+  emit_i64_or,
   emit_i64_shl,
   emit_i64_shr_s,
   emit_if_void,
@@ -4095,6 +4096,12 @@ fn comp_wit_types_interface_id(interface_id: String) -> String with Exception {
 }
 
 fn emit_comp_wit_payload_types_instance_type(buf: Bytes, payload: String) -> Unit with Exception {
+  emit_comp_wit_payload_types_instance_type_named(buf, payload, "payload")
+}
+
+/// The types interface's instance type, exporting the payload record under
+/// `type_name` -- the name the WIT package gives it.
+fn emit_comp_wit_payload_types_instance_type_named(buf: Bytes, payload: String, type_name: String) -> Unit with Exception {
   bytebuf_push(buf, section_type)
   let content = bytebuf_new()
   leb128_encode_u32(content, 1)
@@ -4111,7 +4118,7 @@ fn emit_comp_wit_payload_types_instance_type(buf: Bytes, payload: String) -> Uni
   }
   bytebuf_push(content, 4)
   bytebuf_push(content, 0)
-  emit_name(content, "payload")
+  emit_name(content, type_name)
   bytebuf_push(content, 3)
   bytebuf_push(content, 0)
   leb128_encode_u32(content, payload_idx)
@@ -4182,6 +4189,53 @@ export fn comp_emit_wit_async_future_import_surface(interface_id: String, func_n
     emit_comp_instance_export_alias_section(buf, 1, func_name, comp_extern_func)
   }
   bytebuf_to_bytes(buf)
+}
+
+/// #2066: the name the `types` interface gives the response record.
+fn comp_wit_response_type_name() -> String {
+  "response"
+}
+
+/// #2066: the one response payload the first slice composes.
+fn comp_wit_response_payload_descriptor() -> String {
+  "record{status:s32,body:stream<u8>}"
+}
+
+/// #2066: the API interface of a response import -- the aggregate shape of
+/// `emit_comp_wit_async_aggregate_api_type` (alias the payload the types
+/// interface exports, `future<payload>`, one `async func() -> future`) with
+/// one export per function.
+fn emit_comp_wit_async_response_api_type(buf: Bytes, func_names: Array[String]) -> Unit {
+  bytebuf_push(buf, section_type)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 66)
+  let nfuncs = Array::length(func_names)
+  leb128_encode_u32(content, 3 + nfuncs)
+  bytebuf_push(content, 2)
+  bytebuf_push(content, 3)
+  bytebuf_push(content, 2)
+  leb128_encode_u32(content, 1)
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 1)
+  bytebuf_push(content, 101)
+  bytebuf_push(content, 1)
+  leb128_encode_u32(content, 0)
+  bytebuf_push(content, 1)
+  bytebuf_push(content, 67)
+  bytebuf_push(content, 0)
+  bytebuf_push(content, 0)
+  leb128_encode_u32(content, 1)
+  let mut ei = 0
+  while ei < nfuncs {
+    bytebuf_push(content, 4)
+    bytebuf_push(content, 0)
+    emit_name(content, Array::get(func_names, ei))
+    bytebuf_push(content, comp_extern_func)
+    leb128_encode_u32(content, 2)
+    ei = ei + 1
+  }
+  emit_raw_content(buf, content)
 }
 
 fn emit_comp_wit_async_future_instance_type(buf: Bytes, func_names: Array[String]) -> Unit {
@@ -5627,15 +5681,30 @@ fn comp_hoststream_import_label(core_name: String) -> String {
 /// ADR-0089 (c) (#1218): is `nm` a host-future GET core import -- the
 /// anonymous `host_future_get` or a named `host_future_get$<label>`?
 fn comp_is_host_future_get_import(nm: String) -> Bool {
-  nm == "host_future_get" || String::starts_with(nm, "host_future_get$") || String::starts_with(nm, "wit_future_get$")
+  nm == "host_future_get" || String::starts_with(nm, "host_future_get$") || comp_is_wit_future_get_import(nm)
 }
 
+/// A WIT-addressed future: `wit_future_get$` (`future<s64>`, #2064) or
+/// `wit_response_get$` (`future<record{status: s32, body: stream<u8>}>`,
+/// #2066). Both name `<versioned-interface>#<func>` after the prefix.
 fn comp_is_wit_future_get_import(nm: String) -> Bool {
-  String::starts_with(nm, "wit_future_get$")
+  String::starts_with(nm, "wit_future_get$") || comp_is_wit_response_get_import(nm)
+}
+
+fn comp_is_wit_response_get_import(nm: String) -> Bool {
+  String::starts_with(nm, "wit_response_get$")
+}
+
+fn comp_wit_future_prefix_length(core_name: String) -> Int {
+  if comp_is_wit_response_get_import(core_name) {
+    String::length("wit_response_get$")
+  } else {
+    String::length("wit_future_get$")
+  }
 }
 
 fn comp_wit_future_separator(core_name: String) -> Int with Exception {
-  let suffix = String::substring(core_name, String::length("wit_future_get$"), String::length(core_name))
+  let suffix = String::substring(core_name, comp_wit_future_prefix_length(core_name), String::length(core_name))
   let sep = String::index_of(suffix, "#")
   if sep <= 0 || sep + 1 >= String::length(suffix) {
     throw("component(wit-async-import): malformed core metadata '\{core_name}'; expected wit_future_get$<versioned-interface>#<func>")
@@ -5644,7 +5713,7 @@ fn comp_wit_future_separator(core_name: String) -> Int with Exception {
 }
 
 fn comp_wit_future_interface(core_name: String) -> String with Exception {
-  let start = String::length("wit_future_get$")
+  let start = comp_wit_future_prefix_length(core_name)
   let interface_id = String::substring(core_name, start, start + comp_wit_future_separator(core_name))
   if !String::contains(interface_id, ":") || !String::contains(interface_id, "/") || !String::contains(interface_id, "@") {
     throw("component(wit-async-import): interface id in '\{core_name}' must be versioned (`namespace:package/interface@version`)")
@@ -5653,7 +5722,7 @@ fn comp_wit_future_interface(core_name: String) -> String with Exception {
 }
 
 fn comp_wit_future_func(core_name: String) -> String with Exception {
-  let start = String::length("wit_future_get$")
+  let start = comp_wit_future_prefix_length(core_name)
   let sep = comp_wit_future_separator(core_name)
   String::substring(core_name, start + sep + 1, String::length(core_name))
 }
@@ -5796,6 +5865,12 @@ fn comp_hf_max_handles() -> Int {
   1023
 }
 
+/// #2066: the `$root` label of the shared stream read/drop pair when the only
+/// streams are response bodies (no named stream supplies a label).
+fn comp_response_stream_label() -> String {
+  "response-body"
+}
+
 fn comp_hostfuture_import_label(core_name: String) -> String with Exception {
   if comp_is_wit_future_get_import(core_name) {
     comp_wit_future_func(core_name)
@@ -5883,7 +5958,7 @@ fn comp_sleep_wait_payload_slot() -> Int {
   32
 }
 
-fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], stream_core_names: Array[String], want_stream_close: Bool, want_sleep: Bool, tag_mode: Int, future_s64: Bool) -> Bytes with Exception {
+fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], stream_core_names: Array[String], want_stream_close: Bool, want_sleep: Bool, tag_mode: Int, future_s64: Bool, response_payload: Bool) -> Bytes with Exception {
   // #1342: a THIRD half -- `vibe.sleep`. It is not a getter/wait pair like the
   // other two: the host side is an `async func(ms) -> ms`, so its
   // async-lowered call yields a SUBTASK rather than a future/stream handle,
@@ -5907,8 +5982,13 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
   // status, spec §3.17) as -1 after dropping the readable end. Unlike the
   // future getters there is NO eager read: the park is per READ, and a
   // pending read left between calls would double-read the stream.
+  // #2066: a RESPONSE payload (`future<record{status: s32, body:
+  // stream<u8>}>`) lands in the same 8-byte slot as an s64 and hands its body
+  // stream to the shared read half, so that half is present even with no
+  // named stream getter (L = 0).
   let nnames = Array::length(core_names)
   let nstreams = Array::length(stream_core_names)
+  let stream_half = nstreams > 0 || response_payload
   let read_idx = nnames
   let drop_idx = nnames + 1
   let ws_base = if nnames > 0 {
@@ -5923,7 +6003,7 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
   let sget_base = ws_base + 4
   let sread_idx = sget_base + nstreams
   let sdrop_idx = sget_base + nstreams + 1
-  let base_func_imports = if nstreams > 0 {
+  let base_func_imports = if stream_half {
     sget_base + nstreams + 2
   } else {
     ws_base + 4
@@ -5946,7 +6026,7 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
   // 6 (i64)->(i64) host_future_wait; 7 (i32,i32,i32)->(i32) stream.read
   // (only when streams are present). #1342 appends the sleep func's own
   // (i64)->() LAST, so the indices above are unchanged by its presence.
-  let sleep_type_idx = if nstreams > 0 {
+  let sleep_type_idx = if stream_half {
     8
   } else {
     7
@@ -5965,7 +6045,7 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
   emit_func_type_raw(tc, [127, 127], array_empty())
   emit_func_type_raw(tc, array_empty(), [126])
   emit_func_type_raw(tc, [126], [126])
-  if nstreams > 0 {
+  if stream_half {
     emit_func_type_raw(tc, [127, 127, 127], [127])
   } else {
     ()
@@ -6019,7 +6099,7 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
   emit_name(ic, "[waitable-set-drop]")
   bytebuf_push(ic, 0)
   bytebuf_push(ic, 2)
-  if nstreams > 0 {
+  if stream_half {
     let mut simp_i = 0
     while simp_i < nstreams {
       emit_name(ic, "$root")
@@ -6028,7 +6108,11 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
       bytebuf_push(ic, 0)
       simp_i = simp_i + 1
     }
-    let s_first_label = comp_hoststream_import_label(Array::get(stream_core_names, 0))
+    let s_first_label = if nstreams > 0 {
+      comp_hoststream_import_label(Array::get(stream_core_names, 0))
+    } else {
+      comp_response_stream_label()
+    }
     emit_name(ic, "$root")
     emit_name(ic, String::concat("[async-lower][stream-read-0]", s_first_label))
     bytebuf_push(ic, 0)
@@ -6090,7 +6174,7 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     Array::push(export_indices, s_local_base + sfs_i)
     sfs_i = sfs_i + 1
   }
-  if nstreams > 0 {
+  if stream_half {
     Array::push(fn_types, 6)
     Array::push(export_names, "host_stream_read")
     Array::push(export_indices, s_local_base + nstreams)
@@ -6101,7 +6185,7 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
   // LAST so its presence cannot shift any existing index -- a stream
   // composition whose guest never closes is byte-identical to one built
   // before this func existed.
-  if nstreams > 0 && want_stream_close {
+  if stream_half && want_stream_close {
     Array::push(fn_types, 6)
     Array::push(export_names, "host_stream_close")
     Array::push(export_indices, s_local_base + nstreams + 1)
@@ -6280,7 +6364,32 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
   emit_i32_store(wait_body, 2, 0)
   // Return the value in the compiled core's value convention.
   emit_local_get(wait_body, 5)
-  if future_s64 {
+  if response_payload {
+    // #2066: the landed record is `{status: s32 @0, body: stream<u8> @4}`.
+    // It crosses as one scalar, `(status << 32) | body` -- the record's flat
+    // lowering side by side -- which `HostResponse::status` / `::body` take
+    // apart. The value convention spends one bit on the tag, so a status
+    // outside [-2^30, 2^30) cannot be represented and traps here rather than
+    // arriving truncated.
+    emit_i32_load(wait_body, 2, 0)
+    emit_i32_const(wait_body, 1073741824)
+    emit_i32_add(wait_body)
+    emit_i32_const(wait_body, -2147483648)
+    bytebuf_push(wait_body, 79)
+    emit_if_void(wait_body)
+    bytebuf_push(wait_body, 0)
+    emit_end(wait_body)
+    emit_local_get(wait_body, 5)
+    emit_i32_load(wait_body, 2, 0)
+    bytebuf_push(wait_body, 172)
+    emit_i64_const(wait_body, 32)
+    emit_i64_shl(wait_body)
+    emit_local_get(wait_body, 5)
+    emit_i32_load(wait_body, 2, 4)
+    bytebuf_push(wait_body, 173)
+    emit_i64_or(wait_body)
+    comp_emit_encode_i64_value(wait_body, tag_mode)
+  } else if future_s64 {
     // i64.load align=3 offset=0. `future<s64>` is already vibe Int's
     // canonical scalar; only the internal tag convention remains.
     bytebuf_push(wait_body, 41)
@@ -6365,7 +6474,7 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
   // comp_hs_closed_base so the NEXT call settles to -1 without touching
   // the (already notified) stream. Any other zero-transfer code traps
   // loudly.
-  if nstreams > 0 {
+  if stream_half {
     let sread_body = bytebuf_new()
     leb128_encode_u32(sread_body, 1)
     leb128_encode_u32(sread_body, 5)
@@ -6522,7 +6631,7 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
   // Returns tagged 0: the surface is `-> Unit`, but the raw ABI is
   // uniformly `(i64) -> i64` (the same shape as host_stream_read), so the
   // adapter hands back a value the injected wrapper discards.
-  if nstreams > 0 && want_stream_close {
+  if stream_half && want_stream_close {
     let sclose_body = bytebuf_new()
     leb128_encode_u32(sclose_body, 1)
     leb128_encode_u32(sclose_body, 1)
@@ -7125,6 +7234,28 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   let future_s64 = nwit > 0
   let wit_interfaces = comp_wit_future_interfaces(hf_names)
   let nwit_interfaces = Array::length(wit_interfaces)
+  // #2066: WIT RESPONSES -- `async func() -> response` whose payload is
+  // `record{status: s32, body: stream<u8>}`, declared in the package's
+  // `types` interface. The first slice composes them on their own: every
+  // future is a response and they share one interface.
+  let mut nresp = 0
+  let mut resp_i = 0
+  while resp_i < nhf {
+    if comp_is_wit_response_get_import(Array::get(hf_names, resp_i)) {
+      nresp = nresp + 1
+    } else {
+      ()
+    }
+    resp_i = resp_i + 1
+  }
+  let response_mode = nresp > 0
+  if response_mode && nresp != nhf {
+    throw("component(wit-async-import): a component awaiting WIT responses cannot yet await other host futures; split the program or migrate every import to a response")
+  } else if response_mode && nwit_interfaces != 1 {
+    throw("component(wit-async-import): every response function must come from one WIT interface in this composition")
+  } else {
+    ()
+  }
   // ADR-0089 Decision 3 (#1218): host STREAMS ride the same composition --
   // per-name `stream<u8>` component imports after the future imports, the
   // stream canon pair after the waitable quartet, and the shared adapter
@@ -7157,9 +7288,32 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   emit_component_header(buf)
   // Component type indices: root futures use the historical pair. WIT futures
   // use one shared future<s64> type plus one instance type per unique interface.
-  let future_type_idx = 0
+  // #2066 response mode: 0 = the types interface's instance type, 1 = its
+  // exported `payload` record (aliased), 2 = future<payload> for the canon
+  // read, 3 = the API instance type, 4 = stream<u8> for the body's canon
+  // read. The two instance imports sit between them, in that order.
+  let future_type_idx = if response_mode {
+    2
+  } else {
+    0
+  }
   let fut_functype_idx = 1
-  if nhf > 0 {
+  if response_mode {
+    let api_interface = Array::get(wit_interfaces, 0)
+    emit_comp_wit_payload_types_instance_type_named(buf, comp_wit_response_payload_descriptor(), comp_wit_response_type_name())
+    emit_comp_instance_import_section(buf, comp_wit_types_interface_id(api_interface), 0)
+    emit_comp_instance_export_alias_section(buf, 0, comp_wit_response_type_name(), 3)
+    bytebuf_push(buf, section_type)
+    let fut_content = bytebuf_new()
+    leb128_encode_u32(fut_content, 1)
+    bytebuf_push(fut_content, 101)
+    bytebuf_push(fut_content, 1)
+    leb128_encode_u32(fut_content, 1)
+    emit_raw_content(buf, fut_content)
+    emit_comp_wit_async_response_api_type(buf, comp_wit_future_funcs(hf_names, api_interface))
+    emit_comp_stream_type_section(buf, comp_valtype_u8)
+    emit_comp_instance_import_section(buf, api_interface, 3)
+  } else if nhf > 0 {
     emit_comp_future_type_section(buf, if future_s64 {
       comp_valtype_s64
     } else {
@@ -7178,7 +7332,9 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   } else {
     ()
   }
-  let future_type_count = if nhf > 0 {
+  let future_type_count = if response_mode {
+    5
+  } else if nhf > 0 {
     if future_s64 {
       1 + nwit_interfaces
     } else {
@@ -7187,7 +7343,11 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   } else {
     0
   }
-  let stream_type_idx = future_type_count
+  let stream_type_idx = if response_mode {
+    4
+  } else {
+    future_type_count
+  }
   let stream_functype_idx = stream_type_idx + 1
   if nhs > 0 {
     emit_comp_stream_type_section(buf, comp_valtype_u8)
@@ -7218,7 +7378,9 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   // its core module's declaration order, so component func index i is the
   // import the composer's lowered core func i belongs to. `sleep-for` follows
   // them, so it is component func index nt.
-  if future_s64 {
+  if response_mode {
+    ()
+  } else if future_s64 {
     let mut wi = 0
     while wi < nwit_interfaces {
       emit_comp_instance_import_section(buf, Array::get(wit_interfaces, wi), 1 + wi)
@@ -7249,7 +7411,7 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   }
   emit_core_module_section(buf, main_core_wasm)
   emit_core_module_section(buf, comp_generate_memhost_module())
-  emit_core_module_section(buf, comp_generate_hostfuture_adapter_core_module(hf_names, hs_names, hs_wants_close, want_sleep, tag_mode, future_s64))
+  emit_core_module_section(buf, comp_generate_hostfuture_adapter_core_module(hf_names, hs_names, hs_wants_close, want_sleep, tag_mode, future_s64, response_mode))
   emit_core_module_section(buf, comp_generate_async_trampoline_hostfuture())
   emit_core_module_section(buf, comp_generate_wasi_fd_write_stub())
   // A component-instance export alias must follow embedded core-module
@@ -7259,7 +7421,11 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
     while wai < nhf {
       let core_name = Array::get(hf_names, wai)
       let interface_id = comp_wit_future_interface(core_name)
-      let instance_idx = comp_string_array_index(wit_interfaces, interface_id)
+      let instance_idx = if response_mode {
+        1
+      } else {
+        comp_string_array_index(wit_interfaces, interface_id)
+      }
       emit_comp_instance_export_alias_section(buf, instance_idx, comp_wit_future_func(core_name), comp_extern_func)
       wai = wai + 1
     }
@@ -7300,7 +7466,10 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   emit_canon_waitable_set_wait(buf, mem_alias_idx)
   emit_canon_waitable_set_drop(buf)
   let stream_read_core_idx = task_return_core_idx + 5
-  if nhs > 0 {
+  // #2066: a response body is a stream too, so response mode needs the
+  // stream canon pair even with no named stream.
+  let stream_half = nhs > 0 || response_mode
+  if stream_half {
     emit_canon_stream_read(buf, stream_type_idx, mem_alias_idx)
     emit_canon_stream_drop_readable(buf, stream_type_idx)
   } else {
@@ -7308,7 +7477,7 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   }
   // #1342: the sleep half's canon defs come after everything else, so a
   // composition without sleep keeps its exact core func indices.
-  let sleep_lower_core_idx = if nhs > 0 {
+  let sleep_lower_core_idx = if stream_half {
     stream_read_core_idx + 2
   } else {
     task_return_core_idx + 5
@@ -7356,8 +7525,12 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
     Array::push(root_export_indices, nhf + srex_i)
     srex_i = srex_i + 1
   }
-  if nhs > 0 {
-    let hs_first_label = comp_hoststream_import_label(Array::get(hs_names, 0))
+  if stream_half {
+    let hs_first_label = if nhs > 0 {
+      comp_hoststream_import_label(Array::get(hs_names, 0))
+    } else {
+      comp_response_stream_label()
+    }
     Array::push(root_export_names, String::concat("[async-lower][stream-read-0]", hs_first_label))
     Array::push(root_export_indices, stream_read_core_idx)
     Array::push(root_export_names, String::concat("[stream-drop-readable-0]", hs_first_label))
