@@ -1,0 +1,110 @@
+// #3064: `return` in a handler arm leaves the enclosing FUNCTION, whether the
+// `perform` it answers is written in the handled body or inside a function the
+// body calls. The callee path used to run the arm as an evidence closure, so
+// the `return` came back as the value of `perform` -- an implicit resume:
+// `f()` answered 1440 where 43 is right, on linear and gc.
+effect Cfg {
+  Get(Int) -> Int
+}
+
+effect Note {
+  Say(Int) -> Unit
+}
+
+fn ask(n: Int) -> Int with Cfg {
+  let a = perform Cfg::Get(n)
+  a + 100
+}
+
+fn ask2(n: Int) -> Int with Cfg {
+  ask(n) + 1000
+}
+
+// The perform is in a callee.
+fn f() -> Int {
+  let r = handle {
+    ask(3) + 1
+  } with { Cfg::Get(x) => return x + 40 }
+  r * 10
+}
+
+// The perform is directly in the handled body (#2962's shape).
+fn g() -> Int {
+  let r = handle {
+    perform Cfg::Get(3) + 101
+  } with { Cfg::Get(x) => return x + 40 }
+  r * 10
+}
+
+// Two levels of callee.
+fn h() -> Int {
+  let r = handle {
+    ask2(3) + 1
+  } with { Cfg::Get(x) => return x + 40 }
+  r * 10
+}
+
+// Control: an arm that resumes still resumes through a callee.
+fn k() -> Int {
+  let r = handle {
+    ask(3) + 1
+  } with { Cfg::Get(x) => resume(x + 40) }
+  r * 10
+}
+
+// An arm that returns on one branch and resumes on the other.
+fn pick(n: Int) -> Int {
+  let r = handle {
+    ask(n) + ask(n + 1)
+  } with { Cfg::Get(x) => if x >= 5 {
+    return x * 1000
+  } else {
+    resume(x)
+  } }
+  r + 7
+}
+
+// The body calls the callee under a `let`, and the arm leaves with a value
+// that is not the operation's type.
+fn label(n: Int) -> String {
+  let r = handle {
+    let v = ask2(n)
+    v * 2
+  } with { Cfg::Get(x) => return "left at \{x}" }
+  "finished \{r}"
+}
+
+// The perform is inside a closure the body calls: evidence passing ran the
+// arm inside that closure, so `return` left the closure (measured 510).
+fn lam() -> Int {
+  let r = handle {
+    let h = (n: Int) -> perform Cfg::Get(n) + 7
+    h(3) + 1
+  } with { Cfg::Get(x) => return x + 40 }
+  r * 10
+}
+
+fn say_twice() -> Unit with Note {
+  perform Note::Say(1)
+  perform Note::Say(2)
+}
+
+// A Unit operation whose arm returns from the function on the second call.
+fn unit_op() -> Int {
+  let mut seen = 0
+  handle {
+    say_twice()
+  } with { Note::Say(x) => if x == 2 {
+    return seen * 100 + x
+  } else {
+    seen = seen + 1
+    resume(())
+  } }
+  -1
+}
+
+test "return in a handler arm leaves the function through a callee" {
+  inspect("f=\{f()} g=\{g()} h=\{h()} k=\{k()}", content = "f=43 g=43 h=43 k=1440")
+  inspect("pick3=\{pick(3)} pick4=\{pick(4)} pick5=\{pick(5)}", content = "pick3=214 pick4=5000 pick5=5000")
+  inspect("\{label(3)} / \{unit_op()} / lam=\{lam()}", content = "left at 3 / 102 / lam=43")
+}

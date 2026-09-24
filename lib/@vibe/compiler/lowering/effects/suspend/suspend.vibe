@@ -275,6 +275,112 @@ export fn suspend_cps_pass(stmts: Array[Stmt]) -> Array[String] {
   }
 }
 
+/// Drop the ORIGINAL of a function the suspend lowering cloned
+/// (`__scps_cps_<E>_<f>`) once nothing references it any more.
+///
+/// The clone is what every suspend-lowered call site calls; the original is
+/// left for tail-resumptive callers, whose handles evidence_dict_pass
+/// migrates. When no such caller exists, the original keeps its raw
+/// `perform` and nothing lowers it. The linear lane never compiles it (the
+/// late reachability prune drops it), but the gc lane compiles every
+/// top-level function and refused the program with "unsupported perform"
+/// (#3064: every handle of an effect whose arm leaves with `return` through a
+/// callee takes this lowering). Exported functions stay; the drop repeats
+/// until no further original becomes unreferenced, so a chain of callees
+/// (`ask2` calling `ask`) goes together.
+export fn scps_drop_orphaned_originals(stmts: Array[Stmt]) -> Unit {
+  let mut changed = true
+  while changed {
+    changed = false
+    let mut i = 0
+    while i < Array::length(stmts) && !changed {
+      match Array::get(stmts, i) {
+        SLet(exported, _, name, _, EFn(_, _, _, _, _, _)) => if !exported && !String::starts_with(name, "__scps_") && scps_has_clone_of(stmts, name) && !scps_referenced_elsewhere(stmts, i, name) {
+          let kept = scps_empty_stmts()
+          let mut j = 0
+          while j < Array::length(stmts) {
+            if j != i {
+              Array::push(kept, Array::get(stmts, j))
+            } else {
+              ()
+            }
+            j = j + 1
+          }
+          Array::truncate(stmts, 0)
+          let mut k = 0
+          while k < Array::length(kept) {
+            Array::push(stmts, Array::get(kept, k))
+            k = k + 1
+          }
+          changed = true
+        } else {
+          ()
+        },
+        _ => ()
+      }
+      i = i + 1
+    }
+  }
+}
+
+fn scps_has_clone_of(stmts: Array[Stmt], fname: String) -> Bool {
+  let suffix = String::concat("_", scps_sanitize(fname))
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(stmts) && !found {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, _) => if String::starts_with(name, "__scps_cps_") && String::ends_with(name, suffix) {
+        found = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn scps_referenced_elsewhere(stmts: Array[Stmt], at: Int, name: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(stmts) && !found {
+    if i != at {
+      match scps_stmt_expr_of(Array::get(stmts, i)) {
+        Some(expr) => if scps_refs_name(expr, name) {
+          found = true
+        } else {
+          ()
+        },
+        // A statement that can name the function without an expression
+        // keeps the original alive.
+        None => match Array::get(stmts, i) {
+          SExport(names) => if edp_str_array_contains(names, name) {
+            found = true
+          } else {
+            ()
+          },
+          SAliasDecl(a, b) => if a == name || b == name {
+            found = true
+          } else {
+            ()
+          },
+          SExample(_, ex) => if scps_refs_name(ex, name) {
+            found = true
+          } else {
+            ()
+          },
+          _ => ()
+        }
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 // --- pass state accessors. st = (site counter box, injected effect list,
 // clone keys ("E||f"), clone queue effects, clone queue fn names,
 // injected stmts, errors).
