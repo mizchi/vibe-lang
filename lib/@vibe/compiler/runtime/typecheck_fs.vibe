@@ -2189,7 +2189,10 @@ fn identity_rename_formals(ty: Type, params: Array[String]) -> Type {
       CtOption(t) => CtOption(identity_rename_formals(t, params)),
       CtFn(args, ret, label) => CtFn(for t in args {
         identity_rename_formals(t, params)
-      }, identity_rename_formals(ret, params), label),
+      }, identity_rename_formals(ret, params), match label {
+        Some(row) => Some(identity_rename_row(row, params)),
+        None => None
+      }),
       CtApplied(head, args) => CtApplied(identity_rename_formals(head, params), for t in args {
         identity_rename_formals(t, params)
       }),
@@ -2201,6 +2204,45 @@ fn identity_rename_formals(ty: Type, params: Array[String]) -> Type {
       _ => ty
     }
   }
+}
+
+/// A function type's effect row is carried as its spelling (`Probe[T]`,
+/// `Log + Probe[T]`): every identifier in it that names a formal becomes that
+/// formal's positional placeholder, the rest is kept as written.
+fn identity_rename_row(row: String, params: Array[String]) -> String {
+  let len = String::length(row)
+  let mut out = ""
+  let mut start = 0 - 1
+  let mut i = 0
+  while i <= len {
+    let c = if i < len {
+      String::char_code_at(row, i)
+    } else {
+      32
+    }
+    let ident = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 95
+    if ident {
+      if start < 0 {
+        start = i
+      }
+    } else {
+      if start >= 0 {
+        let word = String::substring(row, start, i)
+        let hit = identity_formal_index(params, word)
+        out = String::concat(out, if hit >= 0 {
+          identity_formal_name(hit)
+        } else {
+          word
+        })
+        start = 0 - 1
+      }
+      if i < len {
+        out = String::concat(out, String::substring(row, i, i + 1))
+      }
+    }
+    i = i + 1
+  }
+  out
 }
 
 fn identity_rename_all(tys: Array[Type], params: Array[String]) -> Array[Type] {
