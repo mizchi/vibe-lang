@@ -661,12 +661,27 @@ arr |> Array::length
 s |> String::trim |> String::length
 ```
 
-Without a `_`, the piped value becomes the **first** argument. A bare `_` in
-the call's arguments substitutes the value at that position instead (no
-prepend). A *compound* placeholder such as `_ * 2` is a section lambda
-(`(v) -> v * 2`), not a pipe slot — so
-`xs |> Iterator::map(_, _ * 2)` reads as
-`Iterator::map(xs, (v) -> v * 2)` after importing `trait Iterator`.
+**The `_` rule (frozen, ADR-0117 / #3044).** `_` has two roles, and which
+one it plays is decided by syntax alone:
+
+1. **A bare `_` that IS a whole argument** of the call directly on the right
+   of `|>` is the **pipe slot**: the piped value goes there, and nothing is
+   prepended. Every such `_` receives it (`7 |> pair(_, _)` is `pair(7, 7)`).
+2. **A `_` that is an operand of an operator** is a **lambda section**: the
+   operator expression it sits in, up to the nearest enclosing call argument,
+   becomes a lambda with one parameter per `_`, in order. `_ * 2` is
+   `(v) -> v * 2`, `_ * 10 + 1` is `(v) -> v * 10 + 1`, `_ + _` is
+   `(a, b) -> a + b`, and `inc(_ * 10)` passes the lambda `(v) -> v * 10` to
+   `inc` (it is not `(v) -> inc(v * 10)`).
+3. Without a bare `_` argument, the piped value becomes the **first** argument.
+4. A bare `_` anywhere else -- outside a pipe (`inc(_)`), or as an argument of
+   a call nested inside the piped call -- is refused: `` `_` is not a value
+   here``.
+
+So `xs |> Iterator::map(_, _ * 2)` reads as `Iterator::map(xs, (v) -> v * 2)`
+after importing `trait Iterator`: the first `_` is rule 1, the second rule 2.
+There is no separate pipe-placeholder token; `_` keeps both roles, and this
+rule is the whole of the disambiguation.
 
 Every method-bearing trait exposes its operations through the trait namespace:
 `Trait::operation(value, args)` or `value |> Trait::operation(args)`. The
@@ -1466,22 +1481,39 @@ handle { fetch_user(input) } with {
 
 ### Railway bind (`let*`) — `Option` (#635 / #1324)
 
-`let* x = e` unwraps the success case and binds `x`, or short-circuits the whole
-block with the failure case. The lowering is **type-directed by `e`'s type**:
+`let* x = e` unwraps the success case and binds `x`, or short-circuits the
+**enclosing block** with the failure case:
 
-- `e: Option[T]` → `match e { Some(x) => <rest>, None => None }`
+- `e: Option[T]` → `match e { Some(x) => <rest of the block>, None => None }`
 
-so the enclosing function must return an `Option`. Handy when stages need
-names:
+so the BLOCK must evaluate to an `Option`; the function around it need not.
+
+**`let*` and `?` differ in where they exit, and that is why both exist**
+(ADR-0117, #3044): `?` returns `None` from the enclosing **function**, `let*`
+makes the enclosing **block** `None` and the function carries on after it. In
+a function body's own top-level block the two exit to the same place, so
+there `?` is the one spelling: a `let*` directly in a function body (or a
+closure's body) is a **warning** naming the `let x = e?` rewrite. Use `let*`
+for a nested block whose `None` should stop at the block:
 
 <!-- doctest-skip: 直前 block の定義 (half 等) に依存する断片 (将来の `vibe continue` 候補) -->
 ```vibe skip
-let pair: (Int, Int) -> Option[Int] = (a, b) -> {
-  let* x = half(a)                 // None short-circuits the block
-  let* y = half(b)
-  Some(x + y)                      // last expr is the block's Option
+fn halves_or_zero(a: Int, b: Int) -> Int {   // not an Option: `?` is not allowed here
+  let total = {
+    let* x = half(a)                 // None makes this BLOCK None
+    let* y = half(b)
+    Some(x + y)                      // last expr is the block's Option
+  }
+  match total {
+    Some(t) => t,
+    None => 0
+  }
 }
 ```
+
+Pinned by `fixtures/try_let_star_option_test.vibe` (block exit against `?`'s
+function exit) and `lib/@vibe/compiler/tests/warning_snapshots/let_star_top_level_test.vibe`
+(the warning).
 
 **Adopted scope (#635, narrowed by #1324):** `let*`/`?` lower to **`Option`
 only**. They used to type-direct between `Option` and `Result`, defaulting to
@@ -1640,7 +1672,9 @@ let sum_halves: (Int, Int) -> Option[Int] = (a, b) -> {
 ```
 
 Same adopted scope as `let*` above: `Option` only. (The deferred `Try` trait —
-option 2 — would let user types opt in; it is not implemented.)
+option 2 — would let user types opt in; it is not implemented.) `?` is the
+spelling at a function body's top level; `let*` is for a nested block (see
+"Railway bind" above for the exit-target rule).
 
 ### suberror (typed errors)
 

@@ -8,6 +8,10 @@ import @vibe/core {
   array_empty, struct MutMap
 }
 
+import @vibe/compiler/checker/diagnostics {
+  off_marker_len
+}
+
 import ./checker_effects.vibe {
   check_async_effects_stmts,
   check_mutability_stmts,
@@ -10310,6 +10314,143 @@ export fn detect_redundant_namespace_imports(stmts: Array[Stmt]) -> Array[(Strin
     i = i + 1
   }
   out
+}
+
+/// #3044: `let*` and `?` both short-circuit an `Option`; they differ only in
+/// where they exit. `?` returns from the enclosing FUNCTION, `let*` makes the
+/// enclosing BLOCK evaluate to `None`. In a function body's top-level block
+/// those are the same place, and `?` is the one spelling there -- so a
+/// `let*` on that spine is a warning naming the rewrite. A `let*` inside a
+/// nested block (an `if` / `match` arm that is not the body's tail, a block
+/// expression bound to a name) exits only that block and stays silent.
+///
+/// The parser lowers `let* x = e` to `__try_bind(e, (x) -> rest)`, so the
+/// rest of the block is the continuation lambda's body: the spine walk steps
+/// INTO that lambda instead of treating it as a new function. Every other
+/// lambda starts a spine of its own (a closure's `?` exits the closure).
+/// One warning per function body, at its first `let*`.
+export fn detect_top_level_let_star(stmts: Array[Stmt]) -> Array[(String, String, String)] {
+  let offs: Array[Int] = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, body) => lsw_walk(body, offs),
+      SLetMut(_, _, body) => lsw_walk(body, offs),
+      SExpr(body) => lsw_walk(body, offs),
+      STest(_, body) => lsw_walk(body, offs),
+      SBench(_, body) => lsw_walk(body, offs),
+      _ => ()
+    }
+    i = i + 1
+  }
+  let out = array_empty()
+  let mut j = 0
+  while j < Array::length(offs) {
+    let off = Array::get(offs, j)
+    let msg = String::concat("write `let x = e?` instead of `let* x = e` here: in a function body's top-level block both return `None` from the function, and `?` is the one spelling for that (`let*` is for a nested block, which it exits alone)", off_marker_len(off, 4))
+    Array::push(out, ("top_level_let_star", "let*", msg))
+    j = j + 1
+  }
+  out
+}
+
+/// Find every function literal under `e` and walk its body's spine.
+fn lsw_walk(e: Expr, offs: Array[Int]) -> Unit {
+  match e {
+    EFn(_, _, _, _, _, body) => lsw_spine(body, offs),
+    // A `let*` off every spine: its continuation is the rest of the SAME
+    // nested block, not a function body of its own.
+    ECall(EIdent("__try_bind", _), args, _) => if Array::length(args) == 2 {
+      lsw_walk(Array::get(args, 0), offs)
+      match Array::get(args, 1) {
+        EFn(_, _, _, _, _, rest) => lsw_walk(rest, offs),
+        other => lsw_walk(other, offs)
+      }
+    } else {
+      let kids = expr_children(e)
+      let mut k = 0
+      while k < Array::length(kids) {
+        lsw_walk(Array::get(kids, k), offs)
+        k = k + 1
+      }
+    },
+    _ => {
+      let kids = expr_children(e)
+      let mut k = 0
+      while k < Array::length(kids) {
+        lsw_walk(Array::get(kids, k), offs)
+        k = k + 1
+      }
+    }
+  }
+}
+
+/// Walk one function body's top-level block. The spine is iterative (a body
+/// is one deep right-nested let/seq chain); everything off the spine is
+/// searched for nested function literals only.
+fn lsw_spine(body: Expr, offs: Array[Int]) -> Unit {
+  let mut cur = body
+  let mut going = true
+  let mut reported = false
+  while going {
+    match cur {
+      ECall(EIdent("__try_bind", off), args, _) => if Array::length(args) == 2 {
+        if !reported {
+          Array::push(offs, off)
+          reported = true
+        }
+        lsw_walk(Array::get(args, 0), offs)
+        match Array::get(args, 1) {
+          EFn(_, _, _, _, _, rest) => cur = rest,
+          other => {
+            lsw_walk(other, offs)
+            going = false
+          }
+        }
+      } else {
+        lsw_walk(cur, offs)
+        going = false
+      },
+      ELet(_, v, b, _) => {
+        lsw_walk(v, offs)
+        cur = b
+      },
+      ELetMut(_, v, b, _) => {
+        lsw_walk(v, offs)
+        cur = b
+      },
+      ELetRec(_, v, b) => {
+        lsw_walk(v, offs)
+        cur = b
+      },
+      ESeq(a, b) => {
+        lsw_walk(a, offs)
+        cur = b
+      },
+      EAssign(_, v, c) => {
+        lsw_walk(v, offs)
+        cur = c
+      },
+      EAssignOp(_, _, v, c) => {
+        lsw_walk(v, offs)
+        cur = c
+      },
+      // A destructuring `let PAT = v` is a one-arm match whose arm body is
+      // the rest of the block.
+      EMatch(v, arms) => if Array::length(arms) == 1 {
+        lsw_walk(v, offs)
+        let (_, arm_body) = Array::get(arms, 0)
+        cur = arm_body
+      } else {
+        lsw_walk(cur, offs)
+        going = false
+      },
+      _ => {
+        lsw_walk(cur, offs)
+        going = false
+      }
+    }
+  }
 }
 
 /// The offset of every `ESeq(left, _)` where `left` is itself an `ECall` --

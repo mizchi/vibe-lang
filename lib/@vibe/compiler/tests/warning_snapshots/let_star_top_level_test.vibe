@@ -1,0 +1,33 @@
+import ./helpers.vibe {
+  diagnostics
+}
+
+// #3044 / ADR-0117: `?` leaves the enclosing function and `let*` the enclosing
+// block. In a function body's own top-level block those are the same place,
+// so `?` is the one spelling there and a `let*` is a warning naming the
+// rewrite. A `let*` in a nested block is the reason `let*` exists and stays
+// silent.
+
+fn half_src() -> String {
+  "fn half(n: Int) -> Option[Int] { if n % 2 == 0 { Some(n / 2) } else { None } }\n"
+}
+
+test "let* at a function body's top level warns once" {
+  inspect(diagnostics(String::concat(half_src(), "fn g(a: Int, b: Int) -> Option[Int] {\n  let* x = half(a)\n  let* y = half(b)\n  Some(x + y)\n}\n")), "line 3:3-7: warning: write `let x = e?` instead of `let* x = e` here: in a function body's top-level block both return `None` from the function, and `?` is the one spelling for that (`let*` is for a nested block, which it exits alone)")
+}
+
+test "let* at a lambda body's top level warns" {
+  inspect(diagnostics(String::concat(half_src(), "let g = (a: Int) -> Option[Int] {\n  let* x = half(a)\n  Some(x)\n}\n")), "line 3:3-7: warning: write `let x = e?` instead of `let* x = e` here: in a function body's top-level block both return `None` from the function, and `?` is the one spelling for that (`let*` is for a nested block, which it exits alone)")
+}
+
+test "let* at a closure's top level inside a function warns" {
+  inspect(diagnostics(String::concat(half_src(), "fn g(a: Int) -> Int {\n  let f = (b: Int) -> Option[Int] {\n    let* x = half(b)\n    Some(x)\n  }\n  match f(a) {\n    Some(v) => v,\n    None => 0\n  }\n}\n")), "line 4:5-9: warning: write `let x = e?` instead of `let* x = e` here: in a function body's top-level block both return `None` from the function, and `?` is the one spelling for that (`let*` is for a nested block, which it exits alone)")
+}
+
+test "let* in a nested block is silent" {
+  inspect(diagnostics(String::concat(half_src(), "fn g(a: Int, b: Int) -> Int {\n  let total = {\n    let* x = half(a)\n    let* y = half(b)\n    Some(x + y)\n  }\n  match total {\n    Some(t) => t,\n    None => 0\n  }\n}\n")), "")
+}
+
+test "? at a function body's top level is silent" {
+  inspect(diagnostics(String::concat(half_src(), "fn g(a: Int) -> Option[Int] {\n  let x = half(a)?\n  Some(x)\n}\n")), "")
+}

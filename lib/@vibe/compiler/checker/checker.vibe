@@ -2037,19 +2037,24 @@ fn report_railway_after_arms(kind: Int, env: TypeEnv, s: Subst, result_ty: Type,
       None => ()
     }
   } else if kind == 2 {
-    match env_lookup(env, "__return__") {
-      Some(rt) => if type_is_concrete_non_option(subst_apply(s, rt)) {
-        Array::push(errors, railway_wrong_context_msg(2, off))
-      } else if type_is_concrete_non_option(subst_apply(s, result_ty)) {
-        Array::push(errors, railway_wrap_some_msg(off))
-      } else {
-        ()
-      },
-      None => if type_is_concrete_non_option(subst_apply(s, result_ty)) {
-        Array::push(errors, railway_wrap_some_msg(off))
-      } else {
-        ()
+    // #3044: `let*` leaves its enclosing BLOCK, not the function, so an
+    // Option-valued block inside a function returning `Int` is legal -- the
+    // reason `let*` exists next to `?`. Only a block whose own value is not an
+    // Option is a railway error here; which message fits depends on whether
+    // the function could return the `None` either. A top-level block that is
+    // an Option in a non-Option function is the ordinary return mismatch.
+    if type_is_concrete_non_option(subst_apply(s, result_ty)) {
+      let fn_not_option = match env_lookup(env, "__return__") {
+        Some(rt) => type_is_concrete_non_option(subst_apply(s, rt)),
+        None => false
       }
+      if fn_not_option {
+        Array::push(errors, railway_wrong_context_msg(2, off))
+      } else {
+        Array::push(errors, railway_wrap_some_msg(off))
+      }
+    } else {
+      ()
     }
   } else {
     ()

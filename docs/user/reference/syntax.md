@@ -541,6 +541,26 @@ the `T` in `Array[T]`). An omitted start means `0`, and an omitted end means the
 receiver's length. Both explicit bounds are `Int`. String bounds are byte
 offsets, not Unicode code-point or grapheme offsets.
 
+### `_`: pipe slot and lambda section
+
+`_` has two roles, decided by syntax alone (ADR-0117). This rule is frozen:
+
+1. A bare `_` that is a whole argument of the call directly on the right of
+   `|>` is the **pipe slot**. The piped value is passed there and nothing is
+   prepended; every such `_` receives it (`7 |> pair(_, _)` is `pair(7, 7)`).
+2. A `_` that is an operand of an operator is a **lambda section**. The
+   operator expression it sits in, up to the nearest enclosing call argument,
+   becomes a lambda with one parameter per `_`, in order: `_ * 10 + 1` is
+   `(v) -> v * 10 + 1`, `_ + _` is `(a, b) -> a + b`, and `f(_ * 10)` passes
+   `(v) -> v * 10` to `f`.
+3. With no bare `_` argument, the piped value is the call's first argument.
+4. Any other bare `_` in expression position is rejected (`` `_` is not a
+   value here``), including `f(_)` outside a pipe and a bare `_` argument of a
+   call nested inside the piped call.
+
+`xs |> Iterator::map(_, _ * 2)` is therefore `Iterator::map(xs, (v) -> v * 2)`.
+Pinned by `fixtures/underscore_pipe_slot_section_test.vibe`.
+
 ### Collections
 
 ```vibe skip
@@ -558,6 +578,20 @@ spellings above are parse-level desugars into the same map node, and the old
 literal reports a located parse error naming the replacement.
 
 ### Effects And Error Boundaries
+
+Option short-circuit has two spellings because it has two exit targets
+(ADR-0117):
+
+- `e?` on `e: Option[T]` yields the `T`, or returns `None` from the enclosing
+  **function** (a closure's body is its own function).
+- `let* x = e` binds the `T`, or makes the enclosing **block** evaluate to
+  `None`; the code after that block still runs. The block must evaluate to an
+  `Option`; the function need not return one.
+
+In a function body's own top-level block both exit to the same place, and
+there `?` is the one spelling: a `let*` directly in a function or closure body
+is a warning naming the `let x = e?` rewrite. `let*` belongs in a nested block
+(`let r = { let* x = e; Some(x) }`, an `if` branch).
 
 ```vibe skip
 // doctest-skip: form catalogue: bare surface forms, not a compilable program
