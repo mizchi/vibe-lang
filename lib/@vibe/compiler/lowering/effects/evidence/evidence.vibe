@@ -6086,6 +6086,7 @@ fn edp_migrate_closure_binding_expr(expr: Expr, xname: String, ename: String, di
 // --- applying an eligible migration.
 
 fn edp_apply_migration(stmts: Array[Stmt], ename: String, ops: Array[(String, Array[TypeExpr], TypeExpr)], needing: Array[String], handle_sites: Array[(Expr, Array[(Pat, Expr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], row_labels: Array[Array[String]]) -> Unit {
+  edp_set_declared_op_order(ename, ops)
   let dict_pname = edp_dict_param_name(ename)
   let dict_tyname = edp_dict_struct_name(ename)
   let pure_fns = edp_pure_fn_names(fn_defs)
@@ -6560,19 +6561,94 @@ fn edp_rewrite_handle_site(body: Expr, arms: Array[(Pat, Expr)], ename: String, 
   edp_rewrite_handle_body(body, ename, op_names, bind_names, prepared_bodies, dict_literal, needing)
 }
 
-fn edp_build_dict_literal(ename: String, op_names: Array[String], bind_names: Array[Array[String]], prepared_bodies: Array[Expr]) -> Expr {
-  let fields = array_empty()
+/// The effect being migrated and its DECLARED operations `(name, arity)`,
+/// in declaration order -- set by `edp_apply_migration`, read by
+/// `edp_build_dict_literal`. Pass state, overwritten per effect; the literal
+/// builder consults it only for the effect it names.
+let edp_declared_op_effect: Array[String] = [""]
+let edp_declared_op_names: Array[String] = []
+let edp_declared_op_arities: Array[Int] = []
+
+fn edp_set_declared_op_order(ename: String, ops: Array[(String, Array[TypeExpr], TypeExpr)]) -> Unit {
+  Array::set(edp_declared_op_effect, 0, ename)
+  Array::truncate(edp_declared_op_names, 0)
+  Array::truncate(edp_declared_op_arities, 0)
   let mut i = 0
-  while i < Array::length(op_names) {
-    let bare = edp_strip_effect_prefix(Array::get(op_names, i), ename)
-    let params = for n in Array::get(bind_names, i) {
-      (n, None)
-    }
-    let closure = EFn(empty_str_array(), array_empty(), params, None, None, Array::get(prepared_bodies, i))
-    Array::push(fields, (bare, closure))
+  while i < Array::length(ops) {
+    let (opname, params, _) = Array::get(ops, i)
+    Array::push(edp_declared_op_names, opname)
+    Array::push(edp_declared_op_arities, Array::length(params))
     i = i + 1
   }
+}
+
+/// The dictionary literal a handle site passes down.
+///
+/// ITS FIELDS ARE IN THE EFFECT'S DECLARATION ORDER, not the arms' order. A
+/// needing function receives the dictionary as the `__EvDict_<E>` struct
+/// (`edp_make_dict_struct_stmt`, declaration order) and reads an operation
+/// by that struct's slot, while this literal is an anonymous record whose
+/// slots are its FIELD order. Built in arm order, the two disagreed whenever
+/// a handler listed its arms in a different order than the effect declared
+/// them. Measured on main at 0f0ba36, with `effect E { A(Int) -> Int;
+/// B(Int) -> Int }`, a callee performing `E::A(1)` and a handler written
+///
+///     E::B(x) => resume(x + 1000);
+///     E::A(x) => resume(x + 1)
+///
+/// answered `1001` -- the `B` arm ran for an `A` perform, silently. With
+/// differing signatures the same program trapped (`null function or function
+/// signature mismatch`).
+///
+/// An operation the handler has no arm for gets a closure that traps: the
+/// slot must exist for the ones after it to line up, and reaching it means a
+/// perform this handler cannot answer (it used to read past the record).
+fn edp_build_dict_literal(ename: String, op_names: Array[String], bind_names: Array[Array[String]], prepared_bodies: Array[Expr]) -> Expr {
+  let fields = array_empty()
+  if Array::get(edp_declared_op_effect, 0) == ename && Array::length(edp_declared_op_names) > 0 {
+    let mut d = 0
+    while d < Array::length(edp_declared_op_names) {
+      let declared = Array::get(edp_declared_op_names, d)
+      let mut arm = -1
+      let mut i = 0
+      while i < Array::length(op_names) {
+        if arm < 0 && edp_strip_effect_prefix(Array::get(op_names, i), ename) == declared {
+          arm = i
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      if arm >= 0 {
+        Array::push(fields, (declared, edp_dict_arm_closure(Array::get(bind_names, arm), Array::get(prepared_bodies, arm))))
+      } else {
+        let params = array_empty()
+        let mut a = 0
+        while a < Array::get(edp_declared_op_arities, d) {
+          Array::push(params, (String::concat("__ev_unhandled_", __to_string(a)), None))
+          a = a + 1
+        }
+        let trap = ECall(EIdent("assert_true", -1), [EBool(false)], -1)
+        Array::push(fields, (declared, EFn(empty_str_array(), array_empty(), params, None, None, trap)))
+      }
+      d = d + 1
+    }
+  } else {
+    let mut i = 0
+    while i < Array::length(op_names) {
+      let bare = edp_strip_effect_prefix(Array::get(op_names, i), ename)
+      Array::push(fields, (bare, edp_dict_arm_closure(Array::get(bind_names, i), Array::get(prepared_bodies, i))))
+      i = i + 1
+    }
+  }
   ERecord("", fields, array_empty())
+}
+
+fn edp_dict_arm_closure(binds: Array[String], body: Expr) -> Expr {
+  let params = for n in binds {
+    (n, None)
+  }
+  EFn(empty_str_array(), array_empty(), params, None, None, body)
 }
 
 fn edp_table_lookup(op_names: Array[String], qname: String) -> Int {
