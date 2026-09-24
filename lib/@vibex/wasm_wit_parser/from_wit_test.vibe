@@ -1,0 +1,88 @@
+// ADR-0113 §7 (#2064): the inverse projection, driven from WIT TEXT through
+// `wit_parse`, so each row checks the reading a real `.wit` gets rather than a
+// hand-built type. The forward/inverse agreement with the compiler's
+// `wit_type_text` is pinned in lib/@vibe/compiler/tests/wit_inverse_law_test.vibe.
+
+import ./wit_parser.vibe {
+  IIFunction, wit_parse
+}
+
+import ./from_wit.vibe {
+  from_wit_func, from_wit_type
+}
+
+/// The vibe declaration of the one function `sig` declares, or the refusal.
+fn decl_of(sig: String) -> String {
+  let src = "package a:b@1.0.0;\ninterface api {\n  f: \{sig};\n}\n"
+  handle {
+    let (_, ifaces, _) = wit_parse(src)
+    let (_, _, items) = Array::get(ifaces, 0)
+    match Array::get(items, 0) {
+      IIFunction(name, _, is_async, params, result, _) => from_wit_func(name, is_async, params, result),
+      _ => "<not a function>"
+    }
+  } with { Exception::Throw(msg) => "REFUSED: \{msg}" }
+}
+
+/// The vibe spelling of the parameter type `ty`, or the refusal.
+fn type_of(ty: String) -> String {
+  let src = "package a:b@1.0.0;\ninterface api {\n  f: func(x: \{ty});\n}\n"
+  handle {
+    let (_, ifaces, _) = wit_parse(src)
+    let (_, _, items) = Array::get(ifaces, 0)
+    match Array::get(items, 0) {
+      IIFunction(_, _, _, params, _, _) => from_wit_type(Array::get(params, 0).1),
+      _ => "<not a function>"
+    }
+  } with { Exception::Throw(msg) => "REFUSED: \{msg}" }
+}
+
+test "the admitted scalars and containers read back as their vibe types" {
+  inspect([
+    type_of("s64"),
+    type_of("f64"),
+    type_of("bool"),
+    type_of("char"),
+    type_of("string"),
+    type_of("list<u8>"),
+    type_of("list<s64>"),
+    type_of("option<string>"),
+    type_of("tuple<s64, string>"),
+    type_of("future<s64>"),
+    type_of("stream<u8>")
+  ], content = "[Int, Double, Bool, Char, String, Bytes, Array[Int], Option[String], (Int, String), Future[Int], HostStream]")
+}
+
+test "a keyed list stays a list of pairs, never a Map" {
+  inspect(type_of("list<tuple<string, s64>>"), content = "Array[(String, Int)]")
+}
+
+test "a nested result stays the explicit Result type" {
+  inspect(type_of("option<result<s64, string>>"), content = "Option[Result[Int, String]]")
+}
+
+test "type names become PascalCase" {
+  inspect(type_of("price-info"), content = "PriceInfo")
+}
+
+test "types outside the admitted subset are refused, naming the type" {
+  inspect([
+    type_of("u32"),
+    type_of("u8"),
+    type_of("f32"),
+    type_of("stream<s64>")
+  ], content = "[REFUSED: wit: `u32` has no vibe mapping, REFUSED: wit: `u8 outside list<u8>` has no vibe mapping, REFUSED: wit: `f32` has no vibe mapping, REFUSED: wit: `stream<..> of anything but u8` has no vibe mapping]")
+}
+
+test "a function's own result moves into the row, async becomes Async" {
+  inspect([
+    decl_of("func(ticker: string) -> result<f64, string>"),
+    decl_of("async func() -> future<s64>"),
+    decl_of("async func(get-count: s64) -> result<s64, string>"),
+    decl_of("func()")
+  ], content = "[fn f(ticker: String) -> Double with Exception[String], fn f() -> Future[Int] with Async, fn f(get_count: Int) -> Int with Exception[String] + Async, fn f() -> Unit]")
+}
+
+test "a refusal inside a signature names the function" {
+  inspect(decl_of("func(n: u32) -> s64"), content = "REFUSED: wit: `u32` has no vibe mapping (in `f`)")
+}

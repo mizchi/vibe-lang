@@ -1,0 +1,193 @@
+//# The inverse projection: WIT types -> vibe (ADR-0113 §7, #2064)
+//
+// `wit_gen` (lib/@vibe/compiler/wit_gen.vibe) projects a vibe signature onto
+// WIT. A package that is not vibe arrives as WIT, and `vibe add` derives its
+// vibe contract by the exact inverse of that mapping. This file is the
+// type-level half of that inverse: a parsed `WitTypeExpr` to the vibe type
+// spelling a contract would carry, and a function signature to its `fn`
+// declaration.
+//
+// The admitted subset is the bijection in component-build-convention.md §2,
+// read backwards. Everything outside it is REFUSED here, naming the type (and
+// the function, from `from_wit_func`), because an unusable package must be
+// refused when it is added, not when it is called:
+//
+//   - an integer other than `s64`, and `f32`: vibe has one `Int` (63-bit
+//     inside, `s64` at the boundary) and one `Double`;
+//   - `u8` outside `list<u8>`;
+//   - `borrow<..>`: a borrowed handle has no vibe value to stand for it;
+//   - a `stream` of anything but `u8`, and a `result` with no error type.
+//
+// Two readings are CHOICES rather than inverses, both recorded in §7:
+// `list<tuple<string, V>>` stays `Array[(String, V)]` (a foreign author did
+// not write a map, and duplicate keys are legal in the list), and a
+// function's own `result<T, E>` becomes `-> T with Exception[E]` -- inside
+// vibe, failure belongs in the row (#1324). A `result` nested inside another
+// type has no row to move to and stays the explicit `Result[T, E]` of
+// `@vibe/wit_runtime`.
+
+import ./wit_parser.vibe {
+  TyBool,
+  TyBorrow,
+  TyChar,
+  TyF32,
+  TyF64,
+  TyFuture,
+  TyId,
+  TyList,
+  TyOption,
+  TyOwn,
+  TyResult,
+  TyS16,
+  TyS32,
+  TyS64,
+  TyS8,
+  TyStream,
+  TyString,
+  TyTuple,
+  TyU16,
+  TyU32,
+  TyU64,
+  TyU8,
+  WitTypeExpr
+}
+
+/// The vibe type spelling of a WIT type, or a refusal naming it.
+export fn from_wit_type(t: WitTypeExpr) -> String with Exception {
+  fw_type(t, "")
+}
+
+/// The vibe declaration of a WIT function:
+/// `name: async func(x: s64) -> result<string, string>` becomes
+/// `fn name(x: Int) -> String with Exception[String] + Async`.
+/// A refusal names the function as well as the type.
+export fn from_wit_func(name: String, is_async: Bool, params: Array[(String, WitTypeExpr)], result: Option[WitTypeExpr]) -> String with Exception {
+  let ctx = " (in `\{name}`)"
+  let sb = StringBuilder::new()
+  StringBuilder::push(sb, "fn ")
+  StringBuilder::push(sb, fw_snake(name))
+  StringBuilder::push(sb, "(")
+  let mut i = 0
+  while i < Array::length(params) {
+    let (pname, pty) = Array::get(params, i)
+    if i > 0 {
+      StringBuilder::push(sb, ", ")
+    } else {
+      ()
+    }
+    StringBuilder::push(sb, fw_snake(pname))
+    StringBuilder::push(sb, ": ")
+    StringBuilder::push(sb, fw_type(pty, ctx))
+    i = i + 1
+  }
+  StringBuilder::push(sb, ") -> ")
+  let rows: Array[String] = []
+  match result {
+    Some(TyResult(ok, err)) => match err {
+      Some(e) => {
+        StringBuilder::push(sb, fw_type(ok, ctx))
+        Array::push(rows, "Exception[\{fw_type(e, ctx)}]")
+      },
+      None => throw(fw_refusal("result<..> with no error type", ctx))
+    },
+    Some(other) => StringBuilder::push(sb, fw_type(other, ctx)),
+    None => StringBuilder::push(sb, "Unit")
+  }
+  if is_async {
+    Array::push(rows, "Async")
+  } else {
+    ()
+  }
+  if Array::length(rows) > 0 {
+    StringBuilder::push(sb, " with ")
+    StringBuilder::push(sb, String::join(rows, " + "))
+  } else {
+    ()
+  }
+  StringBuilder::freeze(sb)
+}
+
+fn fw_refusal(what: String, ctx: String) -> String {
+  "wit: `\{what}` has no vibe mapping\{ctx}"
+}
+
+fn fw_type(t: WitTypeExpr, ctx: String) -> String with Exception {
+  match t {
+    TyBool => "Bool",
+    TyS64 => "Int",
+    TyF64 => "Double",
+    TyChar => "Char",
+    TyString => "String",
+    TyList(TyU8) => "Bytes",
+    TyList(el) => "Array[\{fw_type(el, ctx)}]",
+    TyOption(el) => "Option[\{fw_type(el, ctx)}]",
+    TyFuture(el) => "Future[\{fw_type(el, ctx)}]",
+    // The host owns the producer end of a boundary byte stream (ADR-0089 D4),
+    // which is the nominal `HostStream` handle.
+    TyStream(TyU8) => "HostStream",
+    TyStream(_) => throw(fw_refusal("stream<..> of anything but u8", ctx)),
+    TyResult(ok, err) => match err {
+      Some(e) => "Result[\{fw_type(ok, ctx)}, \{fw_type(e, ctx)}]",
+      None => throw(fw_refusal("result<..> with no error type", ctx))
+    },
+    TyTuple(items) => {
+      let parts: Array[String] = []
+      let mut i = 0
+      while i < Array::length(items) {
+        Array::push(parts, fw_type(Array::get(items, i), ctx))
+        i = i + 1
+      }
+      "(\{String::join(parts, ", ")})"
+    },
+    TyId(name) => fw_pascal(name),
+    TyOwn(name) => fw_pascal(name),
+    TyBorrow(name) => throw(fw_refusal("borrow<\{name}>", ctx)),
+    TyU8 => throw(fw_refusal("u8 outside list<u8>", ctx)),
+    TyU16 => throw(fw_refusal("u16", ctx)),
+    TyU32 => throw(fw_refusal("u32", ctx)),
+    TyU64 => throw(fw_refusal("u64", ctx)),
+    TyS8 => throw(fw_refusal("s8", ctx)),
+    TyS16 => throw(fw_refusal("s16", ctx)),
+    TyS32 => throw(fw_refusal("s32", ctx)),
+    TyF32 => throw(fw_refusal("f32", ctx))
+  }
+}
+
+/// `price-info` -> `PriceInfo`: a WIT type name is kebab-case, a vibe type
+/// name is PascalCase.
+fn fw_pascal(name: String) -> String {
+  let sb = StringBuilder::new()
+  let mut upper = true
+  let mut i = 0
+  while i < String::length(name) {
+    let c = String::byte_at(name, i)
+    if c == '-' {
+      upper = true
+    } else if upper && c >= 'a' && c <= 'z' {
+      StringBuilder::push(sb, String::from_byte(c - 32))
+      upper = false
+    } else {
+      StringBuilder::push(sb, String::from_byte(c))
+      upper = false
+    }
+    i = i + 1
+  }
+  StringBuilder::freeze(sb)
+}
+
+/// `get-price` -> `get_price`: WIT identifiers are kebab-case, vibe values
+/// are snake_case.
+fn fw_snake(name: String) -> String {
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < String::length(name) {
+    let c = String::byte_at(name, i)
+    if c == '-' {
+      StringBuilder::push(sb, "_")
+    } else {
+      StringBuilder::push(sb, String::from_byte(c))
+    }
+    i = i + 1
+  }
+  StringBuilder::freeze(sb)
+}

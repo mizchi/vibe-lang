@@ -1,0 +1,72 @@
+// ADR-0113 §8's INVERSE law, for types (#2064): for every WIT type `w` in the
+// admitted subset, `to_wit(from_wit(w)) == w`.
+//
+// `from_wit_type` (@vibex/wasm_wit_parser) reads a WIT type as the vibe type a
+// derived contract carries; `wit_type_text` (wit_gen.vibe) is the forward
+// projection `vibe build --component` uses. #2064 asks for the two directions
+// to agree on ONE mapping, and this test is that agreement: each row parses
+// real WIT text, projects it into vibe, parses the vibe spelling back as a
+// type, and projects it forward again.
+//
+// A row whose forward text differs is a disagreement between the two files,
+// not a formatting nit -- the round trip is how a type a foreign package
+// declares comes back out when a vibe consumer re-exports it.
+
+import ../wit_gen.vibe {
+  wit_type_text
+}
+
+import @vibe/parser {
+  lex, parse_type
+}
+
+import @vibex/wasm_wit_parser {
+  IIFunction, from_wit_type, wit_parse
+}
+
+fn round_trip(wit_ty: String) -> String with Exception {
+  let src = "package a:b@1.0.0;\ninterface api {\n  f: func(x: \{wit_ty});\n}\n"
+  let (_, ifaces, _) = wit_parse(src)
+  let (_, _, items) = Array::get(ifaces, 0)
+  let vibe_ty = match Array::get(items, 0) {
+    IIFunction(_, _, _, params, _, _) => from_wit_type(Array::get(params, 0).1),
+    _ => throw("not a function")
+  }
+  let (te, _) = parse_type(lex(vibe_ty), 0)
+  wit_type_text(te)
+}
+
+test "every admitted WIT type survives from_wit then to_wit unchanged" {
+  let admitted = [
+    "s64",
+    "f64",
+    "bool",
+    "char",
+    "string",
+    "list<u8>",
+    "list<s64>",
+    "list<list<string>>",
+    "option<s64>",
+    "option<option<bool>>",
+    "tuple<s64, string>",
+    "tuple<bool, tuple<f64, char>>",
+    "list<tuple<string, s64>>",
+    "result<s64, string>",
+    "option<result<string, s64>>",
+    "future<s64>",
+    "stream<u8>"
+  ]
+  let mut disagree = ""
+  let mut i = 0
+  while i < Array::length(admitted) {
+    let w = Array::get(admitted, i)
+    let back = round_trip(w)
+    if back != w {
+      disagree = "\{disagree} \{w}->\{back}"
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  inspect(disagree, content = "")
+}
