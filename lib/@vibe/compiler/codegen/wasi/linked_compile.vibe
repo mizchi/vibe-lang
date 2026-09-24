@@ -9728,7 +9728,24 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
   // Each one gets its own `vibe.host_future_get$<name>` core import; they all
   // share the single `vibe.host_future_wait` half, so having any of them
   // implies need_host_future_builtin below.
-  let hf_named_names = lc_collect_host_future_names(stmts)
+  // #2064: root names and WIT function addresses are emitted by two loops
+  // (two declared import patterns in docs/generated/host-runtime-contract.json),
+  // so they are kept apart; `hf_all_names` is both, in emission order, for
+  // the index reservation and registration that must follow that order.
+  let hf_collected_names = lc_collect_host_future_names(stmts)
+  let hf_named_names = lc_fresh_string_array()
+  let hf_wit_names = lc_fresh_string_array()
+  let mut hf_split_i = 0
+  while hf_split_i < Array::length(hf_collected_names) {
+    let hf_split_name = Array::get(hf_collected_names, hf_split_i)
+    if String::index_of(hf_split_name, "#") > 0 {
+      Array::push(hf_wit_names, hf_split_name)
+    } else {
+      Array::push(hf_named_names, hf_split_name)
+    }
+    hf_split_i = hf_split_i + 1
+  }
+  let hf_all_names = Array::concat(hf_named_names, hf_wit_names)
   // The ANONYMOUS `vibe.host_future_get` import is reserved only for the
   // anonymous surface: a program that awaits `host_future_named("price")`
   // alone must import `price`, not a `get-future` nothing calls (an unused
@@ -9736,7 +9753,7 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
   let need_host_future_builtin = Map::has_key(used_builtin_names, "host_future_get") || Map::has_key(used_builtin_names, "vibe_hf_get_raw")
   // The WAIT half is shared by every host future: `__entry_settle`'s
   // waitable arm parks on a handle without caring where it came from.
-  let need_host_future_wait_builtin = need_host_future_builtin || Map::has_key(used_builtin_names, "vibe_hf_wait_raw") || Array::length(hf_named_names) > 0
+  let need_host_future_wait_builtin = need_host_future_builtin || Map::has_key(used_builtin_names, "vibe_hf_wait_raw") || Array::length(hf_all_names) > 0
   // ADR-0089 Decision 3 (#1218): the program's NAMED host streams (sorted,
   // deduped). Each gets its own `vibe.host_stream_get$<name>` core import;
   // they all share the single `vibe.host_stream_read` half (park is per
@@ -10014,7 +10031,7 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
   // same order, and a handful of names never justifies a Map.
   let hf_named_import_indices = lc_fresh_int_array()
   let mut hf_named_i = 0
-  while hf_named_i < Array::length(hf_named_names) {
+  while hf_named_i < Array::length(hf_all_names) {
     Array::push(hf_named_import_indices, next_import_idx)
     next_import_idx = next_import_idx + 1
     hf_named_i = hf_named_i + 1
@@ -11249,8 +11266,8 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
   // against. Shape is fixed and identical for all of them: `() -> Int`, no
   // env, index = the reserved import (see hf_named_import_indices).
   let mut hf_reg_i = 0
-  while hf_reg_i < Array::length(hf_named_names) {
-    Array::push(builtin_names_list, String::concat(cc_host_future_named_raw_prefix(), Array::get(hf_named_names, hf_reg_i)))
+  while hf_reg_i < Array::length(hf_all_names) {
+    Array::push(builtin_names_list, String::concat(cc_host_future_named_raw_prefix(), Array::get(hf_all_names, hf_reg_i)))
     Array::push(builtin_param_counts, 0)
     Array::push(builtin_needs_env_list, false)
     Array::push(builtin_indices_list, Array::get(hf_named_import_indices, hf_reg_i))
@@ -13356,7 +13373,7 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
   // stream read alone does not: ordinary/library code may read a HostStream
   // without being componentized. Ordinary core wasm therefore remains
   // byte-identical. Payload: i32 LE tag_mode.
-  if need_host_future_builtin || serve_handler_has_host_stream || Array::length(hf_named_names) > 0 || Array::length(hs_named_names) > 0 || sleep_needs_component_adapter {
+  if need_host_future_builtin || serve_handler_has_host_stream || Array::length(hf_all_names) > 0 || Array::length(hs_named_names) > 0 || sleep_needs_component_adapter {
     let tm_content = bytebuf_new()
     let tm_name = "vibe.tagmode"
     leb128_encode_u32(tm_content, String::length(tm_name))
@@ -13670,24 +13687,26 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
   // per named host future -- after the anonymous pair, in the same sorted
   // order the indices were reserved in. The `$<name>` suffix is what the
   // composer reads back to build the component-level import of that name.
-  //
-  // #2064: a name that is a WIT function address
-  // (`example:prices/api@1.0.0#get-price`, `cc_is_wit_future_address`) is
-  // emitted as `vibe.wit_future_get$<address>` instead -- the metadata import
-  // the composer turns into an import of that versioned INTERFACE rather than
-  // a root function. Same type, same slot, same wait half.
   let mut hf_emit_i = 0
   while hf_emit_i < Array::length(hf_named_names) {
     emit_name(import_content, "vibe")
-    let hf_emit_name = Array::get(hf_named_names, hf_emit_i)
-    emit_name(import_content, String::concat(if String::index_of(hf_emit_name, "#") > 0 {
-      "wit_future_get$"
-    } else {
-      "host_future_get$"
-    }, hf_emit_name))
+    emit_name(import_content, String::concat("host_future_get$", Array::get(hf_named_names, hf_emit_i)))
     bytebuf_push(import_content, 0)
     leb128_encode_u32(import_content, 5)
     hf_emit_i = hf_emit_i + 1
+  }
+  // #2064: then `vibe.wit_future_get$<address>` (type 5) per WIT function
+  // address (`cc_is_wit_future_address`), the metadata import the composer
+  // turns into an import of that versioned INTERFACE rather than a root
+  // function. Same type, same wait half; reserved after the root names, the
+  // order `hf_all_names` fixed.
+  let mut hf_wit_emit_i = 0
+  while hf_wit_emit_i < Array::length(hf_wit_names) {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, String::concat("wit_future_get$", Array::get(hf_wit_names, hf_wit_emit_i)))
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 5)
+    hf_wit_emit_i = hf_wit_emit_i + 1
   }
   // ADR-0089 Decision 3 (#1218): `vibe.host_stream_read (i64) -> i64` (type
   // 3), then `vibe.host_stream_get$<name> () -> i64` (type 5) per named
