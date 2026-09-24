@@ -95,6 +95,7 @@ import @vibe/compiler/core {
   env_preserve_type_definition_origins,
   env_selectable_type_defs,
   env_trait_def_names_into,
+  env_type_definition_origin,
   env_type_defs,
   env_value_binding,
   has_standard_effect_policy,
@@ -1982,7 +1983,50 @@ fn foreign_trait_impl_collisions(dep_env: TypeEnv, mappings: Array[(String, Stri
   }
 }
 
-fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_path: String, names: Array[ImportItem], declaration_names: Array[ImportItem], cache: Array[(String, TypeEnv)], unresolved: Array[String], trait_claims: Array[(String, String, Bool, String)], reexport_surface_only: Bool, local_types: Array[String]) -> TypeEnv {
+/// #3036: which declaration a dependency's type name is. A published
+/// definition carries its origin (the module that declared it, through any
+/// re-exports); a dependency's own type has none, and is that dependency's.
+fn imported_type_identity(dep_env: TypeEnv, resolved: String, name: String) -> String {
+  match env_type_definition_origin(dep_env, name) {
+    Some(BindingOriginModuleExport(path, n)) => String::concat(path, String::concat("::", n)),
+    Some(BindingOriginReExportSurface(path, n)) => String::concat(path, String::concat("::", n)),
+    _ => String::concat(resolved, String::concat("::", name))
+  }
+}
+
+/// #3036: types are identified by their bare name, so two imports that bring
+/// two DIFFERENT declarations spelled the same way are unified: one module's
+/// `struct Err { code: Int }` was read through another's `struct Err { name:
+/// String }` with `vibe check` clean. #3035 refuses the clash with a type this
+/// module declares; this refuses the clash between two imports. The same
+/// declaration reached twice (directly and through a re-export) is one
+/// identity and stays legal.
+fn note_imported_type_identity(name: String, identity: String, what: String, seen: Array[(String, String, String)], unresolved: Array[String]) -> Unit {
+  let mut clash = ""
+  let mut same = false
+  let mut i = 0
+  while i < Array::length(seen) {
+    let (n, id, w) = Array::get(seen, i)
+    if n == name {
+      if id == identity {
+        same = true
+      } else if String::length(clash) == 0 {
+        clash = w
+      }
+    }
+    i = i + 1
+  }
+  // One report per distinct declaration: an identity already recorded has
+  // either been accepted or already been reported.
+  if !same {
+    if String::length(clash) > 0 {
+      Array::push(unresolved, String::concat(what, String::concat(" and ", String::concat(clash, String::concat(" are different types that share the name `", String::concat(name, "`, and the checker would treat them as one; import only one of them, or rename one of the types"))))))
+    }
+    Array::push(seen, (name, identity, what))
+  }
+}
+
+fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_path: String, names: Array[ImportItem], declaration_names: Array[ImportItem], cache: Array[(String, TypeEnv)], unresolved: Array[String], trait_claims: Array[(String, String, Bool, String)], reexport_surface_only: Bool, local_types: Array[String], seen_types: Array[(String, String, String)]) -> TypeEnv {
   let cached = lookup_env_cache(cache, resolved)
   let dep_env = match cached {
     Some(e) => e,
@@ -2000,6 +2044,9 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
     array_empty()
   }
   let collision_reported: Array[String] = []
+  // #3036: every dependency's declared type names, for the cross-import
+  // identity table (`note_imported_type_identity`).
+  let dep_types_all = dependency_declared_type_names(dep_env)
   // Kind advice is useful only for names the module actually publishes. A
   // private declaration may remain in the TypeDef closure solely to describe
   // a public type; suggesting a different qualifier cannot make it importable.
@@ -2056,6 +2103,9 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
       let ty = match imported_ty {
         Some(t) => {
           foreign_type_name_collisions(name, raw_path, resolved, t, dep_types, local_types, unresolved, collision_reported)
+          for tn in collision_type_names(t, array_empty(), dep_types_all) {
+            note_imported_type_identity(tn, imported_type_identity(dep_env, resolved, tn), String::concat("`", String::concat(tn, String::concat("` used by `", String::concat(name, String::concat("` from '", String::concat(raw_path, "'")))))), seen_types, unresolved)
+          }
           trait_projection_map_type_bounds(t, trait_mappings)
         },
         None => {
@@ -2096,6 +2146,7 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
   for item in declaration_names {
     if contains_str(dep_selectable_type_defs, item.name) {
       foreign_type_declaration_collisions(item, raw_path, resolved, dep_env, dep_types, local_types, unresolved, collision_reported)
+      note_imported_type_identity(item.name, imported_type_identity(dep_env, resolved, item.name), String::concat("`", String::concat(item.name, String::concat("` imported from '", String::concat(raw_path, "'")))), seen_types, unresolved)
     }
   }
   let declaration_trait_mappings = dependency_trait_projection_mappings(dep_env, dep_bindings, bi_trait_names, bi_upper_slots, declaration_names, array_empty())
@@ -2216,6 +2267,9 @@ fn build_import_env(stmts: Array[Stmt], base_dir: String, cache: Array[(String, 
 fn build_import_envs_collecting(stmts: Array[Stmt], base_dir: String, cache: Array[(String, TypeEnv)], unresolved: Array[String]) -> (TypeEnv, TypeEnv) {
   let trait_claims = array_empty()
   let local_types = local_declared_type_names(stmts)
+  // #3036: the type names this module's imports bring in, with the
+  // declaration each one names.
+  let seen_types: Array[(String, String, String)] = []
   let len = Array::length(stmts)
   let rec go: (Int, TypeEnv, TypeEnv) -> (TypeEnv, TypeEnv) = (i, local_acc, surface_acc) -> {
     if i >= len {
@@ -2226,13 +2280,13 @@ fn build_import_envs_collecting(stmts: Array[Stmt], base_dir: String, cache: Arr
           (local_acc, surface_acc)
         } else {
           let resolved = resolve_cached_import_path(base_dir, raw_path, cache)
-          (bind_import_names_from_cache_collecting(local_acc, resolved, raw_path, names, names, cache, unresolved, trait_claims, false, local_types), surface_acc)
+          (bind_import_names_from_cache_collecting(local_acc, resolved, raw_path, names, names, cache, unresolved, trait_claims, false, local_types, seen_types), surface_acc)
         },
         SReExport(raw_path, names) => {
           let resolved = resolve_cached_import_path(base_dir, raw_path, cache)
           let local_declarations = reexport_items_with_alias(names, false)
           let surface_declarations = reexport_items_with_alias(names, true)
-          (bind_import_names_from_cache_collecting(local_acc, resolved, raw_path, names, local_declarations, cache, unresolved, trait_claims, true, local_types), prepend_reexport_alias_declarations(surface_acc, resolved, surface_declarations, cache))
+          (bind_import_names_from_cache_collecting(local_acc, resolved, raw_path, names, local_declarations, cache, unresolved, trait_claims, true, local_types, seen_types), prepend_reexport_alias_declarations(surface_acc, resolved, surface_declarations, cache))
         },
         _ => (local_acc, surface_acc)
       }
