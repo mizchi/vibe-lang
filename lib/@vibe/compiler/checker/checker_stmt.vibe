@@ -14,8 +14,10 @@ import ./checker_effects.vibe {
   check_perform_effects_stmts_env,
   check_stdin_provider_direct_calls_stmts,
   effect_error_to_string,
+  effect_shadow_key,
   env_row_labels,
   row_text_labels,
+  set_shadowed_builtin_type_names,
   set_throw_site_kinds
 }
 
@@ -6426,6 +6428,51 @@ fn fek_formal_kind_in_row(row: String, formals: Array[String]) -> (String, Strin
   (kind_out, formal_out)
 }
 
+/// #3053 (Codex on #3054): per top-level declaration, the builtin type names
+/// a binder inside it reuses as a type parameter. `tps_scan_stmts` already
+/// walks every binder's formals for #2141; asked about the builtin names
+/// instead of the declared ones, its reports name exactly the shadowed
+/// spellings. Keyed by `effect_shadow_key`, so the effects pass applies each
+/// declaration's set to that declaration alone.
+fn builtin_named_type_params(stmts: Array[Stmt]) -> Array[(String, Array[String])] {
+  let out = array_empty()
+  let mut si = 0
+  while si < Array::length(stmts) {
+    let stmt = Array::get(stmts, si)
+    let hits = array_empty()
+    tps_scan_stmts([stmt], [
+      "Int",
+      "String",
+      "Bool",
+      "Double",
+      "Char",
+      "Bytes",
+      "Unit",
+      "Array",
+      "Option"
+    ], hits)
+    if Array::length(hits) > 0 {
+      let names = array_empty()
+      let mut i = 0
+      while i < Array::length(hits) {
+        let msg = Array::get(hits, i)
+        let a = String::index_of(msg, "`")
+        if a >= 0 {
+          let rest = String::substring(msg, a + 1, String::length(msg))
+          let b = String::index_of(rest, "`")
+          if b > 0 {
+            Array::push(names, String::substring(rest, 0, b))
+          }
+        }
+        i = i + 1
+      }
+      Array::push(out, (effect_shadow_key(stmt), names))
+    }
+    si = si + 1
+  }
+  out
+}
+
 fn collect_type_param_shadowing_errors(stmts: Array[Stmt], errors: Array[String]) -> Unit {
   collect_formal_exception_kind_errors(stmts, errors)
   collect_reserved_type_prefix_errors(stmts, errors)
@@ -7399,6 +7446,7 @@ fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: Option[
   // build_gens in desugar_trait_dict.vibe.
   push_error_strings(collect_undispatchable_trait_method_errors(stmts, env), frozen_errors)
   publish_throw_site_kinds(final_s)
+  set_shadowed_builtin_type_names(builtin_named_type_params(stmts))
   collect_async_effect_errors(expanded_stmts, env, empty_defs, frozen_errors)
   // #1455 step 3: `empty_defs` is the finished enum table by now, so the
   // qualifiers drained above can finally be checked against it.
@@ -9333,6 +9381,7 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
       // is covered too.
       push_error_strings(collect_undispatchable_trait_method_errors(stmts, env), frozen_errors)
       publish_throw_site_kinds(final_s)
+      set_shadowed_builtin_type_names(builtin_named_type_params(stmts))
       collect_async_effect_errors(expanded_stmts, env, empty_defs, frozen_errors)
       // #1455 step 3: `empty_defs` holds the imported enums seeded above plus
       // this module's own, which is exactly the set a qualifier may name.
