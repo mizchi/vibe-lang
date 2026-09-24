@@ -390,16 +390,26 @@ export fn contract_shared_import_raws_scan(text: String) -> Array[String] with E
       pos = kw
       let stmt_end = scan_header_stmt_end(text, len, pos)
       let tokens = lex(text[pos: stmt_end])
-      match peek(tokens, 1) {
-        TIdent(path) => if String::length(path) > 1 && String::char_code_at(path, 0) == 64 {
-          match peek(tokens, 2) {
-            TLBrace => Array::push(raws, path),
+      // Every `import @scope/pkg {` in the span, not only the first: the
+      // contract grammar is token-based, so two shared imports may share a
+      // line, and `scan_header_stmt_end` returns the end of that line.
+      let mut ti = 0
+      while ti + 2 < Array::length(tokens) {
+        match peek(tokens, ti) {
+          TImport => match peek(tokens, ti + 1) {
+            TIdent(path) => if String::length(path) > 1 && String::char_code_at(path, 0) == 64 {
+              match peek(tokens, ti + 2) {
+                TLBrace => Array::push(raws, path),
+                _ => ()
+              }
+            } else {
+              ()
+            },
             _ => ()
-          }
-        } else {
-          ()
-        },
-        _ => ()
+          },
+          _ => ()
+        }
+        ti = ti + 1
       }
       pos = if stmt_end > pos {
         stmt_end
