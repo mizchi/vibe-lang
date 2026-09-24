@@ -27,6 +27,16 @@
 // `@vibe/wit_runtime`.
 
 import ./wit_parser.vibe {
+  FKConstructor,
+  FKFreestanding,
+  FKMethod,
+  FKStatic,
+  TDAlias,
+  TDEnum,
+  TDFlags,
+  TDRecord,
+  TDResource,
+  TDVariant,
   TyBool,
   TyBorrow,
   TyChar,
@@ -49,6 +59,7 @@ import ./wit_parser.vibe {
   TyU32,
   TyU64,
   TyU8,
+  WitTypeDef,
   WitTypeExpr
 }
 
@@ -62,10 +73,15 @@ export fn from_wit_type(t: WitTypeExpr) -> String with Exception {
 /// `fn name(x: Int) -> String with Exception[String] + Async`.
 /// A refusal names the function as well as the type.
 export fn from_wit_func(name: String, is_async: Bool, params: Array[(String, WitTypeExpr)], result: Option[WitTypeExpr]) -> String with Exception {
-  let ctx = " (in `\{name}`)"
+  fw_signature(fw_snake(name), is_async, params, result, name)
+}
+
+/// `fn <spelled>(..) -> ..`, refusals naming `ctx_name`.
+fn fw_signature(spelled: String, is_async: Bool, params: Array[(String, WitTypeExpr)], result: Option[WitTypeExpr], ctx_name: String) -> String with Exception {
+  let ctx = " (in `\{ctx_name}`)"
   let sb = StringBuilder::new()
   StringBuilder::push(sb, "fn ")
-  StringBuilder::push(sb, fw_snake(name))
+  StringBuilder::push(sb, spelled)
   StringBuilder::push(sb, "(")
   let mut i = 0
   while i < Array::length(params) {
@@ -105,6 +121,97 @@ export fn from_wit_func(name: String, is_async: Bool, params: Array[(String, Wit
     ()
   }
   StringBuilder::freeze(sb)
+}
+
+/// The vibe declaration(s) of a WIT type definition (§7):
+///
+/// - `record` -> `export struct`, fields in order;
+/// - `enum` -> a payload-less `export enum`;
+/// - `variant` -> `export enum` with payloads, a `tuple<..>` payload read back
+///   as that many payloads (the inverse of §2's `B(U, V)` -> `b(tuple<u, v>)`);
+/// - `type x = ..` -> `type X = ..`;
+/// - `resource` -> an `opaque type` plus its functions taking the handle
+///   first, and an explicit `drop`: a resource handle is not a vibe heap
+///   value, so RC does not free it and the consumer has to;
+/// - `flags` is refused (no vibe mapping, §7).
+export fn from_wit_typedef(typedef: WitTypeDef) -> String with Exception {
+  match typedef {
+    TDRecord(name, fields, _) => {
+      let ctx = " (in record `\{name}`)"
+      let lines: Array[String] = []
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (fname, fty) = Array::get(fields, i)
+        Array::push(lines, "  \{fw_snake(fname)}: \{fw_type(fty, ctx)}")
+        i = i + 1
+      }
+      "export struct \{fw_pascal(name)} {\n\{String::join(lines, ";\n")}\n}"
+    },
+    TDEnum(name, cases, _) => {
+      let parts: Array[String] = []
+      let mut i = 0
+      while i < Array::length(cases) {
+        Array::push(parts, "  \{fw_pascal(Array::get(cases, i))}")
+        i = i + 1
+      }
+      "export enum \{fw_pascal(name)} {\n\{String::join(parts, ";\n")}\n}"
+    },
+    TDVariant(name, cases, _) => {
+      let ctx = " (in variant `\{name}`)"
+      let parts: Array[String] = []
+      let mut i = 0
+      while i < Array::length(cases) {
+        let (cname, payload) = Array::get(cases, i)
+        let head = fw_pascal(cname)
+        Array::push(parts, match payload {
+          Some(TyTuple(items)) => {
+            let tys: Array[String] = []
+            let mut k = 0
+            while k < Array::length(items) {
+              Array::push(tys, fw_type(Array::get(items, k), ctx))
+              k = k + 1
+            }
+            "  \{head}(\{String::join(tys, ", ")})"
+          },
+          Some(t) => "  \{head}(\{fw_type(t, ctx)})",
+          None => "  \{head}"
+        })
+        i = i + 1
+      }
+      "export enum \{fw_pascal(name)} {\n\{String::join(parts, ";\n")}\n}"
+    },
+    TDAlias(name, t, _) => "type \{fw_pascal(name)} = \{fw_type(t, " (in type `\{name}`)")}",
+    TDFlags(name, _, _) => throw(fw_refusal("flags \{name}", "")),
+    TDResource(name, funcs, _) => {
+      let ty = fw_pascal(name)
+      let out: Array[String] = ["opaque type \{ty}"]
+      let mut i = 0
+      while i < Array::length(funcs) {
+        let (fname, kind, is_async, params, result, _) = Array::get(funcs, i)
+        let qualified = "\{ty}::\{fw_snake(fname)}"
+        let decl = match kind {
+          FKConstructor(_) => fw_signature("\{ty}::new", is_async, params, Some(TyOwn(name)), qualified),
+          FKMethod(_) => {
+            let with_self: Array[(String, WitTypeExpr)] = [
+              ("self", TyOwn(name))
+            ]
+            let mut p = 0
+            while p < Array::length(params) {
+              Array::push(with_self, Array::get(params, p))
+              p = p + 1
+            }
+            fw_signature(qualified, is_async, with_self, result, qualified)
+          },
+          FKStatic(_) => fw_signature(qualified, is_async, params, result, qualified),
+          FKFreestanding => fw_signature(qualified, is_async, params, result, qualified)
+        }
+        Array::push(out, decl)
+        i = i + 1
+      }
+      Array::push(out, "fn \{ty}::drop(self: \{ty}) -> Unit")
+      String::join(out, "\n")
+    }
+  }
 }
 
 fn fw_refusal(what: String, ctx: String) -> String {

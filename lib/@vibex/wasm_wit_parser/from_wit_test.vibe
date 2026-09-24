@@ -4,11 +4,11 @@
 // `wit_type_text` is pinned in lib/@vibe/compiler/tests/wit_inverse_law_test.vibe.
 
 import ./wit_parser.vibe {
-  IIFunction, wit_parse
+  IIFunction, IITypeDef, wit_parse
 }
 
 import ./from_wit.vibe {
-  from_wit_func, from_wit_type
+  from_wit_func, from_wit_type, from_wit_typedef
 }
 
 /// The vibe declaration of the one function `sig` declares, or the refusal.
@@ -85,4 +85,41 @@ test "a function's own result moves into the row, async becomes Async" {
 
 test "a refusal inside a signature names the function" {
   inspect(decl_of("func(n: u32) -> s64"), content = "REFUSED: wit: `u32` has no vibe mapping (in `f`)")
+}
+
+/// The vibe declarations of the one type definition `def` declares.
+fn typedef_of(def: String) -> String {
+  let src = "package a:b@1.0.0;\ninterface api {\n  \{def}\n}\n"
+  handle {
+    let (_, ifaces, _) = wit_parse(src)
+    let (_, _, items) = Array::get(ifaces, 0)
+    match Array::get(items, 0) {
+      IITypeDef(d) => from_wit_typedef(d),
+      _ => "<not a type definition>"
+    }
+  } with { Exception::Throw(msg) => "REFUSED: \{msg}" }
+}
+
+test "a record becomes an export struct" {
+  inspect(typedef_of("record price-info { ticker: string, last-price: f64 }"), content = "export struct PriceInfo {\n  ticker: String;\n  last_price: Double\n}")
+}
+
+test "an enum becomes a payload-less export enum" {
+  inspect(typedef_of("enum color { dark-red, green }"), content = "export enum Color {\n  DarkRed;\n  Green\n}")
+}
+
+test "a variant's tuple payload reads back as several payloads" {
+  inspect(typedef_of("variant shape { point, circle(f64), rect(tuple<f64, f64>) }"), content = "export enum Shape {\n  Point;\n  Circle(Double);\n  Rect(Double, Double)\n}")
+}
+
+test "a type alias keeps its name" {
+  inspect(typedef_of("type ticker-list = list<string>;"), content = "type TickerList = Array[String]")
+}
+
+test "a resource becomes an opaque type with its functions and an explicit drop" {
+  inspect(typedef_of("resource conn { constructor(addr: string); send: func(data: list<u8>) -> result<s64, string>; open: static func(addr: string) -> conn; }"), content = "opaque type Conn\nfn Conn::new(addr: String) -> Conn\nfn Conn::send(self: Conn, data: Bytes) -> Int with Exception[String]\nfn Conn::open(addr: String) -> Conn\nfn Conn::drop(self: Conn) -> Unit")
+}
+
+test "flags are refused" {
+  inspect(typedef_of("flags perms { read, write }"), content = "REFUSED: wit: `flags perms` has no vibe mapping")
 }

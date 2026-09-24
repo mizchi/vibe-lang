@@ -17,11 +17,11 @@ import ../wit_gen.vibe {
 }
 
 import @vibe/parser {
-  lex, parse_type
+  lex, parse_program, parse_type
 }
 
 import @vibex/wasm_wit_parser {
-  IIFunction, from_wit_type, wit_parse
+  IIFunction, IITypeDef, from_wit_type, from_wit_typedef, wit_parse
 }
 
 fn round_trip(wit_ty: String) -> String with Exception {
@@ -69,4 +69,31 @@ test "every admitted WIT type survives from_wit then to_wit unchanged" {
     i = i + 1
   }
   inspect(disagree, content = "")
+}
+
+/// How many statements the vibe text derived from the type definition `def`
+/// parses to -- "PARSE ERROR: .." when it does not parse.
+fn parsed_decls(def: String) -> String {
+  let src = "package a:b@1.0.0;\ninterface api {\n  \{def}\n}\n"
+  handle {
+    let (_, ifaces, _) = wit_parse(src)
+    let (_, _, items) = Array::get(ifaces, 0)
+    let text = match Array::get(items, 0) {
+      IITypeDef(d) => from_wit_typedef(d),
+      _ => throw("not a type definition")
+    }
+    "\{Array::length(parse_program(lex(text)))}"
+  } with { Exception::Throw(msg) => "PARSE ERROR: \{msg}" }
+}
+
+// §7's derived declarations are vibe source a contract carries, so each must
+// parse as one declaration -- a projection that emits text the parser rejects
+// would fail at `vibe add` time with an error about the wrong file.
+test "derived type definitions parse as vibe declarations" {
+  inspect([
+    parsed_decls("record price-info { ticker: string, last-price: f64 }"),
+    parsed_decls("enum color { dark-red, green }"),
+    parsed_decls("variant shape { point, circle(f64), rect(tuple<f64, f64>) }"),
+    parsed_decls("type ticker-list = list<string>;")
+  ], content = "[1, 1, 1, 1]")
 }
