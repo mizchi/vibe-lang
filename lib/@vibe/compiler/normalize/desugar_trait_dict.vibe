@@ -22382,19 +22382,91 @@ export fn desugar_trait_dicts_module_with_facts(own: Array[Stmt], ctx: Array[Stm
 /// or `@vibe/builtin`'s `ordering.vibe` linked in) is left as it is.
 ///
 /// A program that derives `Ord` while one of its modules declares an
-/// `Ordering` or a `Less` / `Equal` / `Greater` of another shape has no
-/// prelude to append and no constructor the derived `compare` may build, so it
-/// is refused. The checker refuses the module-local and imported-constructor
+/// `Ordering`, or a `Less` / `Equal` / `Greater` constructor or value, of
+/// another shape has no constructor the derived `compare` may build, so it is
+/// refused. The checker refuses the module-local and imported-constructor
 /// shapes first; this catches a foreign `Ordering` that reached a module only
 /// through an imported signature, whose declaration that module never saw.
+///
+/// An exact-shaped `enum Ordering { Less; Equal; Greater }` declared by some
+/// module IS the prelude for the modules that import a signature mentioning
+/// it, and the checker binds the prelude's `equals` / `compare` /
+/// `to_string` for them. A declaration written without those derives gains
+/// them here, unless the program defines that operation by hand.
 fn dtd_append_prelude_ordering(stmts: Array[Stmt]) -> Unit with Exception {
-  if !stmts_shadow_prelude_ordering(stmts) {
+  if dtd_stmts_derive_ord(stmts) && dtd_ordering_foreign_shadow(stmts) {
+    throw("`derive (Ord)` generates `compare` returning the prelude `Ordering` (`Less` / `Equal` / `Greater`), but a module in this program declares its own `Ordering` or one of those constructors; rename that declaration")
+  } else if !stmts_shadow_prelude_ordering(stmts) {
     if stmts_use_prelude_ordering(stmts) {
       Array::push(stmts, prelude_ordering_stmt())
     }
-  } else if dtd_stmts_derive_ord(stmts) && !stmts_declare_prelude_ordering_shape(stmts) {
-    throw("`derive (Ord)` generates `compare` returning the prelude `Ordering` (`Less` / `Equal` / `Greater`), but a module in this program declares its own `Ordering` or one of those constructors; rename that declaration")
+  } else {
+    dtd_complete_prelude_ordering_derives(stmts)
   }
+}
+
+/// Does some top-level statement shadow the prelude `Ordering` other than an
+/// exact-shaped `enum Ordering { Less; Equal; Greater }` declaration?
+fn dtd_ordering_foreign_shadow(stmts: Array[Stmt]) -> Bool {
+  let mut found = false
+  for stmt in stmts {
+    let one = [stmt]
+    if stmts_shadow_prelude_ordering(one) && !stmts_declare_prelude_ordering_shape(one) {
+      found = true
+    }
+  }
+  found
+}
+
+/// Give an exact-shaped `Ordering` declaration the prelude's `Eq` / `Ord` /
+/// `Show` derives it lacks, skipping one whose operation the program defines.
+fn dtd_complete_prelude_ordering_derives(stmts: Array[Stmt]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let stmt = Array::get(stmts, i)
+    if stmts_declare_prelude_ordering_shape([stmt]) {
+      match stmt {
+        SEnum(exported, name, params, variants, derives) => {
+          let completed = array_empty()
+          for d in derives {
+            Array::push(completed, d)
+          }
+          for pair in [
+            ("Eq", "Ordering::equals"),
+            ("Ord", "Ordering::compare"),
+            ("Show", "Ordering::to_string")
+          ] {
+            let (wanted, op) = pair
+            let mut present = false
+            for d in completed {
+              if d == wanted {
+                present = true
+              }
+            }
+            if !present && !dtd_stmts_define_value(stmts, op) {
+              Array::push(completed, wanted)
+            }
+          }
+          Array::set(stmts, i, SEnum(exported, name, params, variants, completed))
+        },
+        _ => ()
+      }
+    }
+    i = i + 1
+  }
+}
+
+fn dtd_stmts_define_value(stmts: Array[Stmt], wanted: String) -> Bool {
+  let mut found = false
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, name, _, _) => if name == wanted {
+        found = true
+      },
+      _ => ()
+    }
+  }
+  found
 }
 
 /// Does any struct or enum in `stmts` derive `Ord`?
