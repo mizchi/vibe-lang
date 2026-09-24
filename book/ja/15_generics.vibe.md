@@ -63,7 +63,8 @@ show = Green
 ```
 
 `derive (Eq, Ord, Show, Hash, Default)` の5つです。`Eq` はその型の `==` を
-構造的にし、`Ord` は `-1` / `0` / `1` を返す `T::compare` を与え、`Show` は
+構造的にし、`Ord` は `Ordering`（`Less` / `Equal` / `Greater`）を返す
+`T::compare` を与え、`Show` は
 `T::to_string` を与えます。文字列補間が呼ぶのもこれです。
 
 ## 自分で書く trait
