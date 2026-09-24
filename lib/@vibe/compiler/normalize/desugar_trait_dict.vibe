@@ -23456,6 +23456,60 @@ fn ehp_declare_missing_effects(stmts: Array[Stmt], effects: Array[String], perfo
 }
 
 /// The indices of every top-level declaration of `effect`.
+/// Does a declaration in the program give `op` a signature other than the
+/// host's (`effect Fs { Exists(Int, Int) -> Bool }`)? Such an operation is the
+/// program's own, whatever its spelling: the provider must not answer it with
+/// the builtin, and a direct builtin call must not be rewritten into it --
+/// both run after checking, so the mismatched call would never be type
+/// checked (Codex on #3059).
+fn ehp_declared_incompatibly(stmts: Array[Stmt], op: String) -> Bool {
+  let effect = ehp_effect_of(op)
+  let short = String::substring(op, String::index_of(op, "::") + 2, String::length(op))
+  let host = ehp_op_signature(op)
+  let mut bad = false
+  let slots = ehp_effect_decl_indices(stmts, effect)
+  let mut si = 0
+  while si < Array::length(slots) {
+    match Array::get(stmts, Array::get(slots, si)) {
+      SEffectDef(_, _, _, ops) => {
+        let mut k = 0
+        while k < Array::length(ops) {
+          let (name, params, ret) = Array::get(ops, k)
+          if name == short {
+            let same = match host {
+              Some((_, hparams, hret)) => Array::length(hparams) == Array::length(params) && impl_target_key(hret) == impl_target_key(ret) && {
+                let mut eq = true
+                let mut j = 0
+                while j < Array::length(params) {
+                  if impl_target_key(Array::get(params, j)) != impl_target_key(Array::get(hparams, j)) {
+                    eq = false
+                  } else {
+                    ()
+                  }
+                  j = j + 1
+                }
+                eq
+              },
+              None => false
+            }
+            if !same {
+              bad = true
+            } else {
+              ()
+            }
+          } else {
+            ()
+          }
+          k = k + 1
+        }
+      },
+      _ => ()
+    }
+    si = si + 1
+  }
+  bad
+}
+
 fn ehp_effect_decl_indices(stmts: Array[Stmt], effect: String) -> Array[Int] {
   let out: Array[Int] = []
   let mut i = 0
@@ -23645,7 +23699,7 @@ export fn intercept_handled_host_calls_everywhere(stmts: Array[Stmt], entry_name
   let mut i = 0
   while i < Array::length(named) {
     let op = Array::get(named, i)
-    if ihc_granted_everywhere(stmts, entry_name, op) && !str_array_contains(ops, op) {
+    if ihc_granted_everywhere(stmts, entry_name, op) && !ehp_declared_incompatibly(stmts, op) && !str_array_contains(ops, op) {
       Array::push(ops, op)
     } else {
       ()
@@ -23730,7 +23784,7 @@ export fn wrap_entry_host_provider(stmts: Array[Stmt], entry_name: String) -> Un
         SLet(exported, is_rec, name, ty, EFn(tps, tbs, params, ret, eff, body)) => if name == entry_name {
           let row = ehp_entry_row(ty, eff)
           let wrapped = ehp_wrap(body, performed, (op) -> {
-            ehp_row_grants(row, op) && ehp_unshadowed(fn_bound, op, provided_ops)
+            ehp_row_grants(row, op) && !ehp_declared_incompatibly(stmts, op) && ehp_unshadowed(fn_bound, op, provided_ops)
           }, effects)
           Array::set(stmts, i, SLet(exported, is_rec, name, ty, EFn(tps, tbs, params, ret, eff, wrapped)))
         } else {
@@ -23738,12 +23792,12 @@ export fn wrap_entry_host_provider(stmts: Array[Stmt], entry_name: String) -> Un
         },
         STest(tname, body) => {
           Array::set(stmts, i, STest(tname, ehp_wrap(body, performed, (op) -> {
-            ehp_test_grants(op) && ehp_unshadowed(fn_bound, op, provided_ops)
+            ehp_test_grants(op) && !ehp_declared_incompatibly(stmts, op) && ehp_unshadowed(fn_bound, op, provided_ops)
           }, effects)))
         },
         SBench(bname, body) => {
           Array::set(stmts, i, SBench(bname, ehp_wrap(body, performed, (op) -> {
-            ehp_test_grants(op) && ehp_unshadowed(fn_bound, op, provided_ops)
+            ehp_test_grants(op) && !ehp_declared_incompatibly(stmts, op) && ehp_unshadowed(fn_bound, op, provided_ops)
           }, effects)))
         },
         _ => ()

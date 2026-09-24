@@ -264,3 +264,40 @@ fn captured_shadowing_pure_program() -> Array[Stmt] {
 test "a captured function spelled like a pure top-level one stays opaque" {
   inspect(Array::length(evidence_dict_pass(captured_shadowing_pure_program(), "main")) > 0, content = "true")
 }
+
+/// Codex on #3059: the same shadow through a LOOP-STATE binder,
+/// `loop (h = g) { side(1, (y) -> h(y)) }`, beside a pure top-level `h`.
+/// Today the admission walk does not reach a call inside a `loop` body, so
+/// this is refused before the binder set is consulted; the pin keeps it
+/// refused if that walk widens, now that loop-state names are binders.
+fn loop_shadowing_pure_program() -> Array[Stmt] {
+  [
+    SEffectDef(false, "Ask", [], [("Get", [], TyName("Int"))]),
+    SLet(false, false, "h", None, EFn([], [], [("x", Some(TyName("Int")))], Some(TyName("Int")), None, EIdent("x", 0))),
+    SLet(false, false, "side", None, EFn([], [], [
+      ("n", Some(TyName("Int"))),
+      ("f", Some(TyFn([TyName("Int")], TyName("Int"), None)))
+    ], Some(TyName("Int")), Some("e"), ECall(EIdent("f", 0), [EIdent("n", 0)], 0))),
+    SLet(false, false, "user", None, EFn([], [], [
+      ("g", Some(TyFn([TyName("Int")], TyName("Int"), Some("Ask"))))
+    ], Some(TyName("Int")), Some("Ask"), ELoop([("h", EIdent("g", 0))], ECall(EIdent("side", 0), [
+      EInt(1),
+      EFn([], [], [("y", Some(TyName("Int")))], Some(TyName("Int")), None, ECall(EIdent("h", 0), [
+        EIdent("y", 0)
+      ], 0))
+    ], 0)))),
+    SLet(false, false, "ask_plus", None, EFn([], [], [
+      ("v", Some(TyName("Int")))
+    ], Some(TyName("Int")), Some("Ask"), ECall(EIdent("perform", 0), [
+      ECall(EIdent("Ask::Get", 0), [], 0)
+    ], 0))),
+    SLet(false, false, "main", None, EFn([], [], [], Some(TyName("Int")), Some("Stdout"), EHandle(ECall(EIdent("user", 0), [
+      EIdent("ask_plus", 0)
+    ], 0), [(PCtor("Ask::Get", []), ECall(EIdent("resume", 0), [EInt(42)], 0))])))
+  ]
+}
+
+test "a loop-state binder spelled like a pure top-level function stays opaque" {
+  inspect(Array::length(evidence_dict_pass(loop_shadowing_pure_program(), "main")) > 0, content = "true")
+}
+

@@ -175,12 +175,12 @@ test "shapes that would collide or change once spelled in vibe are refused" {
     typedef_of("record %future { value: s64 }"),
     typedef_of("record host-stream { value: s64 }"),
     typedef_of("resource conn { send: func(self: s64); }"),
-    typedefs_of("enum a { ok }\n  enum b { ok }")
-  ], content = "[REFUSED: wit: `tuple<..> with one element` has no vibe mapping (in variant `v`), REFUSED: wit: `type `future` (its vibe name `Future` is a builtin type)` has no vibe mapping, REFUSED: wit: `type `host-stream` (its vibe name `HostStream` is a builtin type)` has no vibe mapping, REFUSED: wit: `method `send` with a parameter named `self` (the receiver is `self`)` has no vibe mapping (in resource `conn`), REFUSED: wit: `case `ok` in both `a` and `b` (both would be the constructor `Ok`)` has no vibe mapping]")
+    typedefs_of("enum a { ready }\n  enum b { ready }")
+  ], content = "[REFUSED: wit: `tuple<..> with one element` has no vibe mapping (in variant `v`), REFUSED: wit: `type `future` (its vibe name `Future` is a builtin type)` has no vibe mapping, REFUSED: wit: `type `host-stream` (its vibe name `HostStream` is a builtin type)` has no vibe mapping, REFUSED: wit: `method `send` with a parameter named `self` (the receiver is `self`)` has no vibe mapping (in resource `conn`), REFUSED: wit: `case `ready` in both `a` and `b` (both would be the constructor `Ready`)` has no vibe mapping]")
 }
 
 test "sibling types without a shared case convert together" {
-  inspect(typedefs_of("enum a { ok }\n  enum b { fine }"), content = "export enum A {\n  Ok\n}\n\nexport enum B {\n  Fine\n}")
+  inspect(typedefs_of("enum a { ready }\n  enum b { fine }"), content = "export enum A {\n  Ready\n}\n\nexport enum B {\n  Fine\n}")
 }
 
 // #2064: the import half, derived from WIT text. Each admitted function is a
@@ -212,4 +212,19 @@ test "the committed prices bindings are the derivation from prices.wit" {
   let committed = Fs::read_file("fixtures/wit_future_import/prices_bindings.vibe")
   let start = String::index_of(committed, "///")
   inspect(String::substring(committed, start, String::length(committed)) == String::concat(derived, "\n"), content = "true")
+}
+
+test "names the compiler owns are refused wherever a foreign definition lands on them" {
+  let refused = (src: String) -> String {
+    handle {
+      from_wit_future_imports(src)
+    } with { Exception::Throw(msg) => "REFUSED: \{msg}" }
+  }
+  inspect([
+    typedef_of("record float { value: s64 }"),
+    typedef_of("record stdin-stream { value: s64 }"),
+    typedef_of("variant choice { some(s64), other }"),
+    typedef_of("enum outcome { ok, err }"),
+    refused("package example:p@1.0.0;\ninterface api {\n  host-future-named: async func() -> s64;\n}\n")
+  ], content = "[REFUSED: wit: `type `float` (its vibe name `Float` is a builtin type)` has no vibe mapping, REFUSED: wit: `type `stdin-stream` (its vibe name `StdinStream` is a builtin type)` has no vibe mapping, REFUSED: wit: `case `some` (its vibe constructor `Some` is the builtin one)` has no vibe mapping (in variant `choice`), REFUSED: wit: `case `ok` (its vibe constructor `Ok` is the builtin one)` has no vibe mapping (in enum `outcome`), REFUSED: wit: `function `host-future-named` (its binding `host_future_named` would shadow the builtin it calls)` has no vibe mapping (in interface `api`)]")
 }

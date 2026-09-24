@@ -163,7 +163,7 @@ export fn from_wit_typedef(typedef: WitTypeDef) -> String with Exception {
       let parts: Array[String] = []
       let mut i = 0
       while i < Array::length(cases) {
-        Array::push(parts, "  \{fw_pascal(Array::get(cases, i))}")
+        Array::push(parts, "  \{fw_case_name(Array::get(cases, i), " (in enum `\{name}`)")}")
         i = i + 1
       }
       "export enum \{fw_type_name(name)} {\n\{String::join(parts, ";\n")}\n}"
@@ -174,7 +174,7 @@ export fn from_wit_typedef(typedef: WitTypeDef) -> String with Exception {
       let mut i = 0
       while i < Array::length(cases) {
         let (cname, payload) = Array::get(cases, i)
-        let head = fw_pascal(cname)
+        let head = fw_case_name(cname, ctx)
         Array::push(parts, match payload {
           Some(TyTuple(items)) => {
             if Array::length(items) == 1 {
@@ -396,6 +396,13 @@ export fn from_wit_future_imports(source: String) -> String with Exception {
             ()
           }
           let vname = fw_ident(fw_snake(fname), ctx)
+          if vname == "host_future_named" {
+            // The binding's body calls the builtin of that name, which this
+            // declaration would shadow (Codex on #3059).
+            throw(fw_refusal("function `\{fname}` (its binding `host_future_named` would shadow the builtin it calls)", ctx))
+          } else {
+            ()
+          }
           let mut j = 0
           while j < Array::length(seen) {
             if Array::get(seen, j) == vname {
@@ -546,11 +553,26 @@ fn fw_ident(name: String, ctx: String) -> String with Exception {
   }
 }
 
+/// A WIT case name as a vibe constructor, refused when it lands on a
+/// constructor the compiler owns: `Some(x)` is typed as the builtin
+/// `Option`'s wherever it is written, so a foreign `some(s64)` case could
+/// never be built (Codex on #3059); `None`, `Ok` and `Err` are the same.
+fn fw_case_name(case: String, ctx: String) -> String with Exception {
+  let ctor = fw_pascal(case)
+  if ctor == "Some" || ctor == "None" || ctor == "Ok" || ctor == "Err" {
+    throw(fw_refusal("case `\{case}` (its vibe constructor `\{ctor}` is the builtin one)", ctx))
+  } else {
+    ctor
+  }
+}
+
 /// A WIT type name as a vibe type name, refused when it lands on a builtin
 /// spelling: `record int { value: s64 }` would read `export struct Int { value:
 /// Int }`, where the field's `Int` no longer means the scalar (Codex on #3059).
 /// `Future` and `HostStream` are what `future<T>` / `stream<u8>` project to,
-/// so a foreign type of that name would collide the same way.
+/// so a foreign type of that name would collide the same way; `Float` and
+/// `StdinStream` complete the checker's own reserved set (`resolve_builtin`),
+/// which refuses a declaration of any of them.
 fn fw_type_name(name: String) -> String with Exception {
   let ty = fw_pascal(name)
   let builtins = [
@@ -566,7 +588,9 @@ fn fw_type_name(name: String) -> String with Exception {
     "Unit",
     "Map",
     "Future",
-    "HostStream"
+    "HostStream",
+    "Float",
+    "StdinStream"
   ]
   let mut clash = false
   let mut i = 0
