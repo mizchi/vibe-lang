@@ -24,6 +24,7 @@ import @vibe/ast {
   TypeExpr::is_array_of_int,
   impl_target_from_key,
   impl_target_key,
+  trait_ref_args,
   trait_ref_from_key,
   trait_ref_key,
   trait_ref_name,
@@ -1778,10 +1779,10 @@ fn nominal_type_names_into(ty: Type, out: Array[String], named_out: Array[String
         let (_, refs) = b
         for r in refs {
           // A bound is a `trait_ref_key` (an applied one is encoded), so it
-          // is decoded before its names are read.
-          match trait_ref_from_key(r) {
-            Some(te) => type_expr_reference_names_into(te, array_empty(), named_out),
-            None => ()
+          // is decoded before its names are read -- its ARGUMENTS only: the
+          // head names a trait, which is not a type (Codex on #3076).
+          for te in trait_ref_args(r) {
+            type_expr_reference_names_into(te, array_empty(), named_out)
           }
         }
       }
@@ -2645,9 +2646,9 @@ fn trait_method_reference_names(methods: Array[(String, Array[TypeExpr], TypeExp
         for b in bounds {
           let (_, refs) = b
           for r in refs {
-            match trait_ref_from_key(r) {
-              Some(te) => type_expr_reference_names_into(te, array_empty(), bound_refs),
-              None => ()
+            // The trait's arguments, not its head (a trait is not a type).
+            for te in trait_ref_args(r) {
+              type_expr_reference_names_into(te, array_empty(), bound_refs)
             }
           }
         }
@@ -2734,16 +2735,16 @@ fn type_expr_reference_names_into(te: TypeExpr, binders: Array[String], out: Arr
 fn trait_impl_reference_names(name: String, params: Array[String], bounds: Array[(String, Array[String])], target: Type) -> Array[String] {
   let names: Array[String] = []
   push_reference_names(target, params, names)
-  match trait_ref_from_key(name) {
-    Some(te) => type_expr_reference_names_into(te, params, names),
-    None => ()
+  // The implemented trait's and each bound's ARGUMENTS: a trait head is not a
+  // type, and a type of the same name must not be read in its place.
+  for te in trait_ref_args(name) {
+    type_expr_reference_names_into(te, params, names)
   }
   for b in bounds {
     let (_, refs) = b
     for r in refs {
-      match trait_ref_from_key(r) {
-        Some(te) => type_expr_reference_names_into(te, params, names),
-        None => ()
+      for te in trait_ref_args(r) {
+        type_expr_reference_names_into(te, params, names)
       }
     }
   }
