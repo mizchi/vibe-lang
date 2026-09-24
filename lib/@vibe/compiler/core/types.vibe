@@ -408,22 +408,12 @@ fn type_definition_name(def: TypeDef) -> String {
 /// Copy declaration provenance from `source` into every declaration node in
 /// `env` while leaving its public/selectable surface unchanged.
 export fn env_preserve_type_definition_origins(env: TypeEnv, source: TypeEnv) -> TypeEnv {
-  env_preserve_type_definition_origins_from(env, source, "")
-}
-
-/// As `env_preserve_type_definition_origins`, and a declaration in `env`'s
-/// FIRST declaration node that `source` carries no provenance for is `source`'s
-/// own, so it is recorded as declared at `source_path` (#3036). Without that,
-/// a type a dependency imported lost its declaring module at the next hop, and
-/// the importer could not tell it from a different type spelled the same way.
-/// Deeper nodes are the importer's own environment and get no fallback.
-export fn env_preserve_type_definition_origins_from(env: TypeEnv, source: TypeEnv, source_path: String) -> TypeEnv {
   match env {
     EnvEmpty => EnvEmpty,
-    EnvBind(name, binding, rest) => EnvBind(name, binding, env_preserve_type_definition_origins_from(rest, source, source_path)),
-    EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens) => EnvTraitDef(name, supers, is_auto, methods, env_preserve_type_definition_origins_from(rest, source, source_path), params, method_gens),
-    EnvTraitImpl(name, target, rest) => EnvTraitImpl(name, target, env_preserve_type_definition_origins_from(rest, source, source_path)),
-    EnvTraitImplGen(name, params, bounds, target, rest) => EnvTraitImplGen(name, params, bounds, target, env_preserve_type_definition_origins_from(rest, source, source_path)),
+    EnvBind(name, binding, rest) => EnvBind(name, binding, env_preserve_type_definition_origins(rest, source)),
+    EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens) => EnvTraitDef(name, supers, is_auto, methods, env_preserve_type_definition_origins(rest, source), params, method_gens),
+    EnvTraitImpl(name, target, rest) => EnvTraitImpl(name, target, env_preserve_type_definition_origins(rest, source)),
+    EnvTraitImplGen(name, params, bounds, target, rest) => EnvTraitImplGen(name, params, bounds, target, env_preserve_type_definition_origins(rest, source)),
     EnvTypeDefs(defs, selectable, rest) => {
       let mut out = EnvTypeDefs(defs, selectable, env_preserve_type_definition_origins(rest, source))
       let mut i = Array::length(defs) - 1
@@ -433,19 +423,15 @@ export fn env_preserve_type_definition_origins_from(env: TypeEnv, source: TypeEn
           Some(origin) => {
             out = EnvBind(type_definition_origin_marker(name), env_value_binding_with_origin(CtUnknown, origin), out)
           },
-          None => if String::length(source_path) > 0 {
-            out = EnvBind(type_definition_origin_marker(name), env_value_binding_with_origin(CtUnknown, BindingOriginModuleExport(source_path, name)), out)
-          } else {
-            ()
-          }
+          None => ()
         }
         i = i - 1
       }
       out
     },
-    EnvMutCell(name, escapes, rest) => EnvMutCell(name, escapes, env_preserve_type_definition_origins_from(rest, source, source_path)),
+    EnvMutCell(name, escapes, rest) => EnvMutCell(name, escapes, env_preserve_type_definition_origins(rest, source)),
     EnvFlat(bindings) => EnvFlat(bindings),
-    EnvCached(names, bindings, rest) => EnvCached(names, bindings, env_preserve_type_definition_origins_from(rest, source, source_path))
+    EnvCached(names, bindings, rest) => EnvCached(names, bindings, env_preserve_type_definition_origins(rest, source))
   }
 }
 
