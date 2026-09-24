@@ -221,11 +221,12 @@ override silently contradicting a module that says `raw` is the hazard #2903's
   `async func() -> s64` and refuses any other function rather than skipping
   it. `scripts/test_wit_async_import_component_gate.sh` compiles
   `fixtures/wit_future_import/main.vibe` against those derived bindings and
-  checks for the single `example:prices/api@1.0.0` instance import. Two limits
-  remain. The async-component wrap runs on the single-file lane only, so a
-  program that imports its bindings is composed by the gate calling the
-  composer on the FS lane's core. And no runner yet links an interface
-  instance of `future<s64>`, so the route is validated but not executed.
+  checks for the single `example:prices/api@1.0.0` instance import. The file
+  lane composes the adapter for a `run` entry whose core imports a host future
+  or stream (`maybe_wrap_stdin_provider_core`), as the single-file lane
+  already did, so a program that imports its bindings builds to a component
+  directly. What remains is the runner: none yet links an interface instance
+  of `future<s64>`, so the route is validated but not executed.
 
 ### Host streams
 

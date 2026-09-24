@@ -158,42 +158,29 @@ rm -rf "$PROG_DIR"
 mkdir -p "$PROG_DIR"
 cp fixtures/wit_future_import/main.vibe fixtures/wit_future_import/prices_bindings.vibe "$PROG_DIR/"
 # The program imports its bindings, so it compiles on the FS lane, which
-# emits the core module; the async-component wrap is applied on the
-# single-file lane only, so the production composer is invoked here directly
-# on that core -- the same `comp_emit_component_wasm_async_hostfuture` the
-# single-file lane calls.
+# composes the host-future adapter itself when a `run` entry's core imports a
+# host future (`maybe_wrap_stdin_provider_core`), as the single-file lane does.
 VIBE_PREOPEN_DIR="$ROOT" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \
-  "$COMPILER" "$PROG_DIR/main.vibe" "$PROG_DIR/core.wasm" run >/dev/null 2>&1 || true
-if [ ! -s "$PROG_DIR/core.wasm" ]; then
+  "$COMPILER" "$PROG_DIR/main.vibe" "$PROG_DIR/main.wasm" run >/dev/null 2>&1 || true
+if [ ! -s "$PROG_DIR/main.wasm" ]; then
   echo "WIT async import gate FAILED: fixtures/wit_future_import/main.vibe did not compile" >&2
-  cat "$PROG_DIR/core.wasm.diag" >&2 2>/dev/null || true
+  cat "$PROG_DIR/main.wasm.diag" >&2 2>/dev/null || true
   exit 1
 fi
-# The core must carry the WIT-addressed metadata imports and no root ones.
+if ! od -A n -t x1 -N 8 "$PROG_DIR/main.wasm" | tr -d ' \n' | grep -q '^0061736d0d000100$'; then
+  echo "WIT async import gate FAILED: the file lane left a core module, not a component" >&2
+  exit 1
+fi
+# The embedded core must carry the WIT-addressed metadata imports and no root ones.
 for want in 'wit_future_get$example:prices/api@1.0.0#get-price' 'wit_future_get$example:prices/api@1.0.0#get-tax'; do
-  grep -aFq "$want" "$PROG_DIR/core.wasm" || {
+  grep -aFq "$want" "$PROG_DIR/main.wasm" || {
     echo "WIT async import gate FAILED: the core lacks the metadata import $want" >&2
     exit 1
   }
 done
-if grep -aFq 'host_future_get$' "$PROG_DIR/core.wasm"; then
+if grep -aFq 'host_future_get$' "$PROG_DIR/main.wasm"; then
   echo "WIT async import gate FAILED: a WIT-addressed future was emitted as a root host_future_get import" >&2
-  exit 1
-fi
-cat >"$PROG_DIR/compose_test.vibe" <<'EOF'
-import @vibe/compiler/entry/source_compile/wasi_only {
-  comp_emit_component_wasm_async_hostfuture
-}
-
-test "compose the program core" {
-  let core = Fs::read_bytes("_build/wit_async_import_component_gate/program/core.wasm")
-  Fs::write_bytes("_build/wit_async_import_component_gate/program/main.wasm", comp_emit_component_wasm_async_hostfuture(core, "run"))
-}
-EOF
-bash scripts/vibe_test.sh "$PROG_DIR/compose_test.vibe"
-if ! od -A n -t x1 -N 8 "$PROG_DIR/main.wasm" | tr -d ' \n' | grep -q '^0061736d0d000100$'; then
-  echo "WIT async import gate FAILED: the composer did not produce a component" >&2
   exit 1
 fi
 wasm-tools validate --features all "$PROG_DIR/main.wasm"
