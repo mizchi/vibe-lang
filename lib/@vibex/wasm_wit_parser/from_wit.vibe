@@ -73,7 +73,7 @@ export fn from_wit_type(t: WitTypeExpr) -> String with Exception {
 /// `fn name(x: Int) -> String with Exception[String] + Async`.
 /// A refusal names the function as well as the type.
 export fn from_wit_func(name: String, is_async: Bool, params: Array[(String, WitTypeExpr)], result: Option[WitTypeExpr]) -> String with Exception {
-  fw_signature(fw_snake(name), is_async, params, result, name)
+  fw_signature(fw_ident(fw_snake(name), " (in `\{name}`)"), is_async, params, result, name)
 }
 
 /// `fn <spelled>(..) -> ..`, refusals naming `ctx_name`.
@@ -91,7 +91,7 @@ fn fw_signature(spelled: String, is_async: Bool, params: Array[(String, WitTypeE
     } else {
       ()
     }
-    StringBuilder::push(sb, fw_snake(pname))
+    StringBuilder::push(sb, fw_ident(fw_snake(pname), ctx))
     StringBuilder::push(sb, ": ")
     StringBuilder::push(sb, fw_type(pty, ctx))
     i = i + 1
@@ -101,7 +101,17 @@ fn fw_signature(spelled: String, is_async: Bool, params: Array[(String, WitTypeE
   match result {
     Some(TyResult(ok, err)) => match err {
       Some(e) => {
-        StringBuilder::push(sb, fw_type(ok, ctx))
+        // `result<_, E>`: the parser reads `_` as the empty tuple. As a
+        // function's own result it is just "no value", i.e. `Unit`.
+        let ok_text = match ok {
+          TyTuple(items) => if Array::length(items) == 0 {
+            "Unit"
+          } else {
+            fw_type(ok, ctx)
+          },
+          _ => fw_type(ok, ctx)
+        }
+        StringBuilder::push(sb, ok_text)
         Array::push(rows, "Exception[\{fw_type(e, ctx)}]")
       },
       None => throw(fw_refusal("result<..> with no error type", ctx))
@@ -142,7 +152,7 @@ export fn from_wit_typedef(typedef: WitTypeDef) -> String with Exception {
       let mut i = 0
       while i < Array::length(fields) {
         let (fname, fty) = Array::get(fields, i)
-        Array::push(lines, "  \{fw_snake(fname)}: \{fw_type(fty, ctx)}")
+        Array::push(lines, "  \{fw_ident(fw_snake(fname), ctx)}: \{fw_type(fty, ctx)}")
         i = i + 1
       }
       "export struct \{fw_pascal(name)} {\n\{String::join(lines, ";\n")}\n}"
@@ -188,7 +198,9 @@ export fn from_wit_typedef(typedef: WitTypeDef) -> String with Exception {
       let mut i = 0
       while i < Array::length(funcs) {
         let (fname, kind, is_async, params, result, _) = Array::get(funcs, i)
-        let qualified = "\{ty}::\{fw_snake(fname)}"
+        let res_ctx = " (in resource `\{name}`)"
+        let method_name = fw_ident(fw_snake(fname), res_ctx)
+        let qualified = "\{ty}::\{method_name}"
         let decl = match kind {
           FKConstructor(_) => fw_signature("\{ty}::new", is_async, params, Some(TyOwn(name)), qualified),
           FKMethod(_) => {
@@ -214,6 +226,16 @@ export fn from_wit_typedef(typedef: WitTypeDef) -> String with Exception {
   }
 }
 
+/// Method-style spelling of `from_wit_type`.
+export fn WitTypeExpr::from_wit_type(recv: WitTypeExpr) -> String with Exception {
+  from_wit_type(recv)
+}
+
+/// Method-style spelling of `from_wit_typedef`.
+export fn WitTypeDef::from_wit_typedef(recv: WitTypeDef) -> String with Exception {
+  from_wit_typedef(recv)
+}
+
 fn fw_refusal(what: String, ctx: String) -> String {
   "wit: `\{what}` has no vibe mapping\{ctx}"
 }
@@ -237,7 +259,12 @@ fn fw_type(t: WitTypeExpr, ctx: String) -> String with Exception {
       Some(e) => "Result[\{fw_type(ok, ctx)}, \{fw_type(e, ctx)}]",
       None => throw(fw_refusal("result<..> with no error type", ctx))
     },
-    TyTuple(items) => {
+    // `_` (the parser's empty tuple) as a type argument: `wit_type_text` has
+    // no inverse for `Unit` outside a function's result, so the round trip
+    // could not hold -- refuse it rather than emit `()`.
+    TyTuple(items) => if Array::length(items) == 0 {
+      throw(fw_refusal("_ (no value) inside another type", ctx))
+    } else {
       let parts: Array[String] = []
       let mut i = 0
       while i < Array::length(items) {
@@ -257,6 +284,76 @@ fn fw_type(t: WitTypeExpr, ctx: String) -> String with Exception {
     TyS16 => throw(fw_refusal("s16", ctx)),
     TyS32 => throw(fw_refusal("s32", ctx)),
     TyF32 => throw(fw_refusal("f32", ctx))
+  }
+}
+
+/// The vibe keywords (the lexer's `keyword_lookup`); a derived name that is one
+/// is written as a raw identifier. `fn` has no raw form (#1280: `r#fn` lexes
+/// as the keyword), so it is refused.
+let fw_vibe_keywords: Array[String] = [
+  "fn",
+  "if",
+  "in",
+  "is",
+  "do",
+  "as",
+  "let",
+  "rec",
+  "mut",
+  "for",
+  "else",
+  "enum",
+  "true",
+  "type",
+  "test",
+  "with",
+  "loop",
+  "open",
+  "impl",
+  "false",
+  "match",
+  "guard",
+  "trait",
+  "throw",
+  "while",
+  "break",
+  "bench",
+  "raise",
+  "yield",
+  "struct",
+  "export",
+  "return",
+  "region",
+  "handle",
+  "module",
+  "derive",
+  "import",
+  "declare",
+  "example",
+  "continue",
+  "suberror",
+  "taskgroup"
+]
+
+fn fw_ident(name: String, ctx: String) -> String with Exception {
+  if name == "fn" {
+    throw(fw_refusal("identifier `fn` (a vibe keyword with no raw form)", ctx))
+  } else {
+    let mut keyword = false
+    let mut i = 0
+    while i < Array::length(fw_vibe_keywords) {
+      if Array::get(fw_vibe_keywords, i) == name {
+        keyword = true
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    if keyword {
+      "r#\{name}"
+    } else {
+      name
+    }
   }
 }
 

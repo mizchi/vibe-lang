@@ -117,9 +117,23 @@ test "a type alias keeps its name" {
 }
 
 test "a resource becomes an opaque type with its functions and an explicit drop" {
-  inspect(typedef_of("resource conn { constructor(addr: string); send: func(data: list<u8>) -> result<s64, string>; open: static func(addr: string) -> conn; }"), content = "opaque type Conn\nfn Conn::new(addr: String) -> Conn\nfn Conn::send(self: Conn, data: Bytes) -> Int with Exception[String]\nfn Conn::open(addr: String) -> Conn\nfn Conn::drop(self: Conn) -> Unit")
+  inspect(typedef_of("resource conn { constructor(addr: string); send: func(data: list<u8>) -> result<s64, string>; open: static func(addr: string) -> conn; }"), content = "opaque type Conn\nfn Conn::new(addr: String) -> Conn\nfn Conn::send(self: Conn, data: Bytes) -> Int with Exception[String]\nfn Conn::r#open(addr: String) -> Conn\nfn Conn::drop(self: Conn) -> Unit")
 }
 
 test "flags are refused" {
   inspect(typedef_of("flags perms { read, write }"), content = "REFUSED: wit: `flags perms` has no vibe mapping")
+}
+
+test "a name that is a vibe keyword becomes a raw identifier, and fn is refused" {
+  inspect([
+    decl_of("func(loop: s64) -> s64"),
+    typedef_of("record job { handle: string, match: bool }")
+  ], content = "[fn f(r#loop: Int) -> Int, export struct Job {\n  r#handle: String;\n  r#match: Bool\n}]")
+}
+
+test "a function's own result<_, E> has no value, and a nested _ is refused" {
+  inspect([
+    decl_of("func() -> result<_, string>"),
+    type_of("option<result<_, string>>")
+  ], content = "[fn f() -> Unit with Exception[String], REFUSED: wit: `_ (no value) inside another type` has no vibe mapping]")
 }
