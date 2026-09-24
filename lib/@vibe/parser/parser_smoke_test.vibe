@@ -727,3 +727,47 @@ test "#2444: a braced SUFFIX handler says braces are the problem" {
   assert(String::contains(msg, "with Effect::Op(_) => expr"))
   assert(!String::contains(msg, "handler-set arms must name"))
 }
+
+// #3041: the lexer's synthetic `;` is zero-width (start == end); the trailing
+// TEof is too, so it is excluded.
+fn synthetic_separators(src: String) -> Int with Exception {
+  let (_tokens, starts, ends) = lex_with_offsets(src)
+  let mut count = 0
+  let mut i = 0
+  while i < Array::length(starts) - 1 {
+    if Array::get(starts, i) == Array::get(ends, i) {
+      count = count + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  count
+}
+
+test "#3041: a tight line-leading prefix operator starts a new expression" {
+  assert_eq(synthetic_separators("a\n-1"), 1)
+  assert_eq(synthetic_separators("a\n-x"), 1)
+  assert_eq(synthetic_separators("f()\n!b"), 1)
+  assert_eq(synthetic_separators("a\n~b"), 1)
+}
+
+test "#3041: a spaced or trailing minus still continues the line" {
+  assert_eq(synthetic_separators("a\n- 1"), 0)
+  assert_eq(synthetic_separators("a -\n1"), 0)
+  assert_eq(synthetic_separators("a -1"), 0)
+  assert_eq(synthetic_separators("a\n+1"), 0)
+  assert_eq(synthetic_separators("a\n-= 1"), 0)
+  assert_eq(synthetic_separators("a\n!= b"), 0)
+  assert_eq(synthetic_separators("f(\n-1)"), 0)
+}
+
+test "#3041: a block ending in a -1 line has two statements" {
+  let tight = print_program(parse_program(lex("fn f(a: Int) -> Int {\n  a\n  -1\n}\n")))
+  let parened = print_program(parse_program(lex("fn f(a: Int) -> Int {\n  a\n  (-1)\n}\n")))
+  assert_eq(tight, parened)
+  let spaced = print_program(parse_program(lex("fn f(a: Int) -> Int {\n  a\n  - 1\n}\n")))
+  let joined = print_program(parse_program(lex("fn f(a: Int) -> Int {\n  a - 1\n}\n")))
+  assert_eq(spaced, joined)
+  assert(tight != spaced)
+}

@@ -57,6 +57,7 @@ import @vibe/compiler/fmt/token_stream {
   is_statement_start,
   is_type_context_end,
   next_non_trivia_kind,
+  prev_non_trivia_index,
   span_has_newline,
   text_contains_newline
 }
@@ -442,6 +443,23 @@ fn should_start_type_context_on_colon(container_stack: Array[Int]) -> Bool {
   }
 }
 
+/// #3041: a `-` that starts a line and is followed by whitespace is the
+/// BINARY minus continuing the previous line (`a` then `- 1` on the next
+/// line), provided that line ended with an expression. The parser reads a
+/// line-leading `-` as prefix only when nothing separates it from its operand
+/// (`-1`), so writing this one as `-1` would change the program's meaning:
+/// the space after it is load-bearing and must be kept.
+fn is_line_leading_binary_minus(toks: Array[LTok], i: Int, kind: Int, line_has_content: Bool) -> Bool {
+  if kind != k_minus || line_has_content || i + 1 >= Array::length(toks) {
+    false
+  } else {
+    let after = Array::get(toks, i + 1).kind
+    let before = prev_non_trivia_index(toks, i)
+    (after == k_ws || after == k_newline) && before >= 0 &&
+    is_index_receiver_kind(Array::get(toks, before).kind)
+  }
+}
+
 fn is_prefix_op(kind: Int, prev_kind: Int) -> Bool {
   if kind != k_minus && kind != k_bang {
     false
@@ -768,7 +786,8 @@ export fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
       if String::length(rendered_text) == 0 {
         i = i + 1
       } else {
-        let curr_prefix = is_prefix_op(kind, prev_kind)
+        let curr_prefix = !is_line_leading_binary_minus(toks, i, kind, line_has_content) &&
+        is_prefix_op(kind, prev_kind)
         let closing_container = if kind == k_rbrace && Array::length(container_stack) > 0 {
           Array::get(container_stack, Array::length(container_stack) - 1)
         } else {
