@@ -48,6 +48,7 @@ import @vibe/compiler/core {
   lookup_registry_builtin,
   namespace_rename_original,
   namespace_rename_originals_reset,
+  resolve_builtin,
   sort_perm_by_names,
   str_lt,
   test_bench_default_effects,
@@ -23594,9 +23595,18 @@ fn ehp_expand_aliases(stmts: Array[Stmt], ty: TypeExpr, fuel: Int) -> TypeExpr {
     ty
   } else {
     match ty {
+      // A builtin has several spellings the checker resolves to one type
+      // (`()` / `Unit`, `i32` / `Int`, `Float` / `Double`), so each is
+      // compared under the registry's spelling (Codex on #3059).
       TyName(name) => match ehp_find_alias(stmts, name, 0) {
         Some((_, target)) => ehp_expand_aliases(stmts, target, fuel - 1),
-        None => ty
+        None => match resolve_builtin(name) {
+          Some(t) => match ehp_type_expr(t) {
+            Some(canonical) => canonical,
+            None => ty
+          },
+          None => ty
+        }
       },
       TyApp(head, args) => {
         let expanded = for arg in args {
@@ -23613,7 +23623,7 @@ fn ehp_expand_aliases(stmts: Array[Stmt], ty: TypeExpr, fuel: Int) -> TypeExpr {
       TyTuple(items) => TyTuple(for item in items {
         ehp_expand_aliases(stmts, item, fuel - 1)
       }),
-      TyUnit => TyUnit
+      TyUnit => TyName("Unit")
     }
   }
 }
