@@ -100,6 +100,7 @@ import @vibe/compiler/core {
   resolve_builtin,
   resolve_type_alias_params,
   resolve_type_constructor_args,
+  strip_published_formal_suffixes,
   subst_add_bound,
   subst_apply,
   subst_apply_except,
@@ -4782,11 +4783,27 @@ fn decl_formal_ids(tps: Array[String], dparams: Array[(String, Option[TypeExpr])
 /// formal by spelling rather than by variable, and it reaches the importer
 /// verbatim, so this is the whole transport: no interface field, no codec
 /// change. `type_to_string` renders the spelling back as `NAME`.
-export fn publish_row_formals(t: Type, val: Expr, defs: Array[TypeDef]) -> Type {
-  match (t, val) {
-    (CtForAll(vars, bounds, CtFn(sparams, sret, Some(row))), EFn(tps, _, params, ret, _, _)) => if Array::length(tps) == 0 {
-      t
+export fn publish_row_formals(t: Type, val: Expr, env: TypeEnv, defs: Array[TypeDef]) -> Type {
+  // The declaration whose formals the row names: the value itself, or -- for
+  // `export let get = get0` -- the aliased binding's, whose formals sit at the
+  // same positions (Codex on #3056).
+  let decl = match val {
+    EFn(tps, _, params, ret, _, _) => if Array::length(tps) == 0 {
+      None
     } else {
+      Some((tps, params, ret))
+    },
+    EIdent(src, _) => match env_lookup(env, src) {
+      Some(src_scheme) => generic_decl_of_scheme(src_scheme),
+      None => None
+    },
+    _ => None
+  }
+  match (t, decl) {
+    (CtForAll(vars, bounds, CtFn(sparams, sret, Some(row0))), Some((tps, params, ret))) => {
+      // An aliased row may already carry markers indexed against its source's
+      // quantifier list; they are respelled against this scheme's.
+      let row = strip_published_formal_suffixes(row0)
       let name_ids: Array[(String, Int)] = []
       decl_formal_ids(tps, params, ret, sparams, sret, defs, name_ids)
       let renames: Array[(String, String)] = []
