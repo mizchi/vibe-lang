@@ -350,7 +350,12 @@ export fn effect_error_to_string(err: EffectError) -> String {
       // `example` block) GRANTS its row, so the edit it is told is `allows`;
       // a called function requires, so its edit stays `with`.
       let entry_block = entry_block_display_name(fname)
-      let hint = if missing_is_erased_exception_only(missing) && declared_is_kinded_exception(declared) {
+      let hint = if row_has_ambiguous_label(required) {
+        // Codex on #3055: a call whose instantiation is ambiguous (`?S`, two
+        // merged sources' calls at one position) fails closed, and no row can
+        // spell `?S`, so the hint names the cause instead of an edit.
+        "\nhint: the type a generic callee's row takes at this call could not be determined -- another call at the same source position (sources merged without separate positions) instantiates it differently -- so no row authorizes it; check this file on its own with `vibe check` to see the concrete row"
+      } else if missing_is_erased_exception_only(missing) && declared_is_kinded_exception(declared) {
         // #2964 / #3015: the requirement is an exception whose KIND this check
         // could not resolve, under a row that promises kinds. Adding the erased
         // label is one honest edit; the others keep the kinded promise.
@@ -2396,6 +2401,26 @@ fn row_label_base(label: String) -> String {
 /// judges spellings made of builtin type names -- a formal, an alias or a
 /// declared type is not a builtin name, so it keeps the old base-name answer
 /// rather than being mistaken for a different type.
+/// A requirement whose call instantiated a formal ambiguously (`?S`, see
+/// `ambiguous_formal_bindings`) is authorized by no declared label.
+fn row_label_args_ambiguous(label: String) -> Bool {
+  String::contains(row_label_args(label), "?")
+}
+
+/// Does a stored row carry a label `row_label_args_ambiguous` refuses?
+fn row_has_ambiguous_label(row: String) -> Bool {
+  let parts = row_items_top_level(row)
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(parts) && !found {
+    if row_label_args_ambiguous(Array::get(parts, i)) {
+      found = true
+    }
+    i = i + 1
+  }
+  found
+}
+
 fn row_label_args_closed_and_differ(a: String, b: String) -> Bool {
   let aa = row_label_args(a)
   let ba = row_label_args(b)
@@ -2578,7 +2603,7 @@ fn row_base_membership(labels: Array[String], eff_name: String) -> Bool {
       let l = Array::get(labels, i)
       let lb = row_label_base(l)
       let lhas = String::length(lb) < String::length(l)
-      if (ehas || lhas) && lb == eb && !is_exception_label(l) && !row_label_args_closed_and_differ(l, eff_name) {
+      if (ehas || lhas) && lb == eb && !is_exception_label(l) && !row_label_args_closed_and_differ(l, eff_name) && !row_label_args_ambiguous(eff_name) {
         found = true
       } else {
         ()
@@ -3330,6 +3355,159 @@ export fn set_throw_site_kinds(sites: Array[(String, String)]) -> Unit {
     i = i + 1
   }
   Array::set(throw_site_kind_cell, 0, m)
+}
+
+/// #3053: a generic callee's formal bindings at each call, keyed by the
+/// callee identifier's offset (`callee_formal_bindings`). Filled once per
+/// check before the effects walk. A key seen with two different bindings maps
+/// to none, so a collision leaves the row as written (open) and can only keep
+/// the old answer, never invent a binding.
+let call_formal_bindings_cell: Array[MutMap[String, Array[(String, String)]]] = [
+  MutMap::new_string()
+]
+
+export fn set_call_formal_bindings(rows: Array[(String, Array[(String, String)])]) -> Unit {
+  let m = MutMap::new_string()
+  let mut i = 0
+  while i < Array::length(rows) {
+    let (k, binds) = Array::get(rows, i)
+    match MutMap::get(m, k) {
+      Some(prev) => if !formal_bindings_same(prev, binds) {
+        MutMap::set(m, k, ambiguous_formal_bindings(prev, binds))
+      },
+      None => MutMap::set(m, k, binds)
+    }
+    i = i + 1
+  }
+  Array::set(call_formal_bindings_cell, 0, m)
+}
+
+/// Two calls under one key that instantiate differently (sources merged
+/// without rebased offsets): every formal either names is bound to `?Name`,
+/// which no row authorizes (`row_label_args_ambiguous`), so the collision
+/// FAILS CLOSED instead of leaving the formal open for the base-name match
+/// (Codex on #3055).
+fn ambiguous_formal_bindings(a: Array[(String, String)], b: Array[(String, String)]) -> Array[(String, String)] {
+  let out = array_empty()
+  let names = array_empty()
+  let mut i = 0
+  while i < Array::length(a) + Array::length(b) {
+    let (n, _) = if i < Array::length(a) {
+      Array::get(a, i)
+    } else {
+      Array::get(b, i - Array::length(a))
+    }
+    if !str_labels_contain(names, n) {
+      Array::push(names, n)
+      Array::push(out, (n, String::concat("?", n)))
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Clears the per-call bindings and the shadow sets, for the direct effect
+/// entries that run without a checker pass: a previous program's tables must
+/// not answer for this one (Codex on #3055).
+fn clear_checker_published_tables() -> Unit {
+  Array::set(call_formal_bindings_cell, 0, MutMap::new_string())
+  set_shadowed_builtin_type_names([])
+}
+
+/// Test hook: a label as the call at `key` instantiates it.
+export fn instantiate_callee_label_at(label: String, key: String) -> String {
+  instantiate_callee_label_key(label, key)
+}
+
+fn formal_bindings_same(a: Array[(String, String)], b: Array[(String, String)]) -> Bool {
+  if Array::length(a) != Array::length(b) {
+    false
+  } else {
+    let mut same = true
+    let mut i = 0
+    while i < Array::length(a) {
+      let (an, at) = Array::get(a, i)
+      let (bn, bt) = Array::get(b, i)
+      if an != bn || at != bt {
+        same = false
+      }
+      i = i + 1
+    }
+    same
+  }
+}
+
+/// A callee's row label as this call instantiates it: every whole-word formal
+/// inside the label's brackets is replaced by the type the call gives it
+/// (`State[S]` at `get("abc")` reads `State[String]`). The effect name before
+/// the bracket is never touched, and a label with no binding is returned as
+/// written.
+fn instantiate_callee_label(label: String, callee_off: Int, callee: String) -> String {
+  if callee_off < 0 {
+    label
+  } else {
+    instantiate_callee_label_key(label, String::concat(__to_string(callee_off), String::concat(":", callee)))
+  }
+}
+
+fn instantiate_callee_label_key(label: String, key: String) -> String {
+  let bi = String::index_of(label, "[")
+  if bi < 0 {
+    label
+  } else {
+    let binds = match MutMap::get(Array::get(call_formal_bindings_cell, 0), key) {
+      Some(b) => b,
+      None => []
+    }
+    if Array::length(binds) == 0 {
+      label
+    } else {
+      let n = String::length(label)
+      let sb = StringBuilder::new()
+      StringBuilder::push(sb, String::substring(label, 0, bi))
+      let mut start = 0 - 1
+      let mut i = bi
+      while i <= n {
+        let c = if i < n {
+          String::char_code_at(label, i)
+        } else {
+          0
+        }
+        let word_char = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 95
+        if word_char {
+          if start < 0 {
+            start = i
+          } else {
+            ()
+          }
+        } else {
+          if start >= 0 {
+            let w = String::substring(label, start, i)
+            let mut rep = w
+            let mut k = 0
+            while k < Array::length(binds) {
+              let (fname, text) = Array::get(binds, k)
+              if fname == w {
+                rep = text
+              }
+              k = k + 1
+            }
+            StringBuilder::push(sb, rep)
+            start = 0 - 1
+          } else {
+            ()
+          }
+          if i < n {
+            StringBuilder::push(sb, String::substring(label, i, i + 1))
+          } else {
+            ()
+          }
+        }
+        i = i + 1
+      }
+      StringBuilder::freeze(sb)
+    }
+  }
 }
 
 fn throw_site_kind(off: Int, payload: Expr) -> String {
@@ -4942,6 +5120,9 @@ export fn check_perform_effects_expr_tx(root: Expr, root_declared: Array[String]
   // per-parameter table, which switches call-site row unification off and
   // restores the pre-#1485 exemption. Callers of this entry are unit-test and
   // non-stmts paths that have no call-graph parameter types to offer anyway.
+  // Nor has a checker pass published call bindings for this AST (Codex on
+  // #3055).
+  clear_checker_published_tables()
   check_perform_effects_expr_tx_indexed(root, root_declared, root_in_handle, fn_names, fn_effs, program_fn_index(fn_names), root_ov_names, root_ov_effs)
 }
 
@@ -4971,7 +5152,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
     match expr {
       ECall(callee, args, call_off) => {
         match callee {
-          EIdent(name, _) => {
+          EIdent(name, callee_ident_off) => {
             // #1723: the overlay is also the lexical-binding environment.
             // Some([]) means a pure local binding; only None may fall through
             // to the module-level function table.
@@ -5144,7 +5325,8 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                 let missing = no_str_labels()
                 let mut ti = 0
                 while ti < Array::length(callee_effs) {
-                  let teff = Array::get(callee_effs, ti)
+                  // #3053: the callee's row as THIS call instantiates it.
+                  let teff = instantiate_callee_label(Array::get(callee_effs, ti), callee_ident_off, name)
                   // #1343 (Codex P1 on PR #1359): `decl_authorizes_op`, not
                   // `decl_authorizes_effect` -- once a callee can declare an
                   // OPERATION row (`with Fs::read_file`), a caller holding
@@ -5216,7 +5398,12 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                 let missing = no_str_labels()
                 let mut pi = 0
                 while pi < Array::length(param_effs) {
-                  let peff = Array::get(param_effs, pi)
+                  // #3053 (Codex on #3055): a local generic lambda, or an
+                  // alias of one, is a lexical callee; its row is
+                  // instantiated at this call exactly like a top-level one.
+                  // A callback parameter records no instantiation, so its row
+                  // is returned as written.
+                  let peff = instantiate_callee_label(Array::get(param_effs, pi), callee_ident_off, name)
                   // #1343: same operation-awareness as the named-callee case
                   // above -- a callback parameter whose row names an operation
                   // is covered by a caller holding the whole effect.
@@ -5744,6 +5931,7 @@ export fn check_perform_effects_expr(root: Expr, root_declared: Array[String], r
   // Same clearing rule as check_perform_effects_stmt (#1344): no env here, so
   // no payload kinds are resolvable and none must be carried over.
   set_throw_kind_table(EnvEmpty)
+  clear_checker_published_tables()
   set_callee_sigs(array_empty(), EnvEmpty)
   check_perform_effects_expr_tx(root, root_declared, root_in_handle, no_str_labels(), no_ov_effs(), no_str_labels(), no_ov_effs())
 }
@@ -6136,6 +6324,7 @@ export fn check_perform_effects_stmt(stmt: Stmt) -> Array[EffectError] {
   // No env to resolve payload kinds from: clear the table rather than let a
   // previous module's bindings decide this one's throw kinds (#1344).
   set_throw_kind_table(EnvEmpty)
+  clear_checker_published_tables()
   set_callee_sigs(Array::slice([stmt], 0, 1), EnvEmpty)
   set_entry_user_effect_operations(Array::slice([stmt], 0, 1))
   check_perform_effects_stmt_tx(stmt, no_str_labels(), no_ov_effs(), program_fn_index(no_str_labels()), no_param_effs())
@@ -6300,7 +6489,17 @@ export fn check_perform_effects_stmts(stmts: Array[Stmt]) -> Array[EffectError] 
   check_perform_effects_stmts_env(stmts, EnvEmpty)
 }
 
+/// The standalone entry: no checker pass published call bindings or shadow
+/// sets for these statements, so a previous program's must not answer
+/// (Codex on #3055). The checker calls
+/// `check_perform_effects_stmts_env_published` instead, right after
+/// publishing them.
 export fn check_perform_effects_stmts_env(stmts: Array[Stmt], env: TypeEnv) -> Array[EffectError] {
+  clear_checker_published_tables()
+  check_perform_effects_stmts_env_published(stmts, env)
+}
+
+export fn check_perform_effects_stmts_env_published(stmts: Array[Stmt], env: TypeEnv) -> Array[EffectError] {
   // Build the call-graph effect map (parallel arrays) from every top-level
   // binding's declared row — locals first, then the env's (imported)
   // bindings (#812) — then run the per-stmt check WITH transitive

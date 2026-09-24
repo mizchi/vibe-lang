@@ -8,7 +8,15 @@ import @vibe/compiler/runtime {
   collect_all_diagnostics
 }
 
+import @vibe/compiler/checker {
+  instantiate_callee_label_at, set_call_formal_bindings
+}
+
 //# Misc
+
+fn diags_of_raw(src: String) -> Array[String] with Exception {
+  collect_all_diagnostics(src)
+}
 
 fn diags_of(body: String) -> Array[String] with Exception {
   let head = "effect State[S] {\n  Get() -> S\n}\n\n"
@@ -32,6 +40,45 @@ test "the same closed argument is authorized, spacing aside" {
   assert(eq(Array::length(d), 0))
 }
 
+test "a callee's formal is instantiated at the call" {
+  let getter = "fn get[S](x: S) -> Int with State[S] {\n  1\n}\n\n"
+  // The call instantiates `S` at `String`, which `State[Int]` does not cover.
+  let wrong = diags_of(String::concat(getter, "fn caller() -> Int with State[Int] {\n  get(\"abc\")\n}\n"))
+  assert(eq(Array::length(wrong), 1))
+  assert(String::contains(Array::get(wrong, 0), "missing { State[String] }"))
+  // ... and the requirement names the instantiation, not the callee's formal.
+  let bare = diags_of(String::concat(getter, "fn caller() -> Int {\n  get(\"abc\")\n}\n"))
+  assert(eq(Array::length(bare), 1))
+  assert(String::contains(Array::get(bare, 0), "missing { State[String] }"))
+  // The matching instantiation is authorized.
+  let right = diags_of(String::concat(getter, "fn caller() -> Int with State[Int] {\n  get(1)\n}\n"))
+  assert(eq(Array::length(right), 0))
+}
+
+test "a local generic lambda and an alias are instantiated at the call" {
+  // Codex on #3055: a local binding is a lexical callee, checked by its own
+  // branch, which used to read the row as written.
+  let local = diags_of("fn caller() -> Int with State[Int] {\n  let get = [S](x: S) -> Int with State[S] {\n    1\n  }\n  get(\"abc\")\n}\n")
+  assert(eq(Array::length(local), 1))
+  assert(String::contains(Array::get(local, 0), "missing { State[String] }"))
+  let alias = diags_of("fn caller() -> Int with State[Int] {\n  let get0 = [S](x: S) -> Int with State[S] {\n    1\n  }\n  let get = get0\n  get(\"abc\")\n}\n")
+  assert(eq(Array::length(alias), 1))
+  assert(String::contains(Array::get(alias, 0), "missing { State[String] }"))
+  let right = diags_of("fn caller() -> Int with State[Int] {\n  let get = [S](x: S) -> Int with State[S] {\n    1\n  }\n  get(1)\n}\n")
+  assert(eq(Array::length(right), 0))
+}
+
+test "a higher-kinded formal is instantiated with its constructor" {
+  // Codex on #3055: `F[_]` applied as `F[Int]` resolves to the argument's
+  // constructor, so `use([1])` requires `Read[Array]`, not an open `Read[F]`.
+  let src = "effect Read[F[_]] {\n  Size() -> Int\n}\n\nfn use[F[_]](xs: F[Int]) -> Int with Read[F] {\n  1\n}\n\n"
+  let wrong = diags_of_raw(String::concat(src, "fn caller() -> Int with Read[Option] {\n  use([1])\n}\n"))
+  assert(eq(Array::length(wrong), 1))
+  assert(String::contains(Array::get(wrong, 0), "missing { Read[Array] }"))
+  let right = diags_of_raw(String::concat(src, "fn caller() -> Int with Read[Array] {\n  use([1])\n}\n"))
+  assert(eq(Array::length(right), 0))
+}
+
 test "an open or declared spelling keeps the base-name answer" {
   // A formal, an alias and a declared type are not builtin names, so this
   // syntactic test does not judge them (#3053 tracks the formal half).
@@ -53,4 +100,32 @@ test "a shadowing formal elsewhere does not switch the check off here" {
   let d = diags_of("fn id[Int](x: Int) -> Int {\n  x\n}\n\nfn g(x: String) -> Int with State[String] {\n  1\n}\n\nfn caller() -> Int with State[Int] {\n  g(\"abc\")\n}\n")
   assert(eq(Array::length(d), 1))
   assert(String::contains(Array::get(d, 0), "missing { State[String] }"))
+}
+
+test "two calls under one key that instantiate differently fail closed" {
+  // Codex on #3055: sources merged without rebased offsets can record two
+  // calls at one offset. Their formals become `?S`, which no row authorizes,
+  // rather than staying open for the base-name match.
+  set_call_formal_bindings([
+    ("7:get", [("S", "String")]),
+    ("7:get", [("S", "Int")]),
+    ("9:get", [("S", "Int")]),
+    ("9:get", [("S", "Int")])
+  ])
+  assert(eq(instantiate_callee_label_at("State[S]", "7:get"), "State[?S]"))
+  // The same binding recorded twice is not a conflict.
+  assert(eq(instantiate_callee_label_at("State[S]", "9:get"), "State[Int]"))
+  // Codex on #3055: one call resolving `S` and another at the same key
+  // leaving it unresolved is a collision too, not the first call's binding.
+  set_call_formal_bindings([("13:get", []), ("13:get", [("S", "String")])])
+  assert(eq(instantiate_callee_label_at("State[S]", "13:get"), "State[?S]"))
+  set_call_formal_bindings([
+    ("7:get", [("S", "String")]),
+    ("7:get", [("S", "Int")]),
+    ("9:get", [("S", "Int")]),
+    ("9:get", [("S", "Int")])
+  ])
+  // An unrecorded key leaves the label as written.
+  assert(eq(instantiate_callee_label_at("State[S]", "11:get"), "State[S]"))
+  set_call_formal_bindings([])
 }
