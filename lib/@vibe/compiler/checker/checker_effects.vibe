@@ -350,7 +350,12 @@ export fn effect_error_to_string(err: EffectError) -> String {
       // `example` block) GRANTS its row, so the edit it is told is `allows`;
       // a called function requires, so its edit stays `with`.
       let entry_block = entry_block_display_name(fname)
-      let hint = if missing_is_erased_exception_only(missing) && declared_is_kinded_exception(declared) {
+      let hint = if row_has_ambiguous_label(required) {
+        // Codex on #3055: a call whose instantiation is ambiguous (`?S`, two
+        // merged sources' calls at one position) fails closed, and no row can
+        // spell `?S`, so the hint names the cause instead of an edit.
+        "\nhint: the type a generic callee's row takes at this call could not be determined -- another call at the same source position (sources merged without separate positions) instantiates it differently -- so no row authorizes it; check this file on its own with `vibe check` to see the concrete row"
+      } else if missing_is_erased_exception_only(missing) && declared_is_kinded_exception(declared) {
         // #2964 / #3015: the requirement is an exception whose KIND this check
         // could not resolve, under a row that promises kinds. Adding the erased
         // label is one honest edit; the others keep the kinded promise.
@@ -2400,6 +2405,20 @@ fn row_label_base(label: String) -> String {
 /// `ambiguous_formal_bindings`) is authorized by no declared label.
 fn row_label_args_ambiguous(label: String) -> Bool {
   String::contains(row_label_args(label), "?")
+}
+
+/// Does a stored row carry a label `row_label_args_ambiguous` refuses?
+fn row_has_ambiguous_label(row: String) -> Bool {
+  let parts = row_items_top_level(row)
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(parts) && !found {
+    if row_label_args_ambiguous(Array::get(parts, i)) {
+      found = true
+    }
+    i = i + 1
+  }
+  found
 }
 
 fn row_label_args_closed_and_differ(a: String, b: String) -> Bool {
