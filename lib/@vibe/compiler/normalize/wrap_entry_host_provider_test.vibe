@@ -1,0 +1,209 @@
+// #1962: the standard host provider at the entry boundary. An unhandled
+// `perform Fs::Exists(p)` used to unwind to the top as a raw wasm exception;
+// the entry now handles each PERFORMED, GRANTED host operation by resuming
+// with its direct builtin. These drive the pass directly, so each answer says
+// which arms were installed rather than only whether a program ran.
+
+import @vibe/compiler/core {
+  Expr, Pat, Stmt
+}
+
+import @vibe/parser {
+  lex, parse_program
+}
+
+import ./desugar_trait_dict.vibe {
+  wrap_entry_host_provider
+}
+
+/// The provider arms, innermost handle first; handles separated by `;`.
+fn arm_names(e: Expr) -> String {
+  match e {
+    EHandle(inner, arms) => {
+      let mut out = ""
+      let mut i = 0
+      while i < Array::length(arms) {
+        let name = match Array::get(arms, i).0 {
+          PCtor(n, binders) => "\{n}/\{Array::length(binders)}",
+          _ => "?"
+        }
+        out = if i == 0 {
+          name
+        } else {
+          "\{out},\{name}"
+        }
+        i = i + 1
+      }
+      let nested = arm_names(inner)
+      if nested == "" {
+        out
+      } else {
+        "\{nested};\{out}"
+      }
+    },
+    _ => ""
+  }
+}
+
+/// The provider arms installed around `entry` (a fn name, or `test:<name>`),
+/// as `Op/arity` joined by commas; "" when the body was left alone.
+fn provided(source: String, entry: String) -> String with Exception {
+  let stmts = parse_program(lex(source))
+  wrap_entry_host_provider(stmts, entry)
+  let mut out = "<entry not found>"
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, EFn(_, _, _, _, _, body)) => if name == entry {
+        out = arm_names(body)
+      } else {
+        ()
+      },
+      STest(name, body) => if "test:\{name}" == entry {
+        out = arm_names(body)
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+test "a performed, granted operation gets an arm at main" {
+  let src = "fn reader() -> Bool with Fs {\n  perform Fs::Exists(\"p\")\n}\n\nfn main() -> Unit allows Stdout + Fs {\n  println(\"\\{reader()}\")\n}\n"
+  inspect(provided(src, "main"), "Fs::Exists/1")
+}
+
+test "only performed operations get arms, each once, in first-seen order" {
+  let src = "fn a() -> Unit with Fs {\n  perform Fs::WriteFile(\"p\", \"c\")\n}\n\nfn b() -> String with Fs {\n  perform Fs::ReadFile(\"p\")\n}\n\nfn c() -> String with Fs {\n  perform Fs::ReadFile(\"q\")\n}\n\nfn main() -> Unit allows Fs {\n  a()\n}\n"
+  inspect(provided(src, "main"), "Fs::WriteFile/2,Fs::ReadFile/1")
+}
+
+test "each effect gets its own handle, in first-seen order" {
+  let src = "fn a() -> Bool with Fs {\n  perform Fs::Exists(\"p\")\n}\n\nfn b() -> String with Env {\n  perform Env::Get(\"k\")\n}\n\nfn c() -> String with Fs {\n  perform Fs::ReadFile(\"p\")\n}\n\ntest \"t\" {\n  let _b = a()\n}\n"
+  inspect(provided(src, "test:t"), "Fs::Exists/1,Fs::ReadFile/1;Env::Get/1")
+}
+
+test "a program that performs no host operation is left alone" {
+  let src = "fn main() -> Unit allows Stdout + Fs {\n  println(Fs::read_file(\"p\"))\n}\n"
+  inspect(provided(src, "main"), "")
+}
+
+test "the operation or its capability spelling grants it too" {
+  let op = "fn r() -> Bool with Fs {\n  perform Fs::Exists(\"p\")\n}\n\nfn main() -> Unit allows Fs::Exists {\n  let _b = r()\n}\n"
+  inspect(provided(op, "main"), "Fs::Exists/1")
+  let cap = "fn r() -> Bool with Fs {\n  perform Fs::Exists(\"p\")\n}\n\nfn main() -> Unit allows Fs::exists {\n  let _b = r()\n}\n"
+  inspect(provided(cap, "main"), "Fs::Exists/1")
+}
+
+test "an ungranted operation acquires no provider" {
+  let other = "fn r() -> Bool with Fs {\n  perform Fs::Exists(\"p\")\n}\n\nfn main() -> Unit allows Fs::read_file {\n  let _b = r()\n}\n"
+  inspect(provided(other, "main"), "")
+  let optional = "fn r() -> Bool with Fs {\n  perform Fs::Exists(\"p\")\n}\n\nfn main() -> Unit allows Fs::exists? {\n  let _b = r()\n}\n"
+  inspect(provided(optional, "main"), "")
+}
+
+test "a test block is provided from its ambient row" {
+  let src = "fn r() -> String with Env {\n  perform Env::Get(\"HOME\")\n}\n\ntest \"t\" {\n  let _v = r()\n}\n"
+  inspect(provided(src, "test:t"), "Env::Get/1")
+}
+
+test "a user effect sharing no host operation spelling is not provided" {
+  let src = "effect Log {\n  Emit(Int) -> Unit\n}\n\nfn f() -> Unit with Log {\n  perform Log::Emit(1)\n}\n\nfn main() -> Unit allows Log {\n  f()\n}\n"
+  inspect(provided(src, "main"), "")
+}
+
+/// The declared operations of `effect`, as `Op(params)->ret` joined by
+/// commas, after the pass; "<none>" when the program has no declaration.
+fn declared(source: String, entry: String, effect: String) -> String with Exception {
+  let stmts = parse_program(lex(source))
+  wrap_entry_host_provider(stmts, entry)
+  let mut out = "<none>"
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SEffectDef(_, name, _, ops) => if name == effect {
+        let mut text = ""
+        let mut j = 0
+        while j < Array::length(ops) {
+          let (op, params, _) = Array::get(ops, j)
+          let one = "\{op}/\{Array::length(params)}"
+          text = if j == 0 {
+            one
+          } else {
+            "\{text},\{one}"
+          }
+          j = j + 1
+        }
+        out = text
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+test "an undeclared host effect that gets a provider is declared from the registry" {
+  let src = "fn r() -> Bool with Fs {\n  perform Fs::Exists(\"p\")\n}\n\nfn main() -> Unit allows Fs {\n  let _b = r()\n}\n"
+  inspect(declared(src, "main", "Fs"), "Exists/1")
+}
+
+test "a host effect named only by a user handler is not declared" {
+  // Declaring it would send every row-carrying closure of that effect through
+  // evidence migration -- see wrap_entry_host_provider's doc comment.
+  let src = "fn main() -> Unit allows Stdout {\n  let b = handle {\n    true\n  } with {\n    Fs::ReadFile(_p) => resume(\"m\")\n  }\n  println(\"\\{b}\")\n}\n"
+  inspect(declared(src, "main", "Fs"), "<none>")
+}
+
+test "a provided effect's declaration also carries the operations handlers name" {
+  let src = "fn r() -> Bool with Fs {\n  perform Fs::Exists(\"p\")\n}\n\nfn main() -> Unit allows Fs {\n  let s = handle {\n    \"x\"\n  } with {\n    Fs::ReadFile(_p) => resume(\"m\")\n  }\n  let _b = r()\n}\n"
+  inspect(declared(src, "main", "Fs"), "Exists/1,ReadFile/1")
+}
+
+test "an existing declaration is left as the program wrote it" {
+  let src = "effect Fs {\n  Exists(String) -> Bool;\n  Mkdir(String) -> Unit\n}\n\nfn r() -> Bool with Fs {\n  perform Fs::Exists(\"p\")\n}\n\nfn main() -> Unit allows Fs {\n  let _b = r()\n}\n"
+  inspect(declared(src, "main", "Fs"), "Exists/1,Mkdir/1")
+}
+
+test "an ungranted, unhandled perform declares nothing" {
+  let src = "fn r() -> Bool with Fs {\n  perform Fs::Exists(\"p\")\n}\n\nfn main() -> Unit allows Stdout {\n  println(\"x\")\n}\n"
+  inspect(declared(src, "main", "Fs"), "<none>")
+}
+
+/// Top-level binding names after the pass, comma-joined.
+fn bindings(source: String, entry: String) -> String with Exception {
+  let stmts = parse_program(lex(source))
+  wrap_entry_host_provider(stmts, entry)
+  let mut out = ""
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, _) => {
+        out = if out == "" {
+          name
+        } else {
+          "\{out},\{name}"
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+test "a value alias occupying the builtin's name is moved aside" {
+  let src = "fn exists(p: String) -> Bool with Fs {\n  perform Fs::Exists(p)\n}\n\nlet Fs::exists = exists\n\ntest \"t\" {\n  let _b = exists(\"p\")\n}\n"
+  inspect(provided(src, "test:t"), "Fs::Exists/1")
+  inspect(bindings(src, "test:t"), "exists,__host_provider_moved_alias$Fs::exists")
+}
+
+test "a function occupying the builtin's name leaves that operation unprovided" {
+  let src = "fn Fs::exists(p: String) -> Bool {\n  false\n}\n\nfn r() -> Bool with Fs {\n  perform Fs::Exists(\"p\")\n}\n\ntest \"t\" {\n  let _b = r()\n}\n"
+  inspect(provided(src, "test:t"), "")
+}

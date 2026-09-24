@@ -305,7 +305,8 @@ import @vibe/compiler/codegen/common_base {
   suspend_cps_pass,
   ty_head_names_formal,
   unique_name_flags,
-  wrap_entry_exception_boundary
+  wrap_entry_exception_boundary,
+  wrap_entry_host_provider
 }
 
 import @vibe/compiler/codegen/common_extractors {
@@ -4783,6 +4784,10 @@ export fn effect_lowering_prelude_grants(stmts: Array[Stmt], entry_name: String,
     // passes below so the synthesized handle is visible to them like any
     // hand-written one, and before collect_used_builtin_names so the
     // diagnostic's Stderr host import is collected.
+    // #1962: the standard host provider, innermost, so an escaping exception
+    // still reaches the boundary above it. Same placement reason: the effect
+    // passes below must see its `handle` like a hand-written one.
+    wrap_entry_host_provider(stmts, entry_name)
     wrap_entry_exception_boundary(stmts, entry_name)
     let async_sleep_boundary_err = lc_inject_async_sleep_boundary(stmts, entry_name)
     if async_sleep_boundary_err != "" {
@@ -5054,7 +5059,10 @@ fn oracle_apply_pass(k: Int, stmts: Array[Stmt], entry_name: String, checker_eq_
       await_poll_pass(stmts, lc_stmts_call_host_future(stmts), lc_waiter_hooks_available(stmts, env.linked_imports))
     },
     10 => rewrite_self_tail_calls(stmts),
-    11 => wrap_entry_exception_boundary(stmts, entry_name),
+    11 => {
+      wrap_entry_host_provider(stmts, entry_name)
+      wrap_entry_exception_boundary(stmts, entry_name)
+    },
     12 => {
       let sleep_msg = lc_inject_async_sleep_boundary(stmts, entry_name)
       if sleep_msg != "" {
