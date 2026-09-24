@@ -3021,23 +3021,13 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
   // #3036: this dependency's definitions, read once, and the state of the
   // closure walk that feeds the cross-import identity table
   // (`note_identity_closure`). A package contract's generated type stub is
-  // exempt, as in #3035: its deferred type IS the implementation's
-  // declaration, which a sibling reaches directly too (`index.vpkg`
-  // importing the stub's `ShResult` and `sh_capture` from `process.vibe`).
-  // The EXACT generated-stub shape (`is_generated_vpkg_types_path`), not the
-  // substring test: an ordinary module under a directory of that name is
-  // user code and is tracked like any other.
-  let identity_tracked = !is_generated_vpkg_types_path(resolved)
-  let id_defs = if identity_tracked {
-    env_type_defs(dep_env)
-  } else {
-    array_empty()
-  }
-  let id_markers = if identity_tracked {
-    type_reference_markers(dep_env)
-  } else {
-    array_empty()
-  }
+  // tracked like any module (Codex on #3076): it holds the contract's
+  // TRANSPARENT declarations verbatim and is imported into every sibling, so
+  // exempting it let an external `Err` shadow the contract's own. Its
+  // deferred (opaque) names are declared by the implementation and have no
+  // definition in the stub, so the closure walk never reaches them.
+  let id_defs = env_type_defs(dep_env)
+  let id_markers = type_reference_markers(dep_env)
   let id_walked: Array[String] = []
   // The declarations this import projects as nodes; every other closure
   // member is carried on as a reference marker.
@@ -3099,16 +3089,12 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
       let ty = match imported_ty {
         Some(t) => {
           foreign_type_name_collisions(name, raw_path, resolved, t, dep_types, local_types, unresolved, collision_reported)
-          if identity_tracked {
-            let roots: Array[String] = []
-            push_reference_names(t, array_empty(), roots)
-            // Most imported signatures name only types an earlier one
-            // already walked; the route text is built only when needed.
-            if any_unwalked(roots, id_walked) {
-              note_identity_closure(roots, String::concat("used by `", String::concat(name, String::concat("` from '", String::concat(raw_path, "'")))), id_defs, id_markers, id_walked, id_keep, carried_references, seen_types, unresolved)
-            } else {
-              ()
-            }
+          let roots: Array[String] = []
+          push_reference_names(t, array_empty(), roots)
+          // Most imported signatures name only types an earlier one already
+          // walked; the route text is built only when needed.
+          if any_unwalked(roots, id_walked) {
+            note_identity_closure(roots, String::concat("used by `", String::concat(name, String::concat("` from '", String::concat(raw_path, "'")))), id_defs, id_markers, id_walked, id_keep, carried_references, seen_types, unresolved)
           } else {
             ()
           }
@@ -3154,14 +3140,10 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
       foreign_type_declaration_collisions(item, raw_path, resolved, dep_env, dep_types, local_types, unresolved, collision_reported)
     }
   }
-  if identity_tracked {
-    note_imported_declaration_identities(dep_env, raw_path, declaration_names, id_defs, id_markers, id_walked, id_keep, carried_references, seen_types, unresolved)
-  }
+  note_imported_declaration_identities(dep_env, raw_path, declaration_names, id_defs, id_markers, id_walked, id_keep, carried_references, seen_types, unresolved)
   let declaration_trait_mappings = dependency_trait_projection_mappings(dep_env, dep_bindings, bi_trait_names, bi_upper_slots, declaration_names, array_empty())
   foreign_trait_impl_collisions(dep_env, declaration_trait_mappings, raw_path, resolved, dep_types, local_types, unresolved, collision_reported)
-  if identity_tracked {
-    note_trait_identities(dep_env, declaration_trait_mappings, raw_path, id_defs, id_markers, id_walked, id_keep, carried_references, seen_types, unresolved)
-  }
+  note_trait_identities(dep_env, declaration_trait_mappings, raw_path, id_defs, id_markers, id_walked, id_keep, carried_references, seen_types, unresolved)
   let bound = bind_names(0, prepend_dependency_trait_nodes(dep_env, declaration_trait_mappings, prepend_dependency_type_defs(dep_env, declaration_names, acc)))
   let mut with_references = bound
   let mut ci = 0
@@ -3201,8 +3183,8 @@ fn note_reexport_surface_identities(resolved: String, raw_path: String, names: A
   // The types the aliased declarations name without publishing, carried on
   // as reference markers by `prepend_reexport_alias_declarations`.
   let carried: Array[(String, Type)] = []
-  // The exact generated-stub shape, as on the ordinary import path.
-  if Array::length(names) > 0 && !is_generated_vpkg_types_path(resolved) {
+  // A generated type stub is tracked too, as on the ordinary import path.
+  if Array::length(names) > 0 {
     match lookup_env_cache(cache, resolved) {
       Some(dep_env) => {
         let defs = env_type_defs(dep_env)
