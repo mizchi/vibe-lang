@@ -4825,7 +4825,59 @@ export fn publish_row_formals(t: Type, val: Expr, env: TypeEnv, defs: Array[Type
         CtForAll(vars, bounds, CtFn(sparams, sret, Some(rename_row_bracket_words(row, renames))))
       }
     },
+    // An alias of an IMPORTED generic has no declaration here, only the
+    // source's published scheme, whose markers index the SOURCE's quantifier
+    // list. `let_generalize` quantifies the alias afresh, possibly in another
+    // order (`f[A, B](b: B, a: A)` aliased generalizes as `B, A`), so each
+    // marker is respelled against the variable it now stands for, found by
+    // position in the two signatures (Codex on #3056).
+    (CtForAll(vars, bounds, CtFn(sparams, sret, Some(row0))), None) => match val {
+      EIdent(src, _) => match env_lookup(env, src) {
+        Some(CtForAll(src_vars, _, src_body)) => CtForAll(vars, bounds, CtFn(sparams, sret, Some(respell_imported_markers(row0, src_vars, src_body, vars, CtFn(sparams, sret, None))))),
+        _ => t
+      },
+      _ => t
+    },
     _ => t
+  }
+}
+
+/// `row` with each published marker `NAME$K`, K indexing `src_vars`, respelled
+/// `NAME$K2`, K2 indexing `vars` at the variable found in the same position of
+/// `body` as the source variable's in `src_body`. A marker with no such
+/// variable keeps its base name only.
+fn respell_imported_markers(row: String, src_vars: Array[Int], src_body: Type, vars: Array[Int], body: Type) -> String {
+  let marked: Array[(String, Int)] = []
+  published_row_formal_ids(Some(row), src_vars, marked)
+  if Array::length(marked) == 0 {
+    row
+  } else {
+    let pairs: Array[(Int, Type)] = []
+    scheme_var_types_from(src_body, body, pairs)
+    let renames: Array[(String, String)] = []
+    let mut mi = 0
+    while mi < Array::length(marked) {
+      let (w, src_id) = Array::get(marked, mi)
+      let base = String::substring(w, 0, String::last_index_of(w, "$"))
+      let mut pi = 0
+      while pi < Array::length(pairs) {
+        match Array::get(pairs, pi) {
+          (sid, CtVar(aid)) => if sid == src_id {
+            let mut vi = 0
+            while vi < Array::length(vars) {
+              if Array::get(vars, vi) == aid {
+                Array::push(renames, (base, String::concat(base, String::concat("$", __to_string(vi)))))
+              }
+              vi = vi + 1
+            }
+          },
+          _ => ()
+        }
+        pi = pi + 1
+      }
+      mi = mi + 1
+    }
+    rename_row_bracket_words(strip_published_formal_suffixes(row), renames)
   }
 }
 
