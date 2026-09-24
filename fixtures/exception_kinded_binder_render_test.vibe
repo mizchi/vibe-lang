@@ -1,0 +1,125 @@
+// #3065: a KINDED exception arm binds its payload at the kind's type (#2963),
+// and interpolating that binder directly must render the payload BY CONTENT.
+// Before the fix the interpolation pass never learned the binder's type, so
+// `"\{e}"` fell to the pointer heuristic: `caught 268` on linear and
+// `caught 317` on gc for `caught KA(5)`, while `let k: K = e` and
+// `K::to_string(e)` both rendered correctly. An `Array[Bool]` / `Option[Bool]`
+// kind was refused on linear and printed an address on gc.
+enum K {
+  KA(Int);
+  KB
+} derive (Show)
+
+enum G[T] {
+  GA(T);
+  GB
+} derive (Show)
+
+struct P {
+  x: Int
+} derive (Show)
+
+fn boom() -> Int with Exception[K] {
+  throw(KA(5))
+}
+
+fn boom_generic() -> Int with Exception[G[Int]] {
+  throw(GA(7))
+}
+
+fn boom_struct() -> Int with Exception[P] {
+  throw(P::{ x: 3 })
+}
+
+fn boom_array() -> Int with Exception[Array[Bool]] {
+  throw([true, false])
+}
+
+fn boom_option() -> Int with Exception[Option[Bool]] {
+  throw(Some(true))
+}
+
+fn boom_erased() -> Int with Exception {
+  throw("msg")
+}
+
+fn run_enum() -> String {
+  handle {
+    let _ = boom()
+    "none"
+  } with { Exception[K]::Throw(e) => "caught \{e}" }
+}
+
+fn run_generic_enum() -> String {
+  handle {
+    let _ = boom_generic()
+    "none"
+  } with { Exception[G[Int]]::Throw(e) => "caught \{e}" }
+}
+
+fn run_struct() -> String {
+  handle {
+    let _ = boom_struct()
+    "none"
+  } with { Exception[P]::Throw(e) => "caught \{e}" }
+}
+
+fn run_array() -> String {
+  handle {
+    let _ = boom_array()
+    "none"
+  } with { Exception[Array[Bool]]::Throw(e) => "caught \{e}" }
+}
+
+fn run_option() -> String {
+  handle {
+    let _ = boom_option()
+    "none"
+  } with { Exception[Option[Bool]]::Throw(e) => "caught \{e}" }
+}
+
+fn run_erased() -> String {
+  handle {
+    let _ = boom_erased()
+    "none"
+  } with { Exception::Throw(m) => "caught \{m}" }
+}
+
+// The binder shadows an outer name of another type; the arm must render the
+// ARM's `e`, not the outer one.
+fn run_shadowing() -> String {
+  let e = 41
+  let inner = handle {
+    let _ = boom()
+    "none"
+  } with { Exception[K]::Throw(e) => "caught \{e}" }
+  "\{inner} outer=\{e}"
+}
+
+test "kinded enum binder renders by content" {
+  inspect(run_enum(), content = "caught KA(5)")
+}
+
+test "kinded generic enum binder renders by content" {
+  inspect(run_generic_enum(), content = "caught GA(7)")
+}
+
+test "kinded struct binder renders by content" {
+  inspect(run_struct(), content = "caught P { x: 3 }")
+}
+
+test "kinded array binder renders by content" {
+  inspect(run_array(), content = "caught [true, false]")
+}
+
+test "kinded option binder renders by content" {
+  inspect(run_option(), content = "caught Some(true)")
+}
+
+test "erased binder keeps the String payload" {
+  inspect(run_erased(), content = "caught msg")
+}
+
+test "kinded binder shadows an outer name" {
+  inspect(run_shadowing(), content = "caught KA(5) outer=41")
+}

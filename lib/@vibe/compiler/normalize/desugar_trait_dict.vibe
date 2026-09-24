@@ -36,6 +36,7 @@ import @vibe/compiler/core {
   builtin_value_form_arity,
   canonical_builtin_name,
   compiler_owned_type_arity,
+  exception_effect_kind,
   expr_child_at,
   expr_children,
   expr_children_pop,
@@ -87,8 +88,10 @@ import @vibe/parser {
   binder_authority_slot_binder,
   binder_authority_slot_role,
   detach_stmts,
+  lex,
   located_program_binder_authority_nodes,
   located_program_binder_authority_program,
+  parse_type,
   resolve_interp_expr,
   source_pat
 }
@@ -6121,6 +6124,42 @@ fn dtd_mask_shadowed_fn_into(out: Array[(String, String)], name: String, fn_retu
   }
 }
 
+/// #3065: a KINDED exception arm (`Exception[K]::Throw(e)`) binds `e` at the
+/// kind's type -- the checker has done so since #2963 -- but this pass never
+/// recorded it, so `"\{e}"` had no head to find `K::to_string` by and fell to
+/// codegen's pointer heuristic: `caught 268` for `caught KA(5)`, while
+/// `let k: K = e` rendered correctly. The binder is seeded exactly the way a
+/// parameter annotated with the kind is, so every shape an annotation already
+/// renders (a nominal, `Array[..]`, `Option[..]`, a tuple) renders here too.
+/// A kind the type parser cannot read leaves `var_types` untouched, which is
+/// what the arm had before. The erased `Exception::Throw(m)` has no kind and
+/// keeps the throw-site rendered message channel.
+fn dtd_exception_kind_arm_var_types(p: Pat, var_types: Array[(String, String)]) -> Array[(String, String)] {
+  match p {
+    PCtor(name, sub) => if Array::length(sub) == 1 && String::ends_with(name, "::Throw") {
+      let kind = exception_effect_kind(String::substring(name, 0, String::length(name) - 7))
+      match Array::get(sub, 0) {
+        PBind(v) => if String::length(kind) > 0 {
+          let parsed: Option[TypeExpr] = handle {
+            let (kind_te, _) = parse_type(lex(kind), 0)
+            Some(kind_te)
+          } with { Exception::Throw(_unreadable) => None }
+          match parsed {
+            Some(te) => seed_var_types([(v, Some(te))], dtd_scope_formals, var_types),
+            None => var_types
+          }
+        } else {
+          var_types
+        },
+        _ => var_types
+      }
+    } else {
+      var_types
+    },
+    _ => var_types
+  }
+}
+
 /// `dtd_mask_shadowed_fn_into` for every name a pattern binds.
 fn dtd_mask_shadowed_pat(var_types: Array[(String, String)], p: Pat, fn_returns: Array[(String, String)]) -> Array[(String, String)] {
   let names = array_empty()
@@ -11190,11 +11229,11 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
       let mut i = 0
       while i < Array::length(arms) {
         let (p, b) = Array::get(arms, i)
-        let arm_vars = dtd_mask_shadowed_pat(if Array::get(dtd_constructor_tracking, 0) {
+        let arm_vars = dtd_exception_kind_arm_var_types(p, dtd_mask_shadowed_pat(if Array::get(dtd_constructor_tracking, 0) {
           constructor_handler_arm_var_types(scrut, p, gens, struct_sets, var_types, fn_returns)
         } else {
           var_types
-        }, p, fn_returns)
+        }, p, fn_returns))
         Array::push(out, (p, rewrite_expr(b, gens, traits, struct_sets, dict_binds, arm_vars, fn_returns)))
         i = i + 1
       }
