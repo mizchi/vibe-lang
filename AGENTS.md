@@ -83,7 +83,7 @@ closure field, an opaque nominal field — the
 `structural_eq_untyped_empty_*_refused.vibe` fixtures). Since #2475 the refusal
 is a build error naming the edit, not a bare `trap: RuntimeError: unreachable`
 on a program that compiled clean; a message cannot be attached at run time
-because `assert_eq` lowers to `println` and so demands `Stdout` on the
+because `assert_eq` lowers to `println` and so demands `Console` on the
 containing function (#2107). The cost, accepted: a comparison that is written
 but never executed no longer compiles. `vibe check` does not run this pass, so
 the refusal lands on `vibe build` / `vibe run` / `vibe test`. While either side

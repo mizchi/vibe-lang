@@ -1,9 +1,9 @@
-//# The ambient `println` / `print` builtins carry the `Stdout` row (#2107).
+//# The ambient `println` / `print` builtins carry the `Console` row (#2107).
 //
 // They used to carry none. The registry entry read
 // `CtFn(reg_p1(CtString), CtUnit, None)` -- the same "pure" spelling `assert`
 // and `map_has` use -- while codegen lowered both names straight onto
-// `Stdout::write_stream` / `Stdout::write_char`, and `builtin_purity` already
+// `Console::write_stream` / `Console::write_char`, and `builtin_purity` already
 // classified them impure. The checker was the only part of the compiler
 // claiming these are pure, and it is the part that decides what compiles: a
 // `fn main allows ()` printed to stdout with a clean `vibe check`.
@@ -36,22 +36,24 @@ fn ok(src: String) -> Bool with Exception {
 test "a row-free function may not print" {
   let d = diags("fn f() -> Unit {\n  println(\"x\")\n}\n")
   assert(Array::length(d) == 1)
-  assert(String::contains(Array::get(d, 0), "Stdout"))
+  assert(String::contains(Array::get(d, 0), "Console"))
+  assert(!String::contains(Array::get(d, 0), "Stdout"))
   let e = diags("fn f() -> Unit {\n  print(\"x\")\n}\n")
   assert(Array::length(e) == 1)
-  assert(String::contains(Array::get(e, 0), "Stdout"))
+  assert(String::contains(Array::get(e, 0), "Console"))
+  assert(!String::contains(Array::get(e, 0), "Stdout"))
 }
 
 test "the row makes it legal, and nothing else has to change" {
-  assert(ok("fn f() -> Unit with Stdout {\n  println(\"x\")\n}\n"))
-  assert(ok("fn f() -> Unit with Stdout {\n  print(\"x\")\n}\n"))
+  assert(ok("fn f() -> Unit with Console {\n  println(\"x\")\n}\n"))
+  assert(ok("fn f() -> Unit with Console {\n  print(\"x\")\n}\n"))
 }
 
 test "the requirement travels through a caller" {
   // The escape was reachable one call deep just as easily: a helper that
   // prints, called from a function that declares nothing.
   assert(!ok("fn shout(s: String) -> Unit {\n  println(s)\n}\n\nfn f() -> Unit {\n  shout(\"x\")\n}\n"))
-  assert(ok("fn shout(s: String) -> Unit with Stdout {\n  println(s)\n}\n\nfn f() -> Unit with Stdout {\n  shout(\"x\")\n}\n"))
+  assert(ok("fn shout(s: String) -> Unit with Console {\n  println(s)\n}\n\nfn f() -> Unit with Console {\n  shout(\"x\")\n}\n"))
 }
 
 test "an explicitly pure entry may not print" {
@@ -73,7 +75,7 @@ test "inspect still expands without an import" {
   // `println` / `assert_true` before the checker runs (#1571), which is why
   // the snapshot assertion needs no import. Giving println a row must not
   // cost that: a `test` block is granted the standard test effect set, which
-  // includes Stdout.
+  // includes Console.
   assert(ok("test \"snap\" {\n  inspect(1 + 1, \"2\")\n}\n"))
 }
 
@@ -86,5 +88,5 @@ test "a source definition of the name owns it" {
   // ...and a user definition that really does print still has to say so,
   // because the `print` INSIDE it is the builtin.
   assert(!ok("fn println(s: String) -> Unit {\n  print(\"S\")\n}\n"))
-  assert(ok("fn println(s: String) -> Unit with Stdout {\n  print(\"S\")\n}\n"))
+  assert(ok("fn println(s: String) -> Unit with Console {\n  print(\"S\")\n}\n"))
 }

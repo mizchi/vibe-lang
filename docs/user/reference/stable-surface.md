@@ -102,7 +102,7 @@ of each item is [spec/syntax.md](syntax.md) and the
   ahead of execution — a bare `trap: RuntimeError: unreachable` on a program
   that had compiled clean carried no message and no position, and a message
   cannot be attached at run time because `assert_eq` lowers to `println` and so
-  demands `Stdout` on the containing function (#2107). The refusal lands on
+  demands `Console` on the containing function (#2107). The refusal lands on
   `vibe build` / `vibe run` / `vibe test`; `vibe check` does not run that pass.
   The accepted cost: a comparison that is written but never executed no longer
   compiles.
@@ -413,9 +413,9 @@ The stable symbols listed under "Key Builtins" in the
   removed from the language in #1324, and `Result::` has zero registry rows.
   `tap` / `tap_some` moved to `@vibe/console` in #2102 (`tap_ok` / `tap_err`
   were removed in #1324).
-- **I/O** (an effect is required): `println` / `print` (`{Stdout}`, builtin) and
+- **I/O** (an effect is required): `println` / `print` (`{Console}`, builtin) and
   `@vibe/console`'s `read_line` (`{Stdin}`). `sh` / `sh_lines` (structured
-  shell) carry **`{Process}`**, not `{Stdout}`.
+  shell) carry **`{Process}`**, not `{Console}`.
 
 > **Adding** a prelude symbol is a Minor. **Removing** one, or changing its
 > signature, is a Major.

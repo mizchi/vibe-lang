@@ -152,7 +152,7 @@ kebab(`standard_host_provider_resource_defaults`) **minus the labels that
 only alias another provider's fields**, which is exactly this rule.
 
 **One WIT function per raw field, not per registry spelling.**
-`Stdout::write_stream` and `Console::write_stream` both emit
+`Console::write_stream` and `Console::write_stream` both emit
 `vibe.stdout_write_stream` (`linked_compile.vibe`
 `need_stdout_write_stream_builtin`; #1460, no ABI consequence). The catalog
 therefore has `stdout.write-stream` once. `Console::write_stream` is an
@@ -454,7 +454,7 @@ Two rules keep this from becoming a second import section:
   it keeps a module built before any of this correct without a version
   check.
 - **The grant label is not the field name.** Today's JSON has no provider
-  labels. `stdout_write_stream` is emitted for `Stdout::write_stream`,
+  labels. `stdout_write_stream` is emitted for `Console::write_stream`,
   `Console::write_stream`, and `println` / `print`. A host that guessed
   `Stdout` from the field would authorize a `Console` program under the
   wrong grant, or refuse a valid `Console` grant. The gated `field_labels`
@@ -727,7 +727,7 @@ What the column buys, in the order the launcher uses it:
 |---|---|---|
 | `check` (2.6 MB) | `Env::get` and the cache write trap in the vfs wrap | `env.get`, `fs.write-bytes`, `fs.publish-immutable-text` are rows; served |
 | `fmt` in place | the write traps | `fs.write-file` is a row; served |
-| every verb | output returned as one string at exit | `stdout.write-stream` is a row; a command prints as it goes through the same `Stdout::write_stream` the monolithic CLI already calls |
+| every verb | output returned as one string at exit | `stdout.write-stream` is a row; a command prints as it goes through the same `Console::write_stream` the monolithic CLI already calls |
 
 The result frame stays mandatory (`vibe-command-result-v1\t<exit>\n`), because
 its job — a trapped command can never read as success — does not change. Its

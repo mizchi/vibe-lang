@@ -408,8 +408,8 @@ fn maybe_use_cache() -> String with Fs::Read[CacheDir]? {
   }
 }
 
-fn main allows Fs::Read[CacheDir]? + Stdout[Process::Root] {
-  Stdout::write_stream(maybe_use_cache())
+fn main allows Fs::Read[CacheDir]? + Console[Process::Root] {
+  Console::write_stream(maybe_use_cache())
 }
 ```
 

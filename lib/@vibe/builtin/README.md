@@ -59,7 +59,7 @@ Boundary enforcement is active in:
 - effect の種類は責務に合わせる:
   - file/path: `with Fs` / `with Env`
   - network: `with Net`
-  - stdio: `with Stdin` / `with Stdout`
+  - stdio: `with Stdin` / `with Console`
   - async runtime: `with Async`
 - 新規 API を追加する場合、pure 変換ロジックは pure module に置き、effect module には混在させない。
 - 実験 API は runtime wrapper 側へ隔離し、必要な unstable flag をドキュメントに明記する。

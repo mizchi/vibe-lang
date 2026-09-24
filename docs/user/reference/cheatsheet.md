@@ -21,11 +21,12 @@ rest of the tty surface (`eprint` / `eprintln` on `Stderr`, `read_line`,
 `read_all`). `@vibe/builtin`'s older `stdout_write` / `stdout_writeln` are
 gone (#2102) -- they duplicated names above.
 
-The row is `Console`, the current tty capability. `println` still *lowers* onto
-the legacy `Stdout` label internally, and declaring `Console` authorizes the
-legacy three (#2102/#2117) -- one way only, so a row declaring just `Stdout`
-cannot reach `Console::read_stream`. The book, README and installer teach this
-same program; `scripts/test_vibe_install_hello.sh` checks they still agree.
+The row you write is `Console`. A missing `println` row is reported as
+`Console`, not as the legacy `Stdout` label `println` still carries
+internally. Declaring `Console` authorizes that label and the legacy three
+(#2102/#2117) -- one way only, so a row declaring just `Stdout` cannot reach
+`Console::read_stream`. The book, README and installer teach this same
+program; `scripts/test_vibe_install_hello.sh` checks they still agree.
 
 ```bash
 vibe run hello.vibex       # compile & execute
@@ -336,7 +337,7 @@ fn fact(n: Int) -> Int {
 }
 fn identity[T](x: T) -> T { x }                // generic
 fn show[T: Eq + Ord](x: T) -> T { x }          // trait bounds
-fn hello() -> Unit with Stdout { println("hi") }
+fn hello() -> Unit with Console { println("hi") }
 // #1429: the effect row has exactly one spelling, plus one for the empty row.
 //   with A + B      the row
 //   with ()         the explicitly empty row
@@ -796,7 +797,7 @@ Iterator::map(xs, compose(parse, render))
 > [`lib/@vibe/builtin/pipeline_ergonomics_test.vibe`](../../../lib/@vibe/builtin/pipeline_ergonomics_test.vibe)
 > (`vibe test lib/@vibe/builtin/pipeline_ergonomics_test.vibe`). The
 > combinators are `@vibe/builtin` exports and `tap` / `tap_some` moved to
-> `@vibe/console` (#2102 — they carry `Stdout`), so a file must `import` them
+> `@vibe/console` (#2102 — they carry `Console`), so a file must `import` them
 > and sit where it can reach those packages — `import` paths may not escape the file's root
 > directory, so standalone `examples/` files cannot reach `lib/@vibe/builtin/`.
 > (`Result` and the `tap_ok`/`tap_err` railway taps were prelude exports until
@@ -1550,9 +1551,9 @@ hand-declared `Result`).
 `tap` runs a side effect on the value and returns it unchanged — observe a
 stage without breaking the `|>` chain. `tap_some` observes only the `Some`
 track. Both are `@vibe/console` exports (`lib/@vibe/console/tui.vibe`) — they
-carry `Stdout` in their signature, which is why they live there and not beside
+carry `Console` in their signature, which is why they live there and not beside
 `Int::abs` (#2102) — so import them, and note that observing with a print costs
-the `Stdout` effect on the chain. (`tap_ok` / `tap_err` were removed with
+the `Console` effect on the chain. (`tap_ok` / `tap_err` were removed with
 the prelude `Result` in #1324.)
 
 <!-- doctest-skip: 未定義名 (x / next_stage / opt) を参照する構文提示の断片 -->
@@ -1753,8 +1754,8 @@ let greet: (String) -> Unit with Logger = (name) -> {
   perform Logger::Log("hello \{name}")
 }
 
-// the handler arm prints, so the executable entry carries Stdout
-fn main allows Stdout {
+// the handler arm prints, so the executable entry carries Console
+fn main allows Console {
   handle { greet("world") } with {
     Logger::Log(msg) => {
       println(msg)
@@ -3060,13 +3061,13 @@ cannot interpolate a value of type `F`: it has no Show renderer
 ### capability builtin の呼び出しも arity と引数型が検査される (#1513 で解決)
 
 かつて `Stdout::*` / `Env::*` / `Stdin::*` / `Fs::read_file` は未検査で、
-`Stdout::write_stream(42)` が compile も実行も成功して garbage を出した。
+`Console::write_stream(42)` が compile も実行も成功して garbage を出した。
 今は両方とも check 時にスパン付きで落ちる:
 
 ```vibe skip
 // doctest-skip: intentionally rejected — the diagnostics are the point
-Stdout::write_stream(42)      // argument type mismatch for Stdout::write_stream
-Stdout::write_stream()        // function arity mismatch: expected 1 args, got 0
+Console::write_stream(42)      // argument type mismatch for Console::write_stream
+Console::write_stream()        // function arity mismatch: expected 1 args, got 0
 ```
 
 `Array::*` / `String::*` / `Bytes::*` / ユーザー定義関数と同じ扱いに
@@ -3106,7 +3107,7 @@ test "n" with Fs { .. }          // NG: a block grants its row -- write `allows 
 **A named `test` / `bench` / `example` may write a row after its name**
 (#1508). A test is an entry point, so the row is a **grant** and the keyword
 is `allows`, as on `fn main allows ..` (ADR-0088). The declared row
-**widens** the ambient row (`{ Fs, Env, Console, Stdin, Stdout, Stderr,
+**widens** the ambient row (`{ Fs, Env, Console, Stdin, Console, Stderr,
 Process, Profiler, Error, Exception }`; `Console` is the current name for the
 tty, the three older labels are legacy) rather than replacing it -- writing
 `allows Http` keeps the defaults `assert` needs, such as `Exception`. An

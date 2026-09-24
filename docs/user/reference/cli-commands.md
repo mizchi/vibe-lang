@@ -181,7 +181,7 @@ Line classification:
   (Richer printing is blocked on known gaps: the `println`/`print` builtins
   have no codegen lowering in bare FS-mode compiles, `@vibe/console`'s
   wrappers drag `vibe::*` host imports the standalone runner does not
-  define, and `Stdout::write_char` writes the raw tagged value.)
+  define, and `Console::write_char` writes the raw tagged value.)
 - REPL commands: `:help`, `:quit`/`:q`, `:list` (print the buffer),
   `:clear`, `:load <file>` (append a file to the buffer, validated with
   rollback), `:type <expr>` (inferred type, backed by the `vibe type-at`

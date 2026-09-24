@@ -38,22 +38,9 @@ hi vibe
 ことはなく、呼び出しから推論された上で、あなたが書いたものと突き合わされ
 ます。シグネチャに書き忘れた関数はコンパイルされません。
 
-`Console` が端末のケーパビリティです。`Stdin` / `Stdout` / `Stderr` はその
-一部を指す古いラベルで、まだ受け付けられます。`allows Console` はこれらを
-覆いますが、逆は成り立ちません。狭い方を求めれば狭い方が来ます。
-
-```vibe skip
-// skip: `allows Stdout` は `Console::` の操作に届かない
-fn main allows Stdout {
-  Console::write_stream("x")
-}
-```
-
-```
-effect row mismatch for 'main': missing { Console::write_stream }
-(declared { Stdout }, requires { Console::write_stream, Stdout })
-hint: add 'allows Console::write_stream + Stdout' to 'main'
-```
+`Console` が端末のケーパビリティです。書く名前はこれです。`Stdin`、
+`Stdout`、`Stderr` はコンパイラがまだ受け付ける古いラベルで、それぞれ
+自分の操作しか覆わず、どれも `Console` は覆いません。
 
 ## `with` は要求、`allows` は付与
 

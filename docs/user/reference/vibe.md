@@ -90,8 +90,8 @@ Rules:
 - Current builtin mapping (the row tag each entry carries in
   `lib/@vibe/compiler/core/builtin_registry.vibe`):
   - `sh(...)` requires `{Process}`
-  - `Stdout::write_char(...)` requires `{Stdout}`
-  - `Stdout::write_stream(...)` requires `{Stdout}`
+  - `Console::write_char(...)` requires `{Console}`
+  - `Console::write_stream(...)` requires `{Console}`
   - `Stdin::read_char()` requires `{Stdin}`
   - `Stdin::read_stream(...)` requires `{Stdin}`
   - `sleep(...)` requires `{Async}`
@@ -228,8 +228,8 @@ Rules:
 > declared row and the requirement never surfaced at the call site:
 >
 > ```vibe skip
-> // error (ENFORCED — #1361): main declares only { Stdout } but reaches Env
-> let main = () -> Unit with Stdout {
+> // error (ENFORCED — #1361): main declares only { Console } but reaches Env
+> let main = () -> Unit with Console {
 >   let read_home = () -> String with Env { Env::get("HOME") }
 >   println(read_home())
 > }
@@ -351,13 +351,13 @@ String:
 - `String::equals(left, right)` -> `Bool`
 
 StdIO (wasi stream primitives for wasm/component-friendly interop):
-- `Stdout::write_char(code)` -> `Unit` with `{Stdout}`
-- `Stdout::write_stream(text)` -> `Unit` with `{Stdout}` (chunk write)
+- `Console::write_char(code)` -> `Unit` with `{Console}`
+- `Console::write_stream(text)` -> `Unit` with `{Console}` (chunk write)
 - `Stdin::read_char()` -> `Int` with `{Stdin}` (`-1` = EOF)
 - `Stdin::read_stream(max-bytes)` -> `String` with `{Stdin}` (`""` = EOF/error)
 - component WIT/wasm import mapping:
-  - `Stdout::write_char` -> `wasi:cli/stdout@0.2.0#get-stdout` + `wasi:io/streams@0.2.0#[method]output-stream.blocking-write-and-flush`
-  - `Stdout::write_stream` -> same as `Stdout::write_char` (single host call for whole chunk)
+  - `Console::write_char` -> `wasi:cli/stdout@0.2.0#get-stdout` + `wasi:io/streams@0.2.0#[method]output-stream.blocking-write-and-flush`
+  - `Console::write_stream` -> same as `Console::write_char` (single host call for whole chunk)
   - `Stdin::read_char` -> `wasi:cli/stdin@0.2.0#get-stdin` + `wasi:io/streams@0.2.0#[method]input-stream.blocking-read`
   - `Stdin::read_stream` -> same as `Stdin::read_char` (cabi read-buffer -> vibe string)
 

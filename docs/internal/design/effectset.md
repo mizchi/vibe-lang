@@ -280,7 +280,7 @@ effect_effectset_param_expansion.vibe)。
 どちらの表にも載っていなかった (call-graph map は top-level SLet/SLetMut
 のみ、overlay は関数型パラメータのみ) ため、`f()` は何もリークせず、
 closure 本体は自分の宣言 row の下で自己充足していた — つまり
-`with Stdout` しか宣言していない関数から `Env` に到達できた。同じ walk
+`with Console` しか宣言していない関数から `Env` に到達できた。同じ walk
 を使う doctest / `vibe test` の cache 判定 (`file_entry_cacheable` /
 `file_tests_cacheable`) もこれを決定的とみなしていた。ELet/ELetRec/ELetMut
 で binding を overlay に登録することで両方閉じている。実測: この変更で

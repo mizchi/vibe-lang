@@ -152,6 +152,17 @@ export enum EffectError {
 // `throw` to `perform Exception::Throw`); EEEffectfulCallOutsideEffect stays --
 // check_async_effects_expr still reports it for async primitives.
 
+/// The tty the reader writes is `Console`. `Stdin` / `Stdout` / `Stderr`
+/// are legacy labels `println` and the old operations still carry. A hint
+/// that pastes them tells the reader to write the name the book retired.
+fn spell_legacy_tty(item: String) -> String {
+  if item == "Stdin" || item == "Stdout" || item == "Stderr" {
+    "Console"
+  } else {
+    item
+  }
+}
+
 /// #1429: render a stored row as the SOURCE spelling the reader must type.
 /// Rows are stored comma-joined; the syntax is `+`-separated. Every `hint:`
 /// below hands the reader something to paste into their code, so it has to go
@@ -159,26 +170,72 @@ export enum EffectError {
 /// to write syntax the compiler is migrating away from (and, once the braced
 /// form is removed, syntax it rejects outright).
 ///
-/// The set-valued parts of the message (`missing { .. }`, `requires { .. }`)
-/// deliberately keep braces: those render a SET difference, not source.
+/// Legacy tty labels are spelled `Console`, and a second `Console` is
+/// dropped. The set-valued parts of the message (`missing { .. }`,
+/// `requires { .. }`) use `row_set_for_reader` for the same spelling.
 fn row_as_source(row: String) -> String {
   let parts = row_items_top_level(row)
   let n = Array::length(parts)
   let mut acc = ""
   let mut k = 0
   let mut i = 0
+  let mut any = false
+  let mut seen_console = false
   while i < n {
     let item = Array::get(parts, i)
     let shown = if row_item_kind_is_unspellable(item) {
       k = k + 1
       String::concat("Exception[", String::concat(unspellable_kind_alias(k), "]"))
     } else {
-      item
+      spell_legacy_tty(item)
     }
-    acc = if i == 0 {
-      shown
+    let skip = shown == "Console" && seen_console
+    if shown == "Console" {
+      seen_console = true
     } else {
-      String::concat(acc, String::concat(" + ", shown))
+      ()
+    }
+    if !skip {
+      acc = if !any {
+        shown
+      } else {
+        String::concat(acc, String::concat(" + ", shown))
+      }
+      any = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  acc
+}
+
+/// Same spelling as `row_as_source`, joined the way a set difference is
+/// printed (`A, B`). What the reader declared is not passed through here.
+fn row_set_for_reader(row: String) -> String {
+  let parts = row_items_top_level(row)
+  let n = Array::length(parts)
+  let mut acc = ""
+  let mut i = 0
+  let mut any = false
+  let mut seen_console = false
+  while i < n {
+    let shown = spell_legacy_tty(Array::get(parts, i))
+    let skip = shown == "Console" && seen_console
+    if shown == "Console" {
+      seen_console = true
+    } else {
+      ()
+    }
+    if !skip {
+      acc = if !any {
+        shown
+      } else {
+        String::concat(acc, String::concat(", ", shown))
+      }
+      any = true
+    } else {
+      ()
     }
     i = i + 1
   }
@@ -347,9 +404,9 @@ export fn effect_error_to_string(err: EffectError) -> String {
         "effect row mismatch"
       }
       let detail = if String::length(declared) > 0 {
-        String::concat(" (declared { ", String::concat(declared, String::concat(" }, requires { ", String::concat(required, " })"))))
+        String::concat(" (declared { ", String::concat(declared, String::concat(" }, requires { ", String::concat(row_set_for_reader(required), " })"))))
       } else {
-        String::concat(" (no 'with' clause, requires { ", String::concat(required, " })"))
+        String::concat(" (no 'with' clause, requires { ", String::concat(row_set_for_reader(required), " })"))
       }
       // ADR-0088: an entry point (`main` / `_start`, a `test` / `bench` /
       // `example` block) GRANTS its row, so the edit it is told is `allows`;
@@ -386,7 +443,7 @@ export fn effect_error_to_string(err: EffectError) -> String {
       } else {
         hint
       }
-      let body = String::concat(head, String::concat(": missing { ", String::concat(missing, String::concat(" }", String::concat(detail, hint)))))
+      let body = String::concat(head, String::concat(": missing { ", String::concat(row_set_for_reader(missing), String::concat(" }", String::concat(detail, hint)))))
       // #1514: marker LAST so the hint line stays the visible tail; the decoder
       // strips it before the user ever sees the string.
       if off >= 0 {
@@ -3633,7 +3690,7 @@ fn unqualified_builtin_effect(name: String) -> Option[String] {
   || name == "vibe_process_exit_raw" {
     Some("Process")
   } else if name == "println" || name == "print" {
-    Some("Stdout")
+    Some("Console")
   } else if name == "vibe_fs_stat_token_raw" {
     Some("Fs")
   } else if name == "vibe_tcp_connect_raw" || name == "vibe_tcp_read_raw"
