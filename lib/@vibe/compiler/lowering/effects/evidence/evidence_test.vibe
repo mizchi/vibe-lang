@@ -109,6 +109,40 @@ test "a higher-order row-variable callee is admitted with an inert literal argum
   inspect(Array::length(evidence_dict_pass(ho_row_program("e"), "main")) == 0, content = "true")
 }
 
+/// Codex on #3059: a literal that calls a function it CAPTURES -- here the
+/// enclosing function's parameter `h`, whose row carries `Ask` -- can perform
+/// the effect even though its own body names no `perform` and no needing
+/// function. `user(h) = side(1, (y) -> h(y))`, handled in `main`.
+fn captured_call_program() -> Array[Stmt] {
+  [
+    SEffectDef(false, "Ask", [], [("Get", [], TyName("Int"))]),
+    SLet(false, false, "ask_plus", None, EFn([], [], [
+      ("v", Some(TyName("Int")))
+    ], Some(TyName("Int")), Some("Ask"), ECall(EIdent("perform", 0), [
+      ECall(EIdent("Ask::Get", 0), [], 0)
+    ], 0))),
+    SLet(false, false, "side", None, EFn([], [], [
+      ("n", Some(TyName("Int"))),
+      ("g", Some(TyFn([TyName("Int")], TyName("Int"), None)))
+    ], Some(TyName("Int")), Some("e"), ECall(EIdent("g", 0), [EIdent("n", 0)], 0))),
+    SLet(false, false, "user", None, EFn([], [], [
+      ("h", Some(TyFn([TyName("Int")], TyName("Int"), Some("Ask"))))
+    ], Some(TyName("Int")), Some("Ask"), ECall(EIdent("side", 0), [
+      EInt(1),
+      EFn([], [], [("y", Some(TyName("Int")))], Some(TyName("Int")), None, ECall(EIdent("h", 0), [
+        EIdent("y", 0)
+      ], 0))
+    ], 0))),
+    SLet(false, false, "main", None, EFn([], [], [], Some(TyName("Int")), Some("Stdout"), EHandle(ECall(EIdent("user", 0), [
+      EIdent("ask_plus", 0)
+    ], 0), [(PCtor("Ask::Get", []), ECall(EIdent("resume", 0), [EInt(42)], 0))])))
+  ]
+}
+
+test "a literal calling a captured function stays opaque" {
+  inspect(Array::length(evidence_dict_pass(captured_call_program(), "main")) > 0, content = "true")
+}
+
 test "a higher-order row-variable callee stays opaque when the argument could perform" {
   // A NAME in the function-typed position: its row is not readable here.
   let named = ho_row_program_with("e", EIdent("ask_plus", 0))
