@@ -2998,6 +2998,24 @@ fn note_imported_declaration_identities(dep_env: TypeEnv, raw_path: String, name
   }
   note_identity_closure(selected_roots, String::concat("imported from '", String::concat(raw_path, "'")), defs, markers, walked, keep, carried, seen, unresolved)
   note_identity_closure(closure_roots, String::concat("brought in by an import from '", String::concat(raw_path, "'")), defs, markers, walked, keep, carried, seen, unresolved)
+  // An import alias is a NAME in this module too (Codex on #3076): `X as Y`
+  // projects `Y -> X`, and another import's own `Y` would be shadowed by it,
+  // or shadow it, with no diagnostic. The alias is recorded under its local
+  // name with the source's definition, so a different `Y` is refused.
+  let mut ai = 0
+  while ai < Array::length(names) {
+    let item = Array::get(names, ai)
+    match item.alias {
+      Some(local) => if local != item.name {
+        match identity_definition(defs, markers, item.name) {
+          Some((def, ty)) => note_imported_type_identity(local, def, ty, String::concat("`", String::concat(local, String::concat("` (`", String::concat(item.name, String::concat("` imported under that name from '", String::concat(raw_path, "')")))))), seen, unresolved),
+          None => ()
+        }
+      },
+      None => ()
+    }
+    ai = ai + 1
+  }
 }
 
 fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_path: String, names: Array[ImportItem], declaration_names: Array[ImportItem], cache: Array[(String, TypeEnv)], unresolved: Array[String], trait_claims: Array[(String, String, Bool, String)], reexport_surface_only: Bool, local_types: Array[String], seen_types: Array[(String, Option[TypeDef], Type, String)]) -> TypeEnv {
