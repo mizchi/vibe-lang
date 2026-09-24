@@ -393,8 +393,16 @@ export fn contract_shared_import_raws_scan(text: String) -> Array[String] with E
     }
     if at_line_start && starts_with_keyword_at(text, kw, "import") {
       pos = kw
-      let stmt_end = scan_header_stmt_end(text, len, pos)
-      let tokens = lex(text[pos: stmt_end])
+      let mut stmt_end = scan_header_stmt_end(text, len, pos)
+      let mut tokens = lex(text[pos: stmt_end])
+      // A newline outside braces is not a statement end in a token-based
+      // grammar when the import is still waiting for its path or its `{`
+      // (`import @scope/pkg` / `{ Thing }` on the next line), so the span is
+      // extended one line at a time until the prefix is complete.
+      while stmt_end < len && String::char_code_at(text, stmt_end) == 10 && shared_import_prefix_open(tokens) {
+        stmt_end = scan_header_stmt_end(text, len, stmt_end + 1)
+        tokens = lex(text[pos: stmt_end])
+      }
       // Every `import @scope/pkg {` in the span, not only the first: the
       // contract grammar is token-based, so two shared imports may share a
       // line, and `scan_header_stmt_end` returns the end of that line.
@@ -426,6 +434,32 @@ export fn contract_shared_import_raws_scan(text: String) -> Array[String] with E
     }
   }
   raws
+}
+
+/// Whether `tokens` end inside an import that has not reached its `{` yet:
+/// `import` alone, or `import @scope/pkg` with nothing after the path.
+fn shared_import_prefix_open(tokens: Array[Token]) -> Bool {
+  let mut n = Array::length(tokens)
+  let mut trailing = true
+  while trailing && n > 0 {
+    match Array::get(tokens, n - 1) {
+      TEof => n = n - 1,
+      TSemicolon => n = n - 1,
+      _ => trailing = false
+    }
+  }
+  if n == 0 {
+    false
+  } else {
+    match Array::get(tokens, n - 1) {
+      TImport => true,
+      TIdent(path) => n >= 2 && String::length(path) > 1 && String::char_code_at(path, 0) == 64 && match Array::get(tokens, n - 2) {
+        TImport => true,
+        _ => false
+      },
+      _ => false
+    }
+  }
 }
 
 /// Per-process memo of each contract's directory-shared import spellings,
