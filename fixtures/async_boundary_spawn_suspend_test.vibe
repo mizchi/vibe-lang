@@ -1,0 +1,42 @@
+/// #2065 wall 2: an `Async` entry whose body spawns a suspend-class task.
+///
+/// The injected entry boundary used to be refused beside
+/// `TaskGroup::spawn_suspend`, as "mixing the step convention for one effect".
+/// That mismatch was only a spelling. The boundary arm was tail-resumptive
+/// because it wrote `resume(v)` in callee position. When the program spawns
+/// suspend-class tasks, the arm now binds `resume` first, which makes the same
+/// handler suspend-class (linked_compile.vibe, `lc_inject_async_sleep_boundary`),
+/// and it goes inside the entry's exception boundary so that the suspend
+/// lowering sees no nested handle.
+///
+/// What remained was the body handed to `TaskGroup::run`: it sits under a row
+/// variable. That body is Async-free at the call site because
+/// `TaskGroup::spawn_suspend` has a CONCRETE row without `Async`, so it
+/// discharges whatever its task performs. `scps_inert_taint` now reads it that
+/// way, including after the task literal has been lifted to a top-level name
+/// or its step clone.
+///
+/// 21 + 21 = 42. The value can only come from the spawned body running to
+/// completion through the in-guest scheduler while the entry's boundary
+/// settles the `sleep`.
+///
+/// Host futures and streams under such an entry stay refused
+/// (`err_async_boundary_mixed_operand.vibe`,
+/// `err_async_boundary_host_waitable_spawn.vibe`): a spawned task cannot yet
+/// park on a host waitable (ADR-0089 D2's third park kind).
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+fn main() -> Int allows Async + Exception {
+  sleep(1)
+  TaskGroup::run((g) -> {
+    let h = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      let _ = perform Async::Suspend(0)
+      21
+    })
+    TaskGroup::pump_all(g)
+    let v = TaskHandle::join(h)
+    v + 21
+  })
+}

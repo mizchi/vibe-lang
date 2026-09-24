@@ -2041,14 +2041,13 @@ fn lc_entry_declares_async(stmts: Array[Stmt], entry_name: String) -> Bool {
 ///      above. The arm is TAIL-RESUMPTIVE: in an entry-row-Async program
 ///      with no suspend-class handler of its own this compiles on the
 ///      cheap evidence path, and `sleep_blocking` (the row-free host
-///      sleep) preserves the blocking semantics. A program that ALSO uses
-///      suspend-class Async handlers (e.g. TaskGroup) under an
-///      Async-carrying entry row is rejected by the existing
-///      convention-mixing guard -- drop `Async` from the entry row and let
-///      TaskGroup discharge it, or keep the Async entry and skip the tasks
-///      (fixture err_async_boundary_mixed_convention pins the message; the
-///      guard's own comment records why the two cannot be reconciled,
-///      tracked in #2065).
+///      sleep) preserves the blocking semantics. A program that ALSO
+///      spawns suspend-class tasks (`TaskGroup::spawn_suspend`) gets the
+///      suspend-class spelling of the same arm (`resume` bound first),
+///      placed inside the exception boundary (#2065 wall 2,
+///      async_boundary_spawn_suspend_test.vibe). Host futures and streams
+///      beside such tasks stay refused: a task cannot park on a host
+///      waitable yet (err_async_boundary_host_waitable_spawn.vibe).
 ///
 /// Keyed on the entry row (like lc_wrap_entry_error_boundary): programs
 /// whose entry row has no `Async` -- including the `__no_entry__`
@@ -3533,6 +3532,19 @@ fn lc_rename_sleep_scoped(e: Expr) -> Expr {
   }
 }
 
+/// The arm set `wrap_entry_exception_boundary` installs: exactly one arm, on
+/// `Exception::Throw`.
+fn lc_is_exception_boundary_arms(arms: Array[(Pat, Expr)]) -> Bool {
+  if Array::length(arms) != 1 {
+    false
+  } else {
+    match Array::get(arms, 0).0 {
+      PCtor(name, _) => name == "Exception::Throw",
+      _ => false
+    }
+  }
+}
+
 fn lc_expr_has_spawn_suspend(e: Expr) -> Bool {
   match e {
     ECall(EIdent(name, _), args, _) => {
@@ -3931,8 +3943,17 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
   let sleep_machinery = calls_sleep && !user_defines_sleep && (entry_has_async || has_async_handle)
   let hf_machinery = calls_host_future && !user_defines_host_future && entry_has_async
   let hs_machinery = calls_host_stream && !user_defines_host_stream && entry_has_async
-  if entry_has_async && (sleep_machinery || hf_machinery || hs_machinery) && has_spawn_suspend {
-    "the entry's Async boundary and TaskGroup::spawn_suspend are mixing the step convention for one effect. Either drop `Async` from the entry row and let TaskGroup discharge it (row-free entry + TaskGroup::run), or keep the Async entry and use `sleep`/`await` directly instead of spawning tasks. Both together stay refused: a spawned task performs Async, so the body handed to `TaskGroup::run` (a function-typed parameter under a row variable) is not provably Async-free at the call site -- only a body that performs no Async is (#2065)"
+  // #2065 wall 2: a SLEEP-only boundary no longer refuses spawn_suspend. The
+  // mismatch was only a spelling (the boundary arm is tail-resumptive because
+  // it writes `resume(v)` in callee position); when the program spawns
+  // suspend-class tasks the arm binds `resume` first, which makes the same
+  // handler suspend-class, and `TaskGroup::spawn_suspend` discharges its
+  // tasks' `Async` (its own row has none) so the body handed to
+  // `TaskGroup::run` is Async-free at the call site. Host futures and host
+  // streams under suspend-class tasks stay refused: parking a task on a host
+  // waitable is ADR-0089 D2's third `park_kind`, which is not built.
+  if entry_has_async && (hf_machinery || hs_machinery) && has_spawn_suspend {
+    "the entry's Async boundary settles host futures/streams, and TaskGroup::spawn_suspend tasks cannot yet park on a host waitable (ADR-0089 D2's third park kind). Either drop `Async` from the entry row and let TaskGroup discharge it (row-free entry + TaskGroup::run), or keep the Async entry and await the host future/stream directly instead of from a spawned task (#2065)"
   } else {
     // Keying (#1218, tightened after gate 19 regressed on the first cut):
     //
@@ -4260,7 +4281,14 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
         let settle = EIf(EBinOp("<", req, EInt(0), -1), ECall(EIdent("sleep_blocking", -1), [
           EBinOp("-", EInt(0), req, -1)
         ], -1), ECall(EIdent("assert", -1), [EBinOp("<", req, EInt(1), -1)], -1))
-        ESeq(settle, ECall(EIdent("resume", -1), [EInt(0)], -1))
+        if has_spawn_suspend {
+          // #2065 wall 2: suspend-class spelling -- see the guard above.
+          ESeq(settle, ELet(lc_fixed_synthetic_name("__entry_k", "review-lint: allow-fixed-synthetic-name"), EIdent("resume", -1), ECall(EIdent("__entry_k", -1), [
+            EInt(0)
+          ], -1), -1))
+        } else {
+          ESeq(settle, ECall(EIdent("resume", -1), [EInt(0)], -1))
+        }
       }
       let mut j = 0
       while j < Array::length(stmts) {
@@ -4273,9 +4301,28 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
             } else {
               body
             }
-            let wrapped = EHandle(with_cells, [
+            let async_arms: Array[(Pat, Expr)] = [
               (PCtor("Async::Suspend", [PBind("__entry_slp_req")]), arm)
-            ])
+            ]
+            // #2065 wall 2: a suspend-class boundary goes INSIDE the entry's
+            // exception boundary. The suspend lowering refuses a handle nested
+            // in its handled body, and the exception boundary (installed
+            // first) would otherwise be exactly that. Inside-out is the shape
+            // `TaskGroup::spawn_suspend` already uses -- the abortive
+            // Exception handle outside, the CPS-lowered Async handle inside --
+            // so a throw from the body still reaches the boundary diagnostic.
+            let wrapped = if has_spawn_suspend {
+              match with_cells {
+                EHandle(inner, earms) => if lc_is_exception_boundary_arms(earms) {
+                  EHandle(EHandle(inner, async_arms), earms)
+                } else {
+                  EHandle(with_cells, async_arms)
+                },
+                _ => EHandle(with_cells, async_arms)
+              }
+            } else {
+              EHandle(with_cells, async_arms)
+            }
             Array::set(stmts, j, SLet(exported, is_rec, name, ty, EFn(tps, tbs, params, ret, eff, wrapped)))
           } else {
             ()

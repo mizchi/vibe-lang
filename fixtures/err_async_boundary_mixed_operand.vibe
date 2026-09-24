@@ -1,9 +1,9 @@
-// #1342: the mixing guard must not depend on WHERE the `spawn_suspend` call
-// sits.
+// #1342 / #2065: the host-waitable guard must not depend on WHERE the
+// `spawn_suspend` call sits.
 //
-// Its walker was missing most expression arms -- no `EBinOp`, no `EMatch`, no
-// `EWhile`, no container arms -- so the same program was rejected or accepted
-// depending on the call's position. Measured, before the fix:
+// Its walker was once missing most expression arms -- no `EBinOp`, no
+// `EMatch`, no `EWhile`, no container arms -- so the same program was rejected
+// or accepted depending on the call's position. Measured, before the fix:
 //
 //   let h = TaskGroup::spawn_suspend(..)     -> rejected
 //   TaskGroup::spawn_suspend(..) + n         -> COMPILED
@@ -11,10 +11,12 @@
 // A partial walk is the worst shape for a guard: it reads as "this is checked"
 // while answering a narrower question than its message claims.
 //
-// This fixture puts the call in an OPERAND, the position that used to slip
-// through. The let-bound position is covered by
-// `err_async_boundary_mixed_convention.vibe`; the two together are what pin
-// position-independence.
+// Since #2065 a SLEEP-only boundary admits suspend-class tasks
+// (`async_boundary_spawn_suspend_test.vibe`). What stays refused is a boundary
+// that settles a host future or stream, because a spawned task cannot park on
+// a host waitable yet. This fixture puts the call in an OPERAND, the position
+// that used to slip through; `err_async_boundary_host_waitable_spawn.vibe` has
+// the let-bound position. The two together pin position-independence.
 //
 // `spawn_suspend` here is a plain local function -- the guard is a name-based
 // over-approximation, which is exactly why it has to be applied consistently
@@ -28,7 +30,7 @@ fn apply(f: (Int) -> Int) -> Int {
 }
 
 fn main() -> Int allows Async {
-  sleep(1)
+  let _fut = host_future_named("price")
   apply((n) -> {
     spawn_suspend(41) + n
   })

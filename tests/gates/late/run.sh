@@ -1469,6 +1469,10 @@ scps_check_reject "err_effect_closure_param_taint.vibe" "cannot see through" "in
 # closure and launders it into an eff-free helper must stay rejected --
 # only names bound within the literal are trusted by the inert scan.
 scps_check_reject "err_effect_closure_param_capture_launder.vibe" "cannot see through" "inertlaunder"
+# #2065 wall 2: the same laundering with the performing closure written as a
+# LITERAL argument. The discharge rule exempts a value argument only where the
+# callee's parameter type carries the effect, which `apply1`'s does not.
+scps_check_reject "err_effect_closure_literal_launder.vibe" "cannot see through" "litlaunder"
 # #1536: the former `break`-in-a-suspending-loop rejection now lives in the
 # inspect snapshot suite above. Its arm stores `resume` and never resumes, so
 # the first perform escapes with its value; the loop shape is what changed.
@@ -3428,10 +3432,11 @@ echo "[compiler-gate] ADR-0091 #zero_alloc allocation check ok"
 # lc_inject_async_sleep_boundary). Positive: a wrapper-fn `sleep` chain
 # under an Async-row main compiles and returns 42
 # (async_sleep_boundary_test.vibe -- behavior parity with the old blocking
-# builtin). Negative: adding suspend-class Async handling (TaskGroup
-# spawn_suspend) under an Async-row entry mixes conventions and must be
-# REJECTED by the ADR-0076 guard, not silently miscompiled
-# (err_async_boundary_mixed_convention.vibe).
+# builtin). Since #2065 wall 2, spawning suspend-class tasks (TaskGroup
+# spawn_suspend) under an Async-row entry COMPILES and answers 42
+# (async_boundary_spawn_suspend_test.vibe); a host future beside such tasks
+# stays REJECTED with the host-waitable diagnostic, in both positions
+# (err_async_boundary_host_waitable_spawn.vibe, err_async_boundary_mixed_operand.vibe).
 echo "[compiler-gate] 77/77 ADR-0089 D1 async sleep boundary (#1218)"
 asb89dir="_build/_gate_async_sleep89"
 rm -rf "$asb89dir"; mkdir -p "$asb89dir"
@@ -3449,21 +3454,30 @@ if [ "$asb89_pos_out" != "42" ]; then
   echo "[compiler-gate] FAIL: async_sleep_boundary_test.vibe got '$asb89_pos_out' (want 42)" >&2
   exit 1
 fi
-cp fixtures/err_async_boundary_mixed_convention.vibe "$asb89dir/neg.vibe"
+cp fixtures/async_boundary_spawn_suspend_test.vibe "$asb89dir/spawn.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$asb89dir/spawn.vibe" "$asb89dir/spawn.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$asb89dir/spawn.wasm" ]; then
+  echo "[compiler-gate] FAIL: async_boundary_spawn_suspend_test.vibe did not compile -- an Async entry spawning suspend-class tasks is refused again (#2065 wall 2)" >&2
+  cat "$asb89dir/spawn.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+asb89_spawn_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$asb89dir/spawn.wasm" 2>/dev/null | tail -1)"
+if [ "$asb89_spawn_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: async_boundary_spawn_suspend_test.vibe got '$asb89_spawn_out' (want 42)" >&2
+  exit 1
+fi
+cp fixtures/err_async_boundary_host_waitable_spawn.vibe "$asb89dir/neg.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$asb89dir/neg.vibe" "$asb89dir/neg.wasm" main >/dev/null 2>&1 || true
 if [ -s "$asb89dir/neg.wasm" ]; then
-  echo "[compiler-gate] FAIL: err_async_boundary_mixed_convention.vibe compiled successfully -- convention mixing must be rejected" >&2
+  echo "[compiler-gate] FAIL: err_async_boundary_host_waitable_spawn.vibe compiled -- a spawned task cannot park on a host waitable yet, so this must be rejected" >&2
   exit 1
 fi
-# Either guard may catch this: the ADR-0076 mixing guard, or #1707's more
-# specific one (a step-split literal landing in a plain-convention parameter,
-# which is the same root -- a step value meeting a plain call). What this pins
-# is that it is REJECTED with an actionable diagnostic, not miscompiled.
-if ! grep -qF 'mixing the step convention' "$asb89dir/neg.wasm.diag" 2>/dev/null \
-   && ! grep -qF 'hand the step object back as the value' "$asb89dir/neg.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: err_async_boundary_mixed_convention.vibe did not produce the expected diagnostic" >&2
+if ! grep -qF 'cannot yet park on a host waitable' "$asb89dir/neg.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: err_async_boundary_host_waitable_spawn.vibe did not produce the host-waitable diagnostic" >&2
   cat "$asb89dir/neg.wasm.diag" >&2 2>/dev/null || true
   exit 1
 fi
@@ -3483,8 +3497,8 @@ if [ -s "$asb89dir/negop.wasm" ]; then
   echo "[compiler-gate] FAIL: err_async_boundary_mixed_operand.vibe compiled -- the mixing guard is position-dependent again (#1342)" >&2
   exit 1
 fi
-if ! grep -qF 'mixing the step convention' "$asb89dir/negop.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: err_async_boundary_mixed_operand.vibe did not produce the mixing diagnostic" >&2
+if ! grep -qF 'cannot yet park on a host waitable' "$asb89dir/negop.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: err_async_boundary_mixed_operand.vibe did not produce the host-waitable diagnostic" >&2
   cat "$asb89dir/negop.wasm.diag" >&2 2>/dev/null || true
   exit 1
 fi

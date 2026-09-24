@@ -206,9 +206,12 @@ trampoline を将来 `wasi:http/service` の
    (debt を row-free `sleep_blocking` で settle) を注入
    (`linked_compile.vibe` `lc_inject_async_sleep_boundary`、#944 Error
    boundary と同型)。gate §77 (挙動 parity 42 + 混在規約 reject fixture)。
-   既知の制限: Async-row entry + suspend-class handler (TaskGroup) の
-   併用は ADR-0076 の混在 guard が明確な診断で reject
-   (err_async_boundary_mixed_convention.vibe)。**発見した潜在バグ**:
+   Since #2065 wall 2, an Async-row entry that spawns suspend-class tasks
+   (TaskGroup) compiles: the boundary arm takes its suspend-class spelling
+   and sits inside the exception boundary
+   (async_boundary_spawn_suspend_test.vibe). Host futures/streams beside
+   such tasks stay refused, because a task cannot park on a host waitable
+   yet (err_async_boundary_host_waitable_spawn.vibe)。**発見した潜在バグ**:
    builtin と同名の top-level `fn sleep` は従来 compiler でも arity
    miscompile ("not enough arguments on the stack") — evidence pass が
    builtin nominal row で分類し codegen が bound fn に dispatch する齟齬。
