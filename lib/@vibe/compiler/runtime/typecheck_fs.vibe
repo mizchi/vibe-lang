@@ -98,6 +98,7 @@ import @vibe/compiler/core {
   env_trait_def_names_into,
   env_type_defs,
   env_value_binding,
+  find_typedef,
   has_standard_effect_policy,
   is_alias_constructor,
   is_builtin_iterator_serialized_boundary_path,
@@ -1687,8 +1688,14 @@ fn row_bracketed_type_names_into(row: String, out: Array[String], named_out: Arr
         i = i + 1
       }
       last_ident = String::substring(row, start, i)
-      if depth > 0 && c >= 65 && c <= 90 {
-        if exception_depth > 0 {
+      // A published formal (`S$0`, #3051) is a quantified variable, never a
+      // reference to a declaration, whatever its base spelling.
+      if c >= 65 && c <= 90 && !String::contains(last_ident, "$") {
+        if depth == 0 {
+          // A row label: an effect or effect set, a reference to the
+          // declaration by that name when the dependency has one (#3036).
+          Array::push(named_out, last_ident)
+        } else if exception_depth > 0 {
           Array::push(out, last_ident)
         } else {
           Array::push(named_out, last_ident)
@@ -1702,7 +1709,8 @@ fn row_bracketed_type_names_into(row: String, out: Array[String], named_out: Arr
 }
 
 fn row_ident_char(c: Int) -> Bool {
-  c >= 65 && c <= 90 || c >= 97 && c <= 122 || c >= 48 && c <= 57 || c == 95
+  // `$` joins a published formal's marker to its spelling (`S$0`).
+  c >= 65 && c <= 90 || c >= 97 && c <= 122 || c >= 48 && c <= 57 || c == 95 || c == 36
 }
 
 /// `out` receives names that are nominal by construction (`CtEnum`,
@@ -1797,6 +1805,17 @@ fn foreign_type_name_collisions(imported: String, raw_path: String, resolved: St
 
 /// The dependency's declared nominal type names (enums, structs, aliases),
 /// published or kept in the closure that describes a published signature.
+/// As `dependency_declared_type_names`, plus effects and effect sets: the
+/// names whose identity #3036 tracks, a row label being a reference to an
+/// effect declaration just as a field type is to a struct.
+fn dependency_declared_identity_names(dep_env: TypeEnv) -> Array[String] {
+  let out: Array[String] = []
+  for def in env_type_defs(dep_env) {
+    Array::push(out, typedef_projection_name(def))
+  }
+  out
+}
+
 fn dependency_declared_type_names(dep_env: TypeEnv) -> Array[String] {
   let out: Array[String] = []
   for def in env_type_defs(dep_env) {
@@ -1983,7 +2002,279 @@ fn foreign_trait_impl_collisions(dep_env: TypeEnv, mappings: Array[(String, Stri
   }
 }
 
-fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_path: String, names: Array[ImportItem], declaration_names: Array[ImportItem], cache: Array[(String, TypeEnv)], unresolved: Array[String], trait_claims: Array[(String, String, Bool, String)], reexport_surface_only: Bool, local_types: Array[String]) -> TypeEnv {
+/// #3036: an imported trait brings its dependency's implementations along,
+/// and an implementation's target names a type by its bare spelling. A's
+/// `make() -> Err` beside B's trait with `impl Show for Err` (B's different
+/// `Err`) would let B's implementation dispatch on A's value with B's
+/// layout, so each retained implementation target joins the identity table.
+fn note_trait_impl_identities(dep_env: TypeEnv, mappings: Array[(String, String)], raw_path: String, resolved: String, dep_types: Array[String], seen: Array[(String, Type, String)], unresolved: Array[String]) -> Unit {
+  if Array::length(mappings) > 0 && !is_vpkg_types_stub_path(resolved) {
+    let mut cur = dep_env
+    let mut done = false
+    while !done {
+      let (target_names, trait_name, next) = match cur {
+        EnvEmpty => (array_empty(), "", EnvEmpty),
+        EnvTraitImpl(name, target, rest) => match trait_projection_mapping(mappings, trait_ref_name(name)) {
+          Some(_) => (collision_type_names(target, array_empty(), dep_types), trait_ref_name(name), rest),
+          None => (array_empty(), "", rest)
+        },
+        EnvTraitImplGen(name, params, _, target, rest) => match trait_projection_mapping(mappings, trait_ref_name(name)) {
+          Some(_) => (collision_type_names(target, params, dep_types), trait_ref_name(name), rest),
+          None => (array_empty(), "", rest)
+        },
+        EnvBind(_, _, rest) => (array_empty(), "", rest),
+        EnvMutCell(_, _, rest) => (array_empty(), "", rest),
+        EnvTraitDef(_, _, _, _, rest, _, _) => (array_empty(), "", rest),
+        EnvTypeDefs(_, _, rest) => (array_empty(), "", rest),
+        EnvFlat(_) => (array_empty(), "", EnvEmpty),
+        EnvCached(_, _, rest) => (array_empty(), "", rest)
+      }
+      let mut i = 0
+      while i < Array::length(target_names) {
+        let n = Array::get(target_names, i)
+        let what = String::concat("`", String::concat(n, String::concat("` (the target of `", String::concat(trait_name, String::concat("`'s implementation from '", String::concat(raw_path, "')"))))))
+        note_imported_type_identity(n, imported_type_definition(dep_env, n), what, seen, unresolved)
+        i = i + 1
+      }
+      match cur {
+        EnvEmpty => {
+          done = true
+        },
+        EnvFlat(_) => {
+          done = true
+        },
+        _ => {
+          cur = next
+        }
+      }
+    }
+  } else {
+    ()
+  }
+}
+
+/// #3036: which declaration a dependency's type name is, identified by its
+/// DEFINITION rather than by the module path that delivered it. The same
+/// declaration reaches an importer through routes whose paths cannot be
+/// canonicalised -- a package facade and the sibling file that declares it, a
+/// re-export, a signature that merely mentions it -- and every route carries
+/// the one TypeDef the declaring module checked. Two same-named declarations
+/// with different layouts carry different TypeDefs.
+///
+/// Two DISTINCT declarations whose definitions are identical (same name, same
+/// type parameters, same fields or variants with the same types in the same
+/// order) are deliberately one identity: reading one through the other's
+/// layout reads the same slot with the same type, which is not the wrong
+/// answer the refusal exists to prevent (`dup_type_same_layout_ok`).
+///
+/// The definition comes from the dependency's own env when it carries one,
+/// else from the marker `bind_type_reference_definitions` published beside a
+/// signature that mentions a type the dependency does not publish. `None`
+/// means no definition is visible -- a builtin or primitive, which is never a
+/// user declaration -- and such a name takes no part in the comparison.
+fn imported_type_definition(dep_env: TypeEnv, name: String) -> Option[Type] {
+  match find_typedef(env_type_defs(dep_env), name) {
+    Some(def) => Some(typedef_identity(def)),
+    None => match env_lookup_binding_including_surface(dep_env, type_reference_definition_marker(name)) {
+      Some(binding) => Some(binding.ty),
+      None => None
+    }
+  }
+}
+
+fn identity_formals(params: Array[String]) -> Array[Type] {
+  for p in params {
+    CtNamed(p, array_empty())
+  }
+}
+
+/// #3036: a TypeDef as a `Type`, so a definition can travel in an ordinary
+/// value binding (the reference marker below) through publication and the
+/// persistent cache. Injective over what distinguishes two declarations'
+/// layouts: the kind, the name, the formals, and every field, variant,
+/// operation or member with its type, in declaration order.
+fn typedef_identity(def: TypeDef) -> Type {
+  match def {
+    TDEnum(name, params, variants) => CtTuple([
+      CtNamed(String::concat("#typeid.enum.", name), identity_formals(params)),
+      CtRecord(for v in variants {
+        let (vname, payload) = v
+        (vname, CtTuple(payload))
+      })
+    ]),
+    TDStruct(name, fields, muts, params) => CtTuple([
+      CtNamed(String::concat("#typeid.struct.", name), identity_formals(params)),
+      CtRecord(fields),
+      CtTuple(identity_formals(muts))
+    ]),
+    TDAlias(name, params, target) => CtTuple([
+      CtNamed(String::concat("#typeid.type.", name), identity_formals(params)),
+      target
+    ]),
+    TDEffect(name, ops, params) => CtTuple([
+      CtNamed(String::concat("#typeid.effect.", name), identity_formals(params)),
+      CtRecord(for op in ops {
+        let (oname, args, ret) = op
+        (oname, CtFn(args, ret, None))
+      })
+    ]),
+    TDEffectSet(name, members) => CtNamed(String::concat("#typeid.effectset.", name), identity_formals(members))
+  }
+}
+
+/// #3036: a published env keeps only the declarations its export surface
+/// names, so a type an exported signature merely MENTIONS -- imported by this
+/// module and not re-exported (`parser_source_span.vibe`'s `source_wrap_pat`
+/// returning `@vibe/ast`'s `Pat`) -- leaves no declaration node behind. This
+/// marker carries that declaration's definition (`typedef_identity`) instead,
+/// so an importer can still tell it from a different type spelled the same
+/// way. A spelling no source identifier has, bound to a value no program can
+/// name.
+fn type_reference_definition_marker(name: String) -> String {
+  String::concat("#typeref-def:", name)
+}
+
+fn bind_type_reference_definitions(value_surface: Array[String], publication_env: TypeEnv, published: TypeEnv) -> TypeEnv {
+  let seen = array_empty()
+  let mut out = published
+  let mut i = 0
+  while i < Array::length(value_surface) {
+    match env_lookup(publication_env, Array::get(value_surface, i)) {
+      Some(t) => {
+        let names = identity_candidate_names(t, publication_env)
+        let mut j = 0
+        while j < Array::length(names) {
+          let n = Array::get(names, j)
+          if !contains_str(seen, n) {
+            Array::push(seen, n)
+            match find_typedef(env_type_defs(published), n) {
+              Some(_) => (),
+              None => match imported_type_definition(publication_env, n) {
+                Some(identity) => {
+                  out = EnvBind(type_reference_definition_marker(n), env_value_binding(identity), out)
+                },
+                None => ()
+              }
+            }
+          } else {
+            ()
+          }
+          j = j + 1
+        }
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// The bare type names `ty` refers to that `env` can give a definition for:
+/// every nominal head (`CtStruct` / `CtEnum`), and a `CtNamed` head or row
+/// label only when `env` declares it or carries its reference marker -- a
+/// formal's spelling is not a reference to a declaration.
+fn identity_candidate_names(ty: Type, env: TypeEnv) -> Array[String] {
+  let out: Array[String] = []
+  let named: Array[String] = []
+  nominal_type_names_into(ty, out, named)
+  let defs = env_type_defs(env)
+  for n in named {
+    let known = match find_typedef(defs, n) {
+      Some(_) => true,
+      None => match env_lookup_binding_including_surface(env, type_reference_definition_marker(n)) {
+        Some(_) => true,
+        None => false
+      }
+    }
+    if known && !contains_str(out, n) {
+      Array::push(out, n)
+    }
+  }
+  out
+}
+
+/// #3036: types are identified by their bare name, so two imports that bring
+/// two DIFFERENT declarations spelled the same way are unified: one module's
+/// `struct Err { code: Int }` was read through another's `struct Err { name:
+/// String }` with `vibe check` clean. #3035 refuses the clash with a type this
+/// module declares; this refuses the clash between two imports. The same
+/// declaration reached twice (directly and through a re-export) is one
+/// identity and stays legal.
+fn note_imported_type_identity(name: String, definition: Option[Type], what: String, seen: Array[(String, Type, String)], unresolved: Array[String]) -> Unit {
+  match definition {
+    Some(def) => {
+      let mut clash = ""
+      let mut same = false
+      let mut i = 0
+      while i < Array::length(seen) {
+        let (n, d, w) = Array::get(seen, i)
+        if n == name {
+          if d == def {
+            same = true
+          } else if String::length(clash) == 0 {
+            clash = w
+          }
+        }
+        i = i + 1
+      }
+      // One report per distinct definition: a definition already recorded
+      // has either been accepted or already been reported.
+      if !same {
+        if String::length(clash) > 0 {
+          Array::push(unresolved, String::concat(what, String::concat(" and ", String::concat(clash, String::concat(" are different types that share the name `", String::concat(name, "`, and the checker would treat them as one; import only one of them, or rename one of the types"))))))
+        }
+        Array::push(seen, (name, def, what))
+      }
+    },
+    None => ()
+  }
+}
+
+/// #3036: every declaration an import projects into this module, not only
+/// the names it selected. Selecting `enum Left { A(Err) }` also projects the
+/// `Err` its payload names, under that bare name, so two selected roots whose
+/// closures hold different `Err`s unify them exactly as two direct imports
+/// would. An import alias does not separate them: the alias is a synonym for
+/// the projected bare name, so `struct X as A` and another module's `struct X
+/// as B` both resolve through one `X` (measured on main: `B::{ .. }` was
+/// checked against `A`'s declaration).
+fn note_imported_declaration_identities(dep_env: TypeEnv, raw_path: String, names: Array[ImportItem], seen: Array[(String, Type, String)], unresolved: Array[String]) -> Unit {
+  let selected = array_empty()
+  let aliases = array_empty()
+  let mut i = 0
+  while i < Array::length(names) {
+    let item = Array::get(names, i)
+    Array::push(selected, item.name)
+    match item.alias {
+      Some(local) => if local != item.name {
+        Array::push(aliases, local)
+      } else {
+        ()
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+  let projected = dependency_typedef_projection(dep_env, names)
+  let mut j = 0
+  while j < Array::length(projected) {
+    let n = typedef_projection_name(Array::get(projected, j))
+    // An alias node is this import's own synonym, not a declaration.
+    if contains_str(selected, n) || !contains_str(aliases, n) {
+      let what = if contains_str(selected, n) {
+        String::concat("`", String::concat(n, String::concat("` imported from '", String::concat(raw_path, "'"))))
+      } else {
+        String::concat("`", String::concat(n, String::concat("` brought in by an import from '", String::concat(raw_path, "'"))))
+      }
+      note_imported_type_identity(n, Some(typedef_identity(Array::get(projected, j))), what, seen, unresolved)
+    } else {
+      ()
+    }
+    j = j + 1
+  }
+}
+
+fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_path: String, names: Array[ImportItem], declaration_names: Array[ImportItem], cache: Array[(String, TypeEnv)], unresolved: Array[String], trait_claims: Array[(String, String, Bool, String)], reexport_surface_only: Bool, local_types: Array[String], seen_types: Array[(String, Type, String)]) -> TypeEnv {
   let cached = lookup_env_cache(cache, resolved)
   let dep_env = match cached {
     Some(e) => e,
@@ -2001,6 +2292,12 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
     array_empty()
   }
   let collision_reported: Array[String] = []
+  // #3036: every dependency's declared type names, for the cross-import
+  // identity table (`note_imported_type_identity`).
+  let dep_types_all = dependency_declared_identity_names(dep_env)
+  // Reference markers (`type_reference_definition_marker`) for types an
+  // imported signature mentions without the dependency publishing them.
+  let carried_references: Array[(String, Type)] = []
   // Kind advice is useful only for names the module actually publishes. A
   // private declaration may remain in the TypeDef closure solely to describe
   // a public type; suggesting a different qualifier cannot make it importable.
@@ -2057,6 +2354,21 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
       let ty = match imported_ty {
         Some(t) => {
           foreign_type_name_collisions(name, raw_path, resolved, t, dep_types, local_types, unresolved, collision_reported)
+          for tn in if is_vpkg_types_stub_path(resolved) {
+            array_empty()
+          } else {
+            identity_candidate_names(t, dep_env)
+          } {
+            let identity = imported_type_definition(dep_env, tn)
+            note_imported_type_identity(tn, identity, String::concat("`", String::concat(tn, String::concat("` used by `", String::concat(name, String::concat("` from '", String::concat(raw_path, "'")))))), seen_types, unresolved)
+            // A definition that arrived only as a reference marker is carried
+            // into this module's env too, so re-exporting `name` (or any
+            // signature of this module mentioning the type) publishes it on.
+            match (find_typedef(env_type_defs(dep_env), tn), identity) {
+              (None, Some(def)) => Array::push(carried_references, (tn, def)),
+              _ => ()
+            }
+          }
           trait_projection_map_type_bounds(t, trait_mappings)
         },
         None => {
@@ -2099,9 +2411,25 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
       foreign_type_declaration_collisions(item, raw_path, resolved, dep_env, dep_types, local_types, unresolved, collision_reported)
     }
   }
+  // A package contract's generated type stub is exempt, as in #3035: its
+  // deferred type IS the implementation's declaration, which a sibling
+  // reaches directly too (`index.vpkg` importing the stub's `ShResult` and
+  // `sh_capture` from `process.vibe`).
+  if !is_vpkg_types_stub_path(resolved) {
+    note_imported_declaration_identities(dep_env, raw_path, declaration_names, seen_types, unresolved)
+  }
   let declaration_trait_mappings = dependency_trait_projection_mappings(dep_env, dep_bindings, bi_trait_names, bi_upper_slots, declaration_names, array_empty())
   foreign_trait_impl_collisions(dep_env, declaration_trait_mappings, raw_path, resolved, dep_types, local_types, unresolved, collision_reported)
-  bind_names(0, prepend_dependency_trait_nodes(dep_env, declaration_trait_mappings, prepend_dependency_type_defs(dep_env, declaration_names, acc)))
+  note_trait_impl_identities(dep_env, declaration_trait_mappings, raw_path, resolved, dep_types_all, seen_types, unresolved)
+  let bound = bind_names(0, prepend_dependency_trait_nodes(dep_env, declaration_trait_mappings, prepend_dependency_type_defs(dep_env, declaration_names, acc)))
+  let mut with_references = bound
+  let mut ci = 0
+  while ci < Array::length(carried_references) {
+    let (tn, def) = Array::get(carried_references, ci)
+    with_references = EnvBind(type_reference_definition_marker(tn), env_value_binding(def), with_references)
+    ci = ci + 1
+  }
+  with_references
 }
 
 fn reexport_items_with_alias(items: Array[ImportItem], want_alias: Bool) -> Array[ImportItem] {
@@ -2123,6 +2451,22 @@ fn reexport_items_with_alias(items: Array[ImportItem], want_alias: Bool) -> Arra
 /// published interface, but the re-export statement introduces no local type
 /// or trait binder. Keep that projection apart from the checker environment;
 /// check_module_impl joins it back only while constructing the public env.
+/// #3036: an aliased re-export (`export ./a.vibe { X as Left }`) publishes
+/// `X`'s declaration under its bare name beside the alias, so two aliased
+/// re-exports of different `X`s would hand an importer of `Left` and `Right`
+/// one `X` for both. They are checked here, in the re-exporting module, like
+/// any other pair of imports.
+fn note_reexport_surface_identities(resolved: String, raw_path: String, names: Array[ImportItem], cache: Array[(String, TypeEnv)], seen: Array[(String, Type, String)], unresolved: Array[String]) -> Unit {
+  if Array::length(names) > 0 && !is_vpkg_types_stub_path(resolved) {
+    match lookup_env_cache(cache, resolved) {
+      Some(dep_env) => note_imported_declaration_identities(dep_env, raw_path, names, seen, unresolved),
+      None => ()
+    }
+  } else {
+    ()
+  }
+}
+
 fn prepend_reexport_alias_declarations(acc: TypeEnv, resolved: String, names: Array[ImportItem], cache: Array[(String, TypeEnv)]) -> TypeEnv {
   let cached = lookup_env_cache(cache, resolved)
   let dep_env = match cached {
@@ -2217,6 +2561,9 @@ fn build_import_env(stmts: Array[Stmt], base_dir: String, cache: Array[(String, 
 fn build_import_envs_collecting(stmts: Array[Stmt], base_dir: String, cache: Array[(String, TypeEnv)], unresolved: Array[String]) -> (TypeEnv, TypeEnv) {
   let trait_claims = array_empty()
   let local_types = local_declared_type_names(stmts)
+  // #3036: the type names this module's imports bring in, with the
+  // declaration each one names.
+  let seen_types: Array[(String, Type, String)] = []
   let len = Array::length(stmts)
   let rec go: (Int, TypeEnv, TypeEnv) -> (TypeEnv, TypeEnv) = (i, local_acc, surface_acc) -> {
     if i >= len {
@@ -2227,13 +2574,14 @@ fn build_import_envs_collecting(stmts: Array[Stmt], base_dir: String, cache: Arr
           (local_acc, surface_acc)
         } else {
           let resolved = resolve_cached_import_path(base_dir, raw_path, cache)
-          (bind_import_names_from_cache_collecting(local_acc, resolved, raw_path, names, names, cache, unresolved, trait_claims, false, local_types), surface_acc)
+          (bind_import_names_from_cache_collecting(local_acc, resolved, raw_path, names, names, cache, unresolved, trait_claims, false, local_types, seen_types), surface_acc)
         },
         SReExport(raw_path, names) => {
           let resolved = resolve_cached_import_path(base_dir, raw_path, cache)
           let local_declarations = reexport_items_with_alias(names, false)
           let surface_declarations = reexport_items_with_alias(names, true)
-          (bind_import_names_from_cache_collecting(local_acc, resolved, raw_path, names, local_declarations, cache, unresolved, trait_claims, true, local_types), prepend_reexport_alias_declarations(surface_acc, resolved, surface_declarations, cache))
+          note_reexport_surface_identities(resolved, raw_path, surface_declarations, cache, seen_types, unresolved)
+          (bind_import_names_from_cache_collecting(local_acc, resolved, raw_path, names, local_declarations, cache, unresolved, trait_claims, true, local_types, seen_types), prepend_reexport_alias_declarations(surface_acc, resolved, surface_declarations, cache))
         },
         _ => (local_acc, surface_acc)
       }
@@ -3708,7 +4056,7 @@ export fn checked_module_public_env_with_reexport_declarations(stmts: Array[Stmt
   let value_surface = interface_public_value_names(stmts)
   let trait_surface = interface_public_trait_names(stmts, publication_env)
   let type_surface = interface_public_type_names(stmts, publication_env)
-  let published = env_preserve_type_definition_origins(restrict_env_to_export_surface(value_surface, trait_surface, type_surface, publication_env), publication_env)
+  let published = bind_type_reference_definitions(value_surface, publication_env, env_preserve_type_definition_origins(restrict_env_to_export_surface(value_surface, trait_surface, type_surface, publication_env), publication_env))
   // Builtin declarations have no TypeDef node to survive the restriction.
   // Their explicit selected surface still needs a transport node, otherwise
   // the importer cannot distinguish this export from an empty dependency.
