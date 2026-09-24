@@ -4185,18 +4185,19 @@ fn resolve_callee_formal_args(wants: Array[String], env_scheme: Option[Type], co
   }
   match call {
     Some((call_scheme, inst)) => {
-      // The scheme the handle's environment answers for the callee comes
-      // first: it is what a top-level declaration was recorded with (the call
-      // position may read another binding of the same declaration), and a
-      // local lambda that shadows the declaration answers its own. A lambda
-      // declared inside the handled body is not in that environment, so the
-      // call's own scheme is the fallback.
-      let (decl, scheme) = match env_scheme {
-        Some(es) => match generic_decl_of_scheme(es) {
-          Some(d) => (Some(d), es),
-          None => (generic_decl_of_scheme(call_scheme), call_scheme)
-        },
-        None => (generic_decl_of_scheme(call_scheme), call_scheme)
+      // The call's own scheme comes first: it is the binding the call really
+      // resolved to, so a lambda declared inside the handled body -- even one
+      // shadowing a top-level generic of the same name, which the handle's
+      // environment still answers with (Codex on #3047) -- is read through
+      // its own declaration. A top-level declaration's call position can read
+      // a binding other than the one recorded, so when the call's scheme has
+      // no declaration the environment's is the fallback.
+      let (decl, scheme) = match generic_decl_of_scheme(call_scheme) {
+        Some(d) => (Some(d), call_scheme),
+        None => match env_scheme {
+          Some(es) => (generic_decl_of_scheme(es), es),
+          None => (None, call_scheme)
+        }
       }
       match (decl, scheme, inst) {
         (Some((tps, dparams, dret)), CtForAll(_, _, CtFn(sparams, sret, _)), CtFn(iparams, iret, _)) => {
