@@ -4777,7 +4777,7 @@ fn decl_formal_ids(tps: Array[String], dparams: Array[(String, Option[TypeExpr])
 }
 
 /// #3051: an exported generic binding is published with each formal its row
-/// names spelled `NAME__fK`, K being the formal's index in the scheme's
+/// names spelled `NAME$K`, K being the formal's index in the scheme's
 /// quantifier list. The row is the one part of a published type that names a
 /// formal by spelling rather than by variable, and it reaches the importer
 /// verbatim, so this is the whole transport: no interface field, no codec
@@ -4796,7 +4796,7 @@ export fn publish_row_formals(t: Type, val: Expr, defs: Array[TypeDef]) -> Type 
         let mut vi = 0
         while vi < Array::length(vars) {
           if Array::get(vars, vi) == id {
-            Array::push(renames, (n, String::concat(n, String::concat("__f", __to_string(vi)))))
+            Array::push(renames, (n, String::concat(n, String::concat("$", __to_string(vi)))))
           }
           vi = vi + 1
         }
@@ -4862,7 +4862,7 @@ fn rename_row_bracket_words(row: String, renames: Array[(String, String)]) -> St
   StringBuilder::freeze(sb)
 }
 
-/// Each `NAME__fK` word in a published row, paired with the scheme's K-th
+/// Each `NAME$K` word in a published row, paired with the scheme's K-th
 /// quantified variable.
 fn published_row_formal_ids(row: Option[String], vars: Array[Int], out: Array[(String, Int)]) -> Unit {
   match row {
@@ -4876,7 +4876,7 @@ fn published_row_formal_ids(row: Option[String], vars: Array[Int], out: Array[(S
         } else {
           0
         }
-        let word_char = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 95
+        let word_char = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 95 || c == 36
         if word_char {
           if start < 0 {
             start = i
@@ -4896,13 +4896,16 @@ fn published_row_formal_ids(row: Option[String], vars: Array[Int], out: Array[(S
   }
 }
 
-/// K for a word spelled `NAME__fK` (NAME non-empty, K all digits), else -1.
+/// K for a word spelled `NAME$K` (NAME non-empty, K all digits), else -1.
+/// `$` cannot occur in a source identifier (the lexer's identifier class is
+/// letters, digits and `_`), so no user-written type name can be read as a
+/// published formal (Codex on #3056).
 fn published_formal_index(w: String) -> Int {
-  let at = String::last_index_of(w, "__f")
+  let at = String::last_index_of(w, "$")
   if at <= 0 {
     0 - 1
   } else {
-    let digits = String::substring(w, at + 3, String::length(w))
+    let digits = String::substring(w, at + 1, String::length(w))
     let nd = String::length(digits)
     if nd == 0 {
       0 - 1
