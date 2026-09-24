@@ -40,6 +40,7 @@ import @vibe/compiler/checker {
   check_program_with_projected_import_env_typed_lowering_located_observation,
   collect_builtin_shadowing_names,
   detect_redundant_namespace_imports,
+  detect_top_level_let_star,
   detect_unbound_nonunit_returns,
   detect_unused_imports,
   export_local_nonvalue_kind,
@@ -8300,6 +8301,10 @@ fn collect_all_diagnostics_on(input_path: String, source: String, pkg_version: S
     if Array::length(parse_diags) > 0 {
       dedupe_diagnostics(parse_diags)
     } else {
+      // #3044: read the `let*` spine BEFORE checking -- the check lowers the
+      // parser's `__try_bind` sentinel in place, after which a `let*` is an
+      // ordinary match.
+      let let_star_warns = detect_top_level_let_star(stmts)
       handle {
         let _env = check_program(stmts)
         // #1948: full `vibe check` rejects a missing Show renderer here via
@@ -8334,6 +8339,12 @@ fn collect_all_diagnostics_on(input_path: String, source: String, pkg_version: S
               let (_, _, wmsg) = Array::get(redundant_import_warns, rwi)
               Array::push(extra, locate_type_error(source, String::concat("warning: ", wmsg)))
               rwi = rwi + 1
+            }
+            let mut lwi = 0
+            while lwi < Array::length(let_star_warns) {
+              let (_, _, wmsg) = Array::get(let_star_warns, lwi)
+              Array::push(extra, locate_type_error(source, String::concat("warning: ", wmsg)))
+              lwi = lwi + 1
             }
             // #1340 (ADR-0071): the #1302 "generic effect declarations are
             // unchecked" declaration-site warning is retired — generic

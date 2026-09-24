@@ -1,33 +1,68 @@
-// #635/#1324: `let*` is the Option railway.
+// #635/#1324/#3044: `let*` is the Option railway for a BLOCK.
 //
-// `Option` is a builtin (Some/None). #1324 removed `Result` from the language,
-// so `let*` no longer type-directs between two monads — it always lowers to
-// `match { Some(x) => rest, None => None }`.
+// `let* x = opt` unwraps `Some` and binds `x`; on `None` the enclosing block
+// evaluates to `None` and the function carries on after it. `?` (see
+// try_question_option_test.vibe) returns `None` from the whole FUNCTION.
+// That exit target is the one difference and the reason both spellings exist
+// (ADR-0117): in a function body's own top-level block they leave the same
+// place, `?` is the one spelling there, and `vibe check` warns on a `let*`.
 
-// Option railway: `let* x = opt` unwraps `Some`, short-circuits the block with
-// `None`.
 let half = (n: Int) -> Option[Int] {
-  if n % 2 == 0 { Some(n / 2) } else { None }
-}
-let chain_opt = (a: Int, b: Int) -> Option[Int] {
-  let* x = half(a)
-  let* y = half(b)
-  Some(x + y)
+  if n % 2 == 0 {
+    Some(n / 2)
+  } else {
+    None
+  }
 }
 
-test "let* on Option: all Some" {
-  match chain_opt(8, 4) {
-    Some(v) => assert_eq(v, 6),
-    None => assert_eq(1, 2)
+// `let*` in a nested block of a function that returns `Int`: `?` could not
+// be written here at all.
+fn halves_or_zero(a: Int, b: Int) -> Int {
+  let total = {
+    let* x = half(a)
+    let* y = half(b)
+    Some(x + y)
+  }
+  match total {
+    Some(t) => t,
+    None => 0
   }
 }
-test "let* on Option: short-circuits to None" {
-  match chain_opt(8, 3) {
-    Some(_) => assert_eq(1, 2),
-    None => assert_eq(0, 0)
+
+// The same nested block inside an Option-returning function: the `None`
+// stops at the block, so the code after it still runs.
+fn block_exit(a: Int) -> Option[Int] {
+  let r = {
+    let* x = half(a)
+    Some(x)
   }
-  match chain_opt(7, 4) {
-    Some(_) => assert_eq(1, 2),
-    None => assert_eq(0, 0)
+  Some(match r {
+    Some(v) => v,
+    None => 100
+  })
+}
+
+// The contrast: `?` in the same position leaves the function.
+fn function_exit(a: Int) -> Option[Int] {
+  let r = {
+    let x = half(a)?
+    Some(x)
   }
+  Some(match r {
+    Some(v) => v,
+    None => 100
+  })
+}
+
+test "let* in a nested block of an Int function" {
+  inspect(halves_or_zero(8, 4), content = "6")
+  inspect(halves_or_zero(8, 3), content = "0")
+  inspect(halves_or_zero(7, 4), content = "0")
+}
+
+test "let* exits the block, ? exits the function" {
+  inspect(block_exit(4), content = "Some(2)")
+  inspect(block_exit(3), content = "Some(100)")
+  inspect(function_exit(4), content = "Some(2)")
+  inspect(function_exit(3), content = "None")
 }

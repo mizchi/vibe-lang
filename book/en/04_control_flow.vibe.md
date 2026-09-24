@@ -125,6 +125,13 @@ doubled = [2, 4, 6]
 with_index = [10, 21]
 ```
 
+A `for` written for its side effects is still that expression, but when
+its value is discarded no array is built. That covers a `for` followed by
+more statements, the last statement of a `while` body, and a branch of an
+`if` or `match` that is itself a statement. Such a loop costs what a
+`while` over the same elements costs. Binding the value keeps the array:
+`let _ = for ...` builds it.
+
 ## `|>`
 
 `x |> f` is `f(x)`, which lets a transformation read left to right
@@ -165,6 +172,9 @@ somewhere else, mark the position with a bare `_`: `x |> f(a, _)` is
 A `_` inside a larger expression is a different thing — the lambda
 shorthand from the last chapter. That is why `Iterator::map(_, _ * 2)` has
 two of them doing unrelated jobs: the first is the pipe slot, the second
-is `(v) -> v * 2`.
+is `(v) -> v * 2`. Syntax alone tells them apart, and this is the whole
+rule: a bare `_` that is an argument of the call right after `|>` is the
+slot, and a `_` that is an operand of an operator is a section. A bare `_`
+anywhere else, such as `f(_)` outside a pipe, is an error.
 
 Next: [Types and strings](05_types_strings.vibe.md).

@@ -1,0 +1,72 @@
+// #2983: catching a family of errors at once.
+//
+// `suberror` is sugar for an enum that serves as an exception kind: the
+// braced form declares a family whose constructors are the members, and its
+// name is the kind (`Exception[AppError]`). A family caught as one is ONE kind
+// with a variant per member -- a single kinded arm binds the payload at the
+// family's type and a `match` on it is exhaustive. An `effectset` of several
+// kinds is for a row that may throw them; a handle cannot catch one of them
+// and let the others through (a kinded arm catches everything its body
+// raises), so the only arm that takes all of them at once is the erased
+// `Exception::Throw(_)`, whose payload is untyped.
+
+suberror AppError {
+  Io(String);
+  Parse(Int)
+}
+
+suberror NotFound(String)
+
+suberror Denied(Int)
+
+effectset IoErrors = {
+  Exception[NotFound],
+  Exception[Denied]
+}
+
+fn load(x: Int) -> Int with Exception[AppError] {
+  if x > 0 {
+    throw(Io("disk"))
+  } else if x < 0 {
+    throw(Parse(7))
+  } else {
+    5
+  }
+}
+
+fn load_or_code(x: Int) -> Int {
+  handle {
+    load(x)
+  } with { Exception[AppError]::Throw(e) => match e {
+    Io(_) => 1,
+    Parse(n) => n + 10
+  } }
+}
+
+fn open_cfg(x: Int) -> Int with IoErrors {
+  if x > 0 {
+    throw(NotFound("cfg"))
+  } else if x < 0 {
+    throw(Denied(3))
+  } else {
+    5
+  }
+}
+
+fn open_or_default(x: Int) -> Int {
+  handle {
+    open_cfg(x)
+  } with { Exception::Throw(_) => -1 }
+}
+
+test "a braced suberror is one kind, caught by one arm with an exhaustive match" {
+  inspect(load_or_code(1), content = "1")
+  inspect(load_or_code(-1), content = "17")
+  inspect(load_or_code(0), content = "5")
+}
+
+test "the erased arm catches every kind of an effectset" {
+  inspect(open_or_default(1), content = "-1")
+  inspect(open_or_default(-1), content = "-1")
+  inspect(open_or_default(0), content = "5")
+}

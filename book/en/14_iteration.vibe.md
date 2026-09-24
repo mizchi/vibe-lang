@@ -40,7 +40,8 @@ doubled[3] = 8
 `for x in xs { body }` **collects**. When `xs` is an `Array` or another
 builtin collection, the loop is an expression whose value is `Array[T]` —
 which is why `doubled` can be indexed. `for i, x in xs` binds the index
-too.
+too. A `for` whose value is discarded builds no array at all, so a loop
+run for its side effects costs no more than a `while`.
 
 `Iterator::map`, `Iterator::filter`, and `Iterator::fold` are eager operations
 provided by the imported trait. `Array` implements `Iterator`, and statically

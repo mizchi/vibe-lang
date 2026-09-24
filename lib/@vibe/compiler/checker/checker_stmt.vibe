@@ -8,6 +8,10 @@ import @vibe/core {
   array_empty, struct MutMap
 }
 
+import @vibe/compiler/checker/diagnostics {
+  off_marker_len
+}
+
 import ./checker_effects.vibe {
   check_async_effects_stmts,
   check_mutability_stmts,
@@ -19,7 +23,8 @@ import ./checker_effects.vibe {
   row_text_labels,
   set_call_formal_bindings,
   set_shadowed_builtin_type_names,
-  set_throw_site_kinds
+  set_throw_site_kinds,
+  stmt_type_rows
 }
 
 import ./checker_pattern.vibe {
@@ -4673,6 +4678,31 @@ fn publish_throw_site_kinds(final_s: Subst) -> Unit {
   set_throw_site_kinds(out)
 }
 
+/// #3045: the effect row label `Mut` (bare or applied, `Mut[..]`) is reserved
+/// for a future marker of argument mutation. An empty row promises no host
+/// capability and no algebraic effect; it does NOT promise that values
+/// reachable from the arguments stay unmutated, and a later opt-in marker
+/// must be able to take this spelling without colliding with a user effect.
+/// So a row naming it, and a user `effect Mut` / `effectset Mut`, are refused.
+let reserved_mut_label = "Mut"
+
+let reserved_mut_row_message = "remove `Mut` from the row: the label is reserved for a future marker of argument mutation, and a function may already mutate values reachable from its arguments without declaring anything"
+
+let reserved_mut_decl_message = "rename this declaration: `Mut` is reserved for a future marker of argument mutation and cannot name an effect or an effectset"
+
+fn row_names_reserved_mut(row: String) -> Bool {
+  let labels = row_text_labels(row)
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(labels) && !found {
+    if uel_head(Array::get(labels, i)) == reserved_mut_label {
+      found = true
+    }
+    i = i + 1
+  }
+  found
+}
+
 /// #2968: an effect label in a written row that names nothing -- no declared
 /// or imported `effect`, no `effectset`, no standard provider, no builtin
 /// effect, no row variable -- was an opaque label nothing could perform, so a
@@ -4733,8 +4763,57 @@ fn collect_unknown_effect_label_errors(stmts: Array[Stmt], env: TypeEnv, es_name
     }
     pi = pi + 1
   }
-  let mut i = 0
   let mut reported = false
+  let mut di = 0
+  while di < Array::length(stmts) && !reported {
+    let declared = match Array::get(stmts, di) {
+      SEffectDef(_, dname, _, _) => dname,
+      SEffectSet(_, dname, _) => dname,
+      _ => ""
+    }
+    if declared == reserved_mut_label {
+      reported = true
+      Array::push(errors, String::concat(reserved_mut_decl_message, String::concat(" [@fn=", String::concat(declared, "]"))))
+    } else {
+      // `effectset Writes = { Mut }` would alias the reserved label under
+      // another name (Codex on #3061).
+      match Array::get(stmts, di) {
+        SEffectSet(_, sname, members) => {
+          let mut mi = 0
+          while mi < Array::length(members) && !reported {
+            if uel_head(Array::get(members, mi)) == reserved_mut_label {
+              reported = true
+              Array::push(errors, String::concat(reserved_mut_row_message, String::concat(" (in the members of effectset '", String::concat(sname, String::concat("')", String::concat(" [@fn=", String::concat(sname, "]")))))))
+            }
+            mi = mi + 1
+          }
+        },
+        _ => ()
+      }
+    }
+    di = di + 1
+  }
+  // #3045: a row inside a TYPE or a signature -- an alias target, a struct
+  // field, an enum or suberror payload, a trait or effect operation, an
+  // extern binding -- reaches every value of that type, so the reservation
+  // covers it too (Codex on #3061). `stmt_type_rows` is the one list of
+  // those declarations the effect checker already keeps (a top-level `let
+  // mut` is refused outright, ADR-0069). Only the reserved label is
+  // reported; unknown labels in declarations keep their existing handling.
+  let mut ti = 0
+  while ti < Array::length(stmts) && !reported {
+    let (decl_name, decl_labels) = stmt_type_rows(Array::get(stmts, ti))
+    let mut dli = 0
+    while dli < Array::length(decl_labels) && !reported {
+      if uel_head(Array::get(decl_labels, dli)) == reserved_mut_label {
+        reported = true
+        Array::push(errors, String::concat(reserved_mut_row_message, String::concat(" (in the declaration of '", String::concat(decl_name, String::concat("')", String::concat(" [@fn=", String::concat(decl_name, "]")))))))
+      }
+      dli = dli + 1
+    }
+    ti = ti + 1
+  }
+  let mut i = 0
   while i < Array::length(stmts) && !reported {
     match Array::get(stmts, i) {
       SLet(_, _, name, ty, body) => {
@@ -4791,6 +4870,30 @@ fn collect_unknown_effect_label_errors(stmts: Array[Stmt], env: TypeEnv, es_name
       _ => ()
     }
     i = i + 1
+  }
+  // #3045: a closure inside a `test`, a `bench` or a top-level expression
+  // carries a row like one inside a binding (Codex on #3061). Only the
+  // reserved label is reported from these bodies; other unknown labels there
+  // keep their existing handling.
+  let mut bi = 0
+  while bi < Array::length(stmts) && !reported {
+    let (owner, bbody) = match Array::get(stmts, bi) {
+      STest(tname, tbody) => (tname, Some(tbody)),
+      SBench(bname, bbody0) => (bname, Some(bbody0)),
+      SExpr(ebody) => ("", Some(ebody)),
+      _ => ("", None)
+    }
+    match bbody {
+      Some(b) => {
+        let bmsg = unknown_effect_arm_in_expr(b, es_names, ed_names, ed_ops, env_labels, type_names)
+        if String::starts_with(bmsg, reserved_mut_row_message) {
+          reported = true
+          Array::push(errors, String::concat(bmsg, String::concat(" [@fn=", String::concat(owner, "]"))))
+        }
+      },
+      None => ()
+    }
+    bi = bi + 1
   }
 }
 
@@ -4947,6 +5050,10 @@ fn unknown_effect_label_message(label: String, es_names: Array[String], ed_names
   if first < 65 || first > 90 {
     // A row variable (`e`) or something this scan does not classify.
     ""
+  } else if head == reserved_mut_label {
+    // #3045: checked before "known", so a user `effect Mut` (refused on its
+    // own by `reserved_mut_decl_message`) cannot make the label legal.
+    reserved_mut_row_message
   } else if !uel_head_known(head, es_names, ed_names, env_labels) && uel_contains(type_names, head) {
     String::concat("`", String::concat(head, String::concat("` is a type, not an effect: a function that throws it declares `with Exception[", String::concat(head, "]`"))))
   } else if !uel_head_known(head, es_names, ed_names, env_labels) {
@@ -5037,6 +5144,35 @@ fn unknown_effect_arm_in_expr(expr: Expr, es_names: Array[String], ed_names: Arr
             _ => ()
           }
           ai = ai + 1
+        }
+      },
+      // #3045: the reserved `Mut` label is refused on a closure's own row
+      // too, not only on a top-level declaration's -- and in the function
+      // types its parameters and result are annotated with (Codex on #3061).
+      EFn(_, _, cparams, cret, crow, _) => {
+        let crows = array_empty()
+        match crow {
+          Some(r) => Array::push(crows, r),
+          None => ()
+        }
+        let mut cpi = 0
+        while cpi < Array::length(cparams) {
+          match Array::get(cparams, cpi) {
+            (_, Some(cpte)) => fek_rows_in_texpr(cpte, crows),
+            _ => ()
+          }
+          cpi = cpi + 1
+        }
+        match cret {
+          Some(crte) => fek_rows_in_texpr(crte, crows),
+          None => ()
+        }
+        let mut cri = 0
+        while cri < Array::length(crows) && String::length(out) == 0 {
+          if row_names_reserved_mut(Array::get(crows, cri)) {
+            out = String::concat(reserved_mut_row_message, " (in a closure's row)")
+          }
+          cri = cri + 1
         }
       },
       _ => ()
@@ -10310,6 +10446,139 @@ export fn detect_redundant_namespace_imports(stmts: Array[Stmt]) -> Array[(Strin
     i = i + 1
   }
   out
+}
+
+/// #3044: `let*` and `?` both short-circuit an `Option`; they differ only in
+/// where they exit. `?` returns from the enclosing FUNCTION, `let*` makes the
+/// enclosing BLOCK evaluate to `None`. In a function body's top-level block
+/// those are the same place, and `?` is the one spelling there -- so a
+/// `let*` on that spine is a warning naming the rewrite. A `let*` inside a
+/// nested block (an `if` / `match` arm that is not the body's tail, a block
+/// expression bound to a name) exits only that block and stays silent.
+///
+/// The parser lowers `let* x = e` to `__try_bind(e, (x) -> rest)`, so the
+/// rest of the block is the continuation lambda's body: the spine walk steps
+/// INTO that lambda instead of treating it as a new function. Every other
+/// lambda starts a spine of its own (a closure's `?` exits the closure).
+/// One warning per function body, at its first `let*`.
+export fn detect_top_level_let_star(stmts: Array[Stmt]) -> Array[(String, String, String)] {
+  let offs: Array[Int] = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, body) => lsw_walk(body, offs),
+      SLetMut(_, _, body) => lsw_walk(body, offs),
+      SExpr(body) => lsw_walk(body, offs),
+      STest(_, body) => lsw_walk(body, offs),
+      SBench(_, body) => lsw_walk(body, offs),
+      _ => ()
+    }
+    i = i + 1
+  }
+  let out = array_empty()
+  let mut j = 0
+  while j < Array::length(offs) {
+    let off = Array::get(offs, j)
+    let msg = String::concat("write `let x = e?` instead of `let* x = e` here: in a function body's top-level block both return `None` from the function, and `?` is the one spelling for that (`let*` is for a nested block, which it exits alone)", off_marker_len(off, 4))
+    Array::push(out, ("top_level_let_star", "let*", msg))
+    j = j + 1
+  }
+  out
+}
+
+/// Find every function literal under `e` and walk its body's spine.
+fn lsw_walk(e: Expr, offs: Array[Int]) -> Unit {
+  match e {
+    EFn(_, _, _, _, _, body) => lsw_spine(body, offs),
+    // A `let*` off every spine: its continuation is the rest of the SAME
+    // nested block, not a function body of its own.
+    ECall(EIdent("__try_bind", _), args, _) => if Array::length(args) == 2 {
+      lsw_walk(Array::get(args, 0), offs)
+      match Array::get(args, 1) {
+        EFn(_, _, _, _, _, rest) => lsw_walk(rest, offs),
+        other => lsw_walk(other, offs)
+      }
+    } else {
+      let kids = expr_children(e)
+      let mut k = 0
+      while k < Array::length(kids) {
+        lsw_walk(Array::get(kids, k), offs)
+        k = k + 1
+      }
+    },
+    _ => {
+      let kids = expr_children(e)
+      let mut k = 0
+      while k < Array::length(kids) {
+        lsw_walk(Array::get(kids, k), offs)
+        k = k + 1
+      }
+    }
+  }
+}
+
+/// Walk one function body's top-level block. The spine is iterative (a body
+/// is one deep right-nested let/seq chain); everything off the spine is
+/// searched for nested function literals only.
+fn lsw_spine(body: Expr, offs: Array[Int]) -> Unit {
+  let mut cur = body
+  let mut going = true
+  let mut reported = false
+  while going {
+    match cur {
+      ECall(EIdent("__try_bind", off), args, _) => if Array::length(args) == 2 {
+        if !reported {
+          Array::push(offs, off)
+          reported = true
+        }
+        lsw_walk(Array::get(args, 0), offs)
+        match Array::get(args, 1) {
+          EFn(_, _, _, _, _, rest) => cur = rest,
+          other => {
+            lsw_walk(other, offs)
+            going = false
+          }
+        }
+      } else {
+        lsw_walk(cur, offs)
+        going = false
+      },
+      ELet(_, v, b, _) => {
+        lsw_walk(v, offs)
+        cur = b
+      },
+      ELetMut(_, v, b, _) => {
+        lsw_walk(v, offs)
+        cur = b
+      },
+      ELetRec(_, v, b) => {
+        lsw_walk(v, offs)
+        cur = b
+      },
+      ESeq(a, b) => {
+        lsw_walk(a, offs)
+        cur = b
+      },
+      EAssign(_, v, c) => {
+        lsw_walk(v, offs)
+        cur = c
+      },
+      EAssignOp(_, _, v, c) => {
+        lsw_walk(v, offs)
+        cur = c
+      },
+      // A destructuring `let PAT = v` lowers to a one-arm match, but so does a
+      // source `match` with one arm, and the AST keeps no provenance to tell
+      // them apart (block-level destructuring admits refutable patterns
+      // too). Both are treated as a nested block: a `let*` after a
+      // destructuring `let` misses this advisory warning, rather than one
+      // inside a source match arm receiving a wrong one (Codex on #3061).
+      _ => {
+        lsw_walk(cur, offs)
+        going = false
+      }
+    }
+  }
 }
 
 /// The offset of every `ESeq(left, _)` where `left` is itself an `ECall` --

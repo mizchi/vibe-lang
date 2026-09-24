@@ -59,6 +59,14 @@ length = 2, last = 9
 This is worth being deliberate about: `xs` is shared, not copied. If you
 want a private copy, make one.
 
+Note what `grow`'s signature does not say. Its row is empty, and an
+empty row promises no host capability and no algebraic effect — it does
+**not** promise that values reachable from the arguments stay unchanged.
+Writing through a `mut` field of a parameter is the same. The row label
+`Mut` is reserved for a future opt-in marker of this kind of mutation:
+`with Mut` (or `Mut[..]`) is refused today, and so is declaring an
+effect named `Mut`.
+
 ## A field you can write through
 
 When the thing that changes is part of a value, declare the field `mut`.

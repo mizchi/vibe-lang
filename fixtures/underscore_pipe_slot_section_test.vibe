@@ -1,0 +1,42 @@
+// #3044 / ADR-0117: `_` keeps both roles, told apart by syntax alone.
+//   1. a bare `_` that is a whole argument of the call directly after `|>` is
+//      the pipe slot (every such `_` receives the piped value);
+//   2. a `_` that is an operand of an operator is a lambda section over the
+//      operator expression, up to the nearest enclosing call argument;
+//   3. with no bare `_`, the piped value is prepended.
+// A bare `_` anywhere else is refused
+// (fixtures/typecheck/underscore_bare_argument_reject.vibe).
+import @vibe/builtin {
+  trait Iterator
+}
+
+fn pair(a: Int, b: Int) -> Int {
+  a * 10 + b
+}
+
+fn apply5(f: (Int) -> Int) -> Int {
+  f(5)
+}
+
+test "a bare _ argument after |> is the pipe slot" {
+  inspect(3 |> pair(1, _), content = "13")
+  inspect(7 |> pair(_, _), content = "77")
+  inspect(3 |> pair(1), content = "31")
+}
+
+test "a _ operand is a lambda section" {
+  let xs = [1, 2, 3]
+  inspect(Array::get(Iterator::map(xs, _ * 2), 2), content = "6")
+  inspect(Iterator::fold(xs, 0, _ + _), content = "6")
+  inspect(Array::get(Iterator::map(xs, _ * 10 + 1), 2), content = "31")
+}
+
+test "a section stops at the nearest call argument" {
+  inspect(apply5(_ * 10), content = "50")
+}
+
+test "both roles in one piped call" {
+  let ys = [1, 2, 3] |> Iterator::map(_, _ * 2)
+  inspect(Array::get(ys, 0), content = "2")
+  inspect(Array::get(ys, 2), content = "6")
+}

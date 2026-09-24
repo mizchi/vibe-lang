@@ -78,10 +78,10 @@ The function has to return an `Option` itself, which is the honest part
 of the deal: `?` does not make the absence disappear, it passes it to
 your caller.
 
-## `let*` — the same idea for a whole block
+## `let*` — leave the block, not the function
 
-`let* x = e` binds the contents of a `Some`, and on `None` the block it
-sits in evaluates to `None`:
+`let* x = e` binds the contents of a `Some`, and on `None` the **block**
+it sits in evaluates to `None`. The function goes on after that block:
 
 ```vibe run
 fn half(n: Int) -> Option[Int] {
@@ -92,25 +92,35 @@ fn half(n: Int) -> Option[Int] {
   }
 }
 
-fn sum_halves(a: Int, b: Int) -> Option[Int] {
-  let* x = half(a)
-  let* y = half(b)
-  Some(x + y)
+fn halves_or_zero(a: Int, b: Int) -> Int {
+  let total = {
+    let* x = half(a)
+    let* y = half(b)
+    Some(x + y)
+  }
+  match total {
+    Some(t) => t,
+    None => 0
+  }
 }
 
 fn main allows Console {
-  println("sum_halves(4, 6) = \{sum_halves(4, 6)}")
-  println("sum_halves(4, 3) = \{sum_halves(4, 3)}")
+  println("halves_or_zero(4, 6) = \{halves_or_zero(4, 6)}")
+  println("halves_or_zero(4, 3) = \{halves_or_zero(4, 3)}")
 }
 ```
 
 ```output
-sum_halves(4, 6) = Some(5)
-sum_halves(4, 3) = None
+halves_or_zero(4, 6) = 5
+halves_or_zero(4, 3) = 0
 ```
 
-`?` and `let*` do the same job here; `?` suits one expression in the
-middle of a line, `let*` suits a run of steps that all have to succeed.
+That is the whole difference between the two, and the reason both
+exist: `?` leaves the enclosing **function**, `let*` leaves the enclosing
+**block**. `halves_or_zero` returns an `Int`, so `?` could not appear in
+it at all. Directly in a function body's own block the two leave the
+same place, and there `?` is the one spelling: `vibe check` warns on a
+`let*` written at a function body's top level and names the `?` rewrite.
 
 ## `guard` — bind, or leave
 

@@ -143,6 +143,23 @@ fn fdp_expr_rebuild(e: Expr, discard: Bool) -> Expr {
       }
       EMatch(fdp_expr(s, false), arms2)
     },
+    // #3043: a discarded handle discards each arm's value, which is only the
+    // handle's result. The body's value is discarded too unless an arm can
+    // observe it through `resume` (Codex on #3061).
+    EHandle(hb, harms) => {
+      let harms2: Array[(Pat, Expr)] = []
+      let mut resumes = false
+      let mut i = 0
+      while i < Array::length(harms) {
+        let (p, ex) = Array::get(harms, i)
+        if edp_rq_fold(RQIdentUses("resume"), ex) > 0 {
+          resumes = true
+        }
+        Array::push(harms2, (p, fdp_expr(ex, discard)))
+        i = i + 1
+      }
+      EHandle(fdp_expr(hb, discard && !resumes), harms2)
+    },
     EWhile(c, b) => EWhile(fdp_expr(c, false), fdp_expr(b, true)),
     ELoop(pairs, b) => {
       let pairs2: Array[(String, Expr)] = []

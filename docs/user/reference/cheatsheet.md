@@ -661,12 +661,27 @@ arr |> Array::length
 s |> String::trim |> String::length
 ```
 
-Without a `_`, the piped value becomes the **first** argument. A bare `_` in
-the call's arguments substitutes the value at that position instead (no
-prepend). A *compound* placeholder such as `_ * 2` is a section lambda
-(`(v) -> v * 2`), not a pipe slot — so
-`xs |> Iterator::map(_, _ * 2)` reads as
-`Iterator::map(xs, (v) -> v * 2)` after importing `trait Iterator`.
+**The `_` rule (frozen, ADR-0117 / #3044).** `_` has two roles, and which
+one it plays is decided by syntax alone:
+
+1. **A bare `_` that IS a whole argument** of the call directly on the right
+   of `|>` is the **pipe slot**: the piped value goes there, and nothing is
+   prepended. Every such `_` receives it (`7 |> pair(_, _)` is `pair(7, 7)`).
+2. **A `_` that is an operand of an operator** is a **lambda section**: the
+   operator expression it sits in, up to the nearest enclosing call argument,
+   becomes a lambda with one parameter per `_`, in order. `_ * 2` is
+   `(v) -> v * 2`, `_ * 10 + 1` is `(v) -> v * 10 + 1`, `_ + _` is
+   `(a, b) -> a + b`, and `inc(_ * 10)` passes the lambda `(v) -> v * 10` to
+   `inc` (it is not `(v) -> inc(v * 10)`).
+3. Without a bare `_` argument, the piped value becomes the **first** argument.
+4. A bare `_` anywhere else -- outside a pipe (`inc(_)`), or as an argument of
+   a call nested inside the piped call -- is refused: `` `_` is not a value
+   here``.
+
+So `xs |> Iterator::map(_, _ * 2)` reads as `Iterator::map(xs, (v) -> v * 2)`
+after importing `trait Iterator`: the first `_` is rule 1, the second rule 2.
+There is no separate pipe-placeholder token; `_` keeps both roles, and this
+rule is the whole of the disambiguation.
 
 Every method-bearing trait exposes its operations through the trait namespace:
 `Trait::operation(value, args)` or `value |> Trait::operation(args)`. The
@@ -804,7 +819,7 @@ match opt {
 // while
 while cond { body }
 
-// for-in (collects into array)
+// for-in (collects into array; a discarded value allocates nothing)
 for x in arr { x * 2 }         // -> Array
 for i, x in arr { i + x }      // with index
 for b in pull { use(b) }       // statement only: async iterator (struct: next() -> Future[Option[(T,Self)]], await-driven) or a () -> Option[T] pull closure (-> None).
@@ -833,6 +848,18 @@ let find_first_neg: (Array[Int]) -> Int = (arr) -> {
   -1
 }
 ```
+
+**A `for` over a builtin collection collects, and a discarded one allocates
+no array** (ADR-0116, #3043). The collecting rule is the specification, not
+an accident: `let ys = for x in xs { f(x) }` is how an eager map is written.
+When the loop's value is discarded -- a block statement followed by more
+statements, the last statement of a `while` body, or a branch of an `if` /
+`match` in such a position -- no result array is built, so a `for` run for
+its side effects costs what a `while` costs. `let _ = for ...` binds the
+value and does build it, and a `for` as the tail of a `-> Unit` function is a
+type error (`expected (), got Array[()]`), so end that body with `()`. Measured
+on the default linear backend (bump and RC; `fixtures/for_discard_no_alloc_test.vibe`,
+mid gate 40e3); the opt-in wasm-gc backend still builds the array.
 
 `for` が body の値を `Array` に集めるのは Array/String など builtin の
 collection iterand だけ。pull closure・trait iterator・HostStream などの
@@ -1293,9 +1320,16 @@ let w_check = {
 
 ## Effects (core concept)
 
-vibe is **pure by default**. Semantic effects, including `Exception`, are tracked
-in the type system. An empty row excludes an escaping exception, but does not guarantee
-termination or exclude panic, Wasm trap, or resource exhaustion (ADR-0073).
+Semantic effects, including `Exception`, are tracked in the type system. An
+**empty row excludes host capabilities and algebraic effects** -- no printing,
+no files, no escaping exception. It does not guarantee termination or exclude
+panic, Wasm trap, or resource exhaustion (ADR-0073), and it does **not**
+exclude mutating values reachable from the arguments (#3045): `fn grow(xs:
+Array[Int]) -> Unit { Array::push(xs, 9) }` has an empty row, as does a
+function writing a parameter's `mut` field. **`Mut` is a reserved row label**
+for a future marker of that mutation (ADR-0100 (2)): `with Mut` / `with
+Mut[..]` is refused (the diagnostic starts ``remove `Mut` from the row``),
+and so is declaring `effect Mut` or `effectset Mut`.
 Missing effects are reported as a set difference (`effect row mismatch for 'f':
 missing { Fs } (declared { Exception }, requires { Exception, Fs })`) with a `hint:`
 line suggesting the exact row to declare (`hint: add 'with Exception + Fs' to
@@ -1454,22 +1488,39 @@ handle { fetch_user(input) } with {
 
 ### Railway bind (`let*`) — `Option` (#635 / #1324)
 
-`let* x = e` unwraps the success case and binds `x`, or short-circuits the whole
-block with the failure case. The lowering is **type-directed by `e`'s type**:
+`let* x = e` unwraps the success case and binds `x`, or short-circuits the
+**enclosing block** with the failure case:
 
-- `e: Option[T]` → `match e { Some(x) => <rest>, None => None }`
+- `e: Option[T]` → `match e { Some(x) => <rest of the block>, None => None }`
 
-so the enclosing function must return an `Option`. Handy when stages need
-names:
+so the BLOCK must evaluate to an `Option`; the function around it need not.
+
+**`let*` and `?` differ in where they exit, and that is why both exist**
+(ADR-0117, #3044): `?` returns `None` from the enclosing **function**, `let*`
+makes the enclosing **block** `None` and the function carries on after it. In
+a function body's own top-level block the two exit to the same place, so
+there `?` is the one spelling: a `let*` directly in a function body (or a
+closure's body) is a **warning** naming the `let x = e?` rewrite. Use `let*`
+for a nested block whose `None` should stop at the block:
 
 <!-- doctest-skip: 直前 block の定義 (half 等) に依存する断片 (将来の `vibe continue` 候補) -->
 ```vibe skip
-let pair: (Int, Int) -> Option[Int] = (a, b) -> {
-  let* x = half(a)                 // None short-circuits the block
-  let* y = half(b)
-  Some(x + y)                      // last expr is the block's Option
+fn halves_or_zero(a: Int, b: Int) -> Int {   // not an Option: `?` is not allowed here
+  let total = {
+    let* x = half(a)                 // None makes this BLOCK None
+    let* y = half(b)
+    Some(x + y)                      // last expr is the block's Option
+  }
+  match total {
+    Some(t) => t,
+    None => 0
+  }
 }
 ```
+
+Pinned by `fixtures/try_let_star_option_test.vibe` (block exit against `?`'s
+function exit) and `lib/@vibe/compiler/tests/warning_snapshots/let_star_top_level_test.vibe`
+(the warning).
 
 **Adopted scope (#635, narrowed by #1324):** `let*`/`?` lower to **`Option`
 only**. They used to type-direct between `Option` and `Result`, defaulting to
@@ -1628,13 +1679,57 @@ let sum_halves: (Int, Int) -> Option[Int] = (a, b) -> {
 ```
 
 Same adopted scope as `let*` above: `Option` only. (The deferred `Try` trait —
-option 2 — would let user types opt in; it is not implemented.)
+option 2 — would let user types opt in; it is not implemented.) `?` is the
+spelling at a function body's top level; `let*` is for a nested block (see
+"Railway bind" above for the exit-target rule).
 
 ### suberror (typed errors)
 
 ```vibe
 suberror NotFound(String)
 suberror InvalidInput(Int, String)   // tuple payload only
+
+suberror AppError {
+  Io(String);
+  Parse(Int)
+}
+```
+
+**`suberror` is sugar for an enum that is used as an exception kind** (#2983).
+`suberror NotFound(String)` declares the type `NotFound` with one constructor
+`NotFound(String)`; the braced form declares the type `AppError` with the
+constructors `Io` and `Parse`. The type name is the kind:
+`throw(Io("disk"))` needs `with Exception[AppError]`, and
+`Exception[AppError]::Throw(e)` binds `e : AppError`. An `enum` works the
+same way; `suberror` only says what the type is for.
+
+**Catching a family at once** (measured, `fixtures/exception_family_catch_test.vibe`):
+
+- **Make the family ONE kind.** A braced `suberror` (or an `enum`) with a
+  constructor per member is caught by a single kinded arm, and the `match` on
+  its payload is exhaustive (example below).
+- **An `effectset` of kinds is for ROWS, not handlers.** `effectset IoErrors =
+  { Exception[NotFound], Exception[Denied] }` lets a function declare `with
+  IoErrors`. A handle cannot catch one of those kinds and let the other
+  propagate -- a kinded arm catches everything its body raises, so an arm for
+  `Exception[NotFound]` over a body that can also raise `Denied` is refused --
+  and a handle has only one exception arm. The arm that takes every kind at
+  once is the erased `Exception::Throw(_)`, whose payload is untyped.
+- `Exception[K]` requires `K` to be a TYPE in scope, in a row and in a handler
+  arm alike: an undeclared name and an effectset name are both refused
+  (``unknown type `IoErrors` in an exception kind``; write `with IoErrors` to
+  throw the set's kinds).
+
+<!-- doctest-skip: continues the AppError declaration above (load is not defined here) -->
+```vibe skip
+fn load_or_code(x: Int) -> Int {
+  handle { load(x) } with {
+    Exception[AppError]::Throw(e) => match e {
+      Io(_) => 1,
+      Parse(n) => n + 10
+    }
+  }
+}
 ```
 
 ### User-defined effects (algebraic)
