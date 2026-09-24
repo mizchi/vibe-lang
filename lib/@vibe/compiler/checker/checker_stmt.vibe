@@ -4871,6 +4871,30 @@ fn collect_unknown_effect_label_errors(stmts: Array[Stmt], env: TypeEnv, es_name
     }
     i = i + 1
   }
+  // #3045: a closure inside a `test`, a `bench` or a top-level expression
+  // carries a row like one inside a binding (Codex on #3061). Only the
+  // reserved label is reported from these bodies; other unknown labels there
+  // keep their existing handling.
+  let mut bi = 0
+  while bi < Array::length(stmts) && !reported {
+    let (owner, bbody) = match Array::get(stmts, bi) {
+      STest(tname, tbody) => (tname, Some(tbody)),
+      SBench(bname, bbody0) => (bname, Some(bbody0)),
+      SExpr(ebody) => ("", Some(ebody)),
+      _ => ("", None)
+    }
+    match bbody {
+      Some(b) => {
+        let bmsg = unknown_effect_arm_in_expr(b, es_names, ed_names, ed_ops, env_labels, type_names)
+        if String::starts_with(bmsg, reserved_mut_row_message) {
+          reported = true
+          Array::push(errors, String::concat(bmsg, String::concat(" [@fn=", String::concat(owner, "]"))))
+        }
+      },
+      None => ()
+    }
+    bi = bi + 1
+  }
 }
 
 fn uel_contains(xs: Array[String], x: String) -> Bool {

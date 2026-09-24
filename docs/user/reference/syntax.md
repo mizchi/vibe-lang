@@ -475,7 +475,10 @@ Rules:
 - **A `for-in` whose value is discarded allocates no result array.** A value
   is discarded when the loop is a block statement followed by more
   statements, the last statement of a `while` body, or a branch of an
-  `if` / `match` that is itself in one of those positions. Binding the value, including `let _ = for ...`,
+  `if` / `match` that is itself in one of those positions. A `handle` in such
+  a position passes it on to each handler arm, and to the handled body when no
+  arm names `resume` -- a resumed handler receives the body's value, so there
+  the body keeps it. Binding the value, including `let _ = for ...`,
   keeps the array. The tail of a function declared `-> Unit` is not a discard
   position: the loop's value there is `Array[Unit]`, a return-type mismatch,
   so end such a body with `()`. This promise holds on the default linear
