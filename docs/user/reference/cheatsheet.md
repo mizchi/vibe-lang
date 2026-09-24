@@ -444,6 +444,22 @@ Iterator::fold(xs, 0, _ + _)
 
 Assignment: `=` `+=` `-=` `*=` `/=` `%=` (statement, not expr)
 
+A line that starts with a binary operator continues the line above it. A
+line-leading `-`, `!` or `~` is a **prefix** operator when no whitespace
+follows it (ADR-0115 / #3041), so a line `-1` starts a new expression while a
+line `- 1` (space after) continues the previous one as a subtraction, and so
+does a `-` that ends the previous line:
+
+```vibe
+fn tail_value() -> Int {
+  let a = 10
+  let wrapped = a
+    - 1              // binary: 9
+  let _ = wrapped
+  -1                 // prefix: the block's value is -1
+}
+```
+
 Slice is a postfix `[]` form with four spellings:
 
 ```vibe

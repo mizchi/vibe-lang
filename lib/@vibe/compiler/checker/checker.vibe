@@ -7650,12 +7650,14 @@ fn infer_binop_type(op: String, left_ty: Type, right_ty: Type, env: TypeEnv, s: 
         None => match infer_named_trait_binop(env, left_ty, right_ty, trait_name, s) {
           Some((resolved, s1)) => (resolved, s1),
           None => {
-            // #2206: a Unit LHS under `-` is almost always a line-leading
-            // `-` glued onto the previous statement (a newline does not end
-            // an expression when the next line starts with an operator).
-            // The checker never sees line layout, so the clause states the
-            // language rule rather than claiming this line started with
-            // `-`; the base text stays a prefix so substring pins hold.
+            // #2206, #3041: a Unit LHS under `-` is almost always a
+            // line-leading `- x` (minus, then a space) glued onto the
+            // previous statement. Since #3041 a line-leading `-x` with no
+            // space is a prefix minus that starts a new expression, so only
+            // the spaced spelling still continues the line. The checker never
+            // sees line layout, so the clause states the language rule
+            // rather than claiming this line started with `-`; the base text
+            // stays a prefix so substring pins hold.
             let minus_unit_lhs = if op == "-" {
               match subst_apply(s, left_ty) {
                 CtUnit => true,
@@ -7665,7 +7667,7 @@ fn infer_binop_type(op: String, left_ty: Type, right_ty: Type, env: TypeEnv, s: 
               false
             }
             let tail = if minus_unit_lhs {
-              "': operands must be Int or Double (the left operand is Unit -- a `-` at the start of a line continues the previous line's expression instead of starting a new one; parenthesize the negated value, e.g. `(-1)` or `(-x)`, or bind it with `let` if you meant a negative value)"
+              "': operands must be Int or Double (the left operand is Unit -- a `-` followed by a space at the start of a line continues the previous line's expression; to start a new expression with a negative value, remove the space (`-1`, `-x`) or parenthesize the negated value, e.g. `(-1)`)"
             } else {
               "': operands must be Int or Double"
             }
