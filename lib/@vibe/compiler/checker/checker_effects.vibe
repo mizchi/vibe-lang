@@ -3332,6 +3332,122 @@ export fn set_throw_site_kinds(sites: Array[(String, String)]) -> Unit {
   Array::set(throw_site_kind_cell, 0, m)
 }
 
+/// #3053: a generic callee's formal bindings at each call, keyed by the
+/// callee identifier's offset (`callee_formal_bindings`). Filled once per
+/// check before the effects walk. A key seen with two different bindings maps
+/// to none, so a collision leaves the row as written (open) and can only keep
+/// the old answer, never invent a binding.
+let call_formal_bindings_cell: Array[MutMap[String, Array[(String, String)]]] = [
+  MutMap::new_string()
+]
+
+export fn set_call_formal_bindings(rows: Array[(Int, Array[(String, String)])]) -> Unit {
+  let m = MutMap::new_string()
+  let dead = MutMap::new_string()
+  let mut i = 0
+  while i < Array::length(rows) {
+    let (off, binds) = Array::get(rows, i)
+    let k = __to_string(off)
+    match MutMap::get(m, k) {
+      Some(prev) => if !formal_bindings_same(prev, binds) {
+        MutMap::set(dead, k, [])
+      },
+      None => MutMap::set(m, k, binds)
+    }
+    i = i + 1
+  }
+  let dead_keys = MutMap::keys(dead)
+  let mut di = 0
+  while di < Array::length(dead_keys) {
+    MutMap::set(m, Array::get(dead_keys, di), [])
+    di = di + 1
+  }
+  Array::set(call_formal_bindings_cell, 0, m)
+}
+
+fn formal_bindings_same(a: Array[(String, String)], b: Array[(String, String)]) -> Bool {
+  if Array::length(a) != Array::length(b) {
+    false
+  } else {
+    let mut same = true
+    let mut i = 0
+    while i < Array::length(a) {
+      let (an, at) = Array::get(a, i)
+      let (bn, bt) = Array::get(b, i)
+      if an != bn || at != bt {
+        same = false
+      }
+      i = i + 1
+    }
+    same
+  }
+}
+
+/// A callee's row label as this call instantiates it: every whole-word formal
+/// inside the label's brackets is replaced by the type the call gives it
+/// (`State[S]` at `get("abc")` reads `State[String]`). The effect name before
+/// the bracket is never touched, and a label with no binding is returned as
+/// written.
+fn instantiate_callee_label(label: String, callee_off: Int) -> String {
+  let bi = String::index_of(label, "[")
+  if bi < 0 || callee_off < 0 {
+    label
+  } else {
+    let binds = match MutMap::get(Array::get(call_formal_bindings_cell, 0), __to_string(callee_off)) {
+      Some(b) => b,
+      None => []
+    }
+    if Array::length(binds) == 0 {
+      label
+    } else {
+      let n = String::length(label)
+      let sb = StringBuilder::new()
+      StringBuilder::push(sb, String::substring(label, 0, bi))
+      let mut start = 0 - 1
+      let mut i = bi
+      while i <= n {
+        let c = if i < n {
+          String::char_code_at(label, i)
+        } else {
+          0
+        }
+        let word_char = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 95
+        if word_char {
+          if start < 0 {
+            start = i
+          } else {
+            ()
+          }
+        } else {
+          if start >= 0 {
+            let w = String::substring(label, start, i)
+            let mut rep = w
+            let mut k = 0
+            while k < Array::length(binds) {
+              let (fname, text) = Array::get(binds, k)
+              if fname == w {
+                rep = text
+              }
+              k = k + 1
+            }
+            StringBuilder::push(sb, rep)
+            start = 0 - 1
+          } else {
+            ()
+          }
+          if i < n {
+            StringBuilder::push(sb, String::substring(label, i, i + 1))
+          } else {
+            ()
+          }
+        }
+        i = i + 1
+      }
+      StringBuilder::freeze(sb)
+    }
+  }
+}
+
 fn throw_site_kind(off: Int, payload: Expr) -> String {
   let m = Array::get(throw_site_kind_cell, 0)
   match MutMap::get(m, throw_payload_site_key(off, payload)) {
@@ -4971,7 +5087,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
     match expr {
       ECall(callee, args, call_off) => {
         match callee {
-          EIdent(name, _) => {
+          EIdent(name, callee_ident_off) => {
             // #1723: the overlay is also the lexical-binding environment.
             // Some([]) means a pure local binding; only None may fall through
             // to the module-level function table.
@@ -5144,7 +5260,8 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                 let missing = no_str_labels()
                 let mut ti = 0
                 while ti < Array::length(callee_effs) {
-                  let teff = Array::get(callee_effs, ti)
+                  // #3053: the callee's row as THIS call instantiates it.
+                  let teff = instantiate_callee_label(Array::get(callee_effs, ti), callee_ident_off)
                   // #1343 (Codex P1 on PR #1359): `decl_authorizes_op`, not
                   // `decl_authorizes_effect` -- once a callee can declare an
                   // OPERATION row (`with Fs::read_file`), a caller holding

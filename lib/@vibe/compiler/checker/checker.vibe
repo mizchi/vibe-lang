@@ -4682,65 +4682,99 @@ fn resolve_callee_formal_args(wants: Array[String], env_scheme: Option[Type], co
           None => (None, call_scheme)
         }
       }
-      match (decl, scheme, inst) {
-        (Some((tps, dparams, dret)), CtForAll(_, _, CtFn(sparams, sret, _)), CtFn(iparams, iret, _)) => {
-          // formal name -> scheme variable id, from the declaration.
-          let name_ids: Array[(String, Int)] = []
-          let mut pi = 0
-          while pi < Array::length(dparams) && pi < Array::length(sparams) {
-            let (_, pann) = Array::get(dparams, pi)
-            match pann {
-              Some(te) => formal_ids_from(resolve_type_expr_shadowed(te, defs, tps), Array::get(sparams, pi), tps, name_ids),
-              None => ()
-            }
-            pi = pi + 1
+      let texts = callee_formal_texts(decl, scheme, inst, defs, s)
+      let out = array_empty()
+      let mut wi = 0
+      while wi < Array::length(wants) {
+        let w = String::trim(Array::get(wants, wi))
+        let mut rep = w
+        let mut ni = 0
+        while ni < Array::length(texts) {
+          let (fname, text) = Array::get(texts, ni)
+          if fname == w {
+            rep = text
           }
-          match dret {
-            Some(te) => formal_ids_from(resolve_type_expr_shadowed(te, defs, tps), sret, tps, name_ids),
-            None => ()
-          }
-          // scheme variable id -> the type this call gives it.
-          let id_tys: Array[(Int, Type)] = []
-          let mut qi = 0
-          while qi < Array::length(sparams) && qi < Array::length(iparams) {
-            scheme_var_types_from(Array::get(sparams, qi), Array::get(iparams, qi), id_tys)
-            qi = qi + 1
-          }
-          scheme_var_types_from(sret, iret, id_tys)
-          let out = array_empty()
-          let mut wi = 0
-          while wi < Array::length(wants) {
-            let w = String::trim(Array::get(wants, wi))
-            let mut rep = w
-            let mut ni = 0
-            while ni < Array::length(name_ids) {
-              let (fname, fid) = Array::get(name_ids, ni)
-              if fname == w {
-                let mut ki = 0
-                while ki < Array::length(id_tys) {
-                  let (kid, kty) = Array::get(id_tys, ki)
-                  if kid == fid {
-                    let concrete = subst_apply(s, kty)
-                    let text = type_to_string(concrete)
-                    if !String::contains(text, "?") {
-                      rep = text
-                    }
-                  }
-                  ki = ki + 1
-                }
-              }
-              ni = ni + 1
-            }
-            Array::push(out, rep)
-            wi = wi + 1
-          }
-          out
-        },
-        _ => wants
+          ni = ni + 1
+        }
+        Array::push(out, rep)
+        wi = wi + 1
       }
+      out
     },
     None => wants
   }
+}
+
+/// Each of a generic callee's formals that its instantiation at one call
+/// resolves to a concrete type, paired with that type's spelling. A formal the
+/// call leaves unresolved (the spelling still holds a `?`) is omitted, so a
+/// reader keeps it open rather than judging it.
+fn callee_formal_texts(decl: Option[(Array[String], Array[(String, Option[TypeExpr])], Option[TypeExpr])], scheme: Type, inst: Type, defs: Array[TypeDef], s: Subst) -> Array[(String, String)] {
+  let out: Array[(String, String)] = []
+  match (decl, scheme, inst) {
+    (Some((tps, dparams, dret)), CtForAll(_, _, CtFn(sparams, sret, _)), CtFn(iparams, iret, _)) => {
+      // formal name -> scheme variable id, from the declaration.
+      let name_ids: Array[(String, Int)] = []
+      let mut pi = 0
+      while pi < Array::length(dparams) && pi < Array::length(sparams) {
+        let (_, pann) = Array::get(dparams, pi)
+        match pann {
+          Some(te) => formal_ids_from(resolve_type_expr_shadowed(te, defs, tps), Array::get(sparams, pi), tps, name_ids),
+          None => ()
+        }
+        pi = pi + 1
+      }
+      match dret {
+        Some(te) => formal_ids_from(resolve_type_expr_shadowed(te, defs, tps), sret, tps, name_ids),
+        None => ()
+      }
+      // scheme variable id -> the type this call gives it.
+      let id_tys: Array[(Int, Type)] = []
+      let mut qi = 0
+      while qi < Array::length(sparams) && qi < Array::length(iparams) {
+        scheme_var_types_from(Array::get(sparams, qi), Array::get(iparams, qi), id_tys)
+        qi = qi + 1
+      }
+      scheme_var_types_from(sret, iret, id_tys)
+      let mut ni = 0
+      while ni < Array::length(name_ids) {
+        let (fname, fid) = Array::get(name_ids, ni)
+        let mut ki = 0
+        while ki < Array::length(id_tys) {
+          let (kid, kty) = Array::get(id_tys, ki)
+          if kid == fid {
+            let text = type_to_string(subst_apply(s, kty))
+            if !String::contains(text, "?") {
+              Array::push(out, (fname, text))
+            }
+          }
+          ki = ki + 1
+        }
+        ni = ni + 1
+      }
+    },
+    _ => ()
+  }
+  out
+}
+
+/// #3053: every recorded generic call's formal bindings under the final
+/// substitution, keyed by the callee identifier's offset, for the effects pass
+/// to instantiate the callee's row at that call. Only the call's own scheme is
+/// read here: a call whose scheme has no recorded declaration contributes
+/// nothing, so its row stays as written (open) rather than being guessed.
+export fn callee_formal_bindings(defs: Array[TypeDef], s: Subst) -> Array[(Int, Array[(String, String)])] {
+  let out: Array[(Int, Array[(String, String)])] = []
+  let mut i = 0
+  while i < Array::length(callee_inst_types_cell) {
+    let (off, scheme, inst) = Array::get(callee_inst_types_cell, i)
+    let texts = callee_formal_texts(generic_decl_of_scheme(scheme), scheme, inst, defs, s)
+    if Array::length(texts) > 0 {
+      Array::push(out, (off, texts))
+    }
+    i = i + 1
+  }
+  out
 }
 
 /// Pair each formal named in the annotation with the scheme variable at the
