@@ -1771,7 +1771,22 @@ fn nominal_type_names_into(ty: Type, out: Array[String], named_out: Array[String
     },
     // A nominal type passed bare to a higher-kinded slot (`Holder[Box]`).
     CtConstructor(name, _) => Array::push(named_out, name),
-    CtForAll(_, _, body) => nominal_type_names_into(body, out, named_out),
+    CtForAll(_, bounds, body) => {
+      // A bound (`[T: Builds[Err]]`) is carried as its spelling; a type it
+      // names reaches the value's callers as surely as a parameter type.
+      for b in bounds {
+        let (_, refs) = b
+        for r in refs {
+          // A bound is a `trait_ref_key` (an applied one is encoded), so it
+          // is decoded before its names are read.
+          match trait_ref_from_key(r) {
+            Some(te) => type_expr_reference_names_into(te, array_empty(), named_out),
+            None => ()
+          }
+        }
+      }
+      nominal_type_names_into(body, out, named_out)
+    },
     CtRecord(fields) => for field in fields {
       let (_, fty) = field
       nominal_type_names_into(fty, out, named_out)
@@ -2580,15 +2595,29 @@ fn trait_method_reference_names(methods: Array[(String, Array[TypeExpr], TypeExp
     for b in binders {
       Array::push(own, b)
     }
+    let bound_refs: Array[String] = []
     let mut gi = 0
     while gi < Array::length(method_gens) {
-      let (gname, formals, _) = Array::get(method_gens, gi)
+      let (gname, formals, bounds) = Array::get(method_gens, gi)
       if gname == mname {
         for f in formals {
           Array::push(own, f)
         }
+        // The method's bounds (`run[T: Builds[Err]]`) name types too.
+        for b in bounds {
+          let (_, refs) = b
+          for r in refs {
+            match trait_ref_from_key(r) {
+              Some(te) => type_expr_reference_names_into(te, array_empty(), bound_refs),
+              None => ()
+            }
+          }
+        }
       }
       gi = gi + 1
+    }
+    for n in bound_refs {
+      push_reference_name(n, own, out)
     }
     let mut ai = 0
     while ai < Array::length(args) {
