@@ -543,8 +543,28 @@ fi
 if [ "$fd_used" -ge 2000 ]; then
   echo "[compiler-gate] FAIL: for_discard_no_alloc heap_used=$fd_used >= 2000 (a discarded for-in materialised its result array; one such loop is ~250 B per iteration, ~500 KB over the fixture's 2000)" >&2; exit 1
 fi
+# The same promise under a `handle` (Codex on #3061): forin_discard_pass had no
+# EHandle arm, so the loop inside collected -- 504,252 B measured before the
+# fix, 252 B (the `xs` literal) after.
+VIBE_RC=0 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/for_discard_handle_no_alloc_test.vibe" "$fddir/handle.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$fddir/handle.wasm" ]; then
+  echo "[compiler-gate] FAIL: for_discard_handle_no_alloc fixture did not compile on the bump lane" >&2
+  cat "$fddir/handle.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+fh_json="$(node scripts/measure_heap.mjs "$fddir/handle.wasm" main 2>/dev/null)"
+fh_used="$(printf '%s' "$fh_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+fh_result="$(printf '%s' "$fh_json" | sed -n 's/.*"result":\([0-9]*\).*/\1/p')"
+if [ -z "$fh_used" ] || [ "$fh_result" != "2000" ]; then
+  echo "[compiler-gate] FAIL: for_discard_handle_no_alloc bad measurement ($fh_json)" >&2; exit 1
+fi
+if [ "$fh_used" -ge 2000 ]; then
+  echo "[compiler-gate] FAIL: for_discard_handle_no_alloc heap_used=$fh_used >= 2000 (a for-in discarded under a handle materialised its result array)" >&2; exit 1
+fi
 rm -rf "$fddir"
-echo "[compiler-gate] discarded for-in no-allocation guard ok (heap_used=$fd_used B at 2000 iterations)"
+echo "[compiler-gate] discarded for-in no-allocation guard ok (heap_used=$fd_used B, under a handle $fh_used B, at 2000 iterations)"
 
 # 40f. RC shadow-liveness regression guard (#715 recurrence prevention).
 #      Compiles the #715 shape corpus (every minimal shape that once produced

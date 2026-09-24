@@ -4774,6 +4774,22 @@ fn collect_unknown_effect_label_errors(stmts: Array[Stmt], env: TypeEnv, es_name
     if declared == reserved_mut_label {
       reported = true
       Array::push(errors, String::concat(reserved_mut_decl_message, String::concat(" [@fn=", String::concat(declared, "]"))))
+    } else {
+      // `effectset Writes = { Mut }` would alias the reserved label under
+      // another name (Codex on #3061).
+      match Array::get(stmts, di) {
+        SEffectSet(_, sname, members) => {
+          let mut mi = 0
+          while mi < Array::length(members) && !reported {
+            if uel_head(Array::get(members, mi)) == reserved_mut_label {
+              reported = true
+              Array::push(errors, String::concat(reserved_mut_row_message, String::concat(" (in the members of effectset '", String::concat(sname, String::concat("')", String::concat(" [@fn=", String::concat(sname, "]")))))))
+            }
+            mi = mi + 1
+          }
+        },
+        _ => ()
+      }
     }
     di = di + 1
   }
@@ -4781,30 +4797,12 @@ fn collect_unknown_effect_label_errors(stmts: Array[Stmt], env: TypeEnv, es_name
   // field, an enum or suberror payload, a trait or effect operation, an
   // extern binding -- reaches every value of that type, so the reservation
   // covers it too (Codex on #3061). `stmt_type_rows` is the one list of
-  // those declarations the effect checker already keeps; a top-level
-  // `let mut`'s annotation is added here. Only the reserved label is
+  // those declarations the effect checker already keeps (a top-level `let
+  // mut` is refused outright, ADR-0069). Only the reserved label is
   // reported; unknown labels in declarations keep their existing handling.
   let mut ti = 0
   while ti < Array::length(stmts) && !reported {
-    let (decl_name, decl_labels) = match Array::get(stmts, ti) {
-      SLetMut(mname, Some(mte), _) => {
-        let mrows = array_empty()
-        fek_rows_in_texpr(mte, mrows)
-        let mlabels = array_empty()
-        let mut mri = 0
-        while mri < Array::length(mrows) {
-          let rl = row_text_labels(Array::get(mrows, mri))
-          let mut rli = 0
-          while rli < Array::length(rl) {
-            Array::push(mlabels, Array::get(rl, rli))
-            rli = rli + 1
-          }
-          mri = mri + 1
-        }
-        (mname, mlabels)
-      },
-      other => stmt_type_rows(other)
-    }
+    let (decl_name, decl_labels) = stmt_type_rows(Array::get(stmts, ti))
     let mut dli = 0
     while dli < Array::length(decl_labels) && !reported {
       if uel_head(Array::get(decl_labels, dli)) == reserved_mut_label {
@@ -10521,16 +10519,12 @@ fn lsw_spine(body: Expr, offs: Array[Int]) -> Unit {
         lsw_walk(v, offs)
         cur = c
       },
-      // A destructuring `let PAT = v` is a one-arm match whose arm body is
-      // the rest of the block.
-      EMatch(v, arms) => if Array::length(arms) == 1 {
-        lsw_walk(v, offs)
-        let (_, arm_body) = Array::get(arms, 0)
-        cur = arm_body
-      } else {
-        lsw_walk(cur, offs)
-        going = false
-      },
+      // A destructuring `let PAT = v` lowers to a one-arm match, but so does a
+      // source `match` with one arm, and the AST keeps no provenance to tell
+      // them apart (block-level destructuring admits refutable patterns
+      // too). Both are treated as a nested block: a `let*` after a
+      // destructuring `let` misses this advisory warning, rather than one
+      // inside a source match arm receiving a wrong one (Codex on #3061).
       _ => {
         lsw_walk(cur, offs)
         going = false
