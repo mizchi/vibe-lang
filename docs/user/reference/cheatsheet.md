@@ -1320,9 +1320,16 @@ let w_check = {
 
 ## Effects (core concept)
 
-vibe is **pure by default**. Semantic effects, including `Exception`, are tracked
-in the type system. An empty row excludes an escaping exception, but does not guarantee
-termination or exclude panic, Wasm trap, or resource exhaustion (ADR-0073).
+Semantic effects, including `Exception`, are tracked in the type system. An
+**empty row excludes host capabilities and algebraic effects** -- no printing,
+no files, no escaping exception. It does not guarantee termination or exclude
+panic, Wasm trap, or resource exhaustion (ADR-0073), and it does **not**
+exclude mutating values reachable from the arguments (#3045): `fn grow(xs:
+Array[Int]) -> Unit { Array::push(xs, 9) }` has an empty row, as does a
+function writing a parameter's `mut` field. **`Mut` is a reserved row label**
+for a future marker of that mutation (ADR-0100 (2)): `with Mut` / `with
+Mut[..]` is refused (the diagnostic starts ``remove `Mut` from the row``),
+and so is declaring `effect Mut` or `effectset Mut`.
 Missing effects are reported as a set difference (`effect row mismatch for 'f':
 missing { Fs } (declared { Exception }, requires { Exception, Fs })`) with a `hint:`
 line suggesting the exact row to declare (`hint: add 'with Exception + Fs' to

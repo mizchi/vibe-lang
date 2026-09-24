@@ -292,7 +292,19 @@ spelling at all — `Option::Some` reports `unknown name`, so write `Some`.
   `impl [T: Eq] Eq for Array[T]`.
 
 ### 2.6 Effect system
-- Pure by default, with `with E` annotations.
+- Effects are declared with `with E` annotations. **What an empty row
+  promises** (#3045): the function uses no host capability and performs no
+  algebraic effect, `Exception` included. It does **not** promise that values
+  reachable from the arguments stay unmutated: `fn grow(xs: Array[Int]) ->
+  Unit { Array::push(xs, 9) }` has an empty row, and so does a function that
+  writes a `mut` field of a parameter (§2.2a: aggregates are shared, never
+  copied). An empty row is not referential transparency.
+- **The row label `Mut` is reserved** for a future opt-in marker of argument
+  mutation (ADR-0100 (2)). A row naming `Mut` or `Mut[..]` -- a declaration's,
+  a parameter's function type, or a closure's -- is refused with a diagnostic
+  saying so, and a user `effect Mut` / `effectset Mut` is refused too, so
+  adding the marker later is a compatible addition rather than a collision
+  with a user name.
 - `throw` / `handle ... with Exception { ... }`, the `?` operator (ADR-0016,
   ADR-0050). `throw(x)` is call-form and sugar for
   `perform Exception::Throw(x)` (#640); the bracketless `Exception` row is

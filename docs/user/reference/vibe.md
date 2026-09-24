@@ -280,10 +280,10 @@ Constraints:
 - `let mut` variables cannot be captured by async closures.
 - Snapshotting is required to pass data into async closures.
 
-> **Note**: `Ref[T]` は ADR-0017 で当初 accepted だったが、ADR-0021 の
-> Effect Handler で設計意図を代替する方針に変更され **abandoned** となった。
-> ミュータブル参照の安全な抽象化は `effect Mut<T>` で提供する計画
-> (ADR-0021 参照)。
+> **Note**: there is no `Ref[T]`. Cross-call mutable state is a user-declared
+> algebraic effect with a handler (ADR-0021). The row label `Mut` is reserved
+> for a future marker of argument mutation (ADR-0100 (2), #3045): a row naming
+> it and a user `effect Mut` are refused today.
 
 Lightweight effect tiers (policy direction):
 - `pure`: no external effects, no local mutable state.

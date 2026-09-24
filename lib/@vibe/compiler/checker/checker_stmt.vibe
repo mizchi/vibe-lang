@@ -4677,6 +4677,31 @@ fn publish_throw_site_kinds(final_s: Subst) -> Unit {
   set_throw_site_kinds(out)
 }
 
+/// #3045: the effect row label `Mut` (bare or applied, `Mut[..]`) is reserved
+/// for a future marker of argument mutation. An empty row promises no host
+/// capability and no algebraic effect; it does NOT promise that values
+/// reachable from the arguments stay unmutated, and a later opt-in marker
+/// must be able to take this spelling without colliding with a user effect.
+/// So a row naming it, and a user `effect Mut` / `effectset Mut`, are refused.
+let reserved_mut_label = "Mut"
+
+let reserved_mut_row_message = "remove `Mut` from the row: the label is reserved for a future marker of argument mutation, and a function may already mutate values reachable from its arguments without declaring anything"
+
+let reserved_mut_decl_message = "rename this declaration: `Mut` is reserved for a future marker of argument mutation and cannot name an effect or an effectset"
+
+fn row_names_reserved_mut(row: String) -> Bool {
+  let labels = row_text_labels(row)
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(labels) && !found {
+    if uel_head(Array::get(labels, i)) == reserved_mut_label {
+      found = true
+    }
+    i = i + 1
+  }
+  found
+}
+
 /// #2968: an effect label in a written row that names nothing -- no declared
 /// or imported `effect`, no `effectset`, no standard provider, no builtin
 /// effect, no row variable -- was an opaque label nothing could perform, so a
@@ -4737,8 +4762,21 @@ fn collect_unknown_effect_label_errors(stmts: Array[Stmt], env: TypeEnv, es_name
     }
     pi = pi + 1
   }
-  let mut i = 0
   let mut reported = false
+  let mut di = 0
+  while di < Array::length(stmts) && !reported {
+    let declared = match Array::get(stmts, di) {
+      SEffectDef(_, dname, _, _) => dname,
+      SEffectSet(_, dname, _) => dname,
+      _ => ""
+    }
+    if declared == reserved_mut_label {
+      reported = true
+      Array::push(errors, String::concat(reserved_mut_decl_message, String::concat(" [@fn=", String::concat(declared, "]"))))
+    }
+    di = di + 1
+  }
+  let mut i = 0
   while i < Array::length(stmts) && !reported {
     match Array::get(stmts, i) {
       SLet(_, _, name, ty, body) => {
@@ -4951,6 +4989,10 @@ fn unknown_effect_label_message(label: String, es_names: Array[String], ed_names
   if first < 65 || first > 90 {
     // A row variable (`e`) or something this scan does not classify.
     ""
+  } else if head == reserved_mut_label {
+    // #3045: checked before "known", so a user `effect Mut` (refused on its
+    // own by `reserved_mut_decl_message`) cannot make the label legal.
+    reserved_mut_row_message
   } else if !uel_head_known(head, es_names, ed_names, env_labels) && uel_contains(type_names, head) {
     String::concat("`", String::concat(head, String::concat("` is a type, not an effect: a function that throws it declares `with Exception[", String::concat(head, "]`"))))
   } else if !uel_head_known(head, es_names, ed_names, env_labels) {
@@ -5042,6 +5084,11 @@ fn unknown_effect_arm_in_expr(expr: Expr, es_names: Array[String], ed_names: Arr
           }
           ai = ai + 1
         }
+      },
+      // #3045: the reserved `Mut` label is refused on a closure's own row
+      // too, not only on a top-level declaration's.
+      EFn(_, _, _, _, Some(row), _) => if row_names_reserved_mut(row) {
+        out = String::concat(reserved_mut_row_message, " (in a closure's row)")
       },
       _ => ()
     }
