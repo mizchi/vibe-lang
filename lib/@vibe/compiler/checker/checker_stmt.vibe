@@ -23,7 +23,8 @@ import ./checker_effects.vibe {
   row_text_labels,
   set_call_formal_bindings,
   set_shadowed_builtin_type_names,
-  set_throw_site_kinds
+  set_throw_site_kinds,
+  stmt_type_rows
 }
 
 import ./checker_pattern.vibe {
@@ -4776,64 +4777,41 @@ fn collect_unknown_effect_label_errors(stmts: Array[Stmt], env: TypeEnv, es_name
     }
     di = di + 1
   }
-  // #3045: a row inside a TYPE -- an alias target, a struct field, an enum
-  // payload -- reaches every value of that type, so the reservation covers it
-  // too (Codex on #3061). Only the reserved label is reported here; unknown
-  // labels in declarations keep their existing handling.
+  // #3045: a row inside a TYPE or a signature -- an alias target, a struct
+  // field, an enum or suberror payload, a trait or effect operation, an
+  // extern binding -- reaches every value of that type, so the reservation
+  // covers it too (Codex on #3061). `stmt_type_rows` is the one list of
+  // those declarations the effect checker already keeps; a top-level
+  // `let mut`'s annotation is added here. Only the reserved label is
+  // reported; unknown labels in declarations keep their existing handling.
   let mut ti = 0
   while ti < Array::length(stmts) && !reported {
-    let decl_rows = array_empty()
-    let decl_name = match Array::get(stmts, ti) {
-      STypeAlias(_, aname, _, target) => {
-        fek_rows_in_texpr(target, decl_rows)
-        aname
-      },
-      SStruct(_, sname, fields, _, _, _) => {
-        let mut fi = 0
-        while fi < Array::length(fields) {
-          let (_, fte) = Array::get(fields, fi)
-          fek_rows_in_texpr(fte, decl_rows)
-          fi = fi + 1
-        }
-        sname
-      },
-      SEnum(_, ename, _, variants, _) => {
-        let mut vi = 0
-        while vi < Array::length(variants) {
-          let (_, payloads) = Array::get(variants, vi)
-          let mut pj = 0
-          while pj < Array::length(payloads) {
-            fek_rows_in_texpr(Array::get(payloads, pj), decl_rows)
-            pj = pj + 1
+    let (decl_name, decl_labels) = match Array::get(stmts, ti) {
+      SLetMut(mname, Some(mte), _) => {
+        let mrows = array_empty()
+        fek_rows_in_texpr(mte, mrows)
+        let mlabels = array_empty()
+        let mut mri = 0
+        while mri < Array::length(mrows) {
+          let rl = row_text_labels(Array::get(mrows, mri))
+          let mut rli = 0
+          while rli < Array::length(rl) {
+            Array::push(mlabels, Array::get(rl, rli))
+            rli = rli + 1
           }
-          vi = vi + 1
+          mri = mri + 1
         }
-        ename
+        (mname, mlabels)
       },
-      // `suberror` is enum sugar (#2983), so its payloads are covered the
-      // same way (Codex on #3061).
-      SSuberror(_, sename, sevariants) => {
-        let mut svi = 0
-        while svi < Array::length(sevariants) {
-          let (_, spayloads) = Array::get(sevariants, svi)
-          let mut spj = 0
-          while spj < Array::length(spayloads) {
-            fek_rows_in_texpr(Array::get(spayloads, spj), decl_rows)
-            spj = spj + 1
-          }
-          svi = svi + 1
-        }
-        sename
-      },
-      _ => ""
+      other => stmt_type_rows(other)
     }
-    let mut dri = 0
-    while dri < Array::length(decl_rows) && !reported {
-      if row_names_reserved_mut(Array::get(decl_rows, dri)) {
+    let mut dli = 0
+    while dli < Array::length(decl_labels) && !reported {
+      if uel_head(Array::get(decl_labels, dli)) == reserved_mut_label {
         reported = true
         Array::push(errors, String::concat(reserved_mut_row_message, String::concat(" (in the declaration of '", String::concat(decl_name, String::concat("')", String::concat(" [@fn=", String::concat(decl_name, "]")))))))
       }
-      dri = dri + 1
+      dli = dli + 1
     }
     ti = ti + 1
   }
