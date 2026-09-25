@@ -113,7 +113,7 @@ world vibec-hosted {
   /// filesystem under wasmtime, an in-memory map in a browser IDE.
   import read-file:  func(path: string) -> string;        // traps if missing
   import exists:     func(path: string) -> bool;
-  import read-dir:   func(path: string) -> string;        // "\n"-joined names
+  import read-dir-nul: func(path: string) -> string;      // NUL-joined names (#2957)
   import stat-token: func(path: string) -> s64;           // stable content token; -1 = non-regular
 
   /// Same request protocol as world vibec's `compile`, but the first
@@ -124,6 +124,15 @@ world vibec-hosted {
   export compile-file: func(input-path: string, request: string) -> string;
 }
 EOF
+# A hosted core built by a compiler from before #2957 (the committed seed, the
+# default above) imports the "\n"-framed `fs_read_dir`, and the componentizer
+# then wraps it with the legacy `read-dir` import. The componentizer records
+# which one it used; declare what the component actually imports.
+if [ "$(cat "$HOSTED_COMPONENT.read-dir" 2>/dev/null)" = "read-dir" ]; then
+  awk '{ if ($0 ~ /import read-dir-nul:/) print "  import read-dir:   func(path: string) -> string;        // newline-joined names (pre-#2957 core)"; else print }' \
+    "$HOSTED_WIT" > "$HOSTED_WIT.tmp" && mv "$HOSTED_WIT.tmp" "$HOSTED_WIT"
+fi
+rm -f "$HOSTED_COMPONENT.read-dir"
 
 echo "vibec core             -> $CORE ($(wc -c <"$CORE") bytes)"
 echo "vibec component        -> $COMPONENT ($(wc -c <"$COMPONENT") bytes)"

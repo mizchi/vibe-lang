@@ -1,6 +1,9 @@
-// #729/#730: Fs::readdir(path) -> Array[String]. The host import returns the
-// byte-sorted entry names "\n"-joined as one string (fs_read_file's ABI);
-// compile_call lowers the Array[String] surface to a String::split over it.
+// #729/#730: Fs::readdir(path) -> Array[String]. The host import
+// (`fs_read_dir_nul`) returns the byte-sorted entry names NUL-joined as one
+// string (fs_read_file's ABI); compile_call lowers the Array[String] surface
+// to a String::split over it. NUL because a POSIX name may contain a newline
+// but never a NUL byte: the "\n" framing this replaced split such a name into
+// fake entries (#2957), which the last test below pins.
 // The checker has typed Fs::readdir since the host era — this locks the
 // selfhost codegen + both runners actually implementing it.
 //
@@ -63,4 +66,25 @@ test "readdir lists entry names byte-sorted" {
 test "readdir result behaves as a normal array" {
   let vibes = count_vibe_entries()
   assert(vibes == 1)
+}
+
+// #2957: a file name holding a newline is ONE entry. Under the "\n" framing
+// this directory listed as ["plain.txt", "we", "ird.txt"] -- three names, two
+// of them files that do not exist.
+let newline_dir = "_build/fixture_readdir_newline_test"
+
+let list_newline_dir: () -> Array[String] with Fs = () -> {
+  Fs::write_file("\{newline_dir}/we\nird.txt", "w")
+  Fs::write_file("\{newline_dir}/plain.txt", "p")
+  Fs::readdir(newline_dir)
+}
+
+test "readdir keeps a name containing a newline as one entry" {
+  let names = list_newline_dir()
+  inspect(Array::length(names), "2")
+  inspect(Array::get(names, 0), "plain.txt")
+  assert(Array::get(names, 1) == "we\nird.txt")
+  // The listed name must name a real file: reading it back by that exact
+  // name is what a caller walking the directory does next.
+  inspect(Fs::read_file("\{newline_dir}/\{Array::get(names, 1)}"), "w")
 }

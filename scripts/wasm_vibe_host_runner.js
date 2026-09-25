@@ -1587,7 +1587,7 @@ function authorizePolicyRawImport(name, args, instanceRef, config = policyRawFsC
   if (name === "sh" || name === "sh_lines" || name.startsWith("sh_capture") || name.startsWith("tcp_") || name.startsWith("http_") || name === "fs_chdir") {
     throw new Error(`policy raw import denied: ${name}`);
   }
-  const readOne = new Set(["fs_read_file", "fs_read_bytes", "fs_read_dir", "fs_readdir", "fs_exists", "fs_stat_token", "fs_is_dir", "fs_is_file"]);
+  const readOne = new Set(["fs_read_file", "fs_read_bytes", "fs_read_dir", "fs_read_dir_nul", "fs_readdir", "fs_exists", "fs_stat_token", "fs_is_dir", "fs_is_file"]);
   const writeOne = new Set(["fs_write_file", "fs_publish_immutable_text", "fs_write_bytes", "fs_mkdir", "fs_mkdir_p", "fs_remove", "fs_remove_file", "fs_remove_tree", "fs_append", "fs_open_write"]);
   if (readOne.has(name)) authorizePolicyRawPath(decodeStringArg(instanceRef, args[0]), false, config);
   if (writeOne.has(name)) authorizePolicyRawPath(decodeStringArg(instanceRef, args[0]), true, config);
@@ -2546,6 +2546,20 @@ async function main() {
     throw new Error(message);
   }
 
+  // Fs::readdir's entry names, byte-sorted. Explicit byte-order comparison:
+  // JS default sort is UTF-16 code-unit order, which diverges from the Rust
+  // runner's byte sort for non-ASCII names. A missing directory is a
+  // guest-visible host error, matching fs_read_file.
+  function sortedDirEntries(dirPath) {
+    try {
+      const entries = fs.readdirSync(dirPath);
+      entries.sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
+      return entries;
+    } catch (e) {
+      throwVibeHostError(`fs_read_dir failed for '${dirPath}': ${e.message}`);
+    }
+  }
+
   const debugImports = process.env.VIBE_DEBUG_IMPORTS === "1";
   const fallbackModule = new Proxy(
     {},
@@ -2958,23 +2972,23 @@ async function main() {
           throwVibeHostError(`fs_read_bytes failed for '${filePath}': ${e.message}`);
         }
       },
-      // #729/#730: Fs::readdir — entry NAMES, byte-sorted, "\n"-joined into
-      // ONE string over the same ABI as fs_read_file (raw + tagged both work;
-      // codegen splits guest-side). The legacy fs_readdir above is
+      // #729/#730 + #2957: Fs::readdir — entry NAMES, byte-sorted, joined
+      // into ONE string over the same ABI as fs_read_file (raw + tagged both
+      // work; codegen splits guest-side). The legacy fs_readdir below is
       // tagged-ABI-only (host-built array) and predates the selfhost raw ABI.
       // Empty dir -> "". Missing dir -> error, matching fs_read_file.
+      //
+      // The separator is NUL, the one byte a POSIX name cannot contain. A name
+      // MAY contain "\n", so the "\n"-joined fs_read_dir split such a name
+      // into fake entries (#2957). fs_read_dir stays only for modules built
+      // by a compiler from before #2957 (the committed seed and whatever it
+      // compiles), which import it under that name and split on "\n"; delete
+      // it once the seed emits fs_read_dir_nul. viberun carries the same pair.
+      fs_read_dir_nul(pathTagged) {
+        return encodeHostString(instanceRef, sortedDirEntries(decodeStringArg(instanceRef, pathTagged)).join("\0"));
+      },
       fs_read_dir(pathTagged) {
-        const dirPath = decodeStringArg(instanceRef, pathTagged);
-        try {
-          const entries = fs.readdirSync(dirPath);
-          // Explicit byte-order comparison: JS default sort is UTF-16
-          // code-unit order, which diverges from the Rust runner's byte sort
-          // for non-ASCII names.
-          entries.sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
-          return encodeHostString(instanceRef, entries.join("\n"));
-        } catch (e) {
-          throwVibeHostError(`fs_read_dir failed for '${dirPath}': ${e.message}`);
-        }
+        return encodeHostString(instanceRef, sortedDirEntries(decodeStringArg(instanceRef, pathTagged)).join("\n"));
       },
       fs_exists(pathTagged) {
         const filePath = decodeStringArg(instanceRef, pathTagged);

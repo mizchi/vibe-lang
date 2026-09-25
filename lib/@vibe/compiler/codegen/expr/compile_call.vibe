@@ -42,7 +42,7 @@ import @vibe/compiler/codegen/common_analysis {
   emit_i64_extend_i32_u,
   is_mut_captured_in,
   md_borrow_mask_of,
-  packed_lines_to_array_expr
+  packed_dir_entries_to_array_expr
 }
 
 import @vibe/compiler/codegen/common_base {
@@ -4034,7 +4034,8 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
     else if fname == "Fs::readdir" && Array::length(args) == 1 {
       // #729/#730: readdir's surface is Array[String], but the host import
       // (`vibe_fs_read_dir_raw`, linked_compile) returns the byte-sorted entry
-      // names "\n"-joined as ONE packed string (same ABI as fs_read_file —
+      // names NUL-joined as ONE packed string (#2957: a name may contain "\n"
+      // but never NUL; same ABI as fs_read_file —
       // no host-side array building, RC/bump agnostic). Lower to ordinary
       // AST so String::split's codegen does the array work. An empty dir
       // returns "" which must yield [] — but split("", d) is [""] — hence
@@ -4042,17 +4043,17 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       // because a synthesized EString is not in the string table (same
       // constraint as double_to_string_expr).
       // #1262: shared with the gc lane -- the rewrite is source-level, so both
-      // lanes take it from packed_lines_to_array_expr rather than each
+      // lanes take it from packed_dir_entries_to_array_expr rather than each
       // spelling it out (see that function for the empty-dir and string-table
       // constraints).
-      ce(buf, packed_lines_to_array_expr(ECall(EIdent("vibe_fs_read_dir_raw", -1), [
+      ce(buf, packed_dir_entries_to_array_expr(ECall(EIdent("vibe_fs_read_dir_raw", -1), [
         Array::get(args, 0)
       ], -1), "__rd_names"), local_names, next_local, ctx, ld)
     }
     else if fname == "sh_lines" && Array::length(args) >= 1 {
       // `sh_lines(cmd) -> Array[String]`: the host import (`vibe_sh_lines_raw`,
       // linked_compile) runs the command and returns its stdout "\n"-joined as
-      // ONE packed string (same ABI as fs_read_dir). Lower to `String::split`
+      // ONE packed string (same ABI as fs_read_dir_nul). Lower to `String::split`
       // over it, with the empty-output guard yielding [] (split("", d) is [""]).
       // #777: any args beyond the first are labeled boolean flags folded
       // into the command string by `sh_lines_flag_cmd` (single-arg calls are
