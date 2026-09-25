@@ -3446,20 +3446,11 @@ fn lc_host_hook_dispatch(payload: Expr, hf_machinery: Bool, hs_machinery: Bool, 
 }
 
 /// #1537: `__conc_host_cancel`'s body. A future's read is cancelled and its
-/// handle released (`vibe_hf_cancel_raw`); a stream read has no cancel half
-/// yet -- the stream stays open for its next reader, which settles the armed
-/// read -- so the stream band answers 0.
+/// handle released (`vibe_hf_cancel_raw`), and so is a stream's
+/// (`vibe_hs_cancel_raw`): a host stream cannot be captured by another task,
+/// so the cancelled task was its only reader.
 fn lc_host_cancel_body(payload: Expr, hf_machinery: Bool, hs_machinery: Bool) -> Expr {
-  let future_call = ECall(EIdent("vibe_hf_cancel_raw", -1), [
-    EBinOp("-", payload, EInt(2), -1)
-  ], -1)
-  if hf_machinery && hs_machinery {
-    EIf(EBinOp("<", EInt(lc_hs_req_base() - 1), payload, -1), EInt(0), future_call)
-  } else if hf_machinery {
-    future_call
-  } else {
-    EInt(0)
-  }
+  lc_host_hook_dispatch(payload, hf_machinery, hs_machinery, "vibe_hf_cancel_raw", "vibe_hs_cancel_raw")
 }
 
 fn lc_waiter_hooks_available(stmts: Array[Stmt], linked_imports: Array[(String, String, Int, Int)]) -> Bool {
@@ -9901,6 +9892,7 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
   let need_host_stream_arm_builtin = Map::has_key(used_builtin_names, "vibe_hs_arm_raw")
   let need_host_sleep_arm_builtin = Map::has_key(used_builtin_names, "vibe_hf_sleep_arm_raw")
   let need_host_future_cancel_builtin = Map::has_key(used_builtin_names, "vibe_hf_cancel_raw")
+  let need_host_stream_cancel_builtin = Map::has_key(used_builtin_names, "vibe_hs_cancel_raw")
   // ADR-0089 Decision 3 (#1218): the program's NAMED host streams (sorted,
   // deduped). Each gets its own `vibe.host_stream_get$<name>` core import;
   // they all share the single `vibe.host_stream_read` half (park is per
@@ -10200,6 +10192,13 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
     -1
   }
   let hf_cancel_import_idx = if need_host_future_cancel_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let hs_cancel_import_idx = if need_host_stream_cancel_builtin {
     let idx = next_import_idx
     next_import_idx = next_import_idx + 1
     idx
@@ -10874,6 +10873,11 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
   } else {
     fs_read_file_stub_idx
   }
+  let hs_cancel_idx = if hs_cancel_import_idx >= 0 {
+    hs_cancel_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
   // ADR-0089 Decision 3: the shared host-stream READ half, same stub
   // discipline as hf_wait (`(i64) -> i64`; the call site only exists when
   // the import is reserved).
@@ -11359,6 +11363,7 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
         "vibe_hs_arm_raw" => hs_arm_idx,
         "vibe_hf_sleep_arm_raw" => hsl_arm_idx,
         "vibe_hf_cancel_raw" => hf_cancel_idx,
+        "vibe_hs_cancel_raw" => hs_cancel_idx,
         // ADR-0089 Decision 3: shared read half of the named host streams.
         "vibe_hs_read_raw" => hs_read_idx,
         // ADR-0089 Decision 3 follow-up: shared drop half of the named host
@@ -13930,6 +13935,14 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
   if hf_cancel_import_idx >= 0 {
     emit_name(import_content, "vibe")
     emit_name(import_content, "host_future_cancel")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  if hs_cancel_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "host_stream_cancel")
     bytebuf_push(import_content, 0)
     leb128_encode_u32(import_content, 3)
   } else {

@@ -227,9 +227,14 @@ override silently contradicting a module that says `raw` is the hazard #2903's
   stream is dropped with it), then the readable end is dropped and the state
   cleared, as `host_future_wait`'s teardown does. Without it every such
   cancellation held one of the adapter's 1023 handles for the rest of the run
-  (`fixtures/async_spawn_host_futures/cancel_many.vibe`). A parked STREAM read
-  has no cancel half yet: it stays armed and the stream's next reader settles
-  it.
+  (`fixtures/async_spawn_host_futures/cancel_many.vibe`). A parked STREAM
+  read is released the same way, by `host_stream_cancel (i64) -> i64`: an
+  armed read leaves the set and is cancelled with a synchronous
+  `stream.cancel-read` (whatever it transferred is discarded), the per-handle
+  bands are cleared and the readable end is dropped. Dropping is sound
+  because a host stream cannot be captured by another task (it is neither
+  Send nor a same-nursery endpoint), so the cancelled task was its only
+  reader (`stream_cancel_many.vibe`).
 - **Drop** is conditional -- this is *the conditional-drop rule* the
   runtime-neutral list below names. A call that completed eagerly (status
   RETURNED, code `2`) created no subtask, so it is neither joined nor dropped

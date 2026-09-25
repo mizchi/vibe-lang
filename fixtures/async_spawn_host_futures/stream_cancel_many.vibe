@@ -1,0 +1,35 @@
+// #1537: cancelling the task parked on a host stream read cancels that read
+// and releases the stream -- no other task can capture a host stream, so the
+// cancelled task was its only reader. 1100 tasks each park on a fresh stream
+// and are cancelled, past the adapter's 1023-handle ceiling, so a run that
+// kept each cancelled stream would trap before the live task drains its own.
+// 10 + 20 + 30 = 60. Executed by scripts/test_named_hoststreams_component_gate.sh.
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+fn drain(s: HostStream) -> Int with Async {
+  let mut total = 0
+  for b in s {
+    total = total + b
+  }
+  total
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  TaskGroup::run((g) -> {
+    let mut i = 0
+    while i < 1100 {
+      let c = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+        host_stream_next(host_stream_named("left"))
+      })
+      TaskHandle::cancel(c)
+      i = i + 1
+    }
+    let b = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      drain(host_stream_named("right"))
+    })
+    TaskGroup::pump_all(g)
+    TaskHandle::join(b)
+  })
+}

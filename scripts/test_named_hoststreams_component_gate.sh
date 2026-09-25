@@ -578,4 +578,27 @@ if [ "$SPAWN_ELAPSED_MS" -ge 450 ] || [ "$SPAWN_ELAPSED_MS" -lt 240 ]; then
 fi
 echo "[named-hoststreams-component-gate] spawned stream readers: 66 in ${SPAWN_ELAPSED_MS}ms (< 450: interleaved)"
 
+# fixtures/async_spawn_host_futures/stream_cancel_many.vibe: 1100 tasks park
+# on a fresh stream's read and are cancelled, past the adapter's 1023-handle
+# ceiling; each cancel must cancel the read and release the stream for the
+# live task's drain to run.
+SCM_OUT="$OUT_DIR/spawn_stream_cancel_many.component.wasm"
+rm -f "$SCM_OUT" "$SCM_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/stream_cancel_many.vibe "$SCM_OUT" run >/dev/null 2>&1 || true
+[ -s "$SCM_OUT" ] || { echo "named hoststreams component gate FAILED: fixtures/async_spawn_host_futures/stream_cancel_many.vibe did not compile: $(cat "$SCM_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+wasm-tools print "$SCM_OUT" >"$SCM_OUT.wat" 2>/dev/null || true
+grep -q 'canon stream.cancel-read' "$SCM_OUT.wat" \
+  || { echo "named hoststreams component gate FAILED: stream_cancel_many composed without stream.cancel-read" >&2; exit 1; }
+SCM_LOG="$OUT_DIR/spawn_stream_cancel_many.log"
+if ! VIBE_ASYNC_STREAMS="left=1|2|3@100,right=10|20|30@100" timeout 60 "$RUNNER" "$SCM_OUT" >"$SCM_LOG" 2>&1; then
+  echo "named hoststreams component gate FAILED: stream_cancel_many did not exit 0 (a cancelled stream kept its handle?)" >&2
+  cat "$SCM_LOG" >&2
+  exit 1
+fi
+[ "$(cat "$SCM_LOG")" = "60" ] \
+  || { echo "named hoststreams component gate FAILED: stream_cancel_many expected 60, got: $(cat "$SCM_LOG")" >&2; exit 1; }
+echo "[named-hoststreams-component-gate] stream_cancel_many: 60 (1100 cancelled stream reads released)"
+
 echo "named hoststreams component gate OK"
