@@ -48,8 +48,9 @@ Usage: gen_program.py SEED OUTDIR [--classic] [--liveness-bias=X] [--extended]
                       interpolation, labeled args, generics, traits) and
                       the lane-independent oracle (see ExtGen).
 Writes OUTDIR/single.vibe, OUTDIR/defs.vibe, OUTDIR/main.vibe; with
---extended also OUTDIR/expected.txt and, when the program carries trait
-impls, OUTDIR/skip_lanes.
+--extended also OUTDIR/expected.txt and, when the program uses a construct
+some lane cannot compile (none today, see README "Known lane gaps"),
+OUTDIR/skip_lanes.
 """
 import random
 import sys
@@ -187,10 +188,8 @@ class ExtGen:
     def __init__(self, g, rng):
         self.g = g
         self.r = rng
-        # Trait impls and bounded generics do not compile on the flat
-        # single-source linear lane (bump/RC) today; a program carrying them
-        # names those two lanes in `skip_lanes` (see lib_oracle.sh), so the
-        # rest of the program is still measured there on the seeds without.
+        # Trait impls and bounded generics run on every lane since #3069
+        # (the flat single-source linear lane used to refuse them).
         self.traits = rng.random() < 0.35
         self.effects = []             # effect names; ops are Ask(Int)->Int, Tell(Int)->Unit
         self.kinds = []               # (name, style, ctors [(cname, arity)])
@@ -218,10 +217,6 @@ class ExtGen:
         (see tests/fuzz/README.md, "Known lane gaps"). A skipped lane is
         reported as `skipped` in every verdict, never silently dropped."""
         skip = []
-        if self.traits:
-            # trait impls / bounded generics: the flat single-source linear
-            # lane answers `no impl <Trait> for Self`
-            skip += ["bump", "rc"]
         return skip
 
     def oid(self, tag):

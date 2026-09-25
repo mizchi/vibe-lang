@@ -2163,6 +2163,51 @@ run_test_block_fixtures_rc() {
   done
 }
 
+# #3069: the FLAT single-source linear lane -- `cli_main` with no
+# VIBE_FS_COMPILE, the lane the compiler's own stage build and the fuzz
+# harness's bump / rc columns use. Every other runner above selects the FS
+# lane, so a construct this lane alone refuses went unseen here: it ran the
+# trait-dictionary desugar before the checker and rejected every trait impl.
+# Both allocators, each selected inline (#2248).
+run_test_block_fixtures_flat() {
+  local label="$1"; shift
+  local fx fxout
+  [ "$#" -gt 0 ] || { echo "[compiler-gate] FAIL: $label matched no fixtures" >&2; exit 1; }
+  for fx in "$@"; do
+    [ -f "$fx" ] || { echo "[compiler-gate] FAIL: $label: no such fixture '$fx'" >&2; exit 1; }
+    fxout="_build/_gate_tbfflat_bump_$(basename "${fx%.vibe}").wasm"
+    rm -f "$fxout" "$fxout.diag"
+    env -u VIBE_FS_COMPILE VIBE_RC=0 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+      bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+      "$fx" "$fxout" __no_entry__ >/dev/null 2>&1 || true
+    if [ ! -s "$fxout" ]; then
+      echo "[compiler-gate] FAIL: $fx did not compile on the flat single-source lane, bump ($label)" >&2
+      cat "$fxout.diag" >&2 2>/dev/null; exit 1
+    fi
+    if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+        --invoke _start "$fxout" >/dev/null 2>&1; then
+      echo "[compiler-gate] FAIL: $fx has a failing test on the flat single-source lane, bump ($label)" >&2
+      exit 1
+    fi
+    rm -f "$fxout" "$fxout.diag" "$fxout.funcmap"
+    fxout="_build/_gate_tbfflat_rc_$(basename "${fx%.vibe}").wasm"
+    rm -f "$fxout" "$fxout.diag"
+    env -u VIBE_FS_COMPILE VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+      bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+      "$fx" "$fxout" __no_entry__ >/dev/null 2>&1 || true
+    if [ ! -s "$fxout" ]; then
+      echo "[compiler-gate] FAIL: $fx did not compile on the flat single-source lane, RC ($label)" >&2
+      cat "$fxout.diag" >&2 2>/dev/null; exit 1
+    fi
+    if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+        --invoke _start "$fxout" >/dev/null 2>&1; then
+      echo "[compiler-gate] FAIL: $fx has a failing test on the flat single-source lane, RC ($label)" >&2
+      exit 1
+    fi
+    rm -f "$fxout" "$fxout.diag" "$fxout.funcmap"
+  done
+}
+
 # 15b. extended derive(...) regression (#638 / #694): enum `derive(Ord/Show)`,
 #      struct + enum `derive(Default)`, `derive(Eq)`, and `derive(Hash)`
 #      including transparent Map keys — `map_key_to_string = [K: Hash](key) ->
@@ -2897,6 +2942,14 @@ run_test_block_fixtures "string length views (linear, bump)" fixtures/string_len
 run_test_block_fixtures_gc "string length views (gc)" fixtures/string_length_intrinsics_test.vibe
 run_test_block_fixtures_rc "string length views (linear, RC)" fixtures/string_length_intrinsics_test.vibe
 echo '[compiler-gate] string length views ok'
+
+# 15b-3c2. #3069: trait impls and bounded generics on the flat single-source
+#          linear lane, with the FS lanes answering the same fixture.
+echo '[compiler-gate] 15b-3c2/15 trait dictionaries on the flat single-source lane (#3069)'
+run_test_block_fixtures "trait dict (linear, bump)" fixtures/trait_dict_flat_lane_test.vibe
+run_test_block_fixtures_gc "trait dict (gc)" fixtures/trait_dict_flat_lane_test.vibe
+run_test_block_fixtures_flat "trait dict (flat single-source)" fixtures/trait_dict_flat_lane_test.vibe
+echo '[compiler-gate] trait dictionaries on the flat lane ok'
 
 # 15b-3c'. #3067: `String::substring` clamps its indices on every lane. The gc
 #          lane used its own body with no bounds checks and read the bytes
