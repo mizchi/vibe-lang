@@ -1,0 +1,52 @@
+// #2837: repeated fill / truncate / refill of OWNED elements keeps the RC heap
+// frontier bounded.
+//
+// `Array::truncate` used to shorten the length and release nothing, so every
+// element it removed stayed allocated forever: this fixture grew `__heap_ptr`
+// by 8,888 B per round on the RC lane, linearly (4,445,044 B at 500 rounds,
+// 17,777,044 B at 2000, 35,553,044 B at 4000). With the release it measures
+// 9,844 B at all three. The Perceus plan now proves, per array, when the removed
+// suffix may be released (`plan_truncate_release` in perceus/perceus.vibe):
+// here `xs` is a fresh local that never escapes, and `saved` -- a view read out
+// of it and still read after the truncate -- is pinned (a reference of its own
+// from its bind site to its scope end) instead of being freed under the view.
+//
+// So this pins both halves at once:
+//
+//   * boundedness: the gate compiles this under VIBE_RC=1 and bounds
+//     `__heap_ptr` growth over the whole run (tests/gates/mid/run.sh, 40f0b);
+//   * the pin: `saved` is element 7 of the round, `[r, 7]`, and it is read
+//     after a truncate AND a push that would reuse its block were it freed.
+//     A freed view reads the refill's `[0, 0]` and the round is not counted,
+//     and VIBE_RC=shadow traps on the drop-of-freed. The same gate runs the
+//     shadow and bump lanes and compares the answer.
+//
+// `main` returns the number of rounds whose saved view survived: 2000.
+
+fn rounds(n: Int) -> Int {
+  let xs: Array[Array[Int]] = Array::with_capacity(128)
+  let mut hits = 0
+  let mut r = 0
+  while r < n {
+    let mut i = 0
+    while i < 100 {
+      Array::push(xs, [r, i])
+      i = i + 1
+    }
+    let saved = Array::get(xs, 7)
+    Array::truncate(xs, 0)
+    Array::push(xs, [0, 0])
+    if Array::get(saved, 1) == 7 {
+      hits = hits + 1
+    } else {
+      ()
+    }
+    Array::truncate(xs, 0)
+    r = r + 1
+  }
+  hits
+}
+
+export fn main() -> Int {
+  rounds(2000)
+}

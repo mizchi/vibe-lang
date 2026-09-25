@@ -1,0 +1,74 @@
+//# Imports
+
+// #2837: which truncates may release the elements they remove. The planner
+// approves a local array (`truncate_release`) only when it can prove every
+// view of its elements is either dead at the truncate or pinned
+// (`view_pin`); everything else keeps the non-releasing truncate, which leaks
+// but never frees an element something still reads. The `:1` suffix marks a
+// release that is sound only in an Int/Bool/Unit-returning function, which
+// codegen checks. The runtime half is fixtures/rc_truncate_saved_view_test.vibe
+// and fixtures/rc_truncate_reclaim_bounded_test.vibe (mid gate 40f0 / 40f0b).
+
+import @vibe/compiler/runtime {
+  rc_plan_source
+}
+
+//# Functions
+
+fn plan_of(source: String) -> String with Exception {
+  rc_plan_source(source, "")
+}
+
+let epilogue = "\nlet main: () -> Int = () -> {\n  run()\n}"
+
+test "a saved view live across the truncate is pinned" {
+  let src = String::concat("let run: () -> Int = () -> {\n  let xs = [[11, 12]]\n  let saved = Array::get(xs, 0)\n  Array::truncate(xs, 0)\n  Array::push(xs, [91, 92])\n  Array::get(saved, 1)\n}", epilogue)
+  let plan = plan_of(src)
+  assert(String::contains(plan, "run xs truncate_release:1 1"))
+  assert(String::contains(plan, "run saved view_pin:1 1"))
+}
+
+test "a loop with no live view needs no pin and no result check" {
+  let src = String::concat("let run: () -> Int = () -> {\n  let xs = [[0, 0]]\n  let mut r = 0\n  while r < 3 {\n    Array::push(xs, [r, r])\n    Array::truncate(xs, 0)\n    r = r + 1\n  }\n  r\n}", epilogue)
+  let plan = plan_of(src)
+  assert(String::contains(plan, "run xs truncate_release:0 1"))
+  assert(!String::contains(plan, "view_pin"))
+}
+
+test "an annotated reserved array is still a fresh local" {
+  let src = String::concat("let run: () -> Int = () -> {\n  let xs: Array[Array[Int]] = Array::with_capacity(4)\n  Array::push(xs, [11, 12])\n  Array::truncate(xs, 0)\n  Array::length(xs)\n}", epilogue)
+  assert(String::contains(plan_of(src), "run xs truncate_release:0 1"))
+}
+
+test "an array that escapes through an alias is declined" {
+  // The truncate the view has to survive happens inside the helper, where
+  // `ys` is a parameter; nothing in `run` may release, and nothing does.
+  let src = String::concat("let clobber: (Array[Array[Int]]) -> Unit = (ys) -> {\n  Array::truncate(ys, 0)\n}\nlet run: () -> Int = () -> {\n  let xs = [[11, 12]]\n  let saved = Array::get(xs, 0)\n  let alias = xs\n  clobber(alias)\n  Array::get(saved, 1)\n}", epilogue)
+  let plan = plan_of(src)
+  assert(!String::contains(plan, "truncate_release"))
+  assert(!String::contains(plan, "view_pin"))
+}
+
+test "a derived binding the plan counts is declined" {
+  // `let w = v` over a view plans a scope-end drop for `w` that it never
+  // acquired. The unreleased element used to absorb that drop; a released
+  // one would be freed twice.
+  let src = String::concat("let run: () -> Int = () -> {\n  let xs = [[1, 2]]\n  let v = Array::get(xs, 0)\n  Array::truncate(xs, 0)\n  let w = v\n  Array::get(w, 1)\n}", epilogue)
+  assert(!String::contains(plan_of(src), "truncate_release"))
+}
+
+test "a derived let mut live across the truncate is declined" {
+  let src = String::concat("let run: () -> Int = () -> {\n  let xs = [[1, 2]]\n  let mut v = Array::get(xs, 0)\n  Array::truncate(xs, 0)\n  Array::get(v, 1)\n}", epilogue)
+  assert(!String::contains(plan_of(src), "truncate_release"))
+}
+
+test "a truncate inside an argument is declined" {
+  // A temporary read before it in the same call may still be live.
+  let src = String::concat("let pair: (Array[Int], Unit) -> Int = (a, u) -> Array::get(a, 1)\nlet run: () -> Int = () -> {\n  let xs = [[1, 2]]\n  pair(Array::get(xs, 0), Array::truncate(xs, 0))\n}", epilogue)
+  assert(!String::contains(plan_of(src), "truncate_release"))
+}
+
+test "an array a lambda captures is declined" {
+  let src = String::concat("let run: () -> Int = () -> {\n  let xs = [[1, 2]]\n  let f = () -> Array::length(xs)\n  Array::truncate(xs, 0)\n  f()\n}", epilogue)
+  assert(!String::contains(plan_of(src), "truncate_release"))
+}

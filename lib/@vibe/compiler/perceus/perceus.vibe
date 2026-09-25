@@ -61,7 +61,18 @@ export enum PerceusActionKind {
   // it, drop it. The bump and wasm-gc lanes ignore both kinds, so the pair
   // degrades to today's leak-direction behavior.
   PaPathDrop;
-  PaConsumeMark
+  PaConsumeMark;
+  // #2837 truncate reclamation (see `plan_truncate_release`).
+  // `PaTruncRelease(x)`: a truncate of the local array `x` may release the
+  // elements it removes. `PaViewPin(v)`, in the rows right after its array's
+  // release row: the binding `v`, which derives from that array and is live
+  // across one of its truncates, takes a reference of its own at its bind
+  // site and releases it at its scope end. `extra` is 1 when the release is
+  // sound only in a function whose result is an Int/Bool/Unit. The bump and
+  // wasm-gc lanes ignore both kinds, so they keep today's non-releasing
+  // truncate.
+  PaTruncRelease;
+  PaViewPin
 }
 
 // PerceusAction is defined transparently in this package's contract
@@ -516,6 +527,20 @@ export fn pa_is_path_drop(a: PerceusAction) -> Bool {
 export fn pa_is_consume_mark(a: PerceusAction) -> Bool {
   match a.kind {
     PaConsumeMark => true,
+    _ => false
+  }
+}
+
+export fn pa_is_trunc_release(a: PerceusAction) -> Bool {
+  match a.kind {
+    PaTruncRelease => true,
+    _ => false
+  }
+}
+
+export fn pa_is_view_pin(a: PerceusAction) -> Bool {
+  match a.kind {
+    PaViewPin => true,
     _ => false
   }
 }
@@ -3925,6 +3950,645 @@ fn plan_reuse_pairs(body: Expr, actions: Array[PerceusAction]) -> Unit {
   }
 }
 
+//# #2837: reclaiming what `Array::truncate` removes
+
+// `Array::truncate` shortens an array's LENGTH and, on its own, releases
+// nothing: the removed elements stay counted by nobody but a length the
+// destructor no longer walks, so a fill/truncate/refill loop of owned
+// elements leaks every round. Releasing them in the truncate body is wrong by
+// itself, because `Array::get` hands out an UNCOUNTED view whose only owner is
+// the array -- the reverted #2554 experiment freed exactly such a view.
+//
+// So release is decided per ARRAY, here, and only where it is proven safe:
+//
+//   1. the array is a local `let x = <fresh array>` (`[..]` or
+//      `Array::with_capacity`), so no caller or global can hold a view into
+//      it;
+//   2. every mention of `x` is the receiver of `Array::push` / `length` /
+//      `get` / `truncate`, outside any lambda -- `x` never escapes, so every
+//      view of its elements is produced in this body, by a mention of `x` or
+//      of a binding derived from one;
+//   3. every truncate of `x` sits in STATEMENT position (reached only through
+//      let bodies, sequences, if branches and loop bodies), so no temporary
+//      is live across it -- only bindings are;
+//   4. every binding enclosing a truncate whose value derives from `x`
+//      (transitively, by mention) is an immutable `let`, and is PINNED: it
+//      takes a reference of its own at its bind site and releases it at its
+//      scope end (dup-on-escape). Any other derived binder kind -- `let mut`,
+//      `for`, a match or handler arm -- declines the array;
+//   5. a pinned binding's scope result cannot carry a view past the pin's
+//      release: its result spine is provably not a derived pointer, or it
+//      flows straight to a function result the codegen knows to be
+//      Int/Bool/Char/Unit (the row's `extra` = 1 asks codegen for that);
+//   6. no `return` / `break` / `continue` / assignment / lambda carries a
+//      derived value;
+//   7. the rest of the plan counts no derived binding: a view holds no
+//      reference, so a planned dup or drop on one is accounting this proof
+//      does not cover.
+//
+// Anything else keeps today's non-releasing truncate: a bounded leak, never
+// a use-after-free. The truncate through an alias or a helper function
+// (`let alias = xs; clobber(alias)`) is exactly such a case -- rule 2
+// declines `xs`, and `clobber`'s parameter is not a fresh local.
+//
+// Rows: `PaTruncRelease(x)` followed by one `PaViewPin(v)` per pinned binding
+// of that array, all carrying the same `extra`. Codegen releases at a
+// truncate of `x` only while every one of those pins is live, so a pin the
+// codegen did not honour withdraws the release instead of freeing a view.
+
+fn tr_is_ident(e: Expr, x: String) -> Bool {
+  match e {
+    EIdent(n, _) => n == x,
+    _ => false
+  }
+}
+
+fn tr_receiver_builtin(f: String) -> Bool {
+  f == "Array::push" || f == "Array::length" || f == "Array::get" || f == "Array::truncate"
+}
+
+/// A local `let x: T = e` reaches here as the parser's ascription wrapper
+/// `((__asc: T) -> __asc)(e)` (ascribe_wrap), which hands back `e` itself.
+fn tr_fresh_array_value(e: Expr) -> Bool {
+  match e {
+    EArray(_) => true,
+    ECall(callee, args, _) => match callee {
+      EIdent(f, _) => f == "Array::with_capacity",
+      EFn(_, _, params, _, _, body) => Array::length(params) == 1 && Array::length(args) == 1 && (Array::get(params, 0)).0 == "__asc" && tr_is_ident(body, "__asc") && tr_fresh_array_value(Array::get(args, 0)),
+      _ => false
+    },
+    _ => false
+  }
+}
+
+/// The receiver of a truncate call, or "" when `e` is not one.
+fn tr_truncate_receiver(e: Expr) -> String {
+  match e {
+    ECall(callee, args, _) => match callee {
+      EIdent(f, _) => if f == "Array::truncate" && Array::length(args) == 2 {
+        match Array::get(args, 0) {
+          EIdent(x, _) => x,
+          _ => ""
+        }
+      } else {
+        ""
+      },
+      _ => ""
+    },
+    _ => ""
+  }
+}
+
+/// Every truncate receiver named in `e`, lambdas included (a truncate inside
+/// a lambda disqualifies its receiver through rule 2 later).
+fn tr_collect_receivers(e: Expr, out: Array[String]) -> Unit {
+  let r = tr_truncate_receiver(e)
+  if r != "" && !array_contains_str_pctx(out, r) {
+    Array::push(out, r)
+  } else {
+    ()
+  }
+  let mark = expr_children_push(e)
+  let end = expr_children_top()
+  let mut i = mark
+  while i < end {
+    tr_collect_receivers(expr_child_at(i), out)
+    i = i + 1
+  }
+  expr_children_pop(mark)
+}
+
+/// Rule 2: every mention of `x` is the receiver of a receiver builtin,
+/// outside any lambda.
+fn tr_receiver_only(e: Expr, x: String, in_fn: Bool) -> Bool {
+  match e {
+    EIdent(n, _) => n != x,
+    ECall(callee, args, _) => {
+      let recv = match callee {
+        EIdent(f, _) => !in_fn && Array::length(args) > 0 && tr_receiver_builtin(f) && tr_is_ident(Array::get(args, 0), x),
+        _ => false
+      }
+      let mut ok = recv || tr_receiver_only(callee, x, in_fn)
+      let mut i = if recv {
+        1
+      } else {
+        0
+      }
+      while ok && i < Array::length(args) {
+        ok = tr_receiver_only(Array::get(args, i), x, in_fn)
+        i = i + 1
+      }
+      ok
+    },
+    EFn(_, _, _, _, _, body) => tr_receiver_only(body, x, true),
+    EAssign(n, v, b) => n != x && tr_receiver_only(v, x, in_fn) && tr_receiver_only(b, x, in_fn),
+    EAssignOp(n, _, v, b) => n != x && tr_receiver_only(v, x, in_fn) && tr_receiver_only(b, x, in_fn),
+    _ => {
+      let mark = expr_children_push(e)
+      let end = expr_children_top()
+      let mut ok = true
+      let mut i = mark
+      while ok && i < end {
+        ok = tr_receiver_only(expr_child_at(i), x, in_fn)
+        i = i + 1
+      }
+      expr_children_pop(mark)
+      ok
+    }
+  }
+}
+
+/// Does `e` mention any of `names` anywhere, lambdas included?
+fn tr_mentions(e: Expr, names: Array[String]) -> Bool {
+  match e {
+    EIdent(n, _) => array_contains_str_pctx(names, n),
+    _ => {
+      let mark = expr_children_push(e)
+      let end = expr_children_top()
+      let mut hit = false
+      let mut i = mark
+      while !hit && i < end {
+        hit = tr_mentions(expr_child_at(i), names)
+        i = i + 1
+      }
+      expr_children_pop(mark)
+      hit
+    }
+  }
+}
+
+fn tr_add(d: Array[String], n: String) -> Unit {
+  if array_contains_str_pctx(d, n) {
+    ()
+  } else {
+    Array::push(d, n)
+  }
+}
+
+fn tr_add_pat(d: Array[String], p: Pat) -> Unit {
+  let names: Array[String] = []
+  let _ = pat_names(p, names)
+  let mut i = 0
+  while i < Array::length(names) {
+    tr_add(d, Array::get(names, i))
+    i = i + 1
+  }
+}
+
+/// Rules 4 and 6, the derivation half: grow `d` (seeded with the array) by
+/// every binder whose value mentions a derived name, in one preorder pass --
+/// a binder's value can only mention binders enclosing it, which are visited
+/// first. Returns false on a carrier rule 6 forbids.
+fn tr_derive(e: Expr, d: Array[String]) -> Bool {
+  match e {
+    ELet(n, v, b, _) => {
+      if tr_mentions(v, d) {
+        tr_add(d, n)
+      } else {
+        ()
+      }
+      tr_derive(v, d) && tr_derive(b, d)
+    },
+    ELetMut(n, v, b, _) => {
+      if tr_mentions(v, d) {
+        tr_add(d, n)
+      } else {
+        ()
+      }
+      tr_derive(v, d) && tr_derive(b, d)
+    },
+    ELetRec(n, v, b) => {
+      if tr_mentions(v, d) {
+        tr_add(d, n)
+      } else {
+        ()
+      }
+      tr_derive(v, d) && tr_derive(b, d)
+    },
+    EForIn(n, _, it, body) => {
+      if tr_mentions(it, d) {
+        tr_add(d, n)
+      } else {
+        ()
+      }
+      tr_derive(it, d) && tr_derive(body, d)
+    },
+    EMatch(s, arms) => {
+      let from_d = tr_mentions(s, d)
+      let mut ok = tr_derive(s, d)
+      let mut i = 0
+      while ok && i < Array::length(arms) {
+        let (p, body) = Array::get(arms, i)
+        if from_d {
+          tr_add_pat(d, p)
+        } else {
+          ()
+        }
+        ok = tr_derive(body, d)
+        i = i + 1
+      }
+      ok
+    },
+    EHandle(hb, arms) => {
+      let from_d = tr_mentions(hb, d)
+      let mut ok = tr_derive(hb, d)
+      let mut i = 0
+      while ok && i < Array::length(arms) {
+        let (p, body) = Array::get(arms, i)
+        if from_d {
+          tr_add_pat(d, p)
+        } else {
+          ()
+        }
+        ok = tr_derive(body, d)
+        i = i + 1
+      }
+      ok
+    },
+    ELoop(params, body) => {
+      let mut ok = true
+      let mut i = 0
+      while ok && i < Array::length(params) {
+        let (pn, pv) = Array::get(params, i)
+        if tr_mentions(pv, d) {
+          tr_add(d, pn)
+        } else {
+          ()
+        }
+        ok = tr_derive(pv, d)
+        i = i + 1
+      }
+      ok && tr_derive(body, d)
+    },
+    EAssign(_, v, b) => !tr_mentions(v, d) && tr_derive(b, d),
+    EAssignOp(_, _, v, b) => !tr_mentions(v, d) && tr_derive(b, d),
+    EReturn(v) => !tr_mentions(v, d),
+    EBreak(ov) => match ov {
+      Some(v) => !tr_mentions(v, d),
+      None => true
+    },
+    EContinue(vs) => {
+      let mut ok = true
+      let mut i = 0
+      while ok && i < Array::length(vs) {
+        ok = !tr_mentions(Array::get(vs, i), d)
+        i = i + 1
+      }
+      ok
+    },
+    EFn(_, _, _, _, _, body) => !tr_mentions(body, d),
+    _ => {
+      let mark = expr_children_push(e)
+      let end = expr_children_top()
+      let mut ok = true
+      let mut i = mark
+      while ok && i < end {
+        ok = tr_derive(expr_child_at(i), d)
+        i = i + 1
+      }
+      expr_children_pop(mark)
+      ok
+    }
+  }
+}
+
+/// Rule 5: can the value `e` produces be a pointer into a derived binding?
+/// Walks the RESULT spine only; a leaf that mentions no derived name cannot
+/// reach one (rule 2 closed every other route), and the comparison, logic and
+/// bitwise operators produce an Int or a Bool whatever they read.
+fn tr_result_safe(e: Expr, d: Array[String]) -> Bool {
+  match e {
+    ELet(_, _, b, _) => tr_result_safe(b, d),
+    ELetMut(_, _, b, _) => tr_result_safe(b, d),
+    ELetRec(_, _, b) => tr_result_safe(b, d),
+    ESeq(_, b) => tr_result_safe(b, d),
+    EAssign(_, _, b) => tr_result_safe(b, d),
+    EAssignOp(_, _, _, b) => tr_result_safe(b, d),
+    EIf(_, t, f) => tr_result_safe(t, d) && tr_result_safe(f, d),
+    EMatch(_, arms) => {
+      let mut ok = true
+      let mut i = 0
+      while ok && i < Array::length(arms) {
+        ok = tr_result_safe((Array::get(arms, i)).1, d)
+        i = i + 1
+      }
+      ok
+    },
+    EWhile(_, _) => true,
+    EForIn(_, _, _, _) => true,
+    EBinOp(op, _, _, _) => op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">=" || op == "&&" || op == "||" || op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>" || !tr_mentions(e, d),
+    EUnaryOp(op, _) => op == "!" || op == "~" || !tr_mentions(e, d),
+    ECall(callee, _, _) => match callee {
+      EIdent(f, _) => f == "Array::length" || !tr_mentions(e, d),
+      _ => !tr_mentions(e, d)
+    },
+    _ => !tr_mentions(e, d)
+  }
+}
+
+struct TrWalk {
+  x: String;
+  d: Array[String];
+  // The binders enclosing the walk's position, innermost last: name, kind
+  // (1 let, 2 let mut, 3 let rec, 4 for), whether the value is a fresh
+  // array, the scope body, and whether the binder's result reaches the
+  // function result with no discarding boundary in between.
+  bn: Array[String];
+  bk: Array[Int];
+  bf: Array[Bool];
+  bb: Array[Expr];
+  bt: Array[Bool];
+  pins: Array[String];
+  pin_bodies: Array[Expr];
+  pin_tail: Array[Bool];
+  mut ok: Bool
+}
+
+fn tr_push(w: TrWalk, n: String, k: Int, fresh: Bool, body: Expr, tail: Bool) -> Unit {
+  Array::push(w.bn, n)
+  Array::push(w.bk, k)
+  Array::push(w.bf, fresh)
+  Array::push(w.bb, body)
+  Array::push(w.bt, tail)
+}
+
+fn tr_pop(w: TrWalk) -> Unit {
+  let n = Array::length(w.bn) - 1
+  Array::truncate(w.bn, n)
+  Array::truncate(w.bk, n)
+  Array::truncate(w.bf, n)
+  Array::truncate(w.bb, n)
+  Array::truncate(w.bt, n)
+}
+
+/// Rules 1, 3 and 4 at one truncate of the walk's array.
+fn tr_site(w: TrWalk, count_arg: Expr, stmt: Bool) -> Unit {
+  let simple_count = match count_arg {
+    EInt(_) => true,
+    EIdent(_, _) => true,
+    _ => false
+  }
+  if !stmt || !simple_count {
+    w.ok = false
+  } else {
+    let mut found = false
+    let mut i = Array::length(w.bn) - 1
+    while w.ok && i >= 0 {
+      let n = Array::get(w.bn, i)
+      if n == w.x {
+        if !found {
+          found = true
+          if Array::get(w.bk, i) != 1 || !Array::get(w.bf, i) {
+            w.ok = false
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+      } else if array_contains_str_pctx(w.d, n) {
+        if Array::get(w.bk, i) != 1 {
+          w.ok = false
+        } else if !array_contains_str_pctx(w.pins, n) {
+          Array::push(w.pins, n)
+          Array::push(w.pin_bodies, Array::get(w.bb, i))
+          Array::push(w.pin_tail, Array::get(w.bt, i))
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      i = i - 1
+    }
+    if !found {
+      w.ok = false
+    } else {
+      ()
+    }
+  }
+}
+
+/// `stmt`: every node from the root to here is a let body, a sequence
+/// element, an if branch or a loop body. `tail`: the value here is the
+/// function's result, with no discarding boundary in between.
+fn tr_walk(w: TrWalk, e: Expr, stmt: Bool, tail: Bool) -> Unit {
+  if !w.ok {
+    ()
+  } else {
+    match e {
+      ELet(n, v, b, _) => {
+        tr_walk(w, v, false, false)
+        tr_push(w, n, 1, tr_fresh_array_value(v), b, tail)
+        tr_walk(w, b, stmt, tail)
+        tr_pop(w)
+      },
+      ELetMut(n, v, b, _) => {
+        tr_walk(w, v, false, false)
+        tr_push(w, n, 2, false, b, tail)
+        tr_walk(w, b, stmt, tail)
+        tr_pop(w)
+      },
+      ELetRec(n, v, b) => {
+        tr_push(w, n, 3, false, b, tail)
+        tr_walk(w, v, false, false)
+        tr_walk(w, b, stmt, tail)
+        tr_pop(w)
+      },
+      ESeq(a, b) => {
+        tr_walk(w, a, stmt, false)
+        tr_walk(w, b, stmt, tail)
+      },
+      EIf(c, t, f) => {
+        tr_walk(w, c, false, false)
+        tr_walk(w, t, stmt, tail)
+        tr_walk(w, f, stmt, tail)
+      },
+      EWhile(c, body) => {
+        tr_walk(w, c, false, false)
+        tr_walk(w, body, stmt, false)
+      },
+      EForIn(n, idx, it, body) => {
+        tr_walk(w, it, false, false)
+        tr_push(w, n, 4, false, body, false)
+        match idx {
+          Some(ix) => tr_push(w, ix, 4, false, body, false),
+          None => ()
+        }
+        tr_walk(w, body, stmt, false)
+        match idx {
+          Some(_) => tr_pop(w),
+          None => ()
+        }
+        tr_pop(w)
+      },
+      EAssign(_, v, b) => {
+        tr_walk(w, v, false, false)
+        tr_walk(w, b, stmt, tail)
+      },
+      EAssignOp(_, _, v, b) => {
+        tr_walk(w, v, false, false)
+        tr_walk(w, b, stmt, tail)
+      },
+      ECall(callee, args, _) => {
+        if tr_truncate_receiver(e) == w.x {
+          tr_site(w, Array::get(args, 1), stmt)
+        } else {
+          ()
+        }
+        tr_walk(w, callee, false, false)
+        let mut i = 0
+        while i < Array::length(args) {
+          tr_walk(w, Array::get(args, i), false, false)
+          i = i + 1
+        }
+      },
+      _ => {
+        let mark = expr_children_push(e)
+        let end = expr_children_top()
+        let mut i = mark
+        while i < end {
+          tr_walk(w, expr_child_at(i), false, false)
+          i = i + 1
+        }
+        expr_children_pop(mark)
+      }
+    }
+  }
+}
+
+/// #2837: append the truncate-release rows for `body` (see the section
+/// comment above). Most bodies truncate nothing, and pay one walk.
+fn plan_truncate_release(body: Expr, actions: Array[PerceusAction]) -> Unit {
+  let receivers: Array[String] = []
+  tr_collect_receivers(body, receivers)
+  let mut ri = 0
+  while ri < Array::length(receivers) {
+    let x = Array::get(receivers, ri)
+    if tr_receiver_only(body, x, false) {
+      let d: Array[String] = [x]
+      if tr_derive(body, d) {
+        let w = TrWalk::{
+          x: x,
+          d: d,
+          bn: [],
+          bk: [],
+          bf: [],
+          bb: [],
+          bt: [],
+          pins: [],
+          pin_bodies: [],
+          pin_tail: [],
+          ok: true
+        }
+        tr_walk(w, body, true, true)
+        // Rule 7: the plan itself must not count any derived binding. A view
+        // holds no reference, so a planned drop or dup on one is an
+        // accounting this analysis cannot vouch for -- measured: `let w = v`
+        // over a view `v` plans a scope-end drop for `w` that it never
+        // acquired, which the unreleased element used to absorb.
+        let mut ai = 0
+        while w.ok && ai < Array::length(actions) {
+          let a = Array::get(actions, ai)
+          if a.name != x && array_contains_str_pctx(d, a.name) {
+            w.ok = false
+          } else {
+            ()
+          }
+          ai = ai + 1
+        }
+        let mut needs_root = false
+        let mut pi = 0
+        while w.ok && pi < Array::length(w.pins) {
+          if tr_result_safe(Array::get(w.pin_bodies, pi), d) {
+            ()
+          } else if Array::get(w.pin_tail, pi) {
+            needs_root = true
+          } else {
+            w.ok = false
+          }
+          pi = pi + 1
+        }
+        if w.ok {
+          let extra = if needs_root {
+            1
+          } else {
+            0
+          }
+          pr_push_reuse(actions, PaTruncRelease, x, extra)
+          let mut pj = 0
+          while pj < Array::length(w.pins) {
+            pr_push_reuse(actions, PaViewPin, Array::get(w.pins, pj), extra)
+            pj = pj + 1
+          }
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    ri = ri + 1
+  }
+}
+
+/// #2837: split a plan's truncate-release rows into what codegen consults.
+/// `accept_root` says whether the function being compiled returns an
+/// Int/Bool/Unit; a row whose `extra` asks for that is dropped otherwise,
+/// together with its pins. `pin_arrays[i]` is the array `pin_names[i]` was
+/// pinned for.
+export fn perceus_truncate_rows(plan: Array[PerceusAction], accept_root: Bool, release: Array[String], pin_arrays: Array[String], pin_names: Array[String]) -> Unit {
+  let mut cur = ""
+  let mut i = 0
+  while i < Array::length(plan) {
+    let a = Array::get(plan, i)
+    if pa_is_trunc_release(a) {
+      if a.extra == 0 || accept_root {
+        cur = a.name
+        Array::push(release, a.name)
+      } else {
+        cur = ""
+      }
+    } else if pa_is_view_pin(a) {
+      if cur != "" {
+        Array::push(pin_arrays, cur)
+        Array::push(pin_names, a.name)
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
+fn tr_type_is_immediate(t: TypeExpr) -> Bool {
+  match t {
+    TyName(n) => n == "Int" || n == "Bool" || n == "Unit",
+    TyUnit => true,
+    _ => false
+  }
+}
+
+/// #2837: is the declared result of this top-level function an Int, a Bool or
+/// Unit -- a value that holds no pointer at all? Read from the signature the
+/// statement carries, else from the lambda's own return annotation.
+export fn fn_result_is_immediate(sig: Option[TypeExpr], value: Expr) -> Bool {
+  match fn_sig_return_type(sig) {
+    Some(t) => tr_type_is_immediate(t),
+    None => match value {
+      EFn(_, _, _, ret, _, _) => match ret {
+        Some(t) => tr_type_is_immediate(t),
+        None => false
+      },
+      _ => false
+    }
+  }
+}
+
 /// Build the plan for a function whose parameters are owned heap values. Params
 /// are declared as bindings (in count + emit lockstep, same ids) so the existing
 /// machinery emits a PaDrop for a borrowed-only/unused heap param and a PaDup for
@@ -4102,6 +4766,9 @@ fn build_perceus_plan_in_ctx(ctx: PCtx, params: Array[(String, Option[TypeExpr])
   // same reason -- they are neither drops nor dups, so every consumer that
   // reads `out_param_drop_start` skips them.
   pe_emit_path_release(ctx)
+  // #2837: the truncate-release rows, after the same suffix -- neither drops
+  // nor dups, so every consumer reading `out_param_drop_start` skips them.
+  plan_truncate_release(body, ctx.actions)
   // An owned copy, NOT ctx.actions itself: the cached PCtx keeps (and later
   // resets) its own actions array, while callers hold the returned plan
   // across subsequent plan builds.

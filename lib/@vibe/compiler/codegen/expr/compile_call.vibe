@@ -2682,6 +2682,107 @@ fn frozen_array_conversion_copy(name: String) -> String {
 /// - `MutList::freeze(l)` / `MutList::to_array(l)` copy out -- see
 ///   `mutlist_exit_copy` for why these two do not share the identity cast,
 ///   and why the arena has no sound release point without them.
+/// #2837: may this `Array::truncate(x, n)` release the elements it removes?
+/// Only when the Perceus plan approved `x` (see `plan_truncate_release`) AND
+/// every binding the plan pinned for `x` is live around this site -- a pin
+/// the lowering did not honour withdraws the release rather than letting it
+/// free a view. Returns the untagged-count source: 1 for a literal, 2 for a
+/// local, 0 for "do not release".
+fn cc_truncate_release_kind(args: Array[Expr], local_names: Array[String], ctx: CompileCtx) -> Int with Exception {
+  if !ctx.enable_rc || ctx.rc_drop_func_idx < 0 || Array::length(args) != 2 || !is_eident(Array::get(args, 0)) {
+    0
+  } else {
+    let x = get_eident_name(Array::get(args, 0))
+    let x_ok = array_contains_str(ctx.rc_trunc_release, x) && find_local_slot(local_names, x) >= 0 && !array_contains_str(ctx.ref_cell_names, x)
+    let mut pins_live = x_ok
+    let mut i = 0
+    while pins_live && i < Array::length(ctx.rc_trunc_pin_arrays) {
+      if Array::get(ctx.rc_trunc_pin_arrays, i) == x && !array_contains_str(ctx.rc_pins_live, Array::get(ctx.rc_trunc_pin_names, i)) {
+        pins_live = false
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    if !pins_live {
+      0
+    } else {
+      let n = Array::get(args, 1)
+      if expr_tag(n) == 0 {
+        1
+      } else if is_eident(n) && find_local_slot(local_names, get_eident_name(n)) >= 0 && !array_contains_str(ctx.ref_cell_names, get_eident_name(n)) {
+        2
+      } else {
+        0
+      }
+    }
+  }
+}
+
+/// #2837: release `x[new_len .. len)` with the ordinary decrement
+/// (`__rt_rc_drop`, never a raw free), BEFORE the truncate stores the new
+/// length -- the destructor walks only the live prefix, so an element outside
+/// it is released here or never. A scalar element is a no-op inside the drop
+/// helper (it tests the tag), so an `Array[Int]` pays the walk and nothing
+/// else. Leaves the stack as it found it; the ordinary truncate call follows.
+fn cc_emit_truncate_release(buf: Bytes, args: Array[Expr], kind: Int, local_names: Array[String], next_local: Int, ctx: CompileCtx) -> Int with Exception {
+  let x_slot = find_local_slot(local_names, get_eident_name(Array::get(args, 0)))
+  let len_l = next_local
+  let idx_l = next_local + 1
+  while Array::length(local_names) < next_local + 2 {
+    Array::push(local_names, "")
+  }
+  // len_l = old length (untagged)
+  emit_local_get(buf, x_slot)
+  emit_i64_const(buf, -2)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_i32_load(buf, 2, 4)
+  emit_i64_extend_i32_u(buf)
+  emit_local_set(buf, len_l)
+  // idx_l = new length (untagged)
+  let n = Array::get(args, 1)
+  if kind == 1 {
+    emit_i64_const(buf, get_eint_value(n))
+  } else {
+    emit_local_get(buf, find_local_slot(local_names, get_eident_name(n)))
+    emit_i64_const(buf, 1)
+    emit_i64_shr_s(buf)
+  }
+  emit_local_set(buf, idx_l)
+  emit_block_void(buf)
+  emit_loop_void(buf)
+  emit_local_get(buf, idx_l)
+  emit_local_get(buf, len_l)
+  emit_i64_ge_s(buf)
+  emit_br_if(buf, 1)
+  emit_local_get(buf, idx_l)
+  emit_i64_const(buf, 0)
+  emit_i64_lt_s(buf)
+  emit_br_if(buf, 1)
+  // __rt_rc_drop(load_i64(data_ptr + idx * 8))
+  emit_local_get(buf, x_slot)
+  emit_i64_const(buf, -2)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_i32_load(buf, 2, 8)
+  emit_local_get(buf, idx_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 8)
+  emit_i32_mul(buf)
+  emit_i32_add(buf)
+  emit_i64_load(buf, 3, 0)
+  emit_call(buf, ctx.rc_drop_func_idx)
+  emit_local_get(buf, idx_l)
+  emit_i64_const(buf, 1)
+  emit_i64_add(buf)
+  emit_local_set(buf, idx_l)
+  emit_br(buf, 0)
+  emit_end(buf)
+  emit_end(buf)
+  next_local + 2
+}
+
 export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
   if is_eident(callee) && get_eident_name(callee) == "__region_run" && Array::length(args) == 1 {
     if ctx.region_ptr_addr >= 0 {
@@ -2723,6 +2824,10 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
     ce(buf, array_value_copy(Array::get(args, 0), frozen_array_conversion_copy(get_eident_name(callee))), local_names, next_local, ctx, ld)
   } else if is_eident(callee) && get_eident_name(callee) == "Map::iter_get" && Array::length(args) == 2 && func_table_index_of(ctx.func_table, "Map::iter_get") < 0 && !array_contains_str(local_names, "Map::iter_get") {
     compile_map_iter_get_checked(buf, Array::get(args, 0), Array::get(args, 1), local_names, next_local, ctx, ld, ce)
+  } else if is_eident(callee) && get_eident_name(callee) == "Array::truncate" && !array_contains_str(local_names, "Array::truncate") && cc_truncate_release_kind(args, local_names, ctx) > 0 {
+    // #2837: release the removed suffix first, then the ordinary truncate.
+    let nl = cc_emit_truncate_release(buf, args, cc_truncate_release_kind(args, local_names, ctx), local_names, next_local, ctx)
+    compile_call_core(buf, callee, args, local_names, nl, ctx, ld, ce)
   } else {
     compile_call_core(buf, callee, args, local_names, next_local, ctx, ld, ce)
   }

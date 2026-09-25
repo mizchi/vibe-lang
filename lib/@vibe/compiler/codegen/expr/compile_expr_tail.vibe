@@ -2259,6 +2259,21 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     } else {
       ()
     }
+    // #2837 dup-on-escape: the plan pinned this binding because it derives
+    // from a local array a truncate may now release while the binding is
+    // still live. Take a reference of its own here and give it back at the
+    // scope end below, so the value outlives the truncate exactly as long as
+    // the binding does. Balanced on every path that reaches the scope end; a
+    // path that leaves early (return, break) keeps it, which leaks. The name
+    // goes on the live stack the truncate lowering checks before releasing.
+    let view_pin = ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && array_contains_str(ctx.rc_trunc_pin_names, name)
+    let pins_mark = Array::length(ctx.rc_pins_live)
+    if view_pin {
+      emit_rc_dup_guarded(buf, local_idx, ctx.rc_shadow, ctx.rc_dup_func_idx)
+      Array::push(ctx.rc_pins_live, name)
+    } else {
+      ()
+    }
     // #712: this `let` may SHADOW an outer loop-borrowed identifier of the same
     // name (e.g. `while ... { let x = ...; f(x) }` rebinding `x` inside a loop
     // whose header already loop-borrowed an outer `x`, #706). cc_is_loop_borrowed_ident
@@ -2414,6 +2429,11 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
       nl_after_reuse
     }
     let nl2 = compile_expr(buf, body, local_names, nl_body, ctx, ld)
+    if view_pin {
+      Array::truncate(ctx.rc_pins_live, pins_mark)
+    } else {
+      ()
+    }
     if path_drop {
       Array::truncate(ctx.rc_path_flag_names, Array::length(ctx.rc_path_flag_names) - 1)
       Array::truncate(ctx.rc_path_flag_locals, Array::length(ctx.rc_path_flag_locals) - 1)
@@ -2444,7 +2464,7 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
       Array::push(ctx.loop_borrowed_names, name)
       lb_restore_i = lb_restore_i + 1
     }
-    if ctx.enable_rc && rc_kind > 0 && array_contains_str(ctx.rc_drop_names, name) {
+    let nl_let = if ctx.enable_rc && rc_kind > 0 && array_contains_str(ctx.rc_drop_names, name) {
       if reuse_fusion {
         // ADR-0092: drop only when no arm consumed the block via reuse.
         emit_local_get(buf, reuse_flag_l)
@@ -2483,6 +2503,15 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     } else {
       nl2
     }
+    // #2837: release the pin taken at the bind site. The body's value stays
+    // on the stack underneath, as it does for the scope-end drop above.
+    if view_pin {
+      emit_local_get(buf, local_idx)
+      emit_call(buf, ctx.rc_drop_func_idx)
+    } else {
+      ()
+    }
+    nl_let
   } else if __tag == 10 {
     let name = get_eletrec_name(expr)
     let value = get_eletrec_val(expr)
