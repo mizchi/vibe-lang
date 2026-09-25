@@ -2385,6 +2385,13 @@ ur_refused fixtures/err_interp_generic_enum_unknown_refused.vibe 'its type argum
 # since #3088 (generic_field_projection_render_test.vibe).
 ur_refused fixtures/err_interp_generic_struct_recursive_refused.vibe 'cannot interpolate a recursive `L`' 'render the value with a function you write'
 ur_refused fixtures/err_derive_show_recursive_generic_field_refused.vibe 'a derived renderer contains a recursive `L`' 'write the containing type'
+# #3092: a function or `Bytes` inside a derived renderer, declared or reached
+# through a type argument, printed a table index or an address.
+ur_refused fixtures/err_derive_show_fn_field_refused.vibe 'a derived renderer contains a function value' 'write the type'
+ur_refused fixtures/err_derive_show_bytes_field_refused.vibe 'a derived renderer contains a `Bytes` value' 'write the type'
+ur_refused fixtures/err_derive_show_generic_fn_arg_refused.vibe 'cannot interpolate a function value' 'interpolate what it returns'
+ur_refused fixtures/err_derive_show_fn_field_refused.vibe 'a derived renderer contains a function value' 'write the type' gc
+ur_refused fixtures/err_derive_show_generic_fn_arg_refused.vibe 'cannot interpolate a function value' 'interpolate what it returns' gc
 # #3084: a generic function's result typed, at the call site, as a struct with
 # no renderer printed its address; the checker's row names the struct.
 ur_refused fixtures/err_interp_generic_call_missing_show_refused.vibe 'cannot interpolate a value of type `Hidden`' 'add `derive(Show)` to `Hidden`'

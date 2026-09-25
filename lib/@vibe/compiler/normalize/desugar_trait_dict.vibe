@@ -12663,6 +12663,7 @@ fn arr_to_string_name(t: TypeExpr) -> String {
 /// delegates to it) is therefore stable for two distinct-but-equal aggregates,
 /// no matter how deeply nested.
 fn show_for_typed(fty: TypeExpr, val: Expr, known_types: Array[String]) -> Expr {
+  show_note_unrenderable(fty)
   match fty {
     TyName("String") => val,
     // #3075: a `Char` / `Unit` field or payload shares the Int
@@ -12753,6 +12754,44 @@ fn show_for_typed(fty: TypeExpr, val: Expr, known_types: Array[String]) -> Expr 
     },
     _ => ECall(EIdent("__to_string", -1), Array::slice([val], 0, 1), -1)
   }
+}
+
+/// #3092: a derived renderer's field or payload that is, or carries through
+/// type arguments, a function or `Bytes` has no text form; the renderer fell
+/// back to `__to_string` and printed a table index or an address
+/// (`C { f: 1 }`). Refused where the pass can throw, naming the edit.
+fn show_note_unrenderable(fty: TypeExpr) -> Unit {
+  let what = show_unrenderable_kind(fty)
+  if String::length(what) > 0 {
+    let msg = String::concat("a derived renderer contains ", String::concat(what, ", which has no text form and would print a memory address -- write the type's `to_string` yourself, or keep that field out of a `derive (Show)` type (#3092)"))
+    if !str_array_contains(dtd_show_refusals, msg) {
+      Array::push(dtd_show_refusals, msg)
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+}
+
+fn show_unrenderable_kind(t: TypeExpr) -> String {
+  match t {
+    TyFn(_, _, _) => "a function value",
+    TyName("Bytes") => "a `Bytes` value",
+    TyApp(_, args) => show_unrenderable_kind_of(args),
+    TyTuple(ts) => show_unrenderable_kind_of(ts),
+    _ => ""
+  }
+}
+
+fn show_unrenderable_kind_of(ts: Array[TypeExpr]) -> String {
+  let mut found = ""
+  let mut i = 0
+  while i < Array::length(ts) && String::length(found) == 0 {
+    found = show_unrenderable_kind(Array::get(ts, i))
+    i = i + 1
+  }
+  found
 }
 
 /// #3082: every type argument names no type parameter, so substituting it
