@@ -2379,9 +2379,10 @@ ur_refused fixtures/err_interp_function_value_refused.vibe 'cannot interpolate a
 # #3074: a generic enum whose instantiation cannot be recovered would render
 # its payload through the erased formal (`GA(1)` for `GA(true)`).
 ur_refused fixtures/err_interp_generic_enum_unknown_refused.vibe 'its type arguments are not known here' 'bind it with a type annotation'
-# #3082: the same for a generic struct, and a recursive one at an argument its
-# erased renderer cannot print (that one used to overflow the compiler's stack).
-ur_refused fixtures/err_interp_generic_struct_unknown_refused.vibe 'its type arguments are not known here' 'bind it with a type annotation'
+# #3082: a recursive generic struct at an argument its erased renderer cannot
+# print (that one used to overflow the compiler's stack). The unknown-
+# instantiation struct program this row used to refuse renders by content
+# since #3088 (generic_field_projection_render_test.vibe).
 ur_refused fixtures/err_interp_generic_struct_recursive_refused.vibe 'cannot interpolate a recursive `L`' 'render the value with a function you write'
 ur_refused fixtures/err_derive_show_recursive_generic_field_refused.vibe 'a derived renderer contains a recursive `L`' 'write the containing type'
 # #3084: a generic function's result typed, at the call site, as a struct with
@@ -2822,7 +2823,7 @@ for render_fx in fixtures/generic_enum_derive_show_render_test.vibe fixtures/cha
     fixtures/exception_kinded_binder_render_test.vibe fixtures/interp_nested_literal_render_test.vibe \
     fixtures/generic_struct_derive_show_nested_test.vibe fixtures/tuple_param_render_test.vibe \
     fixtures/imported_generic_show_test.vibe fixtures/generic_call_result_render_test.vibe \
-    fixtures/derive_show_scalar_payload_test.vibe; do
+    fixtures/derive_show_scalar_payload_test.vibe fixtures/generic_field_projection_render_test.vibe; do
   run_test_block_fixtures "render by content (linear, bump)" "$render_fx"
   run_test_block_fixtures_gc "render by content (gc)" "$render_fx"
   run_test_block_fixtures_rc "render by content (linear, RC)" "$render_fx"

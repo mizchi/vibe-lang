@@ -6054,6 +6054,19 @@ fn infer_shape_by_syntax(e: Expr, struct_sets: Array[(String, Array[String])], v
         None => ""
       }
     },
+    // #3088: a field declared as a `derive (Show)` generic at concrete
+    // arguments (`o.b` with `b: Box[Bool]`) describes its instantiation.
+    EDot(dobj, dfield, _, _) => {
+      let fsh = dtd_field_generic_shape(dobj, dfield, struct_sets, var_types, fn_returns)
+      if String::length(fsh) > 0 {
+        fsh
+      } else {
+        match infer_arg_type_name(e, struct_sets, var_types, fn_returns) {
+          Some(t) => t,
+          None => ""
+        }
+      }
+    },
     _ => match infer_arg_type_name(e, struct_sets, var_types, fn_returns) {
       Some(t) => t,
       None => ""
@@ -14018,6 +14031,85 @@ fn show_generic_enum_known(head: String) -> Bool {
   }
 }
 
+/// #3088: every struct declaration -- (name, formals, fields) -- so a field
+/// projection's declared type can be read here.
+let dtd_struct_field_decls: Array[(String, Array[String], Array[(String, TypeExpr)])] = array_empty()
+
+/// #3088: the `{g:G,..}` shape of `obj.field` when the field's declared type is
+/// a `derive (Show)` generic at concrete arguments, or "". The receiver is a
+/// non-generic struct (`o.b` with `b: Box[Bool]`), or a generic one whose
+/// instantiation this pass already knows (its `{g:` shape), whose arguments
+/// are substituted into the field type.
+///
+/// The checker files no render row for such a projection (measured: the
+/// program's rows held the neighbouring `k()` argument's and none at the
+/// field's offset), so the render fell to the refusal a type annotation
+/// avoids. The declared type answers it exactly. Only a generic Show type is
+/// answered: an `Array` or tuple field keeps reaching codegen, where #2987's
+/// refusal is what its gate row pins.
+fn dtd_field_generic_shape(obj: Expr, field: String, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
+  // A program with no generic Show type (the compiler's own closure, for one)
+  // pays nothing for this per-projection question.
+  if Array::length(dtd_show_generic_structs) == 0 && Array::length(dtd_show_generic_enums) == 0 {
+    ""
+  } else {
+    dtd_field_generic_shape_scan(obj, field, struct_sets, var_types, fn_returns)
+  }
+}
+
+fn dtd_field_generic_shape_scan(obj: Expr, field: String, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
+  let recv_sh = interp_shape(infer_shape(obj, struct_sets, var_types, fn_returns))
+  let recv_head = if String::starts_with(recv_sh, "{g:") {
+    generic_shape_head(recv_sh)
+  } else {
+    match infer_arg_type_name(obj, struct_sets, var_types, fn_returns) {
+      Some(h) => h,
+      None => ""
+    }
+  }
+  let mut out = ""
+  let mut i = 0
+  while i < Array::length(dtd_struct_field_decls) {
+    let (sname, formals, fields) = Array::get(dtd_struct_field_decls, i)
+    if sname == recv_head && !formal_in_scope(sname) {
+      let targs = empty_type_exprs()
+      if String::starts_with(recv_sh, "{g:") {
+        let gparts = shape_split(String::substring(recv_sh, 3, String::length(recv_sh) - 1))
+        let mut ai = 1
+        while ai < Array::length(gparts) {
+          Array::push(targs, shape_to_eq_ty(Array::get(gparts, ai)))
+          ai = ai + 1
+        }
+      } else {
+        ()
+      }
+      if Array::length(targs) == Array::length(formals) {
+        let mut fi = 0
+        while fi < Array::length(fields) {
+          let (fname, fty) = Array::get(fields, fi)
+          if fname == field {
+            let sh = ty_to_eq_shape(eq_subst_ty(fty, formals, targs))
+            out = if String::starts_with(sh, "{g:") && show_generic_known(generic_shape_head(sh)) {
+              sh
+            } else {
+              ""
+            }
+          } else {
+            ()
+          }
+          fi = fi + 1
+        }
+      } else {
+        ()
+      }
+      i = Array::length(dtd_struct_field_decls)
+    } else {
+      i = i + 1
+    }
+  }
+  out
+}
+
 /// A `{g:Head,..}` head this pass renders itself: a `derive (Show)` generic
 /// struct (#3007) or enum (#3074).
 fn show_generic_known(head: String) -> Bool {
@@ -14560,6 +14652,7 @@ fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {
   Array::truncate(dtd_eq_generic_structs, 0)
   Array::truncate(dtd_show_generic_structs, 0)
   Array::truncate(dtd_show_generic_enums, 0)
+  Array::truncate(dtd_struct_field_decls, 0)
   Array::truncate(dtd_show_generic_enum_stack, 0)
   Array::truncate(dtd_show_inline_stack, 0)
   Array::truncate(dtd_show_inline_arr_elems, 0)
@@ -14595,6 +14688,7 @@ fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {
     match Array::get(stmts, j) {
       SStruct(_, sname, fields, derives, _, decl_tparams) => {
         Array::push(dtd_eq_type_owners, sname)
+        Array::push(dtd_struct_field_decls, (sname, decl_tparams, fields))
         if Array::length(decl_tparams) > 0 {
           Array::push(dtd_eq_generic_types, sname)
           Array::push(dtd_eq_generic_structs, (sname, decl_tparams, fields))
