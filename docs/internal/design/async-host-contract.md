@@ -110,16 +110,18 @@ half of this paragraph can go stale without a gate noticing.
 
 ### Dynamic import prefixes
 
-Four import families are minted per program rather than listed:
+Five import families are minted per program rather than listed:
 `vibe.host_future_get$<name>`, `vibe.wit_future_get$<address>` (#2064),
-`vibe.wit_response_get$<address>` (#2066) and `vibe.host_stream_get$<name>`.
+`vibe.wit_response_get$<address>` and `vibe.wit_response_arg_get$<address>`
+(#2066), and `vibe.host_stream_get$<name>`.
 Each has its own emission loop in `linked_compile.vibe` and its own
 `componentAdapterPatterns` row in `docs/generated/host-runtime-contract.json`.
 `check_host_runtime_contract.py`'s `validate_emitter_contract` compares the two
 by **exact dict equality**, so a loop added without its row (or a row without
 its loop) turns the required gate red in the same change. The composer reads
 the prefixes back in `component_codegen.vibe` (`comp_is_wit_future_get_import`,
-`comp_is_wit_response_get_import`, `comp_wit_future_interface` /
+`comp_is_wit_response_get_import`, `comp_is_wit_response_arg_import`,
+`comp_wit_future_interface` /
 `comp_wit_future_func`).
 
 ## What the values mean
@@ -323,8 +325,19 @@ override silently contradicting a module that says `raw` is the hazard #2903's
   scalar future). Runner-private root futures and named streams still cannot
   share a response component. `from_wit_future_imports` derives the bindings (it admits the
   function only with `use types.{response};` and exactly that record).
+  A response function may take ONE `string` parameter (a request URL,
+  `async func(url: string) -> response`); the derivation spells it
+  `host_response_named_with("<address>?<label>", url)`. The guest pushes the
+  argument's bytes one at a time through `vibe.host_arg_push` into the
+  adapter's argument buffer (length at word 64, bytes at 40960, 24576 bytes;
+  overflowing it traps), then calls `vibe.wit_response_arg_get$<address>`,
+  which passes `(buffer, length)` as the lowered string, starts the call and
+  resets the length, so each request starts from an empty buffer. Any other
+  parameter shape is refused by name.
   viberun's `VIBE_ASYNC_RESPONSES="<address>=<status>:<delay_ms>:<b1>|<b2>"`
-  links each function inside its interface. The gate runs
+  links each function inside its interface; `echo` in place of the body links
+  a one-string-parameter function whose body is the argument's own bytes
+  (`fixtures/wit_response_request`: two requests, 594). The gate runs
   `fixtures/wit_response_import/main.vibe` with two 300ms responses, gets 440
   (both statuses plus every body byte) and bounds the wall clock the same way.
 

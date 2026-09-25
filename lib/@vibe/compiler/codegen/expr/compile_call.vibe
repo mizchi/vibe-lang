@@ -594,6 +594,7 @@ fn cc_ladder_names() -> Array[String] {
       "host_stream_next",
       // #2066: the response surface, lowered inline beside host_future_named.
       "host_response_named",
+      "host_response_named_with",
       "HostResponse::body",
       "HostResponse::status",
       "lt",
@@ -3503,6 +3504,51 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
         EInt(2),
         ECall(EIdent(String::concat(cc_host_future_named_raw_prefix(), String::concat("!", hr_name)), -1), hr_no_args, -1)
       ]), local_names, next_local, ctx, ld)
+    }
+    else if !prefer_bound_call && fname == "host_response_named_with" {
+      // #2066: a WIT response whose function takes one `string` (the
+      // request's URL, say). The adapter cannot read the guest's memory, so
+      // the argument crosses a byte at a time into the adapter's argument
+      // buffer (`vibe_hf_arg_push_raw`, the `vibe.host_arg_push` import) and
+      // the getter lowers that buffer as the string parameter. The `!?`
+      // marker tells linked_compile to import the getter as
+      // `vibe.wit_response_arg_get$<address>`.
+      let hra_name = match Array::get(args, 0) {
+        EString(s, _) => s,
+        _ => throw("host_response_named_with: the WIT function address must be a string literal (it becomes a component import, so it is fixed at compile time)")
+      }
+      // `<address>?<label>`: the parameter's WIT label rides the address so
+      // the composer declares the function exactly as the WIT does.
+      let hra_q = String::index_of(hra_name, "?")
+      let hra_ok = hra_q > 0 && cc_is_wit_future_address(String::substring(hra_name, 0, hra_q)) && cc_is_valid_host_future_name(String::substring(hra_name, hra_q + 1, String::length(hra_name)))
+      if !hra_ok {
+        throw("host_response_named_with: invalid address '\{hra_name}' -- must be a WIT function address and its parameter label, like 'example:http/client@1.0.0#fetch?url'")
+      } else {
+        ()
+      }
+      let hra_push = ESeq(ECall(EIdent("vibe_hf_arg_push_raw", -1), [
+        ECall(EIdent("String::char_code_at", -1), [
+          EIdent("__hra_s", -1),
+          EIdent("__hra_i", -1)
+        ], -1)
+      ], -1), EAssign("__hra_i", ECall(EIdent("add", -1), [
+        EIdent("__hra_i", -1),
+        EInt(1)
+      ], -1), EUnit))
+      let hra_no_args = Array::slice([EInt(0)], 0, 0)
+      let hra_get = EArray([
+        EInt(2),
+        ECall(EIdent(String::concat(cc_host_future_named_raw_prefix(), String::concat("!?", hra_name)), -1), hra_no_args, -1)
+      ])
+      let hra_cond = ECall(EIdent("lt", -1), [
+        EIdent("__hra_i", -1),
+        ECall(EIdent("String::length", -1), [EIdent("__hra_s", -1)], -1)
+      ], -1)
+      let hra_loop = ELetMut("__hra_i", EInt(0), ESeq(EWhile(hra_cond, hra_push), hra_get), -1)
+      // review-lint: allow-fixed-synthetic-name
+      let hra_synth = ELet("__hra_s", Array::get(args, 1), hra_loop, -1)
+      // review-lint: allow-fixed-synthetic-name
+      ce(buf, hra_synth, local_names, next_local, ctx, ld)
     }
     else if !prefer_bound_call && fname == "HostResponse::status" {
       // #2066: a response is `(status << 32) | body` -- the record's flat

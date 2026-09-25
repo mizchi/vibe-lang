@@ -1031,7 +1031,10 @@ fn run_async_component(path: &str) -> Result<i32> {
     // with the body streaming those bytes then EOS. The body stream is
     // created when the call is made and handed over inside the record, so
     // it is the guest's readable end from the moment the response lands.
-    let mut responses: std::collections::BTreeMap<String, Vec<(String, i32, u64, Vec<u8>)>> =
+    // (func, status, delay, body, echo): `echo` in place of the body bytes
+    // links `func: async func(<label>: string) -> response` whose body is the
+    // argument's own bytes (#2066 request parameters).
+    let mut responses: std::collections::BTreeMap<String, Vec<(String, i32, u64, Vec<u8>, bool)>> =
         std::collections::BTreeMap::new();
     if let Ok(spec) = std::env::var("VIBE_ASYNC_RESPONSES") {
         for ent in spec.split(',').filter(|s| !s.trim().is_empty()) {
@@ -1054,8 +1057,10 @@ fn run_async_component(path: &str) -> Result<i32> {
                 .trim()
                 .parse()
                 .map_err(|e| format_err!("VIBE_ASYNC_RESPONSES '{addr}': bad delay: {e}"))?;
+            let body_spec = parts.next().unwrap_or("").trim();
+            let echo = body_spec == "echo";
             let mut body: Vec<u8> = Vec::new();
-            for b in parts.next().unwrap_or("").split('|').filter(|s| !s.trim().is_empty()) {
+            for b in body_spec.split('|').filter(|s| !s.trim().is_empty() && !echo) {
                 body.push(
                     b.trim()
                         .parse()
@@ -1065,7 +1070,7 @@ fn run_async_component(path: &str) -> Result<i32> {
             responses
                 .entry(iface.to_string())
                 .or_default()
-                .push((func.to_string(), status, delay, body));
+                .push((func.to_string(), status, delay, body, echo));
         }
     }
     // One linker instance per WIT interface, carrying its scalar futures AND
@@ -1103,7 +1108,34 @@ fn run_async_component(path: &str) -> Result<i32> {
             .map_err(|e| format_err!("link {iface}#{func_name}: {e}"))?;
         }
         let funcs = responses.remove(&iface).unwrap_or_default();
-        for (func_name, status, entry_delay, body) in funcs {
+        for (func_name, status, entry_delay, body, echo) in funcs {
+            if echo {
+                inst.func_wrap_concurrent(
+                    &func_name,
+                    move |acc: &Accessor<StoreLimits>, (arg,): (String,)| {
+                        let ms = scale(entry_delay);
+                        let items = arg.into_bytes();
+                        Box::pin(async move {
+                            let reader = acc.with(|mut access| {
+                                let body = wasmtime::component::StreamReader::<u8>::new(&mut access, items)?;
+                                wasmtime::component::FutureReader::<HostResponse>::new(
+                                    &mut access,
+                                    async move {
+                                        if ms > 0 {
+                                            tokio::time::sleep(std::time::Duration::from_millis(ms))
+                                                .await;
+                                        }
+                                        Ok::<HostResponse, wasmtime::Error>(HostResponse { status, body })
+                                    },
+                                )
+                            })?;
+                            Ok((reader,))
+                        })
+                    },
+                )
+                .map_err(|e| format_err!("link {iface}#{func_name}: {e}"))?;
+                continue;
+            }
             inst.func_wrap_concurrent(
                 &func_name,
                 move |acc: &Accessor<StoreLimits>, _params: ()| {

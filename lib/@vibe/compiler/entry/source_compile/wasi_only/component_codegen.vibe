@@ -4265,6 +4265,88 @@ fn emit_comp_wit_async_response_api_type(buf: Bytes, func_names: Array[String]) 
   emit_raw_content(buf, content)
 }
 
+/// #2066: the API instance type when some response function takes a
+/// `string` parameter. Local types: 0 = the aliased payload record, 1 =
+/// future<0>, 2 = func -> 1, 3 = future<s64>, 4 = func -> 3, then one
+/// `func(<label>: string) -> 1` per argument response, in `core_names` order.
+fn emit_comp_wit_async_api_type_general(buf: Bytes, core_names: Array[String]) -> Unit with Exception {
+  bytebuf_push(buf, section_type)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 66)
+  let n = Array::length(core_names)
+  let mut nargs = 0
+  let mut ci = 0
+  while ci < n {
+    if comp_is_wit_response_arg_import(Array::get(core_names, ci)) {
+      nargs = nargs + 1
+    } else {
+      ()
+    }
+    ci = ci + 1
+  }
+  leb128_encode_u32(content, 5 + nargs + n)
+  bytebuf_push(content, 2)
+  bytebuf_push(content, 3)
+  bytebuf_push(content, 2)
+  leb128_encode_u32(content, 1)
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 1)
+  bytebuf_push(content, 101)
+  bytebuf_push(content, 1)
+  leb128_encode_u32(content, 0)
+  bytebuf_push(content, 1)
+  bytebuf_push(content, 67)
+  bytebuf_push(content, 0)
+  bytebuf_push(content, 0)
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 1)
+  bytebuf_push(content, 101)
+  bytebuf_push(content, 1)
+  bytebuf_push(content, comp_valtype_s64)
+  bytebuf_push(content, 1)
+  bytebuf_push(content, 67)
+  bytebuf_push(content, 0)
+  bytebuf_push(content, 0)
+  leb128_encode_u32(content, 3)
+  let mut ai = 0
+  while ai < n {
+    let nm = Array::get(core_names, ai)
+    if comp_is_wit_response_arg_import(nm) {
+      // func(<label>: string) -> future<response>
+      bytebuf_push(content, 1)
+      bytebuf_push(content, 67)
+      leb128_encode_u32(content, 1)
+      emit_name(content, comp_wit_response_arg_label(nm))
+      bytebuf_push(content, comp_valtype_string)
+      bytebuf_push(content, 0)
+      leb128_encode_u32(content, 1)
+    } else {
+      ()
+    }
+    ai = ai + 1
+  }
+  let mut arg_k = 0
+  let mut ei = 0
+  while ei < n {
+    let nm = Array::get(core_names, ei)
+    bytebuf_push(content, 4)
+    bytebuf_push(content, 0)
+    emit_name(content, comp_wit_future_func(nm))
+    bytebuf_push(content, comp_extern_func)
+    if comp_is_wit_response_arg_import(nm) {
+      leb128_encode_u32(content, 5 + arg_k)
+      arg_k = arg_k + 1
+    } else if comp_is_wit_response_get_import(nm) {
+      leb128_encode_u32(content, 2)
+    } else {
+      leb128_encode_u32(content, 4)
+    }
+    ei = ei + 1
+  }
+  emit_raw_content(buf, content)
+}
+
 /// #2066 mixed: the API instance type of an interface holding both response
 /// functions (`future<response>`) and scalar ones (`future<s64>`). Local
 /// types: 0 = the aliased payload record, 1 = future<0>, 2 = func -> 1, then
@@ -5795,11 +5877,26 @@ fn comp_is_wit_future_get_import(nm: String) -> Bool {
 }
 
 fn comp_is_wit_response_get_import(nm: String) -> Bool {
-  String::starts_with(nm, "wit_response_get$")
+  String::starts_with(nm, "wit_response_get$") || comp_is_wit_response_arg_import(nm)
+}
+
+/// #2066: a response whose function takes one `string`
+/// (`wit_response_arg_get$<interface>#<func>?<label>`); its argument arrives
+/// through `vibe.host_arg_push`.
+fn comp_is_wit_response_arg_import(nm: String) -> Bool {
+  String::starts_with(nm, "wit_response_arg_get$")
+}
+
+/// The WIT label of an argument response's one parameter.
+fn comp_wit_response_arg_label(core_name: String) -> String {
+  let q = String::index_of(core_name, "?")
+  String::substring(core_name, q + 1, String::length(core_name))
 }
 
 fn comp_wit_future_prefix_length(core_name: String) -> Int {
-  if comp_is_wit_response_get_import(core_name) {
+  if comp_is_wit_response_arg_import(core_name) {
+    String::length("wit_response_arg_get$")
+  } else if comp_is_wit_response_get_import(core_name) {
     String::length("wit_response_get$")
   } else {
     String::length("wit_future_get$")
@@ -5827,7 +5924,13 @@ fn comp_wit_future_interface(core_name: String) -> String with Exception {
 fn comp_wit_future_func(core_name: String) -> String with Exception {
   let start = comp_wit_future_prefix_length(core_name)
   let sep = comp_wit_future_separator(core_name)
-  String::substring(core_name, start + sep + 1, String::length(core_name))
+  // An argument response's name ends at its `?<label>`.
+  let end = if comp_is_wit_response_arg_import(core_name) {
+    String::index_of(core_name, "?")
+  } else {
+    String::length(core_name)
+  }
+  String::substring(core_name, start + sep + 1, end)
 }
 
 fn comp_string_array_index(items: Array[String], needle: String) -> Int {
@@ -5867,6 +5970,20 @@ fn comp_wit_future_interfaces(core_names: Array[String]) -> Array[String] with E
 }
 
 /// Functions owned by one interface, preserving core-declaration order.
+fn comp_any_wit_response_arg(core_names: Array[String]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(core_names) {
+    if comp_is_wit_response_arg_import(Array::get(core_names, i)) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 /// comp_wit_future_funcs restricted to responses (`want` true) or to scalar
 /// futures (`want` false).
 fn comp_wit_future_funcs_of_kind(core_names: Array[String], interface_id: String, want: Bool) -> Array[String] with Exception {
@@ -6021,6 +6138,20 @@ fn comp_emit_response_value(buf: Bytes, addr_local: Int, tag_mode: Int) -> Unit 
   bytebuf_push(buf, 173)
   emit_i64_or(buf)
   comp_emit_encode_i64_value(buf, tag_mode)
+}
+
+/// #2066: the argument buffer of responses taking a `string`: its length
+/// word, its base and capacity (to the end of the adapter's one page).
+fn comp_arg_len_slot() -> Int {
+  64
+}
+
+fn comp_arg_buf_base() -> Int {
+  40960
+}
+
+fn comp_arg_buf_cap() -> Int {
+  24576
 }
 
 /// #2066: per-handle payload KIND of a mixed composition (1 = a response, 0 =
@@ -6206,7 +6337,7 @@ fn comp_sleep_wait_payload_slot() -> Int {
   32
 }
 
-fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], stream_core_names: Array[String], want_stream_close: Bool, want_sleep: Bool, tag_mode: Int, future_s64: Bool, response_payload: Bool, want_wait_any: Bool, want_stream_arm: Bool, want_sleep_arm: Bool, want_cancel: Bool, want_stream_cancel: Bool, response_kinds: Array[Bool], exit_stubs: Array[String]) -> Bytes with Exception {
+fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], stream_core_names: Array[String], want_stream_close: Bool, want_sleep: Bool, tag_mode: Int, future_s64: Bool, response_payload: Bool, want_wait_any: Bool, want_stream_arm: Bool, want_sleep_arm: Bool, want_cancel: Bool, want_stream_cancel: Bool, response_kinds: Array[Bool], want_arg_push: Bool, exit_stubs: Array[String]) -> Bytes with Exception {
   // #1342: a THIRD half -- `vibe.sleep`. It is not a getter/wait pair like the
   // other two: the host side is an `async func(ms) -> ms`, so its
   // async-lowered call yields a SUBTASK rather than a future/stream handle,
@@ -6362,7 +6493,14 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     emit_name(ic, "$root")
     emit_name(ic, String::concat("[async-lower]", comp_hostfuture_import_label(Array::get(core_names, imp_i))))
     bytebuf_push(ic, 0)
-    bytebuf_push(ic, 0)
+    // #2066: an argument response's lowering takes the string as (ptr, len)
+    // before its results pointer: type 7, (i32, i32, i32) -> i32, which the
+    // stream half declares (a response component always has one).
+    bytebuf_push(ic, if comp_is_wit_response_arg_import(Array::get(core_names, imp_i)) {
+      7
+    } else {
+      0
+    })
     imp_i = imp_i + 1
   }
   if nnames > 0 {
@@ -6588,6 +6726,13 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
   } else {
     ()
   }
+  if want_arg_push {
+    Array::push(export_indices, nfunc_imports + Array::length(fn_types))
+    Array::push(fn_types, 6)
+    Array::push(export_names, "host_arg_push")
+  } else {
+    ()
+  }
   let mut xs_i = 0
   while xs_i < Array::length(exit_stubs) {
     Array::push(export_indices, nfunc_imports + Array::length(fn_types))
@@ -6616,9 +6761,27 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     bytebuf_push(get_body, 127)
     // packed = <name>(results at 8); pair creation is synchronous by
     // contract, so the low nibble must be RETURNED (2)
+    let takes_arg = comp_is_wit_response_arg_import(Array::get(core_names, get_i))
+    if takes_arg {
+      // #2066: the string the guest pushed through host_arg_push, as
+      // (ptr, len) in this memory.
+      emit_i32_const(get_body, comp_arg_buf_base())
+      emit_i32_const(get_body, comp_arg_len_slot())
+      emit_i32_load(get_body, 2, 0)
+    } else {
+      ()
+    }
     emit_i32_const(get_body, 8)
     emit_call(get_body, get_i)
     emit_local_set(get_body, 0)
+    if takes_arg {
+      // consumed: the next request starts an empty buffer
+      emit_i32_const(get_body, comp_arg_len_slot())
+      emit_i32_const(get_body, 0)
+      emit_i32_store(get_body, 2, 0)
+    } else {
+      ()
+    }
     emit_local_get(get_body, 0)
     emit_i32_const(get_body, 15)
     emit_i32_and(get_body)
@@ -7750,6 +7913,46 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
   } else {
     ()
   }
+  if want_arg_push {
+    // host_arg_push(b): param 0 = the tagged byte; local (i32) 1=len. Appends
+    // one byte to the argument buffer the next argument getter lowers; a
+    // string past the buffer traps rather than overwriting what follows.
+    let apush_body = bytebuf_new()
+    leb128_encode_u32(apush_body, 1)
+    leb128_encode_u32(apush_body, 1)
+    bytebuf_push(apush_body, 127)
+    emit_i32_const(apush_body, comp_arg_len_slot())
+    emit_i32_load(apush_body, 2, 0)
+    emit_local_set(apush_body, 1)
+    emit_local_get(apush_body, 1)
+    emit_i32_const(apush_body, comp_arg_buf_cap())
+    bytebuf_push(apush_body, 79)
+    emit_if_void(apush_body)
+    bytebuf_push(apush_body, 0)
+    emit_end(apush_body)
+    emit_local_get(apush_body, 1)
+    emit_i32_const(apush_body, comp_arg_buf_base())
+    emit_i32_add(apush_body)
+    emit_local_get(apush_body, 0)
+    comp_emit_decode_i64_value(apush_body, tag_mode)
+    emit_i32_wrap_i64(apush_body)
+    // i32.store8 align=0
+    bytebuf_push(apush_body, 58)
+    leb128_encode_u32(apush_body, 0)
+    leb128_encode_u32(apush_body, 0)
+    emit_i32_const(apush_body, comp_arg_len_slot())
+    emit_local_get(apush_body, 1)
+    emit_i32_const(apush_body, 1)
+    emit_i32_add(apush_body)
+    emit_i32_store(apush_body, 2, 0)
+    emit_i64_const(apush_body, 0)
+    comp_emit_encode_i64_value(apush_body, tag_mode)
+    bytebuf_push(apush_body, 11)
+    leb128_encode_u32(code_sec, Bytes::length(apush_body))
+    bytebuf_push_buf(code_sec, apush_body)
+  } else {
+    ()
+  }
   let mut xb_i = 0
   while xb_i < Array::length(exit_stubs) {
     // no locals; unreachable; end
@@ -8210,7 +8413,7 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
     let ifn = Array::get(imp_names, ii)
     if im == "wasi_snapshot_preview1" && ifn == "fd_write" {
       ()
-    } else if im == "vibe" && (comp_is_host_future_get_import(ifn) || ifn == "host_future_wait" || ifn == "host_future_arm" || ifn == "host_future_wait_any" || ifn == "host_stream_arm" || ifn == "host_sleep_arm" || ifn == "host_future_cancel" || ifn == "host_stream_cancel" || comp_is_host_stream_get_import(ifn) || ifn == "host_stream_read" || ifn == "host_stream_close" || ifn == "sleep" || ifn == "stderr_write_stream" || (ifn == "process_exit" && comp_core_imports_func(main_core_wasm, "vibe", "stderr_write_stream"))) {
+    } else if im == "vibe" && (comp_is_host_future_get_import(ifn) || ifn == "host_future_wait" || ifn == "host_future_arm" || ifn == "host_future_wait_any" || ifn == "host_stream_arm" || ifn == "host_sleep_arm" || ifn == "host_future_cancel" || ifn == "host_stream_cancel" || ifn == "host_arg_push" || comp_is_host_stream_get_import(ifn) || ifn == "host_stream_read" || ifn == "host_stream_close" || ifn == "sleep" || ifn == "stderr_write_stream" || (ifn == "process_exit" && comp_core_imports_func(main_core_wasm, "vibe", "stderr_write_stream"))) {
       ()
     } else {
       throw("component(async-hostfuture): core module uses host import '\{im}.\{ifn}' (only fd_write, sleep and the host-future/host-stream imports are satisfiable in this composition)")
@@ -8328,7 +8531,9 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
     bytebuf_push(fut_content, 1)
     leb128_encode_u32(fut_content, 1)
     emit_raw_content(buf, fut_content)
-    if mixed {
+    if comp_any_wit_response_arg(hf_names) {
+      emit_comp_wit_async_api_type_general(buf, hf_names)
+    } else if mixed {
       emit_comp_wit_async_mixed_api_type(buf, comp_wit_future_funcs_of_kind(hf_names, api_interface, true), comp_wit_future_funcs_of_kind(hf_names, api_interface, false))
     } else {
       emit_comp_wit_async_response_api_type(buf, comp_wit_future_funcs(hf_names, api_interface))
@@ -8452,6 +8657,7 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
     ()
   }
   let want_stream_cancel = comp_core_imports_vibe_name(main_core_wasm, "host_stream_cancel")
+  let want_arg_push = comp_core_imports_vibe_name(main_core_wasm, "host_arg_push")
   if want_sleep_arm && !want_sleep {
     throw("component(async-hostfuture): core module imports vibe.host_sleep_arm without vibe.sleep; the timer arm lowers through the sleep half")
   } else {
@@ -8472,7 +8678,7 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   } else {
     ()
   }
-  emit_core_module_section(buf, comp_generate_hostfuture_adapter_core_module(hf_names, hs_names, hs_wants_close, want_sleep, tag_mode, future_s64, response_mode, want_wait_any, want_stream_arm, want_sleep_arm, want_cancel, want_stream_cancel, response_kinds, exit_stubs))
+  emit_core_module_section(buf, comp_generate_hostfuture_adapter_core_module(hf_names, hs_names, hs_wants_close, want_sleep, tag_mode, future_s64, response_mode, want_wait_any, want_stream_arm, want_sleep_arm, want_cancel, want_stream_cancel, response_kinds, want_arg_push, exit_stubs))
   emit_core_module_section(buf, comp_generate_async_trampoline_hostfuture())
   emit_core_module_section(buf, comp_generate_wasi_fd_write_stub())
   // A component-instance export alias must follow embedded core-module

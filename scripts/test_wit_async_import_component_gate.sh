@@ -370,4 +370,32 @@ if [ "$ELAPSED_MS" -ge $(( LONG_MS * 3 / 2 )) ]; then
   exit 1
 fi
 echo "[wit-async-import] response + scalar future from one interface: 211 in ${ELAPSED_MS}ms"
+# #2066 REQUEST PARAMETER: fixtures/wit_response_request imports
+# `fetch: async func(url: string) -> response`. The guest pushes the URL's
+# bytes into the adapter's argument buffer and the adapter lowers it as the
+# string parameter; the runner's `echo` response streams the argument back as
+# the body. 200 + ("abc" = 294) + ("d" = 100) = 594 -- the second request
+# proves the buffer is reset between calls rather than appended to.
+REQ_DIR="$OUT/response_request"
+rm -rf "$REQ_DIR"
+mkdir -p "$REQ_DIR"
+cp fixtures/wit_response_request/main.vibe fixtures/wit_response_request/client_bindings.vibe "$REQ_DIR/"
+VIBE_PREOPEN_DIR="$ROOT" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \
+  "$COMPILER" "$REQ_DIR/main.vibe" "$REQ_DIR/main.wasm" run >/dev/null 2>&1 || true
+if [ ! -s "$REQ_DIR/main.wasm" ]; then
+  echo "WIT async import gate FAILED: fixtures/wit_response_request/main.vibe did not compile" >&2
+  cat "$REQ_DIR/main.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+wasm-tools validate --features all "$REQ_DIR/main.wasm"
+GOT="$(VIBE_ASYNC_RESPONSES="$IFACE#fetch=200:0:echo" timeout 60 "$RUNNER" "$REQ_DIR/main.wasm" 2>&1)" || {
+  echo "WIT async import gate FAILED: viberun did not exit 0 on the request-parameter program: $GOT" >&2
+  exit 1
+}
+[ "$GOT" = "594" ] || {
+  echo "WIT async import gate FAILED: request parameter expected 594 (status 200, echoed \"abc\" 294, echoed \"d\" 100), got: $GOT" >&2
+  exit 1
+}
+echo "[wit-async-import] response taking a string parameter: 594"
 echo "WIT async import component gate OK"
