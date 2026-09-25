@@ -127,13 +127,18 @@ class Oracle:
 
     @staticmethod
     def oracle_signature(detail):
-        """(failing id, {lane: printed text}) with runs of 3+ digits folded
-        to `#`: a wrong answer that is an allocation ADDRESS moves whenever
-        the reducer deletes an allocation, and must still count as the same
-        finding; a short wrong value must stay exactly what it was."""
+        """(failing id, {lane: printed text}). A wrong answer that is an
+        allocation ADDRESS moves whenever the reducer deletes an allocation,
+        and must still count as the same finding, so runs of 3+ digits are
+        folded to `#` -- but only when the expected text has no such run.
+        When the right answer is itself a long number (a shift, a mask, a
+        handler's sum), the lanes' digits are the finding and stay exact."""
         m = ID_RE.search(detail)
-        lanes = {k: LONG_DIGITS_RE.sub("#", v)
-                 for k, v in DETAIL_RE.findall(detail) if k != "expected"}
+        pairs = DETAIL_RE.findall(detail)
+        expected = "".join(v for k, v in pairs if k == "expected")
+        fold = not LONG_DIGITS_RE.search(expected)
+        lanes = {k: (LONG_DIGITS_RE.sub("#", v) if fold else v)
+                 for k, v in pairs if k != "expected"}
         return (m.group(1) if m else None, lanes)
 
     def test(self, lines):

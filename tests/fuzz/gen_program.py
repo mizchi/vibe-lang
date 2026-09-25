@@ -222,10 +222,6 @@ class ExtGen:
             # trait impls / bounded generics: the flat single-source linear
             # lane answers `no impl <Trait> for Self`
             skip += ["bump", "rc"]
-        if any(style == "suberror" for _, style, _ in self.kinds):
-            # `export suberror` is not exported, so main.vibe cannot import
-            # the kind the FS split needs
-            skip.append("fs")
         return skip
 
     def oid(self, tag):
