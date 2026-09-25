@@ -682,6 +682,23 @@ fi
 rm -f "$ROOT_DIR/_build/_gate_rc_shadowed_builtin.log"
 echo "[compiler-gate] shadowed borrowing builtin ownership ok on shadow"
 
+# 40f-b5. #3129: `MutList::*` / `MutBytes::*` lower to the builtin
+#         `Array::*` / `ArrayBuilder::push` / `Bytes::*`. A program that
+#         defines its own function under the target spelling must not capture
+#         the call: the plain RC lane answers the program's sentinel instead of
+#         the list's length, and the shadow lane traps on the program function
+#         releasing a list it was only lent.
+echo "[compiler-gate] 40f-b5/40 MutList / MutBytes reach the builtin under a same-named program function on shadow (#3129)"
+if ! VIBE_RC=shadow VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+    bash scripts/vibe_test.sh fixtures/mut_alias_shadowed_builtin_test.vibe \
+    >"$ROOT_DIR/_build/_gate_mut_alias_shadowed.log" 2>&1; then
+  echo "[compiler-gate] FAIL: a MutList / MutBytes operation was captured by the program's own function of the builtin's spelling under VIBE_RC=shadow (#3129):" >&2
+  tail -20 "$ROOT_DIR/_build/_gate_mut_alias_shadowed.log" >&2
+  exit 1
+fi
+rm -f "$ROOT_DIR/_build/_gate_mut_alias_shadowed.log"
+echo "[compiler-gate] MutList / MutBytes builtin aliases ok on shadow"
+
 # 40f0. #2837: `Array::truncate` changes the array's LENGTH, not the lifetime
 #       of an element someone already took out of it. That is the ownership
 #       rule stable-surface.md §2.2a freezes and the one #2837 asks to define

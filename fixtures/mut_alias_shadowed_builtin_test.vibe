@@ -1,0 +1,81 @@
+// #3129: `MutList` / `MutBytes` storage is the builtin growable array /
+// `Bytes`, so the linear lowering spells `MutList::length(m)` as the builtin
+// `Array::length`, `MutList::get` as `Array::get`, `MutBytes::push` as
+// `Bytes::push`, and so on. It looked that spelling up like any call, so a
+// program that declares its OWN `Array::length` captured every
+// `MutList::length(m)`: the list below answered 77 instead of 3, and the
+// shadow RC lane trapped on the program function releasing a list it was
+// only lent. The alias now names the builtin itself.
+//
+// Each program function below answers a sentinel and consumes its
+// arguments, so a captured call shows up as a wrong answer and, under
+// VIBE_RC=shadow, as a use-after-free.
+
+fn Array::length(xs: Array[String]) -> Int {
+  let _ = xs
+  77
+}
+
+fn Array::get(xs: Array[String], i: Int) -> String {
+  let _ = xs
+  let _ = i
+  "shadow"
+}
+
+fn Array::truncate(xs: Array[String], n: Int) -> Unit {
+  let _ = xs
+  let _ = n
+  ()
+}
+
+fn Bytes::length(b: Bytes) -> Int {
+  let _ = b
+  55
+}
+
+fn Bytes::push(b: Bytes, v: Int) -> Unit {
+  let _ = b
+  let _ = v
+  ()
+}
+
+fn list_probe(r0: Int) -> String {
+  region r {
+    let m = MutList::empty(r)
+    MutList::push(m, String::concat("a", Int::to_string(r0)))
+    MutList::push(m, String::concat("b", Int::to_string(r0)))
+    MutList::push(m, String::concat("c", Int::to_string(r0)))
+    let before = MutList::length(m)
+    MutList::truncate(m, 2)
+    let _ = [String::concat("z", "z")]
+    let after = MutList::length(m)
+    "\{before} \{after} \{MutList::get(m, 1)}"
+  }
+}
+
+fn bytes_probe() -> Int {
+  region r {
+    let b = MutBytes::empty(r)
+    MutBytes::push(b, 7)
+    MutBytes::push(b, 8)
+    MutBytes::length(b)
+  }
+}
+
+test "MutList operations reach the builtin under a program's Array::* functions" {
+  inspect(list_probe(1), content = "3 2 b1")
+  inspect(list_probe(2), content = "3 2 b2")
+}
+
+test "MutBytes operations reach the builtin under a program's Bytes::* functions" {
+  inspect(bytes_probe(), content = "2")
+}
+
+test "the program's own functions still answer their direct calls" {
+  let xs = ["p", "q"]
+  let b = Bytes::new()
+  Bytes::push(b, 1)
+  inspect(Array::length(xs), content = "77")
+  inspect(Array::get(["p"], 0), content = "shadow")
+  inspect(Bytes::length(b), content = "55")
+}
