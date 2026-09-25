@@ -1,0 +1,46 @@
+// #3108 review: a branch tail that calls a LOCAL binding which shadows a
+// top-level borrow-returning function must not be retained as a borrow. The
+// #3103 retain rewrite matched the callee's spelling against the module's
+// borrow-returning set without seeing the `let` inside the branch, so the
+// local `peek()` -- a fresh allocation the binding owns -- got an extra retain
+// that no drop ever spent: one leaked array per execution on the RC lane.
+//
+// The value is the same either way; only the heap frontier tells them apart.
+// After a warmup the loop reuses freed blocks, so the extra allocation over
+// 2000 more executions stays far below one leaked array per execution.
+
+fn peek(xs: Array[Array[Int]]) -> Array[Int] {
+  Array::get(xs, 0)
+}
+
+fn step(xs: Array[Array[Int]], fresh: Bool) -> Int {
+  let d = if fresh {
+    let peek = (n: Int) -> Array[Int] { [n, n + 1, n + 2] }
+    peek(7)
+  } else {
+    peek(xs)
+  }
+  Array::length(d)
+}
+
+fn run(xs: Array[Array[Int]], rounds: Int) -> Int {
+  let mut total = 0
+  let mut i = 0
+  while i < rounds {
+    total = total + step(xs, true) + step(xs, false)
+    i = i + 1
+  }
+  total
+}
+
+test "a branch-local shadow of a borrow-returning fn is not retained" {
+  let xs = [[1, 2], [3, 4, 5]]
+  let warm = run(xs, 200)
+  let before = Profiler::heap_bytes()
+  let total = run(xs, 2000)
+  let grown = Profiler::heap_bytes() - before
+  inspect(warm, content = "1000")
+  inspect(total, content = "10000")
+  // One leaked 3-element array per execution would be well over 2000 * 32 B.
+  inspect(grown < 2000 * 16, content = "true")
+}

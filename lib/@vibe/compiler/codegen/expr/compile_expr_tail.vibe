@@ -27,6 +27,7 @@ import @vibe/compiler/codegen/common_analysis {
   collect_free_vars,
   collect_free_vars_indexed,
   collect_free_vars_indexed_self,
+  collect_pattern_bindings,
   collect_strings_stmts,
   emit_closure_call_tail,
   emit_closure_resolve,
@@ -1581,7 +1582,7 @@ fn call_returns_borrow(value: Expr, local_names: Array[String], ctx: CompileCtx)
 /// unwrapped -- no new retention on the owned path. Guarded dup no-ops on
 /// scalars/non-RC values; worst case is the codebase-wide "leak, never corrupt"
 /// trade.
-fn retain_wrap_branch_tails(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Expr with Exception {
+fn retain_wrap_branch_tails(e: Expr, local_names: Array[String], inner: Array[String], ctx: CompileCtx) -> Expr with Exception {
   match e {
     // #3103: a branch tail that CALLS a borrow-returning function
     // (`Array::get(xs, i)`, `Map::get`, a user wrapper) hands back a view of
@@ -1592,7 +1593,7 @@ fn retain_wrap_branch_tails(e: Expr, local_names: Array[String], ctx: CompileCtx
     // next iteration) reaches a freed block. Unlike an ident, this holds in
     // straight-line code too, which is why retain_wrap_let_value does not
     // require a loop for it.
-    ECall(_, _, _) => if call_returns_borrow(e, local_names, ctx) {
+    ECall(_, _, _) => if call_returns_borrow(e, local_names, ctx) && !callee_bound_in(e, inner) {
       ECall(EIdent("__loop_tail_retain", -1), [e], -1)
     } else {
       e
@@ -1610,7 +1611,7 @@ fn retain_wrap_branch_tails(e: Expr, local_names: Array[String], ctx: CompileCtx
         e
       }
     },
-    EIf(c, t, el) => EIf(c, retain_wrap_branch_tails(t, local_names, ctx), retain_wrap_branch_tails(el, local_names, ctx)),
+    EIf(c, t, el) => EIf(c, retain_wrap_branch_tails(t, local_names, inner, ctx), retain_wrap_branch_tails(el, local_names, inner, ctx)),
     EMatch(scrut, arms) => {
       if Array::length(arms) == 0 {
         e
@@ -1619,17 +1620,17 @@ fn retain_wrap_branch_tails(e: Expr, local_names: Array[String], ctx: CompileCtx
         let mut ai = 0
         while ai < Array::length(arms) {
           let (apat, abody) = Array::get(arms, ai)
-          Array::push(out, (apat, retain_wrap_branch_tails(abody, local_names, ctx)))
+          Array::push(out, (apat, retain_wrap_branch_tails(abody, local_names, with_pattern_binders(inner, apat), ctx)))
           ai = ai + 1
         }
         EMatch(scrut, out)
       }
     },
-    ELet(n, v, b, soff) => ELet(n, v, retain_wrap_branch_tails(b, local_names, ctx), soff),
-    ELetMut(n, v, b, soff) => ELetMut(n, v, retain_wrap_branch_tails(b, local_names, ctx), soff),
-    ESeq(a, b) => ESeq(a, retain_wrap_branch_tails(b, local_names, ctx)),
-    EAssign(n, v, b) => EAssign(n, v, retain_wrap_branch_tails(b, local_names, ctx)),
-    EAssignOp(n, op, v, b) => EAssignOp(n, op, v, retain_wrap_branch_tails(b, local_names, ctx)),
+    ELet(n, v, b, soff) => ELet(n, v, retain_wrap_branch_tails(b, local_names, with_name(inner, n), ctx), soff),
+    ELetMut(n, v, b, soff) => ELetMut(n, v, retain_wrap_branch_tails(b, local_names, with_name(inner, n), ctx), soff),
+    ESeq(a, b) => ESeq(a, retain_wrap_branch_tails(b, local_names, inner, ctx)),
+    EAssign(n, v, b) => EAssign(n, v, retain_wrap_branch_tails(b, local_names, inner, ctx)),
+    EAssignOp(n, op, v, b) => EAssignOp(n, op, v, retain_wrap_branch_tails(b, local_names, inner, ctx)),
     _ => e
   }
 }
@@ -1987,6 +1988,30 @@ fn vsb_under_binder(n: String, v: Expr, b: Expr, local_names: Array[String], bou
   r
 }
 
+/// #3108 review: the names a branch binds on the way down to its tail -- a
+/// `let` / `let mut` in the arm, a match pattern's binders. A tail call whose
+/// callee is one of them calls the LOCAL binding, not the top-level
+/// borrow-returning function of the same spelling, so it is left unretained
+/// (`local_names` covers only what was in scope at the enclosing `let`).
+fn callee_bound_in(e: Expr, inner: Array[String]) -> Bool {
+  match e {
+    ECall(EIdent(cn, _), _, _) => array_contains_str(inner, cn),
+    _ => false
+  }
+}
+
+fn with_name(inner: Array[String], n: String) -> Array[String] {
+  let out = Array::slice(inner, 0, Array::length(inner))
+  Array::push(out, n)
+  out
+}
+
+fn with_pattern_binders(inner: Array[String], pat: Pat) -> Array[String] {
+  let out = Array::slice(inner, 0, Array::length(inner))
+  collect_pattern_bindings(pat, out)
+  out
+}
+
 /// #768: apply the branch-tail retain rewrite (see retain_wrap_branch_tails)
 /// when this binding's scope-end drop is planned AND we are inside a loop
 /// (loop_borrowed_names non-empty -- empty outside loops and under bump, so
@@ -2000,8 +2025,8 @@ fn vsb_under_binder(n: String, v: Expr, b: Expr, local_names: Array[String], bou
 /// the rewrite outside a loop too. A value with no such tail keeps the
 /// loop-only gate, so its codegen is unchanged.
 fn retain_wrap_let_value(value: Expr, name: String, local_names: Array[String], ctx: CompileCtx) -> Expr with Exception {
-  if ctx.enable_rc && (expr_tag(value) == 7 || expr_tag(value) == 16) && array_contains_str(ctx.rc_drop_names, name) && (Array::length(ctx.loop_borrowed_names) > 0 || branch_tail_calls_borrow(value, local_names, ctx)) {
-    retain_wrap_branch_tails(value, local_names, ctx)
+  if ctx.enable_rc && (expr_tag(value) == 7 || expr_tag(value) == 16) && array_contains_str(ctx.rc_drop_names, name) && (Array::length(ctx.loop_borrowed_names) > 0 || branch_tail_calls_borrow(value, local_names, array_empty(), ctx)) {
+    retain_wrap_branch_tails(value, local_names, array_empty(), ctx)
   } else {
     value
   }
@@ -2009,16 +2034,16 @@ fn retain_wrap_let_value(value: Expr, name: String, local_names: Array[String], 
 
 /// #3103: does any if/match branch tail of `e` call a borrow-returning
 /// function -- a tail retain_wrap_branch_tails' `ECall` arm retains?
-fn branch_tail_calls_borrow(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool {
+fn branch_tail_calls_borrow(e: Expr, local_names: Array[String], inner: Array[String], ctx: CompileCtx) -> Bool {
   match e {
-    ECall(_, _, _) => call_returns_borrow(e, local_names, ctx),
-    EIf(_, t, el) => branch_tail_calls_borrow(t, local_names, ctx) || branch_tail_calls_borrow(el, local_names, ctx),
+    ECall(_, _, _) => call_returns_borrow(e, local_names, ctx) && !callee_bound_in(e, inner),
+    EIf(_, t, el) => branch_tail_calls_borrow(t, local_names, inner, ctx) || branch_tail_calls_borrow(el, local_names, inner, ctx),
     EMatch(_, arms) => {
       let mut found = false
       let mut ai = 0
       while ai < Array::length(arms) {
-        let (_, abody) = Array::get(arms, ai)
-        if branch_tail_calls_borrow(abody, local_names, ctx) {
+        let (apat, abody) = Array::get(arms, ai)
+        if branch_tail_calls_borrow(abody, local_names, with_pattern_binders(inner, apat), ctx) {
           found = true
           ai = Array::length(arms)
         } else {
@@ -2027,11 +2052,11 @@ fn branch_tail_calls_borrow(e: Expr, local_names: Array[String], ctx: CompileCtx
       }
       found
     },
-    ELet(_, _, b, _) => branch_tail_calls_borrow(b, local_names, ctx),
-    ELetMut(_, _, b, _) => branch_tail_calls_borrow(b, local_names, ctx),
-    ESeq(_, b) => branch_tail_calls_borrow(b, local_names, ctx),
-    EAssign(_, _, b) => branch_tail_calls_borrow(b, local_names, ctx),
-    EAssignOp(_, _, _, b) => branch_tail_calls_borrow(b, local_names, ctx),
+    ELet(n, _, b, _) => branch_tail_calls_borrow(b, local_names, with_name(inner, n), ctx),
+    ELetMut(n, _, b, _) => branch_tail_calls_borrow(b, local_names, with_name(inner, n), ctx),
+    ESeq(_, b) => branch_tail_calls_borrow(b, local_names, inner, ctx),
+    EAssign(_, _, b) => branch_tail_calls_borrow(b, local_names, inner, ctx),
+    EAssignOp(_, _, _, b) => branch_tail_calls_borrow(b, local_names, inner, ctx),
     _ => false
   }
 }
