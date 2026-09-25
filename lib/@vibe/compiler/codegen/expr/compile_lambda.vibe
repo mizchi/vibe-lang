@@ -694,6 +694,23 @@ fn cl_agg_fields_cells(fields: Array[(String, Expr)], cells: Array[String]) -> A
 ///   EReturn / EBreak / EContinue (they leave the expression instead of
 ///   producing its value).
 ///
+/// Why a `return v` / `throw(v)` operand is NOT marked (#3130 review, fifth
+/// round, measured rather than assumed): these exits skip every scope-end
+/// release between them and the function boundary -- the `return` lowering
+/// (compile_expr_tail3.vibe, tag 26) compiles the operand and emits a wasm
+/// `return`, and the cell's drop sits after its body -- so the cell is never
+/// dropped on that path and its own reference is the one the receiver gets.
+/// Retaining the operand as well gives the payload a reference nothing
+/// releases: a directly called `if c { return d }` grows 9600 / 19200 B per
+/// 200 / 400 calls (the skipped cell and closure), while the same body under
+/// the owned-return ABI, which does retain the operand, grows 33600 / 67200 B
+/// -- the payload leaked on top. `break v` of a loop inside the cell's scope
+/// is a result tail of the loop (the ELoop row above), so it IS marked; a
+/// `break` or `continue` that leaves the cell's own scope skips its drop the
+/// same way `return` does. What would make marking correct is releasing the
+/// scopes an early exit leaves; until then the unmarked operand is the
+/// balanced choice.
+///
 /// A new constructor falls into the `_` arm, i.e. is treated as a leaf; add it
 /// to this list either way.
 ///

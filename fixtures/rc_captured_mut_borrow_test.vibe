@@ -896,3 +896,157 @@ test "a captured cell on a match arm stored into a struct field keeps the elemen
 test "a captured cell on a handle tail stored into a struct field keeps the element alive" {
   inspect(String::join([set_names(3, true), set_names(3, false)], ";"), content = "axax,by,cz;freshax,by,cz")
 }
+
+// #3130 review, fifth round. Exits that leave a captured cell's scope: an
+// early `return` (bare, if, match-arm block, from a closure), a parameterized
+// loop's `break` payload, and a thrown payload. A `return` / `throw` skips the
+// cell's scope-end drop, so the cell's own reference is what the receiver
+// gets and the operand is deliberately NOT retained (see `rs_map`'s table).
+// Measured on a stage2 built from 7241e2386: all seven already answer
+// correctly on the default and shadow lanes; these pin that.
+
+fn exit_return_bare(c: Bool) -> D {
+  let xs = mk()
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  if c {
+    return d
+  }
+  B("fresh")
+}
+
+fn exit_return_if(c: Bool) -> D {
+  let xs = mk()
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  return if c { d } else { B("fresh") }
+}
+
+fn exit_return_match_block(c: Bool) -> D {
+  let xs = mk()
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  return match c {
+    true => {
+      let k = 1
+      d
+    },
+    false => B("fresh")
+  }
+}
+
+fn exit_closure_return(c: Bool) -> D {
+  let xs = mk()
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  let g = () -> D {
+    let _ = f()
+    if c {
+      return d
+    }
+    B("fresh")
+  }
+  g()
+}
+
+fn exit_loop_break(c: Bool) -> D {
+  let xs = mk()
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  let r = loop (i = 0) {
+    if i >= 2 {
+      break if c { d } else { B("fresh") }
+    }
+    continue(i + 1)
+  }
+  r
+}
+
+fn exit_loop_break_tail(c: Bool) -> D {
+  let xs = mk()
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  loop (i = 0) {
+    if i >= 2 {
+      break if c { d } else { B("fresh") }
+    }
+    continue(i + 1)
+  }
+}
+
+fn exit_thrower(c: Bool) -> D with Exception[D] {
+  let xs = mk()
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  if c {
+    throw(d)
+  }
+  B("fresh")
+}
+
+fn exit_throw_payload(c: Bool) -> D {
+  handle { exit_thrower(c) } with { Exception[D]::Throw(e) => e }
+}
+
+test "an early return of a captured cell hands the element over" {
+  let a = exit_return_bare(true)
+  let churn = mk()
+  let b = exit_return_bare(true)
+  let c = exit_return_bare(false)
+  inspect(String::join([name_of(a), name_of(b), name_of(c), names(churn)], ";"), content = "ax;ax;fresh;ax,by,cz")
+}
+
+test "a return of an if over a captured cell hands the element over" {
+  let a = exit_return_if(true)
+  let churn = mk()
+  let b = exit_return_if(true)
+  let c = exit_return_if(false)
+  inspect(String::join([name_of(a), name_of(b), name_of(c), names(churn)], ";"), content = "ax;ax;fresh;ax,by,cz")
+}
+
+test "a return of a match arm block over a captured cell hands the element over" {
+  let a = exit_return_match_block(true)
+  let churn = mk()
+  let b = exit_return_match_block(true)
+  let c = exit_return_match_block(false)
+  inspect(String::join([name_of(a), name_of(b), name_of(c), names(churn)], ";"), content = "ax;ax;fresh;ax,by,cz")
+}
+
+test "an early return from a closure over a captured cell hands the element over" {
+  let a = exit_closure_return(true)
+  let churn = mk()
+  let b = exit_closure_return(true)
+  let c = exit_closure_return(false)
+  inspect(String::join([name_of(a), name_of(b), name_of(c), names(churn)], ";"), content = "ax;ax;fresh;ax,by,cz")
+}
+
+test "a loop break payload bound to a let over a captured cell hands the element over" {
+  let a = exit_loop_break(true)
+  let churn = mk()
+  let b = exit_loop_break(true)
+  let c = exit_loop_break(false)
+  inspect(String::join([name_of(a), name_of(b), name_of(c), names(churn)], ";"), content = "ax;ax;fresh;ax,by,cz")
+}
+
+test "a loop break payload as the function tail over a captured cell hands the element over" {
+  let a = exit_loop_break_tail(true)
+  let churn = mk()
+  let b = exit_loop_break_tail(true)
+  let c = exit_loop_break_tail(false)
+  inspect(String::join([name_of(a), name_of(b), name_of(c), names(churn)], ";"), content = "ax;ax;fresh;ax,by,cz")
+}
+
+test "a thrown payload of a captured cell hands the element over" {
+  let a = exit_throw_payload(true)
+  let churn = mk()
+  let b = exit_throw_payload(true)
+  let c = exit_throw_payload(false)
+  inspect(String::join([name_of(a), name_of(b), name_of(c), names(churn)], ";"), content = "ax;ax;fresh;ax,by,cz")
+}
