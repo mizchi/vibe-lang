@@ -1,0 +1,56 @@
+// #3088: interpolating a field whose declared type is a `derive (Show)`
+// generic at concrete arguments (`o.b` with `b: Box[Bool]`). The checker files
+// no render row for the projection, so the render had nothing but the head
+// `Box` and was refused ("its type arguments are not known here"); before that
+// refusal (#3082) it printed `Box { v: 1 }`. The field's declared type now
+// supplies the instantiation, substituted through a generic receiver too.
+struct Box[T] {
+  v: T
+} derive (Show)
+
+enum G[T] {
+  GA(T);
+  GB
+} derive (Show)
+
+struct Outer {
+  b: Box[Bool];
+  g: G[Double]
+}
+
+struct Holder[T] {
+  inner: Box[T]
+} derive (Show)
+
+fn field_of(o: Outer) -> String {
+  "\{o.b}"
+}
+
+test "a generic struct field renders at its declared arguments" {
+  let o = Outer::{ b: Box::{ v: true }, g: GA(2.5) }
+  inspect("\{o.b}", content = "Box { v: true }")
+}
+
+test "a generic enum field renders at its declared arguments" {
+  let o = Outer::{ b: Box::{ v: false }, g: GA(2.5) }
+  inspect("\{o.g}", content = "GA(2.5)")
+}
+
+test "through an annotated parameter and a binding" {
+  let o = Outer::{ b: Box::{ v: false }, g: GB }
+  let q = o.b
+  inspect(field_of(o), content = "Box { v: false }")
+  inspect("\{q}", content = "Box { v: false }")
+}
+
+test "a generic receiver substitutes its argument into the field" {
+  let h: Holder[Bool] = Holder::{ inner: Box::{ v: true } }
+  inspect("\{h.inner}", content = "Box { v: true }")
+}
+
+// This program was the #3082 refusal fixture (`field=\{h.inner}` refused,
+// `Box { v: 1 }` before that); it renders by content now.
+test "an unannotated generic receiver" {
+  let h = Holder::{ inner: Box::{ v: false } }
+  inspect("\{h.inner}", content = "Box { v: false }")
+}

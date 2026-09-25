@@ -7,10 +7,12 @@ split (defs.vibe + main.vibe) so single-file and multi-module lanes can
 be diffed against each other.
 
 Design notes:
-- No expected-value oracle: the harness (run_fuzz.sh) diffs the program's
+- Differential oracle: the harness (run_fuzz.sh) diffs the program's
   result across bump / RC / wasm-gc backends and the FS-linked lane.
   Any divergence, compile diagnostic, trap, or hang on a generated
-  program is a finding.
+  program is a finding. With --extended (#2979) the program also prints
+  generation-known values that are compared against expected.txt, which
+  catches a wrong answer every lane shares.
 - Trap freedom: every arithmetic result is masked (`& 1048575`) so values
   stay small and deterministic; divisors/shift-counts are forced into
   safe ranges; array indexes go through `expr % len` on masked (hence
@@ -37,11 +39,17 @@ Design notes:
   the same trap-free-by-construction discipline (masked arithmetic,
   bounded recursion depth via a literal argument cap).
 
-Usage: gen_program.py SEED OUTDIR [--classic] [--liveness-bias=X]
+Usage: gen_program.py SEED OUTDIR [--classic] [--liveness-bias=X] [--extended]
   --classic          disable the liveness-aware bias (legacy behavior)
   --liveness-bias=X  force the bias probability to X (0.0..1.0), instead
                       of the seed-derived default; mostly for testing.
-Writes OUTDIR/single.vibe, OUTDIR/defs.vibe, OUTDIR/main.vibe.
+  --extended         add the #2979 productions (effects, handlers,
+                      exceptions, nested containers, builtins inside
+                      interpolation, labeled args, generics, traits) and
+                      the lane-independent oracle (see ExtGen).
+Writes OUTDIR/single.vibe, OUTDIR/defs.vibe, OUTDIR/main.vibe; with
+--extended also OUTDIR/expected.txt and, when the program carries trait
+impls, OUTDIR/skip_lanes.
 """
 import random
 import sys
@@ -58,9 +66,836 @@ FIELD_POOL = ["name", "kind", "v", "x", "y", "w", "tagf", "size"]
 STR_POOL = ["alpha", "beta", "route", "k", "", "nested"]
 
 
+# ---------- extended productions + lane-independent oracle (#2979) ----------
+#
+# Opt-in via `--extended`. The classic/liveness generator above produces
+# ints, strings, structs, closures, loops and enum matches -- and none of the
+# constructs where the 2026-09 audit found its bugs. This section adds them:
+#
+#   * user effects: `effect` / `perform` / `handle` / `resume`, including arms
+#     that LEAVE instead of resuming (`return`, `throw`);
+#   * exceptions: `throw` / `handle .. with Exception[K]`, `Exception[K]` and
+#     `effectset` rows, `suberror` and `derive(Show)` enum kinds;
+#   * nested containers: `Option[Option[T]]`, `Array[Option[T]]`,
+#     `Option[Array[T]]` and deeper, annotated and self-describing;
+#   * builtin calls directly inside a `"\{..}"` interpolation;
+#   * labeled arguments, generics (unbounded and trait-bounded), traits with
+#     impls, shift counts outside 0..62.
+#
+# Every function the section generates carries an effect ROW (`self.rows`),
+# and `_start` discharges each row with nested handles before the entry, so
+# `_start` itself needs only `Stdout` (checked in `discharge`).
+#
+# The ORACLE: each production whose value is known at generation time prints
+# one line `<ID>|<text>` and records the text it must print in
+# `expected.txt`. The ID's first letter names the oracle -- R (render),
+# T (throw), C (continuation) -- and the harness maps a wrong line to
+# ORACLE_RENDER / ORACLE_THROW / ORACLE_CONT. The expected text is computed by
+# a small Python model of exactly the shapes generated here (masked integer
+# arithmetic, the renderer's container spelling, the handler semantics of
+# ADR-0114); it is deliberately NOT a second evaluator for the whole
+# language, which is why only these productions carry an oracle line.
+
+EXT_STR_POOL = ["alpha", "beta", "", "ab", "route", "a b", "nest"]
+
+
+class Leave(Exception):
+    """A handler arm that left instead of resuming (`return v`)."""
+
+    def __init__(self, value):
+        super().__init__(value)
+        self.value = value
+
+
+class Thrown(Exception):
+    """A `throw(K(..))` in the Python model: (kind name, rendered payload,
+    constructor, int payload or None)."""
+
+    def __init__(self, kind, ctor, payload):
+        super().__init__(kind)
+        self.kind = kind
+        self.ctor = ctor
+        self.payload = payload
+
+
+def render_val(v):
+    tag = v[0]
+    if tag == "int":
+        return str(v[1])
+    if tag == "str":
+        return v[1]
+    if tag == "bool":
+        return "true" if v[1] else "false"
+    if tag == "some":
+        return f"Some({render_val(v[1])})"
+    if tag == "none":
+        return "None"
+    if tag == "arr":
+        return "[" + ", ".join(render_val(x) for x in v[1]) + "]"
+    raise ValueError(v)
+
+
+def lit_val(v):
+    tag = v[0]
+    if tag == "int":
+        return str(v[1])
+    if tag == "str":
+        return f'"{v[1]}"'
+    if tag == "bool":
+        return "true" if v[1] else "false"
+    if tag == "some":
+        return f"Some({lit_val(v[1])})"
+    if tag == "none":
+        return "None"
+    if tag == "arr":
+        return "[" + ", ".join(lit_val(x) for x in v[1]) + "]"
+    raise ValueError(v)
+
+
+def ty_str(t):
+    if isinstance(t, str):
+        return t
+    return f"{t[0]}[{ty_str(t[1])}]"
+
+
+def self_describing(v):
+    """Can the checker infer this literal's type from its own syntax? A
+    `None` or `[]` alone says nothing; an array is typed by its first
+    element, which the others must unify with."""
+    tag = v[0]
+    if tag in ("int", "str", "bool"):
+        return True
+    if tag == "some":
+        return self_describing(v[1])
+    if tag == "none":
+        return False
+    if tag == "arr":
+        return bool(v[1]) and self_describing(v[1][0])
+    return False
+
+
+def ext_substring(s, i, j):
+    n = len(s.encode())
+    i = max(0, min(i, n))
+    j = max(0, min(j, n))
+    if j < i:
+        return ""
+    return s.encode()[i:j].decode()
+
+
+class ExtGen:
+    def __init__(self, g, rng):
+        self.g = g
+        self.r = rng
+        # Trait impls and bounded generics do not compile on the flat
+        # single-source linear lane (bump/RC) today; a program carrying them
+        # names those two lanes in `skip_lanes` (see lib_oracle.sh), so the
+        # rest of the program is still measured there on the seeds without.
+        self.traits = rng.random() < 0.35
+        self.effects = []             # effect names; ops are Ask(Int)->Int, Tell(Int)->Unit
+        self.kinds = []               # (name, style, ctors [(cname, arity)])
+        self.effectsets = []          # (name, [labels])
+        self.efuncs = {}              # name -> spec dict
+        self.rows = {}                # function name -> frozenset of row labels
+        self.decls = []               # top-level declaration texts, in order
+        self.exports = []             # names main.vibe must import
+        self.expected = []            # (id, text)
+        self.counter = {"R": 0, "T": 0, "C": 0}
+        self.trait_info = None
+        # Helpers some production has called. Every effect / throwing helper
+        # is called at least once: the gc backend refuses a program whose
+        # uncalled function performs a user effect (`GC codegen: unsupported
+        # perform`, tests/fuzz/README.md "Known lane gaps"), and an uncalled
+        # helper measures nothing anyway.
+        self.used = set()
+
+    def fresh(self, p):
+        return self.g.fresh(p)
+
+    def skip_lanes(self):
+        """Lanes that cannot compile a construct this program uses TODAY,
+        each tied to a compiler defect found while building this generator
+        (see tests/fuzz/README.md, "Known lane gaps"). A skipped lane is
+        reported as `skipped` in every verdict, never silently dropped."""
+        skip = []
+        if self.traits:
+            # trait impls / bounded generics: the flat single-source linear
+            # lane answers `no impl <Trait> for Self`
+            skip += ["bump", "rc"]
+        return skip
+
+    def oid(self, tag):
+        self.counter[tag] += 1
+        return f"{tag}{self.counter[tag]}"
+
+    def emit(self, lines, tag, interp, expected_text):
+        """Print one oracle line. `interp` is the interpolation body (already
+        valid inside a string literal); `expected_text` what it must print."""
+        i = self.oid(tag)
+        lines.append(f'println("{i}|{interp}")')
+        self.expected.append((i, expected_text))
+
+    # ----- declarations -----
+
+    def gen_decls(self):
+        r = self.r
+        for i in range(r.randint(1, 2)):
+            name = f"Ef{i}"
+            self.effects.append(name)
+            self.decls.append(
+                f"export effect {name} {{\n  Ask(Int) -> Int;\n  Tell(Int) -> Unit\n}}")
+            self.exports.append(name)
+        for i in range(r.randint(1, 2)):
+            if r.random() < 0.7:
+                name = f"Kd{i}"
+                ctors = [(f"{name}A", 1), (f"{name}B", 0)]
+                self.kinds.append((name, "enum", ctors))
+                self.decls.append(
+                    f"export enum {name} {{ {name}A(Int); {name}B }} derive(Show)")
+            else:
+                name = f"Sb{i}"
+                self.kinds.append((name, "suberror", [(name, 1)]))
+                self.decls.append(f"export suberror {name}(Int)")
+            self.exports.append(name)
+        # effect helpers (row: {Ef})
+        for _ in range(r.randint(2, 3)):
+            self.gen_eff_fn(r.choice(self.effects))
+        # throwing helpers (row: {Exception[K]})
+        for _ in range(r.randint(1, 3)):
+            self.gen_thr_fn(r.choice(self.kinds))
+        # mixed rows, optionally spelled through an effectset
+        for _ in range(r.randint(1, 2)):
+            self.gen_mix_fn()
+        self.gen_labeled()
+        self.gen_generic_id()
+        if self.traits:
+            self.gen_traits()
+
+    def gen_eff_fn(self, eff):
+        r = self.r
+        name = self.fresh("eff")
+        steps = []
+        nask = r.randint(1, 3)
+        for k in range(nask):
+            if r.random() < 0.4:
+                steps.append(("tell",))
+            steps.append(("ask", r.randint(1, 5), r.randint(0, 20)))
+        if r.random() < 0.3:
+            steps.append(("tell",))
+        coefs = [r.randint(1, 4) for _ in range(nask)]
+        body = []
+        prev = "n"
+        asks = []
+        for st in steps:
+            if st[0] == "ask":
+                a = self.fresh("a")
+                body.append(
+                    f"let {a} = perform {eff}::Ask((({prev} * {st[1]} + {st[2]}) & {MASK}))")
+                asks.append(a)
+                prev = a
+            else:
+                body.append(f"perform {eff}::Tell({prev})")
+        tail = " + ".join(f"{a} * {c}" for a, c in zip(asks, coefs))
+        body.append(f"(({tail} + n) & {MASK})")
+        txt = "\n".join("  " + l for l in body)
+        self.decls.append(f"export fn {name}(n: Int) -> Int with {eff} {{\n{txt}\n}}")
+        self.exports.append(name)
+        self.efuncs[name] = {"kind": "eff", "eff": eff, "steps": steps, "coefs": coefs}
+        self.rows[name] = frozenset([eff])
+
+    def gen_thr_fn(self, kind):
+        r = self.r
+        kname, style, ctors = kind
+        name = self.fresh("thr")
+        thresh = r.randint(1, 12)
+        cname, arity = r.choice(ctors)
+        c = r.randint(0, 9)
+        m = r.randint(1, 7)
+        k = r.randint(0, 30)
+        payload = f"(((n + {c}) & {MASK}))" if arity else ""
+        self.decls.append(
+            f"export fn {name}(n: Int) -> Int with Exception[{kname}] {{\n"
+            f"  if n > {thresh} {{ throw({cname}{payload}) }}\n"
+            f"  ((n * {m} + {k}) & {MASK})\n}}")
+        self.exports.append(name)
+        self.efuncs[name] = {"kind": "thr", "kname": kname, "thresh": thresh,
+                             "ctor": cname, "arity": arity, "c": c, "m": m, "k": k}
+        self.rows[name] = frozenset([f"Exception[{kname}]"])
+
+    def gen_mix_fn(self):
+        r = self.r
+        effs = [n for n, s in self.efuncs.items() if s["kind"] == "eff"]
+        thrs = [n for n, s in self.efuncs.items() if s["kind"] == "thr"]
+        ef, th = r.choice(effs), r.choice(thrs)
+        name = self.fresh("mix")
+        row = self.rows[ef] | self.rows[th]
+        labels = sorted(row)
+        if r.random() < 0.5:
+            es = self.fresh("Es")
+            self.effectsets.append((es, labels))
+            self.decls.append(f"export effectset {es} = {{ {', '.join(labels)} }}")
+            self.exports.append(es)
+            spelled = es
+        else:
+            spelled = " + ".join(labels)
+        mask_k = r.choice([7, 15])
+        self.decls.append(
+            f"export fn {name}(n: Int) -> Int with {spelled} {{\n"
+            f"  let a = {ef}(n)\n"
+            f"  let b = {th}((a & {mask_k}))\n"
+            f"  ((a + b * 3) & {MASK})\n}}")
+        self.exports.append(name)
+        self.efuncs[name] = {"kind": "mix", "ef": ef, "th": th, "mask": mask_k}
+        self.rows[name] = row
+
+    def gen_labeled(self):
+        r = self.r
+        name = self.fresh("lab")
+        ca, cb, cc = r.randint(1, 5), r.randint(1, 5), r.randint(1, 5)
+        self.decls.append(
+            f"export fn {name}(a~: Int, b~: Int, c~: Int) -> Int {{\n"
+            f"  ((a * {ca} - b * {cb} + c * {cc}) & {MASK})\n}}")
+        self.exports.append(name)
+        self.lab = (name, ca, cb, cc)
+        self.rows[name] = frozenset()
+
+    def gen_generic_id(self):
+        name = self.fresh("gid")
+        self.decls.append(f"export fn {name}[T](x: T) -> T {{ x }}")
+        self.exports.append(name)
+        self.gid = name
+        self.rows[name] = frozenset()
+
+    def gen_traits(self):
+        r = self.r
+        tr = self.fresh("Tr")
+        st = self.fresh("Tp")
+        m1, k1 = r.randint(1, 5), r.randint(0, 9)
+        m2, k2 = r.randint(1, 5), r.randint(0, 9)
+        self.decls.append(f"export trait {tr} {{\n  mz(Self) -> Int\n}}")
+        self.decls.append(f"export struct {st} {{\n  p: Int;\n  q: Int\n}}")
+        self.decls.append(
+            f"impl {tr} for Int {{\n  mz(a: Int) -> Int {{ ((a * {m1} + {k1}) & {MASK}) }}\n}}")
+        self.decls.append(
+            f"impl {tr} for {st} {{\n  mz(a: {st}) -> Int {{ ((a.p * {m2} - a.q + {k2}) & {MASK}) }}\n}}")
+        g1 = self.fresh("gm")
+        ufcs = r.random() < 0.5
+        call = "v.mz()" if ufcs else f"T::mz(v)"
+        self.decls.append(f"export fn {g1}[T: {tr}](v: T) -> Int {{ {call} }}")
+        g2 = self.fresh("gm")
+        self.decls.append(
+            f"export fn {g2}[T: {tr}](a: T, b: T) -> Int {{ ((T::mz(a) * 2 - T::mz(b)) & {MASK}) }}")
+        self.exports += [tr, st, g1, g2]
+        self.trait_info = (tr, st, g1, g2, m1, k1, m2, k2)
+        for n in (g1, g2):
+            self.rows[n] = frozenset()
+
+    # ----- Python model of the generated helpers -----
+
+    def eval_fn(self, name, n, handlers):
+        """handlers: effect name -> callable(op, arg) returning the resumed
+        value (or raising Leave / Thrown)."""
+        s = self.efuncs[name]
+        if s["kind"] == "eff":
+            h = handlers[s["eff"]]
+            prev = n
+            asks = []
+            for st in s["steps"]:
+                if st[0] == "ask":
+                    v = h("Ask", (prev * st[1] + st[2]) & MASK)
+                    asks.append(v)
+                    prev = v
+                else:
+                    h("Tell", prev)
+            return (sum(a * c for a, c in zip(asks, s["coefs"])) + n) & MASK
+        if s["kind"] == "thr":
+            if n > s["thresh"]:
+                p = ((n + s["c"]) & MASK) if s["arity"] else None
+                raise Thrown(s["kname"], s["ctor"], p)
+            return (n * s["m"] + s["k"]) & MASK
+        a = self.eval_fn(s["ef"], n, handlers)
+        b = self.eval_fn(s["th"], a & s["mask"], handlers)
+        return (a + b * 3) & MASK
+
+    # ----- handler construction -----
+
+    def resume_handler(self, eff, lines_state):
+        """A resuming handler for `eff`: Ask(x) => resume(((x * m + k) & MASK)),
+        Tell(y) => accumulate into a `let mut` counter, resume(())."""
+        r = self.r
+        m, k = r.randint(1, 4), r.randint(0, 50)
+        tc = self.fresh("tc")
+        arms = (f"  {eff}::Ask(x) => resume(((x * {m} + {k}) & {MASK}))\n"
+                f"  {eff}::Tell(y) => {{\n"
+                f"    {tc} = (({tc} * 3 + y) & {MASK})\n"
+                f"    resume(())\n  }}")
+        state = {"tc": 0}
+
+        def h(op, arg):
+            if op == "Ask":
+                return (arg * m + k) & MASK
+            state["tc"] = (state["tc"] * 3 + arg) & MASK
+            return None
+        lines_state.append(f"let mut {tc} = 0")
+        return arms, h, (tc, state)
+
+    def discharge(self, call, row, pre, exc_arm):
+        """Wrap `call` in handles for every label of `row` (user effects
+        innermost, the exception outermost). Returns (expr, handlers, tcs).
+        `exc_arm(kname) -> (arm_text, py_fn)` builds the exception arm."""
+        handlers = {}
+        tcs = []
+        expr = call
+        for lab in sorted(row):
+            if lab.startswith("Exception["):
+                continue
+            arms, h, tc = self.resume_handler(lab, pre)
+            handlers[lab] = h
+            tcs.append(tc)
+            expr = f"handle {{ {expr} }} with {{\n{arms}\n}}"
+        exc = None
+        for lab in sorted(row):
+            if lab.startswith("Exception["):
+                kname = lab[len("Exception["):-1]
+                arm, fn = exc_arm(kname)
+                expr = f"handle {{ {expr} }} with {{ Exception[{kname}]::Throw(e) => {arm} }}"
+                exc = fn
+        assert all(l.startswith("Exception[") or l in handlers for l in row), row
+        return expr, handlers, tcs, exc
+
+    # ----- oracle statements for _start -----
+
+    def kind_of(self, kname):
+        for k in self.kinds:
+            if k[0] == kname:
+                return k
+        raise KeyError(kname)
+
+    def render_thrown(self, t):
+        if t.payload is None:
+            return t.ctor
+        return f"{t.ctor}({t.payload})"
+
+    def int_exc_arm(self, kname):
+        """An exception arm producing an Int from the payload by `match`."""
+        r = self.r
+        _, style, ctors = self.kind_of(kname)
+        bias = r.randint(100, 900)
+        parts = []
+        table = {}
+        for cname, arity in ctors:
+            if arity:
+                parts.append(f"{cname}(p) => ((p + {bias}) & {MASK})")
+                table[cname] = ("p", bias)
+            else:
+                v = r.randint(0, 99)
+                parts.append(f"{cname} => {v}")
+                table[cname] = ("c", v)
+        arm = f"match e {{ {', '.join(parts)} }}"
+
+        def fn(t):
+            kind, v = table[t.ctor]
+            return (t.payload + v) & MASK if kind == "p" else v
+        return arm, fn
+
+    def str_exc_arm(self, kname):
+        """An exception arm producing a String that renders the payload --
+        the throw oracle proper. Three spellings, because they do not all
+        agree today: interpolating the kinded binder directly, rebinding it
+        with an annotation first, and matching on it."""
+        r = self.r
+        _, style, ctors = self.kind_of(kname)
+        pick = r.random()
+        if style == "enum" and pick < 0.4:
+            return '"caught \\{e}"', lambda t: f"caught {self.render_thrown(t)}"
+        if style == "enum" and pick < 0.7:
+            kb = self.fresh("kb")
+            return (f'{{\n    let {kb}: {kname} = e\n    "caught \\{{{kb}}}"\n  }}',
+                    lambda t: f"caught {self.render_thrown(t)}")
+        parts = []
+        for cname, arity in ctors:
+            if arity:
+                parts.append(f'{cname}(p) => "caught {cname} \\{{p}}"')
+            else:
+                parts.append(f'{cname} => "caught {cname}"')
+
+        def fn(t):
+            if t.payload is None:
+                return f"caught {t.ctor}"
+            return f"caught {t.ctor} {t.payload}"
+        return f"match e {{ {', '.join(parts)} }}", fn
+
+    def oracle_stmts(self, acc):
+        r = self.r
+        lines = []
+        prods = [self.o_render, self.o_render, self.o_match, self.o_builtins,
+                 self.o_labeled, self.o_shift, self.o_cont_resume,
+                 self.o_cont_leave, self.o_cont_throw, self.o_throw_str,
+                 self.o_throw_int, self.o_mix]
+        if self.traits:
+            prods.append(self.o_traits)
+        # every production at least once, then a random extra handful
+        order = list(prods) + [r.choice(prods) for _ in range(r.randint(2, 6))]
+        r.shuffle(order)
+        for p in order:
+            p(lines, acc)
+        for f in list(self.efuncs):
+            if f in self.used:
+                continue
+            kind = self.efuncs[f]["kind"]
+            if kind == "eff":
+                self.o_cont_resume(lines, acc, f)
+            elif kind == "thr":
+                self.o_throw_int(lines, acc, f)
+            else:
+                self.o_mix(lines, acc, f)
+        return lines
+
+    def rand_type(self, depth):
+        r = self.r
+        if depth <= 0:
+            return r.choice(["Int", "Int", "String", "Bool"])
+        hot = r.random()
+        if hot < 0.2:
+            return ("Option", ("Option", self.rand_type(depth - 2)))
+        if hot < 0.4:
+            return ("Array", ("Option", self.rand_type(depth - 2)))
+        if hot < 0.6:
+            return ("Option", ("Array", self.rand_type(depth - 2)))
+        if hot < 0.8:
+            return (r.choice(["Option", "Array"]), self.rand_type(depth - 1))
+        return self.rand_type(0)
+
+    def rand_val(self, t, depth=3):
+        r = self.r
+        if t == "Int":
+            return ("int", r.randint(-9, 99))
+        if t == "String":
+            return ("str", r.choice(EXT_STR_POOL))
+        if t == "Bool":
+            return ("bool", r.random() < 0.5)
+        head, inner = t
+        if head == "Option":
+            if r.random() < 0.3:
+                return ("none",)
+            return ("some", self.rand_val(inner, depth - 1))
+        n = r.randint(0, 3) if depth > 0 else 0
+        return ("arr", [self.rand_val(inner, depth - 1) for _ in range(n)])
+
+    def o_render(self, lines, acc):
+        t = self.rand_type(self.r.randint(1, 4))
+        v = self.rand_val(t)
+        name = self.fresh("rv")
+        if self_describing(v) and self.r.random() < 0.5:
+            lines.append(f"let {name} = {lit_val(v)}")
+        else:
+            lines.append(f"let {name}: {ty_str(t)} = {lit_val(v)}")
+        self.emit(lines, "R", f"\\{{{name}}}", render_val(v))
+        # Int::parse: a builtin whose Option result is known from its literal
+        if self.r.random() < 0.4:
+            s = self.r.choice(["42", "0", "-7", "4x", "", "12a", "100"])
+            pv = self.fresh("pv")
+            lines.append(f'let {pv}: Option[Int] = Int::parse("{s}")')
+            try:
+                exp = f"Some({int(s)})" if s.lstrip("-").isdigit() else "None"
+            except ValueError:
+                exp = "None"
+            self.emit(lines, "R", f"\\{{{pv}}}", exp)
+
+    def o_match(self, lines, acc):
+        r = self.r
+        c, k1, k2 = r.randint(0, 9), r.randint(100, 199), r.randint(200, 299)
+        if r.random() < 0.5:
+            v = self.rand_val(("Option", ("Option", "Int")))
+            name = self.fresh("oo")
+            lines.append(f"let {name}: Option[Option[Int]] = {lit_val(v)}")
+            mv = self.fresh("mo")
+            lines.append(
+                f"let {mv} = match {name} {{ Some(Some(x)) => ((x + {c}) & {MASK}), "
+                f"Some(None) => {k1}, None => {k2} }}")
+            if v[0] == "none":
+                exp = k2
+            elif v[1][0] == "none":
+                exp = k1
+            else:
+                exp = (v[1][1][1] + c) & MASK
+        else:
+            elems = [self.rand_val(("Option", "Int")) for _ in range(r.randint(1, 4))]
+            name = self.fresh("ao")
+            lines.append(f"let {name}: Array[Option[Int]] = {lit_val(('arr', elems))}")
+            idx = r.randrange(len(elems))
+            mv = self.fresh("mo")
+            lines.append(
+                f"let {mv} = match Array::get({name}, {idx}) {{ Some(x) => ((x + {c}) & {MASK}), "
+                f"None => {k1} }}")
+            e = elems[idx]
+            exp = k1 if e[0] == "none" else (e[1][1] + c) & MASK
+        self.emit(lines, "R", f"\\{{{mv}}}", str(exp))
+        lines.append(f"{acc} = (({acc} * 31 + {mv}) & {MASK})")
+
+    def o_builtins(self, lines, acc):
+        r = self.r
+        parts = []
+        exps = []
+        for _ in range(r.randint(1, 4)):
+            a, b = r.choice(EXT_STR_POOL), r.choice(EXT_STR_POOL)
+            pick = r.randrange(7)
+            if pick == 0:
+                parts.append(f'\\{{String::length("{a}")}}')
+                exps.append(str(len(a.encode())))
+            elif pick == 1:
+                xs = [r.randint(0, 9) for _ in range(r.randint(0, 5))]
+                parts.append(f"\\{{Array::length([{', '.join(map(str, xs))}])}}"
+                             if xs else "\\{Array::length([0])}")
+                exps.append(str(len(xs) if xs else 1))
+            elif pick == 2:
+                parts.append(f'\\{{String::concat("{a}", "{b}")}}')
+                exps.append(a + b)
+            elif pick == 3:
+                i, j = r.randint(-1, 6), r.randint(-1, 6)
+                parts.append(f'\\{{String::substring("{a}", {i}, {j})}}')
+                exps.append(ext_substring(a, i, j))
+            elif pick == 4:
+                parts.append(f'\\{{String::contains("{a}", "{b}")}}')
+                exps.append("true" if b in a else "false")
+            elif pick == 5:
+                parts.append(f'\\{{String::starts_with("{a}", "{b}")}}')
+                exps.append("true" if a.startswith(b) else "false")
+            else:
+                parts.append(f'\\{{String::ends_with("{a}", "{b}")}}')
+                exps.append("true" if a.endswith(b) else "false")
+        self.emit(lines, "R", ",".join(parts), ",".join(exps))
+
+    def o_labeled(self, lines, acc):
+        r = self.r
+        name, ca, cb, cc = self.lab
+        vals = {"a": r.randint(0, 50), "b": r.randint(0, 50), "c": r.randint(0, 50)}
+        order = ["a", "b", "c"]
+        r.shuffle(order)
+        lv = self.fresh("lv")
+        lines.append(f"let {lv} = {name}({', '.join(f'{k}={vals[k]}' for k in order)})")
+        exp = (vals["a"] * ca - vals["b"] * cb + vals["c"] * cc) & MASK
+        self.emit(lines, "R", f"\\{{{lv}}}", str(exp))
+        lines.append(f"{acc} = (({acc} * 31 + {lv}) & {MASK})")
+        # an unbounded generic at two instantiations
+        s = r.choice(EXT_STR_POOL)
+        n = r.randint(0, 99)
+        self.emit(lines, "R", f'\\{{{self.gid}({n})}} \\{{{self.gid}("{s}")}}', f"{n} {s}")
+
+    def o_shift(self, lines, acc):
+        r = self.r
+        parts = []
+        exps = []
+        for _ in range(r.randint(1, 3)):
+            x = r.randint(-40, 200)
+            xs = f"(0 - {-x})" if x < 0 else str(x)
+            if r.random() < 0.6:
+                n = r.choice([63, 64, 65, 70, 100, -1, -5])
+            else:
+                n = r.randint(0, 40)
+            if r.random() < 0.5:
+                parts.append(f"\\{{({xs} << {n})}}")
+                exps.append(str(0 if (n >= 63 or n < 0) else x << n))
+            else:
+                parts.append(f"\\{{({xs} >> {n})}}")
+                exps.append(str((0 if x >= 0 else -1) if (n >= 63 or n < 0) else x >> n))
+        self.emit(lines, "R", " ".join(parts), " ".join(exps))
+
+    def eff_names(self):
+        return [n for n, s in self.efuncs.items() if s["kind"] == "eff"]
+
+    def o_cont_resume(self, lines, acc, f=None):
+        """A resuming handler over an effect helper: the answer and the Tell
+        counter are both known."""
+        r = self.r
+        f = f or r.choice(self.eff_names())
+        self.used.add(f)
+        n = r.randint(0, 40)
+        cv = self.fresh("cv")
+        pre = []
+        expr, handlers, tcs, _ = self.discharge(f"{f}({n})", self.rows[f], pre, None)
+        lines += pre
+        lines.append(f"let {cv} = {expr}")
+        exp = self.eval_fn(f, n, handlers)
+        tc, st = tcs[0]
+        self.emit(lines, "C", f"\\{{{cv}}} \\{{{tc}}}", f"{exp} {st['tc']}")
+        lines.append(f"{acc} = (({acc} * 31 + {cv}) & {MASK})")
+
+    def o_cont_leave(self, lines, acc):
+        """An arm that does NOT resume: `return` leaves the enclosing
+        function with the arm's value (ADR-0114). The perform is either in
+        the handle body itself or inside a called helper."""
+        r = self.r
+        f = r.choice(self.eff_names())
+        s = self.efuncs[f]
+        eff = s["eff"]
+        k = r.randint(0, 60)
+        w = self.fresh("leave")
+        direct = r.random() < 0.4
+        if direct:
+            m, c = r.randint(1, 5), r.randint(0, 9)
+            body = f"perform {eff}::Ask(((n * {m} + {c}) & {MASK})) + 1"
+            first_ask = lambda n: (n * m + c) & MASK  # noqa: E731
+        else:
+            body = f"{f}(n) + 1"
+            self.used.add(f)
+
+            def first_ask(n):
+                try:
+                    def h(op, arg):
+                        if op == "Ask":
+                            raise Leave(arg)
+                        return None
+                    self.eval_fn(f, n, {eff: h})
+                except Leave as lv:
+                    return lv.value
+                raise AssertionError("eff helper never asked")
+        self.decls.append(
+            f"export fn {w}(n: Int) -> Int {{\n"
+            f"  let r = handle {{ {body} }} with {{\n"
+            f"    {eff}::Ask(x) => return ((x + {k}) & {MASK})\n"
+            f"    {eff}::Tell(y) => resume(())\n"
+            f"  }}\n"
+            f"  ((r * 3 + 1) & {MASK})\n}}")
+        self.exports.append(w)
+        self.rows[w] = frozenset()
+        n = r.randint(0, 40)
+        exp = (first_ask(n) + k) & MASK
+        lv = self.fresh("lc")
+        lines.append(f"let {lv} = {w}({n})")
+        self.emit(lines, "C", f"\\{{{lv}}}", str(exp))
+        lines.append(f"{acc} = (({acc} * 31 + {lv}) & {MASK})")
+
+    def o_cont_throw(self, lines, acc):
+        """An arm that leaves by throwing: the outer kinded handle sees the
+        first Ask's argument as the payload."""
+        r = self.r
+        cands = [k for k in self.kinds if any(a for _, a in k[2])]
+        if not cands:
+            return
+        kname, style, ctors = r.choice(cands)
+        cname = [c for c, a in ctors if a][0]
+        f = r.choice(self.eff_names())
+        self.used.add(f)
+        eff = self.efuncs[f]["eff"]
+        n = r.randint(0, 40)
+        arm, fn = self.int_exc_arm(kname)
+        tv = self.fresh("ct")
+        lines.append(
+            f"let {tv} = handle {{\n"
+            f"  handle {{ {f}({n}) }} with {{\n"
+            f"    {eff}::Ask(x) => throw({cname}(x))\n"
+            f"    {eff}::Tell(y) => resume(())\n"
+            f"  }}\n"
+            f"}} with {{ Exception[{kname}]::Throw(e) => {arm} }}")
+
+        def h(op, arg):
+            if op == "Ask":
+                raise Thrown(kname, cname, arg)
+            return None
+        try:
+            exp = self.eval_fn(f, n, {eff: h})
+        except Thrown as t:
+            exp = fn(t)
+        self.emit(lines, "C", f"\\{{{tv}}}", str(exp))
+        lines.append(f"{acc} = (({acc} * 31 + {tv}) & {MASK})")
+
+    def thr_names(self):
+        return [n for n, s in self.efuncs.items() if s["kind"] == "thr"]
+
+    def o_throw_str(self, lines, acc):
+        r = self.r
+        f = r.choice(self.thr_names())
+        self.used.add(f)
+        kname = self.efuncs[f]["kname"]
+        s = self.efuncs[f]
+        n = r.randint(s["thresh"] - 2, s["thresh"] + 6)
+        n = max(n, 0)
+        arm, fn = self.str_exc_arm(kname)
+        tv = self.fresh("ts")
+        vv = self.fresh("v")
+        lines.append(
+            f"let {tv} = handle {{\n  let {vv} = {f}({n})\n  \"ok \\{{{vv}}}\"\n"
+            f"}} with {{ Exception[{kname}]::Throw(e) => {arm} }}")
+        try:
+            exp = f"ok {self.eval_fn(f, n, {})}"
+        except Thrown as t:
+            exp = fn(t)
+        self.emit(lines, "T", f"\\{{{tv}}}", exp)
+
+    def o_throw_int(self, lines, acc, f=None):
+        r = self.r
+        f = f or r.choice(self.thr_names())
+        self.used.add(f)
+        s = self.efuncs[f]
+        n = max(0, r.randint(s["thresh"] - 3, s["thresh"] + 5))
+        pre = []
+        expr, handlers, _, exc = self.discharge(
+            f"{f}({n})", self.rows[f], pre, self.int_exc_arm)
+        lines += pre
+        tv = self.fresh("ti")
+        lines.append(f"let {tv} = {expr}")
+        try:
+            exp = self.eval_fn(f, n, handlers)
+        except Thrown as t:
+            exp = exc(t)
+        self.emit(lines, "T", f"\\{{{tv}}}", str(exp))
+        lines.append(f"{acc} = (({acc} * 31 + {tv}) & {MASK})")
+
+    def o_mix(self, lines, acc, f=None):
+        """A helper whose row mixes a user effect and an exception kind
+        (possibly through an effectset): both are discharged by nested
+        handles before the entry."""
+        r = self.r
+        mixes = [n for n, s in self.efuncs.items() if s["kind"] == "mix"]
+        f = f or r.choice(mixes)
+        self.used.update([f, self.efuncs[f]["ef"], self.efuncs[f]["th"]])
+        n = r.randint(0, 40)
+        pre = []
+        expr, handlers, tcs, exc = self.discharge(
+            f"{f}({n})", self.rows[f], pre, self.int_exc_arm)
+        lines += pre
+        tv = self.fresh("tm")
+        lines.append(f"let {tv} = {expr}")
+        try:
+            exp = self.eval_fn(f, n, handlers)
+        except Thrown as t:
+            exp = exc(t)
+        self.emit(lines, "T", f"\\{{{tv}}}", str(exp))
+        lines.append(f"{acc} = (({acc} * 31 + {tv}) & {MASK})")
+
+    def o_traits(self, lines, acc):
+        r = self.r
+        tr, st, g1, g2, m1, k1, m2, k2 = self.trait_info
+        a = r.randint(0, 60)
+        p, q = r.randint(0, 60), r.randint(0, 60)
+        p2, q2 = r.randint(0, 60), r.randint(0, 60)
+        mi = lambda v: (v * m1 + k1) & MASK  # noqa: E731
+        ms = lambda pp, qq: (pp * m2 - qq + k2) & MASK  # noqa: E731
+        gv = self.fresh("gv")
+        lines.append(f"let {gv} = {g1}({a})")
+        self.emit(lines, "R", f"\\{{{gv}}}", str(mi(a)))
+        gs = self.fresh("gs")
+        lines.append(f"let {gs} = {g1}({st}::{{ q: {q}, p: {p} }})")
+        self.emit(lines, "R", f"\\{{{gs}}}", str(ms(p, q)))
+        g2v = self.fresh("gw")
+        lines.append(
+            f"let {g2v} = {g2}({st}::{{ p: {p}, q: {q} }}, {st}::{{ p: {p2}, q: {q2} }})")
+        self.emit(lines, "R", f"\\{{{g2v}}}", str((ms(p, q) * 2 - ms(p2, q2)) & MASK))
+        lines.append(f"{acc} = (({acc} * 31 + {gv} + {gs}) & {MASK})")
+
+
 class Gen:
-    def __init__(self, seed, liveness=True, liveness_bias=None):
+    def __init__(self, seed, liveness=True, liveness_bias=None,
+                 extended=False):
         self.r = random.Random(seed)
+        # Extended productions (#2979) draw from their OWN stream, so the
+        # base program for a seed is the same with or without --extended and
+        # a finding in the base part reproduces in both modes.
+        self.ext = None
+        if extended:
+            er = random.Random(seed * 1000003 + 2979)
+            self.ext = ExtGen(self, er)
         self.structs = []   # (name, [(fname, ty, is_mut)])
         self.enums = []     # (name, [(vname, [tys])])
         self.helpers = []   # (name, [(argname, ty)], ret_ty, body_lines)
@@ -674,6 +1509,11 @@ class Gen:
                 f"let {cw} = {rname}({depth_arg}, "
                 f"{self.struct_literal(sname, env, 1)})")
             lines.append(f"acc = ((acc * 7 + {cw}) & {MASK})")
+        if self.ext is not None:
+            # #2979: effect / exception / container / generic productions,
+            # each printing an oracle line with a generation-known answer.
+            self.ext.gen_decls()
+            lines += self.ext.oracle_stmts("acc")
         # fold in every live Int/String binding so miscompiled slots surface
         for n, t in env:
             if t == "Int":
@@ -691,13 +1531,19 @@ class Gen:
                             f"String::length({n}.{fn})) & {MASK})")
         lines.append("acc")
         body = "\n".join("  " + l for l in lines)
-        return f"export let _start = () -> Int {{\n{body}\n}}"
+        # The oracle lines are printed, so the extended entry carries
+        # Stdout -- and nothing else: every user effect and exception kind
+        # was discharged by a handle above (ExtGen.discharge).
+        row = " with Stdout" if self.ext is not None else ""
+        return f"export let _start = () -> Int{row} {{\n{body}\n}}"
 
     def build(self):
         self.gen_types()
         self.gen_helpers()
         main = self.gen_main()
-        return self.type_decls(), self.helper_decls(), self.recursor_decls(), main
+        ext = "\n\n".join(self.ext.decls) if self.ext is not None else ""
+        return (self.type_decls(), self.helper_decls(), self.recursor_decls(),
+                ext, main)
 
 
 def main():
@@ -706,14 +1552,16 @@ def main():
     seed = int(positional[0])
     outdir = positional[1]
     classic = "--classic" in args
+    extended = "--extended" in args
     liveness_bias = None
     for a in args:
         if a.startswith("--liveness-bias="):
             liveness_bias = float(a.split("=", 1)[1])
 
-    g = Gen(seed, liveness=not classic, liveness_bias=liveness_bias)
-    types, helpers, recursors, mainfn = g.build()
-    helper_block = "\n\n".join(p for p in (helpers, recursors) if p)
+    g = Gen(seed, liveness=not classic, liveness_bias=liveness_bias,
+            extended=extended)
+    types, helpers, recursors, ext, mainfn = g.build()
+    helper_block = "\n\n".join(p for p in (helpers, recursors, ext) if p)
 
     single = f"// fuzz seed {seed}\n{types}\n\n{helper_block}\n\n{mainfn}\n"
     with open(f"{outdir}/single.vibe", "w") as f:
@@ -724,10 +1572,25 @@ def main():
     imports = ([n for n, _ in g.structs] + [n for n, _ in g.enums]
                + [h[0] for h in g.helpers]
                + [rn for rn, _, _ in g.recursors])
+    if g.ext is not None:
+        imports += g.ext.exports
     with open(f"{outdir}/main.vibe", "w") as f:
         f.write(f"// fuzz seed {seed} (main)\n"
                 f"import ./defs.vibe {{ {', '.join(imports)} }}\n\n"
                 f"{mainfn}\n")
+
+    # The lane-independent oracle (#2979): one `<ID>|<text>` line per
+    # generation-known value, in the order the program prints them. Written
+    # only in extended mode, so a classic/liveness program is judged exactly
+    # as before.
+    if g.ext is not None:
+        with open(f"{outdir}/expected.txt", "w") as f:
+            for oid, text in g.ext.expected:
+                f.write(f"{oid}|{text}\n")
+        skip = g.ext.skip_lanes()
+        if skip:
+            with open(f"{outdir}/skip_lanes", "w") as f:
+                f.write(" ".join(skip) + "\n")
 
 
 if __name__ == "__main__":

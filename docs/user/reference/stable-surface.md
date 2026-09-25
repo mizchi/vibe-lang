@@ -440,7 +440,7 @@ frozen:
 | `vibe new [--name @scope/name] <dir>` / `vibe add <source-spec>` | Scaffold a project / fetch a package into `.vibe/store/` and pin it in the root `index.vpkg`. |
 | `vibe fetch` | Restore `.vibe/store/` from the manifest's pins, hash-verified. |
 | `vibe lsp` | LSP server. |
-| `vibe type-at` / `vibe binding-at` | Editor integration primitives. Always exit 0 — they are queries, not verdicts. |
+| `vibe type-at` / `vibe binding-at` | Editor integration primitives — queries, not verdicts. `binding-at` always exits 0. `type-at` exits 1 with a stderr message when no identifier is under the position, and 0 otherwise (empty stdout = an identifier with no known type, #3000). |
 | `vibe diagnostics` | **Deprecated** (#1567): `vibe check --single-file` is the successor. Kept with frozen behavior for existing editors — raw diagnostic lines (no `error: ` prefix), always exit 0. |
 | `vibe version` | Report the toolchain version. |
 | `vibe self update --cli-wasm <path>` | Replace the compiler wasm, independently of the runner. |

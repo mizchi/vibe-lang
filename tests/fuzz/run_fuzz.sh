@@ -3,6 +3,7 @@
 #
 #   bash tests/fuzz/run_fuzz.sh [--seeds A..B] [--cli path/to/stage2.wasm] [--jobs N]
 #   bash tests/fuzz/run_fuzz.sh --mutate [--seeds A..B]   # parser-robustness mode
+#   bash tests/fuzz/run_fuzz.sh --extended [--seeds A..B] # + #2979 productions/oracle
 #
 # Seeds run with up to --jobs concurrent OS processes (default: nproc, capped
 # at 8) via a bash job-slot pool -- real parallelism (each seed is its own
@@ -24,13 +25,18 @@
 #   3. Run all four; every result must be identical.
 # Findings (any of): COMPILE_DIAG (diagnostic on a valid program),
 # COMPILE_CRASH (compiler trap, no diag), COMPILE_HANG, RUN_TRAP,
-# RUN_HANG, MISMATCH (backend/lane divergence). Failing inputs + logs are
+# RUN_HANG, MISMATCH (backend/lane divergence), and with --extended
+# ORACLE_RENDER / ORACLE_THROW / ORACLE_CONT (a printed value that differs
+# from the one known at generation time, even when every lane agrees). Failing inputs + logs are
 # copied to _build/fuzz/findings/<seed>_<class>/ and seeds recorded in
 # _build/fuzz/failing_seeds.txt.
 #
 # Mutation mode (--mutate): byte-mutates a generated valid program and
-# feeds it to the compiler. Any outcome is fine EXCEPT a compiler trap or
-# hang (a parse/type error diag is the expected rejection path).
+# feeds it to the compiler. A located parse/type error diag is the expected
+# rejection path; a compiler trap or hang (MUT_COMPILE_CRASH /
+# MUT_COMPILE_HANG), a diagnostic with no `line N:M` (DIAG_NO_LOCATION) and
+# one reporting a separator the source does not contain (DIAG_INTERNAL_TOKEN)
+# are findings.
 set -uo pipefail
 
 cd "$(dirname "$0")/../.."
@@ -40,6 +46,7 @@ SEEDS="1..50"
 CLI=""
 MODE="gen"
 GENMODE=""   # "" = liveness-aware generation (default); "--classic" = opt out
+EXTMODE=""   # "--extended" = add the #2979 productions and oracle
 JOBS="${FUZZ_JOBS:-}"
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -48,6 +55,7 @@ while [ $# -gt 0 ]; do
     --mutate) MODE="mutate"; shift ;;
     --classic) GENMODE="--classic"; shift ;;
     --liveness-bias) GENMODE="--liveness-bias=$2"; shift 2 ;;
+    --extended) EXTMODE="--extended"; shift ;;
     --jobs) JOBS="$2"; shift 2 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
@@ -319,7 +327,7 @@ if [ -e "$FIND_PREV" ]; then
   fi
 fi
 
-echo "[fuzz] mode=$MODE gen=${GENMODE:-liveness} seeds=$A..$B cli=$CLI jobs=$JOBS"
+echo "[fuzz] mode=$MODE gen=${GENMODE:-liveness}${EXTMODE:+ $EXTMODE} seeds=$A..$B cli=$CLI jobs=$JOBS"
 
 record() { # seed class dir note
   local seed="$1" class="$2" dir="$3" note="$4"
@@ -340,7 +348,9 @@ record() { # seed class dir note
     printf 'inputs could not be copied from %s -- this finding has no repro\n' "$dir" \
       > "$dst/INPUTS_MISSING.txt" 2>/dev/null || true
   fi
-  cp -f "$dir"/*.log "$dir"/*.diag "$dst"/ 2>/dev/null || true
+  cp -f "$dir"/*.log "$dir"/*.diag "$dir"/*.out "$dst"/ 2>/dev/null || true
+  # The oracle's expectations and the lane skips are part of the repro.
+  cp -f "$dir"/expected.txt "$dir"/skip_lanes "$dst"/ 2>/dev/null || true
   echo "$note" > "$dst/note.txt"
   echo "$seed $class $note" >> "$SEEDS_FILE"
   echo "[fuzz] seed $seed: $class ($note)"
@@ -363,7 +373,7 @@ run_seed() { # seed -- runs entirely in its own background subshell/process
   local seed="$1"
   local dir="$WORK/s$seed"
   rm -rf "$dir"; mkdir -p "$dir"
-  python3 tests/fuzz/gen_program.py "$seed" "$dir" $GENMODE
+  python3 tests/fuzz/gen_program.py "$seed" "$dir" $GENMODE $EXTMODE
 
   if [ "$MODE" = "mutate" ]; then
     # parser robustness: mutate bytes; only compiler trap/hang is a finding
@@ -381,9 +391,10 @@ for _ in range(r.randint(1, 24)):
     else: data.insert(i, r.randrange(32, 127))
 open(f"{d}/mut.vibe", "wb").write(bytes(data))
 EOF
-    st=$(compile "$dir/mut.vibe" "$dir/mut.wasm" VIBE_RC=0) || watchdog_failed "$seed" $?
+    st=$(classify_mutant "$dir/mut.vibe" "$dir/mut.wasm") || watchdog_failed "$seed" $?
     case "$st" in
       OK|COMPILE_DIAG) : ;;
+      DIAG_*) record "$seed" "$st" "$dir" "mutated input: $(head -c 300 "$dir/mut.wasm.diag" | tr '\n' ' ')" ;;
       *) record "$seed" "MUT_$st" "$dir" "mutated input: $st" ;;
     esac
   else

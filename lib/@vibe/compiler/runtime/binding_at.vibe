@@ -304,6 +304,248 @@ fn bind_introduce_pats(st: BindState, sub: Array[Pat]) -> Unit {
   }
 }
 
+/// The names a pattern binds, in source order (the order bind_introduce_pat
+/// recovers them in).
+fn bind_pat_names(pat: Pat, out: Array[String]) -> Unit {
+  match pat {
+    PWild => (),
+    PBind(name) => Array::push(out, name),
+    PInt(_) => (),
+    PFloat(_) => (),
+    PString(_) => (),
+    PBool(_) => (),
+    PCtor(_, sub) => bind_pats_names(sub, out),
+    PTuple(sub) => bind_pats_names(sub, out),
+    POr(a, b) => {
+      bind_pat_names(a, out)
+      bind_pat_names(b, out)
+    },
+    PStruct(_, fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fp) = Array::get(fields, i)
+        bind_pat_names(fp, out)
+        i = i + 1
+      }
+    }
+  }
+}
+
+fn bind_pats_names(sub: Array[Pat], out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(sub) {
+    bind_pat_names(Array::get(sub, i), out)
+    i = i + 1
+  }
+}
+
+/// The smallest located offset among the hits the walk of `e` would record,
+/// or -1 when it records none. The walk is undone afterwards (hits truncated,
+/// floor restored), so this only LOOKS at where `e` starts in the source.
+fn bind_expr_first_off(st: BindState, e: Expr) -> Int {
+  let hit_mark = Array::length(st.hits)
+  let floor0 = Array::get(st.floor, 0)
+  bind_walk_expr(st, e)
+  let mut best = -1
+  let mut i = hit_mark
+  while i < Array::length(st.hits) {
+    match Array::get(st.hits, i) {
+      BindHit(_, off, _) => if off >= 0 && (best < 0 || off < best) {
+        best = off
+      } else {
+        ()
+      }
+    }
+    i = i + 1
+  }
+  Array::truncate(st.hits, hit_mark)
+  Array::set(st.floor, 0, floor0)
+  best
+}
+
+/// The start of the `let` that introduces a pattern-first binding whose value
+/// begins at `before`: the last `let` / `match` keyword starting in
+/// [floor, before), when that keyword is `let`; -1 otherwise. Binder recovery
+/// starts HERE rather than at the floor, because tokens between the floor and
+/// that `let` -- a record literal's field labels, a field access `.v` -- can
+/// spell the same name as a binder.
+fn bind_pattern_let_start(st: BindState, before: Int) -> Int {
+  let from = Array::get(st.floor, 0)
+  let mut found = -1
+  let mut i = 0
+  while i < Array::length(st.tokens) {
+    let off = Array::get(st.starts, i)
+    if off >= from && off < before {
+      match Array::get(st.tokens, i) {
+        TLet => {
+          found = off
+        },
+        TMatch => {
+          found = -1
+        },
+        _ => ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// True when `EMatch(s, arms)` was written pattern-FIRST: a `let (a, b) = s`
+/// or `let Some(x) = s` lowers to an EMatch whose first arm's pattern precedes
+/// the scrutinee in the source, unlike `match s { .. }` or `s is Some(x)`.
+/// Walking such a match scrutinee-first would search for the binder AFTER the
+/// value and record a later use of the same name as the declaration (#3000).
+/// Decided by position, not by shape: the nearest keyword before the
+/// scrutinee's first located name must be `let`, and the first binder must
+/// sit between the two. A scrutinee with no located name cannot steal a
+/// binder, so either order is right and the ordinary one is kept.
+fn bind_match_is_pattern_first(st: BindState, s: Expr, arms: Array[(Pat, Expr)]) -> Bool {
+  if Array::length(arms) == 0 {
+    false
+  } else {
+    let (pat, _) = Array::get(arms, 0)
+    let names = array_empty()
+    bind_pat_names(pat, names)
+    if Array::length(names) == 0 {
+      false
+    } else {
+      let scrut_off = bind_expr_first_off(st, s)
+      let let_off = if scrut_off >= 0 {
+        bind_pattern_let_start(st, scrut_off)
+      } else {
+        -1
+      }
+      if let_off < 0 {
+        false
+      } else {
+        let binder_off = bind_find_ident_token(st.tokens, st.starts, Array::get(names, 0), let_off)
+        binder_off >= 0 && binder_off < scrut_off
+      }
+    }
+  }
+}
+
+/// Move the floor to the `let` introducing a pattern-first binding whose value
+/// is `v`, when that can be told (see bind_pattern_let_start).
+fn bind_floor_to_pattern_let(st: BindState, v: Expr) -> Unit {
+  let v_off = bind_expr_first_off(st, v)
+  if v_off >= 0 {
+    let let_off = bind_pattern_let_start(st, v_off)
+    if let_off >= 0 {
+      Array::set(st.floor, 0, let_off)
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+}
+
+/// True for a value the parser synthesised to project one destructured field:
+/// `__struct_destr.f`, `__rec_sub_i.j` or `__rec_field(__rec_destr, i)`.
+fn bind_is_destr_projection(v: Expr) -> Bool {
+  match v {
+    EDot(EIdent(_, off), _, _, _) => off < 0,
+    ECall(EIdent(callee, _), _, _) => callee == "__rec_field",
+    _ => false
+  }
+}
+
+/// The user-written names of a destructuring chain (see bind_walk_destr), in
+/// source order. Synthetic `__`-prefixed intermediates are skipped.
+fn bind_destr_names(e: Expr, out: Array[String]) -> Unit {
+  match e {
+    ELet(n, v, b, _) => if bind_is_destr_projection(v) {
+      if String::starts_with(n, "__") {
+        ()
+      } else {
+        Array::push(out, n)
+      }
+      bind_destr_names(b, out)
+    } else {
+      ()
+    },
+    _ => ()
+  }
+}
+
+/// `let P::{ x, y } = v` / `let record { x, y } = v` lower to
+/// `ELet("__struct_destr", v, ELet(x, <projection>, ELet(y, <projection>, rest)))`.
+/// The binders are written BEFORE `v`, so recover them first -- walking `v`
+/// first moved the floor past them and took a later use of each name for its
+/// declaration (#3000) -- then walk `v` with them out of scope, and scope them
+/// over the rest.
+fn bind_walk_destr(st: BindState, v: Expr, chain: Expr) -> Unit {
+  let names = array_empty()
+  bind_destr_names(chain, names)
+  bind_floor_to_pattern_let(st, v)
+  let ids = array_empty()
+  let mut i = 0
+  while i < Array::length(names) {
+    Array::push(ids, bind_recover_binder(st, Array::get(names, i)))
+    i = i + 1
+  }
+  bind_walk_expr(st, v)
+  let mark = Array::length(st.scope_names)
+  bind_walk_destr_chain(st, chain, names, ids, 0)
+  bind_pop_scope(st, mark)
+}
+
+fn bind_walk_destr_chain(st: BindState, e: Expr, names: Array[String], ids: Array[Int], next: Int) -> Unit {
+  match e {
+    ELet(n, v, b, _) => if bind_is_destr_projection(v) {
+      bind_walk_expr(st, v)
+      if String::starts_with(n, "__") {
+        bind_push_binder(st, n, 0)
+        bind_walk_destr_chain(st, b, names, ids, next)
+      } else {
+        bind_push_binder(st, n, Array::get(ids, next))
+        bind_walk_destr_chain(st, b, names, ids, next + 1)
+      }
+    } else {
+      bind_walk_expr(st, e)
+    },
+    _ => bind_walk_expr(st, e)
+  }
+}
+
+/// Walk a pattern-first match (see bind_match_is_pattern_first): recover the
+/// first arm's binders before the scrutinee, keep them OUT of scope while
+/// walking it (`let (a, b) = f(a)` reads the outer `a`), then scope them to
+/// the first arm's body. Any further arm (the `else` of a let-else / if-let)
+/// is an ordinary arm.
+fn bind_walk_pattern_first_match(st: BindState, s: Expr, arms: Array[(Pat, Expr)]) -> Unit {
+  let (pat, body) = Array::get(arms, 0)
+  let names = array_empty()
+  bind_pat_names(pat, names)
+  bind_floor_to_pattern_let(st, s)
+  let ids = array_empty()
+  let mut i = 0
+  while i < Array::length(names) {
+    Array::push(ids, bind_recover_binder(st, Array::get(names, i)))
+    i = i + 1
+  }
+  bind_walk_expr(st, s)
+  let mark = Array::length(st.scope_names)
+  let mut j = 0
+  while j < Array::length(names) {
+    bind_push_binder(st, Array::get(names, j), Array::get(ids, j))
+    j = j + 1
+  }
+  bind_walk_expr(st, body)
+  bind_pop_scope(st, mark)
+  let rest = array_empty()
+  let mut k = 1
+  while k < Array::length(arms) {
+    Array::push(rest, Array::get(arms, k))
+    k = k + 1
+  }
+  bind_walk_arms(st, rest)
+}
+
 /// Scope-aware walker. `st.hits` accumulates references (resolved to a binding id)
 /// and recovered binders. Every Expr arm is enumerated so a new variant is a
 /// compile error here, keeping the collector in sync with the AST.
@@ -324,7 +566,9 @@ fn bind_walk_expr(st: BindState, expr: Expr) -> Unit {
       bind_walk_expr(st, t)
       bind_walk_expr(st, e)
     },
-    ELet(name, v, b, _) => {
+    ELet(name, v, b, _) => if name == "__struct_destr" || name == "__rec_destr" {
+      bind_walk_destr(st, v, b)
+    } else {
       // `let name = v; b`: the binder is textually BEFORE v, so recover its
       // offset first (advancing the floor past it), but keep it OUT of scope while
       // walking v — a non-recursive `let x = x + 1` references the OUTER x. Then
@@ -368,7 +612,9 @@ fn bind_walk_expr(st: BindState, expr: Expr) -> Unit {
       bind_walk_expr(st, a)
       bind_walk_expr(st, b)
     },
-    EMatch(s, arms) => {
+    EMatch(s, arms) => if bind_match_is_pattern_first(st, s, arms) {
+      bind_walk_pattern_first_match(st, s, arms)
+    } else {
       bind_walk_expr(st, s)
       bind_walk_arms(st, arms)
     },
@@ -394,13 +640,22 @@ fn bind_walk_expr(st: BindState, expr: Expr) -> Unit {
       bind_pop_scope(st, mark)
     },
     EForIn(name, idx_opt, it, b) => {
+      // `for x in it` / `for i, x in it`: the binders are written BEFORE the
+      // iterable (the index first), so recover them first -- walking `it`
+      // first moved the floor past them and took a later use of the same
+      // name for the declaration (#3000). They stay out of scope for `it`.
+      let idx_id = match idx_opt {
+        Some(idx) => bind_recover_binder(st, idx),
+        None => 0
+      }
+      let name_id = bind_recover_binder(st, name)
       bind_walk_expr(st, it)
       let mark = Array::length(st.scope_names)
-      bind_introduce(st, name)
       match idx_opt {
-        Some(idx) => bind_introduce(st, idx),
+        Some(idx) => bind_push_binder(st, idx, idx_id),
         None => ()
       }
+      bind_push_binder(st, name, name_id)
       bind_walk_expr(st, b)
       bind_pop_scope(st, mark)
     },
@@ -542,7 +797,18 @@ fn bind_walk_stmt(st: BindState, stmt: Stmt) -> Unit {
     STest(_, body) => bind_walk_expr(st, body),
     SBench(_, body) => bind_walk_expr(st, body),
     SExpr(e) => bind_walk_expr(st, e),
-    SLetPat(_, body) => bind_walk_expr(st, body),
+    SLetPat(pat, body) => {
+      // A top-level `let (a, b) = e`: each binder is a module-level name,
+      // written before `e` (#3000).
+      let names = array_empty()
+      bind_pat_names(pat, names)
+      let mut i = 0
+      while i < Array::length(names) {
+        bind_record_module_binder(st, Array::get(names, i))
+        i = i + 1
+      }
+      bind_walk_expr(st, body)
+    },
     SModule(_, _, body) => bind_walk_stmts(st, body),
     _ => ()
   }

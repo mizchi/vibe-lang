@@ -684,6 +684,14 @@ vibe symbols lib/@vibe/core/index.vpkg
 vibe symbols --with-path file.vibe
 
 # カーソル位置 (1-based line,col) の識別子の推論型。hover の基盤
+# A binder answers at its DECLARATION too, with the type of its uses: a
+# parameter, a local `let`, a match / handler arm pattern, `guard` / `is`, a
+# `let` destructuring (tuple / ctor / `P::{..}` / `record {..}`, top level too)
+# and a `for` header (#3000).
+# No identifier under the position (whitespace, keyword, literal, past EOL/EOF)
+# is an ERROR: `type-at: no identifier at FILE:L:C` on stderr, exit 1; so is a
+# file that does not parse. Empty stdout + exit 0 means exactly one thing: an
+# identifier with no known type (stderr names it).
 vibe type-at file.vibe <line> <col>
 
 # カーソル位置の binding の全出現箇所 (START END byte offset / 行)。rename/refs の基盤。

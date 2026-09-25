@@ -28,6 +28,16 @@ oriented generated source):
      structurally-reduced) source, tries shrinking each toward 0. Both
      keep the substitution iff the class still reproduces.
 
+Oracle classes (#2979: ORACLE_RENDER / ORACLE_THROW / ORACLE_CONT) carry
+an expected.txt; the reducer keeps only the expectations whose println
+survives in a candidate, requires the SAME failing id with the same per-lane
+answer (3+-digit runs folded, since an address moves when an allocation is
+deleted), and skips pass 2, which changes values by design. The expected
+values were computed for the ORIGINAL program, so confirm the reduced
+program's expected line still holds by reading it. Mutation-mode classes
+(DIAG_NO_LOCATION / DIAG_INTERNAL_TOKEN) reduce a finding's mut.vibe with
+classify.sh --mutate.
+
 Caveat: classify.sh's class vocabulary is coarse (e.g. "COMPILE_DIAG"
 covers ANY diagnostic on a well-typed generated program, not a specific
 diagnostic message) -- for COMPILE_DIAG findings in particular, eyeball
@@ -46,7 +56,8 @@ oracle will just never see the fs lane so such a finding would test as
 the minimized single-file program's decls into defs.vibe/main.vibe).
 
 Usage:
-  python3 tests/fuzz/reduce.py <seed-or-path.vibe> --class CLASS [--cli PATH] [--out PATH] [--budget N]
+  python3 tests/fuzz/reduce.py <seed-or-path.vibe> --class CLASS [--cli PATH] [--out PATH] [--budget N] [--extended]
+                     [--fold-addresses auto|always|never]
 
 Examples:
   python3 tests/fuzz/reduce.py 217 --class MISMATCH
@@ -69,7 +80,16 @@ CLASSIFY_SH = FUZZ_DIR / "classify.sh"
 FINDING_CLASSES = [
     "MISMATCH", "COMPILE_CRASH", "COMPILE_HANG",
     "RUN_TRAP", "RUN_HANG", "COMPILE_DIAG",
+    # the lane-independent oracle (#2979, run_fuzz.sh --extended)
+    "ORACLE_RENDER", "ORACLE_THROW", "ORACLE_CONT",
+    # mutation mode's malformed diagnostics (#2979, run_fuzz.sh --mutate)
+    "DIAG_NO_LOCATION", "DIAG_INTERNAL_TOKEN",
 ]
+ORACLE_CLASSES = {"ORACLE_RENDER", "ORACLE_THROW", "ORACLE_CONT"}
+DIAG_CLASSES = {"DIAG_NO_LOCATION", "DIAG_INTERNAL_TOKEN"}
+DETAIL_RE = re.compile(r"(\w+)='([^']*)'")
+ID_RE = re.compile(r"\bid=(\S+)")
+LONG_DIGITS_RE = re.compile(r"\d{3,}")
 
 CONST_CANDIDATES = ["0", "1", '""', "false", "true"]
 ASSIGN_RE = re.compile(r'^(\s*)((?:let\s+(?:mut\s+)?[A-Za-z_]\w*|[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*=\s*)(.*)$')
@@ -82,7 +102,8 @@ class Oracle:
     """Wraps tests/fuzz/classify.sh: writes a candidate to workdir/single.vibe
     and reports whether it still reproduces the target finding class."""
 
-    def __init__(self, workdir, target_cls, cli, budget, timeout=180):
+    def __init__(self, workdir, target_cls, cli, budget, timeout=180,
+                 expected=None, fold_addresses="auto"):
         self.workdir = Path(workdir)
         self.target_cls = target_cls
         self.cli = cli
@@ -90,13 +111,59 @@ class Oracle:
         self.timeout = timeout
         self.calls = 0
         self.accepted = 0
+        # ORACLE_* only: the full expected.txt lines, and the signature of
+        # the original finding (failing id + what each lane printed there)
+        # that a candidate must keep -- see oracle_signature.
+        self.expected = expected or []
+        self.signature = None
+        self.fold_addresses = fold_addresses
+
+    def write_expected(self, text):
+        """Keep only the expectations whose `println("<ID>|` survives in the
+        candidate: a statement the reducer deleted no longer prints, and its
+        absence is not a finding."""
+        kept = [l for l in self.expected
+                if f'"{l.split("|", 1)[0]}|' in text]
+        (self.workdir / "expected.txt").write_text(
+            "".join(l + "\n" for l in kept))
+
+    @staticmethod
+    def oracle_signature(detail, fold_addresses="auto"):
+        """(failing id, {lane: printed text}). A wrong answer that is an
+        allocation ADDRESS moves whenever the reducer deletes an allocation,
+        and must still count as the same finding, so runs of 3+ digits are
+        folded to `#`. Whether a long number is an address cannot be read
+        off the text when the right answer is itself a long number: a wrong
+        shift result (`1440` for `1441`) and an address (`257` for `1024`)
+        look alike. `fold_addresses` decides:
+          auto   -- fold only when the expected text has no 3+ digit run, so
+                    a long right answer keeps the lanes' digits exact;
+          always -- fold regardless (an address where a number was expected);
+          never  -- keep every lane's text exact."""
+        m = ID_RE.search(detail)
+        pairs = DETAIL_RE.findall(detail)
+        expected = "".join(v for k, v in pairs if k == "expected")
+        if fold_addresses == "always":
+            fold = True
+        elif fold_addresses == "never":
+            fold = False
+        else:
+            fold = not LONG_DIGITS_RE.search(expected)
+        lanes = {k: (LONG_DIGITS_RE.sub("#", v) if fold else v)
+                 for k, v in pairs if k != "expected"}
+        return (m.group(1) if m else None, lanes)
 
     def test(self, lines):
         if self.calls >= self.budget:
             return False
         self.calls += 1
-        (self.workdir / "single.vibe").write_text("\n".join(lines) + "\n")
+        text = "\n".join(lines) + "\n"
+        (self.workdir / "single.vibe").write_text(text)
+        if self.target_cls in ORACLE_CLASSES:
+            self.write_expected(text)
         cmd = ["bash", str(CLASSIFY_SH), str(self.workdir)]
+        if self.target_cls in DIAG_CLASSES:
+            cmd.append("--mutate")
         if self.cli:
             cmd += ["--cli", self.cli]
         try:
@@ -112,6 +179,14 @@ class Oracle:
             out = proc.stdout.strip()
             got = out.split(" ", 1)[0] if out else "UNKNOWN"
         ok = got == self.target_cls
+        if ok and self.target_cls in ORACLE_CLASSES:
+            # The class alone is too coarse here: any deletion that changes
+            # a printed value would "reproduce" it. Keep the original's
+            # failing id and per-lane answer (see oracle_signature).
+            sig = self.oracle_signature(out, self.fold_addresses)
+            if self.signature is None:
+                self.signature = sig
+            ok = sig == self.signature
         if ok:
             self.accepted += 1
         return ok
@@ -289,22 +364,33 @@ def shrink_int_literals(lines, test):
 
 # ---------- CLI ----------
 
-def load_target(target, workdir):
-    """Returns the initial source lines for `target` (a seed number or a
-    path to a .vibe file), writing it (and nothing else -- no main.vibe/
-    defs.vibe, so classify.sh sticks to the 3-lane single-file oracle)
-    into workdir/single.vibe."""
+def load_target(target, workdir, gen_args):
+    """Returns (source lines, expected.txt lines) for `target` (a seed
+    number or a path to a .vibe file), writing the source (and nothing else
+    -- no main.vibe/defs.vibe, so classify.sh sticks to the single-file
+    lanes) into workdir/single.vibe. The oracle's expected.txt and the
+    lane skips (skip_lanes) come along: from the generator for a seed, from
+    beside the file for a path (run_fuzz.sh copies both into a finding)."""
+    expected = []
     if target.isdigit():
         gen_dir = Path(tempfile.mkdtemp(prefix="vibe-reduce-gen-"))
         subprocess.run(
-            [sys.executable, str(GEN_PROGRAM), target, str(gen_dir)],
+            [sys.executable, str(GEN_PROGRAM), target, str(gen_dir)] + gen_args,
             check=True)
+        src_dir = gen_dir
         text = (gen_dir / "single.vibe").read_text()
-        shutil.rmtree(gen_dir, ignore_errors=True)
     else:
+        gen_dir = None
+        src_dir = Path(target).resolve().parent
         text = Path(target).read_text()
+    if (src_dir / "expected.txt").exists():
+        expected = (src_dir / "expected.txt").read_text().splitlines()
+    if (src_dir / "skip_lanes").exists():
+        shutil.copy(src_dir / "skip_lanes", workdir / "skip_lanes")
+    if gen_dir is not None:
+        shutil.rmtree(gen_dir, ignore_errors=True)
     (workdir / "single.vibe").write_text(text)
-    return text.splitlines()
+    return text.splitlines(), expected
 
 
 def main():
@@ -322,11 +408,31 @@ def main():
                           "_build/fuzz/reduced/<name>.vibe)")
     ap.add_argument("--budget", type=int, default=4000,
                      help="max oracle invocations (compile+run cycles)")
+    ap.add_argument("--extended", action="store_true",
+                     help="regenerate a SEED target with gen_program.py "
+                          "--extended (the #2979 productions and oracle)")
+    ap.add_argument("--classic", action="store_true",
+                     help="regenerate a SEED target with --classic")
+    ap.add_argument("--fold-addresses", choices=["auto", "always", "never"],
+                     default="auto",
+                     help="ORACLE_* only: treat 3+ digit runs in a lane's "
+                          "answer as an allocation address (see "
+                          "Oracle.oracle_signature); `always` when an "
+                          "address stands where a long number was expected")
     args = ap.parse_args()
+    if args.cls in DIAG_CLASSES and args.target.isdigit():
+        ap.error(f"{args.cls} is a mutation-mode class: pass the finding's "
+                 "mut.vibe, not a seed")
+    gen_args = (["--extended"] if args.extended else []) + (
+        ["--classic"] if args.classic else [])
 
     workdir = Path(tempfile.mkdtemp(prefix="vibe-reduce-"))
-    lines = load_target(args.target, workdir)
-    oracle = Oracle(workdir, args.cls, args.cli, args.budget)
+    lines, expected = load_target(args.target, workdir, gen_args)
+    if args.cls in ORACLE_CLASSES and not expected:
+        ap.error(f"{args.cls} needs the program's expected.txt (a seed with "
+                 "--extended, or a finding directory's single.vibe)")
+    oracle = Oracle(workdir, args.cls, args.cli, args.budget,
+                    expected=expected, fold_addresses=args.fold_addresses)
 
     print(f"[reduce] target={args.target} class={args.cls} "
           f"lines={len(lines)} budget={args.budget}")
@@ -338,8 +444,12 @@ def main():
         sys.exit(1)
 
     reduced = reduce_program(lines, oracle.test)
-    reduced = substitute_constants(reduced, oracle.test)
-    reduced = shrink_int_literals(reduced, oracle.test)
+    if args.cls not in ORACLE_CLASSES:
+        # Both passes CHANGE VALUES by design, and an oracle finding is a
+        # value compared against one computed for the original program:
+        # substituting a constant would make it mismatch for a new reason.
+        reduced = substitute_constants(reduced, oracle.test)
+        reduced = shrink_int_literals(reduced, oracle.test)
     # constant substitution can expose newly-dead statements (e.g. a
     # struct literal is now only ever used as a constant), so run one more
     # structural pass to mop those up.
@@ -355,6 +465,11 @@ def main():
     print(f"[reduce] {len(lines)} -> {len(reduced)} lines "
           f"({oracle.calls} oracle calls, {oracle.accepted} accepted)")
     print(f"[reduce] wrote {out_path}")
+    if args.cls in ORACLE_CLASSES:
+        exp_path = out_path.with_suffix(".expected.txt")
+        oracle.write_expected(out_text)
+        exp_path.write_text((workdir / "expected.txt").read_text())
+        print(f"[reduce] wrote {exp_path}")
     print("---")
     print(out_text)
     shutil.rmtree(workdir, ignore_errors=True)
