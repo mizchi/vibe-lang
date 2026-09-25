@@ -647,4 +647,28 @@ fi
   || { echo "named hostfutures component gate FAILED: nested_shared_reuse expected 45, got: $(cat "$NR_LOG")" >&2; exit 1; }
 echo "[named-hostfutures-component-gate] nested_shared_reuse: 45 (a future on a reused handle was awaited, not answered from the mailbox)"
 
+# join_parked: TaskHandle::join on a task parked on a host future, with no
+# pump_all first. It trapped as a deadlock; join now pumps the group itself.
+# The 5s sleeper beside it is cancelled after the join, so the run ends with
+# the 100ms future.
+JP_OUT="$OUT_DIR/spawn_join_parked.component.wasm"
+rm -f "$JP_OUT" "$JP_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/join_parked.vibe "$JP_OUT" run >/dev/null 2>&1 || true
+[ -s "$JP_OUT" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/join_parked.vibe did not compile: $(cat "$JP_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+JP_LOG="$OUT_DIR/spawn_join_parked.log"
+JP_START=$(date +%s%N)
+if ! VIBE_ASYNC_FUTURES="fast=7:100" timeout 60 "$RUNNER" "$JP_OUT" >"$JP_LOG" 2>&1; then
+  echo "named hostfutures component gate FAILED: join_parked did not exit 0" >&2
+  cat "$JP_LOG" >&2
+  exit 1
+fi
+JP_MS=$(( ( $(date +%s%N) - JP_START ) / 1000000 ))
+[ "$(cat "$JP_LOG")" = "7" ] \
+  || { echo "named hostfutures component gate FAILED: join_parked expected 7, got: $(cat "$JP_LOG")" >&2; exit 1; }
+[ "$JP_MS" -lt 2000 ] \
+  || { echo "named hostfutures component gate FAILED: join_parked took ${JP_MS}ms -- the cancelled 5s sleeper held the run" >&2; exit 1; }
+echo "[named-hostfutures-component-gate] join_parked: 7 in ${JP_MS}ms (join pumped the parked task)"
+
 echo "named hostfutures component gate OK"

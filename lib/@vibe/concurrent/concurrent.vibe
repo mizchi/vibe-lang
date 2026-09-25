@@ -826,9 +826,22 @@ export fn TaskHandle::join[rg, e, T](h: TaskHandle[rg, e, T]) -> T with Exceptio
       throw(Cancelled)
     }
     // s == 1: join cycle through the dispatch stack — deadlock.
-    conc_require(s == 0)
+    conc_require(s == 0 || s == 5)
     // s == 0: the target is still Ready somewhere in the queue.
-    conc_require(drive_one(h.group))
+    // s == 5: it is PARKED (a suspendable task awaiting a host waitable, a
+    // timer, a future or a channel). Joining one used to trap as if it were
+    // a deadlock, so a join had to follow an explicit pump_all (#1537). It
+    // now pumps the group until THIS task settles -- not every task, so a
+    // long sibling does not hold the join -- under pump_all's rules: virtual
+    // time advances for sleepers, and a stalled sweep with nothing to wake
+    // it still traps as a deadlock.
+    if s == 0 {
+      conc_require(drive_one(h.group))
+    } else {
+      conc_pump_until_settled(h.group, h.cell)
+      // Nothing resumable and the target still parked: a deadlock.
+      conc_require(h.cell.status != 5)
+    }
     continue (d)
   }
 }
@@ -1938,9 +1951,31 @@ export fn TaskGroup::pump[rg, e](n: TaskGroup[rg, e]) -> Bool {
 /// Pump until no adopted task is parked. Tasks that yield in a cycle
 /// against each other interleave deterministically (round-robin).
 export fn TaskGroup::pump_all[rg, e](n: TaskGroup[rg, e]) -> Unit {
+  conc_pump_rounds(n, [])
+  // The loop only exits when nothing is resumable. Pre-direct-wake that
+  // implied nothing was parked at all; now it can also mean only
+  // direct-parked waiters remain (their valve already spent) — nothing in
+  // this deterministic scheduler can ever wake them, so trap here exactly
+  // like the stalled-poller rule instead of returning with live tasks.
+  let mut di = 0
+  while di < Array::length(n.adopted) {
+    conc_require(Array::get(n.adopted, di).status != 5)
+    di = di + 1
+  }
+}
+
+/// #1537: pump until `target` settles (it is no longer parked), not until
+/// every task does -- TaskHandle::join's wait on a parked task.
+fn conc_pump_until_settled[rg, e](n: TaskGroup[rg, e], target: TaskCell) -> Unit {
+  conc_pump_rounds(n, [target])
+}
+
+/// Pump rounds under the deadlock rules below, until nothing is resumable
+/// or, when `until` names a task, until that task is no longer parked.
+fn conc_pump_rounds[rg, e](n: TaskGroup[rg, e], until: Array[TaskCell]) -> Unit {
   let mut go = true
   let mut stall = 0
-  while go {
+  while go && (Array::length(until) == 0 || Array::get(until, 0).status == 5) {
     let before = n.progress
     go = TaskGroup::pump(n)
     if go {
@@ -1990,16 +2025,6 @@ export fn TaskGroup::pump_all[rg, e](n: TaskGroup[rg, e]) -> Unit {
     } else {
       ()
     }
-  }
-  // The loop only exits when nothing is resumable. Pre-direct-wake that
-  // implied nothing was parked at all; now it can also mean only
-  // direct-parked waiters remain (their valve already spent) — nothing in
-  // this deterministic scheduler can ever wake them, so trap here exactly
-  // like the stalled-poller rule instead of returning with live tasks.
-  let mut di = 0
-  while di < Array::length(n.adopted) {
-    conc_require(Array::get(n.adopted, di).status != 5)
-    di = di + 1
   }
 }
 

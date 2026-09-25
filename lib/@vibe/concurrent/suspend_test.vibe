@@ -645,6 +645,28 @@ test "await on a pending future parks until a sleeping sibling resolves it" {
   assert_eq(out, 43)
 }
 
+/// #1537: `join` drives a PARKED target itself. The same program as above
+/// with no `pump_all`: joining A while it is parked on the pending future
+/// used to trap as a deadlock (join only dispatched Ready tasks); it now
+/// pumps the group -- B's sleep settles, B resolves the cell, A resumes.
+test "join on a parked task pumps the group instead of trapping" {
+  let out = TaskGroup::run((g) -> {
+    let f = Future::pending()
+    let ha = TaskGroup::spawn_suspend(g, () -> Int with Async {
+      await(f) + 2
+    })
+    let hb = TaskGroup::spawn_suspend(g, () -> Int with Async {
+      sleep(5)
+      Future::resolve(f, 40)
+      1
+    })
+    let ra = TaskHandle::join(ha)
+    let rb = TaskHandle::join(hb)
+    ra + rb
+  })
+  assert_eq(out, 43)
+}
+
 /// Same scheduler hole, channel spelling: a consumer polling recv_wait on
 /// a producer that sleeps between sends must not trap as deadlock -- the
 /// forced settle wakes the producer.
