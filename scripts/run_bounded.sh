@@ -80,8 +80,11 @@ run_bounded() { # <seconds> <cmd...>
     "timeout" | "gtimeout")
       # Through a variable, so the tool name never sits in command position
       # where scripts/check_gate_portability.sh would read it as a bare call.
+      # `-k 2`: timeout(1) only sends TERM by default, so a command that
+      # ignores TERM would run on past the bound; escalate to KILL two seconds
+      # later, as the watchdog does (#3099 review).
       local bin="$impl"
-      "$bin" "$secs" "$@"
+      "$bin" -k 2 "$secs" "$@"
       return $?
       ;;
     "watchdog")

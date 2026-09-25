@@ -165,6 +165,16 @@ grep -q '^// probe$' "$WORK/lib/source.vibe" || fail "case (c): the probe did no
 grep -q "left the working tree changed" "$WORK/out" || { cat "$WORK/out" >&2; fail "case (c): the failure did not say the tree changed"; }
 echo "  ok  a companion that edits an already-dirty file further is rejected"
 
+# (d) An UNTRACKED file that existed before the suite, edited by a companion.
+# Its `??` status line is the same both times and it is outside `git diff`,
+# so only a content digest sees the edit (#3099 review).
+restore_scratch
+printf 'untracked work\n' > "$WORK/lib/stray_probe.vibe"
+printf '#!/usr/bin/env bash\nprintf "probe\\n" >> "$(dirname "$0")/../lib/stray_probe.vibe"\nexit 0\n' > "$WORK/scripts/check_thing_test.sh"
+if run_exec; then cat "$WORK/out" >&2; fail "a companion that edited a pre-existing untracked file was accepted"; fi
+grep -q '^probe$' "$WORK/lib/stray_probe.vibe" || fail "case (d): the probe did not land"
+echo "  ok  a companion that edits a pre-existing untracked file is rejected"
+
 # ...and a pre-existing dirty tree by itself is NOT a finding: the check is
 # "unchanged by the suite", not "clean", or it could never run mid-work.
 restore_scratch

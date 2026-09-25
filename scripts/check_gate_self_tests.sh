@@ -212,6 +212,9 @@ run_companion() {
 tree_state() {
   git -C "$ROOT_DIR" status --porcelain=v1 --untracked-files=all 2>/dev/null || return 1
   printf 'tracked-diff %s\n' "$(git -C "$ROOT_DIR" diff HEAD --no-ext-diff --binary 2>/dev/null | cksum)"
+  # An untracked file that existed before the suite keeps the same `??` line
+  # when a companion edits it; its CONTENT is what shows the edit (#3099 review).
+  printf 'untracked-content %s\n' "$(cd "$ROOT_DIR" && git ls-files --others --exclude-standard -z 2>/dev/null | xargs -0 cksum 2>/dev/null | cksum)"
 }
 dirtied=""
 dirty_report=""

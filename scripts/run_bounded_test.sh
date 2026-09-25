@@ -46,6 +46,12 @@ contract() { # <lib> <impl>
   #    hang; only the marker knows who sent the signal.
   r="$(VIBE_RUN_BOUNDED_IMPL="$impl" bash -c '. "$1"; run_bounded 10 sh -c "kill -TERM \$\$"; echo "rc=$?"' _ "$lib" 2>/dev/null | tail -1)"
   [ "$r" = "rc=143" ] || echo "self-kill: $r"
+  # 3b. A command that IGNORES SIGTERM is still ended: timeout(1) without
+  #     `-k` sends TERM and waits forever (#3099 review).
+  t0="$(date +%s)"
+  r="$(VIBE_RUN_BOUNDED_IMPL="$impl" bash -c '. "$1"; run_bounded 1 sh -c "trap \"\" TERM; sleep 20"; echo "rc=$?"' _ "$lib" 2>/dev/null | tail -1)"
+  t1="$(date +%s)"
+  [ $((t1 - t0)) -lt 10 ] || echo "term-ignoring: took $((t1 - t0))s for a 1s bound ($r)"
   # 4. Assignment prefixes and stdin reach the command, as they do through
   #    timeout(1): `VAR=x timeout 60 cmd <in` was the commonest call shape.
   r="$(printf 'piped\n' | VIBE_RUN_BOUNDED_IMPL="$impl" bash -c '. "$1"; PROBE_VAR=seen run_bounded 10 sh -c "read -r l; echo \"\$PROBE_VAR/\$l\""' _ "$lib" 2>/dev/null | tail -1)"
