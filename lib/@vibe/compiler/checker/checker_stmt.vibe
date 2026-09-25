@@ -7218,11 +7218,13 @@ fn builtin_named_type_params(stmts: Array[Stmt]) -> Array[(String, Array[String]
 /// heads name different types. A name any alias in scope also spells (`type
 /// P = Pt`, an imported alias) is left out, and so is every name an import
 /// item renames (`Box as B`), because the checker prints the type by its
-/// declared name while the row spells the local one.
+/// declared name while the row spells the local one -- unless this module
+/// declares its own struct / enum under the source name, which then owns it.
 fn row_nominal_type_names(stmts: Array[Stmt], env: TypeEnv, defs: Array[TypeDef]) -> Array[String] {
   let blocked = array_empty()
   let candidates = array_empty()
   let imported = array_empty()
+  let renamed = array_empty()
   let mut ti = 0
   while ti < Array::length(stmts) {
     match Array::get(stmts, ti) {
@@ -7235,7 +7237,7 @@ fn row_nominal_type_names(stmts: Array[Stmt], env: TypeEnv, defs: Array[TypeDef]
           let item = Array::get(items, ii)
           match item.alias {
             Some(alias) => {
-              Array::push(blocked, item.name)
+              Array::push(renamed, item.name)
               Array::push(blocked, alias)
             },
             None => Array::push(imported, item.name)
@@ -7246,6 +7248,17 @@ fn row_nominal_type_names(stmts: Array[Stmt], env: TypeEnv, defs: Array[TypeDef]
       _ => ()
     }
     ti = ti + 1
+  }
+  // A renamed import's source spelling is blocked only when no local
+  // struct / enum owns it: `struct Box` plus `import ./dep { Box as
+  // RemoteBox }` leaves a row's `Box` naming the local type (#3102 review).
+  let mut ri = 0
+  while ri < Array::length(renamed) {
+    let n = Array::get(renamed, ri)
+    if !tps_names_contains(candidates, n) {
+      Array::push(blocked, n)
+    }
+    ri = ri + 1
   }
   let nominal_defs = array_empty()
   row_nominal_scan_defs(env_type_defs(env), blocked, nominal_defs)
