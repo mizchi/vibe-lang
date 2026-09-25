@@ -496,12 +496,25 @@ fn conc_fail_cell[rg, e](n: TaskGroup[rg, e], cell: TaskCell, msg: String) -> Un
 /// pump_all or leaves run's terminal-state check to TRAP instead of
 /// returning Err(Failed(...)).
 fn conc_cancel_parked[rg, e](n: TaskGroup[rg, e]) -> Unit {
+  // #1537: a task parked on a host waitable releases it as TaskHandle::cancel
+  // does -- after every cell is marked, so a sibling cancelled in the same
+  // sweep no longer counts as a waiter. Left armed, its read stayed in the
+  // shared set with nobody to take it (Codex on #3091).
+  let host_waits: Array[Int] = []
+  let host_serials: Array[Int] = []
   let mut i = 0
   while i < Array::length(n.adopted) {
     let c = Array::get(n.adopted, i)
     if c.status == 5 {
+      if c.host_wait >= 0 {
+        Array::push(host_waits, c.host_wait)
+        Array::push(host_serials, c.serial)
+      } else {
+        ()
+      }
       c.status = 4
       c.cont = None
+      c.host_wait = 0 - 1
       c.wait_poll = false
       c.direct_wait = false
       conc_notify_waiters(c)
@@ -509,6 +522,11 @@ fn conc_cancel_parked[rg, e](n: TaskGroup[rg, e]) -> Unit {
       ()
     }
     i = i + 1
+  }
+  let mut k = 0
+  while k < Array::length(host_waits) {
+    conc_host_release_orphan(n, Array::get(host_waits, k), Array::get(host_serials, k))
+    k = k + 1
   }
 }
 
@@ -1804,11 +1822,19 @@ fn conc_host_resume[rg, e](n: TaskGroup[rg, e], fired: Int) -> Bool {
     j = j + 1
   }
   if Array::length(woken) == 0 {
-    // Not this group's: a task of an ENCLOSING group is parked on it (this
-    // group runs inside one of that group's tasks). It is left untaken --
-    // taking it would release the value that task is waiting for. The
-    // adapter already recorded it as completed, so the owning group's next
-    // arm answers "ready" and takes it (Codex on #3059).
+    // Not this group's. When a task of an ENCLOSING group is parked on it
+    // (this group runs inside one of that group's tasks), it is left
+    // untaken -- taking it would release the value that task is waiting
+    // for. The adapter already recorded it as completed, so the owning
+    // group's next arm answers "ready" and takes it (Codex on #3059). When
+    // NO task anywhere waits on it, nobody will take it: release it here
+    // rather than hold its handle for the rest of the run (Codex on #3091).
+    if conc_host_waiters_on(fired) == 0 {
+      let _ = __conc_host_cancel(fired)
+      ()
+    } else {
+      ()
+    }
     true
   } else {
     let v = __conc_host_take(fired)
