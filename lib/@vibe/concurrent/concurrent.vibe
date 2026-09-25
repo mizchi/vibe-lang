@@ -284,8 +284,13 @@ let conc_fut_id_ctr: Array[Int] = [0]
 let conc_host_parked: Array[TaskCell] = []
 
 // #1537: a host value a group TOOK while tasks of another group still waited
-// on the same waitable (a future captured by both): payloads and values,
-// consumed by the owning group's next settle.
+// on the same waitable (a future captured by both), one entry per such task:
+// its cell serial and the value, consumed by the owning group's next settle.
+// Keyed by the WAITER, not the waitable: taking the value released the
+// handle, so the runtime may hand the same handle to a later future, and a
+// handle-keyed entry would answer that future with this stale value (Codex
+// on #3091). A listed task is parked until it consumes its entry, so its
+// serial cannot stand for any other wait.
 let conc_host_landed_keys: Array[Int] = []
 let conc_host_landed_vals: Array[Int] = []
 
@@ -825,7 +830,7 @@ export fn TaskHandle::cancel[rg, e, T](h: TaskHandle[rg, e, T]) -> Unit {
     c.cont = None
     c.host_wait = 0 - 1
     c.direct_wait = false
-    conc_host_release_orphan(h.group, waited)
+    conc_host_release_orphan(h.group, waited, c.serial)
     conc_notify_waiters(c)
   } else {
     ()
@@ -1450,9 +1455,8 @@ fn conc_settle_host_waits[rg, e](n: TaskGroup[rg, e]) -> Bool {
   // A value another group took while this group's tasks waited on it comes
   // first -- before any arm: its handle is already released, and arming a
   // released handle traps.
-  let landed = conc_host_local_landed(n)
-  if landed >= 0 {
-    conc_host_resume_landed(n, landed)
+  if conc_host_local_landed(n) {
+    conc_host_resume_landed(n)
     true
   } else {
     conc_settle_host_waits_armed(n)
@@ -1624,19 +1628,18 @@ fn conc_host_sleep_elapsed[rg, e](n: TaskGroup[rg, e], ms: Int) -> Unit {
 /// which no other task can capture; left pending, every such cancellation
 /// would hold an adapter handle for the rest of the run (Codex on #3059).
 /// Another task still parked on the same future keeps it.
-fn conc_host_release_orphan[rg, e](n: TaskGroup[rg, e], waited: Int) -> Unit {
-  if waited >= 0 {
+fn conc_host_release_orphan[rg, e](n: TaskGroup[rg, e], waited: Int, serial: Int) -> Unit {
+  let li = conc_host_landed_index(serial)
+  if li >= 0 {
+    // Its value already landed in the mailbox (another group took it and
+    // released the handle): drop this task's entry. Nothing is left to
+    // cancel, and the handle is no longer this task's to reason about.
+    conc_host_landed_remove(li)
+  } else if waited >= 0 {
     // Any group's task still parked on it keeps it -- including a task of an
     // enclosing group that captured the same future (Codex on #3091).
-    let li = conc_host_landed_index(waited)
     if conc_host_waiters_on(waited) > 0 {
       ()
-    } else if li >= 0 {
-      // Its value already landed in the mailbox (another group took it and
-      // released the handle) and this was the last task waiting on it: drop
-      // the entry, or a later waitable reusing the handle would read this
-      // stale value (Codex on #3091). Nothing is left to cancel.
-      conc_host_landed_remove(li)
     } else {
       let _ = __conc_host_cancel(waited)
       ()
@@ -1679,12 +1682,14 @@ fn conc_host_register_parked(cell: TaskCell) -> Unit {
 }
 
 /// #1537: how many tasks, in any group, are parked on `waitable` right now.
+/// A task whose value already landed in the mailbox is not: it waits on the
+/// released handle's OLD future, which a reused handle no longer names.
 fn conc_host_waiters_on(waitable: Int) -> Int {
   let mut count = 0
   let mut i = 0
   while i < Array::length(conc_host_parked) {
     let c = Array::get(conc_host_parked, i)
-    if c.status == 5 && c.host_wait == waitable {
+    if c.status == 5 && c.host_wait == waitable && conc_host_landed_index(c.serial) < 0 {
       count = count + 1
     } else {
       ()
@@ -1702,11 +1707,12 @@ fn conc_host_landed_remove(li: Int) -> Unit {
   Array::truncate(conc_host_landed_vals, last)
 }
 
-fn conc_host_landed_index(waitable: Int) -> Int {
+/// #1537: the mailbox entry of the task with cell serial `serial`, or -1.
+fn conc_host_landed_index(serial: Int) -> Int {
   let mut found = 0 - 1
   let mut i = 0
   while i < Array::length(conc_host_landed_keys) {
-    if found < 0 && Array::get(conc_host_landed_keys, i) == waitable {
+    if found < 0 && Array::get(conc_host_landed_keys, i) == serial {
       found = i
     } else {
       ()
@@ -1716,15 +1722,15 @@ fn conc_host_landed_index(waitable: Int) -> Int {
   found
 }
 
-/// #1537: a landed payload one of this group's parked tasks waits on, or -1.
-fn conc_host_local_landed[rg, e](n: TaskGroup[rg, e]) -> Int {
-  let mut found = 0 - 1
+/// #1537: does one of this group's parked tasks have a value in the mailbox?
+fn conc_host_local_landed[rg, e](n: TaskGroup[rg, e]) -> Bool {
+  let mut found = false
   if Array::length(conc_host_landed_keys) > 0 {
     let mut i = 0
     while i < Array::length(n.adopted) {
       let c = Array::get(n.adopted, i)
-      if found < 0 && c.status == 5 && c.host_wait >= 0 && conc_host_landed_index(c.host_wait) >= 0 {
-        found = c.host_wait
+      if !found && c.status == 5 && conc_host_landed_index(c.serial) >= 0 {
+        found = true
       } else {
         ()
       }
@@ -1736,16 +1742,24 @@ fn conc_host_local_landed[rg, e](n: TaskGroup[rg, e]) -> Int {
   found
 }
 
-/// #1537: resume this group's tasks parked on `waitable` with the value
-/// another group took; the entry goes once no task anywhere waits on it.
-fn conc_host_resume_landed[rg, e](n: TaskGroup[rg, e], waitable: Int) -> Unit {
-  let li = conc_host_landed_index(waitable)
-  let v = Array::get(conc_host_landed_vals, li)
+/// #1537: resume every task of this group whose value another group took,
+/// each with its own entry, which it consumes.
+fn conc_host_resume_landed[rg, e](n: TaskGroup[rg, e]) -> Unit {
+  // Collected (and their entries consumed) before any resumes: a resumed
+  // task may park again, and must not be matched to its old entry.
   let woken: Array[TaskCell] = []
+  let vals: Array[Int] = []
   let mut j = 0
   while j < Array::length(n.adopted) {
     let c = Array::get(n.adopted, j)
-    if c.status == 5 && c.host_wait == waitable {
+    let li = if c.status == 5 {
+      conc_host_landed_index(c.serial)
+    } else {
+      0 - 1
+    }
+    if li >= 0 {
+      Array::push(vals, Array::get(conc_host_landed_vals, li))
+      conc_host_landed_remove(li)
       c.host_wait = 0 - 1
       Array::push(woken, c)
     } else {
@@ -1753,14 +1767,10 @@ fn conc_host_resume_landed[rg, e](n: TaskGroup[rg, e], waitable: Int) -> Unit {
     }
     j = j + 1
   }
-  if conc_host_waiters_on(waitable) == 0 {
-    conc_host_landed_remove(li)
-  } else {
-    ()
-  }
   let mut w = 0
   while w < Array::length(woken) {
     let c = Array::get(woken, w)
+    let v = Array::get(vals, w)
     match c.cont {
       Some(k) => {
         c.cont = None
@@ -1783,7 +1793,9 @@ fn conc_host_resume[rg, e](n: TaskGroup[rg, e], fired: Int) -> Bool {
   let mut j = 0
   while j < total {
     let c = Array::get(n.adopted, j)
-    if c.status == 5 && c.host_wait == fired {
+    // A task with a mailbox entry waits on the released handle's OLD
+    // future; `fired` may be a reused handle naming a new one.
+    if c.status == 5 && c.host_wait == fired && conc_host_landed_index(c.serial) < 0 {
       c.host_wait = 0 - 1
       Array::push(woken, c)
     } else {
@@ -1803,11 +1815,18 @@ fn conc_host_resume[rg, e](n: TaskGroup[rg, e], fired: Int) -> Bool {
     // Tasks of ANOTHER group still parked on it (the woken cells above were
     // already cleared): the value was taken once, so leave it for them
     // instead of their group arming a released handle (Codex on #3091).
-    if conc_host_waiters_on(fired) > 0 {
-      Array::push(conc_host_landed_keys, fired)
-      Array::push(conc_host_landed_vals, v)
-    } else {
-      ()
+    // One entry per such task, keyed by its serial rather than the handle
+    // just released (see conc_host_landed_keys).
+    let mut o = 0
+    while o < Array::length(conc_host_parked) {
+      let c = Array::get(conc_host_parked, o)
+      if c.status == 5 && c.host_wait == fired && conc_host_landed_index(c.serial) < 0 {
+        Array::push(conc_host_landed_keys, c.serial)
+        Array::push(conc_host_landed_vals, v)
+      } else {
+        ()
+      }
+      o = o + 1
     }
     let mut w = 0
     while w < Array::length(woken) {

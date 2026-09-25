@@ -1,0 +1,33 @@
+// #1537: the nested group takes a future shared with an enclosing waiter and
+// releases its handle; the resumed nested task then obtains ANOTHER host
+// future before the enclosing group pumps, which the runtime may give the
+// released handle. That new future must be awaited for real, not answered
+// with the value the enclosing waiter's mailbox entry holds (Codex on #3091).
+// 20 + (20 + 5) = 45. Executed by
+// scripts/test_named_hostfutures_component_gate.sh.
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  let shared = host_future_named("slow")
+  TaskGroup::run((g) -> {
+    let a = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      await(shared)
+    })
+    let b = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      let _ = await(host_future_named("fast"))
+      TaskGroup::run((h) -> {
+        let t = TaskGroup::spawn_suspend(h, () -> Int with Async + Exception {
+          let x = await(shared)
+          let other = host_future_named("other")
+          x + await(other)
+        })
+        TaskGroup::pump_all(h)
+        TaskHandle::join(t)
+      })
+    })
+    TaskGroup::pump_all(g)
+    TaskHandle::join(a) + TaskHandle::join(b)
+  })
+}

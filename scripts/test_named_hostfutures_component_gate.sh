@@ -626,4 +626,25 @@ fi
   || { echo "named hostfutures component gate FAILED: nested_shared expected 41, got: $(cat "$NS_LOG")" >&2; exit 1; }
 echo "[named-hostfutures-component-gate] nested_shared: 41 (the enclosing waiter resumed with the value the nested group took)"
 
+# nested_shared_reuse: after the nested group takes the shared future (and
+# releases its handle), its task obtains ANOTHER host future, which the
+# runtime hands the released handle. The mailbox is keyed by waiter, so that
+# future is awaited for real: 20 + (20 + 5) = 45. Keyed by handle it answered
+# 60 -- the stale shared value, silently (Codex on #3091).
+NR_OUT="$OUT_DIR/spawn_nested_shared_reuse.component.wasm"
+rm -f "$NR_OUT" "$NR_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/nested_shared_reuse.vibe "$NR_OUT" run >/dev/null 2>&1 || true
+[ -s "$NR_OUT" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/nested_shared_reuse.vibe did not compile: $(cat "$NR_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+NR_LOG="$OUT_DIR/spawn_nested_shared_reuse.log"
+if ! VIBE_ASYNC_FUTURES="fast=1:100,slow=20:300,other=5:100" timeout 60 "$RUNNER" "$NR_OUT" >"$NR_LOG" 2>&1; then
+  echo "named hostfutures component gate FAILED: nested_shared_reuse did not exit 0" >&2
+  cat "$NR_LOG" >&2
+  exit 1
+fi
+[ "$(cat "$NR_LOG")" = "45" ] \
+  || { echo "named hostfutures component gate FAILED: nested_shared_reuse expected 45, got: $(cat "$NR_LOG")" >&2; exit 1; }
+echo "[named-hostfutures-component-gate] nested_shared_reuse: 45 (a future on a reused handle was awaited, not answered from the mailbox)"
+
 echo "named hostfutures component gate OK"
