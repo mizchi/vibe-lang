@@ -2235,7 +2235,7 @@ rm -rf "$eqtrapdir"; mkdir -p "$eqtrapdir"
 # `assert_true(false)`, so the program compiled clean and died with
 # `trap: RuntimeError: unreachable` -- no message, no position, nothing to act
 # on. There is no way to attach a message at run time (`assert_eq` lowers to
-# `println` and so requires `Stdout` on the containing function, #2107), so
+# `println` and so requires `Console` on the containing function, #2107), so
 # earlier is the only place a message can go, and no guard is emitted for them.
 #
 # The MESSAGE is asserted, not just the refusal: "did not compile" is what the
