@@ -662,6 +662,21 @@ fn cc_is_projection(e: Expr) -> Bool {
   }
 }
 
+/// #3113: a read of a captured `let mut` loads the payload of its RC cell, and
+/// the cell keeps owning that payload -- so the read is a borrowed view,
+/// exactly like a projection. Handing it to an OWNING position (a consuming
+/// parameter, a constructor / tuple / array / record field) without a retain
+/// let the consumer free what the cell still held, and the cell's own drop
+/// then released it a second time. Neither the enclosing plan (the cell
+/// arm never applies it) nor a closure body's plan (captures are untracked)
+/// budgets a reference for such a read, so the site retains it itself.
+fn cc_is_ref_cell_read(e: Expr, ctx: CompileCtx) -> Bool {
+  match e {
+    EIdent(n, _) => array_contains_str(ctx.ref_cell_names, n),
+    _ => false
+  }
+}
+
 /// #705: a borrow-RETURNING builtin call (`Array::get` / `Map::get` / `__index`)
 /// yields a borrowed view of a heap element — its refcount is NOT bumped, like a
 /// projection `a.f`. When that result is consumed in an OWNING position (a ctor
@@ -1518,7 +1533,7 @@ fn cc_bmask_has(mask: Int, i: Int) -> Bool {
 /// Expects the freshly compiled arg on the wasm stack; leaves it there.
 fn cc_retain_stored_arg(buf: Bytes, carg: Expr, local_names: Array[String], nl: Int, ctx: CompileCtx) -> Int with Exception {
   let is_loop_borrow = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx)
-  if ctx.enable_rc && (cc_is_projection(carg) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow) {
+  if ctx.enable_rc && (cc_is_projection(carg) || cc_is_ref_cell_read(carg, ctx) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow) {
     // #706 leak follow-up: a loop-borrowed trigger needs the epilogue's
     // compensating drop, same as the generic path's `__argdup` sites.
     if is_loop_borrow {
@@ -1578,7 +1593,7 @@ fn cc_retain_stored_arg(buf: Bytes, carg: Expr, local_names: Array[String], nl: 
 fn cc_hof_retain_arg(buf: Bytes, carg: Expr, local_idx: Int, fname: String, pos: Int, ctx: CompileCtx) -> Unit with Exception {
   let is_loop_borrow = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx)
   let planner_borrows = ctx.enable_rc && cc_bmask_has(md_borrow_mask_of(fname, ctx.borrow_param_user, ctx.borrow_param_mask), pos)
-  if ctx.enable_rc && (cc_is_projection(carg) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow || planner_borrows) {
+  if ctx.enable_rc && (cc_is_projection(carg) || cc_is_ref_cell_read(carg, ctx) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow || planner_borrows) {
     if is_loop_borrow {
       Array::push(ctx.loop_consumed_names, get_eident_name(carg))
     } else {
@@ -2898,7 +2913,7 @@ fn cc_compile_resolved_call(buf: Bytes, fname: String, args: Array[Expr], local_
       // caller must not dup it.
       let borrows_this = cc_bmask_has(cc_bmask, ci)
       let is_loop_borrow1 = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx) && !borrows_this
-      if ctx.enable_rc && (cc_is_projection(carg) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow1) && !borrows_this {
+      if ctx.enable_rc && (cc_is_projection(carg) || cc_is_ref_cell_read(carg, ctx) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow1) && !borrows_this {
         // #706 leak follow-up: this dup's matching consume is INSIDE the loop
         // (the callee drops its own copy each iteration) and never touches
         // the binding's own slot-held reference, so the function epilogue
@@ -2999,7 +3014,7 @@ fn cc_compile_resolved_call(buf: Bytes, fname: String, args: Array[Expr], local_
       // through a `let rec`-captured closure value) was double-freed the same
       // way #704/#706's direct-call cases were, just one call-shape over.
       let is_loop_borrow2 = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx)
-      if ctx.enable_rc && (cc_is_projection(carg) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow2) {
+      if ctx.enable_rc && (cc_is_projection(carg) || cc_is_ref_cell_read(carg, ctx) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow2) {
         // #706 leak follow-up: log so the epilogue compensates (see above).
         if is_loop_borrow2 {
           Array::push(ctx.loop_consumed_names, get_eident_name(carg))
@@ -3245,7 +3260,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
           // #715: also retain a bare-ident arg whose binding is borrow-bound or
           // loop-borrowed (cc_is_loop_borrowed_ident) -- same gap as the ETuple
           // case in compile_expr_tail2.vibe (see the comment there).
-          if ctx.enable_rc && (cc_is_projection(carg_c) || cc_is_borrow_ret_call(carg_c, ctx) || cc_is_loop_borrowed_ident(carg_c, ctx)) {
+          if ctx.enable_rc && (cc_is_projection(carg_c) || cc_is_ref_cell_read(carg_c, ctx) || cc_is_borrow_ret_call(carg_c, ctx) || cc_is_loop_borrowed_ident(carg_c, ctx)) {
             emit_rc_dup_guarded(buf, val_local, ctx.rc_shadow, ctx.rc_dup_func_idx)
           } else {
             ()
@@ -7423,7 +7438,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       // #708: also retain a projection / borrow-returning-call arg (see the
       // matching comment on the other closure-call path above).
       let is_loop_borrow3 = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx)
-      if ctx.enable_rc && (cc_is_projection(carg) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow3) {
+      if ctx.enable_rc && (cc_is_projection(carg) || cc_is_ref_cell_read(carg, ctx) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow3) {
         // #706 leak follow-up: log so the epilogue compensates (see above).
         if is_loop_borrow3 {
           Array::push(ctx.loop_consumed_names, get_eident_name(carg))

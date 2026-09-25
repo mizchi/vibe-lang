@@ -304,6 +304,10 @@ export fn cl_own_return_stmts(stmts: Array[Stmt]) -> Array[String] {
   // The may-view analysis already follows helper calls to a fixed point.
   // Normalize every candidate before recomputing the callers' RC contracts;
   // retaining a mixed result after its branches merge would leak fresh paths.
+  // #3113: captured `let mut` cells own what is stored into them. Rewritten
+  // here, before the borrow / view analyses and the Perceus plans read the
+  // bodies, for the same reason as the return normalization above.
+  cl_own_cell_stmts(stmts)
   sorted_names_of(owned)
 }
 
@@ -471,6 +475,265 @@ fn cl_own_binding_value(e: Expr, needed: Array[String]) -> Expr {
     EAssign(_, _, _) => cl_own_return_into(e, needed, true),
     EAssignOp(_, _, _, _) => cl_own_return_into(e, needed, true),
     _ => cl_own_return_into(e, needed, false)
+  }
+}
+
+/// #3113: a `let mut` that a closure captures lives in an RC cell, and the
+/// cell OWNS its payload -- dropping the cell releases it. So every value that
+/// goes INTO the cell is a consuming use, and every read of the cell that
+/// leaves it for an owning place is a borrow that has to be retained.
+///
+/// Neither held. The initializer was stored as compiled, so a borrowed one
+/// (`Array::get(xs, i)`, a projection, a branch or block ending in either)
+/// entered the cell with no reference of its own, and the cell's drop freed an
+/// element its container still owned. An assignment did the same, and the
+/// scope's own tail -- `{ let mut d = ..; ..; d }` -- handed the payload out
+/// while the cell's drop released it.
+///
+/// This rewrites those three places to the same owning contract a lambda's
+/// RETURN already uses (`cl_own_return_into`): every result path ends in the
+/// `__lambda_return_owned` marker, and codegen retains exactly the paths whose
+/// value is a borrow (a projection, a borrow-returning call, a ref-cell or
+/// loop-borrowed name), with the lexical scope live. It runs BEFORE the
+/// Perceus plan, so a binding feeding such a path is planned as an owner and
+/// no leaf is retained twice -- which is what a codegen-only walk could not
+/// get right (#3108: a pattern binder the match lowering had already retained
+/// leaked, and a block ending in a borrow-bound name was missed).
+///
+/// Other bindings get the narrower treatment: an `ELet` / uncaptured `let mut`
+/// initializer, or an assignment to an uncaptured name, has only a bare read
+/// of a cell name at a result path marked. `let e = d` is otherwise planned as
+/// a MOVE out of `d`, which the cell never gives up.
+///
+/// The consuming reads the plan cannot see -- a cell read passed to an owning
+/// parameter, or stored into a tuple / array / record / constructor -- are
+/// retained at those sites in codegen (`cc_is_ref_cell_read`).
+fn cl_own_cell_stmts(stmts: Array[Stmt]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(ex, is_rec, n, ty, value) => if cl_has_letmut(value) {
+        Array::set(stmts, i, SLet(ex, is_rec, n, ty, cl_own_cells(value, array_empty())))
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+/// Cheap pre-check: most bodies declare no `let mut` at all, and those are
+/// left as the same tree.
+fn cl_has_letmut(e: Expr) -> Bool {
+  match e {
+    ELetMut(_, _, _, _) => true,
+    _ => {
+      let mark = expr_children_push(e)
+      let end = expr_children_top()
+      let mut i = mark
+      let mut found = false
+      while i < end && !found {
+        found = cl_has_letmut(expr_child_at(i))
+        i = i + 1
+      }
+      expr_children_pop(mark)
+      found
+    }
+  }
+}
+
+/// `cells` without `n`: a binder of that spelling shadows the cell below it.
+fn cl_cells_without(cells: Array[String], n: String) -> Array[String] {
+  if array_contains_str(cells, n) {
+    let out = array_empty()
+    for c in cells {
+      if c != n {
+        Array::push(out, c)
+      }
+    }
+    out
+  } else {
+    cells
+  }
+}
+
+fn cl_cells_without_all(cells: Array[String], names: Array[String]) -> Array[String] {
+  let mut out = cells
+  for n in names {
+    out = cl_cells_without(out, n)
+  }
+  out
+}
+
+/// Every name a pattern binds, including struct-field and or-pattern binders.
+fn cl_pat_binds(p: Pat, out: Array[String]) -> Unit {
+  match p {
+    PBind(n) => Array::push(out, n),
+    PCtor(_, args) => for a in args {
+      cl_pat_binds(a, out)
+    },
+    PTuple(ps) => for a in ps {
+      cl_pat_binds(a, out)
+    },
+    POr(a, b) => {
+      cl_pat_binds(a, out)
+      cl_pat_binds(b, out)
+    },
+    PStruct(_, fields) => for f in fields {
+      cl_pat_binds(f.1, out)
+    },
+    _ => ()
+  }
+}
+
+fn cl_arms_cells(arms: Array[(Pat, Expr)], cells: Array[String]) -> Array[(Pat, Expr)] {
+  let out = array_empty()
+  for arm in arms {
+    let binds = array_empty()
+    cl_pat_binds(arm.0, binds)
+    Array::push(out, (arm.0, cl_own_cells(arm.1, cl_cells_without_all(cells, binds))))
+  }
+  out
+}
+
+fn cl_list_cells(items: Array[Expr], cells: Array[String]) -> Array[Expr] {
+  let out = array_empty()
+  for item in items {
+    Array::push(out, cl_own_cells(item, cells))
+  }
+  out
+}
+
+fn cl_fields_cells(fields: Array[(String, Expr)], cells: Array[String]) -> Array[(String, Expr)] {
+  let out = array_empty()
+  for field in fields {
+    Array::push(out, (field.0, cl_own_cells(field.1, cells)))
+  }
+  out
+}
+
+/// Is `e` a read of a cell, directly or through a projection off one?
+fn cl_is_cell_read(e: Expr, cells: Array[String], through_dot: Bool) -> Bool {
+  match e {
+    EIdent(x, _) => array_contains_str(cells, x),
+    EDot(obj, _, _, _) => through_dot && cl_is_cell_read(obj, cells, true),
+    _ => false
+  }
+}
+
+/// Mark the result paths of `e` that read a cell. Walks the same result spine
+/// `cl_own_return_into` does, keeping the cell set scoped: a binder that
+/// shadows a cell's name hides it from the paths below it.
+fn cl_cell_tails(e: Expr, cells: Array[String], through_dot: Bool) -> Expr {
+  if Array::length(cells) == 0 {
+    e
+  } else if cl_is_cell_read(e, cells, through_dot) {
+    ECall(EIdent("__lambda_return_owned", -1), [e], -1)
+  } else {
+    match e {
+      EIf(c, t, f) => EIf(c, cl_cell_tails(t, cells, through_dot), cl_cell_tails(f, cells, through_dot)),
+      EMatch(s, arms) => {
+        let out = array_empty()
+        for arm in arms {
+          let binds = array_empty()
+          cl_pat_binds(arm.0, binds)
+          Array::push(out, (arm.0, cl_cell_tails(arm.1, cl_cells_without_all(cells, binds), through_dot)))
+        }
+        EMatch(s, out)
+      },
+      ELet(n, v, b, off) => ELet(n, v, cl_cell_tails(b, cl_cells_without(cells, n), through_dot), off),
+      ELetMut(n, v, b, off) => ELetMut(n, v, cl_cell_tails(b, cl_cells_without(cells, n), through_dot), off),
+      ELetRec(n, v, b) => ELetRec(n, v, cl_cell_tails(b, cl_cells_without(cells, n), through_dot)),
+      ESeq(a, b) => ESeq(a, cl_cell_tails(b, cells, through_dot)),
+      EAssign(n, v, b) => EAssign(n, v, cl_cell_tails(b, cells, through_dot)),
+      EAssignOp(n, op, v, b) => EAssignOp(n, op, v, cl_cell_tails(b, cells, through_dot)),
+      _ => e
+    }
+  }
+}
+
+/// The value stored into a cell, normalized to the owning contract.
+fn cl_cell_store_value(v: Expr) -> Expr {
+  cl_own_return_into(v, array_empty(), true)
+}
+
+fn cl_own_cells(e: Expr, cells: Array[String]) -> Expr {
+  match e {
+    ELetMut(n, v, b, off) => {
+      let v2 = cl_own_cells(v, cells)
+      if is_mut_captured_in(b, n) {
+        // A fresh array: `cl_cells_without` hands `cells` itself back when
+        // `n` is not in it, and the enclosing scope must not see `n`.
+        let inner = array_empty()
+        for c in cl_cells_without(cells, n) {
+          Array::push(inner, c)
+        }
+        Array::push(inner, n)
+        let b2 = cl_cell_tails(cl_own_cells(b, inner), [n], true)
+        ELetMut(n, cl_cell_store_value(v2), b2, off)
+      } else {
+        ELetMut(n, cl_cell_tails(v2, cells, false), cl_own_cells(b, cl_cells_without(cells, n)), off)
+      }
+    },
+    ELet(n, v, b, off) => {
+      let v2 = cl_cell_tails(cl_own_cells(v, cells), cells, false)
+      ELet(n, v2, cl_own_cells(b, cl_cells_without(cells, n)), off)
+    },
+    ELetRec(n, v, b) => {
+      let inner = cl_cells_without(cells, n)
+      ELetRec(n, cl_own_cells(v, inner), cl_own_cells(b, inner))
+    },
+    EAssign(n, v, b) => {
+      let v2 = cl_own_cells(v, cells)
+      let v3 = if array_contains_str(cells, n) {
+        cl_cell_store_value(v2)
+      } else {
+        cl_cell_tails(v2, cells, false)
+      }
+      EAssign(n, v3, cl_own_cells(b, cells))
+    },
+    EAssignOp(n, op, v, b) => EAssignOp(n, op, cl_own_cells(v, cells), cl_own_cells(b, cells)),
+    ESeq(a, b) => ESeq(cl_own_cells(a, cells), cl_own_cells(b, cells)),
+    EIf(c, t, f) => EIf(cl_own_cells(c, cells), cl_own_cells(t, cells), cl_own_cells(f, cells)),
+    EMatch(s, arms) => EMatch(cl_own_cells(s, cells), cl_arms_cells(arms, cells)),
+    EHandle(body, arms) => EHandle(cl_own_cells(body, cells), cl_arms_cells(arms, cells)),
+    EFn(tps, bounds, ps, ret, eff, body) => {
+      let names = array_empty()
+      for p in ps {
+        Array::push(names, strip_param_label_marker(p.0))
+      }
+      EFn(tps, bounds, ps, ret, eff, cl_own_cells(body, cl_cells_without_all(cells, names)))
+    },
+    ECall(callee, args, off) => ECall(cl_own_cells(callee, cells), cl_list_cells(args, cells), off),
+    ETuple(items) => ETuple(cl_list_cells(items, cells)),
+    EArray(items) => EArray(cl_list_cells(items, cells)),
+    ERecord(n, fields, args) => ERecord(n, cl_fields_cells(fields, cells), args),
+    EMap(fields) => EMap(cl_fields_cells(fields, cells)),
+    EWhile(c, body) => EWhile(cl_own_cells(c, cells), cl_own_cells(body, cells)),
+    ELoop(inits, body) => {
+      let names = array_empty()
+      for init in inits {
+        Array::push(names, init.0)
+      }
+      ELoop(cl_fields_cells(inits, cells), cl_own_cells(body, cl_cells_without_all(cells, names)))
+    },
+    EForIn(n, label, iter, body) => {
+      let inner = match label {
+        Some(l) => cl_cells_without(cl_cells_without(cells, n), l),
+        None => cl_cells_without(cells, n)
+      }
+      EForIn(n, label, cl_own_cells(iter, cells), cl_own_cells(body, inner))
+    },
+    EBinOp(op, a, b, off) => EBinOp(op, cl_own_cells(a, cells), cl_own_cells(b, cells), off),
+    EUnaryOp(op, value) => EUnaryOp(op, cl_own_cells(value, cells)),
+    EDot(obj, field, off, field_off) => EDot(cl_own_cells(obj, cells), field, off, field_off),
+    ELabeledArg(n, label, value) => ELabeledArg(n, label, cl_own_cells(value, cells)),
+    EReturn(value) => EReturn(cl_own_cells(value, cells)),
+    EBreak(Some(value)) => EBreak(Some(cl_own_cells(value, cells))),
+    EContinue(args) => EContinue(cl_list_cells(args, cells)),
+    ESpread(value) => ESpread(cl_own_cells(value, cells)),
+    _ => e
   }
 }
 

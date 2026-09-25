@@ -642,6 +642,28 @@ if ! VIBE_RC=shadow VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_N
 fi
 rm -f "$ROOT_DIR/_build/_gate_rc_branch_letrec.log"
 echo "[compiler-gate] let-rec / handle branch-tail borrow retain ok on shadow"
+# 40f-b3. #3113: a captured `let mut` cell owns its payload. The cell's drop
+#         releases what it holds, so every store into it must be an owned
+#         reference and every read that leaves for an owning place a
+#         retained one. The fixture covers both sides: borrowed initializers
+#         (direct, if/match, block, borrow-bound name, projection, if-arm
+#         projection, pattern binder), a borrowed assignment, the scope's
+#         tail, and a read handed to an owning parameter from the closure
+#         and from the defining scope. Two of its shapes pass on the plain RC
+#         lane even when broken and only show under VIBE_RC=shadow, so it
+#         runs on both.
+echo "[compiler-gate] 40f-b3/40 captured let mut cell owns its payload (#3113)"
+for cm_lane in 1 shadow; do
+  if ! VIBE_RC="$cm_lane" VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+      bash scripts/vibe_test.sh fixtures/rc_captured_mut_borrow_test.vibe \
+      >"$ROOT_DIR/_build/_gate_rc_captured_mut.log" 2>&1; then
+    echo "[compiler-gate] FAIL: fixtures/rc_captured_mut_borrow_test.vibe failed with VIBE_RC=$cm_lane (#3113). A trap means a captured let mut's RC cell released a payload it did not own -- a borrowed value stored without a retain, or a read of the cell handed to an owning place without one:" >&2
+    tail -20 "$ROOT_DIR/_build/_gate_rc_captured_mut.log" >&2
+    exit 1
+  fi
+done
+rm -f "$ROOT_DIR/_build/_gate_rc_captured_mut.log"
+echo "[compiler-gate] captured let mut cell ownership ok (rc + shadow)"
 
 # 40f0. #2837: `Array::truncate` changes the array's LENGTH, not the lifetime
 #       of an element someone already took out of it. That is the ownership

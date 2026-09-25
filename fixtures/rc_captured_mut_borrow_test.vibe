@@ -1,0 +1,262 @@
+// #3113: a `let mut` that a closure captures is stored in an RC cell, and the
+// cell's drop releases its payload -- so the cell OWNS one reference to it.
+// Two sides broke that.
+//
+// The STORE side: the initializer was stored as compiled. A borrowed one --
+// `Array::get(xs, i)`, a projection, an if/match or block ending in either --
+// entered the cell with no reference of its own, and the cell's drop freed an
+// element `xs` still owned. An assignment of a borrow did the same, and the
+// scope's tail (`{ ..; d }`) handed out a payload the cell then released.
+//
+// The READ side: a read of the cell passed to an owning place (a consuming
+// parameter such as `Array::push`'s element, or a `let` alias that is later
+// consumed) spent the cell's own reference, so the cell's drop released the
+// same block a second time.
+//
+// Measured on a stage2 built from main at 2aa4f1be5, one test per file: every
+// test below trapped under VIBE_RC=shadow, and all but the tail-escape and
+// if-arm-projection tests also trapped on the RC lane -- the assignment test
+// after first answering `ax,by,cz,ax,qq,cz`, a freed element read back as the
+// value that reused its block. The two that pass on the RC lane only show under
+// shadow, which is why the gate runs this file on both (tests/gates/mid/run.sh,
+// 40f-b3).
+
+enum D {
+  A(String, Array[String]);
+  B(String)
+}
+
+fn name_of(d: D) -> String {
+  match d {
+    A(n, _) => n,
+    B(n) => n
+  }
+}
+
+fn scan_if(xs: Array[D], out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(xs) {
+    let mut d = if i % 2 == 0 {
+      Array::get(xs, i)
+    } else {
+      Array::get(xs, i)
+    }
+    let f = () -> String { name_of(d) }
+    Array::push(out, f())
+    i = i + 1
+  }
+}
+
+fn scan_direct(xs: Array[D], out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(xs) {
+    let mut d = Array::get(xs, i)
+    let f = () -> String { name_of(d) }
+    Array::push(out, f())
+    i = i + 1
+  }
+}
+
+fn scan_block(xs: Array[D], out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(xs) {
+    let mut d = {
+      let j = i
+      Array::get(xs, j)
+    }
+    let f = () -> String { name_of(d) }
+    Array::push(out, f())
+    i = i + 1
+  }
+}
+
+// The block's tail is a NAME bound to a borrow, not the borrowing call itself.
+fn scan_block_let(xs: Array[D], out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(xs) {
+    let mut d = {
+      let h = Array::get(xs, i)
+      h
+    }
+    let f = () -> String { name_of(d) }
+    Array::push(out, f())
+    i = i + 1
+  }
+}
+
+// A borrow assigned into the cell after the closure captured it.
+fn assign_borrow(xs: Array[D], out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(xs) {
+    let mut d = B(String::concat("q", "q"))
+    let f = () -> String { name_of(d) }
+    d = Array::get(xs, i)
+    Array::push(out, f())
+    i = i + 1
+  }
+}
+
+// The closure hands the cell's payload to an owning parameter.
+fn sink_from_closure(xs: Array[D], sink: Array[D]) -> Unit {
+  let mut i = 0
+  while i < Array::length(xs) {
+    let mut d = Array::get(xs, i)
+    let f = () -> Unit { Array::push(sink, d) }
+    f()
+    i = i + 1
+  }
+}
+
+// The defining scope does the same, directly and through a `let` alias.
+fn sink_from_scope(xs: Array[D], sink: Array[D]) -> Unit {
+  let mut i = 0
+  while i < Array::length(xs) {
+    let mut d = Array::get(xs, i)
+    let f = () -> String { name_of(d) }
+    let _ = f()
+    Array::push(sink, d)
+    let e = d
+    Array::push(sink, e)
+    i = i + 1
+  }
+}
+
+// The payload leaves as the scope's tail.
+fn get_cell(xs: Array[D], i: Int) -> D {
+  let mut d = Array::get(xs, i)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  d
+}
+
+struct Box {
+  inner: D
+}
+
+fn scan_field(bs: Array[Box], out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(bs) {
+    let b = Array::get(bs, i)
+    let mut d = b.inner
+    let f = () -> String { name_of(d) }
+    Array::push(out, f())
+    i = i + 1
+  }
+}
+
+fn pick_field(b: Box, first: Bool) -> String {
+  let mut d = if first {
+    b.inner
+  } else {
+    b.inner
+  }
+  let f = () -> String { name_of(d) }
+  f()
+}
+
+// A match pattern binder: the match lowering already retains it, so the store
+// must not retain it again (that leaked in #3108's first attempt).
+fn pick_arm(b: Box) -> String {
+  let mut d = match b {
+    Box::{ inner } => inner
+  }
+  let f = () -> String { name_of(d) }
+  f()
+}
+
+fn mk() -> Array[D] {
+  [A(String::concat("a", "x"), ["p"]), B(String::concat("b", "y")), A(String::concat("c", "z"), [])]
+}
+
+fn names(ds: Array[D]) -> String {
+  String::join(Array::map(ds, (d) -> String { name_of(d) }), ",")
+}
+
+test "a captured let mut holding an if/match borrow keeps the element alive" {
+  let xs = mk()
+  let out: Array[String] = []
+  scan_if(xs, out)
+  scan_if(xs, out)
+  scan_if(xs, out)
+  inspect(String::join(out, ","), content = "ax,by,cz,ax,by,cz,ax,by,cz")
+}
+
+test "a captured let mut holding a direct borrow keeps the element alive" {
+  let xs = mk()
+  let out: Array[String] = []
+  scan_direct(xs, out)
+  scan_direct(xs, out)
+  scan_direct(xs, out)
+  inspect(String::join(out, ","), content = "ax,by,cz,ax,by,cz,ax,by,cz")
+}
+
+test "a captured let mut holding a block that ends in a borrow keeps the element alive" {
+  let xs = mk()
+  let out: Array[String] = []
+  scan_block(xs, out)
+  scan_block(xs, out)
+  scan_block(xs, out)
+  inspect(String::join(out, ","), content = "ax,by,cz,ax,by,cz,ax,by,cz")
+}
+
+test "a captured let mut holding a block that ends in a borrow-bound name keeps the element alive" {
+  let xs = mk()
+  let out: Array[String] = []
+  scan_block_let(xs, out)
+  scan_block_let(xs, out)
+  scan_block_let(xs, out)
+  inspect(String::join(out, ","), content = "ax,by,cz,ax,by,cz,ax,by,cz")
+}
+
+test "a borrow assigned into a captured cell keeps the element alive" {
+  let xs = mk()
+  let out: Array[String] = []
+  assign_borrow(xs, out)
+  assign_borrow(xs, out)
+  inspect(String::join(out, ","), content = "ax,by,cz,ax,by,cz")
+  inspect(names(xs), content = "ax,by,cz")
+}
+
+test "a closure handing a captured cell to an owning parameter keeps the element alive" {
+  let xs = mk()
+  let sink: Array[D] = []
+  sink_from_closure(xs, sink)
+  sink_from_closure(xs, sink)
+  inspect(names(sink), content = "ax,by,cz,ax,by,cz")
+  inspect(names(xs), content = "ax,by,cz")
+}
+
+test "the defining scope handing a captured cell to an owning parameter keeps the element alive" {
+  let xs = mk()
+  let sink: Array[D] = []
+  sink_from_scope(xs, sink)
+  sink_from_scope(xs, sink)
+  inspect(names(sink), content = "ax,ax,by,by,cz,cz,ax,ax,by,by,cz,cz")
+  inspect(names(xs), content = "ax,by,cz")
+}
+
+test "a captured cell leaving as the scope's tail keeps the element alive" {
+  let xs = mk()
+  let a = get_cell(xs, 0)
+  let b = get_cell(xs, 0)
+  let c = get_cell(xs, 2)
+  inspect(String::join([name_of(a), name_of(b), name_of(c)], ","), content = "ax,ax,cz")
+  inspect(names(xs), content = "ax,by,cz")
+}
+
+test "a captured let mut holding a projection keeps the field alive" {
+  let bs = [Box::{ inner: A(String::concat("a", "x"), ["p"]) }, Box::{ inner: B(String::concat("b", "y")) }]
+  let out: Array[String] = []
+  scan_field(bs, out)
+  scan_field(bs, out)
+  scan_field(bs, out)
+  inspect(String::join(out, ","), content = "ax,by,ax,by,ax,by")
+}
+
+test "a captured let mut holding a projection from an if arm keeps the field alive" {
+  let b = Box::{ inner: A(String::concat("a", "x"), ["p"]) }
+  let r1 = pick_field(b, true)
+  let r2 = pick_field(b, false)
+  let r3 = pick_arm(b)
+  inspect(String::join([r1, r2, r3, name_of(b.inner)], ","), content = "ax,ax,ax,ax")
+}
