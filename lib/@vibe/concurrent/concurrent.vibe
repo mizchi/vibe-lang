@@ -113,6 +113,12 @@ export struct TaskCell {
   // rescued by the pump's once-per-progress fallback valve
   // (conc_clear_direct_waits) before the deadlock rules apply.
   mut direct_wait: Bool;
+  // #1537: the HOST future handle this task is parked on (-1 = none). Set
+  // when the task's `await` of a host future suspends with the waitable
+  // band; the pump skips it, and when nothing else can run the group
+  // blocks on every pending handle at once (`conc_settle_host_waits`) and
+  // resumes whichever landed, with its value.
+  mut host_wait: Int;
   // Tasks parked waiting for THIS cell to reach a terminal status
   // (TaskHandle::result_wait). Every terminal transition clears their
   // direct_wait via conc_notify_waiters.
@@ -655,6 +661,7 @@ export fn TaskGroup::spawn[rg, e, T: Send](n: TaskGroup[rg, e], f: () -> T with 
     wait_poll: false,
     sleep_left: 0,
     direct_wait: false,
+    host_wait: 0 - 1,
     waiters: empty_cells()
   }
   let runner: () -> Unit with e = () -> {
@@ -1043,17 +1050,24 @@ export fn TaskGroup::spawn_suspend[rg, e, T: Send](n: TaskGroup[rg, e], f: () ->
       SDone(v)
     } with { Async::Suspend(r) => {
       // Payload convention: 0 = yield, 1 = poll wait, NEGATIVE = a sleep
-      // debt of -r ms (#1227). Payloads >= 2 are RESERVED for waitable
-      // handles (ADR-0089 D2: the third wait kind; realized today at the
-      // component lowering level -- comp_emit_component_wasm_host_
-      // future_value parks the task on waitable-set.wait -- not in this
-      // in-guest scheduler, which has no host waitables to wait on).
-      // They park as POLLERS here so the in-guest backend degrades to
-      // the deadlock trap (nothing in-guest can ever complete a host
-      // waitable) rather than to a silent yield livelock (a yielder is
-      // resumed for free forever and never counts as stalled).
+      // debt of -r ms (#1227), [2, 2047] = a host future (handle + 2,
+      // ADR-0089 D2's third wait kind). A host future parks on its handle
+      // when the program's entry boundary settles host futures (#1537:
+      // `__conc_host_arm` answers >= 0), and the group waits on every such
+      // handle at once. Without that boundary nothing in-guest can complete
+      // a host waitable, so it parks as a POLLER and the backend degrades to
+      // the deadlock trap rather than to a silent yield livelock (a yielder
+      // is resumed for free forever and never counts as stalled). Stream
+      // reads (>= 2048) stay pollers: the entry refuses a host stream beside
+      // spawned tasks.
       if r < 0 {
         TaskHandle::park_kind(h, resume, true, 0 - r)
+      } else if r >= 2 && r < 2048 && __conc_host_arm(r - 2) >= 0 {
+        // #1537: a host future (handle + 2) in a program whose entry
+        // boundary settles host waitables. The group waits on it together
+        // with every other pending one (conc_settle_host_waits).
+        TaskHandle::park_kind(h, resume, false, 0)
+        h.cell.host_wait = r - 2
       } else {
         TaskHandle::park_kind(h, resume, r >= 1, 0)
       }
@@ -1088,6 +1102,7 @@ export fn TaskGroup::adopt[rg, e, T: Send](n: TaskGroup[rg, e]) -> TaskHandle[rg
     wait_poll: false,
     sleep_left: 0,
     direct_wait: false,
+    host_wait: 0 - 1,
     waiters: empty_cells()
   }
   Array::push(n.adopted, cell)
@@ -1234,7 +1249,10 @@ fn conc_settle_sleep_debt[rg, e](n: TaskGroup[rg, e]) -> Unit {
         } else {
           ()
         }
-      } else if c.direct_wait {
+      } else if c.direct_wait || c.host_wait >= 0 {
+        // A host waiter (#1537) likewise resumes only when its future
+        // lands, so it does not hold back the virtual clock either.
+        //
         // A direct-parked waiter cannot progress for free (the pump skips
         // it until its completion notify) — it must not hold back the
         // virtual clock the way a resumable poller does, or a sleeper it
@@ -1353,7 +1371,7 @@ fn conc_pump_once[rg, e](n: TaskGroup[rg, e]) -> Bool {
     }
     let i = (n.pump_next + step) % total
     let c = Array::get(n.adopted, i)
-    if c.status == 5 && c.sleep_left == 0 && !c.direct_wait {
+    if c.status == 5 && c.sleep_left == 0 && !c.direct_wait && c.host_wait < 0 {
       n.pump_next = (i + 1) % total
       match c.cont {
         Some(k) => {
@@ -1371,9 +1389,96 @@ fn conc_pump_once[rg, e](n: TaskGroup[rg, e]) -> Bool {
   }
 }
 
+/// #1537: resume a task parked on a host future once nothing else can run.
+/// Every pending handle is armed (joined to the adapter's shared waitable
+/// set); a handle whose value already landed resumes at once, otherwise the
+/// group blocks until ANY of them lands -- so tasks awaiting different host
+/// futures interleave in completion order instead of the order they parked.
+/// False when no task waits on the host.
+fn conc_settle_host_waits[rg, e](n: TaskGroup[rg, e]) -> Bool {
+  let total = Array::length(n.adopted)
+  let mut pending = false
+  let mut ready = 0 - 1
+  let mut i = 0
+  while i < total {
+    let c = Array::get(n.adopted, i)
+    if c.status == 5 && c.host_wait >= 0 {
+      pending = true
+      if ready < 0 && __conc_host_arm(c.host_wait) == 1 {
+        ready = c.host_wait
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if !pending {
+    false
+  } else {
+    let fired = if ready >= 0 {
+      ready
+    } else {
+      __conc_host_wait_any()
+    }
+    let v = __conc_host_take(fired)
+    let mut resumed = false
+    let mut j = 0
+    while j < total {
+      let c = Array::get(n.adopted, j)
+      if !resumed && c.status == 5 && c.host_wait == fired {
+        resumed = true
+        c.host_wait = 0 - 1
+        match c.cont {
+          Some(k) => {
+            c.cont = None
+            k(v)
+          },
+          None => ()
+        }
+      } else {
+        ()
+      }
+      j = j + 1
+    }
+    conc_require(resumed)
+    true
+  }
+}
+
+//# Host-waitable hooks (#1537)
+
+// A task that awaits a host future parks on its handle. Waiting on SEVERAL
+// such handles at once needs the component adapter (its shared waitable set),
+// which exists only when the program's entry boundary settles host futures.
+// These are the defaults -- "no host waitables" -- and linked_compile replaces
+// their bodies with the adapter calls exactly when that boundary is built, so
+// a program without host futures imports nothing new.
+
+/// Arm `waitable` for the next `__conc_host_wait_any`: 1 when its value has
+/// already landed, 0 when it is now waiting in the set, -1 when this program
+/// has no host waitables (the task then parks as a poller, as before).
+export fn __conc_host_arm(waitable: Int) -> Int {
+  let _ = waitable
+  0 - 1
+}
+
+/// Block until one armed handle's value lands; returns that handle.
+export fn __conc_host_wait_any() -> Int {
+  0 - 1
+}
+
+/// The landed value of `waitable`, releasing its readable end.
+export fn __conc_host_take(waitable: Int) -> Int {
+  waitable
+}
+
 export fn TaskGroup::pump[rg, e](n: TaskGroup[rg, e]) -> Bool {
   conc_settle_sleep_debt(n)
   if conc_pump_once(n) {
+    true
+  } else if conc_settle_host_waits(n) {
     true
   } else if !n.direct_valve_used && conc_clear_direct_waits(n) {
     // Nothing resumable but direct-parked waiters exist: open the

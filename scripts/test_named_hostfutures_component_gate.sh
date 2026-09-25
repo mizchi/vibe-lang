@@ -394,4 +394,37 @@ fi
 [ "$(cat "$CTRL_LOG")" = "41" ] \
   || { echo "named hostfutures component gate FAILED: control expected 41, got: $(cat "$CTRL_LOG")" >&2; exit 1; }
 
+# --- spawned tasks awaiting host futures interleave (#1537) ------------------
+# fixtures/async_spawn_host_futures/main.vibe: task a awaits `slow` (300ms);
+# task b awaits `fast` (150ms) and only then requests a second `fast`. The
+# group waits on every pending handle at once and resumes whichever lands, so
+# b completes both reads inside a's 300ms. Waiting in park order would start
+# b's second read only after a's future landed (~450ms), so the 400ms upper
+# bound is what separates the two.
+SPAWN_OUT="$OUT_DIR/spawn_host_futures.component.wasm"
+rm -f "$SPAWN_OUT" "$SPAWN_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/main.vibe "$SPAWN_OUT" run >/dev/null 2>&1 || true
+[ -s "$SPAWN_OUT" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/main.vibe did not compile: $(cat "$SPAWN_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+SPAWN_LOG="$OUT_DIR/spawn_host_futures.log"
+SPAWN_START_NS=$(date +%s%N)
+if ! VIBE_ASYNC_FUTURES="slow=40:300,fast=1:150" timeout 60 "$RUNNER" "$SPAWN_OUT" >"$SPAWN_LOG" 2>&1; then
+  echo "named hostfutures component gate FAILED: spawned-task run did not exit 0" >&2
+  cat "$SPAWN_LOG" >&2
+  exit 1
+fi
+SPAWN_ELAPSED_MS=$(( ( $(date +%s%N) - SPAWN_START_NS ) / 1000000 ))
+[ "$(cat "$SPAWN_LOG")" = "42" ] \
+  || { echo "named hostfutures component gate FAILED: spawned tasks expected 42 (40 + 1 + 1), got: $(cat "$SPAWN_LOG")" >&2; exit 1; }
+if [ "$SPAWN_ELAPSED_MS" -ge 400 ]; then
+  echo "named hostfutures component gate FAILED: spawned tasks took ${SPAWN_ELAPSED_MS}ms -- b's second read waited for a's future instead of interleaving" >&2
+  exit 1
+fi
+if [ "$SPAWN_ELAPSED_MS" -lt 240 ]; then
+  echo "named hostfutures component gate FAILED: spawned tasks took ${SPAWN_ELAPSED_MS}ms, under the 300ms future -- the tasks did not park" >&2
+  exit 1
+fi
+echo "[named-hostfutures-component-gate] spawned tasks: 42 in ${SPAWN_ELAPSED_MS}ms (< 400: interleaved, not park order)"
+
 echo "named hostfutures component gate OK"

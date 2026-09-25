@@ -5612,6 +5612,26 @@ export fn comp_core_imports_host_future(core_wasm: Bytes) -> Bool {
 /// `vibe.host_stream_get$<name>`? Emitted by linked_compile exactly when
 /// the program calls `host_stream_named`, so the byte sniff is exact.
 /// Either sniff routes the wrap to the hostfuture/hoststream composition.
+/// Does the core module import `vibe.<name>`?
+fn comp_core_imports_vibe_name(core_wasm: Bytes, name: String) -> Bool {
+  let imp_modules = array_empty()
+  let imp_names = array_empty()
+  let imp_type_indices = new_int_array()
+  let imp_type_sigs = array_empty()
+  let import_count = parse_core_imports(core_wasm, imp_modules, imp_names, imp_type_indices, imp_type_sigs)
+  let mut found = false
+  let mut i = 0
+  while i < import_count {
+    if Array::get(imp_modules, i) == "vibe" && Array::get(imp_names, i) == name {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 export fn comp_core_imports_host_stream(core_wasm: Bytes) -> Bool {
   Array::length(comp_core_host_stream_names(core_wasm)) > 0
 }
@@ -5836,6 +5856,12 @@ fn comp_hf_state_base() -> Int {
 /// property, not something this adapter has to lean on: a byte per read
 /// costs nothing to give its own band, and a collision would corrupt an
 /// eagerly-landed future value silently (Codex P1 on #1339).
+/// #1537: the shared waitable set `host_future_arm` joins pending futures
+/// to (0 until first use). Past the fixed 0/8/16 and sleep 24/32 words.
+fn comp_hf_arm_ws_slot() -> Int {
+  40
+}
+
 fn comp_hs_value_base() -> Int {
   12288
 }
@@ -5958,7 +5984,7 @@ fn comp_sleep_wait_payload_slot() -> Int {
   32
 }
 
-fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], stream_core_names: Array[String], want_stream_close: Bool, want_sleep: Bool, tag_mode: Int, future_s64: Bool, response_payload: Bool) -> Bytes with Exception {
+fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], stream_core_names: Array[String], want_stream_close: Bool, want_sleep: Bool, tag_mode: Int, future_s64: Bool, response_payload: Bool, want_wait_any: Bool, exit_stubs: Array[String]) -> Bytes with Exception {
   // #1342: a THIRD half -- `vibe.sleep`. It is not a getter/wait pair like the
   // other two: the host side is an `async func(ms) -> ms`, so its
   // async-lowered call yields a SUBTASK rather than a future/stream handle,
@@ -6031,10 +6057,20 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
   } else {
     7
   }
-  let ntypes = if want_sleep {
+  let base_ntypes = if want_sleep {
     sleep_type_idx + 1
   } else {
     sleep_type_idx
+  }
+  // #1537: the exception boundary's exit imports (`stderr_write_stream`,
+  // `process_exit`, both `(i64) -> ()`), served as trapping stubs -- the trap
+  // IS the boundary's non-zero outcome (#2976's rule for the p1 wrap). Their
+  // type is appended last.
+  let exit_type_idx = base_ntypes
+  let ntypes = if Array::length(exit_stubs) > 0 {
+    base_ntypes + 1
+  } else {
+    base_ntypes
   }
   let tc = bytebuf_new()
   bytebuf_push_vec_header(tc, ntypes)
@@ -6051,6 +6087,11 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     ()
   }
   if want_sleep {
+    emit_func_type_raw(tc, [126], array_empty())
+  } else {
+    ()
+  }
+  if Array::length(exit_stubs) > 0 {
     emit_func_type_raw(tc, [126], array_empty())
   } else {
     ()
@@ -6200,6 +6241,26 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     Array::push(export_names, "sleep")
   } else {
     ()
+  }
+  // #1537: the group-wide wait -- `host_future_arm` joins a pending future to
+  // one shared waitable set, `host_future_wait_any` blocks on that set and
+  // names the future that landed. Appended after everything else.
+  if want_wait_any {
+    Array::push(export_indices, nfunc_imports + Array::length(fn_types))
+    Array::push(fn_types, 6)
+    Array::push(export_names, "host_future_arm")
+    Array::push(export_indices, nfunc_imports + Array::length(fn_types))
+    Array::push(fn_types, 5)
+    Array::push(export_names, "host_future_wait_any")
+  } else {
+    ()
+  }
+  let mut xs_i = 0
+  while xs_i < Array::length(exit_stubs) {
+    Array::push(export_indices, nfunc_imports + Array::length(fn_types))
+    Array::push(fn_types, exit_type_idx)
+    Array::push(export_names, Array::get(exit_stubs, xs_i))
+    xs_i = xs_i + 1
   }
   emit_function_section(out, fn_types)
   emit_export_section_multi(out, export_names, export_indices)
@@ -6753,6 +6814,127 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
   } else {
     ()
   }
+  if want_wait_any {
+    let shift = if future_s64 {
+      3
+    } else {
+      2
+    }
+    // host_future_arm(h): param 0 = tagged handle; locals (i32) 1=fut,
+    // 2=state addr, 3=st, 4=ws. Answers 1 when the value already landed
+    // (the getter's eager read completed), else joins the future to the
+    // shared set (created on first use, kept in comp_hf_arm_ws_slot) and
+    // answers 0.
+    let arm_body = bytebuf_new()
+    leb128_encode_u32(arm_body, 1)
+    leb128_encode_u32(arm_body, 4)
+    bytebuf_push(arm_body, 127)
+    emit_local_get(arm_body, 0)
+    comp_emit_decode_i64_value(arm_body, tag_mode)
+    emit_i32_wrap_i64(arm_body)
+    emit_local_set(arm_body, 1)
+    emit_local_get(arm_body, 1)
+    emit_i32_const(arm_body, shift)
+    emit_i32_shl(arm_body)
+    emit_i32_const(arm_body, comp_hf_state_base())
+    emit_i32_add(arm_body)
+    emit_local_set(arm_body, 2)
+    emit_local_get(arm_body, 2)
+    emit_i32_load(arm_body, 2, 0)
+    emit_local_set(arm_body, 3)
+    emit_local_get(arm_body, 3)
+    emit_i32_const(arm_body, 2)
+    emit_i32_eq(arm_body)
+    emit_if_void(arm_body)
+    emit_i64_const(arm_body, 1)
+    comp_emit_encode_i64_value(arm_body, tag_mode)
+    bytebuf_push(arm_body, 15)
+    emit_end(arm_body)
+    // Anything but BLOCKED (1) here never went through a getter.
+    emit_local_get(arm_body, 3)
+    emit_i32_const(arm_body, 1)
+    emit_i32_ne(arm_body)
+    emit_if_void(arm_body)
+    bytebuf_push(arm_body, 0)
+    emit_end(arm_body)
+    emit_i32_const(arm_body, comp_hf_arm_ws_slot())
+    emit_i32_load(arm_body, 2, 0)
+    emit_local_set(arm_body, 4)
+    emit_local_get(arm_body, 4)
+    emit_i32_eqz(arm_body)
+    emit_if_void(arm_body)
+    emit_call(arm_body, ws_new_idx)
+    emit_local_set(arm_body, 4)
+    emit_i32_const(arm_body, comp_hf_arm_ws_slot())
+    emit_local_get(arm_body, 4)
+    emit_i32_store(arm_body, 2, 0)
+    emit_end(arm_body)
+    emit_local_get(arm_body, 1)
+    emit_local_get(arm_body, 4)
+    emit_call(arm_body, join_idx)
+    emit_i64_const(arm_body, 0)
+    comp_emit_encode_i64_value(arm_body, tag_mode)
+    bytebuf_push(arm_body, 11)
+    leb128_encode_u32(code_sec, Bytes::length(arm_body))
+    bytebuf_push_buf(code_sec, arm_body)
+    // host_future_wait_any(): locals (i32) 0=ws, 1=ev, 2=fut. Blocks on the
+    // shared set; the event must be FUTURE_READ (4), whose payload[0] names
+    // the future. It leaves the set (join to 0) and its state becomes
+    // completed (2), so host_future_wait then takes the value without
+    // blocking.
+    let any_body = bytebuf_new()
+    leb128_encode_u32(any_body, 1)
+    leb128_encode_u32(any_body, 3)
+    bytebuf_push(any_body, 127)
+    emit_i32_const(any_body, comp_hf_arm_ws_slot())
+    emit_i32_load(any_body, 2, 0)
+    emit_local_set(any_body, 0)
+    emit_local_get(any_body, 0)
+    emit_i32_eqz(any_body)
+    emit_if_void(any_body)
+    bytebuf_push(any_body, 0)
+    emit_end(any_body)
+    emit_local_get(any_body, 0)
+    emit_i32_const(any_body, 16)
+    emit_call(any_body, ws_wait_idx)
+    emit_local_set(any_body, 1)
+    emit_local_get(any_body, 1)
+    emit_i32_const(any_body, 4)
+    emit_i32_ne(any_body)
+    emit_if_void(any_body)
+    bytebuf_push(any_body, 0)
+    emit_end(any_body)
+    emit_i32_const(any_body, 16)
+    emit_i32_load(any_body, 2, 0)
+    emit_local_set(any_body, 2)
+    emit_local_get(any_body, 2)
+    emit_i32_const(any_body, 0)
+    emit_call(any_body, join_idx)
+    emit_local_get(any_body, 2)
+    emit_i32_const(any_body, shift)
+    emit_i32_shl(any_body)
+    emit_i32_const(any_body, comp_hf_state_base())
+    emit_i32_add(any_body)
+    emit_i32_const(any_body, 2)
+    emit_i32_store(any_body, 2, 0)
+    emit_local_get(any_body, 2)
+    bytebuf_push(any_body, 173)
+    comp_emit_encode_i64_value(any_body, tag_mode)
+    bytebuf_push(any_body, 11)
+    leb128_encode_u32(code_sec, Bytes::length(any_body))
+    bytebuf_push_buf(code_sec, any_body)
+  } else {
+    ()
+  }
+  let mut xb_i = 0
+  while xb_i < Array::length(exit_stubs) {
+    // no locals; unreachable; end
+    leb128_encode_u32(code_sec, 3)
+    bytebuf_push(code_sec, 0)
+    bytebuf_push(code_sec, 0)
+    bytebuf_push(code_sec, 11)
+    xb_i = xb_i + 1
+  }
   bytebuf_push_section(out, 10, code_sec)
   bytebuf_to_bytes(out)
 }
@@ -7204,7 +7386,7 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
     let ifn = Array::get(imp_names, ii)
     if im == "wasi_snapshot_preview1" && ifn == "fd_write" {
       ()
-    } else if im == "vibe" && (comp_is_host_future_get_import(ifn) || ifn == "host_future_wait" || comp_is_host_stream_get_import(ifn) || ifn == "host_stream_read" || ifn == "host_stream_close" || ifn == "sleep") {
+    } else if im == "vibe" && (comp_is_host_future_get_import(ifn) || ifn == "host_future_wait" || ifn == "host_future_arm" || ifn == "host_future_wait_any" || comp_is_host_stream_get_import(ifn) || ifn == "host_stream_read" || ifn == "host_stream_close" || ifn == "sleep" || ifn == "stderr_write_stream" || (ifn == "process_exit" && comp_core_imports_func(main_core_wasm, "vibe", "stderr_write_stream"))) {
       ()
     } else {
       throw("component(async-hostfuture): core module uses host import '\{im}.\{ifn}' (only fd_write, sleep and the host-future/host-stream imports are satisfiable in this composition)")
@@ -7411,7 +7593,24 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   }
   emit_core_module_section(buf, main_core_wasm)
   emit_core_module_section(buf, comp_generate_memhost_module())
-  emit_core_module_section(buf, comp_generate_hostfuture_adapter_core_module(hf_names, hs_names, hs_wants_close, want_sleep, tag_mode, future_s64, response_mode))
+  // #1537: tasks awaiting host futures wait on them together.
+  let want_wait_any = comp_core_imports_vibe_name(main_core_wasm, "host_future_arm") || comp_core_imports_vibe_name(main_core_wasm, "host_future_wait_any")
+  // #1537: an entry whose row carries `Exception` exits through its boundary
+  // (stderr diagnosis, then process_exit); the adapter serves both as
+  // trapping stubs, as the p1 wrap does (#2976). A program's own
+  // process_exit without the boundary's stderr import was refused above.
+  let exit_stubs: Array[String] = []
+  if comp_core_imports_func(main_core_wasm, "vibe", "stderr_write_stream") {
+    Array::push(exit_stubs, "stderr_write_stream")
+  } else {
+    ()
+  }
+  if comp_core_imports_func(main_core_wasm, "vibe", "process_exit") {
+    Array::push(exit_stubs, "process_exit")
+  } else {
+    ()
+  }
+  emit_core_module_section(buf, comp_generate_hostfuture_adapter_core_module(hf_names, hs_names, hs_wants_close, want_sleep, tag_mode, future_s64, response_mode, want_wait_any, exit_stubs))
   emit_core_module_section(buf, comp_generate_async_trampoline_hostfuture())
   emit_core_module_section(buf, comp_generate_wasi_fd_write_stub())
   // A component-instance export alias must follow embedded core-module

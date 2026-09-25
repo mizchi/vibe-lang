@@ -179,6 +179,21 @@ override silently contradicting a module that says `raw` is the hazard #2903's
 - **Wait** (`host_future_wait`) only **settles**. It does not re-read: a second
   `future.read` on a future that already has one pending is a canonical-ABI
   error, which is why the read is in the getter and not here.
+- **Wait on any** (#1537). `host_future_arm (i64) -> i64` answers `1` when the
+  handle's read already completed, else joins the handle to ONE shared
+  waitable set (created on first use, its handle kept in the adapter's scratch
+  word 40) and answers `0`. `host_future_wait_any () -> i64` blocks on that
+  set; the event must be FUTURE_READ, its `payload[0]` names the future, which
+  leaves the set and is marked completed, so `host_future_wait` then takes its
+  value without blocking. Both are imported only when a program's entry
+  boundary settles host futures AND it links `@vibe/concurrent`: the library's
+  `__conc_host_arm` / `__conc_host_wait_any` / `__conc_host_take` default to
+  "no host waitables", and linked_compile gives them these bodies
+  (`lc_host_hooks_install`). A spawned task awaiting a host future parks on
+  its handle; `TaskGroup::pump` resumes whichever lands first, with its value,
+  once nothing else can run. An `Exception` entry beside them exits through
+  its boundary; the adapter serves `stderr_write_stream` / `process_exit` as
+  trapping stubs, #2976's rule for the p1 wrap.
 - **Drop** is conditional -- this is *the conditional-drop rule* the
   runtime-neutral list below names. A call that completed eagerly (status
   RETURNED, code `2`) created no subtask, so it is neither joined nor dropped
