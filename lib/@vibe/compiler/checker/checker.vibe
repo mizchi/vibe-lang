@@ -5177,6 +5177,64 @@ export fn call_formal_key(off: Int, name: String) -> String {
   String::concat(__to_string(off), String::concat(":", name))
 }
 
+/// #3053: `s` extended so that each still-unsolved variable a generic
+/// binder's formal stands for in its body is spelled by the formal's name.
+/// A call inside `fn caller[S](x: S)` that passes `x` instantiates the
+/// callee at the caller's `S`; left a variable, its spelling holds a `?`, the
+/// binding was dropped, and the callee's row kept its OWN formal as written --
+/// which matched a caller formal of the same spelling (`get(y)` with `y: T`
+/// read as `State[S]` under `with State[S]`). A variable two binders' rows
+/// claim under different names (an auxiliary re-check can allocate one id
+/// twice, see `eq_formal_row_of`) is left unsolved, so it can only keep the
+/// old answer.
+fn formal_var_display_subst(s: Subst) -> Subst {
+  let reps: Array[(Int, String)] = []
+  let clashes: Array[Int] = []
+  let mut i = 0
+  while i < Array::length(eq_formal_vars) {
+    let (vid, name) = Array::get(eq_formal_vars, i)
+    match subst_apply(s, CtVar(vid)) {
+      CtVar(rid) => {
+        let mut seen = false
+        let mut j = 0
+        while j < Array::length(reps) {
+          let (r, n) = Array::get(reps, j)
+          if r == rid {
+            seen = true
+            if n != name {
+              Array::push(clashes, rid)
+            }
+          }
+          j = j + 1
+        }
+        if !seen {
+          Array::push(reps, (rid, name))
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  let mut ds = s
+  let mut k = 0
+  while k < Array::length(reps) {
+    let (rid, name) = Array::get(reps, k)
+    let mut clash = false
+    let mut c = 0
+    while c < Array::length(clashes) {
+      if Array::get(clashes, c) == rid {
+        clash = true
+      }
+      c = c + 1
+    }
+    if !clash {
+      ds = SubstBind(rid, CtNamed(name, array_empty()), ds)
+    }
+    k = k + 1
+  }
+  ds
+}
+
 /// #3053: every recorded generic call's formal bindings under the final
 /// substitution, keyed by `call_formal_key`, for the effects pass
 /// to instantiate the callee's row at that call. Only the call's own scheme is
@@ -5184,6 +5242,7 @@ export fn call_formal_key(off: Int, name: String) -> String {
 /// nothing, so its row stays as written (open) rather than being guessed.
 export fn callee_formal_bindings(defs: Array[TypeDef], s: Subst) -> Array[(String, Array[(String, String)])] {
   let out: Array[(String, Array[(String, String)])] = []
+  let ds = formal_var_display_subst(s)
   let mut i = 0
   while i < Array::length(callee_inst_types_cell) {
     let (off, scheme, inst, cname) = Array::get(callee_inst_types_cell, i)
@@ -5191,7 +5250,7 @@ export fn callee_formal_bindings(defs: Array[TypeDef], s: Subst) -> Array[(Strin
     // key two merged sources share -- one call resolving a formal, the other
     // not -- turns ambiguous rather than lending the first call's binding to
     // the second (Codex on #3055).
-    let texts = callee_formal_texts(generic_decl_of_scheme(scheme), scheme, inst, defs, s)
+    let texts = callee_formal_texts(generic_decl_of_scheme(scheme), scheme, inst, defs, ds)
     Array::push(out, (call_formal_key(off, cname), texts))
     i = i + 1
   }

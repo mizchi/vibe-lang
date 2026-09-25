@@ -2531,6 +2531,103 @@ fn select_shadowed_builtin_type_names(stmt: Stmt) -> Unit {
   Array::set(shadowed_builtin_type_names_cell, 0, chosen)
 }
 
+/// #3053: the type parameter names the top-level declaration being walked
+/// binds, anywhere inside it (`decl_type_formal_names`). Inside that
+/// declaration each one is a RIGID formal in a row: `with State[S]` stands for
+/// one type the body does not choose, so it authorizes `State[S]` and nothing
+/// else. Slot 0 is the set in force; a statement no key names gets none, which
+/// keeps the base-name answer -- never a refusal.
+let decl_type_formals_cell: Array[Array[String]] = [[]]
+let decl_type_formals_by_decl: Array[MutMap[String, Array[String]]] = [
+  MutMap::new_string()
+]
+
+export fn set_decl_type_formals(by_decl: Array[(String, Array[String])]) -> Unit {
+  let m = MutMap::new_string()
+  let mut i = 0
+  while i < Array::length(by_decl) {
+    let (k, names) = Array::get(by_decl, i)
+    MutMap::set(m, k, names)
+    i = i + 1
+  }
+  Array::set(decl_type_formals_by_decl, 0, m)
+  Array::set(decl_type_formals_cell, 0, [])
+}
+
+fn select_decl_type_formals(stmt: Stmt) -> Unit {
+  let k = effect_shadow_key(stmt)
+  let chosen = if String::length(k) == 0 {
+    []
+  } else {
+    match MutMap::get(Array::get(decl_type_formals_by_decl, 0), k) {
+      Some(names) => names,
+      None => []
+    }
+  }
+  Array::set(decl_type_formals_cell, 0, chosen)
+}
+
+/// Is `t` (spaces already removed) built only from builtin type names,
+/// `Array[..]` / `Option[..]`, commas and the walked declaration's own type
+/// formals, with at least one formal? Such a spelling names exactly one type
+/// per formal, so two of them that differ as text differ as types, and one
+/// differs from any `builtin_closed_type_text` spelling.
+fn rigid_formal_type_text(t: String) -> Bool {
+  let formals = Array::get(decl_type_formals_cell, 0)
+  let n = String::length(t)
+  let mut ok = n > 0 && Array::length(formals) > 0
+  let mut has_formal = false
+  let mut start = 0 - 1
+  let mut i = 0
+  while i <= n && ok {
+    let c = if i < n {
+      String::char_code_at(t, i)
+    } else {
+      0
+    }
+    let is_word = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 95
+    if is_word {
+      if start < 0 {
+        start = i
+      } else {
+        ()
+      }
+    } else {
+      if start >= 0 {
+        let w = String::substring(t, start, i)
+        if str_labels_contain(formals, w) {
+          has_formal = true
+        } else if builtin_closed_type_text(w) {
+          ()
+        } else {
+          ok = false
+        }
+        start = 0 - 1
+      } else {
+        ()
+      }
+      if i < n && c != 91 && c != 93 && c != 44 {
+        ok = false
+      } else {
+        ()
+      }
+    }
+    i = i + 1
+  }
+  ok && has_formal
+}
+
+/// `with State[S]`, `S` a formal of the walked declaration, against a
+/// requirement of `State[String]` or `State[T]` (#3053): both spellings are
+/// determinate and differ, so they name different types.
+fn row_label_args_rigid_and_differ(a: String, b: String) -> Bool {
+  let aa = row_label_args(a)
+  let ba = row_label_args(b)
+  let a_ok = rigid_formal_type_text(aa) || builtin_closed_type_text(aa)
+  let b_ok = rigid_formal_type_text(ba) || builtin_closed_type_text(ba)
+  String::length(aa) > 0 && String::length(ba) > 0 && a_ok && b_ok && aa != ba
+}
+
 fn str_labels_contain(xs: Array[String], x: String) -> Bool {
   let mut found = false
   let mut i = 0
@@ -2611,7 +2708,7 @@ fn row_base_membership(labels: Array[String], eff_name: String) -> Bool {
       let l = Array::get(labels, i)
       let lb = row_label_base(l)
       let lhas = String::length(lb) < String::length(l)
-      if (ehas || lhas) && lb == eb && !is_exception_label(l) && !row_label_args_closed_and_differ(l, eff_name) && !row_label_args_ambiguous(eff_name) {
+      if (ehas || lhas) && lb == eb && !is_exception_label(l) && !row_label_args_closed_and_differ(l, eff_name) && !row_label_args_rigid_and_differ(l, eff_name) && !row_label_args_ambiguous(eff_name) {
         found = true
       } else {
         ()
@@ -3420,6 +3517,7 @@ fn ambiguous_formal_bindings(a: Array[(String, String)], b: Array[(String, Strin
 fn clear_checker_published_tables() -> Unit {
   Array::set(call_formal_bindings_cell, 0, MutMap::new_string())
   set_shadowed_builtin_type_names([])
+  set_decl_type_formals([])
 }
 
 /// Test hook: a label as the call at `key` instantiates it.
@@ -6685,10 +6783,12 @@ export fn check_perform_effects_stmts_env_published(stmts: Array[Stmt], env: Typ
       }
     }
     select_shadowed_builtin_type_names(stmt)
+    select_decl_type_formals(stmt)
     append_eff_errs(errors, check_perform_effects_stmt_tx(stmt, fn_names, fn_effs, fn_index, fn_param_effs))
     i = i + 1
   }
   Array::set(shadowed_builtin_type_names_cell, 0, Array::get(shadowed_builtin_type_names_cell, 1))
+  Array::set(decl_type_formals_cell, 0, [])
   // #1347: only once the rows themselves check out — on a program with real
   // row errors every reachability answer is suspect, and a second diagnostic
   // per handle would bury the first.
