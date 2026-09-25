@@ -39,8 +39,14 @@
 //   x10000      `if` of views, alias consumed         5
 //   x100000     `if` of a view and a fresh array      3
 //   x1000000    `match` whose arms are both views     6
+//   x10000000   `handle` whose BODY is the view       2
+//   x100000000  `handle` whose ARM is the view        1
 //
-// Expected: all_wrapped(1) = 6354332, main = 6354332566498532
+// The `handle` rows are the third branching form: codegen treated it as
+// branching and retained its borrowed tails, the plan did not, so an alias
+// took the source's reference by transfer and the retain never ran.
+//
+// Expected: all_wrapped(1) = 126354332, main = 126354332566498532
 //
 // The owned side -- an alias of an OWNED value must still be released -- is
 // rc_view_alias_owned_release_test.vibe, kept apart because it measures the
@@ -224,8 +230,38 @@ fn w_match(n: Int) -> Int {
   Array::get(w, 0)
 }
 
+fn fail_if(c: Bool) -> Int with Exception {
+  if c {
+    throw("no")
+  } else {
+    0
+  }
+}
+
+/// The `handle` body hands back the view: [1, 2][1] + 1 - 1 = 2.
+fn w_handle_body(n: Int) -> Int {
+  let xs = [[n, n + 1]]
+  let v = handle {
+    let _ = fail_if(n < 0)
+    Array::get(xs, 0)
+  } with { Exception::Throw(_) => [n + 7, n + 8] }
+  let w = v
+  Array::get(w, 1) + Array::get(Array::get(xs, 0), 0) - n
+}
+
+/// The handler arm hands back the view: [1, 2][0] + 2 - 1 - 1 = 1.
+fn w_handle_arm(n: Int) -> Int {
+  let xs = [[n, n + 1]]
+  let v = handle {
+    let _ = fail_if(n >= 0)
+    [n + 7, n + 8]
+  } with { Exception::Throw(_) => Array::get(xs, 0) }
+  let w = v
+  Array::get(w, 0) + Array::get(Array::get(xs, 0), 1) - n - 1
+}
+
 fn all_wrapped(n: Int) -> Int {
-  w_block(n) + w_block_chain(n) * 10 + w_if(n, false) * 100 + w_block_consumed(n) * 1000 + w_if_consumed(n, true) * 10000 + w_if_mixed(n, true) * 100000 + w_match(n) * 1000000
+  w_block(n) + w_block_chain(n) * 10 + w_if(n, false) * 100 + w_block_consumed(n) * 1000 + w_if_consumed(n, true) * 10000 + w_if_mixed(n, true) * 100000 + w_match(n) * 1000000 + w_handle_body(n) * 10000000 + w_handle_arm(n) * 100000000
 }
 
 export fn main() -> Int {
@@ -237,5 +273,5 @@ test "an alias of a borrowed view is not released twice" {
 }
 
 test "an alias of a view handed back through a wrapper or branch is not released twice" {
-  inspect(all_wrapped(1), content = "6354332")
+  inspect(all_wrapped(1), content = "126354332")
 }

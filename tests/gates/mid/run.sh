@@ -772,8 +772,8 @@ echo "[compiler-gate] alias of a pinned view across a released truncate ok on sh
 #        second release; the plain RC lane corrupted the free list and died in
 #        a later allocation. Nine alias shapes at distinct decimal places, on
 #        all four lanes -- gc and bump are the value oracle, shadow is the pin.
-#        Above them, seven shapes whose source hands the view back through a
-#        block, a `let` chain, or an `if` / `match` of views (#3114 review).
+#        Above them, nine shapes whose source hands the view back through a
+#        block, a `let` chain, or an `if` / `match` / `handle` (#3114 review).
 echo "[compiler-gate] 40f0c/40 alias of a borrowed view is not released twice (#3114)"
 vadir="_build/_gate_rc_view_alias"
 rm -rf "$vadir"; mkdir -p "$vadir"
@@ -791,13 +791,13 @@ for va_lane in bump rc shadow gc; do
     exit 1
   fi
   va_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$vadir/va.wasm" 2>&1 | tail -1)"
-  if [ "$va_out" != "6354332566498532" ]; then
-    echo "[compiler-gate] FAIL: rc_view_alias_drop got '$va_out' on the $va_lane lane (want 6354332566498532). Each alias shape sits at its own decimal place -- see the fixture header for which digit is which. A trap means an alias of a borrowed view released a reference it never took (#3114)." >&2
+  if [ "$va_out" != "126354332566498532" ]; then
+    echo "[compiler-gate] FAIL: rc_view_alias_drop got '$va_out' on the $va_lane lane (want 126354332566498532). Each alias shape sits at its own decimal place -- see the fixture header for which digit is which. A trap means an alias of a borrowed view released a reference it never took (#3114)." >&2
     exit 1
   fi
 done
 rm -rf "$vadir"
-echo "[compiler-gate] borrowed-view alias guard ok (6354332566498532 on bump/rc/shadow/gc)"
+echo "[compiler-gate] borrowed-view alias guard ok (126354332566498532 on bump/rc/shadow/gc)"
 
 # 40f0d. #3134: `let w = p` inside a loop body, with `p` bound outside the
 #        loop, transferred `p`'s one reference into `w` on every iteration,
@@ -831,6 +831,36 @@ for lc_lane in bump rc shadow gc; do
 done
 rm -rf "$lcdir"
 echo "[compiler-gate] loop-carried alias guard ok (362412181109361818 on bump/rc/shadow/gc)"
+
+# 40f0e. #3135 / #3134 review: the plan called a `Double` literal scalar while
+#        codegen boxes it, so an alias of one inside a loop body took no
+#        reference of its own and freed the source's box on the first
+#        iteration (RC: memory access out of bounds; shadow: trap).
+#        Four shapes at distinct decimal places, on all four lanes.
+echo "[compiler-gate] 40f0e/40 alias of a Double literal inside a loop keeps the box alive (#3135)"
+dldir="_build/_gate_rc_double_literal_alias"
+rm -rf "$dldir"; mkdir -p "$dldir"
+for dl_lane in bump rc shadow gc; do
+  rm -f "$dldir/dl.wasm" "$dldir/dl.wasm.diag"
+  case "$dl_lane" in
+    bump) env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_double_literal_alias_test.vibe" "$dldir/dl.wasm" main >/dev/null 2>&1 || true ;;
+    rc) env VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_double_literal_alias_test.vibe" "$dldir/dl.wasm" main >/dev/null 2>&1 || true ;;
+    shadow) env VIBE_RC=shadow VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_double_literal_alias_test.vibe" "$dldir/dl.wasm" main >/dev/null 2>&1 || true ;;
+    gc) env VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_double_literal_alias_test.vibe" "$dldir/dl.wasm" main >/dev/null 2>&1 || true ;;
+  esac
+  if [ ! -s "$dldir/dl.wasm" ]; then
+    echo "[compiler-gate] FAIL: rc_double_literal_alias fixture did not compile on the $dl_lane lane (#3135)" >&2
+    cat "$dldir/dl.wasm.diag" >&2 2>/dev/null || true
+    exit 1
+  fi
+  dl_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$dldir/dl.wasm" 2>&1 | tail -1)"
+  if [ "$dl_out" != "6333" ]; then
+    echo "[compiler-gate] FAIL: rc_double_literal_alias got '$dl_out' on the $dl_lane lane (want 6333). Each shape sits at its own decimal place -- see the fixture header. A trap means an alias of a Double inside a loop released the source's box (#3135)." >&2
+    exit 1
+  fi
+done
+rm -rf "$dldir"
+echo "[compiler-gate] Double-literal alias guard ok (6333 on bump/rc/shadow/gc)"
 
 # 40f1a. #2427: the shadow table must not overlap the heap it describes.
 #        40f above proves the marks catch a real dup/drop-of-freed; this

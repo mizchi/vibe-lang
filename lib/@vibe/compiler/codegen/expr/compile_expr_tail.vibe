@@ -32,6 +32,7 @@ import @vibe/compiler/codegen/common_analysis {
   emit_closure_call_tail,
   emit_closure_resolve,
   emit_i64_extend_i32_u,
+  is_branching_value,
   md_consume_count_b,
   md_self_reassign_move_arg,
   mut_needs_ref_cell,
@@ -1148,6 +1149,18 @@ fn classify_let_value_heap(buf: Bytes, value: Expr, name: String, local_idx: Int
     if expr_is_floatish(value, local_names, ctx) {
       rc_kind = 2
       Array::push(ctx.heap_binding_names, name)
+      // #3135: a `Double` is a heap box, and the plan now says so, so an
+      // alias of a `Double` binding gets the same PaAliasDup as any other
+      // heap alias (a source with later uses, or a loop-carried one). This
+      // arm is reached before the `is_eident` arm below, which is the one
+      // that applies an alias dup -- without this the plan's dup was
+      // silently dropped for a floatish alias, and the alias's own drop
+      // released the source's box.
+      if is_eident(value) && array_contains_str(ctx.rc_alias_dup_names, name) {
+        emit_rc_dup_guarded(buf, local_idx, ctx.rc_shadow, ctx.rc_dup_func_idx)
+      } else {
+        ()
+      }
     } else if is_etuple(value) {
       rc_kind = 2
       Array::push(ctx.heap_binding_names, name)
@@ -1992,16 +2005,6 @@ fn vsb_under_binder(n: String, v: Expr, b: Expr, local_names: Array[String], bou
   Array::truncate(bound, mark)
   Array::truncate(bound_owned, mark)
   r
-}
-
-/// An if / match / handle value: its result is one of several arm tails.
-fn is_branching_value(value: Expr) -> Bool {
-  match value {
-    EIf(_, _, _) => true,
-    EMatch(_, _) => true,
-    EHandle(_, _) => true,
-    _ => false
-  }
 }
 
 fn retain_wrap_arms(arms: Array[(Pat, Expr)], local_names: Array[String], inner: Array[String], ctx: CompileCtx) -> Array[(Pat, Expr)] with Exception {

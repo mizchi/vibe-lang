@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/codegen/common_analysis {
-  collect_free_vars, md_borrow_mask_of, md_consume_count, md_consume_count_pre
+  collect_free_vars, is_branching_value, md_borrow_mask_of, md_consume_count, md_consume_count_pre
 }
 
 import @vibe/core {
@@ -149,7 +149,8 @@ struct PCtx {
   // view's alias may inherit "nothing to release".
   mut borrowed_view: Array[Bool];
   // #3114 review: per binding id, true when the binding's value is an
-  // `if` / `match` (top node). Codegen gives such a binding a reference of
+  // `if` / `match` / `handle` (top node; is_branching_value, the predicate
+  // codegen asks too). Codegen gives such a binding a reference of
   // its own -- it retains a borrowed branch tail (#768 / #3103) -- but only
   // while the binding keeps its planned scope-end drop. A `let` alias that
   // took the binding's reference by transfer removed that drop, so the
@@ -1633,11 +1634,18 @@ export fn compute_scalar_returning_names(stmts: Array[Stmt]) -> Array[String] {
 /// `let pick = (..) -> ..`) is that local, which returns whatever it
 /// returns -- codegen's `call_returns_borrow` declines the same way, so a
 /// fresh result the plan called scalar was never released (#3114 review).
+///
+/// A `Double` literal is NOT scalar (#3135): codegen boxes every Double on the
+/// heap (classify_let_value_heap's `expr_is_floatish` arm gives the binding
+/// rc_kind 2), so a plan that called `let x = 1.5` scalar planned no drop for
+/// a box codegen allocated -- 16 B leaked per evaluation -- and an alias of
+/// it inside a loop (#3134) took no reference of its own, so the alias's
+/// scope-end drop freed the box on the first iteration. The literals left
+/// here are exactly the ones codegen does not allocate: Int, Bool, Unit.
 fn is_scalar_expr(ctx: PCtx, scope: Map[String, Int], e: Expr) -> Bool {
   match e {
     EInt(_) => true,
     EBool(_) => true,
-    EFloat(_) => true,
     EUnit => true,
     ECall(EIdent(fname, _), _, _) => fname == "Stdin::read_via_stream" || (!Map::has_key(scope, fname) && is_borrow_ret_fname(ctx, fname)),
     _ => false
@@ -3131,10 +3139,10 @@ export fn pc_count(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
       } else {
         ()
       }
-      match value {
-        EIf(_, _, _) => Array::set(ctx.branch_value, id, true),
-        EMatch(_, _) => Array::set(ctx.branch_value, id, true),
-        _ => ()
+      if is_branching_value(value) {
+        Array::set(ctx.branch_value, id, true)
+      } else {
+        ()
       }
       let _ = pctx_mark_view_call(ctx, scope, id, value)
       pc_count(ctx, Map::set(scope, name, id), body)

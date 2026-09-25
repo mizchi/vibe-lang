@@ -2,7 +2,7 @@
 // BORROWED VIEW (`Array::get` and the other borrow-returning callees), not
 // from every binding the Perceus plan calls scalar.
 //
-// The plan classifies a `Double` literal as scalar, but codegen boxes it on
+// The plan classified a `Double` literal as scalar, but codegen boxes it on
 // the heap. With the first cut of #3114 an alias of one inherited that flag,
 // so `let y = x` over `let x = 1.5` lost the scope-end drop that released the
 // box, and every round below leaked it. Measured at 10000 rounds:
@@ -16,6 +16,31 @@
 // the scalar flag, so it must stay flat on every compiler. It also shows the
 // probe measures a release at all -- on `VIBE_RC=0` both it and the float
 // shapes grow and this file fails.
+//
+// #3135: the plan no longer calls a `Double` literal scalar at all, so the
+// literal binding itself is released. `float_literal_in_loop` is the issue's
+// own repro (160000 B at 10000 rounds before, 0 now), and
+// `float_alias_in_loop` the loop-carried alias of one (#3134 review), which
+// used to free the source's box on its first iteration.
+
+fn float_literal_in_loop(i: Int) -> Int {
+  let mut k = 0
+  while k < 3 {
+    let x = 1.5
+    k = k + 1
+  }
+  i - i
+}
+
+fn float_alias_in_loop(i: Int) -> Int {
+  let x = 1.5
+  let mut k = 0
+  while k < 3 {
+    let y = x
+    k = k + 1
+  }
+  i - i
+}
 
 fn float_alias_unused(i: Int) -> Int {
   let x = 1.5
@@ -60,4 +85,12 @@ test "an unused alias of a Double literal releases the box" {
 
 test "a chain of aliases of a Double literal releases the box" {
   inspect(growth(float_alias_chain) < 4000, content = "true")
+}
+
+test "#3135: a Double literal binding releases its box" {
+  inspect(growth(float_literal_in_loop) < 4000, content = "true")
+}
+
+test "a loop-carried alias of a Double literal releases both boxes" {
+  inspect(growth(float_alias_in_loop) < 4000, content = "true")
 }
