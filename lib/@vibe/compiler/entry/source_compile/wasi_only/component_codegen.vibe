@@ -10272,6 +10272,33 @@ fn comp_generate_vfs_adapter() -> Bytes {
   bytebuf_to_bytes(out)
 }
 
+/// #2957: the vfs component import that carries this core's directory
+/// listing -- `read-dir-nul` (NUL-joined names) for a core that imports
+/// `vibe.fs_read_dir_nul`, or the legacy "\n"-joined `read-dir` for one built
+/// by a pre-#2957 compiler (the committed seed) that still imports
+/// `vibe.fs_read_dir`. `build_vibec.sh` declares the same name in the WIT it
+/// ships beside the component.
+export fn comp_vfs_read_dir_import(core_wasm: Bytes) -> String {
+  let imp_modules = array_empty()
+  let imp_names = array_empty()
+  let imp_type_indices = new_int_array()
+  let imp_type_sigs = array_empty()
+  let import_count = parse_core_imports(core_wasm, imp_modules, imp_names, imp_type_indices, imp_type_sigs)
+  let mut legacy = false
+  let mut i = 0
+  while i < import_count {
+    if Array::get(imp_modules, i) == "vibe" && Array::get(imp_names, i) == "fs_read_dir" {
+      legacy = true
+    }
+    i = i + 1
+  }
+  if legacy {
+    "read-dir"
+  } else {
+    "read-dir-nul"
+  }
+}
+
 export fn comp_emit_component_wasm_string_handler_vfs(core_wasm: Bytes, target_func_name: String, export_name: String, param_names: Array[String]) -> Bytes with Exception {
   comp_emit_string_handler_vfs_impl(core_wasm, target_func_name, export_name, param_names, true)
 }
@@ -10340,20 +10367,13 @@ fn comp_emit_string_handler_vfs_impl(core_wasm: Bytes, target_func_name: String,
   let imp_type_indices = new_int_array()
   let imp_type_sigs = array_empty()
   let import_count = parse_core_imports(core_wasm, imp_modules, imp_names, imp_type_indices, imp_type_sigs)
-  // The directory import this core was built with: NUL-framed
-  // `fs_read_dir_nul`, or the seed-era "\n"-framed `fs_read_dir`.
-  let mut read_dir_fn = "fs_read_dir_nul"
-  let mut ri = 0
-  while ri < import_count {
-    if Array::get(imp_modules, ri) == "vibe" && Array::get(imp_names, ri) == "fs_read_dir" {
-      read_dir_fn = "fs_read_dir"
-    }
-    ri = ri + 1
-  }
-  let read_dir_wit = if read_dir_fn == "fs_read_dir" {
-    "read-dir"
+  // The directory import this core was built with (see
+  // `comp_vfs_read_dir_import`).
+  let read_dir_wit = comp_vfs_read_dir_import(core_wasm)
+  let read_dir_fn = if read_dir_wit == "read-dir" {
+    "fs_read_dir"
   } else {
-    "read-dir-nul"
+    "fs_read_dir_nul"
   }
   let vibe_import_names = array_empty()
   let stub_names = array_empty()
