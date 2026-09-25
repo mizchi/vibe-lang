@@ -9,7 +9,8 @@ import @vibe/core {
 }
 import @vibe/compiler/checker {
   check_program_double_call_result_observation,
-  checked_int_and_bool_render_offsets,
+  checked_int_bool_and_unrenderable_render_offsets,
+  merge_unrenderable_render_offsets,
   validate_user_source_exports_excluding,
   validate_user_source_stmts
 }
@@ -432,7 +433,13 @@ fn compile_stmts_gc_only_impl(stmts: Array[Stmt], entry_name: String, merged_off
   // uniqueness filter of its own -- the checker already refuses an offset
   // whose typed occurrences disagree, which is the fail-closed condition a
   // consumer keyed on offset needs.
-  let (gc_int_render_offsets, gc_bool_render_offsets) = checked_int_and_bool_render_offsets(checked)
+  // #3068: the tag-6 rows (a render argument the checker typed as a shape the
+  // runtime renderer cannot print) ride the Int array under a negative key,
+  // exactly as on the linear lanes (#2987). This lane used to request only
+  // tags 3 and 5, so its `__to_string` lowering never saw a refusal row and
+  // printed the argument's address where linear refused the build.
+  let (gc_int_only, gc_bool_render_offsets, gc_unrenderable) = checked_int_bool_and_unrenderable_render_offsets(checked)
+  let gc_int_render_offsets = merge_unrenderable_render_offsets(gc_int_only, gc_unrenderable)
   compile_wasi_module_gc(stmts, effective_entry, generated_test_artifact, gc_to_string_is_wrapper, direct_abi_generic_names, gc_float_ret_fn_names, unique_gc_float_call_offsets, gc_int_render_offsets, gc_bool_render_offsets)
 }
 
