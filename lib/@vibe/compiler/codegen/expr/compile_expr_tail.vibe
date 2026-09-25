@@ -2017,8 +2017,9 @@ fn with_pattern_binders(inner: Array[String], pat: Pat) -> Array[String] {
 
 /// #3108 review: a captured `let mut` lives in an RC cell whose drop releases
 /// its payload, so the cell must OWN the value it stores. A borrowed
-/// initializer -- a borrow-returning call (`Array::get(xs, i)`) or an if/match
-/// whose branch tail is one -- is a view of an element its container still
+/// initializer -- a borrow-returning call (`Array::get(xs, i)`), a projection,
+/// a straight-line block ending in either, or an if/match whose branch tail is
+/// one -- is a view of an element its container still
 /// owns; storing it unretained lets the cell's drop free that element while
 /// the container holds it (a shadow abort, or a trap / wrong read on the
 /// default RC lane). Retain such a value before the store; a fresh owned value
@@ -2028,7 +2029,10 @@ fn ref_cell_retain_value(value: Expr, local_names: Array[String], ctx: CompileCt
     value
   } else if expr_tag(value) == 7 || expr_tag(value) == 16 {
     retain_wrap_branch_tails(value, local_names, array_empty(), ctx)
-  } else if call_returns_borrow(value, local_names, ctx) {
+  } else if is_edot(value) || call_returns_borrow(value, local_names, ctx) || spine_leaf_unowned(value, local_names, ctx) {
+    // The same test the assignment path uses for an unowned replacement: a
+    // bare projection, a borrow-returning call, or a straight-line block whose
+    // leaf is either (`{ let i = 0; Array::get(xs, i) }`).
     ECall(EIdent("__loop_tail_retain", -1), [value], -1)
   } else {
     value
