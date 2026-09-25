@@ -106,9 +106,20 @@ class GcHostListTest(unittest.TestCase):
     def test_real_backend_satisfies_every_invariant(self):
         # A PIN, deliberately a literal: it moves only when a host import is
         # really added or removed, and then whoever moves it has to look at
-        # this file. 22 -> 23 when #2758 appended fs_remove_tree.
+        # this file. 22 -> 23 when #2758 appended fs_remove_tree, 23 -> 24
+        # when stdout_write_char was appended. Console::write_* aliases do
+        # not count: they repeat those import indices.
         self.assertEqual(
-            module.validate_gc_lists(self.names, self.text, self.import_types, self.core_sigs), 23
+            module.validate_gc_lists(self.names, self.text, self.import_types, self.core_sigs), 24
+        )
+
+    def test_stdout_alias_pointing_at_another_index_fails(self):
+        self.assert_mutation_fails(
+            self.text.replace(
+                '("Console::write_stream", 1, 16, 0)',
+                '("Console::write_stream", 1, 5, 0)',
+                1,
+            )
         )
 
     def test_use_host_losing_a_builtin_fails(self):

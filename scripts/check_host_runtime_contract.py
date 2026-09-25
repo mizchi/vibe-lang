@@ -18,6 +18,14 @@ GC = ROOT / "lib/@vibe/compiler/codegen/gc/backend_body.vibe"
 # { Process }), which is why only one of the two raw names appears in both.
 GC_LOWERED_ALIASES = {"Fs::readdir": "vibe_fs_read_dir_raw"}
 
+# Console write spellings are a second name for the Stdout import, not a new
+# wasm function. They repeat that import's index in host_defs so codegen can
+# look the name up, and they do not count toward hbo or the import vector.
+GC_STDOUT_ALIAS_OF = {
+    "Console::write_stream": "Stdout::write_stream",
+    "Console::write_char": "Stdout::write_char",
+}
+
 # `host_defs` spells a builtin the vibe way and `host_imports` spells the wasm
 # import it binds to. The mapping is mechanical for 16 of the 22 -- `::` to `_`,
 # lowercased -- and these six predate that convention. Declared rather than
@@ -39,6 +47,29 @@ GC_IMPORT_NAME_EXCEPTIONS = {
     "vibe_fs_read_dir_raw": "fs_read_dir",
     "vibe_process_exit_raw": "process_exit",
 }
+
+
+def gc_import_rows(host_defs: list[tuple[str, int, int, int]]) -> list[tuple[str, int, int, int]]:
+    """Drop Console write aliases. They repeat a Stdout import's index."""
+    seen: dict[str, tuple[int, int, int]] = {}
+    imports: list[tuple[str, int, int, int]] = []
+    taken: set[int] = set()
+    for name, index, params, ret in host_defs:
+        canonical = GC_STDOUT_ALIAS_OF.get(name)
+        if canonical is not None:
+            owner = seen.get(canonical)
+            if owner is None or owner != (index, params, ret):
+                die(
+                    f"gc host_defs {name!r} must alias {canonical} "
+                    f"(same index, params, and ret); got index {index}, params={params}, ret={ret}"
+                )
+            continue
+        if index in taken:
+            die(f"gc host_defs {name!r} repeats import index {index}, and it is not a stdout write alias")
+        seen[name] = (index, params, ret)
+        taken.add(index)
+        imports.append((name, index, params, ret))
+    return imports
 
 
 def gc_import_name_for(def_name: str) -> str:
@@ -319,6 +350,9 @@ def validate_gc_lists(
 ) -> int:
     use_host, host_defs, host_imports, hbo, header = gc_lists(text)
     def_names = [name for name, _index, _params, _ret in host_defs]
+    # Console::write_* repeats a Stdout import index. The wasm import list,
+    # hbo, and the 1..n index check count the imports only.
+    import_rows = gc_import_rows(host_defs)
 
     # Compared as SETS: `host_defs` is append-only by its own rule while
     # `use_host` is a boolean OR chain, so the two orders legitimately diverge
@@ -330,19 +364,21 @@ def validate_gc_lists(
             f"missing={sorted(set(def_names) - lowered)} extra={sorted(lowered - set(def_names))}"
         )
 
-    # `host_defs` indices ARE the call indices, so they must be 1..n in order.
-    expected = list(range(1, len(host_defs) + 1))
-    if [index for _name, index, _p, _r in host_defs] != expected:
-        die(f"gc host_defs indices are not 1..{len(host_defs)} in order: {[i for _n, i, _p, _r in host_defs]}")
+    # Import indices ARE the call indices, so the non-alias rows must be 1..n
+    # in order. An alias that repeated one of them was already checked above.
+    expected = list(range(1, len(import_rows) + 1))
+    if [index for _name, index, _p, _r in import_rows] != expected:
+        die(f"gc host_defs indices are not 1..{len(import_rows)} in order: {[i for _n, i, _p, _r in import_rows]}")
 
-    if len(host_imports) != len(host_defs):
-        die(f"gc host_imports has {len(host_imports)} entries for {len(host_defs)} host_defs")
+    if len(host_imports) != len(import_rows):
+        die(f"gc host_imports has {len(host_imports)} entries for {len(import_rows)} host imports")
 
     # POSITIONAL, not just equal-length. Import order fixes the wasm function
     # indices that host_defs's absolute call indices address, so reordering two
     # entries of the same ABI type produces a module that validates and calls
-    # the wrong host function (Codex on #2765, P2).
-    for position, ((def_name, _index, _params, _ret), (import_name, _type_id)) in enumerate(zip(host_defs, host_imports), start=1):
+    # the wrong host function (Codex on #2765, P2). Aliases are not in this
+    # zip: they are not their own import.
+    for position, ((def_name, _index, _params, _ret), (import_name, _type_id)) in enumerate(zip(import_rows, host_imports), start=1):
         expected = gc_import_name_for(def_name)
         if expected != import_name:
             die(
@@ -353,8 +389,8 @@ def validate_gc_lists(
     # hbo is an OFFSET, not a name: corrupt it and nothing is missing, every
     # generated body index simply shifts. It gets its own assertion for that
     # reason -- a name-set check stays green on exactly this failure.
-    if hbo != len(host_defs):
-        die(f"gc hbo is {hbo} for {len(host_defs)} host imports")
+    if hbo != len(import_rows):
+        die(f"gc hbo is {hbo} for {len(import_rows)} host imports")
     if header != hbo + 1:
         die(f"gc import vector header is {header}, expected hbo + 1 = {hbo + 1} (wasi fd_write is the extra entry)")
 
@@ -394,7 +430,7 @@ def validate_gc_lists(
     # manifest's own coreTypeSignatures, so this adds no table: measured, all 22
     # already agree (Codex on #2765, P2, third round).
     if core_type_signatures is not None:
-        for (def_name, _index, params, ret), (import_name, type_id) in zip(host_defs, host_imports):
+        for (def_name, _index, params, ret), (import_name, type_id) in zip(import_rows, host_imports):
             signature = core_type_signatures.get(type_id)
             if signature is None:
                 die(f"gc host_imports {import_name!r} uses ABI type {type_id}, which the contract does not describe")
@@ -404,7 +440,7 @@ def validate_gc_lists(
                     f"gc host_defs {def_name!r} declares {params} param(s)/ret={ret}, but its import"
                     f" {import_name!r} is ABI type {type_id} = {signature!r} ({want_params} param(s)/ret={want_ret})"
                 )
-    return len(host_defs)
+    return len(import_rows)
 
 
 def node_imports(text: str) -> set[str]:

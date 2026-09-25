@@ -7535,6 +7535,17 @@ fn expr_keeps_stdout_write(name: String, value: Expr, body: Expr, fn_names: Arra
   }
 }
 
+/// `|>` is still an `EBinOp` here. Desugar turns it into a call of the
+/// right-hand side, so that side is the callee, not a pure operand.
+fn pipe_rhs_is_captured_output(right: Expr, fn_names: Array[String]) -> Bool {
+  match right {
+    ECall(callee, args, _) => call_is_captured_output(callee, fn_names) && exprs_are_captured_output(args, fn_names),
+    EIdent(_, _) => call_is_captured_output(right, fn_names),
+    EDot(_, _, _, _) => call_is_captured_output(right, fn_names),
+    _ => false
+  }
+}
+
 fn expr_is_captured_output(expr: Expr, fn_names: Array[String]) -> Bool {
   match expr {
     EInt(_) => true,
@@ -7562,7 +7573,11 @@ fn expr_is_captured_output(expr: Expr, fn_names: Array[String]) -> Bool {
     // Desugar rewrites `for` into iter_get / host_stream_next, which can
     // read. Those calls are not in this AST, so the surface node is refused.
     EForIn(_, _, _, _) => false,
-    EBinOp(_, left, right, _) => expr_is_captured_output(left, fn_names) && expr_is_captured_output(right, fn_names),
+    EBinOp(op, left, right, _) => if op == "|>" {
+      expr_is_captured_output(left, fn_names) && pipe_rhs_is_captured_output(right, fn_names)
+    } else {
+      expr_is_captured_output(left, fn_names) && expr_is_captured_output(right, fn_names)
+    },
     EUnaryOp(_, arg) => expr_is_captured_output(arg, fn_names),
     EReturn(arg) => expr_is_captured_output(arg, fn_names),
     ESpread(arg) => expr_is_captured_output(arg, fn_names),
