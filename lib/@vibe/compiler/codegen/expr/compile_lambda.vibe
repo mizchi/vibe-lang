@@ -505,15 +505,42 @@ fn cl_own_binding_value(e: Expr, needed: Array[String]) -> Expr {
 /// of a cell name at a result path marked. `let e = d` is otherwise planned as
 /// a MOVE out of `d`, which the cell never gives up.
 ///
-/// The consuming reads the plan cannot see -- a cell read passed to an owning
-/// parameter, or stored into a tuple / array / record / constructor -- are
-/// retained at those sites in codegen (`cc_is_ref_cell_read`).
+/// Aggregate literals (tuple / array / record / map) own their items, so a
+/// cell read on any item's result path is marked here too. A call argument is
+/// owning or borrowed depending on the callee's borrow mask, which is not known
+/// yet, so a cell read handed to an owning parameter or a constructor field is
+/// retained in codegen instead (`cc_is_ref_cell_read` for a bare read,
+/// `cc_own_cell_compound_args` for one on a branch or block tail).
+///
+/// A `test` / `bench` / `example` block is rewritten here too: this runs
+/// before those are lowered to `SLet`s, so a captured `let mut` written
+/// directly in one was otherwise left unmarked (#3130 review).
 fn cl_own_cell_stmts(stmts: Array[Stmt]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       SLet(ex, is_rec, n, ty, value) => if cl_has_letmut(value) {
         Array::set(stmts, i, SLet(ex, is_rec, n, ty, cl_own_cells(value, array_empty())))
+      } else {
+        ()
+      },
+      STest(n, body) => if cl_has_letmut(body) {
+        Array::set(stmts, i, STest(n, cl_own_cells(body, array_empty())))
+      } else {
+        ()
+      },
+      SBench(n, body) => if cl_has_letmut(body) {
+        Array::set(stmts, i, SBench(n, cl_own_cells(body, array_empty())))
+      } else {
+        ()
+      },
+      SExample(n, body) => if cl_has_letmut(body) {
+        Array::set(stmts, i, SExample(n, cl_own_cells(body, array_empty())))
+      } else {
+        ()
+      },
+      SExpr(body) => if cl_has_letmut(body) {
+        Array::set(stmts, i, SExpr(cl_own_cells(body, array_empty())))
       } else {
         ()
       },
@@ -613,6 +640,28 @@ fn cl_fields_cells(fields: Array[(String, Expr)], cells: Array[String]) -> Array
   out
 }
 
+/// The items of a tuple / array literal: each OWNS what it holds, so a cell
+/// read on any of an item's result paths is marked -- a bare `d`, and the
+/// branch or block tail of `[if c { d } else { fresh() }]` alike (#3130
+/// review: only the bare form was retained, so the array and the cell shared
+/// one reference).
+fn cl_agg_cells(items: Array[Expr], cells: Array[String]) -> Array[Expr] {
+  let out = array_empty()
+  for item in items {
+    Array::push(out, cl_cell_tails(cl_own_cells(item, cells), cells, true))
+  }
+  out
+}
+
+/// `cl_agg_cells` for the fields of a record / struct / map literal.
+fn cl_agg_fields_cells(fields: Array[(String, Expr)], cells: Array[String]) -> Array[(String, Expr)] {
+  let out = array_empty()
+  for field in fields {
+    Array::push(out, (field.0, cl_cell_tails(cl_own_cells(field.1, cells), cells, true)))
+  }
+  out
+}
+
 /// Is `e` a read of a cell, directly or through a projection off one?
 fn cl_is_cell_read(e: Expr, cells: Array[String], through_dot: Bool) -> Bool {
   match e {
@@ -706,10 +755,10 @@ fn cl_own_cells(e: Expr, cells: Array[String]) -> Expr {
       EFn(tps, bounds, ps, ret, eff, cl_own_cells(body, cl_cells_without_all(cells, names)))
     },
     ECall(callee, args, off) => ECall(cl_own_cells(callee, cells), cl_list_cells(args, cells), off),
-    ETuple(items) => ETuple(cl_list_cells(items, cells)),
-    EArray(items) => EArray(cl_list_cells(items, cells)),
-    ERecord(n, fields, args) => ERecord(n, cl_fields_cells(fields, cells), args),
-    EMap(fields) => EMap(cl_fields_cells(fields, cells)),
+    ETuple(items) => ETuple(cl_agg_cells(items, cells)),
+    EArray(items) => EArray(cl_agg_cells(items, cells)),
+    ERecord(n, fields, args) => ERecord(n, cl_agg_fields_cells(fields, cells), args),
+    EMap(fields) => EMap(cl_agg_fields_cells(fields, cells)),
     EWhile(c, body) => EWhile(cl_own_cells(c, cells), cl_own_cells(body, cells)),
     ELoop(inits, body) => {
       let names = array_empty()

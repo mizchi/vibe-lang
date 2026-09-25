@@ -677,6 +677,86 @@ fn cc_is_ref_cell_read(e: Expr, ctx: CompileCtx) -> Bool {
   }
 }
 
+/// A read of a captured cell, directly or through a projection off one.
+fn cc_is_cell_read_path(e: Expr, ctx: CompileCtx) -> Bool {
+  match e {
+    EIdent(n, _) => array_contains_str(ctx.ref_cell_names, n),
+    EDot(obj, _, _, _) => cc_is_cell_read_path(obj, ctx),
+    _ => false
+  }
+}
+
+/// Retain every cell read on a result path of a COMPOUND argument -- the tail
+/// of an if / match / block. `top` is false for the argument itself: a bare
+/// cell read or projection is already retained by the per-site checks
+/// (`cc_is_ref_cell_read`, `cc_is_projection`), and wrapping it here would
+/// hide it from them without changing the count.
+fn cc_retain_cell_tails(e: Expr, ctx: CompileCtx, top: Bool) -> Expr {
+  if !top && cc_is_cell_read_path(e, ctx) {
+    ECall(EIdent("__loop_tail_retain", -1), [e], -1)
+  } else {
+    match e {
+      EIf(c, t, f) => EIf(c, cc_retain_cell_tails(t, ctx, false), cc_retain_cell_tails(f, ctx, false)),
+      EMatch(sc, arms) => {
+        let out = array_empty()
+        for arm in arms {
+          Array::push(out, (arm.0, cc_retain_cell_tails(arm.1, ctx, false)))
+        }
+        EMatch(sc, out)
+      },
+      ELet(n, v, b, off) => ELet(n, v, cc_retain_cell_tails(b, ctx, false), off),
+      ELetMut(n, v, b, off) => ELetMut(n, v, cc_retain_cell_tails(b, ctx, false), off),
+      ELetRec(n, v, b) => ELetRec(n, v, cc_retain_cell_tails(b, ctx, false)),
+      ESeq(a, b) => ESeq(a, cc_retain_cell_tails(b, ctx, false)),
+      EAssign(n, v, b) => EAssign(n, v, cc_retain_cell_tails(b, ctx, false)),
+      EAssignOp(n, op, v, b) => EAssignOp(n, op, v, cc_retain_cell_tails(b, ctx, false)),
+      ELabeledArg(n, l, v) => ELabeledArg(n, l, cc_retain_cell_tails(v, ctx, top)),
+      _ => e
+    }
+  }
+}
+
+/// #3130 review: a captured cell read on a branch or block tail of an
+/// argument handed to an OWNING position -- `keep(sink, if c { d } else {
+/// fresh() })`, `Some(match k { 0 => d, _ => .. })` -- was passed without a
+/// reference of its own. The per-site retain recognizes only a bare read, so
+/// the consumer and the cell shared one reference and the value was freed
+/// twice. Retain those tails, but only where the callee owns the position:
+/// its borrow mask (user or builtin) says which, and a callee that resolves
+/// to a local or is not a name at all is a closure, which owns every
+/// argument. A borrowed position is left alone -- retaining there would add a
+/// reference nothing releases.
+fn cc_own_cell_compound_args(callee: Expr, args: Array[Expr], local_names: Array[String], ctx: CompileCtx) -> Array[Expr] {
+  if !ctx.enable_rc || Array::length(ctx.ref_cell_names) == 0 {
+    args
+  } else {
+    let (mask, internal) = match callee {
+      EIdent(f, _) => if find_local_slot(local_names, f) >= 0 {
+        (0, false)
+      } else {
+        (cc_borrow_mask(ctx, f), String::starts_with(f, "__"))
+      },
+      _ => (0, false)
+    }
+    if internal {
+      args
+    } else {
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(args) {
+        let a = Array::get(args, i)
+        if cc_bmask_has(mask, i) {
+          Array::push(out, a)
+        } else {
+          Array::push(out, cc_retain_cell_tails(a, ctx, true))
+        }
+        i = i + 1
+      }
+      out
+    }
+  }
+}
+
 /// #705: a borrow-RETURNING builtin call (`Array::get` / `Map::get` / `__index`)
 /// yields a borrowed view of a heap element — its refcount is NOT bumped, like a
 /// projection `a.f`. When that result is consumed in an OWNING position (a ctor
@@ -3049,7 +3129,8 @@ fn cc_compile_resolved_call(buf: Bytes, fname: String, args: Array[Expr], local_
   }
 }
 
-fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
+fn compile_call_core(buf: Bytes, callee: Expr, raw_args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
+  let args = cc_own_cell_compound_args(callee, raw_args, local_names, ctx)
   if is_eident(callee) {
     let source_name = get_eident_name(callee)
     // Builtin aliases are source-compatible fallbacks, not reserved names.

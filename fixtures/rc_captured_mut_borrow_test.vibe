@@ -172,6 +172,130 @@ fn names(ds: Array[D]) -> String {
   String::join(Array::map(ds, (d) -> String { name_of(d) }), ",")
 }
 
+// #3130 review. A captured cell read that reaches an OWNING place through a
+// branch or block tail -- an array / tuple / record / map item, a constructor
+// field, an owning call argument -- was not retained: only a bare read was.
+// And a captured `let mut` written directly in a `test` / `bench` block was
+// not rewritten at all, because those are lowered to functions after the
+// rewrite ran. Measured on a stage2 built from 72bbc9efe, one test per file:
+// every test from here down trapped under VIBE_RC=shadow except the closure
+// call argument, and the two test-block ones also on the RC lane (the
+// assignment first answering `ax,qq,cz`). The helpers ending in `_names` drop
+// their result before returning; that is what makes a reference the result
+// holds without owning it visible.
+
+
+fn keep(sink: Array[D], d: D) -> Unit {
+  Array::push(sink, d)
+}
+
+fn arr_if(xs: Array[D], c: Bool) -> Array[D] {
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  [if c { d } else { B("fresh") }]
+}
+
+fn arr_block(xs: Array[D]) -> Array[D] {
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  [{
+    let j = 0
+    {
+      let k = j
+      d
+    }
+  }]
+}
+
+fn tup_match(xs: Array[D], k: Int) -> (D, Int) {
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  (match k {
+    0 => d,
+    _ => B("fresh")
+  }, 1)
+}
+
+fn rec_if(xs: Array[D], c: Bool) -> Box {
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  Box::{ inner: if c { d } else { B("fresh") } }
+}
+
+fn ctor_if(xs: Array[D], c: Bool) -> Option[D] {
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  Some(if c { d } else { B("fresh") })
+}
+
+fn call_if(xs: Array[D], sink: Array[D], c: Bool) -> Unit {
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  keep(sink, if c { d } else { B("fresh") })
+  Array::push(sink, match c {
+    true => d,
+    false => B("fresh")
+  })
+}
+
+fn closure_call_if(xs: Array[D], sink: Array[D], c: Bool) -> Unit {
+  let mut d = Array::get(xs, 0)
+  let g = (x: D) -> Unit { Array::push(sink, x) }
+  let f = () -> Unit { g(if c { d } else { B("fresh") }) }
+  f()
+}
+
+fn map_if(xs: Array[D], c: Bool) -> StringMap[D] {
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  let m = Map::from_pairs([("k", if c { d } else { B("fresh") })])
+  Map::set(m, "j", if c { d } else { B("fresh") })
+}
+
+// Each of these drops its result before returning, so a reference the result
+// holds without owning it is released while `xs` still lists the element.
+fn arr_if_names(xs: Array[D], c: Bool) -> String {
+  let a = arr_if(xs, c)
+  name_of(Array::get(a, 0))
+}
+
+fn arr_block_names(xs: Array[D]) -> String {
+  let a = arr_block(xs)
+  name_of(Array::get(a, 0))
+}
+
+fn call_if_names(xs: Array[D], c: Bool) -> String {
+  let sink: Array[D] = []
+  call_if(xs, sink, c)
+  String::concat(name_of(Array::get(sink, 0)), name_of(Array::get(sink, 1)))
+}
+
+fn closure_call_if_names(xs: Array[D], c: Bool) -> String {
+  let sink: Array[D] = []
+  closure_call_if(xs, sink, c)
+  name_of(Array::get(sink, 0))
+}
+
+fn consume(d: D) -> String {
+  let s = name_of(d)
+  let keep_it: Array[D] = [d]
+  String::concat(s, __to_string(Array::length(keep_it)))
+}
+
+fn consume_if(xs: Array[D], c: Bool) -> String {
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  consume(if c { d } else { B("fresh") })
+}
+
 test "a captured let mut holding an if/match borrow keeps the element alive" {
   let xs = mk()
   let out: Array[String] = []
@@ -259,4 +383,111 @@ test "a captured let mut holding a projection from an if arm keeps the field ali
   let r2 = pick_field(b, false)
   let r3 = pick_arm(b)
   inspect(String::join([r1, r2, r3, name_of(b.inner)], ","), content = "ax,ax,ax,ax")
+}
+
+test "a captured cell on a branch tail of an owning argument keeps the element alive" {
+  let xs = mk()
+  let a = consume_if(xs, true)
+  let b = consume_if(xs, true)
+  let c = consume_if(xs, false)
+  inspect(String::join([a, b, c, names(xs)], ";"), content = "ax1;ax1;fresh1;ax,by,cz")
+}
+
+test "a captured let mut declared in a test block holds a borrow safely" {
+  let xs = mk()
+  let out: Array[String] = []
+  let mut i = 0
+  while i < 3 {
+    let mut d = Array::get(xs, i)
+    let f = () -> String { name_of(d) }
+    Array::push(out, f())
+    i = i + 1
+  }
+  let mut j = 0
+  while j < 3 {
+    let mut e = Array::get(xs, j)
+    let g = () -> String { name_of(e) }
+    Array::push(out, g())
+    j = j + 1
+  }
+  inspect(String::join(out, ","), content = "ax,by,cz,ax,by,cz")
+  inspect(names(xs), content = "ax,by,cz")
+}
+
+test "a borrow assigned into a captured let mut in a test block keeps the element alive" {
+  let xs = mk()
+  let out: Array[String] = []
+  let mut i = 0
+  while i < 3 {
+    let mut d = B(String::concat("q", "q"))
+    let f = () -> String { name_of(d) }
+    d = Array::get(xs, i)
+    Array::push(out, f())
+    i = i + 1
+  }
+  inspect(String::join(out, ","), content = "ax,by,cz")
+  inspect(names(xs), content = "ax,by,cz")
+}
+
+test "a captured cell on a branch tail of an array element keeps the element alive" {
+  let xs = mk()
+  let a = arr_if_names(xs, true)
+  let b = arr_if_names(xs, true)
+  let c = arr_if_names(xs, false)
+  inspect(String::join([a, b, c, names(xs)], ";"), content = "ax;ax;fresh;ax,by,cz")
+}
+
+test "a captured cell on a nested block tail of an array element keeps the element alive" {
+  let xs = mk()
+  let a = arr_block_names(xs)
+  let b = arr_block_names(xs)
+  inspect(String::join([a, b, names(xs)], ";"), content = "ax;ax;ax,by,cz")
+}
+
+test "a captured cell on a match arm of a tuple element keeps the element alive" {
+  let xs = mk()
+  let a = tup_match(xs, 0)
+  let b = tup_match(xs, 0)
+  let c = tup_match(xs, 1)
+  inspect(String::join([name_of(a.0), name_of(b.0), name_of(c.0), names(xs)], ";"), content = "ax;ax;fresh;ax,by,cz")
+}
+
+test "a captured cell on a branch tail of a struct field keeps the element alive" {
+  let xs = mk()
+  let a = rec_if(xs, true)
+  let b = rec_if(xs, true)
+  inspect(String::join([name_of(a.inner), name_of(b.inner), names(xs)], ";"), content = "ax;ax;ax,by,cz")
+}
+
+test "a captured cell on a branch tail of a constructor field keeps the element alive" {
+  let xs = mk()
+  let a = ctor_if(xs, true)
+  let b = ctor_if(xs, true)
+  let s = match (a, b) {
+    (Some(p), Some(q)) => String::concat(name_of(p), name_of(q)),
+    _ => "none"
+  }
+  inspect(String::join([s, names(xs)], ";"), content = "axax;ax,by,cz")
+}
+
+test "a captured cell on a branch or arm tail of an owning call argument keeps the element alive" {
+  let xs = mk()
+  let a = call_if_names(xs, true)
+  let b = call_if_names(xs, true)
+  let c = call_if_names(xs, false)
+  inspect(String::join([a, b, c, names(xs)], ";"), content = "axax;axax;freshfresh;ax,by,cz")
+}
+
+test "a captured cell on a branch tail of a closure call argument keeps the element alive" {
+  let xs = mk()
+  let a = closure_call_if_names(xs, true)
+  let b = closure_call_if_names(xs, true)
+  inspect(String::join([a, b, names(xs)], ";"), content = "ax;ax;ax,by,cz")
+}
+
+test "a captured cell on a branch tail of a map value keeps the element alive" {
+  let xs = mk()
+  let a = map_if(xs, true)
+  let b = map_if(xs, true)
+  inspect(String::join([name_of(Map::get(a, "k")), name_of(Map::get(a, "j")), name_of(Map::get(b, "k")), names(xs)], ";"), content = "ax;ax;ax;ax,by,cz")
 }
