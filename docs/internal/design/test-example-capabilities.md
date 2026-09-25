@@ -42,7 +42,7 @@ everything else. The default is `test_bench_default_effects` in
 `lib/@vibe/compiler/core/standard_effect_policy.vibe`:
 
 ```text
-Fs, Env, Stdin, Stdout, Stderr, Console, Process, Profiler, Error, Exception
+Fs,Env,Stdin,Stdout,Stderr,Console,Process,Profiler,Error,Exception,Async
 ```
 
 A declared row may name an effect, an operation (`Http::request`), or an

@@ -26,7 +26,7 @@ src="$WORK_DIR/single_invoke_probe.vibex"
 
 cat > "$src" <<'EOF'
 
-fn main allows Stdout {
+fn main allows Console {
   println("SINGLE_INVOKE_PROBE_MARKER")
 }
 EOF

@@ -1526,10 +1526,10 @@ class Gen:
                             f"String::length({n}.{fn})) & {MASK})")
         lines.append("acc")
         body = "\n".join("  " + l for l in lines)
-        # The oracle lines are printed, so the extended entry carries
-        # Stdout -- and nothing else: every user effect and exception kind
-        # was discharged by a handle above (ExtGen.discharge).
-        row = " with Stdout" if self.ext is not None else ""
+        # The oracle lines are println, which requires Console. Every user
+        # effect and exception kind was discharged by a handle above
+        # (ExtGen.discharge), so the entry carries nothing else.
+        row = " with Console" if self.ext is not None else ""
         return f"export let _start = () -> Int{row} {{\n{body}\n}}"
 
     def build(self):

@@ -1,15 +1,9 @@
 //# `Console` authorizes the legacy tty labels, and not the other way (#2102).
 //
 // #1460 is merging `Stdin` / `Stdout` / `Stderr` into one `Console`
-// capability. Until that lands, the docs call `Console` current and `Stdout`
-// legacy -- while the ergonomic verb was welded to the legacy label:
-//
-//     fn main with Stdout  { println("x") }   compiled
-//     fn main with Console { println("x") }   effect row mismatch
-//
-// So the book taught `Stdout` fifty times, in a chapter that tells the reader
-// `Stdout` is legacy. Not a docs bug: `println` carries `Stdout`, so `Console`
-// simply did not authorize it.
+// capability. `println` requires `Console`. A row that declares only
+// `Stdout` still reaches `Stdout::write_stream` and does not reach
+// `println` or `Console::read_stream`.
 //
 // The fix is CONTAINMENT, not the alias equality `Error`/`Exception` uses
 // (`exception_effect_labels_equal`). Measured on builtin_registry.vibe:
@@ -39,6 +33,24 @@ fn ok(src: String) -> Bool with Exception {
 }
 
 //# Tests
+
+test "a missing println row names Console, not the legacy Stdout label" {
+  let ds = collect_all_diagnostics("fn main {\n  println(\"x\")\n}\n")
+  assert(Array::length(ds) == 1)
+  let d = Array::get(ds, 0)
+  assert(String::contains(d, "missing { Console }"))
+  assert(String::contains(d, "allows Console"))
+  assert(!String::contains(d, "Stdout"))
+}
+
+test "a Console operation under a legacy Stdout grant is repaired as Console" {
+  let ds = collect_all_diagnostics("fn main allows Stdout {\n  Console::write_stream(\"x\")\n}\n")
+  assert(Array::length(ds) == 1)
+  let d = Array::get(ds, 0)
+  assert(String::contains(d, "declared { Stdout }"))
+  assert(String::contains(d, "allows Console::write_stream + Console"))
+  assert(!String::contains(d, "Stdout'"))
+}
 
 test "Console authorizes the print builtins the book needs" {
   // The whole reason this change exists: the taught verb works under the
@@ -75,10 +87,9 @@ test "an unrelated capability still authorizes nothing here" {
   assert(!ok("fn main allows Env {\n  let s = Stdin::read_stream(1)\n  ()\n}\n"))
 }
 
-test "the legacy spelling keeps working while the migration runs" {
-  // ~190 lib sites and 50 book sites still say `with Stdout`. They must not
-  // need touching for this change to land.
-  assert(ok("fn main allows Stdout {\n  println(\"x\")\n}\n"))
+test "println requires Console, not the legacy Stdout label" {
+  assert(!ok("fn main allows Stdout {\n  println(\"x\")\n}\n"))
+  assert(ok("fn main allows Console {\n  println(\"x\")\n}\n"))
   assert(ok("fn main allows Stdout {\n  Stdout::write_stream(\"x\")\n}\n"))
 }
 
@@ -90,7 +101,7 @@ test "the entry `allows` spelling gets the same containment" {
   // book's own example caught the divergence -- it failed `vibe_md check`
   // while the bare form passed.
   assert(ok("fn main allows Console {\n  println(\"x\")\n}\n"))
-  assert(ok("fn main allows Stdout {\n  println(\"x\")\n}\n"))
+  assert(!ok("fn main allows Stdout {\n  println(\"x\")\n}\n"))
 }
 
 test "the escape stays closed on the allows path too" {

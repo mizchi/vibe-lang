@@ -51,23 +51,23 @@ silent ケースに診断が付くようになった場合も **FAIL する**。
 | 02 | retired `Error` label (#1461) | `line 6:1: ` `Error` ` was retired ... -- write ` `Exception` | 0 | 1 | 2 | 3 |
 | 03 | top-level bare expr (ADR-0069) | `line 4:1: top-level expressions are not allowed; move it into fn main` | 1 | 1 | 2 | 4 |
 | 04 | `test` 名が裸の識別子 | `line 1:1: expected test name string` | 0 | 1 | 2 | 3 |
-| 05 | effect row 宣言漏れ | `effect row mismatch for 'helper': missing { Stdout::write_stream } ... hint: declare ...` | 0 | 1 | 2 | 3 |
+| 05 | effect row 宣言漏れ | `effect row mismatch for 'helper': missing { Console::write_stream } ... hint: declare ...` | 0 | 1 | 2 | 3 |
 | 06 | ユーザー関数の arity | `line 4:11-14: function arity mismatch for add: expected 2 args, got 3` | 1 | 1 | 2 | 4 |
 | 07 | builtin の引数型 | `line 2:24-38: argument type mismatch for String::concat (arg 1): Int` | 1 | 1 | 2 | 4 |
 | 08 | `handle` 適格性 (#1511) | `handle of effect 'Ask' cannot be compiled: ... (ADR-0076) ... 追記34 V2 ...` | 0 | 1 | 1 | 2 |
-| 09 | `Stdout::write_stream()` (0引数) | **なし** — compile 成功、生成 wasm が不正で load 時に host が拒否 | 0 | 0 | 0 | 0 |
-| 10 | `Stdout::write_stream(42)` | **なし** — compile も実行も成功し、garbage を出力 | 0 | 0 | 0 | 0 |
+| 09 | `Console::write_stream()` (0引数) | **なし** — compile 成功、生成 wasm が不正で load 時に host が拒否 | 0 | 0 | 0 | 0 |
+| 10 | `Console::write_stream(42)` | **なし** — compile も実行も成功し、garbage を出力 | 0 | 0 | 0 | 0 |
 
 ### Re-score 2026-09-11 (#2654, stage2 `entry-allows-2026-09-11`)
 
 Case 01 only. Its subject was the braced row's own diagnostic; since #2654 an
 entry head spelled `with` is refused as such (the row is still read, so the
 message names the whole edit), and the case now measures that diagnostic.
-`fixed.vibe` is `fn main allows Stdout {` and `diag.grep` pins the new text.
+`fixed.vibe` is `fn main allows Console {` and `diag.grep` pins the new text.
 
 | # | ケース | 診断 (要約) | L | A | C | 計 |
 |---|---|---|---|---|---|---|
-| 01 | braced effect row (#1429) | `line 1:9: ` `fn main` ` is an entry point and grants its row, so the keyword is ` `allows` `: write ` `fn main allows Stdout` | 1 | 1 | 2 | 4 |
+| 01 | braced effect row (#1429) | `line 1:9: ` `fn main` ` is an entry point and grants its row, so the keyword is ` `allows` `: write ` `fn main allows Console` | 1 | 1 | 2 | 4 |
 
 L moved 0 → 1: the position is the `with` token (line and column), not the
 declaration's start. The other nine rows are unchanged.
@@ -99,7 +99,7 @@ mean = 26/10 = 2.6 → **repair_convergence = 3.6**
 
 | # | ケース | 診断 | L | A | C | 計 |
 |---|---|---|---|---|---|---|
-| 09 | `Stdout::write_stream()` (0引数) | `line 2:3-23: function arity mismatch for Stdout::write_stream: expected 1 args, got 0` | **1** | **1** | **2** | **4** (was 0) |
+| 09 | `Console::write_stream()` (0引数) | `line 2:3-23: function arity mismatch for Console::write_stream: expected 1 args, got 0` | **1** | **1** | **2** | **4** (was 0) |
 
 `line:col-col` のスパン付きで出るので、06/07 と同じ最良の段。
 
@@ -108,7 +108,7 @@ mean = 30/10 = 3.0 → **repair_convergence = 4.0** (r4 の 3.6 から)。
 見直す対象になる (スコアの更新はラウンドの仕事なので `scores/` は触っていない)。
 
 **ケース 10 は silent のまま据え置き** — 直したのは arity であって引数の型では
-ない。`Stdout::write_stream(42)` は今も compile も実行も通り garbage を出す。
+ない。`Console::write_stream(42)` は今も compile も実行も通り garbage を出す。
 ディレクトリ名 `09_silent_builtin_arity` は当初この2つが同じ穴だった経緯の記録
 なので、名前は変えていない。
 
@@ -170,7 +170,7 @@ arity に続いて**引数の型**も塞いだ。`builtin_first_arg_head` /
 
 | # | ケース | 診断 | L | A | C | 計 |
 |---|---|---|---|---|---|---|
-| 10 | `Stdout::write_stream(42)` | `line 2:3-23: argument type mismatch for Stdout::write_stream: receiver type Int` | **1** | **1** | **2** | **4** (was 0) |
+| 10 | `Console::write_stream(42)` | `line 2:3-23: argument type mismatch for Console::write_stream: receiver type Int` | **1** | **1** | **2** | **4** (was 0) |
 
 mean = 38/10 = 3.8 → **repair_convergence = 4.8**。
 
@@ -180,7 +180,7 @@ mean = 38/10 = 3.8 → **repair_convergence = 4.8**。
 であり、head 比較が `unify` の作らない区別を作ってはいけない。畳まないと
 レジストリで `CtChar` と書かれた `Char::to_int` が `Char::to_int('A')` を弾き、
 逆に `CtChar` の値 (`Char::from_int(65)`) が `CtInt` と書かれた
-`Stdout::write_char` に渡せなくなる (実際に prelude の `char.vibe` が落ちた)。
+`Console::write_char` に渡せなくなる (実際に prelude の `char.vibe` が落ちた)。
 
 **コーパスから silent ケースが無くなった。** 09/10 は「診断が出ないこと」を測る
 ために置いた2件で、どちらも塞がった。今後 silent 種別が見つかったら**新しい
@@ -216,7 +216,7 @@ miscompile) はこれで解消したので、次ラウンドの見直し対象�
 
 | builtin | arity 検査 |
 |---|---|
-| `Stdout::write_char` / `Stdout::write_stream` | なし |
+| `Console::write_char` / `Console::write_stream` | なし |
 | `Env::get` / `Env::args_len` / `Env::args_get` | なし |
 | `Stdin::read_char` / `Stdin::read_stream` | なし |
 | `Fs::read_file` | なし |

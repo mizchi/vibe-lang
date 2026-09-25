@@ -46,12 +46,15 @@ compiler's own entry point rather than arbitrary user programs.
 
 ## The contract
 
-`export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout`
+`export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Console + Stderr + Process + Profiler`
 (`lib/@vibe/compiler/cli_adapter.vibe`) is the row that matters. `Exception`
 never crosses the host boundary (vibe-internal control flow — an escaping
 throw is a component trap, not a host capability), matching the rule
-`wit_gen.vibe` already applies to user programs. The other four map to
-`docs/internal/compiler/wit/vibe-compiler-host.wit`'s four `import` interfaces.
+`wit_gen.vibe` already applies to user programs. The host imports stay
+`fs`, `env`, `stdin`, and `stdout` in
+`docs/internal/compiler/wit/vibe-compiler-host.wit`. `Console` is the
+effect label; it lowers onto the `stdout` interface. There is no
+`console` import.
 
 **Round 1 correction (Codex review, PR #1178):** the first version of this
 doc derived the `fs` interface from `effect Fs { ReadFile, WriteFile,

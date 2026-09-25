@@ -729,7 +729,7 @@ What the column buys, in the order the launcher uses it:
 |---|---|---|
 | `check` (2.6 MB) | `Env::get` and the cache write trap in the vfs wrap | `env.get`, `fs.write-bytes`, `fs.publish-immutable-text` are rows; served |
 | `fmt` in place | the write traps | `fs.write-file` is a row; served |
-| every verb | output returned as one string at exit | `stdout.write-stream` is a row; a command prints as it goes through the same `Stdout::write_stream` the monolithic CLI already calls |
+| every verb | output returned as one string at exit | `stdout.write-stream` is a row; a command prints as it goes through `print`, which lowers onto that import |
 
 The result frame stays mandatory (`vibe-command-result-v1\t<exit>\n`), because
 its job — a trapped command can never read as success — does not change. Its

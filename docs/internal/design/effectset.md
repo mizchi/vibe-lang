@@ -274,30 +274,30 @@ leak-through チェック (checker_effects.vibe の #885 overlay) の両方が
 (fixtures/effect_effectset_expansion.vibe /
 effect_effectset_param_expansion.vibe)。
 
-**#1361 (2026-08-02)**: この #885 overlay に **ローカル closure** も載る
-ようになった。`let f = () -> T with E { .. }` を関数本体の中に書いた
-場合、それは top-level 関数やコールバック引数と同じ call-graph の葉だが、
-どちらの表にも載っていなかった (call-graph map は top-level SLet/SLetMut
-のみ、overlay は関数型パラメータのみ) ため、`f()` は何もリークせず、
-closure 本体は自分の宣言 row の下で自己充足していた — つまり
-`with Stdout` しか宣言していない関数から `Env` に到達できた。同じ walk
-を使う doctest / `vibe test` の cache 判定 (`file_entry_cacheable` /
-`file_tests_cacheable`) もこれを決定的とみなしていた。ELet/ELetRec/ELetMut
-で binding を overlay に登録することで両方閉じている。実測: この変更で
-cache 判定が変わったファイルは test 499/499・doctest ```vibe run 27/27 で
-**ゼロ** (`fixtures/err_local_closure_effect_leak.vibe`, compiler_gate 82)。
-なお注釈つきの `let f: () -> T with E = ..` は ascription call
-(`ascribe_wrap`) に desugar されてからこの walk に来るので row が見えず、
-従来どおりの寛容な扱いのまま。**未着手のまま残っている範囲**:
-handler レベルの operation 単位 discharge (項目 4 — 現状 `handle ...
-with Env` は Env 全体を一括で discharge しており、特定 operation だけを
-discharge する形にはなっていない)、contract/WIT の operation 単位
-surface (項目 5)。`with Env::get` (単一 operation の直接列挙、
-effectset を介さない) 自体は既存の文字列ラベルベースの effect row
-チェック機構にそのまま乗るため、単一 operation を指す row item は
-最小権限として機能する (caller 側の transitive call-graph チェックで
-実証済み) が、これは正式な OperationRef 正規化ではなく既存機構の
-副産物である点に注意 (この点は変わっていない)。
+**#1361 (2026-08-02)**: a local closure is on the #885 overlay too.
+`let f = () -> T with E { .. }` written inside a function body is a
+call-graph leaf, the same shape as a top-level function or a callback
+parameter, and it was on neither table (the call-graph map held only
+top-level `SLet` / `SLetMut`, and the overlay held only function-typed
+parameters). `f()` therefore leaked nothing, and the closure body was
+satisfied by its own declared row, so a function that declared only
+`with Console` could reach `Env`. The doctest and `vibe test` cache
+(`file_entry_cacheable` / `file_tests_cacheable`) uses the same walk and
+treated that as settled. Registering the `ELet` / `ELetRec` / `ELetMut`
+binding on the overlay closes both. Measured at the time: the cache
+answer changed for **zero** files across test 499/499 and doctest
+```vibe run 27/27 (`fixtures/err_local_closure_effect_leak.vibe`,
+compiler_gate 82). An annotated `let f: () -> T with E = ..` is desugared
+to an ascription call (`ascribe_wrap`) before this walk, so the row is
+still invisible and the old lenient answer remains. **Still open**:
+operation-level discharge in a handler (item 4 — `handle ... with Env`
+still discharges all of `Env`, not one operation) and an operation-level
+contract/WIT surface (item 5). `with Env::get` (a single operation named
+directly, not through an effectset) already rides the existing
+string-label row check, so a row item that names one operation works as
+least privilege (measured on the caller's transitive call-graph check).
+That is a byproduct of the existing mechanism, not a real `OperationRef`
+normalization, and that has not changed.
 fixtures/effect_row_operation_item.vibe (項目1) /
 effect_effectset_expansion.vibe・effect_effectset_param_expansion.vibe・
 err_effectset_cycle.vibe・err_effectset_operation_collision.vibe

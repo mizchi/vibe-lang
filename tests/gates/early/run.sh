@@ -784,7 +784,7 @@ echo "[compiler-gate] generic-struct contract arity regression ok"
 echo "[compiler-gate] 6b2b explicit struct type args (#886)"
 stdir="_build/_gate_struct_targs"
 rm -rf "$stdir"; mkdir -p "$stdir"
-printf 'struct Pair[T] {\n  a: T;\n  b: T\n}\n\nstruct Bag[T] {\n  xs: Array[T]\n}\n\nexport let _start: () -> Unit with Stdout = () -> {\n  let p = Pair[Int]::{ a: 1, b: 2 }\n  assert_eq(p.a + p.b, 3)\n  let g = Bag[Int]::{ xs: [] }\n  Array::push(g.xs, 42)\n  assert_eq(Array::get(g.xs, 0), 42)\n  let n = Pair[Array[Int]]::{ a: [1, 2], b: [] }\n  assert_eq(Array::length(n.a), 2)\n}\n' > "$stdir/ok.vibe"
+printf 'struct Pair[T] {\n  a: T;\n  b: T\n}\n\nstruct Bag[T] {\n  xs: Array[T]\n}\n\nexport let _start: () -> Unit with Console = () -> {\n  let p = Pair[Int]::{ a: 1, b: 2 }\n  assert_eq(p.a + p.b, 3)\n  let g = Bag[Int]::{ xs: [] }\n  Array::push(g.xs, 42)\n  assert_eq(Array::get(g.xs, 0), 42)\n  let n = Pair[Array[Int]]::{ a: [1, 2], b: [] }\n  assert_eq(Array::length(n.a), 2)\n}\n' > "$stdir/ok.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$stdir/ok.vibe" "$stdir/ok.wasm" _start >/dev/null 2>&1 || true
@@ -795,7 +795,7 @@ fi
 if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$stdir/ok.wasm" >/dev/null 2>&1; then
   echo "[compiler-gate] FAIL: explicit struct type args (#886) compiled but trapped at runtime" >&2; exit 1
 fi
-printf 'struct Pair[T] {\n  a: T;\n  b: T\n}\n\nexport let _start: () -> Unit with Stdout = () -> {\n  let p = Pair[Int, String]::{ a: 1, b: 2 }\n  assert_eq(p.a, 1)\n}\n' > "$stdir/arity.vibe"
+printf 'struct Pair[T] {\n  a: T;\n  b: T\n}\n\nexport let _start: () -> Unit with Console = () -> {\n  let p = Pair[Int, String]::{ a: 1, b: 2 }\n  assert_eq(p.a, 1)\n}\n' > "$stdir/arity.vibe"
 if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$stdir/arity.vibe" "$stdir/arity.wasm" _start >/dev/null 2>&1 \
@@ -806,7 +806,7 @@ if ! grep -q "expects 1 type argument(s), got 2" "$stdir/arity.wasm.diag" 2>/dev
   echo "[compiler-gate] FAIL: type-arg arity rejection lacks the expected diagnostic (#886)" >&2
   cat "$stdir/arity.wasm.diag" >&2 2>/dev/null; exit 1
 fi
-printf 'struct Pair[T] {\n  a: T;\n  b: T\n}\n\nexport let _start: () -> Unit with Stdout = () -> {\n  let p = Pair[String]::{ a: 1, b: 2 }\n  assert_eq(p.a, "x")\n}\n' > "$stdir/pin.vibe"
+printf 'struct Pair[T] {\n  a: T;\n  b: T\n}\n\nexport let _start: () -> Unit with Console = () -> {\n  let p = Pair[String]::{ a: 1, b: 2 }\n  assert_eq(p.a, "x")\n}\n' > "$stdir/pin.vibe"
 if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$stdir/pin.vibe" "$stdir/pin.wasm" _start >/dev/null 2>&1 \
@@ -2280,7 +2280,7 @@ rm -rf "$eqtrapdir"; mkdir -p "$eqtrapdir"
 # `assert_true(false)`, so the program compiled clean and died with
 # `trap: RuntimeError: unreachable` -- no message, no position, nothing to act
 # on. There is no way to attach a message at run time (`assert_eq` lowers to
-# `println` and so requires `Stdout` on the containing function, #2107), so
+# `println` and so requires `Console` on the containing function, #2107), so
 # earlier is the only place a message can go, and no guard is emitted for them.
 #
 # The MESSAGE is asserted, not just the refusal: "did not compile" is what the
@@ -2492,7 +2492,7 @@ for ur_ok in \
   ur_i=$((ur_i + 1))
   ur_decl="${ur_ok%%|*}"; ur_rest="${ur_ok#*|}"
   ur_body="${ur_rest%%|*}"; ur_want="${ur_rest#*|}"
-  printf '%s\nfn main allows Stdout {\n  %s\n}\n' "$ur_decl" "$ur_body" > "$urdir/ok$ur_i.vibe"
+  printf '%s\nfn main allows Console {\n  %s\n}\n' "$ur_decl" "$ur_body" > "$urdir/ok$ur_i.vibe"
   # #3068: the controls run on the gc lane too, so its refusal cannot
   # over-refuse a spelling the message recommends.
   for ur_lane in linear gc; do
@@ -4283,7 +4283,7 @@ echo "[compiler-gate] 27f/27 print primitives on the FS lane (#929/#930)"
 ppdir="_build/_gate_print_prims"
 rm -rf "$ppdir"; mkdir -p "$ppdir"
 cat > "$ppdir/prints.vibe" <<'EOF'
-fn main() -> Unit allows Stdout {
+fn main() -> Unit allows Console {
   println("hello gate")
   print("forty")
   print("two")
@@ -4312,16 +4312,16 @@ for pp_rc in 0 1; do
   fi
 done
 # #2107: both rows are declared because both functions really do print --
-# `print` carries `Stdout` now that the checker holds the print builtins to
+# `print` carries `Console` now that the checker holds the print builtins to
 # the row discipline. What this fixture pins is unchanged: the SOURCE
 # definition of `println` wins over the builtin lowering, so the program
 # prints "S" rather than "ignored".
 cat > "$ppdir/shadow.vibe" <<'EOF'
-fn println(s: String) -> Unit with Stdout {
+fn println(s: String) -> Unit with Console {
   print("S\n")
 }
 
-fn main() -> Unit allows Stdout {
+fn main() -> Unit allows Console {
   println("ignored")
 }
 EOF
