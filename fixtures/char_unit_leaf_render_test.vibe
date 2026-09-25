@@ -1,0 +1,69 @@
+// #3075: a `Char` and a `Unit` share the Int representation at run time, so
+// the renderer printed a `Char` as its code point (`97` for `'a'`) and a
+// `Unit` as `0` (`Some(())` -> `Some(0)`), with or without an annotation. A
+// `Char` now renders as the character itself (UTF-8), the way a `String`
+// renders its text, and a `Unit` renders as `()`.
+//
+// A char LITERAL lexes as an Int (`Char` is a transparent Int alias), so a
+// bare `'a'` with nothing declaring it a `Char` is still an Int here.
+struct Glyph {
+  c: Char;
+  u: Unit
+} derive (Show)
+
+fn first_char() -> Char {
+  Char::from_int(98)
+}
+
+fn render_char(c: Char) -> String {
+  "\{c}"
+}
+
+test "annotated Char renders the character" {
+  let c: Char = 'a'
+  inspect("\{c}", content = "a")
+}
+
+test "Char parameter and declared return render the character" {
+  inspect(render_char('q'), content = "q")
+  inspect("\{first_char()}", content = "b")
+}
+
+test "Char inside containers" {
+  let cs: Array[Char] = ['a', 'b']
+  let o: Option[Char] = Some('z')
+  let t: (Int, Char) = (1, 'x')
+  inspect("\{cs}", content = "[a, b]")
+  inspect("\{o}", content = "Some(z)")
+  inspect("\{t}", content = "(1, x)")
+}
+
+test "a non-ASCII Char renders as UTF-8" {
+  let e: Char = Char::from_int(233)
+  let k: Char = Char::from_int(12354)
+  inspect("\{e}\{k}", content = "éあ")
+}
+
+test "Unit renders as ()" {
+  let u: Unit = ()
+  inspect("\{u}", content = "()")
+}
+
+test "Some(()) renders its Unit payload" {
+  let a = Some(())
+  let b: Option[Unit] = Some(())
+  inspect("\{a}", content = "Some(())")
+  inspect("\{b}", content = "Some(())")
+}
+
+test "Unit inside an array and a tuple" {
+  let us: Array[Unit] = [(), ()]
+  let t: (Int, Unit) = (1, ())
+  inspect("\{us}", content = "[(), ()]")
+  inspect("\{t}", content = "(1, ())")
+}
+
+test "derived Show renders Char and Unit fields" {
+  let g = Glyph::{ c: 'w', u: () }
+  inspect("\{g}", content = "Glyph { c: w, u: () }")
+}

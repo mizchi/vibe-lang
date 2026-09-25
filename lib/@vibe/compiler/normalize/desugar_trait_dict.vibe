@@ -1447,7 +1447,10 @@ fn infer_arg_type_name(arg: Expr, struct_sets: Array[(String, Array[String])], v
 /// inference for method calls — and no other path in `infer_arg_type_name`
 /// produces a non-concrete `Some`.
 fn is_concrete_or_known_type_name(t: String, struct_sets: Array[(String, Array[String])]) -> Bool {
-  t == "Int" || t == "Bool" || t == "String" || t == "Double" || t == "Float" || t == "Array" || t == "Map" || t == "Option" || t == "Result" || t == "ByteStream" || struct_set_has(struct_sets, t)
+  // `Char` / `Unit` are concrete: a `Char` operand is an Int at run time, and
+  // routing it to the erased-generic dispatch left `__generic_add` unresolved
+  // on the gc lane.
+  t == "Int" || t == "Bool" || t == "String" || t == "Double" || t == "Float" || t == "Char" || t == "Unit" || t == "Array" || t == "Map" || t == "Option" || t == "Result" || t == "ByteStream" || struct_set_has(struct_sets, t)
 }
 
 /// #973: does either operand's inferred static type look like an ERASED
@@ -5520,7 +5523,7 @@ fn shape_is_composite(sh: String) -> Bool {
 fn interp_shape(sh: String) -> String {
   if String::starts_with(sh, "(") || String::starts_with(sh, "[") || String::starts_with(sh, "{o:") || String::starts_with(sh, "{r:") {
     sh
-  } else if String::starts_with(sh, "{g:") && show_generic_struct_known(generic_shape_head(sh)) {
+  } else if String::starts_with(sh, "{g:") && show_generic_known(generic_shape_head(sh)) {
     sh
   } else {
     ""
@@ -5971,9 +5974,22 @@ fn infer_shape_by_syntax(e: Expr, struct_sets: Array[(String, Array[String])], v
         Some(sentinel) => String::concat("(", String::concat(sentinel, ")")),
         None => match array_elem_type_of(var_types, n) {
           Some(elem) => String::concat("[", String::concat(elem, "]")),
-          None => match infer_arg_type_name(e, struct_sets, var_types, fn_returns) {
-            Some(t) => t,
-            None => ""
+          // #3074: a PARAMETER annotated with a `derive (Show)` generic type
+          // (`k: G[Bool]`) records its instantiation only as its equality
+          // shape; without reading it the render fell to the erased renderer.
+          None => match lookup_var_type(var_types, eq_shape_key(n)) {
+            Some(esh) => if String::starts_with(esh, "{g:") && show_generic_known(generic_shape_head(esh)) {
+              esh
+            } else {
+              match infer_arg_type_name(e, struct_sets, var_types, fn_returns) {
+                Some(t) => t,
+                None => ""
+              }
+            },
+            None => match infer_arg_type_name(e, struct_sets, var_types, fn_returns) {
+              Some(t) => t,
+              None => ""
+            }
           }
         }
       }
@@ -5985,9 +6001,13 @@ fn infer_shape_by_syntax(e: Expr, struct_sets: Array[(String, Array[String])], v
     // `[Some([1]), None]` printed an address. Equality's `infer_eq_shape`
     // already spells the same encoding. A payload this pass cannot type keeps
     // the old answer (the head), never a guessed shape.
+    // #3074: a `derive (Show)` generic enum constructor describes its own
+    // instantiation the same way, `GA(true)` -> `{g:G,Bool}`.
     ECall(callee, cargs, _) => match callee {
       EIdent(fname, _) => if (fname == "Some" || fname == "Option::Some") && Array::length(cargs) == 1 && String::length(infer_shape(Array::get(cargs, 0), struct_sets, var_types, fn_returns)) > 0 {
         String::concat("{o:", String::concat(infer_shape(Array::get(cargs, 0), struct_sets, var_types, fn_returns), "}"))
+      } else if String::length(show_generic_enum_ctor_shape(fname, cargs, struct_sets, var_types, fn_returns)) > 0 {
+        show_generic_enum_ctor_shape(fname, cargs, struct_sets, var_types, fn_returns)
       } else match lookup_var_type(var_types, eq_shape_key(fname)) {
         Some(sh) => interp_shape(sh),
         None => match fn_return_type(fn_returns, fn_eq_shape_key(fname)) {
@@ -9528,6 +9548,30 @@ fn collect_local_binder_names(stmts: Array[Stmt]) -> Array[String] {
   out
 }
 
+/// #3075: a non-generic shim whose parameter is annotated with a type the
+/// call-site argument cannot stand in for is left an ordinary call, whose body
+/// renders at the declared type. Expanding it at the call site replaced that
+/// type with the argument's: `fn render(c: Char)` applied to `'q'` (a char
+/// literal is an Int) rendered `113`. The same holds for `Unit` and for an
+/// applied user type (`G[Bool]`, #3074). Builtin containers and tuples keep
+/// the expansion: their parameter shape is not read in the body.
+fn show_shim_param_is_concrete(value: Expr) -> Bool {
+  match value {
+    EFn(tparams, _, params, _, _, _) => if Array::length(tparams) == 0 && Array::length(params) == 1 {
+      let (_, ann) = Array::get(params, 0)
+      match ann {
+        Some(TyName(n)) => n == "Char",
+        Some(TyUnit) => true,
+        Some(TyApp(n, _)) => n != "Array" && n != "Option" && n != "Result" && n != "Map",
+        _ => false
+      }
+    } else {
+      false
+    },
+    _ => false
+  }
+}
+
 /// Refreshed at each `desugar_trait_dicts` entry. Empty (so nothing is
 /// rewritten) whenever the shim's own definition is not part of the program
 /// being compiled -- the conservative direction.
@@ -9538,7 +9582,7 @@ fn collect_show_shims(stmts: Array[Stmt]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SLet(_, _, name, _, value) => if is_show_shim_value(value) && !str_array_contains(shadowed, name) {
+      SLet(_, _, name, _, value) => if is_show_shim_value(value) && !str_array_contains(shadowed, name) && !show_shim_param_is_concrete(value) {
         Array::push(dtd_show_shims, name)
         match value {
           EFn(tparams, _, _, _, _, _) => if Array::length(tparams) > 0 {
@@ -9845,7 +9889,10 @@ fn interp_render_shaped(sub: Expr, sh: String, derived_only: Bool, gens: Array[D
 /// interp_expand_var_tuple / interp_expand_var_array for anything that nests;
 /// those two stay for the shapes recorded by the older sentinels alone.
 fn interp_expand_shape(subject: Expr, sh: String, derived_only: Bool, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
-  if String::starts_with(sh, "(") {
+  if sh == "{u}" {
+    // #3075: a Unit position (`Option[Unit]`) printed `0`.
+    unit_render_expr(subject)
+  } else if String::starts_with(sh, "(") {
     let parts = shape_split(shape_inner(sh))
     let n = Array::length(parts)
     let pats = array_empty()
@@ -9902,6 +9949,8 @@ fn interp_expand_shape(subject: Expr, sh: String, derived_only: Bool, gens: Arra
       (PCtor("Ok", Array::slice([PBind(ov)], 0, 1)), concat2(EString("Ok(", -1), concat2(ok_piece, EString(")", -1)))),
       (PCtor("Err", Array::slice([PBind(ev)], 0, 1)), concat2(EString("Err(", -1), concat2(err_piece, EString(")", -1))))
     ], 0, 2))
+  } else if String::starts_with(sh, "{g:") && show_generic_enum_known(generic_shape_head(sh)) {
+    interp_expand_generic_enum(subject, sh, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
   } else if String::starts_with(sh, "{g:") && show_generic_struct_known(generic_shape_head(sh)) {
     // #3007: a `derive (Show)` generic struct at a known instantiation. The
     // field types get the arguments substituted, so each field renders at its
@@ -9991,6 +10040,90 @@ fn interp_expand_shape(subject: Expr, sh: String, derived_only: Bool, gens: Arra
   }
 }
 
+/// #3074: the heads of the generic enums whose `{g:` expansion is being
+/// generated, innermost last. A payload naming one of them again (`Cons(T,
+/// L[T])`) would otherwise expand forever.
+let dtd_show_generic_enum_stack: Array[String] = empty_str_array()
+
+/// #3074: a `derive (Show)` generic enum at a known instantiation, rendered
+/// variant by variant with the arguments substituted into the payload types.
+/// The text matches `gen_enum_show_fn`'s (`GA(true)`, `GB`).
+///
+/// A payload that names an enum already being expanded is recursive. Its
+/// erased `to_string` is exact only when every type argument renders the same
+/// erased as typed (`Int`, `String`); any other argument is refused rather than
+/// printed through the erased formal.
+fn interp_expand_generic_enum(subject: Expr, sh: String, derived_only: Bool, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
+  let gparts = shape_split(String::substring(sh, 3, String::length(sh) - 1))
+  let head = Array::get(gparts, 0)
+  if str_array_contains(dtd_show_generic_enum_stack, head) {
+    let mut safe = true
+    let mut ai = 1
+    while ai < Array::length(gparts) {
+      let a = Array::get(gparts, ai)
+      if a != "Int" && a != "String" {
+        safe = false
+      } else {
+        ()
+      }
+      ai = ai + 1
+    }
+    if safe {
+      ECall(EIdent(String::concat(head, "::to_string"), -1), [subject], -1)
+    } else {
+      let shown = namespace_rename_original(head)
+      throw(String::concat("cannot interpolate a recursive `", String::concat(shown, String::concat("` whose type arguments are not `Int` or `String`: its derived renderer erases the type parameter, so a nested payload would print through it -- render the value with a function you write (e.g. `fn show(v: ", String::concat(shown, "[..]) -> String`) (#3074)")))))
+    }
+  } else {
+    match show_generic_enum_decl(head) {
+      Some((_, formals, variants)) => {
+        let targs = empty_type_exprs()
+        let mut ai = 1
+        while ai < Array::length(gparts) {
+          Array::push(targs, shape_to_eq_ty(Array::get(gparts, ai)))
+          ai = ai + 1
+        }
+        Array::push(dtd_show_generic_enum_stack, head)
+        let arms = array_empty()
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (vname, ptys) = Array::get(variants, vi)
+          let pats = array_empty()
+          let mut body = EString(namespace_rename_original(vname), -1)
+          if Array::length(ptys) > 0 {
+            body = EString(String::concat(namespace_rename_original(vname), "("), -1)
+            let mut pi = 0
+            while pi < Array::length(ptys) {
+              let pv = show_tmp_name()
+              Array::push(pats, PBind(pv))
+              let psh = if Array::length(targs) == Array::length(formals) {
+                ty_to_eq_shape(eq_subst_ty(Array::get(ptys, pi), formals, targs))
+              } else {
+                ""
+              }
+              let piece = interp_render_shaped(EIdent(pv, -1), psh, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+              body = if pi == 0 {
+                concat2(body, piece)
+              } else {
+                concat2(concat2(body, EString(", ", -1)), piece)
+              }
+              pi = pi + 1
+            }
+            body = concat2(body, EString(")", -1))
+          } else {
+            ()
+          }
+          Array::push(arms, (PCtor(vname, pats), body))
+          vi = vi + 1
+        }
+        Array::truncate(dtd_show_generic_enum_stack, Array::length(dtd_show_generic_enum_stack) - 1)
+        EMatch(subject, arms)
+      },
+      None => interp_render_sub(subject, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+    }
+  }
+}
+
 /// `ctor_name(<rendered payload>)`.
 fn interp_wrap1(ctor: String, payload: Expr, derived_only: Bool, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
   concat2(EString(String::concat(ctor, "("), -1), concat2(interp_render_sub(payload, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns), EString(")", -1)))
@@ -10072,6 +10205,63 @@ fn interp_arg_is_double(arg: Expr, struct_sets: Array[(String, Array[String])], 
   }
 }
 
+/// #3075: a `Char` (declared, recorded, or filed by the checker's render row).
+/// A `Char` is a transparent `Int` at run time, so codegen's renderer printed
+/// its code point: `let c: Char = 'a'` rendered `97`. A char LITERAL lexes as
+/// an Int and is not a `Char` until something declares it one.
+fn interp_arg_is_char(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Bool {
+  match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
+    Some(t) => t == "Char",
+    None => dtd_typed_render_leaf_for(arg) == "Char"
+  }
+}
+
+/// #3075: a `Unit` value. It shares the Int representation too, so `Some(())`
+/// rendered `Some(0)`.
+fn interp_arg_is_unit(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Bool {
+  match arg {
+    EUnit => true,
+    _ => match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
+      Some(t) => t == "Unit",
+      None => dtd_typed_render_leaf_for(arg) == "{u}"
+    }
+  }
+}
+
+/// #3075: render a `Char` as the character itself (UTF-8 encoded), the way a
+/// `String` renders its text.
+fn char_render_expr(val: Expr) -> Expr {
+  let c = show_tmp_name()
+  let cv = EIdent(c, -1)
+  let byte = (e: Expr) -> Expr {
+    ECall(EIdent("String::from_char_code", -1), [e], -1)
+  }
+  let shr = (n: Int) -> Expr {
+    EBinOp(">>", cv, EInt(n), -1)
+  }
+  let cont = (e: Expr) -> Expr {
+    byte(EBinOp("|", EInt(128), EBinOp("&", e, EInt(63), -1), -1))
+  }
+  let lead = (mark: Int, e: Expr) -> Expr {
+    byte(EBinOp("|", EInt(mark), e, -1))
+  }
+  let two = concat2(lead(192, shr(6)), cont(cv))
+  let three = concat2(lead(224, shr(12)), concat2(cont(shr(6)), cont(cv)))
+  let four = concat2(lead(240, shr(18)), concat2(cont(shr(12)), concat2(cont(shr(6)), cont(cv))))
+  // Through `Char::to_int` so the binder is an Int: the gc lane has no `<` /
+  // `>>` lowering for a Char-typed operand.
+  ELet(c, ECall(EIdent("Char::to_int", -1), [val], -1), EIf(EBinOp("<", cv, EInt(128), -1), byte(cv), EIf(EBinOp("<", cv, EInt(2048), -1), two, EIf(EBinOp("<", cv, EInt(65536), -1), three, four))), -1)
+}
+
+/// #3075: render a `Unit` as `()`, still evaluating the value once.
+fn unit_render_expr(val: Expr) -> Expr {
+  match val {
+    EUnit => EString("()", -1),
+    EIdent(_, _) => EString("()", -1),
+    _ => ESeq(val, EString("()", -1))
+  }
+}
+
 /// The structural rendering for an interpolated wrapper value, or None when
 /// this pass has no shape to work from and the `__to_string` call must stand.
 fn interp_expand(arg: Expr, derived_only: Bool, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[Expr] with Exception {
@@ -10128,6 +10318,16 @@ fn interp_expand_checked(arg: Expr, derived_only: Bool, gens: Array[DictGen], tr
     interp_shape(dtd_offsetless_shape(arg, struct_sets, var_types, fn_returns))
   } else if dtd_interp_expands_itself(syn_sh, head) {
     dtd_typed_render_shape_for(arg)
+  } else if String::length(head) == 0 {
+    // #3074: a value this pass cannot name at all (`pair.0` holding a
+    // `G[Bool]`) takes a generic-renderer row only: the erased renderer, or
+    // an address, is all that is left for it otherwise.
+    let row_sh = dtd_typed_render_shape_for(arg)
+    if String::starts_with(row_sh, "{g:") {
+      row_sh
+    } else {
+      ""
+    }
   } else {
     ""
   }
@@ -10743,11 +10943,36 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
         // #3007: a `derive (Show)` generic struct whose instantiation this pass
         // can see renders field by field (`interp_expand_shape`'s `{g:` arm);
         // its one derived `to_string` erases the formals.
-        let generic_show_sh = interp_shape(infer_shape(Array::get(args, 0), struct_sets, var_types, fn_returns))
+        let generic_syn_sh = interp_shape(infer_shape(Array::get(args, 0), struct_sets, var_types, fn_returns))
+        // #3074: the checker's render row supplies the instantiation where the
+        // syntax does not (a call result, a binder it never recorded).
+        let generic_head = match infer_arg_type_name(Array::get(args, 0), struct_sets, var_types, fn_returns) {
+          Some(h) => h,
+          None => ""
+        }
+        let generic_show_sh = if String::starts_with(generic_syn_sh, "{g:") || (!show_generic_known(generic_head) && String::length(generic_head) > 0) {
+          generic_syn_sh
+        } else {
+          let row_sh = dtd_typed_render_shape_for(Array::get(args, 0))
+          if String::starts_with(row_sh, "{g:") {
+            row_sh
+          } else {
+            generic_syn_sh
+          }
+        }
         let show_target = if String::starts_with(generic_show_sh, "{g:") {
           ""
         } else {
           interp_show_target(Array::get(args, 0), false, struct_sets, var_types, fn_returns)
+        }
+        // #3074: the only renderer left is the derived one, which erases the
+        // enum's formals -- `G[Bool]` printed `GA(1)`. A payload-free
+        // constructor renders its name at any instantiation; anything else is
+        // refused rather than printed through the erased formal.
+        if show_target != "" && show_generic_enum_known(generic_head) && !show_generic_enum_nullary(Array::get(args, 0)) {
+          throw(interp_generic_enum_unknown_msg(namespace_rename_original(generic_head), off))
+        } else {
+          ()
         }
         if show_target != "" {
           Some(ECall(EIdent(show_target, -1), Array::slice([
@@ -10776,6 +11001,12 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
           Some(ECall(EIdent("Double::to_string", -1), Array::slice([
             rewrite_expr(Array::get(args, 0), gens, traits, struct_sets, dict_binds, var_types, fn_returns)
           ], 0, 1), off))
+        } else if interp_arg_is_char(Array::get(args, 0), struct_sets, var_types, fn_returns) {
+          // #3075: a `Char` printed its code point (`97` for `'a'`).
+          Some(char_render_expr(rewrite_expr(Array::get(args, 0), gens, traits, struct_sets, dict_binds, var_types, fn_returns)))
+        } else if interp_arg_is_unit(Array::get(args, 0), struct_sets, var_types, fn_returns) {
+          // #3075: a `Unit` printed `0` (`Some(())` -> `Some(0)`).
+          Some(unit_render_expr(rewrite_expr(Array::get(args, 0), gens, traits, struct_sets, dict_binds, var_types, fn_returns)))
         } else {
           let expanded = interp_expand(Array::get(args, 0), false, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
           // #1445: nothing rendered it structurally AND the type is a declared
@@ -12332,6 +12563,10 @@ fn arr_to_string_name(t: TypeExpr) -> String {
 fn show_for_typed(fty: TypeExpr, val: Expr, known_types: Array[String]) -> Expr {
   match fty {
     TyName("String") => val,
+    // #3075: a `Char` / `Unit` field or payload shares the Int
+    // representation, so `__to_string` printed `97` / `0`.
+    TyName("Char") => char_render_expr(val),
+    TyUnit => unit_render_expr(val),
     TyName(n) => if !is_scalar_type_name(n) && str_array_contains(known_types, n) {
       ECall(EIdent(qualified_name(n, "to_string"), -1), Array::slice([val], 0, 1), -1)
     } else {
@@ -13455,6 +13690,133 @@ fn show_generic_struct_known(head: String) -> Bool {
   }
 }
 
+/// #3074: the generic enums that `derive (Show)` -- (name, formals, variants).
+/// Like the structs above, their one derived `to_string` erases the formals, so
+/// a `G[Bool]` payload rendered as its tagged integer (`GA(1)`), annotated or
+/// not. An interpolation that knows the instantiation renders the variants
+/// itself (`interp_expand_shape`'s `{g:` arm), with the arguments substituted
+/// into the payload types; one that does not is refused
+/// (`interp_generic_enum_unknown_msg`).
+let dtd_show_generic_enums: Array[(String, Array[String], Array[(String, Array[TypeExpr])])] = array_empty()
+
+fn show_generic_enum_decl(head: String) -> Option[(String, Array[String], Array[(String, Array[TypeExpr])])] {
+  let mut found: Option[(String, Array[String], Array[(String, Array[TypeExpr])])] = None
+  let mut i = 0
+  while i < Array::length(dtd_show_generic_enums) {
+    let decl = Array::get(dtd_show_generic_enums, i)
+    if decl.0 == head {
+      found = Some(decl)
+      i = Array::length(dtd_show_generic_enums)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+fn show_generic_enum_known(head: String) -> Bool {
+  match show_generic_enum_decl(head) {
+    Some(_) => true,
+    None => false
+  }
+}
+
+/// A `{g:Head,..}` head this pass renders itself: a `derive (Show)` generic
+/// struct (#3007) or enum (#3074).
+fn show_generic_known(head: String) -> Bool {
+  show_generic_struct_known(head) || show_generic_enum_known(head)
+}
+
+/// #3074: the `derive (Show)` generic enum declaring constructor `fname`
+/// (bare `GA` or qualified `G::GA`), with that variant's payload types.
+fn show_generic_enum_ctor(fname: String) -> Option[(String, Array[String], Array[TypeExpr])] {
+  let mut found: Option[(String, Array[String], Array[TypeExpr])] = None
+  let mut i = 0
+  while i < Array::length(dtd_show_generic_enums) {
+    let (ename, formals, variants) = Array::get(dtd_show_generic_enums, i)
+    let mut vi = 0
+    while vi < Array::length(variants) {
+      let (vname, ptys) = Array::get(variants, vi)
+      if fname == vname || fname == qualified_name(ename, vname) {
+        found = Some((ename, formals, ptys))
+        vi = Array::length(variants)
+        i = Array::length(dtd_show_generic_enums)
+      } else {
+        vi = vi + 1
+      }
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// #3074: the `{g:G,..}` shape of a generic enum constructor call written
+/// without type arguments, reading each formal off a payload declared exactly
+/// that formal. "" when this is not such a call or a formal is not answered.
+fn show_generic_enum_ctor_shape(fname: String, cargs: Array[Expr], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
+  match show_generic_enum_ctor(fname) {
+    Some((ename, formals, ptys)) => if Array::length(ptys) != Array::length(cargs) {
+      ""
+    } else {
+      let mut acc = String::concat("{g:", ename)
+      let mut ok = true
+      let mut fi = 0
+      while fi < Array::length(formals) && ok {
+        let f = Array::get(formals, fi)
+        let mut sh = ""
+        let mut pi = 0
+        while pi < Array::length(ptys) && String::length(sh) == 0 {
+          match Array::get(ptys, pi) {
+            TyName(tn) => if tn == f {
+              sh = infer_shape(Array::get(cargs, pi), struct_sets, var_types, fn_returns)
+            } else {
+              ()
+            },
+            _ => ()
+          }
+          pi = pi + 1
+        }
+        if String::length(sh) == 0 {
+          ok = false
+        } else {
+          acc = String::concat(acc, String::concat(",", sh))
+        }
+        fi = fi + 1
+      }
+      if ok {
+        String::concat(acc, "}")
+      } else {
+        ""
+      }
+    },
+    None => ""
+  }
+}
+
+/// #3074: is `arg` a payload-free constructor of a `derive (Show)` generic
+/// enum? Its erased rendering is its name, which is exact at any
+/// instantiation, so it needs no type arguments.
+fn show_generic_enum_nullary(arg: Expr) -> Bool {
+  match arg {
+    EIdent(n, _) => match show_generic_enum_ctor(n) {
+      Some((_, _, ptys)) => Array::length(ptys) == 0,
+      None => false
+    },
+    _ => false
+  }
+}
+
+/// #3074: the refusal for a `derive (Show)` generic enum whose type arguments
+/// this site cannot recover, naming the edit.
+fn interp_generic_enum_unknown_msg(ename: String, off: Int) -> String {
+  let base = String::concat("cannot interpolate this `", String::concat(ename, String::concat("` value: its type arguments are not known here, and the derived renderer would print a payload through an erased type parameter (`GA(1)` for `GA(true)`) -- bind it with a type annotation first (e.g. `let v: ", String::concat(ename, "[Bool] = ...`, then interpolate `v`) (#3074)"))))
+  if off >= 0 {
+    String::concat(base, String::concat(" [@off=", String::concat(__to_string(off), "]")))
+  } else {
+    base
+  }
+}
+
 /// The head of a `{g:Head,..}` shape, or "".
 fn generic_shape_head(sh: String) -> String {
   if String::starts_with(sh, "{g:") {
@@ -13900,6 +14262,8 @@ fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {
   Array::truncate(dtd_eq_unsafe_types, 0)
   Array::truncate(dtd_eq_generic_structs, 0)
   Array::truncate(dtd_show_generic_structs, 0)
+  Array::truncate(dtd_show_generic_enums, 0)
+  Array::truncate(dtd_show_generic_enum_stack, 0)
   Array::truncate(dtd_eq_derived_generic, 0)
   Array::truncate(dtd_eq_enum_decls, 0)
   Array::truncate(dtd_eq_enum_payload_check_stack, 0)
@@ -13961,6 +14325,11 @@ fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {
           Array::push(dtd_eq_generic_types, ename)
           if str_array_contains(enum_derives, "Eq") {
             Array::push(dtd_eq_derived_generic, ename)
+          } else {
+            ()
+          }
+          if str_array_contains(enum_derives, "Show") && ename != "Option" && ename != "Result" {
+            Array::push(dtd_show_generic_enums, (ename, decl_tparams, variants))
           } else {
             ()
           }
@@ -22117,6 +22486,22 @@ let dtd_typed_render_keys: Array[String] = []
 /// "" too: a formal renders through its witness, which the syntactic path
 /// already finds.
 fn dtd_typed_render_shape_for(arg: Expr) -> String {
+  interp_shape(dtd_typed_render_raw_shape_for(arg))
+}
+
+/// #3075: the checker's row for a SCALAR leaf the runtime renderer cannot tell
+/// from an Int: "Char", "{u}", or "".
+fn dtd_typed_render_leaf_for(arg: Expr) -> String {
+  let sh = dtd_typed_render_raw_shape_for(arg)
+  if sh == "Char" || sh == "{u}" {
+    sh
+  } else {
+    ""
+  }
+}
+
+/// The row's type in the shape grammar, unfiltered.
+fn dtd_typed_render_raw_shape_for(arg: Expr) -> String {
   let off = typed_lowering_arg_offset(arg)
   let mut key = ""
   if off >= 0 {
@@ -22137,7 +22522,7 @@ fn dtd_typed_render_shape_for(arg: Expr) -> String {
   } else {
     match impl_target_from_key(key) {
       Some(TyApp(head, args)) => if head == typed_render_row_head() && Array::length(args) == 1 && !eq_ty_mentions_scope_formal(Array::get(args, 0)) {
-        interp_shape(ty_to_eq_shape(Array::get(args, 0)))
+        ty_to_eq_shape(Array::get(args, 0))
       } else {
         ""
       },
@@ -22334,7 +22719,7 @@ fn infer_item_shape(e: Expr, struct_sets: Array[(String, Array[String])], var_ty
 /// where the checker's own refusal (#2987) still answers -- a row never turns a
 /// refusal into a render.
 fn dtd_interp_expands_itself(sh: String, head: String) -> Bool {
-  String::length(sh) > 0 || head == "Option" || head == "Result"
+  String::length(sh) > 0 || head == "Option" || head == "Result" || show_generic_known(head)
 }
 
 fn dtd_typed_eq_key_for(boff: Int) -> String {
