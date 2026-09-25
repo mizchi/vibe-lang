@@ -1,0 +1,75 @@
+// #3082: a `derive (Show)` generic struct renders through its derived
+// `to_string`, which is generated once with the formal erased. Where the
+// instantiation is not in front of the renderer, that erased renderer printed
+// the representation: a `Box[Bool]` field of a derived struct rendered
+// `Outer { b: Box { v: 1 } }` (the same for a `G[Bool]` payload,
+// `OuterG { g: GA(1) }`), and a recursive struct at any instantiation
+// overflowed the stack while the render was being generated. A derived
+// renderer now renders such a field at its substituted type, and a recursive
+// position uses the erased renderer only where it is exact (`Int`, `String`).
+struct Box[T] {
+  v: T
+} derive (Show)
+
+struct Pair[A, B] {
+  a: A;
+  b: B
+} derive (Show)
+
+enum G[T] {
+  GA(T);
+  GB
+} derive (Show)
+
+struct Outer {
+  b: Box[Bool]
+} derive (Show)
+
+struct OuterG {
+  g: G[Bool]
+} derive (Show)
+
+struct OuterMix {
+  p: Pair[Double, Array[Bool]];
+  o: Option[Box[Bool]]
+} derive (Show)
+
+enum Holder {
+  Holds(Box[Bool]);
+  Empty
+} derive (Show)
+
+struct L[T] {
+  head: T;
+  rest: Option[L[T]]
+} derive (Show)
+
+test "a generic struct field of a derived struct renders at its argument" {
+  let o = Outer::{ b: Box::{ v: true } }
+  inspect("\{o}", content = "Outer { b: Box { v: true } }")
+}
+
+test "a generic enum field of a derived struct renders at its argument" {
+  let o = OuterG::{ g: GA(true) }
+  inspect("\{o}", content = "OuterG { g: GA(true) }")
+}
+
+test "two formals, an array argument, and an Option around the generic" {
+  let o = OuterMix::{ p: Pair::{ a: 1.5, b: [true, false] }, o: Some(Box::{ v: false }) }
+  inspect("\{o}", content = "OuterMix { p: Pair { a: 1.5, b: [true, false] }, o: Some(Box { v: false }) }")
+}
+
+test "a generic struct payload of a derived enum renders at its argument" {
+  let h = Holds(Box::{ v: true })
+  inspect("\{h}", content = "Holds(Box { v: true })")
+}
+
+test "a recursive generic struct at Int renders and terminates" {
+  let l: L[Int] = L::{ head: 1, rest: Some(L::{ head: 2, rest: None }) }
+  inspect("\{l}", content = "L { head: 1, rest: Some(L { head: 2, rest: None }) }")
+}
+
+test "the same head at two instantiations is not recursion" {
+  let b: Box[Box[Bool]] = Box::{ v: Box::{ v: true } }
+  inspect("\{b}", content = "Box { v: Box { v: true } }")
+}

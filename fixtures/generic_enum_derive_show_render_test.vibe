@@ -1,0 +1,106 @@
+// #3074: a generic enum's `derive (Show)` generates ONE `to_string` with the
+// formals erased, so a payload rendered through the erased type parameter:
+// `let k: G[Bool] = GA(true)` printed `GA(1)`, and the annotation did not
+// help. An interpolation that knows the instantiation -- an annotation, a
+// constructor call whose payload says it, a declared return type, or the
+// checker's render row -- now renders variant by variant at the real payload
+// types. The Int / String rows are controls: they rendered correctly before.
+enum G[T] {
+  GA(T);
+  GB
+} derive (Show)
+
+enum Two[A, B] {
+  Both(A, B);
+  Left(A);
+  Neither
+} derive (Show)
+
+enum L[T] {
+  Cons(T, L[T]);
+  Nil
+} derive (Show)
+
+fn make_g() -> G[Bool] {
+  GA(false)
+}
+
+fn render_param(k: G[Bool]) -> String {
+  "\{k}"
+}
+
+test "annotated G[Bool] renders the Bool payload" {
+  let k: G[Bool] = GA(true)
+  inspect("\{k}", content = "GA(true)")
+}
+
+test "constructor call renders the Bool payload" {
+  inspect("\{GA(true)}", content = "GA(true)")
+}
+
+test "unannotated binding renders the Bool payload" {
+  let k = GA(false)
+  inspect("\{k}", content = "GA(false)")
+}
+
+test "annotated G[Double] renders the Double payload" {
+  let k: G[Double] = GA(1.5)
+  inspect("\{k}", content = "GA(1.5)")
+}
+
+test "annotated G[Array[Bool]] renders the array payload" {
+  let k: G[Array[Bool]] = GA([true, false])
+  inspect("\{k}", content = "GA([true, false])")
+}
+
+test "payload-free variant renders its name" {
+  let k: G[Bool] = GB
+  inspect("\{k}", content = "GB")
+}
+
+test "declared return type renders the Bool payload" {
+  inspect("\{make_g()}", content = "GA(false)")
+}
+
+test "annotated parameter renders the Bool payload" {
+  inspect(render_param(GA(true)), content = "GA(true)")
+}
+
+test "a local lambda result renders through the checker's row" {
+  let mk = () -> GA(true)
+  inspect("\{mk()}", content = "GA(true)")
+}
+
+test "a tuple projection renders through the checker's row" {
+  let mk = () -> GA(true)
+  let pair = (mk(), 1)
+  inspect("\{pair.0}", content = "GA(true)")
+}
+
+test "a recursive enum at Int terminates and renders" {
+  let l: L[Int] = Cons(1, Cons(2, Nil))
+  inspect("\{l}", content = "Cons(1, Cons(2, Nil))")
+}
+
+test "nested in Option and Array" {
+  let o: Option[G[Bool]] = Some(GA(true))
+  let xs: Array[G[Bool]] = [GA(false), GB]
+  inspect("\{o}", content = "Some(GA(true))")
+  inspect("\{xs}", content = "[GA(false), GB]")
+}
+
+test "two formals substitute independently" {
+  let t: Two[Bool, Double] = Both(true, 2.5)
+  let l: Two[Bool, Double] = Left(false)
+  let n: Two[Bool, Double] = Neither
+  inspect("\{t}", content = "Both(true, 2.5)")
+  inspect("\{l}", content = "Left(false)")
+  inspect("\{n}", content = "Neither")
+}
+
+test "Int and String instantiations (controls)" {
+  let i: G[Int] = GA(7)
+  let s: G[String] = GA("hi")
+  inspect("\{i}", content = "GA(7)")
+  inspect("\{s}", content = "GA(hi)")
+}

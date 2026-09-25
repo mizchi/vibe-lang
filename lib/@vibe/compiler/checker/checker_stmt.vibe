@@ -9321,10 +9321,11 @@ fn irc_render_arg_offsets_quad(checked: CheckedProgram, want_a: Int, want_b: Int
 }
 
 /// #3066: the render-row key for one typed occurrence, or "" when it cannot
-/// be one. Only an `Option` / `Array` / tuple: those are the shapes the
-/// interpolation pass expands, and the ones whose payload positions it had to
-/// guess from syntax -- `Some(k())` through a local lambda rendered
-/// `Some(0)` for `Some(false)`. The type must be fully spelled by
+/// be one. An `Option` / `Array` / tuple / applied nominal: those are the
+/// shapes the interpolation pass expands, and the ones whose payload positions
+/// it had to guess from syntax -- `Some(k())` through a local lambda rendered
+/// `Some(0)` for `Some(false)`. Plus the `Char` / `Unit` leaves (#3075). The
+/// type must be fully spelled by
 /// `eq_channel_type_expr` (no variable, function or record anywhere in it).
 ///
 /// #3081: an ELEMENT of a composite literal (`literal_item`) files any type
@@ -9333,10 +9334,22 @@ fn irc_render_arg_offsets_quad(checked: CheckedProgram, want_a: Int, want_b: Int
 /// Option does.
 fn irc_render_row_key(checked: CheckedProgram, oty: Type, literal_item: Bool) -> String {
   let t = subst_apply(checked.final_subst, oty)
+  // #3074: an applied nominal (`G[Bool]`), whose derived renderer erases its
+  // formals. #3075: a `Char` / `Unit` leaf, which the runtime renderer cannot
+  // tell from an Int.
   let composite = match t {
     CtOption(_) => true,
     CtArray(_) => true,
     CtTuple(_) => true,
+    // #3084: a plain nominal too. A generic function's result (`pass(Pt::{
+    // x: 1 })`) is typed only here -- its declared return is the callee's
+    // formal, which names nothing at the call site.
+    CtNamed(_, _) => true,
+    CtStruct(_) => true,
+    CtEnum(_) => true,
+    CtApplied(_, _) => true,
+    CtChar => true,
+    CtUnit => true,
     _ => false
   }
   if composite || literal_item {

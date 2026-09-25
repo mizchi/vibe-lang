@@ -3878,6 +3878,49 @@ fn check_interp_formal(ty: Type, s: Subst, env: TypeEnv, errors: Array[String], 
   if interp_mentions_bytes(subst_apply(s, ty), s) {
     Array::push(errors, String::concat("cannot interpolate a `Bytes` value: `Bytes` has no renderer -- convert it first: `let a: Array[Int] = Bytes::to_array(b)`, then interpolate `a` (#2987)", off_marker(off)))
   }
+  if interp_mentions_fn(subst_apply(s, ty), s) {
+    Array::push(errors, String::concat("cannot interpolate a function value: a function has no text form, and rendering it would print a memory address -- interpolate what it returns (`f(x)`), or a description you write (#3075)", off_marker(off)))
+  }
+}
+
+/// #3075: a function value (bare or inside the containers the renderer
+/// descends) has no rendering; it printed its table index or closure address
+/// (`Some(<address>)` for `Some((x: Int) -> x + 1)`).
+fn interp_mentions_fn(ty: Type, s: Subst) -> Bool {
+  match ty {
+    CtFn(_, _, _) => true,
+    CtForAll(_, _, inner) => interp_mentions_fn(inner, s),
+    CtVar(id) => match subst_apply(s, CtVar(id)) {
+      CtVar(_) => false,
+      other => interp_mentions_fn(other, s)
+    },
+    CtArray(element) => interp_mentions_fn(element, s),
+    CtOption(element) => interp_mentions_fn(element, s),
+    CtTuple(items) => {
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(items) && !found {
+        found = interp_mentions_fn(Array::get(items, i), s)
+        i = i + 1
+      }
+      found
+    },
+    // #3092: a nominal type's arguments reach the renderer too
+    // (`Box[(Int) -> Int]` rendered `Box { v: 1 }`).
+    CtNamed(_, args) => interp_mentions_fn_any(args, s),
+    CtApplied(head, args) => interp_mentions_fn(head, s) || interp_mentions_fn_any(args, s),
+    _ => false
+  }
+}
+
+fn interp_mentions_fn_any(items: Array[Type], s: Subst) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(items) && !found {
+    found = interp_mentions_fn(Array::get(items, i), s)
+    i = i + 1
+  }
+  found
 }
 
 /// #2987: `Bytes` has no renderer, and nothing can be derived for a builtin,
@@ -3901,8 +3944,22 @@ fn interp_mentions_bytes(ty: Type, s: Subst) -> Bool {
       }
       found
     },
+    // #3092: a nominal type's arguments reach the renderer too
+    // (`Box[(Int) -> Int]` rendered `Box { v: 1 }`).
+    CtNamed(_, args) => interp_mentions_bytes_any(args, s),
+    CtApplied(head, args) => interp_mentions_bytes(head, s) || interp_mentions_bytes_any(args, s),
     _ => false
   }
+}
+
+fn interp_mentions_bytes_any(items: Array[Type], s: Subst) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(items) && !found {
+    found = interp_mentions_bytes(Array::get(items, i), s)
+    i = i + 1
+  }
+  found
 }
 
 fn eq_formals_has_name(items: Array[(Int, String)], name: String) -> Bool {

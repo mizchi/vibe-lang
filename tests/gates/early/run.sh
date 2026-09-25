@@ -2373,6 +2373,28 @@ ur_refused fixtures/err_interp_unrenderable_parse_bound_refused.vibe 'cannot int
 # address. The message names the syntax, not the internal `__slice`.
 ur_refused fixtures/err_interp_unrenderable_slice_field_refused.vibe 'cannot interpolate this slice (`xs[a:b]`)' 'bind it with a type annotation'
 ur_refused fixtures/err_interp_unrenderable_slice_field_refused.vibe 'cannot interpolate this slice (`xs[a:b]`)' 'bind it with a type annotation' gc
+# #3075: a function value, bare or inside a container, has no text form.
+ur_refused fixtures/err_interp_function_payload_refused.vibe 'cannot interpolate a function value' 'interpolate what it returns'
+ur_refused fixtures/err_interp_function_value_refused.vibe 'cannot interpolate a function value' 'interpolate what it returns'
+# #3074: a generic enum whose instantiation cannot be recovered would render
+# its payload through the erased formal (`GA(1)` for `GA(true)`).
+ur_refused fixtures/err_interp_generic_enum_unknown_refused.vibe 'its type arguments are not known here' 'bind it with a type annotation'
+# #3082: a recursive generic struct at an argument its erased renderer cannot
+# print (that one used to overflow the compiler's stack). The unknown-
+# instantiation struct program this row used to refuse renders by content
+# since #3088 (generic_field_projection_render_test.vibe).
+ur_refused fixtures/err_interp_generic_struct_recursive_refused.vibe 'cannot interpolate a recursive `L`' 'render the value with a function you write'
+ur_refused fixtures/err_derive_show_recursive_generic_field_refused.vibe 'a derived renderer contains a recursive `L`' 'write the containing type'
+# #3092: a function or `Bytes` inside a derived renderer, declared or reached
+# through a type argument, printed a table index or an address.
+ur_refused fixtures/err_derive_show_fn_field_refused.vibe 'a derived renderer contains a function value' 'write the type'
+ur_refused fixtures/err_derive_show_bytes_field_refused.vibe 'a derived renderer contains a `Bytes` value' 'write the type'
+ur_refused fixtures/err_derive_show_generic_fn_arg_refused.vibe 'cannot interpolate a function value' 'interpolate what it returns'
+ur_refused fixtures/err_derive_show_fn_field_refused.vibe 'a derived renderer contains a function value' 'write the type' gc
+ur_refused fixtures/err_derive_show_generic_fn_arg_refused.vibe 'cannot interpolate a function value' 'interpolate what it returns' gc
+# #3084: a generic function's result typed, at the call site, as a struct with
+# no renderer printed its address; the checker's row names the struct.
+ur_refused fixtures/err_interp_generic_call_missing_show_refused.vibe 'cannot interpolate a value of type `Hidden`' 'add `derive(Show)` to `Hidden`'
 # #3019 rides the same helper: a lowering-time refusal asserted on its message
 # and its edit, not on the bare fact that the build failed.
 ur_refused fixtures/err_handle_resume_capture_loop_break_refused.vibe 'leaves a loop outside it' 'set a flag inside the handle'
@@ -2797,6 +2819,23 @@ run_test_block_fixtures "gc-lane scalar parity (linear, bump)" fixtures/gc_lane_
 run_test_block_fixtures_gc "gc-lane scalar parity (gc)" fixtures/gc_lane_scalar_parity_test.vibe
 run_test_block_fixtures_rc "gc-lane scalar parity (linear, RC)" fixtures/gc_lane_scalar_parity_test.vibe
 echo '[compiler-gate] gc-lane scalar parity ok'
+
+# #3074 / #3075 (and #3065 / #3066 before them): renders that printed a
+# representation instead of the value -- a generic enum's payload through its
+# erased formal (`GA(1)`), a `Char` as its code point, a `Unit` as `0`. The
+# interpolation rewrite and the derived renderers are shared by every backend,
+# so each fixture runs on all three lanes.
+echo '[compiler-gate] 15b-3a/15 render by content: generic enum/struct, Char, Unit, tuple parameter, generic call, scalar payload (#3065/#3066/#3074/#3075/#3082-#3085/#3087)'
+for render_fx in fixtures/generic_enum_derive_show_render_test.vibe fixtures/char_unit_leaf_render_test.vibe \
+    fixtures/exception_kinded_binder_render_test.vibe fixtures/interp_nested_literal_render_test.vibe \
+    fixtures/generic_struct_derive_show_nested_test.vibe fixtures/tuple_param_render_test.vibe \
+    fixtures/imported_generic_show_test.vibe fixtures/generic_call_result_render_test.vibe \
+    fixtures/derive_show_scalar_payload_test.vibe fixtures/generic_field_projection_render_test.vibe; do
+  run_test_block_fixtures "render by content (linear, bump)" "$render_fx"
+  run_test_block_fixtures_gc "render by content (gc)" "$render_fx"
+  run_test_block_fixtures_rc "render by content (linear, RC)" "$render_fx"
+done
+echo '[compiler-gate] render by content ok'
 
 # 15b-3b. #2442: a pure builtin bound to a name and called through the binding
 #         must answer exactly as the direct call does. The lowering is an
