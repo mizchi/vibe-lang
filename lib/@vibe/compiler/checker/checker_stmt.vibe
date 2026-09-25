@@ -3847,7 +3847,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
           array_empty()
         }, env_default), s, c + param_len)
       },
-      SSuberror(_, name, variants) => {
+      SSuberror(exported, name, variants) => {
         // #786: a `suberror Name(payload...)` declaration is structurally a
         // single-typed enum whose constructors produce a throwable value. It
         // was parsed (SSuberror) but never bound, so `KeyInvalid("x")` was an
@@ -3907,7 +3907,17 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
           ctor_result_type,
           ctor_result_type
         ], CtBool, None))
-        (env_eq, s, c)
+        // #3070: published as the SEnum arm publishes an enum. Without the
+        // `EnvTypeDefs` node the declaration never reached the module's
+        // public env: `export suberror K` answered "imported name 'K' is not
+        // exported", and `export { K }` let the import through with no
+        // TypeDef behind it, so `with Exception[K]` in the importer said
+        // ``unknown type `K` in an exception kind``.
+        (EnvTypeDefs([TDEnum(name, array_empty(), resolved_variants)], if exported {
+          [name]
+        } else {
+          array_empty()
+        }, env_eq), s, c)
       },
       SStruct(exported, name, field_defs, derives, mut_fields, tparams) => {
         validate_derives(derives, errors)
