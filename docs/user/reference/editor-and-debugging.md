@@ -77,8 +77,20 @@ vibe check --single-file --json <file.vibe>  # same JSON contract without resolv
   `declare`-form file under `lib/` does that to all 966); dropping it silently
   would be a partial inventory that reads as a complete one.
 
-- `type-at` powers hover. Empty output means there is no env-visible
-  identifier at that position. Field accesses resolve at BOTH positions of
+- `type-at` powers hover. Stdout carries the type and nothing else. A
+  binder answers at its DECLARATION as well as at its uses, with the same
+  type: a parameter, a local `let`, a `match` or handler arm pattern
+  (`Some(v)`, `Log::Emit(msg)`), a `guard` / `is` pattern, a `let`
+  destructuring (`let (a, b) = p`, `let Some(x) = o`, `let P::{ x, y } = p`,
+  `let record { x, y } = r`, at top level too) and a `for` header
+  (`for i, x in xs`) (#3000).
+  **A position with no identifier under it** — whitespace, a keyword, a
+  literal, punctuation, past the end of the line or file — is an error:
+  `type-at: no identifier at FILE:LINE:COL` on stderr and exit 1, and so is a
+  file that does not parse (it used to answer nothing, exit 0). **Empty
+  stdout with exit 0** therefore means one thing: there is an identifier, and
+  no type is known for it (an unused pattern binder, say); stderr names it.
+  LSP hover calls the same query and answers `null` for both. Field accesses resolve at BOTH positions of
   `obj.field` (#645): the base identifier and the field name each yield the
   projection type (EDot carries the field token's own offset).
 - `binding-at` powers rename/references. Each line is a `START END` pair of

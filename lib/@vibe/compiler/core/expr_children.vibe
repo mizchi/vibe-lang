@@ -72,7 +72,8 @@ export fn typed_render_row_head() -> String {
 /// #2987 / #3068: the message a codegen lane throws when it refuses a render
 /// argument filed under `typed_render_refuse_key`. Shared so the linear and gc
 /// lanes refuse one program with one sentence: a lane that printed an address
-/// where the other refused was #3068.
+/// where the other refused was #3068. It carries the argument's offset as a
+/// ` [@off=N]` marker (#3090), so both lanes name one position as well.
 export fn unrenderable_render_message(e: Expr) -> String {
   let what = match e {
     EIdent(n, _) => String::concat("`", String::concat(n, "`")),
@@ -82,7 +83,17 @@ export fn unrenderable_render_message(e: Expr) -> String {
     ECall(EIdent(cn, _), _, _) => String::concat("the result of `", String::concat(cn, "`")),
     _ => "this value"
   }
-  String::concat("cannot interpolate ", String::concat(what, ": its type is an Option, Array, tuple, Bytes or record whose shape the renderer could not resolve here, so it would print a memory address -- bind it with a type annotation first (e.g. `let v: Option[Int] = ...`, then interpolate `v`) (#2987)"))
+  let base = String::concat("cannot interpolate ", String::concat(what, ": its type is an Option, Array, tuple, Bytes or record whose shape the renderer could not resolve here, so it would print a memory address -- bind it with a type annotation first (e.g. `let v: Option[Int] = ...`, then interpolate `v`) (#2987)"))
+  // #3090: anchor the refusal at the interpolated expression -- the key the
+  // checker filed the row under, so it names the node the reader wrote. The
+  // CLI resolves the marker to `path: line:col`, or strips it where it cannot
+  // tell which file the offset indexes.
+  let off = typed_lowering_arg_offset(e)
+  if off >= 0 {
+    String::concat(base, String::concat(" [@off=", String::concat(__to_string(off), "]")))
+  } else {
+    base
+  }
 }
 
 /// #2424: the same key, restricted to the shapes the DOUBLE channel may use --

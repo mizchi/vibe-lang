@@ -89,7 +89,7 @@ RUNNER
   chmod +x "$stage/runner/viberun"
   tar -czf "$d/viberun-$tag-$rtarget.tar.gz" -C "$stage/runner" viberun
   install -m 0755 "$ROOT_DIR/runtime/vibe" "$stage/tc/bin/vibe"
-  cp "$ROOT_DIR/scripts/vibe_pkg.sh" "$ROOT_DIR/scripts/parallel_warm_pool.sh" "$stage/tc/lib/"
+  cp "$ROOT_DIR/scripts/vibe_pkg.sh" "$ROOT_DIR/scripts/parallel_warm_pool.sh" "$ROOT_DIR/scripts/run_bounded.sh" "$stage/tc/lib/"
   cp "$ROOT_DIR/lib/@vibe/console/index.vpkg" "$stage/tc/lib/@vibe/console/"
   printf '@vibe/console\tpkg:sha1:0000000000000000000000000000000000000000\n' > "$stage/tc/stdlib-hashes.tsv"
   printf 'context pack of release %s\n' "$version" > "$stage/tc/lib/context-pack.md"

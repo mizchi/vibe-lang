@@ -23,6 +23,7 @@
 # Env:
 #   VIBE_OFFBUILD_STAGE2   explicit stage2 to check with (default: newest build)
 set -euo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/run_bounded.sh" # portable timeout(1), #2958
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="${VIBE_PROJECT_ROOT:-$(dirname "$SCRIPT_DIR")}"
@@ -118,7 +119,7 @@ while IFS= read -r f; do
   rm -f "$out" "$out.diag" "$runner_err"
   runner_status=0
   VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw VIBE_CHECK_ONLY=1 \
-    timeout 300 bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" \
+    run_bounded 300 bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" \
     --invoke cli_main "$STAGE2" "$f" "$out" __no_entry__ >/dev/null 2>"$runner_err" || runner_status=$?
   if [ -s "$out.diag" ]; then
     failed=$((failed + 1))

@@ -28,6 +28,7 @@
 #                  HEAD's generation and SAYS which -- never silently, since
 #                  the committed seed is a different compiler.
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/run_bounded.sh" # portable timeout(1), #2958
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -70,7 +71,7 @@ V
 fail=0
 note() { printf '%s\n' "$*"; }
 grep_run() { # grep_run <path> <pattern> -> OUT, RC
-  OUT="$(VIBE_CLI_WASM="$CLI" timeout 600 bash "$ROOT_DIR/scripts/vibe_grep_bin.sh" \
+  OUT="$(VIBE_CLI_WASM="$CLI" run_bounded 600 bash "$ROOT_DIR/scripts/vibe_grep_bin.sh" \
     --pattern "$2" "$1" 2>&1)"
   RC=$?
 }
@@ -124,7 +125,7 @@ if [ ! -x "$RUNNER" ]; then
   note "=== 4. SKIPPED: no viberun at $RUNNER, so the argv lane is not exercised ==="
 else
   note "=== 4. RED: a named unparseable file among SEVERAL paths is still refused ==="
-  OUT="$(VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" timeout 900 \
+  OUT="$(VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" run_bounded 900 \
     "$ROOT_DIR/runtime/vibe" grep --pattern 'good($(a:args))' \
     "$WORK/corpus2" "$WORK/corpus/broken.vibe" 2>&1)"
   RC=$?
@@ -141,7 +142,7 @@ else
 
   note "=== 5. CONTROL: the same two paths, both readable, still answer 0 ==="
   # Without this, case 4 is satisfied by refusing EVERY multi-path sweep.
-  OUT="$(VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" timeout 900 \
+  OUT="$(VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" run_bounded 900 \
     "$ROOT_DIR/runtime/vibe" grep --pattern 'good($(a:args))' \
     "$WORK/corpus2" "$WORK/corpus2/ok2.vibe" 2>&1)"
   RC=$?
@@ -154,7 +155,7 @@ else
   # The argv lane's own version of case 2: widening fatality to "any path is a
   # file" would make an unparseable file INSIDE a named directory fatal too,
   # which is the opposite regression and just as invisible.
-  OUT="$(VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" timeout 900 \
+  OUT="$(VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" run_bounded 900 \
     "$ROOT_DIR/runtime/vibe" grep --pattern 'good($(a:args))' \
     "$WORK/corpus" "$WORK/corpus2/ok2.vibe" 2>&1)"
   RC=$?

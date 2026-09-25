@@ -43,6 +43,7 @@
 #   VIBE_P3_GATE_REQUIRE_TOOLS=1    missing cargo/wasm-tools/viberun = FAIL
 #                                   instead of skip
 set -euo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/run_bounded.sh" # portable timeout(1), #2958
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -138,7 +139,7 @@ wasm-tools validate --features all "$COMPONENT" \
 RESULT_LOG="$OUT_DIR/run.blocked.log"
 BLOCKED_DELAY_MS=300
 START_NS=$(date +%s%N)
-if ! VIBE_ASYNC_GET_DELAY_MS="$BLOCKED_DELAY_MS" timeout 60 "$RUNNER" "$COMPONENT" >"$RESULT_LOG" 2>&1; then
+if ! VIBE_ASYNC_GET_DELAY_MS="$BLOCKED_DELAY_MS" run_bounded 60 "$RUNNER" "$COMPONENT" >"$RESULT_LOG" 2>&1; then
   echo "selfhost host-future-value component gate FAILED: viberun did not exit 0" >&2
   cat "$RESULT_LOG" >&2
   exit 1
@@ -169,7 +170,7 @@ PROBE_WASM="$OUT_DIR/probe.component.wasm"
 wasm-tools parse "$PROBE_WAT" -o "$PROBE_WASM" \
   || { echo "selfhost host-future-value component gate FAILED: probe WAT did not parse" >&2; exit 1; }
 PROBE_LOG="$OUT_DIR/run.probe.log"
-if ! VIBE_ASYNC_GET_DELAY_MS=50 timeout 60 "$RUNNER" "$PROBE_WASM" >"$PROBE_LOG" 2>&1; then
+if ! VIBE_ASYNC_GET_DELAY_MS=50 run_bounded 60 "$RUNNER" "$PROBE_WASM" >"$PROBE_LOG" 2>&1; then
   echo "selfhost host-future-value component gate FAILED: probe component did not run" >&2
   cat "$PROBE_LOG" >&2
   exit 1

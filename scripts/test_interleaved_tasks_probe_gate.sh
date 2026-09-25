@@ -39,6 +39,7 @@
 #   VIBE_INTERLEAVED_GATE_RUNNER    viberun binary override
 #   VIBE_P3_GATE_REQUIRE_TOOLS=1    missing tools = FAIL instead of skip
 set -euo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/run_bounded.sh" # portable timeout(1), #2958
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -102,11 +103,11 @@ run_probe() {
   # full ~1.3s of sleeps before). Ratios are preserved, so the guest still
   # takes exactly the same path; and the floor keeps every call blocking,
   # which the probe's own `unreachable` guards require.
-  VIBE_ASYNC_DELAY_SCALE_PCT=2 timeout 60 "$RUNNER" "$wasm" >/dev/null 2>&1 \
+  VIBE_ASYNC_DELAY_SCALE_PCT=2 run_bounded 60 "$RUNNER" "$wasm" >/dev/null 2>&1 \
     || { echo "interleaved-tasks probe gate FAILED: $name warmup did not exit 0" >&2; exit 1; }
   local log="$OUT_DIR/$name.log" start_ns elapsed
   start_ns=$(date +%s%N)
-  timeout 60 "$RUNNER" "$wasm" >"$log" 2>&1 \
+  run_bounded 60 "$RUNNER" "$wasm" >"$log" 2>&1 \
     || { echo "interleaved-tasks probe gate FAILED: $name did not exit 0" >&2; cat "$log" >&2; exit 1; }
   elapsed=$(( ( $(date +%s%N) - start_ns ) / 1000000 ))
   echo "$(cat "$log") $elapsed"

@@ -1,0 +1,67 @@
+// #3070: an exported `suberror` imports by name, is accepted as an exception
+// kind in the importer, and is thrown and caught across the module boundary.
+// Before the fix, `import ./defs.vibe { K }` answered "imported name 'K' is not
+// exported", and an `export { K }` list then made `with Exception[K]` fail
+// with ``unknown type `K` in an exception kind``.
+import ./suberror_export_dep.vibe {
+  AppError, Denied, Io, Listed, Parse, check_access, listed, load
+}
+
+fn guarded(level: Int) -> String {
+  handle {
+    let v = check_access(level)
+    "ok \{v}"
+  } with { Exception[Denied]::Throw(e) => match e {
+    Denied(n) => "denied \{n}"
+  } }
+}
+
+fn loaded(code: Int) -> String {
+  handle {
+    let v = load(code)
+    "ok \{v}"
+  } with { Exception[AppError]::Throw(e) => match e {
+    Io(what) => "io \{what}",
+    Parse(n) => "parse \{n}"
+  } }
+}
+
+// The importer throws an imported kind itself.
+fn rethrow(level: Int) -> Int with Exception[Denied] {
+  if level == 0 {
+    throw(Denied(99))
+  } else {
+    level
+  }
+}
+
+fn listed_kind(bad: Bool) -> String {
+  handle {
+    let v = listed(bad)
+    "ok \{v}"
+  } with { Exception[Listed]::Throw(e) => match e {
+    Listed(why) => "listed \{why}"
+  } }
+}
+
+test "exported single-form suberror crosses the boundary" {
+  inspect("\{guarded(1)} / \{guarded(5)}", content = "denied 1 / ok 50")
+}
+
+test "exported braced suberror crosses the boundary" {
+  inspect("\{loaded(0)} / \{loaded(-7)} / \{loaded(4)}", content = "io disk / parse -7 / ok 4")
+}
+
+test "an imported kind is thrown by the importer" {
+  let r = handle {
+    let v = rethrow(0)
+    "ok \{v}"
+  } with { Exception[Denied]::Throw(e) => match e {
+    Denied(n) => "caught \{n}"
+  } }
+  inspect(r, content = "caught 99")
+}
+
+test "a suberror published through an export list is a kind" {
+  inspect("\{listed_kind(true)} / \{listed_kind(false)}", content = "listed nope / ok 1")
+}

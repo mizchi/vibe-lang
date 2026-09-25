@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 # Standalone single-candidate oracle check, built on tests/fuzz/lib_oracle.sh.
 #
-#   bash tests/fuzz/classify.sh DIR [--cli path/to/stage2.wasm]
+#   bash tests/fuzz/classify.sh DIR [--cli path/to/stage2.wasm] [--mutate]
 #
 # DIR must contain single.vibe (and optionally main.vibe, to also exercise
-# the FS-linked lane). Prints "CLASS detail..." to stdout -- see
+# the FS-linked lane, expected.txt for the lane-independent oracle and
+# skip_lanes). With --mutate, DIR/mut.vibe (else DIR/single.vibe) is judged
+# the way run_fuzz.sh --mutate judges a mutated input: OK or COMPILE_DIAG is
+# the expected rejection, DIAG_NO_LOCATION / DIAG_INTERNAL_TOKEN a malformed
+# diagnostic, COMPILE_CRASH / COMPILE_HANG a compiler failure -- see
+# lib_oracle.sh's classify_mutant. Prints "CLASS detail..." to stdout -- see
 # tests/fuzz/lib_oracle.sh's classify() for the exact class vocabulary. This
 # is the same oracle tests/fuzz/run_fuzz.sh uses per seed; tests/fuzz/reduce.py
 # shells out to this script once per reduction candidate so both tools agree
@@ -16,9 +21,11 @@ ROOT="$PWD"
 DIR="${1:?usage: tests/fuzz/classify.sh DIR [--cli path]}"
 shift
 CLI=""
+MUTATE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --cli) CLI="$2"; shift 2 ;;
+    --mutate) MUTATE=1; shift ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -42,4 +49,10 @@ CLI="$(resolve_stage2_strict classify "$CLI")" || exit 2
 
 # shellcheck source=tests/fuzz/lib_oracle.sh
 source "$ROOT/tests/fuzz/lib_oracle.sh"
-classify "$DIR"
+if [ "$MUTATE" -eq 1 ]; then
+  src="$DIR/mut.vibe"
+  [ -f "$src" ] || src="$DIR/single.vibe"
+  classify_mutant "$src" "$DIR/mut.wasm"
+else
+  classify "$DIR"
+fi

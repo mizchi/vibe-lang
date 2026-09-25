@@ -8,7 +8,7 @@
 // shift_expr_offsets) for the fixes these tests pin down.
 
 import ./type_at.vibe {
-  type_at_source
+  type_at_ident_at, type_at_source
 }
 
 import ./binding_at.vibe {
@@ -340,7 +340,108 @@ test "type-at: lambda parameter and local let answer at their declarations" {
   assert(type_at_source(src, 2, 7) == "Int")
 }
 
+// #3050: a closure whose every use is a call. A callee's table row is the
+// call RESULT (`Int` here), so the declaration had no use to borrow from and
+// answered "", and the callee answered the shadowed top-level `f` instead of
+// the local one. Both now answer with the local `let`'s own value type.
+test "type-at: a local closure used only as a callee answers at its declaration and its call" {
+  let src = "fn main() -> Int {\n  let f = (x: Int) -> x + 1\n  f(1)\n}\n"
+  assert(type_at_source(src, 2, 7) == "(Int) -> Int")
+  assert(type_at_source(src, 3, 3) == "(Int) -> Int")
+  let shadow_src = "fn f(s: String) -> String {\n  s\n}\nfn main() -> Int {\n  let f = (x: Int) -> x + 1\n  f(1)\n}\n"
+  assert(type_at_source(shadow_src, 6, 3) == "(Int) -> Int")
+  assert(type_at_source(shadow_src, 1, 4) == "(String) -> String")
+}
+
 test "type-at: an unused pattern binder does not borrow a top-level name's type" {
   let src = "fn v() -> String {\n  \"x\"\n}\nfn f(o: Option[Int]) -> Int {\n  match o {\n    Some(v) => 0\n    None => 1\n  }\n}\n"
   assert(type_at_source(src, 6, 10) == "")
+}
+
+// #3000, the binder forms the first fix left out. A `let` destructuring (and a
+// let-else / if-let) lowers to a match whose pattern is written BEFORE its
+// value, and a `for` header's binders precede the iterable, so the scope walk
+// used to recover them after the value and answer nothing -- or take a later
+// use of the same name for the declaration.
+test "type-at: let destructuring binders answer at their declaration" {
+  let src = "fn d(p: (Int, String)) -> String {\n  let (n, s) = p\n  let _ = n\n  s\n}\n"
+  assert(type_at_source(src, 2, 8) == "Int")
+  assert(type_at_source(src, 2, 11) == "String")
+}
+
+test "type-at: constructor, struct and record destructuring binders answer at their declaration" {
+  let ctor_src = "fn f(pt: Option[(Int, String)]) -> String {\n  let Some((px, py)) = pt\n  let _ = px\n  py\n}\n"
+  assert(type_at_source(ctor_src, 2, 13) == "Int")
+  assert(type_at_source(ctor_src, 2, 17) == "String")
+  let struct_src = "struct P { x: Int; y: String }\nfn f(p: P) -> String {\n  let P::{ x, y } = p\n  let _ = x\n  y\n}\n"
+  assert(type_at_source(struct_src, 3, 12) == "Int")
+  assert(type_at_source(struct_src, 3, 15) == "String")
+  assert(occ_len(binding_occurrences(struct_src, 3, 15)) == 2)
+  let record_src = "fn f() -> Int {\n  let r = record { x: 10, y: 20 }\n  let record { x, y } = r\n  x + y\n}\n"
+  assert(type_at_source(record_src, 3, 16) == "Int")
+  assert(occ_len(binding_occurrences(record_src, 3, 16)) == 2)
+  // A record literal's field label spelled like a binder, between the scan
+  // floor and the `let`, must not be taken for the declaration.
+  let label_src = "fn f(p: (Int, String)) -> String {\n  let r = record { n: 1 }\n  let (n, s) = p\n  let _ = r\n  let _ = n\n  s\n}\n"
+  assert(type_at_source(label_src, 3, 8) == "Int")
+  assert(occ_len(binding_occurrences(label_src, 3, 8)) == 2)
+}
+
+test "type-at: guard and is binders answer at their declaration" {
+  let guard_src = "fn f(o: Option[Int]) -> Int {\n  guard o is Some(v) else {\n    return 0\n  }\n  v\n}\n"
+  assert(type_at_source(guard_src, 2, 19) == "Int")
+  let is_src = "fn f(o: Option[Int]) -> Int {\n  if o is Some(v) {\n    v\n  } else {\n    0\n  }\n}\n"
+  assert(type_at_source(is_src, 2, 16) == "Int")
+}
+
+test "type-at: top-level tuple destructuring binders answer at their declaration" {
+  let src = "let (a, b) = (1, \"x\")\nfn f() -> String {\n  b\n}\n"
+  assert(type_at_source(src, 1, 6) == "Int")
+  assert(type_at_source(src, 1, 9) == "String")
+  assert(occ_len(binding_occurrences(src, 1, 9)) == 2)
+}
+
+test "type-at: for header binders answer at their declaration" {
+  let src = "fn fo(xs: Array[Int]) -> Int {\n  let mut t = 0\n  for x in xs {\n    t = t + x\n  }\n  t\n}\n"
+  assert(type_at_source(src, 3, 7) == "Int")
+  let idx_src = "fn fo(xs: Array[String]) -> Int {\n  let mut t = 0\n  for i, x in xs {\n    t = t + i + String::length(x)\n  }\n  t\n}\n"
+  assert(type_at_source(idx_src, 3, 7) == "Int")
+  assert(type_at_source(idx_src, 3, 10) == "String")
+}
+
+test "binding-at: a destructuring binder is not confused with a same-named value" {
+  // `let (n, m) = f(n)`: the `n` inside f(n) is the PARAMETER, not the binder.
+  let src = "fn f(x: Int) -> (Int, Int) {\n  (x, x)\n}\nfn g(n: Int) -> Int {\n  let (n, m) = f(n)\n  n + m\n}\n"
+  let binder = binding_occurrences(src, 5, 8)
+  assert(occ_contains(binder, 69, 70))
+  assert(occ_contains(binder, 84, 85))
+  assert(!occ_contains(binder, 79, 80))
+  let param = binding_occurrences(src, 4, 6)
+  assert(occ_contains(param, 45, 46))
+  assert(occ_contains(param, 79, 80))
+  assert(!occ_contains(param, 69, 70))
+}
+
+test "binding-at: a for binder is its declaration, not its first use" {
+  let src = "fn fo(xs: Array[Int]) -> Int {\n  let mut t = 0\n  for x in xs {\n    t = t + x\n  }\n  t\n}\n"
+  let occ = binding_occurrences(src, 3, 7)
+  assert(occ_len(occ) == 2)
+}
+
+test "type-at: a same-named field before a real match keeps the match order" {
+  let src = "struct S { v: Int }\nfn f(p: S, o: Option[Int]) -> Int {\n  let k = p.v\n  match o {\n    Some(v) => v + k\n    None => 0\n  }\n}\n"
+  assert(type_at_source(src, 5, 10) == "Int")
+}
+
+test "type-at: no identifier under the cursor is told apart from an unknown type" {
+  let src = "fn f(o: Option[Int]) -> Int {\n  match o {\n    Some(v) => 0\n    None => 1\n  }\n}\n"
+  // whitespace, a keyword, a literal, past the end of the line / file
+  assert(type_at_ident_at(src, 2, 1) == "")
+  assert(type_at_ident_at(src, 2, 3) == "")
+  assert(type_at_ident_at(src, 3, 16) == "")
+  assert(type_at_ident_at(src, 1, 200) == "")
+  assert(type_at_ident_at(src, 99, 1) == "")
+  // an identifier: the unused binder has no known type, but it IS a name
+  assert(type_at_ident_at(src, 3, 10) == "v")
+  assert(type_at_source(src, 3, 10) == "")
 }

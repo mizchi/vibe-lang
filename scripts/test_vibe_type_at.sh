@@ -2,12 +2,17 @@
 # Regression test for `vibe type-at` (LSP typed-hover MVP, docs/internal/project/release-roadmap.md
 # テーマ4). type_at_source locates the identifier at a 1-based (line, col) via the
 # real EIdent / binding-name source offsets, typechecks the program, and prints
-# the inferred type of that env-visible name. Hovering whitespace / a keyword (no
-# identifier there) prints nothing.
+# the inferred type of that name. A binder answers at its declaration too
+# (#3000). Hovering whitespace / a keyword (no identifier there) prints nothing
+# on stdout, names the position on stderr and exits 1.
 #
 # The committed seed predates this feature, so this test builds a FRESH compiler
 # via install/install.sh (default, no --cli-wasm seed override) into a throwaway
 # VIBE_HOME/VIBE_BIN_DIR so it never touches a real install.
+#
+# TYPE_AT_CLI_WASM=<stage2.wasm> skips the install and asks that compiler
+# through runtime/vibe on the node runner -- the way to test a compiler change
+# before it is installed. A named artifact that does not exist is an error.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -19,10 +24,20 @@ export VIBE_HOME="$WORK/home"
 export VIBE_BIN_DIR="$WORK/bin"
 unset RUST_BACKTRACE || true
 
-# Fresh compiler (NOT the seed): the seed cannot answer type-at queries.
-bash install/install.sh >/dev/null 2>&1
-VIBE="$VIBE_BIN_DIR/vibe"
-[ -x "$VIBE" ] || { echo "FAIL: launcher not installed" >&2; exit 1; }
+if [ -n "${TYPE_AT_CLI_WASM:-}" ]; then
+  [ -s "$TYPE_AT_CLI_WASM" ] || { echo "FAIL: TYPE_AT_CLI_WASM does not exist: $TYPE_AT_CLI_WASM" >&2; exit 1; }
+  VIBE="$WORK/vibe"
+  cat > "$VIBE" <<SH
+#!/usr/bin/env bash
+exec env VIBE_RUNNER="$ROOT_DIR/scripts/viberun_node.sh" VIBE_PREOPEN_DIR=/ VIBE_CLI_WASM="$TYPE_AT_CLI_WASM" bash "$ROOT_DIR/runtime/vibe" "\$@"
+SH
+  chmod +x "$VIBE"
+else
+  # Fresh compiler (NOT the seed): the seed cannot answer type-at queries.
+  bash install/install.sh >/dev/null 2>&1
+  VIBE="$VIBE_BIN_DIR/vibe"
+  [ -x "$VIBE" ] || { echo "FAIL: launcher not installed" >&2; exit 1; }
+fi
 
 pass=0; fail=0
 
@@ -39,13 +54,45 @@ else
   echo "FAIL: type-at on 'add' (1:12) should contain Int, got '$ty_add'" >&2; fail=$((fail + 1))
 fi
 
-# Hovering a non-identifier (column 7 is the space between `export` and `let`)
-# yields no type -> empty output.
-ty_ws="$("$VIBE" type-at "$f" 1 7 2>/dev/null || true)"
-if [ -z "$ty_ws" ]; then
-  echo "ok: type-at on whitespace (1:7) is empty"; pass=$((pass + 1))
+# Hovering a non-identifier is an ERROR (#3000): empty stdout, a stderr line
+# naming the position, exit 1 -- so that empty stdout with exit 0 means only
+# "an identifier with no known type". Column 7 is the space between `export`
+# and `let`, column 1 the keyword `export`, line 9 is past the end of the file.
+no_ident() { # no_ident <file> <line> <col> <label>
+  local out rc=0
+  out="$("$VIBE" type-at "$1" "$2" "$3" 2>"$WORK/no_ident.err")" || rc=$?
+  if [ -z "$out" ] && [ "$rc" -ne 0 ] && grep -qF "no identifier at" "$WORK/no_ident.err"; then
+    echo "ok: type-at on $4 ($2:$3) reports no identifier and exits $rc"; pass=$((pass + 1))
+  else
+    echo "FAIL: type-at on $4 ($2:$3) should print nothing, exit non-zero and say 'no identifier at' on stderr; got stdout '$out', exit $rc, stderr '$(cat "$WORK/no_ident.err")'" >&2; fail=$((fail + 1))
+  fi
+}
+no_ident "$f" 1 7 "whitespace"
+no_ident "$f" 1 1 "a keyword"
+no_ident "$f" 9 1 "a line past the end of the file"
+
+# A file that does not parse has no types at all; it used to answer nothing
+# with exit 0, which read like a clean miss.
+bad="$WORK/bad.vibe"
+printf 'struct P { x: Int, y: String }\nfn f(p: P) -> Int {\n  p.x\n}\n' > "$bad"
+rc_bad=0
+ty_bad="$("$VIBE" type-at "$bad" 3 3 2>"$WORK/bad.err")" || rc_bad=$?
+if [ -z "$ty_bad" ] && [ "$rc_bad" -ne 0 ] && grep -qF "does not parse" "$WORK/bad.err"; then
+  echo "ok: type-at on a file that does not parse says so and exits $rc_bad"; pass=$((pass + 1))
 else
-  echo "FAIL: type-at on whitespace (1:7) should be empty, got '$ty_ws'" >&2; fail=$((fail + 1))
+  echo "FAIL: type-at on a file that does not parse: want empty stdout, non-zero exit, 'does not parse' on stderr; got '$ty_bad', exit $rc_bad, stderr '$(cat "$WORK/bad.err")'" >&2; fail=$((fail + 1))
+fi
+
+# An identifier with NO known type (an unused pattern binder) is the one
+# meaning left for empty stdout: exit 0, and stderr names the identifier.
+u="$WORK/unused.vibe"
+printf 'fn f(o: Option[Int]) -> Int {\n  match o {\n    Some(v) => 0\n    None => 1\n  }\n}\n' > "$u"
+rc_u=0
+ty_u="$("$VIBE" type-at "$u" 3 10 2>"$WORK/unused.err")" || rc_u=$?
+if [ -z "$ty_u" ] && [ "$rc_u" -eq 0 ] && grep -qF 'no type is known for `v`' "$WORK/unused.err"; then
+  echo "ok: type-at on an unused binder (3:10) is empty, exit 0, and names it on stderr"; pass=$((pass + 1))
+else
+  echo "FAIL: type-at on an unused binder (3:10): want empty stdout, exit 0, stderr naming \`v\`; got '$ty_u', exit $rc_u, stderr '$(cat "$WORK/unused.err")'" >&2; fail=$((fail + 1))
 fi
 
 # Hovering a USE of an env-visible name resolves too (line 2 references `add`).
@@ -117,6 +164,124 @@ if printf '%s' "$ty_field" | grep -qF "Int"; then
 else
   echo "FAIL: type-at on field access 'p.x' (2:35) should resolve to Int, got '$ty_field'" >&2; fail=$((fail + 1))
 fi
+
+# BINDER DECLARATION SITES (#3000): each form answers where the name is
+# introduced, with the type its uses have. Columns are 1-based BYTE columns.
+b="$WORK/binders.vibe"
+cat > "$b" <<'VIBE'
+effect Log {
+  Emit(String) -> Unit
+}
+fn run(sink: Array[String]) -> Unit {
+  handle {
+    perform Log::Emit("hi")
+  } with { Log::Emit(msg) => {
+    Array::push(sink, msg)
+    resume(())
+  } }
+}
+fn m(o: Option[Int]) -> Int {
+  match o {
+    Some(v) => v
+    None => 0
+  }
+}
+fn d(p: (Int, String)) -> String {
+  let (n, s) = p
+  let _ = n
+  s
+}
+fn fo(xs: Array[String]) -> Int {
+  let mut t = 0
+  for i, x in xs {
+    t = t + i + String::length(x)
+  }
+  t
+}
+VIBE
+binder() { # binder <line> <col> <want> <label>
+  local out rc=0
+  out="$("$VIBE" type-at "$b" "$1" "$2" 2>/dev/null)" || rc=$?
+  if [ "$out" = "$3" ] && [ "$rc" -eq 0 ]; then
+    echo "ok: type-at on the $4 ($1:$2) is $3"; pass=$((pass + 1))
+  else
+    echo "FAIL: type-at on the $4 ($1:$2) should be '$3' (exit 0), got '$out' (exit $rc)" >&2; fail=$((fail + 1))
+  fi
+}
+binder 7 22 String "handler arm binder msg"
+binder 8 23 String "use of msg"
+binder 14 10 Int "match arm binder v"
+binder 14 16 Int "use of v"
+binder 19 8 Int "destructuring binder n"
+binder 19 11 String "destructuring binder s"
+binder 25 7 Int "for index binder i"
+binder 25 10 String "for value binder x"
+binder 12 6 "Option[Int]" "parameter o"
+
+# Struct / record destructuring and a guard binder.
+b="$WORK/destr.vibe"
+cat > "$b" <<'VIBE'
+struct P { x: Int; y: String }
+fn f(p: P) -> String {
+  let P::{ x, y } = p
+  let _ = x
+  y
+}
+fn g() -> Int {
+  let r = record { x: 10, y: 20 }
+  let record { x, y } = r
+  x + y
+}
+fn h(o: Option[Int]) -> Int {
+  guard o is Some(v) else {
+    return 0
+  }
+  v
+}
+VIBE
+binder 3 12 Int "struct destructuring binder x"
+binder 3 15 String "struct destructuring binder y"
+binder 9 16 Int "record destructuring binder x"
+binder 13 19 Int "guard binder v"
+
+# A local closure whose EVERY use is a call (#3050). A callee's table row is the
+# call RESULT, so there is no use to borrow a type from; the declaration and
+# the callee answer with the binding's own type, which the checker records per
+# local `let`. `f` in `main` shadows the top-level `f`: the callee must answer
+# for the local binding, never for the module-level name of the same spelling.
+b="$WORK/called_only.vibe"
+cat > "$b" <<'VIBE'
+fn f(s: String) -> String {
+  s
+}
+fn main() -> Int {
+  let f = (x: Int) -> x + 1
+  let mut g = (a: Int, b: String) -> String::length(b) - a
+  g(1, "xy") + f(1)
+}
+VIBE
+binder 5 7 "(Int) -> Int" "declaration of a closure only ever called"
+binder 7 16 "(Int) -> Int" "call of a local closure that shadows a top-level fn"
+binder 6 11 "(Int, String) -> Int" "declaration of a let mut closure only ever called"
+binder 7 3 "(Int, String) -> Int" "call of a let mut closure"
+binder 1 4 "(String) -> String" "shadowed top-level fn"
+
+# #3104 review: a polymorphic local answers with its generalized type (not the
+# monotype before quantification, whose variables no use ever solves), and a
+# comment between `let` and the name does not hide the binding's row.
+b="$WORK/called_only_review.vibe"
+cat > "$b" <<'VIBE'
+fn main() -> Int {
+  let id = (x) -> x
+  let // note
+    f = (x: Int) -> x + 1
+  id(1) + f(2)
+}
+VIBE
+binder 2 7 "forall ?t1. (?t1) -> ?t1" "declaration of a polymorphic local closure"
+binder 5 3 "forall ?t1. (?t1) -> ?t1" "call of a polymorphic local closure"
+binder 4 5 "(Int) -> Int" "declaration after a comment between let and the name"
+binder 5 11 "(Int) -> Int" "call of a closure declared after a comment"
 
 echo "[vibe-type-at] $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1

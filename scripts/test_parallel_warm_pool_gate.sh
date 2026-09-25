@@ -18,6 +18,7 @@
 #   VIBE_WARM_POOL_GATE_RUNNER    runner override
 #   VIBE_P3_GATE_REQUIRE_TOOLS=1  missing tools = FAIL instead of skip
 set -euo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/run_bounded.sh" # portable timeout(1), #2958
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -79,7 +80,7 @@ BASE=""
 for P in 1 2 4 8; do
   CACHE="$OUT_DIR/cache.$P"
   rm -rf "$CACHE"; mkdir -p "$CACHE"
-  if ! ( cd "$SAMPLE" && VIBE_BUILD_CACHE_DIR="$CACHE" timeout 900 \
+  if ! ( cd "$SAMPLE" && VIBE_BUILD_CACHE_DIR="$CACHE" run_bounded 900 \
            bash "$PROJECT_ROOT/scripts/parallel_warm_pool.sh" "$COMPILER" main.vibe "$P" "$RUNNER" \
            > "$OUT_DIR/warm.$P.log" 2>&1 ); then
     die "coordinator exited nonzero at -P $P: $(tail -1 "$OUT_DIR/warm.$P.log")"
@@ -138,7 +139,7 @@ peak_at() {  # peak_at <jobs> -> echoes the max concurrent worker count
   local trace="$OUT_DIR/trace.$p" cache="$OUT_DIR/wcache.$p"
   rm -rf "$cache"; mkdir -p "$cache"
   : > "$trace"
-  ( cd "$WIDE" && VIBE_BUILD_CACHE_DIR="$cache" VIBE_WARM_POOL_TRACE="$trace" timeout 900 \
+  ( cd "$WIDE" && VIBE_BUILD_CACHE_DIR="$cache" VIBE_WARM_POOL_TRACE="$trace" run_bounded 900 \
       bash "$PROJECT_ROOT/scripts/parallel_warm_pool.sh" "$COMPILER" root.vibe "$p" "$RUNNER" \
       > "$OUT_DIR/wide.$p.log" 2>&1 ) || return 1
   awk '{ if ($0 == "+") { c++; if (c > m) m = c } else if ($0 == "-") c-- }

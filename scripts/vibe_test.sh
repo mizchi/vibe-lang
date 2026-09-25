@@ -19,6 +19,7 @@
 # exercised. Per-file lines + an aggregate are printed; per-file JSON reports
 # land in _build/vibe_test/coverage/.
 set -euo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/run_bounded.sh" # portable timeout(1), #2958
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -616,7 +617,7 @@ vt_worker() {
   local run_out="$vt_results/$flat.out"
   local run_errf="$vt_results/$flat.err2"
   if [ "$backend" = "gc" ]; then
-    if timeout 60 wasmtime run -W gc=y,function-references=y,exceptions=y \
+    if run_bounded 60 wasmtime run -W gc=y,function-references=y,exceptions=y \
         --invoke _start "$ROOT_DIR/$out_rel" >"$run_out" 2>"$run_errf"; then
       run_ok=1
     fi

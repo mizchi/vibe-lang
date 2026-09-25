@@ -42,41 +42,13 @@ HOST_MODE="${VIBE_CLI_CORE_HOST_MODE:-debug}"
 WASMTIME_RUN="$PROJECT_ROOT/scripts/wasmtime_run.sh"
 WASMTIME_WASM_FLAGS="${VIBE_WASMTIME_WASM_FLAGS:-exceptions=y}"
 
-run_with_timeout() {
-  local timeout_sec="$1"
-  shift
-  if [ "$timeout_sec" -le 0 ]; then
-    "$@"
-    return $?
-  fi
-  if command -v timeout >/dev/null 2>&1; then
-    timeout "$timeout_sec" "$@"
-    return $?
-  fi
-  if command -v gtimeout >/dev/null 2>&1; then
-    gtimeout "$timeout_sec" "$@"
-    return $?
-  fi
-  "$@" &
-  local cmd_pid=$!
-  (
-    sleep "$timeout_sec"
-    if kill -0 "$cmd_pid" 2>/dev/null; then
-      kill -TERM "$cmd_pid" 2>/dev/null || true
-      sleep 2
-      kill -KILL "$cmd_pid" 2>/dev/null || true
-    fi
-  ) &
-  local watchdog_pid=$!
-  wait "$cmd_pid"
-  local status=$?
-  kill "$watchdog_pid" 2>/dev/null || true
-  wait "$watchdog_pid" 2>/dev/null || true
-  if [ "$status" -eq 143 ] || [ "$status" -eq 137 ]; then
-    return 124
-  fi
-  return "$status"
-}
+# One portable bound for every stage (#2958): timeout, else gtimeout, else a
+# process-group watchdog that answers 124 only when IT fired. The local copy
+# this replaced mapped any 143/137 to 124, so a stage the OOM killer took was
+# reported as a timeout, and it signalled only the direct child. 0 still
+# means "no bound".
+. "$SCRIPT_DIR/run_bounded.sh"
+run_with_timeout() { run_bounded "$@"; }
 
 run_stage() {
   local name="$1"

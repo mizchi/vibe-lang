@@ -44,6 +44,7 @@
 #   VIBE_NAMED_HOSTSTREAMS_GATE_RUNNER    viberun binary override
 #   VIBE_P3_GATE_REQUIRE_TOOLS=1          missing tools = FAIL instead of skip
 set -euo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/run_bounded.sh" # portable timeout(1), #2958
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -161,7 +162,7 @@ echo "[named-hoststreams-component-gate] wit: body is a stream<u8> import, no fu
 
 run_stream_case() {
   local label="$1" component="$2" stream_spec="$3" log="$4"
-  if ! VIBE_ASYNC_STREAMS="$stream_spec" timeout 60 "$RUNNER" "$component" >"$log" 2>&1; then
+  if ! VIBE_ASYNC_STREAMS="$stream_spec" run_bounded 60 "$RUNNER" "$component" >"$log" 2>&1; then
     echo "named hoststreams component gate FAILED: $label did not exit 0" >&2
     cat "$log" >&2
     exit 1
@@ -201,7 +202,7 @@ FOR_COMPONENT="$OUT_DIR/stream_for.component.wasm"
 compile_fixture "$FOR_SRC" "$FOR_COMPONENT"
 check_component_header "$FOR_COMPONENT"
 FOR_LOG="$OUT_DIR/run.for.log"
-if ! VIBE_ASYNC_STREAMS="body=10|15|17" timeout 60 "$RUNNER" "$FOR_COMPONENT" >"$FOR_LOG" 2>&1; then
+if ! VIBE_ASYNC_STREAMS="body=10|15|17" run_bounded 60 "$RUNNER" "$FOR_COMPONENT" >"$FOR_LOG" 2>&1; then
   echo "named hoststreams component gate FAILED: the `for` form did not exit 0" >&2
   cat "$FOR_LOG" >&2
   exit 1
@@ -261,7 +262,7 @@ PROJ_COMPONENT="$OUT_DIR/stream_for_proj.component.wasm"
 compile_fixture "$PROJ_SRC" "$PROJ_COMPONENT"
 check_component_header "$PROJ_COMPONENT"
 PROJ_LOG="$OUT_DIR/run.for_proj.log"
-if ! VIBE_ASYNC_STREAMS="body=10|15|17" timeout 60 "$RUNNER" "$PROJ_COMPONENT" >"$PROJ_LOG" 2>&1; then
+if ! VIBE_ASYNC_STREAMS="body=10|15|17" run_bounded 60 "$RUNNER" "$PROJ_COMPONENT" >"$PROJ_LOG" 2>&1; then
   echo "named hoststreams component gate FAILED: the projected for form did not exit 0" >&2
   cat "$PROJ_LOG" >&2
   exit 1
@@ -347,7 +348,7 @@ grep -Eq "^[[:space:]]*import body: async func\(\) -> stream<u8>;" "$MIXED_WIT" 
 
 MIXED_LOG="$OUT_DIR/run.mixed.log"
 if ! VIBE_ASYNC_FUTURES="price=30:50" VIBE_ASYNC_STREAMS="body=5|7" \
-     timeout 60 "$RUNNER" "$MIXED" >"$MIXED_LOG" 2>&1; then
+     run_bounded 60 "$RUNNER" "$MIXED" >"$MIXED_LOG" 2>&1; then
   echo "named hoststreams component gate FAILED: mixed run did not exit 0" >&2
   cat "$MIXED_LOG" >&2
   exit 1
@@ -378,7 +379,7 @@ compile_fixture "$NESTED_SRC" "$NESTED"
 check_component_header "$NESTED"
 
 NESTED_LOG="$OUT_DIR/run.nested.log"
-if ! VIBE_ASYNC_STREAMS="body=21|21" timeout 60 "$RUNNER" "$NESTED" >"$NESTED_LOG" 2>&1; then
+if ! VIBE_ASYNC_STREAMS="body=21|21" run_bounded 60 "$RUNNER" "$NESTED" >"$NESTED_LOG" 2>&1; then
   echo "named hoststreams component gate FAILED: record-nested run did not exit 0" >&2
   cat "$NESTED_LOG" >&2
   exit 1
@@ -421,7 +422,7 @@ compile_fixture "$CLOSE_SRC" "$CLOSE_COMPONENT"
 check_component_header "$CLOSE_COMPONENT"
 
 CLOSE_LOG="$OUT_DIR/run.close.log"
-if ! VIBE_ASYNC_STREAMS="body=20|22|90|91|92" timeout 60 "$RUNNER" "$CLOSE_COMPONENT" >"$CLOSE_LOG" 2>&1; then
+if ! VIBE_ASYNC_STREAMS="body=20|22|90|91|92" run_bounded 60 "$RUNNER" "$CLOSE_COMPONENT" >"$CLOSE_LOG" 2>&1; then
   echo "named hoststreams component gate FAILED: partial-consume close run did not exit 0 (a double drop-readable traps host-side)" >&2
   cat "$CLOSE_LOG" >&2
   exit 1
@@ -488,7 +489,7 @@ PROTOCOL_COMPONENT="$OUT_DIR/stream_protocol.component.wasm"
 compile_fixture "$PROTOCOL_SRC" "$PROTOCOL_COMPONENT"
 check_component_header "$PROTOCOL_COMPONENT"
 PROTOCOL_LOG="$OUT_DIR/run.protocol.log"
-if ! VIBE_ASYNC_STREAMS="left=10|20@20,right=5|7|99@20" timeout 60 "$RUNNER" "$PROTOCOL_COMPONENT" >"$PROTOCOL_LOG" 2>&1; then
+if ! VIBE_ASYNC_STREAMS="left=10|20@20,right=5|7|99@20" run_bounded 60 "$RUNNER" "$PROTOCOL_COMPONENT" >"$PROTOCOL_LOG" 2>&1; then
   echo "named hoststreams component gate FAILED: nominal protocol run did not exit 0" >&2
   cat "$PROTOCOL_LOG" >&2
   exit 1
@@ -541,7 +542,7 @@ OPTION_COMPONENT="$OUT_DIR/stream_protocol_option.component.wasm"
 compile_fixture "$OPTION_SRC" "$OPTION_COMPONENT"
 check_component_header "$OPTION_COMPONENT"
 OPTION_LOG="$OUT_DIR/run.protocol_option.log"
-if ! VIBE_ASYNC_STREAMS="left=10|20@20,right=5|7|99@20" timeout 60 "$RUNNER" "$OPTION_COMPONENT" >"$OPTION_LOG" 2>&1; then
+if ! VIBE_ASYNC_STREAMS="left=10|20@20,right=5|7|99@20" run_bounded 60 "$RUNNER" "$OPTION_COMPONENT" >"$OPTION_LOG" 2>&1; then
   echo "named hoststreams component gate FAILED: Option protocol run did not exit 0" >&2
   cat "$OPTION_LOG" >&2
   exit 1
@@ -564,7 +565,7 @@ VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_A
 [ -s "$SPAWN_OUT" ] || { echo "named hoststreams component gate FAILED: fixtures/async_spawn_host_futures/streams.vibe did not compile: $(cat "$SPAWN_OUT.diag" 2>/dev/null)" >&2; exit 1; }
 SPAWN_LOG="$OUT_DIR/spawn_streams.log"
 SPAWN_START_NS=$(date +%s%N)
-if ! VIBE_ASYNC_STREAMS="left=1|2|3@100,right=10|20|30@100" timeout 60 "$RUNNER" "$SPAWN_OUT" >"$SPAWN_LOG" 2>&1; then
+if ! VIBE_ASYNC_STREAMS="left=1|2|3@100,right=10|20|30@100" run_bounded 60 "$RUNNER" "$SPAWN_OUT" >"$SPAWN_LOG" 2>&1; then
   echo "named hoststreams component gate FAILED: spawned stream readers did not exit 0" >&2
   cat "$SPAWN_LOG" >&2
   exit 1
@@ -592,7 +593,7 @@ wasm-tools print "$SCM_OUT" >"$SCM_OUT.wat" 2>/dev/null || true
 grep -q 'canon stream.cancel-read' "$SCM_OUT.wat" \
   || { echo "named hoststreams component gate FAILED: stream_cancel_many composed without stream.cancel-read" >&2; exit 1; }
 SCM_LOG="$OUT_DIR/spawn_stream_cancel_many.log"
-if ! VIBE_ASYNC_STREAMS="left=1|2|3@100,right=10|20|30@100" timeout 60 "$RUNNER" "$SCM_OUT" >"$SCM_LOG" 2>&1; then
+if ! VIBE_ASYNC_STREAMS="left=1|2|3@100,right=10|20|30@100" run_bounded 60 "$RUNNER" "$SCM_OUT" >"$SCM_LOG" 2>&1; then
   echo "named hoststreams component gate FAILED: stream_cancel_many did not exit 0 (a cancelled stream kept its handle?)" >&2
   cat "$SCM_LOG" >&2
   exit 1

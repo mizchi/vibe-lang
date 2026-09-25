@@ -5,11 +5,12 @@
 // covers that position, typecheck the program, and return the inferred type of
 // that name via env_lookup + type_to_string.
 //
-// MVP scope / LIMITATION: only env-visible names resolve — top-level bindings
-// and imported names that the checker records in the returned TypeEnv. Locals
-// and function parameters are NOT in that env (they live in nested scopes during
-// inference and are gone by the time check_program returns), so hovering one
-// yields "". A future per-node type table would lift this restriction.
+// Locals and parameters resolve through the checker's per-node type table; a
+// binder's DECLARATION site (a match / handler arm pattern, a `let`
+// destructuring, a `for` header, a parameter), which the AST stores as a bare
+// String, is located by binding_at's scope walk and answers with the type of a
+// use of the same binding (#3000). "" means no identifier at the position, or
+// one with no known type; `type_at_ident_at` tells the two apart for the CLI.
 //
 // All strings are built with String::concat only (never `+`, never "\{x}"
 // interpolation): both mis-codegen to NUL here. Ints stringify via
@@ -24,7 +25,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/checker {
-  check_program, check_program_type_table
+  check_program, check_program_type_table, local_let_types
 }
 
 import ./binding_at.vibe {
@@ -352,8 +353,52 @@ fn collect_binding_name_hits(stmts: Array[Stmt], span_start: Array[Int], span_en
       SLet(_, _, name, _, _) => push_binding_name_hit(source, start, end, name, acc),
       SLetMut(name, _, _) => push_binding_name_hit(source, start, end, name, acc),
       SFnDecl(_, name, _, _, _) => push_binding_name_hit(source, start, end, name, acc),
+      SLetPat(pat, _) => {
+        // A top-level `let (a, b) = e` binds env-visible names too (#3000).
+        let names = array_empty()
+        pat_binder_names(pat, names)
+        let mut j = 0
+        while j < Array::length(names) {
+          push_binding_name_hit(source, start, end, Array::get(names, j), acc)
+          j = j + 1
+        }
+      },
       _ => ()
     }
+    i = i + 1
+  }
+}
+
+/// The names a pattern binds, in source order.
+fn pat_binder_names(pat: Pat, out: Array[String]) -> Unit {
+  match pat {
+    PWild => (),
+    PBind(name) => Array::push(out, name),
+    PInt(_) => (),
+    PFloat(_) => (),
+    PString(_) => (),
+    PBool(_) => (),
+    PCtor(_, sub) => pats_binder_names(sub, out),
+    PTuple(sub) => pats_binder_names(sub, out),
+    POr(a, b) => {
+      pat_binder_names(a, out)
+      pat_binder_names(b, out)
+    },
+    PStruct(_, fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fp) = Array::get(fields, i)
+        pat_binder_names(fp, out)
+        i = i + 1
+      }
+    }
+  }
+}
+
+fn pats_binder_names(sub: Array[Pat], out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(sub) {
+    pat_binder_names(Array::get(sub, i), out)
     i = i + 1
   }
 }
@@ -509,12 +554,87 @@ fn type_at_off_in_occ(occ: Array[(Int, Int)], off: Int) -> Bool {
   found
 }
 
+/// #3050: the offset of the `let` keyword that introduces the binder written
+/// at `boff` (`let f` or `let mut f`), or -1 when that binder is not a `let`'s.
+/// The checker keys a local `let`'s value type by this offset, which is the one
+/// the parser gives `ELet` / `ELetMut`. Read from the token stream, so a
+/// comment between the keyword and the name is skipped the way the parser
+/// skips it (#3104 review).
+fn type_at_let_keyword_before(source: String, boff: Int) -> Int with Exception {
+  let (tokens, starts, _) = lex_with_offsets(source)
+  let mut k = -1
+  let mut i = 0
+  while i < Array::length(starts) && k < 0 {
+    if Array::get(starts, i) == boff {
+      k = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  let prev = if k > 0 {
+    match Array::get(tokens, k - 1) {
+      TMut => k - 2,
+      _ => k - 1
+    }
+  } else {
+    -1
+  }
+  if prev >= 0 {
+    match Array::get(tokens, prev) {
+      TLet => Array::get(starts, prev),
+      _ => -1
+    }
+  } else {
+    -1
+  }
+}
+
+/// The declaration offset of the LOCAL binder that `occ` (the scope walk's
+/// occurrences of one binding) resolves to, or -1 when the binding is not a
+/// local one (a top-level or imported name).
+fn type_at_local_binder_off(hits: Array[IdentHit], name: String, occ: Array[(Int, Int)]) -> Int {
+  let mut found = -1
+  let mut i = 0
+  while i < Array::length(hits) {
+    let hit = Array::get(hits, i)
+    let (hname, hoff) = hit_name_off(hit)
+    if hname == name && hit_is_local_binder(hit) && type_at_off_in_occ(occ, hoff) {
+      found = hoff
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// #3050: the value type of the local `let` whose binder is declared at
+/// `boff`, from the rows `check_program_type_table` recorded per `let`; "" when
+/// the binder is not a `let`'s (a parameter, a pattern binder) or has no row.
+/// Read it right after `check_program_type_table`, which is what fills it.
+fn type_at_local_let(source: String, boff: Int, final_s: Subst) -> String with Exception {
+  let let_off = type_at_let_keyword_before(source, boff)
+  if let_off < 0 {
+    ""
+  } else {
+    match tytab_lookup(local_let_types(), let_off) {
+      Some(t) => type_to_string(subst_apply(final_s, t)),
+      None => ""
+    }
+  }
+}
+
 /// A name with no row of its own in the type table answers with the type of a
 /// USE that resolves to the same binding (`occ`, from the scope walk). Only a
 /// name that is not a local binder may then fall back to the top-level env: a
 /// local binder with no use has no recorded type, and looking its spelling up
 /// in the module env would answer for an unrelated top-level name.
-fn type_at_use_or_env(table: Array[(Int, Type)], hits: Array[IdentHit], name: String, chosen_off: Int, final_s: Subst, stmts: Array[Stmt], occ: Array[(Int, Int)], local_binder: Bool) -> String with Exception {
+///
+/// A local `let` binder with no such use -- a closure that is only ever
+/// called, whose callee rows are call results -- answers with the value type
+/// the checker recorded for that `let` (#3050).
+fn type_at_use_or_env(source: String, table: Array[(Int, Type)], hits: Array[IdentHit], name: String, chosen_off: Int, final_s: Subst, stmts: Array[Stmt], occ: Array[(Int, Int)], local_binder: Bool) -> String with Exception {
   let mut use_ty = ""
   let mut u = 0
   while u < Array::length(hits) {
@@ -534,7 +654,7 @@ fn type_at_use_or_env(table: Array[(Int, Type)], hits: Array[IdentHit], name: St
   if use_ty != "" {
     use_ty
   } else if local_binder {
-    ""
+    type_at_local_let(source, chosen_off, final_s)
   } else {
     let env = check_program(stmts)
     match env_lookup(env, name) {
@@ -542,6 +662,60 @@ fn type_at_use_or_env(table: Array[(Int, Type)], hits: Array[IdentHit], name: St
       None => ""
     }
   }
+}
+
+/// Every located identifier the hover can land on: EIdent uses, `let*`
+/// binders, top-level binding names and LOCAL binder declaration sites. Returns
+/// the located parse alongside, since type resolution re-reads it.
+fn type_at_collect(source: String) -> (Array[Stmt], Array[IdentHit]) with Exception {
+  let (tokens, starts, ends) = lex_with_offsets(source)
+  let stmts = parse_program_located(tokens, starts, source)
+  let hits = empty_hits()
+  // Identifier USES carry real offsets on their EIdent nodes.
+  collect_stmts(stmts, hits)
+  let mut lsi = 0
+  let ls_ntok = Array::length(tokens)
+  while lsi + 2 < ls_ntok {
+    match Array::get(tokens, lsi) {
+      TLet => match Array::get(tokens, lsi + 1) {
+        TStar => match Array::get(tokens, lsi + 2) {
+          TIdent(ls_name) => {
+            let ls_off = Array::get(starts, lsi + 2)
+            if ls_off >= 0 {
+              Array::push(hits, IdentHit(ls_name, ls_off))
+            } else {
+              ()
+            }
+            lsi = lsi + 3
+          },
+          _ => {
+            lsi = lsi + 1
+          }
+        },
+        _ => {
+          lsi = lsi + 1
+        }
+      },
+      _ => {
+        lsi = lsi + 1
+      }
+    }
+  }
+  // Identifier DEFINITIONS (let / fn binding names) carry none, so recover
+  // their source offset from each statement's span and the source text.
+  let (span_stmts, span_start, span_end) = parse_program_spans(tokens, starts, ends)
+  collect_binding_name_hits(span_stmts, span_start, span_end, source, hits)
+  // LOCAL binder declaration sites (pattern binders, parameters, local
+  // `let`s, `for` / `loop` binders) carry no offset either, and are not
+  // statements, so take them from binding_at's scope walk (#3000).
+  let binder_sites = local_binder_sites(source)
+  let mut bsi = 0
+  while bsi < Array::length(binder_sites) {
+    let (b_name, b_off) = Array::get(binder_sites, bsi)
+    Array::push(hits, BinderHit(b_name, b_off))
+    bsi = bsi + 1
+  }
+  (stmts, hits)
 }
 
 export fn type_at_source(source: String, line: Int, col: Int) -> String {
@@ -554,53 +728,7 @@ export fn type_at_source(source: String, line: Int, col: Int) -> String {
       // identifier" empty-result convention below.
       ""
     } else {
-      let (tokens, starts, ends) = lex_with_offsets(source)
-      let stmts = parse_program_located(tokens, starts, source)
-      let hits = empty_hits()
-      // Identifier USES carry real offsets on their EIdent nodes.
-      collect_stmts(stmts, hits)
-      let mut lsi = 0
-      let ls_ntok = Array::length(tokens)
-      while lsi + 2 < ls_ntok {
-        match Array::get(tokens, lsi) {
-          TLet => match Array::get(tokens, lsi + 1) {
-            TStar => match Array::get(tokens, lsi + 2) {
-              TIdent(ls_name) => {
-                let ls_off = Array::get(starts, lsi + 2)
-                if ls_off >= 0 {
-                  Array::push(hits, IdentHit(ls_name, ls_off))
-                } else {
-                  ()
-                }
-                lsi = lsi + 3
-              },
-              _ => {
-                lsi = lsi + 1
-              }
-            },
-            _ => {
-              lsi = lsi + 1
-            }
-          },
-          _ => {
-            lsi = lsi + 1
-          }
-        }
-      }
-      // Identifier DEFINITIONS (let / fn binding names) carry none, so recover
-      // their source offset from each statement's span and the source text.
-      let (span_stmts, span_start, span_end) = parse_program_spans(tokens, starts, ends)
-      collect_binding_name_hits(span_stmts, span_start, span_end, source, hits)
-      // LOCAL binder declaration sites (pattern binders, parameters, local
-      // `let`s, `for` / `loop` binders) carry no offset either, and are not
-      // statements, so take them from binding_at's scope walk (#3000).
-      let binder_sites = local_binder_sites(source)
-      let mut bsi = 0
-      while bsi < Array::length(binder_sites) {
-        let (b_name, b_off) = Array::get(binder_sites, bsi)
-        Array::push(hits, BinderHit(b_name, b_off))
-        bsi = bsi + 1
-      }
+      let (stmts, hits) = type_at_collect(source)
       let name = pick_ident_at(hits, tgt)
       if name == "" {
         ""
@@ -608,14 +736,23 @@ export fn type_at_source(source: String, line: Int, col: Int) -> String {
         let chosen_off = pick_ident_off(hits, tgt)
         let on_callee = pick_ident_is_callee(hits, tgt)
         if on_callee {
-          let env = check_program(stmts)
-          match env_lookup(env, name) {
-            Some(t) => type_to_string(t),
-            None => {
-              // Local / parameter callee: not in the final env. The table's
-              // last-wins entry here is CallResult, which is the wrong type
-              // for the name — prefer empty over a confident wrong answer.
-              ""
+          // A LOCAL callee is answered by its own binding, never by the
+          // module env: the env holds only top-level names, so a local that
+          // shadows one would be answered with the other's type. The table's
+          // last-wins entry at a callee is the CallResult, the wrong type for
+          // the name, so a local `let` answers with the value type the
+          // checker recorded for it (#3050), and any other local binder
+          // (a parameter, a pattern binder) prefers empty over a confident
+          // wrong answer.
+          let callee_binder = type_at_local_binder_off(hits, name, binding_occurrences(source, line, col))
+          if callee_binder >= 0 {
+            let (_, callee_s) = check_program_type_table(stmts)
+            type_at_local_let(source, callee_binder, callee_s)
+          } else {
+            let env = check_program(stmts)
+            match env_lookup(env, name) {
+              Some(t) => type_to_string(t),
+              None => ""
             }
           }
         } else {
@@ -628,10 +765,27 @@ export fn type_at_source(source: String, line: Int, col: Int) -> String {
           }
           match table_hit {
             Some(rec_ty) => type_to_string(subst_apply(final_s, rec_ty)),
-            None => type_at_use_or_env(table, hits, name, chosen_off, final_s, stmts, binding_occurrences(source, line, col), pick_ident_is_local_binder(hits, tgt))
+            None => type_at_use_or_env(source, table, hits, name, chosen_off, final_s, stmts, binding_occurrences(source, line, col), pick_ident_is_local_binder(hits, tgt))
           }
         }
       }
+    }
+  } with { Exception::Throw(_) => "" }
+}
+
+/// The identifier under 1-based (line, col), or "" when there is none -- the
+/// position is out of range, or over whitespace, a keyword, a literal or
+/// punctuation. `vibe type-at` uses it to tell "no identifier here" (an error
+/// the caller should hear about) from "an identifier whose type is unknown"
+/// (#3000); both make type_at_source answer "".
+export fn type_at_ident_at(source: String, line: Int, col: Int) -> String {
+  handle {
+    let tgt = line_col_to_offset(source, line, col)
+    if tgt < 0 {
+      ""
+    } else {
+      let (_, hits) = type_at_collect(source)
+      pick_ident_at(hits, tgt)
     }
   } with { Exception::Throw(_) => "" }
 }

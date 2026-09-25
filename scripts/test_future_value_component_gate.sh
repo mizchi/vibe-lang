@@ -36,6 +36,7 @@
 #   VIBE_P3_GATE_REQUIRE_TOOLS=1     missing wasmtime/wasm-tools = FAIL
 #                                    instead of skip
 set -euo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/run_bounded.sh" # portable timeout(1), #2958
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -99,7 +100,7 @@ wasm-tools validate --features all "$COMPONENT" \
   || { echo "selfhost future-value component gate FAILED: generated component failed validation" >&2; exit 1; }
 
 RESULT_LOG="$OUT_DIR/run.log"
-if ! timeout 60 wasmtime run \
+if ! run_bounded 60 wasmtime run \
     -W exceptions=y -W concurrency-support=y \
     -W component-model-async=y -W component-model-async-stackful=y \
     -W component-model-more-async-builtins=y \

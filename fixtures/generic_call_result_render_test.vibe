@@ -1,0 +1,62 @@
+// #3084: a generic function's result is typed, at the render site, by the
+// callee's declared return -- its own formal `T`, which names nothing here --
+// so the interpolation pass had no type for it and codegen's heuristic took
+// over. On the gc lane every aggregate printed its address
+// (`pass(Box::{ v: true })` -> `273`, a struct, an enum, an Option, an array,
+// a tuple); on linear the Option / array / tuple were refused by #2987 and the
+// nominals printed addresses. The checker's row carries the call site's
+// instantiation, and the render now reads it.
+struct Box[T] {
+  v: T
+} derive (Show)
+
+struct Pt {
+  x: Int
+} derive (Show)
+
+enum G[T] {
+  GA(T);
+  GB
+} derive (Show)
+
+enum K {
+  KA(Int);
+  KB
+} derive (Show)
+
+fn pass[T](x: T) -> T {
+  x
+}
+
+fn first[A, B](a: A, b: B) -> A {
+  a
+}
+
+test "a generic struct through a generic function" {
+  inspect("\{pass(Box::{ v: true })}", content = "Box { v: true }")
+  inspect("\{first(Box::{ v: 2.5 }, 1)}", content = "Box { v: 2.5 }")
+}
+
+test "a plain struct and enum through a generic function" {
+  inspect("\{pass(Pt::{ x: 1 })}", content = "Pt { x: 1 }")
+  inspect("\{pass(KA(3))}", content = "KA(3)")
+}
+
+test "a generic enum through a generic function" {
+  inspect("\{pass(GA(true))}", content = "GA(true)")
+}
+
+test "Option, array and tuple through a generic function" {
+  inspect("\{pass(Some(true))}", content = "Some(true)")
+  inspect("\{pass([true, false])}", content = "[true, false]")
+  inspect("\{pass((1, true))}", content = "(1, true)")
+}
+
+test "scalars through a generic function (controls)" {
+  inspect("\{pass(1.5)} \{pass(true)} \{pass(7)} \{pass("s")}", content = "1.5 true 7 s")
+}
+
+test "a Char through a generic function" {
+  let c: Char = 'q'
+  inspect("\{pass(c)}", content = "q")
+}

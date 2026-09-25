@@ -40,6 +40,7 @@
 # this run's calibration reading to the baseline's as a per-report
 # normalization factor for the advisory section.
 set -euo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/run_bounded.sh" # portable timeout(1), #2958
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
@@ -115,7 +116,7 @@ if [ -x "$RUNNER_BIN" ] && [ -f "$TRACKED" ]; then
       continue
     fi
     if ! VIBE_RUNNER="$RUNNER_BIN" VIBE_CLI_WASM="$(cd "$(dirname "$STAGE2")" && pwd)/$(basename "$STAGE2")" \
-      timeout 300 ./runtime/vibe bench "$bf" --iters "$BENCH_ITERS" 2>/dev/null \
+      run_bounded 300 ./runtime/vibe bench "$bf" --iters "$BENCH_ITERS" 2>/dev/null \
       | grep '^vibe::bench ' \
       | sed -n 's/^vibe::bench label=\([^ ]*\) .* ns_p50=\([0-9]*\) .* bytes_per_op=\([0-9]*\).*/\1\t\2\t\3/p' \
       >> "$bench_tsv"; then
@@ -159,7 +160,7 @@ if [ -x "$RUNNER_BIN" ] && [ -d bench/exec ]; then
       "$src" "$lin_wasm" main >/dev/null 2>&1 || true
     if [ -s "$lin_wasm" ]; then
       lin_bytes="$(wc -c < "$lin_wasm")"
-      if VIBE_FUEL=1 VIBE_MEM=1 timeout 120 "$RUNNER_BIN" "$lin_wasm" \
+      if VIBE_FUEL=1 VIBE_MEM=1 run_bounded 120 "$RUNNER_BIN" "$lin_wasm" \
           > "$work/exec_$name.out" 2> "$work/exec_$name.err"; then
         lin_fuel="$(sed -n 's/^vibe::fuel consumed=\([0-9][0-9]*\)$/\1/p' "$work/exec_$name.err" | tail -1)"
         mem_line="$(grep '^vibe::mem ' "$work/exec_$name.err" | tail -1 || true)"
@@ -186,7 +187,7 @@ if [ -x "$RUNNER_BIN" ] && [ -d bench/exec ]; then
       "$src" "$gc_wasm" main >/dev/null 2>&1 || true
     if [ -s "$gc_wasm" ]; then
       gc_bytes="$(wc -c < "$gc_wasm")"
-      if VIBE_FUEL=1 timeout 120 "$RUNNER_BIN" "$gc_wasm" \
+      if VIBE_FUEL=1 run_bounded 120 "$RUNNER_BIN" "$gc_wasm" \
           > "$work/exec_$name.gc.out" 2> "$work/exec_$name.gc.err"; then
         gc_fuel="$(sed -n 's/^vibe::fuel consumed=\([0-9][0-9]*\)$/\1/p' "$work/exec_$name.gc.err" | tail -1)"
         if [ "$lin_status" = "ok" ] && [ "$out_status" != "skipped" ] \
@@ -255,7 +256,7 @@ if [ -x "$RUNNER_BIN" ] && [ -f "$CALIB_BENCH" ] && [ -s "$SEED_WASM" ]; then
   calib_runner_sha="$(sha256sum "$RUNNER_BIN" | cut -d' ' -f1)"
   calib_bench_sha="$(sha256sum "$CALIB_BENCH" | cut -d' ' -f1)"
   calib_line="$(VIBE_RUNNER="$RUNNER_BIN" VIBE_CLI_WASM="$(cd "$(dirname "$SEED_WASM")" && pwd)/$(basename "$SEED_WASM")" \
-    timeout 300 ./runtime/vibe bench "$CALIB_BENCH" --iters "$BENCH_ITERS" 2>/dev/null \
+    run_bounded 300 ./runtime/vibe bench "$CALIB_BENCH" --iters "$BENCH_ITERS" 2>/dev/null \
     | grep "^vibe::bench label=$CALIB_KEY " || true)"
   calib_ns="$(sed -n 's/^vibe::bench label=[^ ]* .* ns_p50=\([0-9]*\).*/\1/p' <<<"$calib_line")"
   if [ -n "$calib_ns" ]; then

@@ -29,6 +29,7 @@
 #                   compiler than a checkout's stage2.
 #   VIBE_RUNNER     the viberun binary (default: the release build in-tree)
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/run_bounded.sh" # portable timeout(1), #2958
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -57,9 +58,9 @@ note() { printf '%s\n' "$*"; }
 
 probe() { # probe <call> -> CHECK_OUT, RUN_OUT
   printf 'fn main allows Console {\n  let _x = %s\n  println("ok")\n}\n' "$1" > "$WORK/p.vibex"
-  CHECK_OUT="$(VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" timeout 300 \
+  CHECK_OUT="$(VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" run_bounded 300 \
     bash runtime/vibe check "$WORK/p.vibex" 2>&1)"
-  RUN_OUT="$(VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" timeout 400 \
+  RUN_OUT="$(VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" run_bounded 400 \
     bash runtime/vibe run "$WORK/p.vibex" 2>&1)"
 }
 
