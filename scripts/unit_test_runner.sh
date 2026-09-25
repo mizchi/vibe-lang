@@ -29,6 +29,7 @@
 # (CI reuses the gate's freshly-built stage2 to avoid a second selfbuild);
 # otherwise build a fresh seed->stage1->stage2 generation and use its stage2.
 set -euo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/run_bounded.sh" # portable timeout(1), #2958
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
@@ -208,7 +209,7 @@ unit_out_store() {
   local pathkey; pathkey="$(printf '%s' "$f" | tr '/' '_')"
   local plantmp; plantmp="$(mktemp -t vibe-unit-plan-XXXXXX)"
   rm -f "$plantmp"
-  if ! VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_MODULE_PLAN=1 VIBE_IMPORT_ABI=raw       timeout 60 bash "$RUNNER" --invoke cli_main "$S2" "$f" "$plantmp" __no_entry__ >/dev/null 2>&1       || [ ! -s "$plantmp" ]; then
+  if ! VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_MODULE_PLAN=1 VIBE_IMPORT_ABI=raw       run_bounded 60 bash "$RUNNER" --invoke cli_main "$S2" "$f" "$plantmp" __no_entry__ >/dev/null 2>&1       || [ ! -s "$plantmp" ]; then
     rm -f "$plantmp" "$plantmp.diag"
     return 0
   fi
@@ -262,7 +263,7 @@ attribute_block_failure() {
   done <<< "$names"
   [ "${#ordered[@]}" -gt 0 ] || return 0
   local bdir; bdir="$(mktemp -d -t vibe-attr-XXXXXX)"
-  VIBE_PREOPEN_DIR="$ROOT_DIR" timeout 300 bash "$RUNNER" \
+  VIBE_PREOPEN_DIR="$ROOT_DIR" run_bounded 300 bash "$RUNNER" \
     --invoke-batch-dir "$bdir" "${args[@]}" "$wasm" >/dev/null 2>&1 || true
   local failed="" i=0
   while [ "$i" -lt "${#ordered[@]}" ]; do
@@ -312,7 +313,7 @@ run_one_untraced() {
     if [ -n "$ckey" ] && [ -s "$OUT_CACHE_ROOT/$STAGE2_SHA/$pathkey.$ckey.wasm" ]; then
       local cout; cout="$(mktemp -t vibe-unit-XXXXXX.wasm)"
       cp "$OUT_CACHE_ROOT/$STAGE2_SHA/$pathkey.$ckey.wasm" "$cout"
-      if VIBE_PREOPEN_DIR="$ROOT_DIR" timeout 300 bash "$RUNNER" --invoke _start "$cout" >/dev/null 2>&1; then
+      if VIBE_PREOPEN_DIR="$ROOT_DIR" run_bounded 300 bash "$RUNNER" --invoke _start "$cout" >/dev/null 2>&1; then
         rm -f "$cout"; return 0
       fi
       LAST_DIAG="(test assertion trapped at runtime)"
@@ -329,7 +330,7 @@ run_one_untraced() {
     # daemons, so the one-shot fallback and the batch path compile the same
     # files the same way. See that file for why it is granted wholesale.
     VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw VIBE_UNSTABLE=1 \
-      timeout 300 bash "$RUNNER" --invoke cli_main "$S2" "$f" "$out" __no_entry__ >/dev/null 2>&1 || true
+      run_bounded 300 bash "$RUNNER" --invoke cli_main "$S2" "$f" "$out" __no_entry__ >/dev/null 2>&1 || true
     if [ -s "$out" ]; then
       # timeout: a miscompiled test that loops forever must fail the FILE,
       # not hang the whole battery (a nested-loop break-depth bug once
@@ -339,7 +340,7 @@ run_one_untraced() {
       # ~8x slower under the CI shard's 4-way fan-out of the heaviest files
       # -- 120s tripped exactly that way on a 4-vCPU runner (#1321), and a
       # run-phase timeout is reported as a trap and never retried.
-      if VIBE_PREOPEN_DIR="$ROOT_DIR" timeout 300 bash "$RUNNER" --invoke _start "$out" >/dev/null 2>&1; then
+      if VIBE_PREOPEN_DIR="$ROOT_DIR" run_bounded 300 bash "$RUNNER" --invoke _start "$out" >/dev/null 2>&1; then
         unit_out_store "$f" "$out"
         rm -f "$out" "$out.diag"; return 0
       fi

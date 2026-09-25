@@ -34,6 +34,9 @@
 #      scripts, tests and install, so it is scanned across every directory the
 #      idiom reached, not just scripts/.
 #
+#   5. GNU `timeout` is absent on a stock macOS (#2958), so a bare call is exit
+#      127 there. Every bounded call goes through scripts/run_bounded.sh.
+#
 # All are lexical, so all are decidable from the text.
 set -euo pipefail
 
@@ -203,10 +206,76 @@ $diag_findings"
   fi
 fi
 
+# 5. A bare GNU `timeout` (or `gtimeout`) call (#2958). timeout(1) is
+#    coreutils: a stock macOS has no such binary, and Homebrew installs it as
+#    `gtimeout`, which a Linux box in turn usually lacks. Either spelling in
+#    command position is `command not found` somewhere we support -- exit 127,
+#    which every caller then read as its own kind of failure (a compile crash,
+#    a failed gate, a fuzz finding per seed). 96 such calls had accumulated
+#    across scripts/ and tests/, plus five inside shell command strings built
+#    by scripts/vibe_md.vibex, so `.vibex` files are scanned too.
+#
+#    The fix is scripts/run_bounded.sh: `run_bounded SECS cmd...` when
+#    sourced, `bash scripts/run_bounded.sh SECS cmd...` from a command
+#    string. It resolves timeout, then gtimeout, then a shell watchdog that
+#    keeps exit 124 meaningful.
+#
+#    Matched as a WORD anywhere on a line, like the rg and mapfile rules and
+#    for the same reason: `VAR=x timeout ...`, `if ! timeout ...`,
+#    `$(timeout ...)`, `arr=(timeout N)` and `/usr/bin/timeout ...` all run
+#    the tool, and enumerating command positions is the losing side of that
+#    game. Two things are NOT calls and are removed before matching: the
+#    `command -v timeout` / `command -v gtimeout` probe itself, and a spelling
+#    that is not a word -- `$timeout_sec`, `--timeout`, `run_with_timeout`,
+#    `"timeout"` as a quoted value, `timeout(1)` in prose. A message string
+#    that says "timeout" followed by a space is a finding; reword it.
+timeout_scan_files=()
+for d in scripts tests runtime install .claude; do
+  [ -d "$ROOT/$d" ] || continue
+  while IFS= read -r f; do
+    case "$(basename "$f")" in "$SELF" | "$SELF_TEST") continue ;; esac
+    timeout_scan_files+=("$f")
+  done < <(find "$ROOT/$d" -type f \( -name '*.sh' -o -name '*.vibex' \))
+done
+# The launcher is a shell script with no extension.
+[ -f "$ROOT/runtime/vibe" ] && timeout_scan_files+=("$ROOT/runtime/vibe")
+
+if [ "${#timeout_scan_files[@]}" -gt 0 ]; then
+  timeout_findings="$(
+    awk -v root="$ROOT/" '
+      FNR == 1 { rel = FILENAME; sub("^" root, "", rel) }
+
+      # Whole-line comments (sh # or vibex //) carry no behaviour.
+      /^[[:space:]]*(#|\/\/)/ { next }
+
+      {
+        line = $0
+        # The resolution probe names the tool without running it.
+        gsub(/command[[:space:]]+-v[[:space:]]+g?timeout/, "", line)
+        # Two alternatives, as for rg: a bare word, and a path ending in the
+        # tool (the left boundary excludes `/`, so `/usr/bin/timeout` needs
+        # its own arm or it walks straight past).
+        if (line ~ /(^|[^A-Za-z0-9_.$\/{-])g?timeout([[:space:]]|$)/ ||
+            line ~ /(^|[^A-Za-z0-9_.-])[A-Za-z0-9_.\/-]*\/g?timeout([[:space:]]|$)/) {
+          printf "  %s:%d: bare `timeout`/`gtimeout` call; stock macOS has no GNU timeout (exit 127) -- source scripts/run_bounded.sh and call `run_bounded SECS cmd...`, or run `bash scripts/run_bounded.sh SECS cmd...` from a command string (#2958)\n", rel, FNR
+        }
+      }
+    ' "${timeout_scan_files[@]}"
+  )"
+  if [ -n "$timeout_findings" ]; then
+    if [ -n "$findings" ]; then
+      findings="$findings
+$timeout_findings"
+    else
+      findings="$timeout_findings"
+    fi
+  fi
+fi
+
 if [ -n "$findings" ]; then
   echo "[gate-portability] FAIL: gates that cannot run, or patterns that do not mean what they say:" >&2
   printf '%s\n' "$findings" >&2
   exit 1
 fi
 
-echo "[gate-portability] ok (no ripgrep dependency; no bash 4 mapfile; no bare sed -i; no uninterpreted \\t in grep patterns; no 2>/dev/null >&2 diag-swallow)"
+echo "[gate-portability] ok (no ripgrep dependency; no bash 4 mapfile; no bare sed -i; no uninterpreted \\t in grep patterns; no 2>/dev/null >&2 diag-swallow; no bare timeout)"

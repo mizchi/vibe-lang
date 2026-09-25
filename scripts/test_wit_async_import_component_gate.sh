@@ -3,6 +3,7 @@
 # WIT-derived async import and validate that it owns a versioned interface
 # import instead of a runner-private root function import.
 set -euo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/run_bounded.sh" # portable timeout(1), #2958
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -213,7 +214,7 @@ fi
 LONG_MS=300
 IFACE='example:prices/api@1.0.0'
 START_NS=$(date +%s%N)
-GOT="$(VIBE_ASYNC_FUTURES="$IFACE#get-price=40:$LONG_MS,$IFACE#get-tax=2:$LONG_MS" timeout 60 "$RUNNER" "$PROG_DIR/main.wasm" 2>&1)" || {
+GOT="$(VIBE_ASYNC_FUTURES="$IFACE#get-price=40:$LONG_MS,$IFACE#get-tax=2:$LONG_MS" run_bounded 60 "$RUNNER" "$PROG_DIR/main.wasm" 2>&1)" || {
   echo "WIT async import gate FAILED: viberun did not exit 0: $GOT" >&2
   exit 1
 }
@@ -251,7 +252,7 @@ if [ ! -s "$SPAWN_DIR/main.wasm" ]; then
 fi
 wasm-tools validate --features all "$SPAWN_DIR/main.wasm"
 START_NS=$(date +%s%N)
-GOT="$(VIBE_ASYNC_FUTURES="$IFACE#get-price=40:$LONG_MS,$IFACE#get-tax=2:$LONG_MS" timeout 60 "$RUNNER" "$SPAWN_DIR/main.wasm" 2>&1)" || {
+GOT="$(VIBE_ASYNC_FUTURES="$IFACE#get-price=40:$LONG_MS,$IFACE#get-tax=2:$LONG_MS" run_bounded 60 "$RUNNER" "$SPAWN_DIR/main.wasm" 2>&1)" || {
   echo "WIT async import gate FAILED: viberun did not exit 0 on the spawned-task program: $GOT" >&2
   exit 1
 }
@@ -308,7 +309,7 @@ grep -Fq '(record (field "status" s32) (field "body"' "$RESP_DIR/main.wat" || {
 # the two requests were in flight together.
 IFACE='example:http-lite/client@1.0.0'
 START_NS=$(date +%s%N)
-GOT="$(VIBE_ASYNC_RESPONSES="$IFACE#fetch-a=200:$LONG_MS:1|2|3,$IFACE#fetch-b=204:$LONG_MS:10|20" timeout 60 "$RUNNER" "$RESP_DIR/main.wasm" 2>&1)" || {
+GOT="$(VIBE_ASYNC_RESPONSES="$IFACE#fetch-a=200:$LONG_MS:1|2|3,$IFACE#fetch-b=204:$LONG_MS:10|20" run_bounded 60 "$RUNNER" "$RESP_DIR/main.wasm" 2>&1)" || {
   echo "WIT async import gate FAILED: viberun did not exit 0 on the response program: $GOT" >&2
   exit 1
 }
@@ -329,7 +330,7 @@ echo "[wit-async-import] responses executed: 440 in ${ELAPSED_MS}ms (two ${LONG_
 # The runner registers an interface's scalar futures and its responses on ONE
 # linker instance: a scalar future supplied on the same interface must not
 # make the linker define the instance twice (Codex on #3059).
-GOT="$(VIBE_ASYNC_FUTURES="$IFACE#extra=5:0" VIBE_ASYNC_RESPONSES="$IFACE#fetch-a=200:0:1|2|3,$IFACE#fetch-b=204:0:10|20" timeout 60 "$RUNNER" "$RESP_DIR/main.wasm" 2>&1)" || {
+GOT="$(VIBE_ASYNC_FUTURES="$IFACE#extra=5:0" VIBE_ASYNC_RESPONSES="$IFACE#fetch-a=200:0:1|2|3,$IFACE#fetch-b=204:0:10|20" run_bounded 60 "$RUNNER" "$RESP_DIR/main.wasm" 2>&1)" || {
   echo "WIT async import gate FAILED: viberun refused a scalar future and responses on one interface: $GOT" >&2
   exit 1
 }

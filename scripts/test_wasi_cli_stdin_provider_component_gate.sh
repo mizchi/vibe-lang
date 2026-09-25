@@ -7,6 +7,7 @@
 # forced completion tag and byte-mismatch controls exercise cleanup/fail-closed
 # code; they do not measure provider-generated errors.
 set -euo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/run_bounded.sh" # portable timeout(1), #2958
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -161,7 +162,7 @@ FLAGS=(-Sp3 -W component-model-async=y -W component-model-async-stackful=y -W co
 run_success() {
   local lane="$1" expected="$2"
   local log="$OUT_DIR/run.$lane.log"
-  if ! timeout 60 "$WASMTIME_BIN" run "${FLAGS[@]}" --invoke "$lane()" "$COMPONENT" <"$INPUT" >"$log" 2>&1; then
+  if ! run_bounded 60 "$WASMTIME_BIN" run "${FLAGS[@]}" --invoke "$lane()" "$COMPONENT" <"$INPUT" >"$log" 2>&1; then
     if grep -Eq 'component imports instance .wasi:cli/stdin@0\.3\.0., but a matching implementation was not found in (the )?linker' "$log"; then
       require_or_skip_runtime "wasmtime has no matching wasi:cli/stdin@0.3.0 implementation"
     fi
@@ -178,7 +179,7 @@ run_success() {
 run_trap() {
   local lane="$1"
   local log="$OUT_DIR/run.$lane.log"
-  if timeout 60 "$WASMTIME_BIN" run "${FLAGS[@]}" --invoke "$lane()" "$COMPONENT" <"$INPUT" >"$log" 2>&1; then
+  if run_bounded 60 "$WASMTIME_BIN" run "${FLAGS[@]}" --invoke "$lane()" "$COMPONENT" <"$INPUT" >"$log" 2>&1; then
     echo "wasi cli stdin provider shadow FAILED: $lane unexpectedly succeeded" >&2
     exit 1
   fi

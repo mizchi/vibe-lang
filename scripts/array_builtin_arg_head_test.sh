@@ -36,6 +36,7 @@
 #   VIBE_CLI_WASM  the compiler to ask. Unset, scripts/resolve_stage2.sh picks
 #                  HEAD's generation and says which.
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/run_bounded.sh" # portable timeout(1), #2958
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -57,7 +58,7 @@ note() { printf '%s\n' "$*"; }
 check_refused() {
   printf 'fn main allows Console {\n  let xs = [1, 2]\n  let _ = %s\n  println("ok")\n}\n' "$1" > "$WORK/p.vibex"
   local out
-  out="$(VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" timeout 400 \
+  out="$(VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" run_bounded 400 \
     bash runtime/vibe check "$WORK/p.vibex" 2>&1)"
   if [ -z "$out" ]; then
     note "  FAIL $1: vibe check is CLEAN -- this compiles to an unloadable module"
@@ -109,7 +110,7 @@ fn main allows Console {
   println("map=\{Array::get(m, 0)} filter=\{Array::length(f)} any=\{a} all=\{l} fold=\{d} named=\{Array::get(n, 2)}")
 }
 V
-chk="$(VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" timeout 400 bash runtime/vibe check "$WORK/pos.vibex" 2>&1)"
+chk="$(VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" run_bounded 400 bash runtime/vibe check "$WORK/pos.vibex" 2>&1)"
 if [ -n "$chk" ]; then
   note "  FAIL valid higher-order code no longer type-checks:"
   printf '%s\n' "$chk" | head -2 | sed 's/^/        /'
@@ -117,7 +118,7 @@ if [ -n "$chk" ]; then
 else
   note "  ok   vibe check is clean"
 fi
-got="$(VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" timeout 500 bash runtime/vibe run "$WORK/pos.vibex" 2>&1 | tail -1)"
+got="$(VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" run_bounded 500 bash runtime/vibe run "$WORK/pos.vibex" 2>&1 | tail -1)"
 want="map=2 filter=2 any=true all=true fold=6 named=4"
 if [ "$got" = "$want" ]; then
   note "  ok   and answers: $got"

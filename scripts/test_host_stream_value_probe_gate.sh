@@ -20,6 +20,7 @@
 #   VIBE_HOST_STREAM_PROBE_RUNNER   viberun binary override
 #   VIBE_P3_GATE_REQUIRE_TOOLS=1    missing tools = FAIL instead of skip
 set -euo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/run_bounded.sh" # portable timeout(1), #2958
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -71,7 +72,7 @@ wasm-tools validate --features all "$COMPONENT" \
   || { echo "host stream value probe gate FAILED: probe failed validation" >&2; exit 1; }
 
 LOG="$OUT_DIR/run.log"
-if ! VIBE_ASYNC_STREAMS="body=10|15|17" timeout 60 "$RUNNER" "$COMPONENT" >"$LOG" 2>&1; then
+if ! VIBE_ASYNC_STREAMS="body=10|15|17" run_bounded 60 "$RUNNER" "$COMPONENT" >"$LOG" 2>&1; then
   echo "host stream value probe gate FAILED: viberun did not exit 0" >&2
   cat "$LOG" >&2
   exit 1
@@ -96,7 +97,7 @@ echo "[host-stream-value-probe-gate] 42: bytes delivered one at a time, end-of-s
 DELAY_MS=60
 LOG2="$OUT_DIR/run_delayed.log"
 t0=$(date +%s%3N)
-if ! VIBE_ASYNC_STREAMS="body=10|15|17@${DELAY_MS}" timeout 60 "$RUNNER" "$COMPONENT" >"$LOG2" 2>&1; then
+if ! VIBE_ASYNC_STREAMS="body=10|15|17@${DELAY_MS}" run_bounded 60 "$RUNNER" "$COMPONENT" >"$LOG2" 2>&1; then
   echo "host stream value probe gate FAILED: delayed run did not exit 0 (BLOCKED/park path)" >&2
   cat "$LOG2" >&2
   exit 1

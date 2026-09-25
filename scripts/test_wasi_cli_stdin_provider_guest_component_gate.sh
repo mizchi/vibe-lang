@@ -4,6 +4,7 @@
 # controls, validates their nominal WIT and bridge structure, then runs them on
 # pinned Wasmtime 47.0.2 when the ratified stdin provider is available.
 set -euo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/run_bounded.sh" # portable timeout(1), #2958
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -175,7 +176,7 @@ FLAGS=(-Sp3 -W component-model-async=y -W component-model-async-stackful=y -W co
 run_lane() {
   local lane="$1" expected="$2"
   local log="$OUT_DIR/run.$lane.log"
-  if ! timeout 60 "$WASMTIME_BIN" run "${FLAGS[@]}" --invoke 'run()' "$OUT_DIR/$lane.component.wasm" <"$INPUT" >"$log" 2>&1; then
+  if ! run_bounded 60 "$WASMTIME_BIN" run "${FLAGS[@]}" --invoke 'run()' "$OUT_DIR/$lane.component.wasm" <"$INPUT" >"$log" 2>&1; then
     if grep -Eq 'component imports instance .wasi:cli/stdin@0\.3\.0., but a matching implementation was not found in (the )?linker' "$log"; then
       require_or_skip_runtime "wasmtime has no matching wasi:cli/stdin@0.3.0 implementation"
     fi
@@ -192,7 +193,7 @@ run_lane() {
 run_trap() {
   local lane="$1"
   local log="$OUT_DIR/run.$lane.log"
-  if timeout 60 "$WASMTIME_BIN" run "${FLAGS[@]}" --invoke 'run()' "$OUT_DIR/$lane.component.wasm" <"$INPUT" >"$log" 2>&1; then
+  if run_bounded 60 "$WASMTIME_BIN" run "${FLAGS[@]}" --invoke 'run()' "$OUT_DIR/$lane.component.wasm" <"$INPUT" >"$log" 2>&1; then
     echo "wasi cli stdin provider guest FAILED: $lane unexpectedly succeeded" >&2
     exit 1
   fi

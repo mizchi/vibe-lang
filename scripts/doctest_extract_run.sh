@@ -63,6 +63,9 @@ cd "$ROOT_DIR"
 # with a 120s timeout and the loop is SERIAL, so a single pathological block
 # sets the floor for the whole task -- that is the thing worth being able to see.
 . "$SCRIPT_DIR/trace_lib.sh"
+# Portable timeout(1) (#2958); exported by the helper, so the xargs workers
+# below see it.
+. "$SCRIPT_DIR/run_bounded.sh"
 
 if [ $# -lt 1 ]; then
   echo "usage: bash scripts/doctest_extract_run.sh <file.md> [more.md ...]" >&2
@@ -271,8 +274,7 @@ doctest_block() {
   local seq_no src line mode srcmd
   IFS=$'\t' read -r seq_no src line mode srcmd <<< "$1"
   local label="$srcmd:$line"
-  local timeout_cmd=()
-  if command -v timeout >/dev/null 2>&1; then timeout_cmd=(timeout "$DOCTEST_TIMEOUT_S"); fi
+  local timeout_cmd=(run_bounded "$DOCTEST_TIMEOUT_S")
 
   trace_begin "block $label ($mode)"
   local blk_tok="$TRACE_TOKEN"

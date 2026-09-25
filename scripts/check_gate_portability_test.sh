@@ -16,7 +16,8 @@ ok() { echo "  ok  $1"; }
 run() { VIBE_GATE_PORTABILITY_ROOT="$TMP_ROOT" bash "$CHECK" >"$TMP_ROOT/out" 2>&1; }
 
 reset_tree() {
-  rm -f "$TMP_ROOT"/scripts/*.sh
+  rm -f "$TMP_ROOT"/scripts/*.sh "$TMP_ROOT"/scripts/*.vibex
+  rm -rf "$TMP_ROOT/tests"
   cat > "$TMP_ROOT/scripts/clean.sh" <<'EOF'
 #!/usr/bin/env bash
 grep -qE '^ok$' "$1"
@@ -209,5 +210,82 @@ reset_tree
 printf '%s\n' '# cat "$x.diag" 2>/dev/null >&2 sent the message to /dev/null (historical, #2688)' >> "$TMP_ROOT/scripts/clean.sh"
 run || { cat "$TMP_ROOT/out" >&2; fail "a comment documenting the 2>/dev/null >&2 bug was rejected"; }
 ok "the 2>/dev/null >&2 idiom in a whole-line comment is not a finding"
+
+# --- red 8: a bare GNU `timeout` call (#2958). Stock macOS has no such binary,
+# so the call is exit 127 there and the caller reads 127 as its own failure.
+reset_tree
+printf '%s\n' 'timeout 60 "$RUNNER" "$COMPONENT"' >> "$TMP_ROOT/scripts/clean.sh"
+grep -qF 'timeout 60 "$RUNNER"' "$TMP_ROOT/scripts/clean.sh" || fail "fixture 8 did not land"
+run && { cat "$TMP_ROOT/out" >&2; fail "a bare timeout call was accepted"; }
+grep -qF 'stock macOS has no GNU timeout' "$TMP_ROOT/out" || { cat "$TMP_ROOT/out" >&2; fail "timeout finding did not name the reason"; }
+ok "a bare timeout call is rejected"
+
+# --- red 8b: every spelling that RUNS the tool, each asserted on its own so a
+# rule that catches one and misses another cannot pass. A command-position
+# rule would miss the assignment prefix, the negation, the substitution and
+# the array element; the left boundary excludes `/`, so the absolute path
+# needs its own arm; `gtimeout` is the Homebrew name and is just as absent on
+# Linux; and a guard on the same line does not make the call after it safe.
+for spelled in \
+  'VIBE_X=1 timeout 60 "$RUNNER" x' \
+  'if ! timeout 60 "$RUNNER" x; then echo no; fi' \
+  'out="$(timeout 5 bash -c true)"' \
+  'cmd=(timeout "$secs")' \
+  '/usr/bin/timeout 5 true' \
+  'gtimeout 5 true' \
+  'if command -v timeout >/dev/null 2>&1; then timeout 5 true; fi'; do
+  reset_tree
+  printf '%s\n' "$spelled" >> "$TMP_ROOT/scripts/clean.sh"
+  grep -qF "$spelled" "$TMP_ROOT/scripts/clean.sh" || fail "fixture 8b did not land: $spelled"
+  run && { cat "$TMP_ROOT/out" >&2; fail "a timeout spelling was accepted: $spelled"; }
+done
+ok "prefixed / negated / substituted / array / absolute-path / gtimeout / guarded-line calls are rejected"
+
+# --- red 8c: the corpus is wider than scripts/*.sh. tests/ carried two of
+# the calls, and scripts/vibe_md.vibex built five inside shell command
+# strings; a rule that scanned only scripts/*.sh would have certified both.
+reset_tree
+mkdir -p "$TMP_ROOT/tests/gates"
+printf '%s\n' 'x="$(timeout 30 bash -c true)"' > "$TMP_ROOT/tests/gates/run.sh"
+run && { cat "$TMP_ROOT/out" >&2; fail "a bare timeout under tests/ was accepted"; }
+grep -qF 'tests/gates/run.sh:1:' "$TMP_ROOT/out" || { cat "$TMP_ROOT/out" >&2; fail "the tests/ finding did not name the file"; }
+reset_tree
+printf '%s\n' 'let cmd = "timeout \{secs} env X=1 bash scripts/x.sh"' > "$TMP_ROOT/scripts/tool.vibex"
+run && { cat "$TMP_ROOT/out" >&2; fail "a timeout inside a .vibex command string was accepted"; }
+grep -qF 'scripts/tool.vibex:1:' "$TMP_ROOT/out" || { cat "$TMP_ROOT/out" >&2; fail "the .vibex finding did not name the file"; }
+ok "a bare timeout under tests/ and inside a .vibex command string is rejected"
+
+# --- red 8d: a REAL converted call site, reverted. The fixtures above are
+# synthetic; this is the shape the tree actually has, so a rule that matched
+# only the fixtures' spelling fails here.
+reset_tree
+cp "$SCRIPT_DIR/test_async_sleep_component_gate.sh" "$TMP_ROOT/scripts/real_gate.sh"
+run || { cat "$TMP_ROOT/out" >&2; fail "the converted real gate was rejected before the mutation"; }
+sed 's/run_bounded 60 /timeout 60 /' "$TMP_ROOT/scripts/real_gate.sh" > "$TMP_ROOT/scripts/real_gate.sh.tmp"
+mv "$TMP_ROOT/scripts/real_gate.sh.tmp" "$TMP_ROOT/scripts/real_gate.sh"
+grep -q 'timeout 60 "\$RUNNER"' "$TMP_ROOT/scripts/real_gate.sh" || fail "fixture 8d did not land"
+run && { cat "$TMP_ROOT/out" >&2; fail "a real gate reverted to a bare timeout was accepted"; }
+grep -qF 'scripts/real_gate.sh:' "$TMP_ROOT/out" || { cat "$TMP_ROOT/out" >&2; fail "the reverted real gate was not the finding"; }
+ok "a real call site reverted to a bare timeout is rejected"
+
+# --- green guard for 8: what is NOT a call must pass, or the rule could be
+# satisfied by rejecting every line that mentions the word.
+reset_tree
+cat >> "$TMP_ROOT/scripts/clean.sh" <<'EOF'
+if command -v timeout >/dev/null 2>&1; then TIMEOUT_BIN="timeout"; fi
+command -v gtimeout >/dev/null 2>&1 || true
+"$TIMEOUT_BIN" 5 true
+run_bounded 60 "$RUNNER" "$COMPONENT"
+VIBE_X=1 run_bounded 60 "$RUNNER"
+bash scripts/run_bounded.sh 5 true
+run_with_timeout "$timeout_sec" true
+wasmtime --timeout 5 run x.wasm
+echo "$timeout_sec" "${timeout_s:-120}"
+echo "no GNU timeout(1) on this host"
+# timeout 60 "$RUNNER"   -- a whole-line comment is not a call
+EOF
+printf '%s\n' '// timeout 5 in a vibex comment' 'let cmd = "bash scripts/run_bounded.sh \{secs} env X=1"' > "$TMP_ROOT/scripts/tool.vibex"
+run || { cat "$TMP_ROOT/out" >&2; fail "a non-call mention of timeout, or the portable spelling, was rejected"; }
+ok "the probe, indirection, run_bounded, --timeout, \$timeout_*, timeout(1) prose and comments all pass"
 
 echo "[gate-portability-test] ok"

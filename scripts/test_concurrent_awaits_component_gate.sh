@@ -46,6 +46,7 @@
 #                                         of fixed overhead)
 #   VIBE_P3_GATE_REQUIRE_TOOLS=1          missing tools = FAIL instead of skip
 set -euo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/run_bounded.sh" # portable timeout(1), #2958
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -140,13 +141,13 @@ wasm-tools validate --features all "$COMPONENT" \
 # --- warmup (unmeasured): pay JIT compilation before the timed run ----------
 # Delay 0 keeps this cheap, and here it is also the eager path, which this
 # component must handle anyway (asserted for real further down).
-VIBE_ASYNC_GET_DELAY_MS=0 timeout 60 "$RUNNER" "$COMPONENT" >/dev/null 2>&1 \
+VIBE_ASYNC_GET_DELAY_MS=0 run_bounded 60 "$RUNNER" "$COMPONENT" >/dev/null 2>&1 \
   || { echo "selfhost concurrent-awaits component gate FAILED: warmup run did not exit 0" >&2; exit 1; }
 
 # --- timed run: both calls suspend --------------------------------------------
 RESULT_LOG="$OUT_DIR/run.concurrent.log"
 START_NS=$(date +%s%N)
-if ! VIBE_ASYNC_GET_DELAY_MS="$DELAY_MS" timeout 120 "$RUNNER" "$COMPONENT" >"$RESULT_LOG" 2>&1; then
+if ! VIBE_ASYNC_GET_DELAY_MS="$DELAY_MS" run_bounded 120 "$RUNNER" "$COMPONENT" >"$RESULT_LOG" 2>&1; then
   echo "selfhost concurrent-awaits component gate FAILED: viberun did not exit 0" >&2
   cat "$RESULT_LOG" >&2
   exit 1
@@ -175,7 +176,7 @@ echo "[concurrent-awaits-gate] concurrent: 84 in ${ELAPSED_MS}ms for 2x${DELAY_M
 # Same regression guard the spawned-future gate carries: an async-lowered
 # call that completes eagerly creates no subtask, so nothing may be dropped.
 EAGER_LOG="$OUT_DIR/run.eager.log"
-if ! VIBE_ASYNC_GET_DELAY_MS=0 timeout 60 "$RUNNER" "$COMPONENT" >"$EAGER_LOG" 2>&1; then
+if ! VIBE_ASYNC_GET_DELAY_MS=0 run_bounded 60 "$RUNNER" "$COMPONENT" >"$EAGER_LOG" 2>&1; then
   echo "selfhost concurrent-awaits component gate FAILED: viberun did not exit 0 with a non-suspending host import (eager path)" >&2
   cat "$EAGER_LOG" >&2
   exit 1

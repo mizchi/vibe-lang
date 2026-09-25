@@ -67,6 +67,11 @@ bash "$ROOT_DIR/scripts/incremental_kpi_test.sh"
 # compiler that does not contain the change, with nothing in the report saying
 # so (#2836 §1). Cheap: no compiler, synthetic git trees.
 bash "$ROOT_DIR/scripts/resolve_stage2_test.sh"
+# The portable timeout(1) every bounded call in scripts/ and tests/ goes
+# through (#2958). Its shell watchdog only runs where GNU timeout is absent --
+# never in CI by accident -- so the companion forces it and holds it to
+# timeout(1)'s contract, with a mutant per property. No compiler; ~35s.
+bash "$ROOT_DIR/scripts/run_bounded_test.sh"
 # The host half of the capability contract (#2825 step 1,
 # docs/internal/design/capability-host-contract.md). Same glob reason again -- and this one is
 # a case where the gate that already exists could not see the property:
