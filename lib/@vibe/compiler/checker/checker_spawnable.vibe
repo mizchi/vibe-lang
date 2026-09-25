@@ -379,6 +379,21 @@ fn sp_same_region(a: Type, b: Type) -> Bool {
   }
 }
 
+fn sp_is_stream_owning_future(t: Type) -> Bool {
+  match t {
+    CtNamed(n, targs) => n == "Future" && Array::length(targs) == 1 && sp_owns_host_stream(Array::get(targs, 0)),
+    _ => false
+  }
+}
+
+/// #2066: a value that owns a host stream's readable end.
+fn sp_owns_host_stream(t: Type) -> Bool {
+  match t {
+    CtNamed(n, _) => n == "HostResponse" || n == "HostStream",
+    _ => false
+  }
+}
+
 /// A capture is Spawnable-legal when it is structurally `Send`, or when it
 /// is a `TaskGroup[r]` / `TaskHandle[r,_]` / `Sender[r,_]` / `Receiver[r,_]`
 /// tagged with THIS spawn call's own region (`r_here`) -- an endpoint from
@@ -405,7 +420,14 @@ fn sp_spawnable_ok(env: TypeEnv, s: Subst, defs: Array[TypeDef], ty: Type, r_her
         // would prevent. When the cell gains a scheduler-visible waiter
         // list (the waitable/completion-order slice), `Future` should
         // grow a region tag and join the sp_same_region branch above.
-        true
+        //
+        // #2066: except a future whose VALUE owns a host stream. A
+        // `HostResponse` carries its body's one readable end, so every task
+        // that awaits a shared response future would be handed that same
+        // end; once one drains or closes it, another reads a dropped -- or
+        // reused -- handle (Codex on #3091). Like a `HostStream`, it has one
+        // owner: the task that makes the request.
+        !sp_owns_host_stream(Array::get(targs, 0))
       } else {
         false
       },
@@ -456,6 +478,8 @@ export fn check_spawnable_captures(env: TypeEnv, s: Subst, defs: Array[TypeDef],
             let resolved = subst_apply(s, vty)
             if sp_spawnable_ok(env, s, defs, resolved, r_here) {
               ()
+            } else if sp_is_stream_owning_future(resolved) {
+              Array::push(out, String::concat("capture `", String::concat(vname, "` is a future whose value owns a host stream (a response body), which only one task may read: start the request inside the spawned task and await it there, rather than sharing the future")))
             } else {
               Array::push(out, String::concat("no impl `Spawnable` for `", String::concat(type_to_string(resolved), String::concat("`: capture `", String::concat(vname, "` is neither Send nor a same-nursery endpoint")))))
             }
