@@ -312,10 +312,16 @@ override silently contradicting a module that says `raw` is the hazard #2903's
   in a host-stream cell, which the shared stream read half reads (present
   whenever a response is, even with no named stream). Each `body` call wraps
   the same end, so read it through one cell: once one reaches end of stream
-  the end is dropped, and reading through another traps. The first slice
-  composes responses on their own: every future in the component is a
-  response and they share one interface, and anything else is refused by
-  name. `from_wit_future_imports` derives the bindings (it admits the
+  the end is dropped, and reading through another traps. Every future in a
+  response component comes from ONE interface, and anything else is refused
+  by name. Scalar `future<s64>` functions of that interface may sit beside
+  the responses (MIXED): the API instance type declares both future types,
+  the composer adds a second canon read/drop (and cancel-read) pair of the
+  s64 type, and the adapter records each handle's kind (band 36864, 1 = a
+  response) at its getter, then picks the pair and the value encoding by it
+  (`fixtures/wit_response_mixed`: 211 in ~320ms for a response beside a
+  scalar future). Runner-private root futures and named streams still cannot
+  share a response component. `from_wit_future_imports` derives the bindings (it admits the
   function only with `use types.{response};` and exactly that record).
   viberun's `VIBE_ASYNC_RESPONSES="<address>=<status>:<delay_ms>:<b1>|<b2>"`
   links each function inside its interface. The gate runs

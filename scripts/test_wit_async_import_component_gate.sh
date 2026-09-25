@@ -338,4 +338,36 @@ GOT="$(VIBE_ASYNC_FUTURES="$IFACE#extra=5:0" VIBE_ASYNC_RESPONSES="$IFACE#fetch-
   exit 1
 }
 echo "[wit-async-import] one interface carrying a scalar future and responses links once: 440"
+# #2066 MIXED: fixtures/wit_response_mixed awaits a response AND a scalar
+# `future<s64>` from ONE interface. The instance type declares both future
+# types; the adapter keys each handle's canon pair and encoding on its kind.
+# Both land after LONG_MS: 200 + (1+2+3) + 5 = 211 in about LONG_MS.
+MIX_DIR="$OUT/response_mixed"
+rm -rf "$MIX_DIR"
+mkdir -p "$MIX_DIR"
+cp fixtures/wit_response_mixed/main.vibe fixtures/wit_response_mixed/client_bindings.vibe "$MIX_DIR/"
+VIBE_PREOPEN_DIR="$ROOT" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \
+  "$COMPILER" "$MIX_DIR/main.vibe" "$MIX_DIR/main.wasm" run >/dev/null 2>&1 || true
+if [ ! -s "$MIX_DIR/main.wasm" ]; then
+  echo "WIT async import gate FAILED: fixtures/wit_response_mixed/main.vibe did not compile" >&2
+  cat "$MIX_DIR/main.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+wasm-tools validate --features all "$MIX_DIR/main.wasm"
+START_NS=$(date +%s%N)
+GOT="$(VIBE_ASYNC_RESPONSES="$IFACE#fetch-a=200:$LONG_MS:1|2|3" VIBE_ASYNC_FUTURES="$IFACE#pending-count=5:$LONG_MS" timeout 60 "$RUNNER" "$MIX_DIR/main.wasm" 2>&1)" || {
+  echo "WIT async import gate FAILED: viberun did not exit 0 on the mixed program: $GOT" >&2
+  exit 1
+}
+ELAPSED_MS=$(( ( $(date +%s%N) - START_NS ) / 1000000 ))
+[ "$GOT" = "211" ] || {
+  echo "WIT async import gate FAILED: mixed expected 211 (status 200, body bytes 6, count 5), got: $GOT" >&2
+  exit 1
+}
+if [ "$ELAPSED_MS" -ge $(( LONG_MS * 3 / 2 )) ]; then
+  echo "WIT async import gate FAILED: ${ELAPSED_MS}ms for a ${LONG_MS}ms response beside a ${LONG_MS}ms future -- they were not in flight together" >&2
+  exit 1
+fi
+echo "[wit-async-import] response + scalar future from one interface: 211 in ${ELAPSED_MS}ms"
 echo "WIT async import component gate OK"

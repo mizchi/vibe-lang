@@ -4265,6 +4265,62 @@ fn emit_comp_wit_async_response_api_type(buf: Bytes, func_names: Array[String]) 
   emit_raw_content(buf, content)
 }
 
+/// #2066 mixed: the API instance type of an interface holding both response
+/// functions (`future<response>`) and scalar ones (`future<s64>`). Local
+/// types: 0 = the aliased payload record, 1 = future<0>, 2 = func -> 1, then
+/// 3 = future<s64>, 4 = func -> 3.
+fn emit_comp_wit_async_mixed_api_type(buf: Bytes, response_funcs: Array[String], scalar_funcs: Array[String]) -> Unit {
+  bytebuf_push(buf, section_type)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 66)
+  let nresp = Array::length(response_funcs)
+  let nscalar = Array::length(scalar_funcs)
+  leb128_encode_u32(content, 5 + nresp + nscalar)
+  bytebuf_push(content, 2)
+  bytebuf_push(content, 3)
+  bytebuf_push(content, 2)
+  leb128_encode_u32(content, 1)
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 1)
+  bytebuf_push(content, 101)
+  bytebuf_push(content, 1)
+  leb128_encode_u32(content, 0)
+  bytebuf_push(content, 1)
+  bytebuf_push(content, 67)
+  bytebuf_push(content, 0)
+  bytebuf_push(content, 0)
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 1)
+  bytebuf_push(content, 101)
+  bytebuf_push(content, 1)
+  bytebuf_push(content, comp_valtype_s64)
+  bytebuf_push(content, 1)
+  bytebuf_push(content, 67)
+  bytebuf_push(content, 0)
+  bytebuf_push(content, 0)
+  leb128_encode_u32(content, 3)
+  let mut ri = 0
+  while ri < nresp {
+    bytebuf_push(content, 4)
+    bytebuf_push(content, 0)
+    emit_name(content, Array::get(response_funcs, ri))
+    bytebuf_push(content, comp_extern_func)
+    leb128_encode_u32(content, 2)
+    ri = ri + 1
+  }
+  let mut si = 0
+  while si < nscalar {
+    bytebuf_push(content, 4)
+    bytebuf_push(content, 0)
+    emit_name(content, Array::get(scalar_funcs, si))
+    bytebuf_push(content, comp_extern_func)
+    leb128_encode_u32(content, 4)
+    si = si + 1
+  }
+  emit_raw_content(buf, content)
+}
+
 fn emit_comp_wit_async_future_instance_type(buf: Bytes, func_names: Array[String]) -> Unit {
   emit_comp_wit_async_future_instance_type_at(buf, func_names, 0)
 }
@@ -5811,6 +5867,23 @@ fn comp_wit_future_interfaces(core_names: Array[String]) -> Array[String] with E
 }
 
 /// Functions owned by one interface, preserving core-declaration order.
+/// comp_wit_future_funcs restricted to responses (`want` true) or to scalar
+/// futures (`want` false).
+fn comp_wit_future_funcs_of_kind(core_names: Array[String], interface_id: String, want: Bool) -> Array[String] with Exception {
+  let picked: Array[String] = []
+  let mut i = 0
+  while i < Array::length(core_names) {
+    let nm = Array::get(core_names, i)
+    if comp_is_wit_response_get_import(nm) == want {
+      Array::push(picked, nm)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  comp_wit_future_funcs(picked, interface_id)
+}
+
 fn comp_wit_future_funcs(core_names: Array[String], interface_id: String) -> Array[String] with Exception {
   let out = array_empty()
   let mut i = 0
@@ -5921,6 +5994,82 @@ fn comp_timer_counter_slot() -> Int {
 /// band (24576 + 1024 * 4); 1024 handles * 8 bytes ends at 36864.
 fn comp_timer_id_base() -> Int {
   28672
+}
+
+/// #2066: the landed record is `{status: s32 @0, body: stream<u8> @4}`, its
+/// address both on the stack and in local `addr_local`. It crosses as one
+/// scalar, `(status << 32) | body` -- the record's flat lowering side by side
+/// -- which `HostResponse::status` / `::body` take apart. The value convention
+/// spends one bit on the tag, so a status outside [-2^30, 2^30) cannot be
+/// represented and traps here rather than arriving truncated.
+fn comp_emit_response_value(buf: Bytes, addr_local: Int, tag_mode: Int) -> Unit {
+  emit_i32_load(buf, 2, 0)
+  emit_i32_const(buf, 1073741824)
+  emit_i32_add(buf)
+  emit_i32_const(buf, -2147483648)
+  bytebuf_push(buf, 79)
+  emit_if_void(buf)
+  bytebuf_push(buf, 0)
+  emit_end(buf)
+  emit_local_get(buf, addr_local)
+  emit_i32_load(buf, 2, 0)
+  bytebuf_push(buf, 172)
+  emit_i64_const(buf, 32)
+  emit_i64_shl(buf)
+  emit_local_get(buf, addr_local)
+  emit_i32_load(buf, 2, 4)
+  bytebuf_push(buf, 173)
+  emit_i64_or(buf)
+  comp_emit_encode_i64_value(buf, tag_mode)
+}
+
+/// #2066: per-handle payload KIND of a mixed composition (1 = a response, 0 =
+/// a scalar `future<s64>`), past the timer id band (28672 + 1024 * 8).
+fn comp_hf_kind_base() -> Int {
+  36864
+}
+
+/// Push `comp_hf_kind_base() + fut * 4`, `fut` in local `fut_local`.
+fn comp_emit_hf_kind_addr(buf: Bytes, fut_local: Int) -> Unit {
+  emit_local_get(buf, fut_local)
+  emit_i32_const(buf, 2)
+  emit_i32_shl(buf)
+  emit_i32_const(buf, comp_hf_kind_base())
+  emit_i32_add(buf)
+}
+
+/// Drop the readable end in local `fut_local` through the canon drop of its
+/// kind's type (only one type unless `mixed`).
+fn comp_emit_drop_by_kind(buf: Bytes, mixed: Bool, fut_local: Int, response_drop: Int, scalar_drop: Int) -> Unit {
+  if mixed {
+    comp_emit_hf_kind_addr(buf, fut_local)
+    emit_i32_load(buf, 2, 0)
+    emit_if_void(buf)
+    emit_local_get(buf, fut_local)
+    emit_call(buf, response_drop)
+    emit_else(buf)
+    emit_local_get(buf, fut_local)
+    emit_call(buf, scalar_drop)
+    emit_end(buf)
+  } else {
+    emit_local_get(buf, fut_local)
+    emit_call(buf, response_drop)
+  }
+}
+
+/// Index of the first name whose kind is `want` (a response when true).
+fn comp_first_kind_index(kinds: Array[Bool], want: Bool) -> Int {
+  let mut found = 0 - 1
+  let mut i = 0
+  while i < Array::length(kinds) {
+    if found < 0 && Array::get(kinds, i) == want {
+      found = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
 }
 
 fn comp_hs_value_base() -> Int {
@@ -6057,7 +6206,7 @@ fn comp_sleep_wait_payload_slot() -> Int {
   32
 }
 
-fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], stream_core_names: Array[String], want_stream_close: Bool, want_sleep: Bool, tag_mode: Int, future_s64: Bool, response_payload: Bool, want_wait_any: Bool, want_stream_arm: Bool, want_sleep_arm: Bool, want_cancel: Bool, want_stream_cancel: Bool, exit_stubs: Array[String]) -> Bytes with Exception {
+fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], stream_core_names: Array[String], want_stream_close: Bool, want_sleep: Bool, tag_mode: Int, future_s64: Bool, response_payload: Bool, want_wait_any: Bool, want_stream_arm: Bool, want_sleep_arm: Bool, want_cancel: Bool, want_stream_cancel: Bool, response_kinds: Array[Bool], exit_stubs: Array[String]) -> Bytes with Exception {
   // #1342: a THIRD half -- `vibe.sleep`. It is not a getter/wait pair like the
   // other two: the host side is an `async func(ms) -> ms`, so its
   // async-lowered call yields a SUBTASK rather than a future/stream handle,
@@ -6090,8 +6239,20 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
   let stream_half = nstreams > 0 || response_payload
   let read_idx = nnames
   let drop_idx = nnames + 1
+  // #2066: MIXED -- WIT responses and scalar `future<s64>` functions in one
+  // component. `response_kinds[i]` says which the i-th name is; a second
+  // canon read/drop pair (the s64 type) follows the response pair, each
+  // getter records its handle's kind (comp_hf_kind_base), and wait, cancel and
+  // teardown pick the pair and the value encoding by that kind.
+  let mixed = Array::length(response_kinds) > 0
+  let read1_idx = nnames + 2
+  let drop1_idx = nnames + 3
   let ws_base = if nnames > 0 {
-    nnames + 2
+    if mixed {
+      nnames + 4
+    } else {
+      nnames + 2
+    }
   } else {
     0
   }
@@ -6119,8 +6280,13 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
   // #1537: `future.cancel-read` (sync), after the sleep half for the same
   // reason -- a composition without it keeps every index.
   let cancel_read_idx = sleep_func_imports
+  let cancel1_read_idx = sleep_func_imports + 1
   let cancel_func_imports = if want_cancel {
-    sleep_func_imports + 1
+    if mixed {
+      sleep_func_imports + 2
+    } else {
+      sleep_func_imports + 1
+    }
   } else {
     sleep_func_imports
   }
@@ -6209,6 +6375,19 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     emit_name(ic, String::concat("[future-drop-readable-0]", first_label))
     bytebuf_push(ic, 0)
     bytebuf_push(ic, 2)
+    if mixed {
+      let scalar_label = comp_hostfuture_import_label(Array::get(core_names, comp_first_kind_index(response_kinds, false)))
+      emit_name(ic, "$root")
+      emit_name(ic, String::concat("[async-lower][future-read-1]", scalar_label))
+      bytebuf_push(ic, 0)
+      bytebuf_push(ic, 1)
+      emit_name(ic, "$root")
+      emit_name(ic, String::concat("[future-drop-readable-1]", scalar_label))
+      bytebuf_push(ic, 0)
+      bytebuf_push(ic, 2)
+    } else {
+      ()
+    }
   } else {
     ()
   }
@@ -6275,6 +6454,14 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     emit_name(ic, String::concat("[future-cancel-read-0]", comp_hostfuture_import_label(Array::get(core_names, 0))))
     bytebuf_push(ic, 0)
     bytebuf_push(ic, 0)
+    if mixed {
+      emit_name(ic, "$root")
+      emit_name(ic, String::concat("[future-cancel-read-1]", comp_hostfuture_import_label(Array::get(core_names, comp_first_kind_index(response_kinds, false)))))
+      bytebuf_push(ic, 0)
+      bytebuf_push(ic, 0)
+    } else {
+      ()
+    }
   } else {
     ()
   }
@@ -6475,12 +6662,28 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     emit_i32_add(get_body)
     emit_local_get(get_body, 1)
     emit_local_get(get_body, 2)
-    emit_call(get_body, read_idx)
+    emit_call(get_body, if mixed && !Array::get(response_kinds, get_i) {
+      read1_idx
+    } else {
+      read_idx
+    })
     emit_i32_const(get_body, -1)
     emit_i32_ne(get_body)
     emit_i32_const(get_body, 1)
     emit_i32_add(get_body)
     emit_i32_store(get_body, 2, 0)
+    if mixed {
+      // mem[HF_KIND_BASE + fut*4] = 1 for a response, 0 for a scalar
+      comp_emit_hf_kind_addr(get_body, 1)
+      emit_i32_const(get_body, if Array::get(response_kinds, get_i) {
+        1
+      } else {
+        0
+      })
+      emit_i32_store(get_body, 2, 0)
+    } else {
+      ()
+    }
     // Return the handle in the compiled core's value convention.
     emit_local_get(get_body, 1)
     bytebuf_push(get_body, 173)
@@ -6555,8 +6758,7 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
   // then the set if one was created (ends before sets, the children rule).
   // The state slot is cleared so a stale handle value cannot be awaited
   // twice against a freed end.
-  emit_local_get(wait_body, 1)
-  emit_call(wait_body, drop_idx)
+  comp_emit_drop_by_kind(wait_body, mixed, 1, drop_idx, drop1_idx)
   emit_local_get(wait_body, 2)
   emit_i32_const(wait_body, 1)
   emit_i32_eq(wait_body)
@@ -6570,43 +6772,39 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
   emit_i32_const(wait_body, 0)
   emit_i32_store(wait_body, 2, 0)
   // Return the value in the compiled core's value convention.
-  emit_local_get(wait_body, 5)
-  if response_payload {
-    // #2066: the landed record is `{status: s32 @0, body: stream<u8> @4}`.
-    // It crosses as one scalar, `(status << 32) | body` -- the record's flat
-    // lowering side by side -- which `HostResponse::status` / `::body` take
-    // apart. The value convention spends one bit on the tag, so a status
-    // outside [-2^30, 2^30) cannot be represented and traps here rather than
-    // arriving truncated.
+  if mixed {
+    // #2066: pick the encoding by the handle's recorded kind.
+    comp_emit_hf_kind_addr(wait_body, 1)
     emit_i32_load(wait_body, 2, 0)
-    emit_i32_const(wait_body, 1073741824)
-    emit_i32_add(wait_body)
-    emit_i32_const(wait_body, -2147483648)
-    bytebuf_push(wait_body, 79)
-    emit_if_void(wait_body)
-    bytebuf_push(wait_body, 0)
-    emit_end(wait_body)
+    // if (result i64)
+    bytebuf_push(wait_body, 4)
+    bytebuf_push(wait_body, 126)
     emit_local_get(wait_body, 5)
-    emit_i32_load(wait_body, 2, 0)
-    bytebuf_push(wait_body, 172)
-    emit_i64_const(wait_body, 32)
-    emit_i64_shl(wait_body)
+    comp_emit_response_value(wait_body, 5, tag_mode)
+    emit_else(wait_body)
     emit_local_get(wait_body, 5)
-    emit_i32_load(wait_body, 2, 4)
-    bytebuf_push(wait_body, 173)
-    emit_i64_or(wait_body)
-    comp_emit_encode_i64_value(wait_body, tag_mode)
-  } else if future_s64 {
-    // i64.load align=3 offset=0. `future<s64>` is already vibe Int's
-    // canonical scalar; only the internal tag convention remains.
+    // i64.load align=3: the scalar future<s64>
     bytebuf_push(wait_body, 41)
     leb128_encode_u32(wait_body, 3)
     leb128_encode_u32(wait_body, 0)
     comp_emit_encode_i64_value(wait_body, tag_mode)
+    emit_end(wait_body)
   } else {
-    emit_i32_load(wait_body, 2, 0)
-    bytebuf_push(wait_body, 173)
-    comp_emit_encode_i64_value(wait_body, tag_mode)
+    emit_local_get(wait_body, 5)
+    if response_payload {
+      comp_emit_response_value(wait_body, 5, tag_mode)
+    } else if future_s64 {
+      // i64.load align=3 offset=0. `future<s64>` is already vibe Int's
+      // canonical scalar; only the internal tag convention remains.
+      bytebuf_push(wait_body, 41)
+      leb128_encode_u32(wait_body, 3)
+      leb128_encode_u32(wait_body, 0)
+      comp_emit_encode_i64_value(wait_body, tag_mode)
+    } else {
+      emit_i32_load(wait_body, 2, 0)
+      bytebuf_push(wait_body, 173)
+      comp_emit_encode_i64_value(wait_body, tag_mode)
+    }
   }
   bytebuf_push(wait_body, 11)
   if nnames > 0 {
@@ -7432,8 +7630,22 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     emit_local_get(cancel_body, 1)
     emit_i32_const(cancel_body, 0)
     emit_call(cancel_body, join_idx)
-    emit_local_get(cancel_body, 1)
-    emit_call(cancel_body, cancel_read_idx)
+    if mixed {
+      comp_emit_hf_kind_addr(cancel_body, 1)
+      emit_i32_load(cancel_body, 2, 0)
+      // if (result i32)
+      bytebuf_push(cancel_body, 4)
+      bytebuf_push(cancel_body, 127)
+      emit_local_get(cancel_body, 1)
+      emit_call(cancel_body, cancel_read_idx)
+      emit_else(cancel_body)
+      emit_local_get(cancel_body, 1)
+      emit_call(cancel_body, cancel1_read_idx)
+      emit_end(cancel_body)
+    } else {
+      emit_local_get(cancel_body, 1)
+      emit_call(cancel_body, cancel_read_idx)
+    }
     emit_i32_const(cancel_body, 15)
     emit_i32_and(cancel_body)
     emit_i32_eqz(cancel_body)
@@ -7446,6 +7658,14 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
       emit_local_get(cancel_body, 3)
       emit_i32_const(cancel_body, 2)
       emit_i32_eq(cancel_body)
+      if mixed {
+        // only a RESPONSE owns a body stream
+        comp_emit_hf_kind_addr(cancel_body, 1)
+        emit_i32_load(cancel_body, 2, 0)
+        emit_i32_and(cancel_body)
+      } else {
+        ()
+      }
       emit_if_void(cancel_body)
       emit_local_get(cancel_body, 2)
       emit_i32_const(cancel_body, comp_hf_value_base() - comp_hf_state_base() + 4)
@@ -7456,8 +7676,7 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     } else {
       ()
     }
-    emit_local_get(cancel_body, 1)
-    emit_call(cancel_body, drop_idx)
+    comp_emit_drop_by_kind(cancel_body, mixed, 1, drop_idx, drop1_idx)
     emit_local_get(cancel_body, 2)
     emit_i32_const(cancel_body, 0)
     emit_i32_store(cancel_body, 2, 0)
@@ -8036,10 +8255,22 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
     resp_i = resp_i + 1
   }
   let response_mode = nresp > 0
-  if response_mode && nresp != nhf {
-    throw("component(wit-async-import): a component awaiting WIT responses cannot yet await other host futures; split the program or migrate every import to a response")
-  } else if response_mode && nwit_interfaces != 1 {
-    throw("component(wit-async-import): every response function must come from one WIT interface in this composition")
+  // #2066: responses may share the component with scalar WIT futures of the
+  // same interface (MIXED); the adapter then keys each handle's canon pair and
+  // encoding on its kind.
+  let mixed = response_mode && nresp != nhf
+  let response_kinds: Array[Bool] = []
+  if mixed {
+    let mut rk_i = 0
+    while rk_i < nhf {
+      Array::push(response_kinds, comp_is_wit_response_get_import(Array::get(hf_names, rk_i)))
+      rk_i = rk_i + 1
+    }
+  } else {
+    ()
+  }
+  if response_mode && nwit_interfaces != 1 {
+    throw("component(wit-async-import): a component awaiting WIT responses imports every async function from one WIT interface; move the other futures into that interface or split the program")
   } else {
     ()
   }
@@ -8097,9 +8328,19 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
     bytebuf_push(fut_content, 1)
     leb128_encode_u32(fut_content, 1)
     emit_raw_content(buf, fut_content)
-    emit_comp_wit_async_response_api_type(buf, comp_wit_future_funcs(hf_names, api_interface))
+    if mixed {
+      emit_comp_wit_async_mixed_api_type(buf, comp_wit_future_funcs_of_kind(hf_names, api_interface, true), comp_wit_future_funcs_of_kind(hf_names, api_interface, false))
+    } else {
+      emit_comp_wit_async_response_api_type(buf, comp_wit_future_funcs(hf_names, api_interface))
+    }
     emit_comp_stream_type_section(buf, comp_valtype_u8)
     emit_comp_instance_import_section(buf, api_interface, 3)
+    if mixed {
+      // 5 = future<s64>, the scalar functions' canon read/drop type
+      emit_comp_future_type_section(buf, comp_valtype_s64)
+    } else {
+      ()
+    }
   } else if nhf > 0 {
     emit_comp_future_type_section(buf, if future_s64 {
       comp_valtype_s64
@@ -8119,7 +8360,9 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   } else {
     ()
   }
-  let future_type_count = if response_mode {
+  let future_type_count = if mixed {
+    6
+  } else if response_mode {
     5
   } else if nhf > 0 {
     if future_s64 {
@@ -8229,7 +8472,7 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   } else {
     ()
   }
-  emit_core_module_section(buf, comp_generate_hostfuture_adapter_core_module(hf_names, hs_names, hs_wants_close, want_sleep, tag_mode, future_s64, response_mode, want_wait_any, want_stream_arm, want_sleep_arm, want_cancel, want_stream_cancel, exit_stubs))
+  emit_core_module_section(buf, comp_generate_hostfuture_adapter_core_module(hf_names, hs_names, hs_wants_close, want_sleep, tag_mode, future_s64, response_mode, want_wait_any, want_stream_arm, want_sleep_arm, want_cancel, want_stream_cancel, response_kinds, exit_stubs))
   emit_core_module_section(buf, comp_generate_async_trampoline_hostfuture())
   emit_core_module_section(buf, comp_generate_wasi_fd_write_stub())
   // A component-instance export alias must follow embedded core-module
@@ -8271,7 +8514,9 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
     emit_canon_lower_async_section(buf, hlow_i + wit_sleep_shift, mem_alias_idx)
     hlow_i = hlow_i + 1
   }
-  let fut_extra = if nhf > 0 {
+  let fut_extra = if mixed {
+    4
+  } else if nhf > 0 {
     2
   } else {
     0
@@ -8279,6 +8524,12 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   if nhf > 0 {
     emit_canon_future_read(buf, future_type_idx, mem_alias_idx)
     emit_canon_future_drop_readable(buf, future_type_idx)
+  } else {
+    ()
+  }
+  if mixed {
+    emit_canon_future_read(buf, 5, mem_alias_idx)
+    emit_canon_future_drop_readable(buf, 5)
   } else {
     ()
   }
@@ -8327,11 +8578,20 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   }
   if want_cancel {
     emit_canon_future_cancel_read(buf, future_type_idx)
+    if mixed {
+      emit_canon_future_cancel_read(buf, 5)
+    } else {
+      ()
+    }
   } else {
     ()
   }
   let scancel_read_core_idx = if want_cancel {
-    cancel_read_core_idx + 1
+    if mixed {
+      cancel_read_core_idx + 2
+    } else {
+      cancel_read_core_idx + 1
+    }
   } else {
     cancel_read_core_idx
   }
@@ -8365,6 +8625,15 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
     Array::push(root_export_indices, nt)
     Array::push(root_export_names, String::concat("[future-drop-readable-0]", hf_first_label))
     Array::push(root_export_indices, nt + 1)
+    if mixed {
+      let hf_scalar_label = comp_hostfuture_import_label(Array::get(hf_names, comp_first_kind_index(response_kinds, false)))
+      Array::push(root_export_names, String::concat("[async-lower][future-read-1]", hf_scalar_label))
+      Array::push(root_export_indices, nt + 2)
+      Array::push(root_export_names, String::concat("[future-drop-readable-1]", hf_scalar_label))
+      Array::push(root_export_indices, nt + 3)
+    } else {
+      ()
+    }
   } else {
     ()
   }
@@ -8406,6 +8675,12 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   if want_cancel {
     Array::push(root_export_names, String::concat("[future-cancel-read-0]", comp_hostfuture_import_label(Array::get(hf_names, 0))))
     Array::push(root_export_indices, cancel_read_core_idx)
+    if mixed {
+      Array::push(root_export_names, String::concat("[future-cancel-read-1]", comp_hostfuture_import_label(Array::get(hf_names, comp_first_kind_index(response_kinds, false)))))
+      Array::push(root_export_indices, cancel_read_core_idx + 1)
+    } else {
+      ()
+    }
   } else {
     ()
   }
