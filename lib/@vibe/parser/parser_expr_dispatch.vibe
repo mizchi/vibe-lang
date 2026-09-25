@@ -600,7 +600,12 @@ fn parse_qualified_handle_rest(tokens: Array[Token], starts: Array[Int], pos: In
       ArrayBuilder::push(b, arm)
       parse_qualified_handle_rest(tokens, starts, next, body, b, parse_recur, context)
     },
-    _ => throw("expected ';', a newline, or '}' between handler-set arms")
+    // #3072: every throw here carries the token index, so the diagnostic lands
+    // on the offending token rather than on the enclosing `fn`'s first line.
+    // A `,` is the likely slip (it separates arguments and struct fields), so
+    // it gets the edit spelled out.
+    TComma => throw("replace this `,` with `;` or a newline: handler-set arms are separated by `;` or a newline, not `,` at #\{pos}"),
+    _ => throw("expected ';', a newline, or '}' between handler-set arms at #\{pos}")
   }
 }
 
@@ -634,7 +639,9 @@ fn parse_handle_rest(tokens: Array[Token], starts: Array[Int], pos: Int, body: E
       }
     },
     TRBrace => (EHandle(body, ArrayBuilder::freeze(b)), pos + 1),
-    _ => throw("expected ';' or '}' in handle arm list")
+    // #3072: located at the offending token, like the handler-set list above.
+    TComma => throw("replace this `,` with `;`: the arms of a `with Effect { ... }` handler are separated by `;`, not `,` at #\{pos}"),
+    _ => throw("expected ';' or '}' in handle arm list at #\{pos}")
   }
 }
 
