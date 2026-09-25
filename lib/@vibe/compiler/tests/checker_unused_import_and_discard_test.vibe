@@ -239,6 +239,44 @@ test "locate_type_error attaches a line:col to an unused import-alias warning" {
 // name would land on THIS comment (line 1) instead of the import itself
 // (line 3) -- locate_unused_import_msg anchors on the import's own path
 // first (line 2) and searches for the name only from there forward.
+test "locate_type_error anchors an import-kind mismatch after its path, not an earlier comment" {
+  let source = "// HashMap is a type alias, see @vibe/core\nimport @vibe/core { struct HashMap }\n"
+  let msg = "import kind mismatch: `HashMap` is a type alias, not a struct (from '@vibe/core')"
+  let located = locate_type_error(source, msg)
+  assert(String::starts_with(located, "line 2:28:"))
+}
+
+test "locate_type_error ignores a comment that quotes the import line" {
+  // The comment contains the whole `import @vibe/core { HashMap }` text.
+  // The name after that false path is not the statement.
+  let source = "// was: import @vibe/core { HashMap }\nimport @vibe/core { struct HashMap }\n"
+  let msg = "import kind mismatch: `HashMap` is a type alias, not a struct (from '@vibe/core')"
+  let located = locate_type_error(source, msg)
+  assert(String::starts_with(located, "line 2:28:"))
+}
+
+test "locate_type_error does not take a longer path that starts with the import path" {
+  let source = "import @vibe/core/checker { Foo }\nimport @vibe/core { struct HashMap }\n"
+  let msg = "import kind mismatch: `HashMap` is a type alias, not a struct (from '@vibe/core')"
+  let located = locate_type_error(source, msg)
+  assert(String::starts_with(located, "line 2:28:"))
+}
+
+test "locate_type_error anchors the imported name, not the same spelling in the path" {
+  // `HashMap` in `./HashMap.vibe` is a path segment. The item is column 30.
+  let source = "import ./HashMap.vibe { type HashMap }\n"
+  let msg = "import kind mismatch: `HashMap` is a type, not a struct (from './HashMap.vibe')"
+  let located = locate_type_error(source, msg)
+  assert(String::starts_with(located, "line 1:30:"))
+}
+
+test "locate_type_error leaves an import and a re-export of the same path unlocated" {
+  let source = "import ./m.vibe { struct HashMap }\nexport ./m.vibe { struct HashMap }\n"
+  let msg = "import kind mismatch: `HashMap` is a struct, not a type (from './m.vibe')"
+  let located = locate_type_error(source, msg)
+  assert(!String::contains(located, "line "))
+}
+
 test "locate_type_error skips an earlier same-name comment, anchors on the import path" {
   let source = "// unused_fn is intentionally kept around\nimport ./m.vibe {\n  unused_fn\n}\n"
   let msg = "warning: imported name 'unused_fn' from './m.vibe' is never used in this file"

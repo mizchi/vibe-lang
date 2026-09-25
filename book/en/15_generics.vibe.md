@@ -64,8 +64,8 @@ show = Green
 ```
 
 `derive (Eq, Ord, Show, Hash, Default)` are the five. `Eq` makes `==`
-structural for the type, `Ord` gives `T::compare` returning `-1` / `0` /
-`1`, and `Show` gives `T::to_string`, which is also what string
+structural for the type, `Ord` gives `T::compare` returning an `Ordering`
+(`Less` / `Equal` / `Greater`), and `Show` gives `T::to_string`, which is also what string
 interpolation calls.
 
 ## Traits you write

@@ -17,11 +17,29 @@ fn capture_run(wasm_path: String, bytes: Bytes) -> String with Exception + Fs + 
   Fs::read_file(String::concat(wasm_path, ".out"))
 }
 
+// Drop a trailing ` [@off=]` / ` [@fn=]`. The marker is where the
+// interpolation sits; this helper's answers are the edit.
+fn refusal_text(message: String) -> String {
+  let mi = String::index_of(message, " [@")
+  if mi < 0 {
+    message
+  } else {
+    String::substring(message, 0, mi)
+  }
+}
+
+fn compile_thrown(source: String) -> String {
+  handle {
+    let _ = compile_source_wasi(source, "main")
+    ""
+  } with { Exception::Throw(message) => message }
+}
+
 fn compile_outcome(label: String, source: String) -> String {
   String::concat(label, String::concat(": ", handle {
     let _ = compile_source_wasi(source, "main")
     "accepted"
-  } with { Exception::Throw(message) => message }))
+  } with { Exception::Throw(message) => refusal_text(message) }))
 }
 
 fn eq_prelude() -> String {
@@ -55,7 +73,9 @@ test "nested Show interpolation compiles" {
 // the body was already refused. Bounded-and-renderable is the case above
 // ("nested Show interpolation compiles"); this is bounded-and-not.
 test "a nested Eq bound is not a renderer, so interpolation is refused" {
-  inspect(compile_outcome("nested-eq-interp", String::concat(eq_prelude(), "fn main() -> Int {\n  let inner = [T: Eq](a: T) -> String {\n    \"\\{a}\"\n  }\n  String::length(inner(7))\n}\n")), "nested-eq-interp: pass an explicit renderer `(T) -> String`, or interpolate at a concrete type: type parameter `T` is erased here and has no renderer witness; a marker `Show` bound does not provide one")
+  let src = String::concat(eq_prelude(), "fn main() -> Int {\n  let inner = [T: Eq](a: T) -> String {\n    \"\\{a}\"\n  }\n  String::length(inner(7))\n}\n")
+  assert(String::contains(compile_thrown(src), " [@off="))
+  inspect(compile_outcome("nested-eq-interp", src), "nested-eq-interp: pass an explicit renderer `(T) -> String`, or interpolate at a concrete type: type parameter `T` is erased here and has no renderer witness; a marker `Show` bound does not provide one")
 }
 
 test "nested unshadowed binder compiles" {
@@ -118,7 +138,9 @@ test "a let-mut nested Eq lambda compiles" {
 // all, so its `"\{a}"` has no renderer and is refused where it is written.
 // Nothing downstream of a refused body can make it compile.
 test "an unbounded shim is refused even when a later let rebinds its name" {
-  inspect(compile_outcome("nested-shim-shadow", "fn main() -> Int {\n  let inner = [T](a: T) -> String {\n    \"\\{a}\"\n  }\n  let inner = (n: Int) -> Int {\n    n + 1\n  }\n  inner(7)\n}\n"), "nested-shim-shadow: pass an explicit renderer `(T) -> String`, or interpolate at a concrete type: type parameter `T` is erased here and has no renderer witness; a marker `Show` bound does not provide one")
+  let src = "fn main() -> Int {\n  let inner = [T](a: T) -> String {\n    \"\\{a}\"\n  }\n  let inner = (n: Int) -> Int {\n    n + 1\n  }\n  inner(7)\n}\n"
+  assert(String::contains(compile_thrown(src), " [@off="))
+  inspect(compile_outcome("nested-shim-shadow", src), "nested-shim-shadow: pass an explicit renderer `(T) -> String`, or interpolate at a concrete type: type parameter `T` is erased here and has no renderer witness; a marker `Show` bound does not provide one")
 }
 
 test "rebinding a nested Eq lambda to a non-generic compiles" {

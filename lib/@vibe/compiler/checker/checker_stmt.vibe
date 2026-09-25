@@ -76,11 +76,15 @@ import @vibe/compiler/core {
   lookup_registry_builtin,
   overlapping_impl_target_for,
   predeclared_resources,
+  prelude_ordering_stmt,
   reject_user_iterator_serialized_boundaries,
   resolve_builtin,
   rewrite_import_alias_stmt,
   runtime_prelude_dispatched_builtin_name,
   sort_perm_by_names,
+  stmts_declare_prelude_ordering_shape,
+  stmts_shadow_prelude_ordering,
+  stmts_use_prelude_ordering,
   subst_apply,
   subst_lookup,
   subst_resolves_to_double,
@@ -2329,7 +2333,7 @@ fn import_kind_article(label: String) -> String {
   }
 }
 
-fn check_import_item_kinds(items: Array[ImportItem], initial_env: TypeEnv, builtin_authority: Bool, errors: Array[String]) -> Unit {
+fn check_import_item_kinds(items: Array[ImportItem], initial_env: TypeEnv, builtin_authority: Bool, path: String, errors: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(items) {
     let item = Array::get(items, i)
@@ -2340,7 +2344,9 @@ fn check_import_item_kinds(items: Array[ImportItem], initial_env: TypeEnv, built
         Some(actual) => {
           let wanted = import_kind_label(expected)
           if !import_kind_matches(expected, actual) {
-            Array::push(errors, "import kind mismatch: `\{item.name}` is \{import_kind_article(actual)} \{actual}, not \{import_kind_article(wanted)} \{wanted}")
+            // `(from '<path>')` is what locate_import_kind_msg anchors on, so a
+            // comment that mentions the name earlier cannot claim the column.
+            Array::push(errors, "import kind mismatch: `\{item.name}` is \{import_kind_article(actual)} \{actual}, not \{import_kind_article(wanted)} \{wanted} (from '\{path}')")
           }
         }
       }
@@ -2349,9 +2355,9 @@ fn check_import_item_kinds(items: Array[ImportItem], initial_env: TypeEnv, built
   }
 }
 
-export fn import_item_kind_errors(items: Array[ImportItem], initial_env: TypeEnv, builtin_authority: Bool) -> Array[String] {
+export fn import_item_kind_errors(items: Array[ImportItem], initial_env: TypeEnv, builtin_authority: Bool, path: String) -> Array[String] {
   let errors = array_empty()
-  check_import_item_kinds(items, initial_env, builtin_authority, errors)
+  check_import_item_kinds(items, initial_env, builtin_authority, path, errors)
   errors
 }
 
@@ -2359,8 +2365,8 @@ fn check_import_kinds(stmts: Array[Stmt], initial_env: TypeEnv, errors: Array[St
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SImport(path, items) => check_import_item_kinds(items, initial_env, path == "@vibe/builtin", errors),
-      SReExport(path, items) => check_import_item_kinds(items, initial_env, path == "@vibe/builtin", errors),
+      SImport(path, items) => check_import_item_kinds(items, initial_env, path == "@vibe/builtin", path, errors),
+      SReExport(path, items) => check_import_item_kinds(items, initial_env, path == "@vibe/builtin", path, errors),
       SModule(_, _, body) => check_import_kinds(body, initial_env, errors),
       _ => ()
     }
@@ -2436,6 +2442,235 @@ fn seed_imported_type_defs(stmts: Array[Stmt], initial_env: TypeEnv, defs: Array
     i = i + 1
   }
   (Array::length(defs), next_c)
+}
+
+/// #3042 (ADR-0118): check the prelude `enum Ordering { Less; Equal; Greater }
+/// derive (Eq, Ord, Show)` ahead of a module, so `Ordering`, its constructors,
+/// its exhaustiveness and `Ordering::{equals, to_string, compare}` resolve
+/// without an import, as `Option` does. It is checked as the ordinary
+/// declaration it is (the same `SEnum` arm a source declaration takes), into
+/// `defs` BEFORE `local_defs_start`, so the module's own declarations stay
+/// local to it and a constructor collision is only ever reported between two
+/// of the module's own enums.
+///
+/// Skipped when the module does not mention the prelude at all
+/// (`module_uses_prelude_ordering`), when it declares `Ordering` or a `Less` /
+/// `Equal` / `Greater` constructor itself (its own declaration wins, as a local
+/// enum shadows an imported one), and when an import already supplied the
+/// enum.
+/// Answers the environment, the new `local_defs_start` and the next free type
+/// variable id.
+fn seed_prelude_ordering(stmts: Array[Stmt], env: TypeEnv, defs: Array[TypeDef], type_def_binders: Array[Array[Int]], local_defs_start: Int, c: Int, errors: Array[String], tytab: Array[(Int, Type)]) -> (TypeEnv, Int, Int) {
+  if stmts_shadow_prelude_ordering(stmts) {
+    report_prelude_ordering_conflict(stmts, errors)
+    (env, local_defs_start, c)
+  } else if !module_uses_prelude_ordering(stmts) {
+    (env, local_defs_start, c)
+  } else if env_binds_foreign_ordering_value(env) {
+    // An import bound a VALUE named `Ordering` (a function, a constant, an
+    // alias): `module_uses_prelude_ordering` counted the reference to it, but
+    // it is not the type, and seeding the prelude would overwrite it.
+    report_ordering_conflict_with(stmts, errors, "but this module imports a `Less` / `Equal` / `Greater` constructor or an `Ordering` of another type; import that type qualified or rename it")
+    (env, local_defs_start, c)
+  } else if env_binds_any_prelude_ordering_ctor(env) {
+    // An import bound at least one of the constructor names. Only the
+    // prelude-shaped enum may stand in for the prelude: an unrelated imported
+    // enum with a `Less`, an `Equal` or a `Greater` would otherwise be what a
+    // derived `compare` builds, or be overwritten by the prelude's binding.
+    if env_binds_prelude_ordering_ctors(env) && defs_ordering_is_prelude_shaped(defs) {
+      (bind_prelude_ordering_values(env), local_defs_start, c)
+    } else {
+      report_ordering_conflict_with(stmts, errors, "but this module imports a `Less` / `Equal` / `Greater` constructor or an `Ordering` of another type; import that type qualified or rename it")
+      (env, local_defs_start, c)
+    }
+  } else match find_typedef(defs, "Ordering") {
+    // An import carried the declaration in only to make a signature
+    // intelligible (`import @vibe/builtin { int_compare }`): the type is
+    // known, its constructors and derived operations are not bound yet. That
+    // holds only for the prelude-shaped enum; any other imported `Ordering`
+    // has no `Less` / `Equal` / `Greater` to bind.
+    Some(_) => if defs_ordering_is_prelude_shaped(defs) {
+      (bind_prelude_ordering_values(env), local_defs_start, c)
+    } else {
+      report_ordering_conflict_with(stmts, errors, "but this module imports a `Less` / `Equal` / `Greater` constructor or an `Ordering` of another type; import that type qualified or rename it")
+      (env, local_defs_start, c)
+    },
+    None => {
+      let prelude = array_empty()
+      Array::push(prelude, prelude_ordering_stmt())
+      let (seeded, _, next_c) = check_stmts_with_binders(prelude, 0, env, defs, type_def_binders, local_defs_start, SubstEmpty, c, errors, tytab, None, None, None, false, false)
+      (seeded, Array::length(defs), next_c)
+    }
+  }
+}
+
+/// #3042: does `env` bind the name `Ordering` to something other than the
+/// type itself -- an imported function or value spelled like it?
+fn env_binds_foreign_ordering_value(env: TypeEnv) -> Bool {
+  match env_lookup(env, "Ordering") {
+    Some(ty) => !type_is_ordering(ty),
+    None => false
+  }
+}
+
+/// #3042: is any of `Less` / `Equal` / `Greater` already bound in `env`?
+fn env_binds_any_prelude_ordering_ctor(env: TypeEnv) -> Bool {
+  let mut any = false
+  for name in ["Less", "Equal", "Greater"] {
+    match env_lookup(env, name) {
+      Some(_) => any = true,
+      None => ()
+    }
+  }
+  any
+}
+
+/// #3042: is the `Ordering` in `defs` exactly the prelude's
+/// `enum Ordering { Less; Equal; Greater }` -- no parameters, three payloadless
+/// variants in that order?
+fn defs_ordering_is_prelude_shaped(defs: Array[TypeDef]) -> Bool {
+  match find_typedef(defs, "Ordering") {
+    Some(TDEnum(_, params, variants)) => Array::length(params) == 0 && Array::length(variants) == 3 && typedef_variant_is(variants, 0, "Less") && typedef_variant_is(variants, 1, "Equal") && typedef_variant_is(variants, 2, "Greater"),
+    _ => false
+  }
+}
+
+fn typedef_variant_is(variants: Array[(String, Array[Type])], i: Int, expected: String) -> Bool {
+  let (name, fields) = Array::get(variants, i)
+  name == expected && Array::length(fields) == 0
+}
+
+/// Does this module mention the prelude `Ordering` at all -- by syntax
+/// (`stmts_use_prelude_ordering`: `derive (Ord)`, a constructor as a value or
+/// a pattern) or in a type annotation? A module that does not is checked
+/// exactly as before the prelude existed, so its outputs (`type_defs`, the
+/// environment it publishes) carry no `Ordering` it never asked for. A value
+/// of the type can still flow through it untouched, as any enum's can.
+fn module_uses_prelude_ordering(stmts: Array[Stmt]) -> Bool {
+  if stmts_use_prelude_ordering(stmts) {
+    true
+  } else {
+    let used = array_empty()
+    collect_referenced_names_stmts(stmts, used)
+    let mut found = false
+    let mut i = 0
+    while !found && i < Array::length(used) {
+      let name = Array::get(used, i)
+      found = name == "Ordering" || String::starts_with(name, "Ordering::")
+      i = i + 1
+    }
+    found
+  }
+}
+
+/// Does `env` already record an impl of `trait_name` for `Ordering`?
+fn env_has_ordering_impl(env: TypeEnv, trait_name: String) -> Bool {
+  match env {
+    EnvEmpty => false,
+    EnvBind(_, _, rest) => env_has_ordering_impl(rest, trait_name),
+    EnvTraitDef(_, _, _, _, rest, _, _) => env_has_ordering_impl(rest, trait_name),
+    EnvTraitImpl(tn, target, rest) => (tn == trait_name && type_is_ordering(target)) || env_has_ordering_impl(rest, trait_name),
+    EnvTraitImplGen(tn, _, _, target, rest) => (tn == trait_name && type_is_ordering(target)) || env_has_ordering_impl(rest, trait_name),
+    EnvMutCell(_, _, rest) => env_has_ordering_impl(rest, trait_name),
+    EnvTypeDefs(_, _, rest) => env_has_ordering_impl(rest, trait_name),
+    EnvCached(_, _, rest) => env_has_ordering_impl(rest, trait_name),
+    EnvFlat(_) => false
+  }
+}
+
+fn type_is_ordering(ty: Type) -> Bool {
+  match ty {
+    CtEnum(name) => name == "Ordering",
+    CtNamed(name, _) => name == "Ordering",
+    CtConstructor(name, _) => name == "Ordering",
+    _ => false
+  }
+}
+
+fn bind_prelude_ordering_values(env: TypeEnv) -> TypeEnv {
+  let ordering = CtEnum("Ordering")
+  let mut out = env
+  // Only what the import left unbound: an operation the dependency exported
+  // keeps its own signature (the lowering refuses a hand-written one on a
+  // prelude-shaped `Ordering`, so the two cannot disagree at run time).
+  for pair in [
+    ("Ordering", ordering),
+    ("Less", ordering),
+    ("Equal", ordering),
+    ("Greater", ordering),
+    ("Ordering::equals", CtFn([ordering, ordering], CtBool, None)),
+    ("Ordering::compare", CtFn([ordering, ordering], ordering, None)),
+    ("Ordering::to_string", CtFn([ordering], CtString, None))
+  ] {
+    let (name, ty) = pair
+    match env_lookup(out, name) {
+      Some(_) => (),
+      None => out = env_bind(out, name, ty)
+    }
+  }
+  // The prelude derives `Eq` and `Show`, so the type satisfies those bounds
+  // here exactly as the seeded declaration would.
+  if !env_has_ordering_impl(out, "Eq") {
+    out = EnvTraitImpl("Eq", ordering, out)
+  }
+  if !env_has_ordering_impl(out, "Show") {
+    out = EnvTraitImpl("Show", ordering, out)
+  }
+  out
+}
+
+/// #3042: `derive (Ord)` generates `compare` returning the prelude `Ordering`
+/// and builds `Less` / `Equal` / `Greater` values. A module that declares
+/// those names differently has no such enum to build, so the derive is refused
+/// here with the rename that fixes it, instead of lowering a `compare` whose
+/// constructors belong to some other type.
+fn report_prelude_ordering_conflict(stmts: Array[Stmt], errors: Array[String]) -> Unit {
+  if stmts_declare_prelude_ordering_shape(stmts) {
+    ()
+  } else {
+    report_ordering_conflict_with(stmts, errors, "but this module declares its own `Ordering` or one of those constructors; rename that declaration")
+  }
+}
+
+/// #3042: do `Less` / `Equal` / `Greater` all name the prelude-shaped
+/// `Ordering` in `env`? False when any of them resolves to another type.
+fn env_binds_prelude_ordering_ctors(env: TypeEnv) -> Bool {
+  let mut ok = true
+  for name in ["Less", "Equal", "Greater"] {
+    match env_lookup(env, name) {
+      Some(CtEnum(owner)) => if owner != "Ordering" {
+        ok = false
+      },
+      _ => ok = false
+    }
+  }
+  ok
+}
+
+/// Refuse the first `derive (Ord)` in `stmts`, naming why the prelude
+/// `Ordering` it needs is unavailable (`why` finishes the sentence).
+fn report_ordering_conflict_with(stmts: Array[Stmt], errors: Array[String], why: String) -> Unit {
+  let mut i = 0
+  let mut reported = false
+  while !reported && i < Array::length(stmts) {
+    let derived_ord = match Array::get(stmts, i) {
+      SStruct(_, name, _, derives, _, _) => if struct_derives_has(derives, "Ord") {
+        Some(name)
+      } else None,
+      SEnum(_, name, _, _, derives) => if struct_derives_has(derives, "Ord") {
+        Some(name)
+      } else None,
+      _ => None
+    }
+    match derived_ord {
+      Some(name) => {
+        Array::push(errors, String::concat("`derive (Ord)` on `", String::concat(name, String::concat("` generates `compare` returning the prelude `Ordering` (`Less` / `Equal` / `Greater`), ", why))))
+        reported = true
+      },
+      None => ()
+    }
+    i = i + 1
+  }
 }
 
 /// #1078: the name of a DIFFERENT enum (already registered in `defs`) that
@@ -3561,7 +3796,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
           env_bind(env_eq_impl, String::concat(name, "::compare"), CtFn([
             ctor_result_type,
             ctor_result_type
-          ], CtInt, None))
+          ], CtEnum("Ordering"), None))
         } else {
           env_eq_impl
         }
@@ -3723,7 +3958,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
           env_bind(env1, String::concat(name, "::compare"), CtFn([
             CtStruct(name),
             CtStruct(name)
-          ], CtInt, None))
+          ], CtEnum("Ordering"), None))
         } else {
           env1
         }
@@ -7581,7 +7816,10 @@ fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: Option[
       None => None
     }
   }
-  let (env, final_s0, _) = check_stmts_with_binders(expanded_stmts, 0, seeded_env, empty_defs, type_def_binders, 0, SubstEmpty, 0, frozen_errors, tytab, statement_parent_path, capture, role_lane_capture, false, true)
+  // #3042: the prelude `Ordering`, checked ahead of the module's own
+  // declarations (see seed_prelude_ordering).
+  let (prelude_env, prelude_defs_start, prelude_next_c) = seed_prelude_ordering(expanded_stmts, seeded_env, empty_defs, type_def_binders, 0, 0, frozen_errors, tytab)
+  let (env, final_s0, _) = check_stmts_with_binders(expanded_stmts, 0, prelude_env, empty_defs, type_def_binders, prelude_defs_start, SubstEmpty, prelude_next_c, frozen_errors, tytab, statement_parent_path, capture, role_lane_capture, false, true)
   // #2848: field reads whose receiver was still unsolved at every function
   // end are judged once more under the final substitution, which comes back
   // extended by the resolved reads' result variables -- BEFORE the bound
@@ -9443,7 +9681,12 @@ export fn check_program_type_table(stmts: Array[Stmt]) -> (Array[(Int, Type)], S
   reset_throw_payload_sites()
   set_generic_fn_decls(stmts)
   handle {
-    let (_, final_s0, _) = check_stmts(stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors, tytab)
+    // #3042: hover sees the prelude `Ordering` the check does.
+    let prelude_binders = array_empty()
+    // The binder table has to stay aligned with `empty_defs`, which the
+    // prelude just grew, so this goes through the binder-aware entry.
+    let (prelude_env, prelude_defs_start, prelude_next_c) = seed_prelude_ordering(stmts, seeded_env, empty_defs, prelude_binders, 0, 0, frozen_errors, tytab)
+    let (_, final_s0, _) = check_stmts_with_binders(stmts, 0, prelude_env, empty_defs, prelude_binders, prelude_defs_start, SubstEmpty, prelude_next_c, frozen_errors, tytab, None, None, None, false, true)
     // #2848 (Codex on #2864, round 3): a deferred field read is typed by a
     // result variable that the production check resolves at the end; hover
     // reads this table through the returned substitution, so resolve here too
@@ -9520,7 +9763,10 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
           None => None
         }
       }
-      let (env, final_s0, _) = check_stmts_with_binders(expanded_stmts, 0, seeded_env, empty_defs, type_def_binders, local_defs_start, SubstEmpty, seed_next_c, frozen_errors, tytab, statement_parent_path, capture, role_lane_capture, imports_already_projected, true)
+      // #3042: the prelude `Ordering`, after the imported type defs and
+      // before the module's own (see seed_prelude_ordering).
+      let (prelude_env, prelude_defs_start, prelude_next_c) = seed_prelude_ordering(expanded_stmts, seeded_env, empty_defs, type_def_binders, local_defs_start, seed_next_c, frozen_errors, tytab)
+      let (env, final_s0, _) = check_stmts_with_binders(expanded_stmts, 0, prelude_env, empty_defs, type_def_binders, prelude_defs_start, SubstEmpty, prelude_next_c, frozen_errors, tytab, statement_parent_path, capture, role_lane_capture, imports_already_projected, true)
       // Selected import projection carries trait definitions and impls into
       // this environment, so user-trait bounds are checked here with the same
       // rule as the standalone path.

@@ -93,6 +93,26 @@ Use `assert_eq` when you know the answer and it matters. Use `inspect`
 for the shape of a bigger structure, where writing it out by hand is the
 only thing stopping you from testing it at all.
 
+## A test grants what it uses
+
+A `test`, `bench` or `example` block is an entry point, the same way
+`fn main` is. The row after the name is a grant, so the keyword is
+`allows`, not `with`. It widens the row a test already runs with
+(`Fs`, `Console`, `Exception`, and the other defaults `assert` needs).
+A capability that is not in that set, such as `Http::request`, has to
+be named or the call does not compile:
+
+```vibe
+test "hits the network" allows Http::request {
+  let _ = Http::request("GET", "http://127.0.0.1:9/", "", "")
+  assert(true)
+}
+```
+
+An anonymous `test { }` has no name to hang a row on, so it cannot
+grant one. [Capabilities](09_capabilities.vibe.md) is why `allows` and
+`with` are different words.
+
 ## Testing what you cannot call directly
 
 Tests live inside the package, so they can reach its internals — a test

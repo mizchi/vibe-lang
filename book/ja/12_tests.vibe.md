@@ -90,6 +90,25 @@ vibe test --update demo_test.vibe
 テストを書かない理由になっているような、大きめの構造の形には `inspect` を
 使ってください。
 
+## テストは使うものを付与する
+
+`test` / `bench` / `example` は `fn main` と同じくエントリポイントです。
+名前の後の row は付与なので、キーワードは `with` ではなく `allows` です。
+テストが最初から持っている row（`Fs`、`Console`、`Exception`、それに
+`assert` が要る既定）を狭めるのではなく、広げます。そこに無い能力、
+たとえば `Http::request` は、書かないと呼び出しがコンパイルできません。
+
+```vibe
+test "hits the network" allows Http::request {
+  let _ = Http::request("GET", "http://127.0.0.1:9/", "", "")
+  assert(true)
+}
+```
+
+名前の無い `test { }` には row を掛ける場所が無いので、付与できません。
+`allows` と `with` が別の語である理由は
+[ケーパビリティ](09_capabilities.vibe.md) にあります。
+
 ## 直接呼べないものをテストする
 
 テストはパッケージの内側にあるので、その内部に手が届きます — テストファイルは

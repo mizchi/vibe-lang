@@ -2,7 +2,7 @@
 
 **Toolchain not available in this sandbox** (`gleam` not on `PATH`,
 2026-07-22). almide's own upstream comparison includes Gleam as a "modern
-peer" (`docs/pl-survey-2026-07.md`), so this language is kept in the
+peer" (`docs/internal/reports/pl-survey-2026-07.md`), so this language is kept in the
 `langs/` set for completeness, but a round including it must run
 somewhere with the Gleam toolchain installed and report results back into
 `results/` manually — `run_lang_bench.sh` (if/when written) should skip

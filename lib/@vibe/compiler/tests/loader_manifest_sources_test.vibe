@@ -5,6 +5,7 @@ import @vibe/compiler/loader {
   build_grouped_sources_from_manifest_rows,
   build_manifest_path_index,
   build_manifest_source_index,
+  contract_shared_import_raws_scan,
   filter_manifest_sources_by_path_index,
   filter_manifest_sources_by_paths,
   filter_manifest_sources_by_paths_linear,
@@ -555,4 +556,88 @@ test "try_collect_manifest_sources_fs: a re-export written BELOW a declaration i
     },
     None => assert(false)
   }
+}
+
+test "try_collect_manifest_sources_fs: a sibling's directory-shared import is collected" {
+  // `runtime/typing_dependency_record_codec.vibe` imports nothing itself. Its
+  // one dependency is the `import @vibe/compiler/core { .. }` that
+  // `runtime/index.vpkg` shares with every sibling, which the loader prepends
+  // on ingestion and the typecheck walk resolves. The manifest header scan
+  // read the raw text, so `core/index.vpkg` was left out of the closure and
+  // `vibe check` on the file failed with `type_db: missing resolved dependency
+  // environment: lib/@vibe/compiler/core/index.vpkg` -- in a fresh process
+  // only, which is where a resumed typed `vibe grep` sweep starts.
+  match try_collect_manifest_sources_fs("lib/@vibe/compiler/runtime/typing_dependency_record_codec.vibe") {
+    Some((_, sources)) => assert(has_source_path(sources, "lib/@vibe/compiler/core/index.vpkg")),
+    None => assert(false)
+  }
+}
+
+test "contract_shared_import_raws_scan: an indented shared import is read" {
+  // #3036 (Codex on #3076): the contract parser accepts leading horizontal
+  // whitespace before a statement, so the manifest scan must too; a missed
+  // shared import leaves the sibling's dependency environment out of the
+  // closure.
+  let raws = contract_shared_import_raws_scan("  import @vibe/core {\n  array_empty\n}\n\timport @vibe/json { parse }\n")
+  assert(Array::length(raws) == 2)
+  assert(Array::get(raws, 0) == "@vibe/core")
+  assert(Array::get(raws, 1) == "@vibe/json")
+}
+
+test "contract_shared_import_raws_scan: a word containing import mid-line is not a statement" {
+  let raws = contract_shared_import_raws_scan("fn reimport(x: Int) -> Int\nlet y = 1 // import @vibe/core { a }\n")
+  assert(Array::length(raws) == 0)
+}
+
+test "contract_shared_import_raws_scan: two shared imports on one line are both read" {
+  // #3036 (Codex on #3076): the contract grammar is token-based.
+  let raws = contract_shared_import_raws_scan("import @vibe/core { array_empty } import @vibe/json { parse }\n")
+  assert(Array::length(raws) == 2)
+  assert(Array::get(raws, 0) == "@vibe/core")
+  assert(Array::get(raws, 1) == "@vibe/json")
+}
+
+test "contract_shared_import_raws_scan: an import after an empty statement is read" {
+  // #3036 (Codex on #3076): the parser skips a leading `;`.
+  let raws = contract_shared_import_raws_scan("; import @vibe/core { array_empty }\n")
+  assert(Array::length(raws) == 1)
+  assert(Array::get(raws, 0) == "@vibe/core")
+}
+
+test "contract_shared_import_raws_scan: imports separated by ';' on one line are both read" {
+  // #3036 (Codex on #3076): the statement scan stops at the separator.
+  let raws = contract_shared_import_raws_scan("import @vibe/core { array_empty }; import @vibe/json { parse }\n")
+  assert(Array::length(raws) == 2)
+  assert(Array::get(raws, 0) == "@vibe/core")
+  assert(Array::get(raws, 1) == "@vibe/json")
+}
+
+test "contract_shared_import_raws_scan: an import whose brace starts the next line is read" {
+  // #3036 (Codex on #3076): the contract grammar is token-based, so a
+  // newline between the path and `{` does not end the statement.
+  let raws = contract_shared_import_raws_scan("import @vibe/core\n{ array_empty }\nimport\n  @vibe/json\n  { parse }\n")
+  assert(Array::length(raws) == 2)
+  assert(Array::get(raws, 0) == "@vibe/core")
+  assert(Array::get(raws, 1) == "@vibe/json")
+}
+
+test "contract_shared_import_raws_scan: a line continuation does not reach past a complete import" {
+  // The statement after a complete import is not joined to it: the
+  // namespaced form on the next line stays out of the shared list.
+  let raws = contract_shared_import_raws_scan("import @vibe/core { array_empty }\nimport @vibe/json as json only\n")
+  assert(Array::length(raws) == 1)
+  assert(Array::get(raws, 0) == "@vibe/core")
+}
+
+test "contract_shared_import_raws_scan: an import after a declaration on the same line is read" {
+  // #3036 (Codex on #3076): the contract parser finishes the alias and keeps
+  // the import that follows it on the same line.
+  let raws = contract_shared_import_raws_scan("type Id = Int import @vibe/core { array_empty }\n")
+  assert(Array::length(raws) == 1)
+  assert(Array::get(raws, 0) == "@vibe/core")
+}
+
+test "contract_shared_import_raws_scan: an import-shaped token inside braces is not a statement" {
+  let raws = contract_shared_import_raws_scan("struct S { import @vibe/core { a } }\n")
+  assert(Array::length(raws) == 0)
 }

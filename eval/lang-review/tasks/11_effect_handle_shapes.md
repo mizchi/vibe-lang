@@ -13,7 +13,9 @@ compile+run して確認する** — この帯域には型検査を通り抜け�
 
 期待出力例: `a=42 b=43 c=43`
 
-> r3 所見 (#1511): 現行コンパイラでは B が
-> `handle of effect 'Ask' cannot be compiled here. ...` で落ちる (#1511 で
-> 文言を書き直したが、拒否される形は変わっていない)。
-> A と C は通る。解けるようになったら golden を作る。
+> r3 所見 (2026-08-06, #1511): B は
+> `handle of effect 'Ask' cannot be compiled here. ...` で落ちた。
+> A と C は通った。2026-09-24 時点でこの 3 形は再測定していない。
+> book の pitfalls は、row を持たない外側の closure が今も拒否されると
+> 書いており、その診断は編集を名指しする。B が今も落ちるかは別の質問である。
+> 再測定してから golden を作る。

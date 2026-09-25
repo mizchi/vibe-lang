@@ -2019,22 +2019,32 @@ rm -rf "$ufcsdir"
 echo "[compiler-gate] UFCS-on-bounded-tparam dict dispatch ok (97097)"
 
 # 15. derive(...) structural generation regression (#638): `derive(Ord)` and
-#     `derive(Show)` on a struct must generate working `Type::compare` (-1/0/1
-#     lexicographic over fields) and `Type::to_string` free functions. Also
-#     covers multiple-derive and `Eq` accepted as a no-op marker.
+#     `derive(Show)` on a struct must generate working `Type::compare`
+#     (lexicographic over fields, answering the prelude `Ordering`, #3042) and
+#     `Type::to_string` free functions. Also covers multiple-derive and `Eq`
+#     accepted as a no-op marker. Each comparison is its own decimal digit, so
+#     two wrong answers cannot cancel out.
 echo "[compiler-gate] 15/15 derive(Ord/Show) structural-generation regression"
 drvdir="_build/_gate_derive"
 rm -rf "$drvdir"; mkdir -p "$drvdir"
 cat > "$drvdir/drv.vibe" <<'EOF'
 struct P { x: Int; y: Int } derive(Eq, Ord, Show)
+fn digit(o: Ordering) -> Int {
+  match o {
+    Less => 1,
+    Equal => 2,
+    Greater => 3
+  }
+}
 export let _start: () -> Int = () -> {
-  P::compare(P::{ x: 1, y: 1 }, P::{ x: 1, y: 2 })
-  + P::compare(P::{ x: 2, y: 0 }, P::{ x: 1, y: 9 })
-  + P::compare(P::{ x: 5, y: 5 }, P::{ x: 5, y: 5 })
+  digit(P::compare(P::{ x: 1, y: 1 }, P::{ x: 1, y: 2 })) * 100000
+  + digit(P::compare(P::{ x: 2, y: 0 }, P::{ x: 1, y: 9 })) * 10000
+  + digit(P::compare(P::{ x: 5, y: 5 }, P::{ x: 5, y: 5 })) * 1000
   + String::length(P::to_string(P::{ x: 7, y: 9 }))
 }
 EOF
-# Expected: -1 + 1 + 0 + len("P { x: 7, y: 9 }")=16 -> 16
+# Expected: Less=1, Greater=3, Equal=2, then len("P { x: 7, y: 9 }")=16
+# -> 132016
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$drvdir/drv.vibe" "$drvdir/drv.wasm" _start >/dev/null 2>&1 || true
@@ -2044,8 +2054,8 @@ if [ ! -s "$drvdir/drv.wasm" ]; then
 fi
 drv_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
   --invoke _start "$drvdir/drv.wasm" 2>/dev/null | tr -dc '0-9-')"
-if [ "$drv_out" != "16" ]; then
-  echo "[compiler-gate] FAIL: derive mismatch (got '$drv_out', want 16 -> #638 regressed)" >&2
+if [ "$drv_out" != "132016" ]; then
+  echo "[compiler-gate] FAIL: derive mismatch (got '$drv_out', want 132016 -> #638 / #3042 regressed)" >&2
   exit 1
 fi
 rm -rf "$drvdir"
@@ -2342,6 +2352,14 @@ ur_refused fixtures/err_interp_unrenderable_shadow_refused.vibe 'cannot interpol
 # #3019 rides the same helper: a lowering-time refusal asserted on its message
 # and its edit, not on the bare fact that the build failed.
 ur_refused fixtures/err_handle_resume_capture_loop_break_refused.vibe 'leaves a loop outside it' 'set a flag inside the handle'
+# #3042: an `Ordering` of another shape that reached a module only through an
+# imported signature. The module's checker never saw the declaration, so the
+# merged program is refused instead of stopping with an internal error.
+ur_refused fixtures/err_ordering_derive_imported_foreign_type_refused.vibe 'but a module in this program declares its own `Ordering`' 'rename that declaration'
+# An `Ordering` spelled like the prelude carries its derives; a hand-written
+# operation beside it could disagree with what an importer was checked against.
+ur_refused fixtures/err_ordering_exact_shape_hand_written_refused.vibe 'is spelled exactly like the prelude' 'remove it and derive it, or rename the type'
+ur_refused fixtures/err_ordering_exact_shape_derive_and_hand_refused.vibe 'is spelled exactly like the prelude' 'remove it and derive it, or rename the type'
 # #2994: `vibe check` reports the handle-eligibility refusal AT the handled
 # body's first call; it used to carry no position at all.
 hi_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \

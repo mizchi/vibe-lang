@@ -1,7 +1,7 @@
 # lang-bench — cross-language same-model snapshot bench
 
 almide (github.com/almide/almide) の評価手法のひとつを vibe に移植した
-評価ループ。`docs/pl-survey-2026-07.md` の almide 調査、issue #1056 に続く
+評価ループ。`docs/internal/reports/pl-survey-2026-07.md` の almide 調査、issue #1056 に続く
 取り込み (`eval/msr/` の姉妹ハーネス — MSR が「改修への耐性」を測るのに
 対し、こちらは almide の "minigit" ベンチ相当: **同じモデルに同じ
 プロンプトを与えて複数言語で実装させ、pass 率・行数・ビルド成果物の
@@ -83,6 +83,9 @@ eval/lang-bench/
 
 ## 現状
 
-**ハーネスのみ (2026-07-22)**: `SPEC.md`・`acceptance_test.sh` は
-トリビアルなモック実装で検証済み (12/12 pass)。`results/` はまだ空。
-最初のラウンドを回すには上記手順に従う。
+r1 (2026-07-22) は `results/2026-07-22-r1.json` にある。vibe / rust /
+typescript は 12/12、gleam と moonbit は未実施 (`pass: null`)。
+あの JSON の notes が指す `docs/cheatsheet.md` と `docs/pl-survey-2026-07.md`
+は当時のパスで、現行は `docs/user/reference/cheatsheet.md` と
+`docs/internal/reports/pl-survey-2026-07.md`。notes 自体は記録なので
+書き換えない。次のラウンドは新しい JSON を足す。

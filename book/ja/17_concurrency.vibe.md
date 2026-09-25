@@ -9,7 +9,9 @@ vibe でスレッドを spawn することはありません。`TaskGroup` を�
 より長生きしません。すべてがスコープに収まっていて、それが残りを検査可能に
 しています。
 
-パッケージは `@vibe/concurrent`。
+パッケージは `@vibe/concurrent`。import は `VIBE_UNSTABLE=1` を付けて
+ビルドしないと拒否され、メッセージはそのフラグを名指しします。下の例は
+そのフラグを付けて実行したものです。
 
 **この章は本書で唯一の unstable な面です。** ここに出てくるものはすべて
 ADR-0068 で、状態はまだ `proposed` です — `Nursery`、`Task`、
@@ -54,9 +56,10 @@ answer = 42
 `main` の `+ Exception` は飾りではありません: spawn されたタスクは失敗し
 得て、`join` はその失敗を `TaskError` として投げ直すので、`join` 自身の
 row が `Exception[TaskError]` を運びます。`main` から外すとコンパイラが
-直すべき編集をそのまま教えます — `` hint: add 'with Console +
+直すべき編集をそのまま教えます — `` hint: add 'allows Console +
 Exception[TaskError]' to 'main' `` (上で書いた素の `Exception` はこれを
-カバーします)。
+カバーします)。この hint が出るのは `VIBE_UNSTABLE=1` のあとです。
+フラグが無いとその手前で止まります。
 
 ## spawn を越えられるもの
 

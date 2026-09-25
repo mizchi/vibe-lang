@@ -614,13 +614,15 @@ export fn check_linked_file_source_groups(input_path: String) -> Array[(String, 
         // identity -- the desugar ran on the MERGED statements, so the
         // culprit can live in a dependency. Naming the entry file for a
         // dep-file error would be confidently wrong, so the path is added
-        // only when exactly one source in the consumed group set resolves
-        // the message's [@fn=] anchor (locate_type_error answers with a
-        // `line ` prefix only when it does): that source owns the culprit,
-        // and its own path and text locate it. Zero owners (the marker was
-        // absent or the merge renamed the binder) or two-plus owners (the
-        // #1596 same-name collision) fail closed to the unlocated message
-        // with no path -- missing information beats misinformation.
+        // only when exactly one source in the consumed group set owns the
+        // marker (`missing_show_source_owns`): a `[@off=]` fragment whose
+        // preceding bytes are `\{`, or a `[@fn=]` binder that resolves.
+        // That source's own path and text locate it. Zero owners (the
+        // marker was absent, the offset is not an interpolation in any
+        // file, or the merge renamed the binder) or two-plus owners (the
+        // #1596 same-name collision, or two files with `\{` at the same
+        // byte) fail closed to the unlocated message with no path --
+        // missing information beats misinformation.
         if String::starts_with(msg, "cannot interpolate a value of type `") {
           let mut owner_path = ""
           let mut owner_source = ""
@@ -655,7 +657,7 @@ export fn check_linked_file_source_groups(input_path: String) -> Array[(String, 
                 // exact match -- and drop the candidate (not an owner) when
                 // they cannot be verified.
                 match owner_locating_source(mpath, msource) {
-                  Some(mlocating) => if String::starts_with(locate_type_error(mlocating, msg), "line ") {
+                  Some(mlocating) => if missing_show_source_owns(mlocating, msg) {
                     owners = owners + 1
                     owner_path = mpath
                     owner_source = mlocating
@@ -703,6 +705,39 @@ export fn check_redundant_import_warnings(input_path: String) -> Array[String] w
   check_redundant_import_warnings_from_source_groups(input_path, [
     ("entry", [(input_path, source)])
   ])
+}
+
+/// True when `source` is the file the missing-Show throw came from.
+///
+/// `[@off=N]` is the backslash of `\{`, not the expression. An in-range
+/// test is not ownership: N is small and every file longer than N would
+/// count, which either names the entry for a dependency's error or fails
+/// closed on every multi-file program.
+/// `[@fn=]` (no fragment offset) still owns the file whose binder the
+/// marker resolves, and only that file.
+fn missing_show_source_owns(source: String, msg: String) -> Bool {
+  let marker = " [@off="
+  let mi = String::index_of(msg, marker)
+  if mi < 0 {
+    String::starts_with(locate_type_error(source, msg), "line ")
+  } else {
+    let inner_start = mi + String::length(marker)
+    let rest = String::substring(msg, inner_start, String::length(msg))
+    let rel = String::index_of(rest, "]")
+    if rel < 0 {
+      false
+    } else {
+      let inner = String::substring(rest, 0, rel)
+      let colon = String::index_of(inner, ":")
+      let digits = if colon < 0 {
+        inner
+      } else {
+        String::substring(inner, 0, colon)
+      }
+      let n = parse_marker_digits(digits)
+      n >= 0 && n + 1 < String::length(source) && String::char_code_at(source, n) == 92 && String::char_code_at(source, n + 1) == 123
+    }
+  }
 }
 
 /// The source text an offset-bearing diagnostic may be located against for

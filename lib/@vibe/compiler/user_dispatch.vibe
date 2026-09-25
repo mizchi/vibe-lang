@@ -21,6 +21,10 @@ import @vibe/compiler/cache {
   ingestion_fingerprint_telemetry_json, set_ingestion_fingerprint_telemetry_enabled
 }
 
+import @vibe/compiler/contract {
+  extract_require_pins
+}
+
 import @vibe/compiler/entry/compiler/file_compile {
   compile_file_fs_mode,
   compile_file_fs_mode_break,
@@ -2513,8 +2517,71 @@ fn host_granted_from_flags(allows: Array[String], denies: Array[String]) -> Arra
 /// is located by the parse itself (#2948), and `located_lex_message` returns
 /// anything already carrying `line ` untouched; it declines to invent a
 /// position for a throw the recovering lexer cannot place.
+// The scanner throws with no line. The smallest line-prefix that throws the
+// same text is the line it stopped on, the same probe `vibe check` uses.
+fn header_prefix_is(lines: Array[String], k: Int, pin_err: String) -> Bool {
+  let sb = StringBuilder::new()
+  let mut j = 0
+  while j < k {
+    if j > 0 {
+      StringBuilder::push(sb, "\n")
+    } else {
+      ()
+    }
+    StringBuilder::push(sb, Array::get(lines, j))
+    j = j + 1
+  }
+  let m = handle {
+    let (_pins, _blanked) = extract_require_pins(StringBuilder::freeze(sb))
+    ""
+  } with { Exception::Throw(m2) => m2 }
+  m == pin_err
+}
+
+fn header_error_line(source: String, pin_err: String) -> Int {
+  let lines = String::split(source, "\n")
+  let nlines = Array::length(lines)
+  if nlines == 0 || !header_prefix_is(lines, nlines, pin_err) {
+    0 - 1
+  } else {
+    let mut lo = 0
+    let mut hi = nlines
+    while hi - lo > 1 {
+      let mid = (lo + hi) / 2
+      if header_prefix_is(lines, mid, pin_err) {
+        hi = mid
+      } else {
+        lo = mid
+      }
+    }
+    hi
+  }
+}
+
 fn parse_user_entry_file(src: String) -> Array[Stmt] with Exception + Fs {
-  let source = Fs::read_file(src)
+  let raw = Fs::read_file(src)
+  // A `require ... = #pkg:` line is a header, not a statement. check and
+  // the build lane blank it before parse (#2227). This preflight parsed
+  // the raw bytes, so `vibe run` / `vibe serve` / `vibe build --wit`
+  // answered `unknown # directive: pkg` for a file those two accept.
+  // The blank keeps byte length, so a later diagnostic stays on the same
+  // column. A head the scanner rejects is located here: throwing before
+  // the handler below dropped the path (#2938).
+  let (source, pin_err) = handle {
+    let (_, blanked) = extract_require_pins(raw)
+    (blanked, "")
+  } with { Exception::Throw(m) => (raw, m) }
+  if pin_err != "" {
+    let line = header_error_line(raw, pin_err)
+    let body = if line > 0 {
+      String::concat("line ", String::concat(__to_string(line), String::concat(":1: ", pin_err)))
+    } else {
+      pin_err
+    }
+    throw(String::concat(src, String::concat(": ", body)))
+  } else {
+    ()
+  }
   // #2948: the located parse, so a PARSE error carries `line L:col C:` too
   // (and never the raw `at #N` token index a tokens-only parse leaves in).
   handle {

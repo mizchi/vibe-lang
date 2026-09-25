@@ -561,14 +561,15 @@ test "entry-file missing-Show interpolation names the entry path and line" {
     ""
   } with { Exception::Throw(m) => m }
   assert(String::contains(msg, "cannot interpolate a value of type"))
-  assert(String::contains(msg, "/main.vibe: line 5:4-8:"))
+  // The backslash of `"\{b}"` is line 7, column 12. The enclosing `main` is not it.
+  assert(String::contains(msg, "/main.vibe: line 7:12:"))
+  assert(!String::contains(msg, "line 5:"))
 }
 
-test "dependency missing-Show interpolation does not name the entry file" {
-  // Red before the fix: `<entry path>: cannot interpolate ...` for an
-  // error living entirely in dep.vibe. The merged binder name does not
-  // resolve in any single source (the merge renames dep declarations), so
-  // the fail-closed answer is the bare message: no path, no location.
+test "dependency missing-Show interpolation locates the dep file, not the entry" {
+  // The offset is the dep file's own: the backslash of `"\{h}"` is line 7,
+  // column 4. An in-range check against the entry would also succeed and
+  // name the wrong file. Ownership is "the offset is the `\` of `\{`".
   let base_dir = "/tmp/vibe_cli_support_show_dep"
   let dep_path = String::concat(base_dir, "/dep.vibe")
   let main_path = String::concat(base_dir, "/entrymod.vibe")
@@ -580,8 +581,9 @@ test "dependency missing-Show interpolation does not name the entry file" {
     ""
   } with { Exception::Throw(m) => m }
   assert(String::contains(msg, "cannot interpolate a value of type"))
+  assert(String::contains(msg, "/dep.vibe: line 7:4:"))
   assert(!String::contains(msg, "entrymod.vibe"))
-  assert(!String::contains(msg, " [@fn="))
+  assert(!String::contains(msg, " [@"))
 }
 
 test "shared-import sibling missing-Show locates against the physical file" {
@@ -604,8 +606,10 @@ test "shared-import sibling missing-Show locates against the physical file" {
   } with { Exception::Throw(m) => m }
   assert(String::contains(msg, "cannot interpolate a value of type"))
   if String::contains(msg, "line ") {
-    // Located answers must carry the PHYSICAL coordinates and the file.
-    assert(String::contains(msg, "/impl.vibe: line 5:11-17:"))
+    // Located answers must carry the PHYSICAL interpolation, not the
+    // enclosing `render` and not a line shifted by a prepended import.
+    // The backslash of `"\{h}"` is line 7, column 4 of the physical file.
+    assert(String::contains(msg, "/impl.vibe: line 7:4:"))
   } else {
     // Fail-closed (unlocatable) is acceptable; a wrong line is not.
     assert(!String::contains(msg, " [@"))
