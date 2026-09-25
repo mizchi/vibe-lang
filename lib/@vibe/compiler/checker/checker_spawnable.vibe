@@ -14,6 +14,7 @@ import @vibe/compiler/core {
   expr_children_pop,
   expr_children_push,
   expr_children_top,
+  find_typedef,
   subst_apply,
   type_to_string
 }
@@ -24,6 +25,10 @@ import @vibe/core {
 
 import ./checker_trait.vibe {
   type_send_ok
+}
+
+import ./checker_resolve.vibe {
+  subst_type_params
 }
 
 //# Functions
@@ -379,18 +384,124 @@ fn sp_same_region(a: Type, b: Type) -> Bool {
   }
 }
 
-fn sp_is_stream_owning_future(t: Type) -> Bool {
+fn sp_is_stream_owning_future(s: Subst, defs: Array[TypeDef], t: Type) -> Bool {
   match t {
-    CtNamed(n, targs) => n == "Future" && Array::length(targs) == 1 && sp_owns_host_stream(Array::get(targs, 0)),
+    CtNamed(n, targs) => n == "Future" && Array::length(targs) == 1 && sp_owns_host_stream(s, defs, Array::get(targs, 0), 0),
     _ => false
   }
 }
 
-/// #2066: a value that owns a host stream's readable end.
-fn sp_owns_host_stream(t: Type) -> Bool {
-  match t {
-    CtNamed(n, _) => n == "HostResponse" || n == "HostStream",
-    _ => false
+/// #2066: does a value of type `t` own a host stream's readable end -- a
+/// `HostResponse` or `HostStream` anywhere inside it: through `Option`,
+/// `Array`, tuples, records, the arguments of a named type, and the fields
+/// and payloads of a declared struct or enum (Codex on #3091). The descent
+/// is capped; a type too deep to finish is answered as owning, which only
+/// refuses a capture.
+fn sp_owns_host_stream(s: Subst, defs: Array[TypeDef], t: Type, depth: Int) -> Bool {
+  if depth > 16 {
+    true
+  } else {
+    match subst_apply(s, t) {
+      CtNamed(n, targs) => if n == "HostResponse" || n == "HostStream" {
+        true
+      } else {
+        sp_owns_host_stream_all(s, defs, targs, depth + 1) || sp_decl_owns_host_stream(s, defs, n, targs, depth + 1)
+      },
+      CtStruct(n) => sp_decl_owns_host_stream(s, defs, n, [], depth + 1),
+      CtEnum(n) => sp_decl_owns_host_stream(s, defs, n, [], depth + 1),
+      CtTuple(ts) => sp_owns_host_stream_all(s, defs, ts, depth + 1),
+      CtArray(e) => sp_owns_host_stream(s, defs, e, depth + 1),
+      CtOption(e) => sp_owns_host_stream(s, defs, e, depth + 1),
+      CtApplied(h, args) => sp_owns_host_stream(s, defs, h, depth + 1) || sp_owns_host_stream_all(s, defs, args, depth + 1),
+      CtRecord(fields) => {
+        let mut hit = false
+        let mut i = 0
+        while i < Array::length(fields) {
+          let (_, ft) = Array::get(fields, i)
+          if sp_owns_host_stream(s, defs, ft, depth + 1) {
+            hit = true
+          } else {
+            ()
+          }
+          i = i + 1
+        }
+        hit
+      },
+      _ => false
+    }
+  }
+}
+
+fn sp_owns_host_stream_all(s: Subst, defs: Array[TypeDef], ts: Array[Type], depth: Int) -> Bool {
+  let mut hit = false
+  let mut i = 0
+  while i < Array::length(ts) {
+    if sp_owns_host_stream(s, defs, Array::get(ts, i), depth) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+/// The fields of a declared struct, or the payloads of a declared enum's
+/// variants, instantiated at `targs`.
+fn sp_decl_owns_host_stream(s: Subst, defs: Array[TypeDef], name: String, targs: Array[Type], depth: Int) -> Bool {
+  match find_typedef(defs, name) {
+    Some(td) => match td {
+      TDStruct(_, fields, _, tparams) => {
+        let mut hit = false
+        let mut i = 0
+        while i < Array::length(fields) {
+          let (_, ft) = Array::get(fields, i)
+          let inst = if Array::length(tparams) == Array::length(targs) {
+            subst_type_params(ft, tparams, targs)
+          } else {
+            ft
+          }
+          if sp_owns_host_stream(s, defs, inst, depth) {
+            hit = true
+          } else {
+            ()
+          }
+          i = i + 1
+        }
+        hit
+      },
+      TDEnum(_, tparams, variants) => {
+        let mut hit = false
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (_, payload) = Array::get(variants, vi)
+          let mut pi = 0
+          while pi < Array::length(payload) {
+            let pt = Array::get(payload, pi)
+            let inst = if Array::length(tparams) == Array::length(targs) {
+              subst_type_params(pt, tparams, targs)
+            } else {
+              pt
+            }
+            if sp_owns_host_stream(s, defs, inst, depth) {
+              hit = true
+            } else {
+              ()
+            }
+            pi = pi + 1
+          }
+          vi = vi + 1
+        }
+        hit
+      },
+      TDAlias(_, aparams, body) => sp_owns_host_stream(s, defs, if Array::length(aparams) == Array::length(targs) {
+        subst_type_params(body, aparams, targs)
+      } else {
+        body
+      }, depth),
+      _ => false
+    },
+    None => false
   }
 }
 
@@ -427,7 +538,7 @@ fn sp_spawnable_ok(env: TypeEnv, s: Subst, defs: Array[TypeDef], ty: Type, r_her
         // end; once one drains or closes it, another reads a dropped -- or
         // reused -- handle (Codex on #3091). Like a `HostStream`, it has one
         // owner: the task that makes the request.
-        !sp_owns_host_stream(Array::get(targs, 0))
+        !sp_owns_host_stream(s, defs, Array::get(targs, 0), 0)
       } else {
         false
       },
@@ -478,7 +589,7 @@ export fn check_spawnable_captures(env: TypeEnv, s: Subst, defs: Array[TypeDef],
             let resolved = subst_apply(s, vty)
             if sp_spawnable_ok(env, s, defs, resolved, r_here) {
               ()
-            } else if sp_is_stream_owning_future(resolved) {
+            } else if sp_is_stream_owning_future(s, defs, resolved) {
               Array::push(out, String::concat("capture `", String::concat(vname, "` is a future whose value owns a host stream (a response body), which only one task may read: start the request inside the spawned task and await it there, rather than sharing the future")))
             } else {
               Array::push(out, String::concat("no impl `Spawnable` for `", String::concat(type_to_string(resolved), String::concat("`: capture `", String::concat(vname, "` is neither Send nor a same-nursery endpoint")))))

@@ -464,4 +464,20 @@ grep -qF "start the request inside the spawned task" "$SHARE_DIR/main.wasm.diag"
   exit 1
 }
 echo "[wit-async-import] a response future shared with a spawned task: refused"
+# The same rule through containers: a future of `Option[Reply]` whose struct
+# field is the response.
+cp fixtures/wit_response_import/share_nested_refused.vibe "$SHARE_DIR/"
+rm -f "$SHARE_DIR/nested.wasm" "$SHARE_DIR/nested.wasm.diag"
+VIBE_PREOPEN_DIR="$ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \
+  "$COMPILER" "$SHARE_DIR/share_nested_refused.vibe" "$SHARE_DIR/nested.wasm" run >/dev/null 2>&1 || true
+if [ -s "$SHARE_DIR/nested.wasm" ]; then
+  echo "WIT async import gate FAILED: a future of an Option/struct holding a response, shared with a spawned task, compiled" >&2
+  exit 1
+fi
+grep -qF "start the request inside the spawned task" "$SHARE_DIR/nested.wasm.diag" 2>/dev/null || {
+  echo "WIT async import gate FAILED: share_nested_refused gave an unexpected diagnostic: $(cat "$SHARE_DIR/nested.wasm.diag" 2>/dev/null)" >&2
+  exit 1
+}
+echo "[wit-async-import] a future of a response inside Option and a struct, shared: refused"
 echo "WIT async import component gate OK"
