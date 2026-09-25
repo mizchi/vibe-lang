@@ -711,38 +711,72 @@ fn cc_retain_cell_tails(e: Expr, ctx: CompileCtx) -> Expr {
 /// reference of its own. The per-site retain recognizes only a bare read, so
 /// the consumer and the cell shared one reference and the value was freed
 /// twice. Retain those tails, but only where the callee owns the position:
-/// its borrow mask (user or builtin) says which, and a callee that resolves
-/// to a local or is not a name at all is a closure, which owns every
-/// argument. A borrowed position is left alone -- retaining there would add a
-/// reference nothing releases.
+/// `cc_internal_borrow_mask` says which, and a callee that resolves to a
+/// local or is not a name at all is a closure, which owns every argument. A
+/// borrowed position is left alone -- retaining there would add a reference
+/// nothing releases.
 fn cc_own_cell_compound_args(callee: Expr, args: Array[Expr], local_names: Array[String], ctx: CompileCtx) -> Array[Expr] {
   if !ctx.enable_rc || Array::length(ctx.ref_cell_names) == 0 {
     args
   } else {
-    let (mask, internal) = match callee {
+    let mask = match callee {
       EIdent(f, _) => if find_local_slot(local_names, f) >= 0 {
-        (0, false)
+        0
       } else {
-        (cc_borrow_mask(ctx, f), String::starts_with(f, "__"))
+        cc_internal_borrow_mask(f, ctx)
       },
-      _ => (0, false)
+      _ => 0
     }
-    if internal {
-      args
-    } else {
-      let out = array_empty()
-      let mut i = 0
-      while i < Array::length(args) {
-        let a = Array::get(args, i)
-        if cc_bmask_has(mask, i) {
-          Array::push(out, a)
-        } else {
-          Array::push(out, cc_retain_cell_tails(a, ctx))
-        }
-        i = i + 1
+    let out = array_empty()
+    let mut i = 0
+    while i < Array::length(args) {
+      let a = Array::get(args, i)
+      if cc_bmask_has(mask, i) {
+        Array::push(out, a)
+      } else {
+        Array::push(out, cc_retain_cell_tails(a, ctx))
       }
-      out
+      i = i + 1
     }
+    out
+  }
+}
+
+/// #3130 review: which argument positions of a callee BORROW (bit i set) --
+/// the complement is the positions that own the value they are handed.
+///
+/// A name spelled with `__` is not special by itself. Most of them are
+/// ordinary functions or closures a lowering synthesized (`__entry_k`,
+/// `__try_bind`, `__hs_fin`, the `__aw_*` and `__generic_*` helpers, the
+/// Double / String-view runtime preludes), and those own their arguments the
+/// way any call does, so they take the borrow mask like any other name. Only
+/// the internal builtins the ladder in `compile_call_core` lowers INLINE need
+/// a row of their own, because they have no signature for a mask to come from:
+///
+///   callee                  owning positions        what it does
+///   `__set_field(o, f, v)`  v                       stores v into o's field
+///   `__rec_field(o, i)`     none                    reads a field
+///   `__index(o, i)`         none                    reads an element / byte
+///   `__len(o)`              none                    reads a length
+///   `__slice(o, a, b)`      none                    copies a range out of o
+///   `__to_string(v)`        none                    renders v
+///   `__float_bits(v)`       none                    reinterprets a scalar
+///   `__lambda_return_owned(v)`, `__loop_tail_retain(v)`
+///                           none -- MARKERS. v is already a result path the
+///                           rewrite put the marker on, and the marker itself
+///                           decides whether to retain it; walking into v
+///                           again would retain it twice.
+///
+/// `__region_run` is lowered in `compile_call` before this runs, and its one
+/// argument is a lambda value, so it never reaches here with a cell read.
+fn cc_internal_borrow_mask(f: String, ctx: CompileCtx) -> Int {
+  if f == "__set_field" {
+    3
+  } else if f == "__rec_field" || f == "__index" || f == "__len" || f == "__slice" || f == "__to_string" || f == "__float_bits" || f == "__lambda_return_owned" || f == "__loop_tail_retain" {
+    // Every position borrows (bits 0..30).
+    2147483647
+  } else {
+    cc_borrow_mask(ctx, f)
   }
 }
 
@@ -7333,6 +7367,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, raw_args: Array[Expr], local_name
         emit_i64_and(buf)
         emit_i32_wrap_i64(buf)
         nl = ce(buf, Array::get(args, 2), local_names, nl, ctx, ld)
+        nl = cc_retain_stored_arg(buf, Array::get(args, 2), local_names, nl, ctx)
         emit_i64_store(buf, 3, vi * 8)
         emit_i64_const(buf, 0)
         nl
@@ -7354,6 +7389,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, raw_args: Array[Expr], local_name
           emit_i64_and(buf)
           emit_i32_wrap_i64(buf)
           nl = ce(buf, Array::get(args, 2), local_names, nl, ctx, ld)
+          nl = cc_retain_stored_arg(buf, Array::get(args, 2), local_names, nl, ctx)
           emit_i64_store(buf, 3, 8 + idx0 * 8)
           emit_i64_const(buf, 0)
           nl
@@ -7366,6 +7402,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, raw_args: Array[Expr], local_name
           Array::push(local_names, "__setf_obj")
           emit_local_set(buf, obj_l)
           nl = ce(buf, Array::get(args, 2), local_names, nl + 1, ctx, ld)
+          nl = cc_retain_stored_arg(buf, Array::get(args, 2), local_names, nl, ctx)
           let val_l = nl
           Array::push(local_names, "__setf_val")
           emit_local_set(buf, val_l)

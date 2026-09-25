@@ -804,3 +804,95 @@ test "a discarded for-in over a captured cell retains nothing" {
   let control = discard_forin_growth(false, 400)
   inspect(cell - control, content = "0")
 }
+
+// #3130 review, fourth round. `bx.inner = v` lowers to the internal builtin
+// `__set_field`, which stores `v` into the struct. The owning-argument retain
+// skipped every `__`-spelled callee, and the `__set_field` lowering stored the
+// value with no retain at all, so a captured cell read -- bare, or on an
+// if / match / handle tail -- left the struct and the cell sharing one
+// reference. Each helper builds its own array and returns the struct, so the
+// array's drop at the helper's exit is what frees an element the struct did
+// not retain. Measured on a stage2 built from 8db4d114d, the same on the
+// default and shadow lanes: all four answered `cz` where `ax` was stored --
+// the freed element's block reused by the next allocation.
+struct MBox {
+  mut inner: D
+}
+
+fn set_bare(c: Bool) -> MBox {
+  let xs = mk()
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  let bx = MBox::{ inner: B("start") }
+  bx.inner = d
+  bx
+}
+
+fn set_if(c: Bool) -> MBox {
+  let xs = mk()
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  let bx = MBox::{ inner: B("start") }
+  bx.inner = if c { d } else { B("fresh") }
+  bx
+}
+
+fn set_match(c: Bool) -> MBox {
+  let xs = mk()
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  let bx = MBox::{ inner: B("start") }
+  bx.inner = match c {
+    true => d,
+    false => B("fresh")
+  }
+  bx
+}
+
+fn set_handle(c: Bool) -> MBox {
+  let xs = mk()
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  let bx = MBox::{ inner: B("start") }
+  bx.inner = handle {
+    let _ = fail_if(!c)
+    d
+  } with {
+    Exception::Throw(_) => B("fresh")
+  }
+  bx
+}
+
+fn set_names(k: Int, c: Bool) -> String {
+  let bx = if k == 0 {
+    set_bare(c)
+  } else if k == 1 {
+    set_if(c)
+  } else if k == 2 {
+    set_match(c)
+  } else {
+    set_handle(c)
+  }
+  let churn = mk()
+  String::concat(name_of(bx.inner), names(churn))
+}
+
+test "a captured cell stored into a struct field keeps the element alive" {
+  inspect(String::join([set_names(0, true), set_names(0, true)], ";"), content = "axax,by,cz;axax,by,cz")
+}
+
+test "a captured cell on an if tail stored into a struct field keeps the element alive" {
+  inspect(String::join([set_names(1, true), set_names(1, false)], ";"), content = "axax,by,cz;freshax,by,cz")
+}
+
+test "a captured cell on a match arm stored into a struct field keeps the element alive" {
+  inspect(String::join([set_names(2, true), set_names(2, false)], ";"), content = "axax,by,cz;freshax,by,cz")
+}
+
+test "a captured cell on a handle tail stored into a struct field keeps the element alive" {
+  inspect(String::join([set_names(3, true), set_names(3, false)], ";"), content = "axax,by,cz;freshax,by,cz")
+}
