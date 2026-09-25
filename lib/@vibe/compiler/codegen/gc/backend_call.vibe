@@ -1100,7 +1100,9 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         ()
       }
       let native_slot = gc_native_array_receiver_slot(args, local_names, ctx)
-      let native_receiver = Array::length(args) > 0 && (native_slot >= 0 || gc_expr_is_native_array_ref(Array::get(args, 0), local_names, ctx))
+      // #3132: the shortcuts below ARE the builtins; a call the program
+      // resolves to its own function of that name must not take them.
+      let native_receiver = Array::length(args) > 0 && (native_slot >= 0 || gc_expr_is_native_array_ref(Array::get(args, 0), local_names, ctx)) && !gc_name_is_user_defined(ctx, local_names, fname)
       if native_receiver && fname == "Array::length" && Array::length(args) == 1 {
         let nl = if native_slot >= 0 {
           emit_local_get(buf, native_slot)
@@ -3752,7 +3754,13 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
       }
       else {
         let fn_len2 = Array::length(ctx.func_table.names)
-        let eff_fname = gc_direct_abi_twin_callee(ctx, fname)
+        // #3132: a `$ref` twin is the BUILTIN's direct-ABI entry; a name the
+        // program defines itself keeps its own function.
+        let eff_fname = if gc_name_is_user_defined(ctx, local_names, fname) {
+          fname
+        } else {
+          gc_direct_abi_twin_callee(ctx, fname)
+        }
         let local_callee_idx = find_local_slot(local_names, fname)
         let mut fn_idx_in_list = -1
         let mut __fi = 0

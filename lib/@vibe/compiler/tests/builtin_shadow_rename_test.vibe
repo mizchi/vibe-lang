@@ -1,0 +1,62 @@
+import @vibe/ast {
+  Expr, Stmt
+}
+import @vibe/compiler/core {
+  builtin_shadow_rename_of, rename_builtin_shadow_defs
+}
+
+// #3132: a program's own definition of a builtin the compiler calls by name
+// moves to a spelling of its own, and so does every reference the program
+// WROTE (a source offset). A call the compiler synthesized (offset -1) keeps
+// the builtin's name, so it still reaches the builtin.
+
+fn one_param_fn(name: String, param: String, body: Expr) -> Stmt {
+  SLet(false, false, name, None, EFn([], [], [(param, None)], None, None, body))
+}
+
+fn let_name(s: Stmt) -> String {
+  match s {
+    SLet(_, _, n, _, _) => n,
+    _ => ""
+  }
+}
+
+fn callee_of_body(s: Stmt) -> String {
+  match s {
+    SLet(_, _, _, _, EFn(_, _, _, _, _, ECall(EIdent(n, _), _, _))) => n,
+    _ => ""
+  }
+}
+
+test "#3132: the definition and the program's own calls are renamed" {
+  let def = one_param_fn("Array::length", "xs", EInt(77))
+  let user_call = one_param_fn("caller", "xs", ECall(EIdent("Array::length", 40), [
+    EIdent("xs", 55)
+  ], 40))
+  let synthesized = one_param_fn("lowered", "xs", ECall(EIdent("Array::length", -1), [
+    EIdent("xs", -1)
+  ], -1))
+  let stmts = [def, user_call, synthesized]
+  rename_builtin_shadow_defs(stmts)
+  assert_eq(let_name(Array::get(stmts, 0)), builtin_shadow_rename_of("Array::length"))
+  assert_eq(callee_of_body(Array::get(stmts, 1)), "Array::length$user")
+  assert_eq(callee_of_body(Array::get(stmts, 2)), "Array::length")
+}
+
+test "#3132: nothing is renamed without a definition, or for an unlisted name" {
+  let user_call = one_param_fn("caller", "xs", ECall(EIdent("Array::length", 40), [
+    EIdent("xs", 55)
+  ], 40))
+  let own = one_param_fn("Array::iter_get_helper", "xs", EInt(1))
+  let stmts = [user_call, own]
+  rename_builtin_shadow_defs(stmts)
+  assert_eq(callee_of_body(Array::get(stmts, 0)), "Array::length")
+  assert_eq(let_name(Array::get(stmts, 1)), "Array::iter_get_helper")
+}
+
+test "#3132: Map::iter_get keeps its source definition's name (#2379)" {
+  let def = one_param_fn("Map::iter_get", "m", EIdent("m", 20))
+  let stmts = [def]
+  rename_builtin_shadow_defs(stmts)
+  assert_eq(let_name(Array::get(stmts, 0)), "Map::iter_get")
+}

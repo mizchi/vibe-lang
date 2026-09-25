@@ -688,7 +688,7 @@ echo "[compiler-gate] shadowed borrowing builtin ownership ok on shadow"
 #         the call: the plain RC lane answers the program's sentinel instead of
 #         the list's length, and the shadow lane traps on the program function
 #         releasing a list it was only lent.
-echo "[compiler-gate] 40f-b5/40 MutList / MutBytes reach the builtin under a same-named program function on shadow (#3129)"
+echo "[compiler-gate] 40f-b5/40 MutList / MutBytes and internal builtin calls reach the builtin under a same-named program function (#3129, #3132)"
 if ! VIBE_RC=shadow VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
     bash scripts/vibe_test.sh fixtures/mut_alias_shadowed_builtin_test.vibe \
     >"$ROOT_DIR/_build/_gate_mut_alias_shadowed.log" 2>&1; then
@@ -698,6 +698,27 @@ if ! VIBE_RC=shadow VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_N
 fi
 rm -f "$ROOT_DIR/_build/_gate_mut_alias_shadowed.log"
 echo "[compiler-gate] MutList / MutBytes builtin aliases ok on shadow"
+# #3132: the compiler's OWN calls by a builtin's name -- for-in, the HOF and
+# Map loops, interpolation, structural `==` -- must reach the builtin when the
+# program defines `Array::length` / `get` / `push`, on the shadow lane and on
+# wasm-gc (whose native-array shortcuts used to answer a program's own direct
+# `Array::length` call with the builtin).
+if ! VIBE_RC=shadow VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+    bash scripts/vibe_test.sh fixtures/builtin_shadow_internal_lowering_test.vibe \
+    >"$ROOT_DIR/_build/_gate_builtin_shadow_lowering.log" 2>&1; then
+  echo "[compiler-gate] FAIL: a compiler-internal call by a builtin's name reached the program's same-named function under VIBE_RC=shadow (#3132):" >&2
+  tail -20 "$ROOT_DIR/_build/_gate_builtin_shadow_lowering.log" >&2
+  exit 1
+fi
+if ! VIBE_TEST_BACKEND=gc VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+    bash scripts/vibe_test.sh fixtures/mut_alias_shadowed_builtin_test.vibe fixtures/builtin_shadow_internal_lowering_test.vibe \
+    >"$ROOT_DIR/_build/_gate_builtin_shadow_lowering.log" 2>&1; then
+  echo "[compiler-gate] FAIL: on wasm-gc a builtin and a same-named program function were confused (#3129 / #3132):" >&2
+  tail -20 "$ROOT_DIR/_build/_gate_builtin_shadow_lowering.log" >&2
+  exit 1
+fi
+rm -f "$ROOT_DIR/_build/_gate_builtin_shadow_lowering.log"
+echo "[compiler-gate] builtin-named internal calls ok on shadow and wasm-gc"
 
 # 40f0. #2837: `Array::truncate` changes the array's LENGTH, not the lifetime
 #       of an element someone already took out of it. That is the ownership

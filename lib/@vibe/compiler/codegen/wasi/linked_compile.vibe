@@ -31,6 +31,7 @@ import @vibe/compiler/core {
   leb128_encode_u32,
   namespace_private_name,
   namespace_rename_originals_reset,
+  rename_builtin_shadow_defs,
   rewrite_import_alias_expr,
   rewrite_top_level_fn_alias_refs,
   sorted_names_of,
@@ -4768,6 +4769,11 @@ export fn prelude_split_last_module_count() -> Int {
 /// unchanged and still fail-closed.
 export fn effect_lowering_prelude_split_grants(stmts: Array[Stmt], entry_name: String, linked_imports: Array[(String, String, Int, Int)], iw_names: Array[String], iw_wats: Array[String], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], split: ModuleSplit, render: (Stmt) -> String, grants: Array[(String, String)]) -> Array[String] with Exception {
   Array::set(prelude_split_completed_modules, 0, 0)
+  // #3132: WHOLE-PROGRAM and first, before the program is partitioned and
+  // before any pass synthesizes a call by a builtin's name. A module holding
+  // only a call to a program's own `Array::length` cannot tell it from the
+  // builtin. Renames in place, so the split's statement indices still hold.
+  rename_builtin_shadow_defs(stmts)
   // #1962: a program that performs a host operation takes the whole-program
   // prelude. The entry host provider (pass 11) must see every perform, and a
   // partition sees an imported helper only through its interface -- split, the
@@ -4882,6 +4888,10 @@ export fn effect_lowering_prelude(stmts: Array[Stmt], entry_name: String, linked
 /// `NotGranted` while the table travelled the whole chain unread; measured,
 /// that is exactly what happened on the first build of this rung.
 export fn effect_lowering_prelude_grants(stmts: Array[Stmt], entry_name: String, linked_imports: Array[(String, String, Int, Int)], iw_names: Array[String], iw_wats: Array[String], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], grants: Array[(String, String)]) -> Array[String] with Exception {
+  // #3132: before any pass below synthesizes a call by a builtin's name (see
+  // rename_builtin_shadow_defs). Idempotent, so the split path's fallback
+  // into here costs one top-level scan.
+  rename_builtin_shadow_defs(stmts)
   let errs = lc_fresh_string_array()
   // ADR-0091 Phase 1: enforce `#zero_alloc` markers before any lowering
   // rewrites the marked bodies. No-op when no marker is present.

@@ -1,0 +1,104 @@
+// #3132: a program may define its own `Array::length` / `Array::get` /
+// `Array::push`. Its OWN calls reach those functions, but the compiler also
+// calls these names itself: a for-in walks an array through the builtin
+// `Array::get`, `Array::map` / `filter` / `fold` loop over `Array::length`,
+// `Map::keys` builds its result with `Array::push`, interpolating an array and
+// comparing two arrays are expanded into `Array::length` / `Array::get` calls.
+// Every one of those used to be resolved by NAME and so reached the program's
+// function -- the lowerings compiled to invalid wasm (`not enough arguments on
+// the stack for call`), `"\{xs}"` printed `[shadow, shadow, ...]` and
+// `[1, 2] == [1, 3]` answered `true`.
+//
+// The program functions work on `Array[String]` and answer sentinels, so a
+// captured internal call is visible in every answer below.
+
+fn Array::length(xs: Array[String]) -> Int {
+  let _ = xs
+  77
+}
+
+fn Array::get(xs: Array[String], i: Int) -> String {
+  let _ = xs
+  let _ = i
+  "shadow"
+}
+
+fn Array::push(xs: Array[String], v: String) -> Unit {
+  let _ = xs
+  let _ = v
+  ()
+}
+
+fn sum_for(xs: Array[Int]) -> Int {
+  let mut t = 0
+  for x in xs {
+    t = t + x
+  }
+  t
+}
+
+fn join_for(xs: Array[String]) -> String {
+  let mut t = ""
+  for x in xs {
+    t = String::concat(t, x)
+  }
+  t
+}
+
+test "for-in walks the array with the builtin accessors" {
+  inspect(sum_for([1, 2, 3]), content = "6")
+  inspect(join_for(["a", "b"]), content = "ab")
+}
+
+test "higher-order lowerings loop over the builtin length" {
+  let ys: Array[Int] = Array::map([1, 2, 3], (x: Int) -> Int { x * 10 })
+  inspect(ys, content = "[10, 20, 30]")
+  let zs: Array[Int] = Array::filter([1, 2, 3, 4], (x: Int) -> Bool { x % 2 == 0 })
+  inspect(zs, content = "[2, 4]")
+  inspect(Array::fold([1, 2, 3], 0, (a: Int, x: Int) -> Int { a + x }), content = "6")
+  inspect(Array::any([1, 2], (x: Int) -> Bool { x > 1 }), content = "true")
+  inspect(Array::all([1, 2], (x: Int) -> Bool { x > 1 }), content = "false")
+  let f: Option[Int] = Array::find([1, 2, 3], (x: Int) -> Bool { x > 1 })
+  inspect(f, content = "Some(2)")
+}
+
+test "Map keys and values are built with the builtin push" {
+  let m = Map::from_pairs([("a", 1), ("b", 2)])
+  let ks: Array[String] = Map::keys(m)
+  inspect(ks, content = "[a, b]")
+  let vs: Array[Int] = Map::values(m)
+  inspect(vs, content = "[1, 2]")
+}
+
+test "interpolation and structural equality read the builtin accessors" {
+  let xs: Array[Int] = [4, 5]
+  inspect("\{xs}", content = "[4, 5]")
+  let ss: Array[String] = ["a", "b"]
+  inspect("\{ss}", content = "[a, b]")
+  inspect([1, 2] == [1, 2], content = "true")
+  inspect([1, 2] == [1, 3], content = "false")
+}
+
+test "other array builtins keep their meaning" {
+  let xs = [4, 5, 6]
+  inspect(xs[2], content = "6")
+  let c: Array[Int] = Array::concat([1], [2, 3])
+  inspect(c, content = "[1, 2, 3]")
+  let r: Array[Int] = Array::reverse([1, 2, 3])
+  inspect(r, content = "[3, 2, 1]")
+  let s: Array[Int] = Array::slice([4, 5, 6], 1, 3)
+  inspect(s, content = "[5, 6]")
+  let parts: Array[String] = String::split("a,b,c", ",")
+  inspect(parts, content = "[a, b, c]")
+  let ps: Array[(Int, Int)] = [(1, 2)]
+  let (_, b) = ps[0]
+  inspect(b, content = "2")
+}
+
+test "the program's own calls still reach its functions" {
+  let ss = ["p", "q"]
+  inspect(Array::length(ss), content = "77")
+  inspect(Array::get(ss, 0), content = "shadow")
+  let f = Array::length
+  inspect(f(["x"]), content = "77")
+}
