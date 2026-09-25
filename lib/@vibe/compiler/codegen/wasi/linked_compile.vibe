@@ -198,7 +198,8 @@ import @vibe/compiler/codegen/common_analysis {
   emit_i64_extend_i32_u,
   is_mut_captured_in,
   may_return_view_link_parts,
-  md_is_borrow_arg0_call,
+  md_borrow_mask_of,
+  md_builtin_borrow_mask,
   mrv_declared_fn_names,
   scope_tail_proj_root,
   stmts_contain_exceptions,
@@ -1361,37 +1362,21 @@ fn bytebuf_push_i32le(buf: Bytes, v: Int) -> Unit {
   bytebuf_push(buf, (v>>24)&255)
 }
 
-/// #1085: builtins whose arg0 is borrowed, with source-owned Map accessors
-/// removed by the two-bit override computed once per linked compile.
-fn lc_is_borrow_arg0_call(f: String, source_owned_mask: Int) -> Bool {
-  let source_owns = (f == "Map::iter_get" && (source_owned_mask&1) != 0) || (f == "Map::__iter_get_unchecked" && (source_owned_mask&2) != 0)
-  !source_owns && md_is_borrow_arg0_call(f)
-}
-
-fn lc_source_owned_borrow_mask(names: Array[String], masks: Array[Int]) -> Int {
-  let mut out = 0
-  let checked = bsearch_leftmost(names, "Map::iter_get")
-  if checked >= 0 && checked < Array::length(masks) && !bmask_has(Array::get(masks, checked), 0) {
-    out = out|1
+/// #1085: the positions a BUILTIN callee borrows (bit 0: arg0, bit 1: arg1 --
+/// #2345's `Bytes::index_of_bytes` / `Bytes::compare` read both operands),
+/// narrowed by a source definition of the same name. `bfns` / `bmasks` are the
+/// program's borrow table, which keeps an authoritative row for every source
+/// definition of a borrowing builtin's name (#3128): a call that resolves to
+/// that definition borrows only what the definition borrows. A user function
+/// with any other name stays 0 here, as before -- this walk counts its
+/// arguments as consumed, the conservative direction.
+fn lc_builtin_borrow_bits(f: String, bfns: Array[String], bmasks: Array[Int]) -> Int {
+  let builtin = md_builtin_borrow_mask(f)
+  if builtin == 0 {
+    0
   } else {
-    ()
+    builtin&md_borrow_mask_of(f, bfns, bmasks)
   }
-  let unchecked = bsearch_leftmost(names, "Map::__iter_get_unchecked")
-  if unchecked >= 0 && unchecked < Array::length(masks) && !bmask_has(Array::get(masks, unchecked), 0) {
-    out = out|2
-  } else {
-    ()
-  }
-  out
-}
-
-/// #2345: and which take a borrowed SECOND operand. `Bytes::index_of_bytes`
-/// and `Bytes::compare` read both of their `Bytes` arguments and drop neither,
-/// so bit 1 belongs in the mask beside bit 0. The arg0 predicate above cannot
-/// say this -- it is one bit -- which is why this is a separate list rather
-/// than a wider version of that one.
-fn lc_is_borrow_arg1_call(f: String) -> Bool {
-  f == "Bytes::index_of_bytes" || f == "Bytes::compare"
 }
 
 /// #1085: does `name` have a consuming occurrence OUTSIDE any loop body?
@@ -1410,17 +1395,17 @@ fn lc_is_borrow_arg1_call(f: String) -> Bool {
 /// loop-borrow sites themselves. Branches use OR (existence), which
 /// over-approximates toward suppressing the epilogue drop: the loop-only
 /// path then leaks one reference, the safe direction.
-fn lc_has_nonloop_consume(e: Expr, name: String, source_owned_mask: Int) -> Bool {
+fn lc_has_nonloop_consume(e: Expr, name: String, bfns: Array[String], bmasks: Array[Int]) -> Bool {
   match e {
     EIdent(n, _) => n == name,
-    ETuple(items) => lc_hnc_any(items, name, source_owned_mask),
-    EArray(items) => lc_hnc_any(items, name, source_owned_mask),
+    ETuple(items) => lc_hnc_any(items, name, bfns, bmasks),
+    EArray(items) => lc_hnc_any(items, name, bfns, bmasks),
     ERecord(_, fields, _) => {
       let mut found = false
       let mut i = 0
       while i < Array::length(fields) {
         let (_, v) = Array::get(fields, i)
-        if lc_has_nonloop_consume(v, name, source_owned_mask) {
+        if lc_has_nonloop_consume(v, name, bfns, bmasks) {
           found = true
         } else {
           ()
@@ -1434,7 +1419,7 @@ fn lc_has_nonloop_consume(e: Expr, name: String, source_owned_mask: Int) -> Bool
       let mut i = 0
       while i < Array::length(fields) {
         let (_, v) = Array::get(fields, i)
-        if lc_has_nonloop_consume(v, name, source_owned_mask) {
+        if lc_has_nonloop_consume(v, name, bfns, bmasks) {
           found = true
         } else {
           ()
@@ -1443,23 +1428,23 @@ fn lc_has_nonloop_consume(e: Expr, name: String, source_owned_mask: Int) -> Bool
       }
       found
     },
-    EIf(c, t, el) => lc_has_nonloop_consume(c, name, source_owned_mask) || lc_has_nonloop_consume(t, name, source_owned_mask) || lc_has_nonloop_consume(el, name, source_owned_mask),
-    ELet(_, v, b, _) => lc_has_nonloop_consume(v, name, source_owned_mask) || lc_has_nonloop_consume(b, name, source_owned_mask),
-    ELetRec(_, v, b) => lc_has_nonloop_consume(v, name, source_owned_mask) || lc_has_nonloop_consume(b, name, source_owned_mask),
-    ELetMut(_, v, b, _) => lc_has_nonloop_consume(v, name, source_owned_mask) || lc_has_nonloop_consume(b, name, source_owned_mask),
-    EAssign(_, v, b) => lc_has_nonloop_consume(v, name, source_owned_mask) || lc_has_nonloop_consume(b, name, source_owned_mask),
-    EAssignOp(_, _, v, b) => lc_has_nonloop_consume(v, name, source_owned_mask) || lc_has_nonloop_consume(b, name, source_owned_mask),
-    ESeq(a, b) => lc_has_nonloop_consume(a, name, source_owned_mask) || lc_has_nonloop_consume(b, name, source_owned_mask),
+    EIf(c, t, el) => lc_has_nonloop_consume(c, name, bfns, bmasks) || lc_has_nonloop_consume(t, name, bfns, bmasks) || lc_has_nonloop_consume(el, name, bfns, bmasks),
+    ELet(_, v, b, _) => lc_has_nonloop_consume(v, name, bfns, bmasks) || lc_has_nonloop_consume(b, name, bfns, bmasks),
+    ELetRec(_, v, b) => lc_has_nonloop_consume(v, name, bfns, bmasks) || lc_has_nonloop_consume(b, name, bfns, bmasks),
+    ELetMut(_, v, b, _) => lc_has_nonloop_consume(v, name, bfns, bmasks) || lc_has_nonloop_consume(b, name, bfns, bmasks),
+    EAssign(_, v, b) => lc_has_nonloop_consume(v, name, bfns, bmasks) || lc_has_nonloop_consume(b, name, bfns, bmasks),
+    EAssignOp(_, _, v, b) => lc_has_nonloop_consume(v, name, bfns, bmasks) || lc_has_nonloop_consume(b, name, bfns, bmasks),
+    ESeq(a, b) => lc_has_nonloop_consume(a, name, bfns, bmasks) || lc_has_nonloop_consume(b, name, bfns, bmasks),
     EMatch(s, arms) => {
       let scr = match s {
         EIdent(_, _) => false,
-        _ => lc_has_nonloop_consume(s, name, source_owned_mask)
+        _ => lc_has_nonloop_consume(s, name, bfns, bmasks)
       }
       let mut found = scr
       let mut i = 0
       while i < Array::length(arms) {
         let (_, ab) = Array::get(arms, i)
-        if lc_has_nonloop_consume(ab, name, source_owned_mask) {
+        if lc_has_nonloop_consume(ab, name, bfns, bmasks) {
           found = true
         } else {
           ()
@@ -1471,13 +1456,13 @@ fn lc_has_nonloop_consume(e: Expr, name: String, source_owned_mask: Int) -> Bool
     EHandle(s, arms) => {
       let scr = match s {
         EIdent(_, _) => false,
-        _ => lc_has_nonloop_consume(s, name, source_owned_mask)
+        _ => lc_has_nonloop_consume(s, name, bfns, bmasks)
       }
       let mut found = scr
       let mut i = 0
       while i < Array::length(arms) {
         let (_, ab) = Array::get(arms, i)
-        if lc_has_nonloop_consume(ab, name, source_owned_mask) {
+        if lc_has_nonloop_consume(ab, name, bfns, bmasks) {
           found = true
         } else {
           ()
@@ -1486,13 +1471,13 @@ fn lc_has_nonloop_consume(e: Expr, name: String, source_owned_mask: Int) -> Bool
       }
       found
     },
-    EWhile(c, _) => lc_has_nonloop_consume(c, name, source_owned_mask),
+    EWhile(c, _) => lc_has_nonloop_consume(c, name, bfns, bmasks),
     ELoop(params, _) => {
       let mut found = false
       let mut i = 0
       while i < Array::length(params) {
         let (_, v) = Array::get(params, i)
-        if lc_has_nonloop_consume(v, name, source_owned_mask) {
+        if lc_has_nonloop_consume(v, name, bfns, bmasks) {
           found = true
         } else {
           ()
@@ -1501,19 +1486,17 @@ fn lc_has_nonloop_consume(e: Expr, name: String, source_owned_mask: Int) -> Bool
       }
       found
     },
-    EForIn(_, _, it, _) => lc_has_nonloop_consume(it, name, source_owned_mask),
+    EForIn(_, _, it, _) => lc_has_nonloop_consume(it, name, bfns, bmasks),
     ECall(callee, args, _) => {
-      let borrow0 = match callee {
-        EIdent(f, _) => lc_is_borrow_arg0_call(f, source_owned_mask),
-        _ => false
+      let borrow_bits = match callee {
+        EIdent(f, _) => lc_builtin_borrow_bits(f, bfns, bmasks),
+        _ => 0
       }
-      let borrow1 = match callee {
-        EIdent(f, _) => lc_is_borrow_arg1_call(f),
-        _ => false
-      }
+      let borrow0 = (borrow_bits&1) != 0
+      let borrow1 = (borrow_bits&2) != 0
       let callee_c = match callee {
         EIdent(_, _) => false,
-        _ => lc_has_nonloop_consume(callee, name, source_owned_mask)
+        _ => lc_has_nonloop_consume(callee, name, bfns, bmasks)
       }
       let mut found = callee_c
       let mut i = 0
@@ -1524,7 +1507,7 @@ fn lc_has_nonloop_consume(e: Expr, name: String, source_owned_mask: Int) -> Bool
         })
         if skip_borrowed_head {
           ()
-        } else if lc_has_nonloop_consume(Array::get(args, i), name, source_owned_mask) {
+        } else if lc_has_nonloop_consume(Array::get(args, i), name, bfns, bmasks) {
           found = true
         } else {
           ()
@@ -1533,27 +1516,27 @@ fn lc_has_nonloop_consume(e: Expr, name: String, source_owned_mask: Int) -> Bool
       }
       found
     },
-    EBinOp(_, l, r, _) => lc_has_nonloop_consume(l, name, source_owned_mask) || lc_has_nonloop_consume(r, name, source_owned_mask),
-    EUnaryOp(_, x) => lc_has_nonloop_consume(x, name, source_owned_mask),
-    EFn(_, _, _, _, _, fb) => lc_has_nonloop_consume(fb, name, source_owned_mask),
-    EDot(x, _, _, _) => lc_has_nonloop_consume(x, name, source_owned_mask),
-    ELabeledArg(_, _, v) => lc_has_nonloop_consume(v, name, source_owned_mask),
-    EReturn(x) => lc_has_nonloop_consume(x, name, source_owned_mask),
+    EBinOp(_, l, r, _) => lc_has_nonloop_consume(l, name, bfns, bmasks) || lc_has_nonloop_consume(r, name, bfns, bmasks),
+    EUnaryOp(_, x) => lc_has_nonloop_consume(x, name, bfns, bmasks),
+    EFn(_, _, _, _, _, fb) => lc_has_nonloop_consume(fb, name, bfns, bmasks),
+    EDot(x, _, _, _) => lc_has_nonloop_consume(x, name, bfns, bmasks),
+    ELabeledArg(_, _, v) => lc_has_nonloop_consume(v, name, bfns, bmasks),
+    EReturn(x) => lc_has_nonloop_consume(x, name, bfns, bmasks),
     EBreak(opt) => match opt {
-      Some(v) => lc_has_nonloop_consume(v, name, source_owned_mask),
+      Some(v) => lc_has_nonloop_consume(v, name, bfns, bmasks),
       None => false
     },
-    EContinue(args) => lc_hnc_any(args, name, source_owned_mask),
-    ESpread(x) => lc_has_nonloop_consume(x, name, source_owned_mask),
+    EContinue(args) => lc_hnc_any(args, name, bfns, bmasks),
+    ESpread(x) => lc_has_nonloop_consume(x, name, bfns, bmasks),
     _ => false
   }
 }
 
-fn lc_hnc_any(items: Array[Expr], name: String, source_owned_mask: Int) -> Bool {
+fn lc_hnc_any(items: Array[Expr], name: String, bfns: Array[String], bmasks: Array[Int]) -> Bool {
   let mut found = false
   let mut i = 0
   while i < Array::length(items) {
-    if lc_has_nonloop_consume(Array::get(items, i), name, source_owned_mask) {
+    if lc_has_nonloop_consume(Array::get(items, i), name, bfns, bmasks) {
       found = true
     } else {
       ()
@@ -9158,7 +9141,6 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
   } else {
     lc_fresh_string_array()
   }
-  let lc_source_owned_borrow_bits = lc_source_owned_borrow_mask(lc_borrow_param_user_srt, lc_borrow_param_mask)
   // Fns whose RETURN may be an unowned interior view: these mark
   // view_call_let in the planner (see PCtx.view_ret_user and the gate
   // comment above). NOT intersected with the borrow-param set: a callee
@@ -13034,7 +13016,7 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
               }
               // #1085: the loop-count clause only applies when every consuming
               // occurrence is a loop site (see lc_has_nonloop_consume).
-              let tcn_loop_drop = tcn_loop_extra > 0 && !lc_has_nonloop_consume(body, tcn, lc_source_owned_borrow_bits)
+              let tcn_loop_drop = tcn_loop_extra > 0 && !lc_has_nonloop_consume(body, tcn, lc_borrow_param_user_srt, lc_borrow_param_mask)
               if array_contains_str(lc_heap_params, tcn) && (array_contains_str(rc_drops, tcn) || tcn_loop_drop) && tcn == tail_root {
                 need_dup = true
               } else {
@@ -13091,7 +13073,7 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
                 // the loop-only path then leaks one reference per call, which
                 // is the safe direction until path-sensitive accounting lands
                 // (fixtures/rc_branch_loop_mixed_consume_test.vibe).
-                let tdn_loop_drop = tdn_loop_count > 0 && !lc_has_nonloop_consume(body, tdn, lc_source_owned_borrow_bits)
+                let tdn_loop_drop = tdn_loop_count > 0 && !lc_has_nonloop_consume(body, tdn, lc_borrow_param_user_srt, lc_borrow_param_mask)
                 if array_contains_str(rc_drops, tdn) || tdn_loop_drop {
                   if pfuse_flag >= 0 && tdn == pfuse_name {
                     // ADR-0092: a reuse arm consumed this param's reference —

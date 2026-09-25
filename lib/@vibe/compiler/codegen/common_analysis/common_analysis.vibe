@@ -1809,16 +1809,26 @@ export fn md_borrow_mask_of(f: String, bfns: Array[String], bmasks: Array[Int]) 
   if bi >= 0 && bi < Array::length(bmasks) {
     Array::get(bmasks, bi)
   } else {
-    let m0 = if md_is_borrow_arg0_call(f) {
-      1
-    } else {
-      0
-    }
-    if md_is_borrow_arg1_call(f) {
-      m0|2
-    } else {
-      m0
-    }
+    md_builtin_borrow_mask(f)
+  }
+}
+
+/// The borrowed-parameter mask of the COMPILER builtin spelled `f`, with no
+/// source definition consulted: bit 0 from md_is_borrow_arg0_call, bit 1
+/// from md_is_borrow_arg1_call. Non-zero exactly for the names whose
+/// spelling alone would make a call site borrow, which is why
+/// compute_borrow_param_user_fns keeps an authoritative row for every source
+/// definition of one of them (#3128).
+export fn md_builtin_borrow_mask(f: String) -> Int {
+  let m0 = if md_is_borrow_arg0_call(f) {
+    1
+  } else {
+    0
+  }
+  if md_is_borrow_arg1_call(f) {
+    m0|2
+  } else {
+    m0
   }
 }
 
@@ -3917,7 +3927,11 @@ fn bp_fixpoint_parts(parts: Array[Array[Stmt]], nonident: MutMap[String, Int], v
   while i < Array::length(names) {
     let name = Array::get(names, i)
     let mask = Array::get(masks, i)
-    if mask != 0 || name == "Map::iter_get" || name == "Map::__iter_get_unchecked" {
+    // #3128: a source definition of ANY borrowing builtin's name keeps its
+    // row, even at a zero mask. Without the row md_borrow_mask_of falls back
+    // to the builtin's mask, so a call that resolves to the user's function
+    // handed over its argument as a borrow while the body consumed it.
+    if mask != 0 || md_builtin_borrow_mask(name) != 0 {
       Array::push(result, name)
       Array::push(out_masks, mask)
     }
@@ -3963,8 +3977,9 @@ fn bp_fixpoint_parts(parts: Array[Array[Stmt]], nonident: MutMap[String, Int], v
 /// Returns the SORTED name array and fills `out_masks` aligned to it, so a
 /// single `bsearch_leftmost` on the names indexes straight into the masks.
 /// Ordinary entries have a non-zero inferred borrow mask. A source definition
-/// that shadows a compiler-owned accessor is retained with an authoritative
-/// zero mask when it consumes every parameter. Sorting and alignment happen
+/// that shadows a borrowing builtin (md_builtin_borrow_mask non-zero) is
+/// retained with an authoritative zero mask when it consumes every
+/// parameter (#3128). Sorting and alignment happen
 /// here together -- a caller that sorted the names itself would silently
 /// misattribute every mask.
 export fn compute_borrow_param_user_fns(stmts: Array[Stmt], exclude: Array[String], out_masks: Array[Int]) -> Array[String] {

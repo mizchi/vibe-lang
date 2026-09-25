@@ -665,6 +665,23 @@ done
 rm -f "$ROOT_DIR/_build/_gate_rc_captured_mut.log"
 echo "[compiler-gate] captured let mut cell ownership ok (rc + shadow)"
 
+# 40f-b4. #3128: a program's own top-level definition of a borrowing
+#         builtin's name (`Array::truncate`, `String::join`, `Bytes::compare`,
+#         `Map::size`) owns its parameters, so the call site must hand over a
+#         reference instead of the builtin's borrow. On the shadow lane the
+#         premature release traps on its first occurrence; the plain RC lane
+#         can answer right by luck when the freed block is not reused yet.
+echo "[compiler-gate] 40f-b4/40 shadowed borrowing builtin receives owned arguments on shadow (#3128)"
+if ! VIBE_RC=shadow VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+    bash scripts/vibe_test.sh fixtures/rc_shadowed_builtin_ownership_test.vibe \
+    >"$ROOT_DIR/_build/_gate_rc_shadowed_builtin.log" 2>&1; then
+  echo "[compiler-gate] FAIL: a source definition of a borrowing builtin's name was called with a borrowed argument it then released, under VIBE_RC=shadow (#3128):" >&2
+  tail -20 "$ROOT_DIR/_build/_gate_rc_shadowed_builtin.log" >&2
+  exit 1
+fi
+rm -f "$ROOT_DIR/_build/_gate_rc_shadowed_builtin.log"
+echo "[compiler-gate] shadowed borrowing builtin ownership ok on shadow"
+
 # 40f0. #2837: `Array::truncate` changes the array's LENGTH, not the lifetime
 #       of an element someone already took out of it. That is the ownership
 #       rule stable-surface.md §2.2a freezes and the one #2837 asks to define
