@@ -24,6 +24,7 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_code_section,
   emit_data_section,
   emit_data_section_multi,
+  emit_else,
   emit_end,
   emit_export_memory,
   emit_export_section,
@@ -5880,6 +5881,18 @@ fn comp_hs_value_base() -> Int {
 /// into a new stream while the flag is up -- the aliasing Codex flagged on
 /// the first cut of this fix), and the NEXT read clears it, drops the end
 /// and returns -1 in one step, after which the guest cell latches closed.
+/// #1537: per-handle stream read ARMED by `host_stream_arm` (0 = none, 1 =
+/// blocked and waiting in the shared set, 2 = completed with its status in
+/// comp_hs_status_base), so `host_stream_read` settles that read instead of
+/// issuing a second one.
+fn comp_hs_pending_base() -> Int {
+  20480
+}
+
+fn comp_hs_status_base() -> Int {
+  24576
+}
+
 fn comp_hs_closed_base() -> Int {
   16384
 }
@@ -5984,7 +5997,7 @@ fn comp_sleep_wait_payload_slot() -> Int {
   32
 }
 
-fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], stream_core_names: Array[String], want_stream_close: Bool, want_sleep: Bool, tag_mode: Int, future_s64: Bool, response_payload: Bool, want_wait_any: Bool, exit_stubs: Array[String]) -> Bytes with Exception {
+fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], stream_core_names: Array[String], want_stream_close: Bool, want_sleep: Bool, tag_mode: Int, future_s64: Bool, response_payload: Bool, want_wait_any: Bool, want_stream_arm: Bool, exit_stubs: Array[String]) -> Bytes with Exception {
   // #1342: a THIRD half -- `vibe.sleep`. It is not a getter/wait pair like the
   // other two: the host side is an `async func(ms) -> ms`, so its
   // async-lowered call yields a SUBTASK rather than a future/stream handle,
@@ -6252,6 +6265,13 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     Array::push(export_indices, nfunc_imports + Array::length(fn_types))
     Array::push(fn_types, 5)
     Array::push(export_names, "host_future_wait_any")
+  } else {
+    ()
+  }
+  if want_stream_arm {
+    Array::push(export_indices, nfunc_imports + Array::length(fn_types))
+    Array::push(fn_types, 6)
+    Array::push(export_names, "host_stream_arm")
   } else {
     ()
   }
@@ -6584,12 +6604,59 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     comp_emit_encode_i64_value(sread_body, tag_mode)
     emit_return(sread_body)
     emit_end(sread_body)
-    // st = stream.read(str, addr, 1)
-    emit_local_get(sread_body, 1)
-    emit_local_get(sread_body, 5)
-    emit_i32_const(sread_body, 1)
-    emit_call(sread_body, sread_idx)
-    emit_local_set(sread_body, 2)
+    if want_stream_arm {
+      // #1537: a read `host_stream_arm` started is settled, never repeated:
+      // completed (2) -> its recorded status; still blocked (1) -> the
+      // BLOCKED path below waits for it (joining a fresh set moves it out
+      // of the shared one); none (0) -> read now.
+      emit_local_get(sread_body, 1)
+      emit_i32_const(sread_body, 2)
+      emit_i32_shl(sread_body)
+      emit_i32_const(sread_body, comp_hs_pending_base())
+      emit_i32_add(sread_body)
+      emit_i32_load(sread_body, 2, 0)
+      emit_local_set(sread_body, 3)
+      emit_local_get(sread_body, 1)
+      emit_i32_const(sread_body, 2)
+      emit_i32_shl(sread_body)
+      emit_i32_const(sread_body, comp_hs_pending_base())
+      emit_i32_add(sread_body)
+      emit_i32_const(sread_body, 0)
+      emit_i32_store(sread_body, 2, 0)
+      emit_local_get(sread_body, 3)
+      emit_i32_const(sread_body, 2)
+      emit_i32_eq(sread_body)
+      emit_if_void(sread_body)
+      emit_local_get(sread_body, 1)
+      emit_i32_const(sread_body, 2)
+      emit_i32_shl(sread_body)
+      emit_i32_const(sread_body, comp_hs_status_base())
+      emit_i32_add(sread_body)
+      emit_i32_load(sread_body, 2, 0)
+      emit_local_set(sread_body, 2)
+      emit_else(sread_body)
+      emit_local_get(sread_body, 3)
+      emit_i32_const(sread_body, 1)
+      emit_i32_eq(sread_body)
+      emit_if_void(sread_body)
+      emit_i32_const(sread_body, -1)
+      emit_local_set(sread_body, 2)
+      emit_else(sread_body)
+      emit_local_get(sread_body, 1)
+      emit_local_get(sread_body, 5)
+      emit_i32_const(sread_body, 1)
+      emit_call(sread_body, sread_idx)
+      emit_local_set(sread_body, 2)
+      emit_end(sread_body)
+      emit_end(sread_body)
+    } else {
+      // st = stream.read(str, addr, 1)
+      emit_local_get(sread_body, 1)
+      emit_local_get(sread_body, 5)
+      emit_i32_const(sread_body, 1)
+      emit_call(sread_body, sread_idx)
+      emit_local_set(sread_body, 2)
+    }
     // BLOCKED (0xffffffff): park as a waitable, completion status is
     // payload[1] (mem[20]); the only waitable in the set, so the event
     // must be STREAM_READ (2). After the wake the stream is UNJOINED
@@ -6898,18 +6965,51 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     emit_i32_const(any_body, 16)
     emit_call(any_body, ws_wait_idx)
     emit_local_set(any_body, 1)
-    emit_local_get(any_body, 1)
-    emit_i32_const(any_body, 4)
-    emit_i32_ne(any_body)
-    emit_if_void(any_body)
-    bytebuf_push(any_body, 0)
-    emit_end(any_body)
+    // payload[0] names the waitable; it leaves the set either way.
     emit_i32_const(any_body, 16)
     emit_i32_load(any_body, 2, 0)
     emit_local_set(any_body, 2)
     emit_local_get(any_body, 2)
     emit_i32_const(any_body, 0)
     emit_call(any_body, join_idx)
+    if want_stream_arm {
+      // STREAM_READ (2): record the completion status (payload[1]) for the
+      // read host_stream_arm started, and name it in the stream band.
+      emit_local_get(any_body, 1)
+      emit_i32_const(any_body, 2)
+      emit_i32_eq(any_body)
+      emit_if_void(any_body)
+      emit_local_get(any_body, 2)
+      emit_i32_const(any_body, 2)
+      emit_i32_shl(any_body)
+      emit_i32_const(any_body, comp_hs_status_base())
+      emit_i32_add(any_body)
+      emit_i32_const(any_body, 20)
+      emit_i32_load(any_body, 2, 0)
+      emit_i32_store(any_body, 2, 0)
+      emit_local_get(any_body, 2)
+      emit_i32_const(any_body, 2)
+      emit_i32_shl(any_body)
+      emit_i32_const(any_body, comp_hs_pending_base())
+      emit_i32_add(any_body)
+      emit_i32_const(any_body, 2)
+      emit_i32_store(any_body, 2, 0)
+      emit_local_get(any_body, 2)
+      bytebuf_push(any_body, 173)
+      emit_i64_const(any_body, 2048)
+      bytebuf_push(any_body, 124)
+      comp_emit_encode_i64_value(any_body, tag_mode)
+      emit_return(any_body)
+      emit_end(any_body)
+    } else {
+      ()
+    }
+    emit_local_get(any_body, 1)
+    emit_i32_const(any_body, 4)
+    emit_i32_ne(any_body)
+    emit_if_void(any_body)
+    bytebuf_push(any_body, 0)
+    emit_end(any_body)
     emit_local_get(any_body, 2)
     emit_i32_const(any_body, shift)
     emit_i32_shl(any_body)
@@ -6917,12 +7017,123 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     emit_i32_add(any_body)
     emit_i32_const(any_body, 2)
     emit_i32_store(any_body, 2, 0)
+    // A future, named in the future band (handle + 2), the payload its task
+    // parked with.
     emit_local_get(any_body, 2)
     bytebuf_push(any_body, 173)
+    emit_i64_const(any_body, 2)
+    bytebuf_push(any_body, 124)
     comp_emit_encode_i64_value(any_body, tag_mode)
     bytebuf_push(any_body, 11)
     leb128_encode_u32(code_sec, Bytes::length(any_body))
     bytebuf_push_buf(code_sec, any_body)
+  } else {
+    ()
+  }
+  if want_stream_arm {
+    // host_stream_arm(h): param 0 = tagged handle; locals (i32) 1=str,
+    // 2=pending addr, 3=st, 4=ws. 1 = the next host_stream_read answers
+    // without blocking (a read completed, or the CLOSED latch is set);
+    // 0 = a one-byte read is pending in the shared set.
+    let sarm_body = bytebuf_new()
+    leb128_encode_u32(sarm_body, 1)
+    leb128_encode_u32(sarm_body, 4)
+    bytebuf_push(sarm_body, 127)
+    emit_local_get(sarm_body, 0)
+    comp_emit_decode_i64_value(sarm_body, tag_mode)
+    emit_i32_wrap_i64(sarm_body)
+    emit_local_set(sarm_body, 1)
+    emit_local_get(sarm_body, 1)
+    emit_i32_const(sarm_body, comp_hf_max_handles())
+    emit_i32_gt_u(sarm_body)
+    emit_if_void(sarm_body)
+    bytebuf_push(sarm_body, 0)
+    emit_end(sarm_body)
+    // CLOSED latch: the read answers -1 at once.
+    emit_local_get(sarm_body, 1)
+    emit_i32_const(sarm_body, 2)
+    emit_i32_shl(sarm_body)
+    emit_i32_const(sarm_body, comp_hs_closed_base())
+    emit_i32_add(sarm_body)
+    emit_i32_load(sarm_body, 2, 0)
+    emit_if_void(sarm_body)
+    emit_i64_const(sarm_body, 1)
+    comp_emit_encode_i64_value(sarm_body, tag_mode)
+    emit_return(sarm_body)
+    emit_end(sarm_body)
+    emit_local_get(sarm_body, 1)
+    emit_i32_const(sarm_body, 2)
+    emit_i32_shl(sarm_body)
+    emit_i32_const(sarm_body, comp_hs_pending_base())
+    emit_i32_add(sarm_body)
+    emit_local_set(sarm_body, 2)
+    emit_local_get(sarm_body, 2)
+    emit_i32_load(sarm_body, 2, 0)
+    emit_i32_const(sarm_body, 2)
+    emit_i32_eq(sarm_body)
+    emit_if_void(sarm_body)
+    emit_i64_const(sarm_body, 1)
+    comp_emit_encode_i64_value(sarm_body, tag_mode)
+    emit_return(sarm_body)
+    emit_end(sarm_body)
+    // No read pending yet: start one into this handle's byte slot.
+    emit_local_get(sarm_body, 2)
+    emit_i32_load(sarm_body, 2, 0)
+    emit_i32_eqz(sarm_body)
+    emit_if_void(sarm_body)
+    emit_local_get(sarm_body, 1)
+    emit_local_get(sarm_body, 1)
+    emit_i32_const(sarm_body, 2)
+    emit_i32_shl(sarm_body)
+    emit_i32_const(sarm_body, comp_hs_value_base())
+    emit_i32_add(sarm_body)
+    emit_i32_const(sarm_body, 1)
+    emit_call(sarm_body, sread_idx)
+    emit_local_set(sarm_body, 3)
+    emit_local_get(sarm_body, 3)
+    emit_i32_const(sarm_body, -1)
+    emit_i32_ne(sarm_body)
+    emit_if_void(sarm_body)
+    // completed inline: keep its status for host_stream_read
+    emit_local_get(sarm_body, 1)
+    emit_i32_const(sarm_body, 2)
+    emit_i32_shl(sarm_body)
+    emit_i32_const(sarm_body, comp_hs_status_base())
+    emit_i32_add(sarm_body)
+    emit_local_get(sarm_body, 3)
+    emit_i32_store(sarm_body, 2, 0)
+    emit_local_get(sarm_body, 2)
+    emit_i32_const(sarm_body, 2)
+    emit_i32_store(sarm_body, 2, 0)
+    emit_i64_const(sarm_body, 1)
+    comp_emit_encode_i64_value(sarm_body, tag_mode)
+    emit_return(sarm_body)
+    emit_end(sarm_body)
+    emit_local_get(sarm_body, 2)
+    emit_i32_const(sarm_body, 1)
+    emit_i32_store(sarm_body, 2, 0)
+    emit_end(sarm_body)
+    // Blocked: join the shared set (created on first use).
+    emit_i32_const(sarm_body, comp_hf_arm_ws_slot())
+    emit_i32_load(sarm_body, 2, 0)
+    emit_local_set(sarm_body, 4)
+    emit_local_get(sarm_body, 4)
+    emit_i32_eqz(sarm_body)
+    emit_if_void(sarm_body)
+    emit_call(sarm_body, ws_new_idx)
+    emit_local_set(sarm_body, 4)
+    emit_i32_const(sarm_body, comp_hf_arm_ws_slot())
+    emit_local_get(sarm_body, 4)
+    emit_i32_store(sarm_body, 2, 0)
+    emit_end(sarm_body)
+    emit_local_get(sarm_body, 1)
+    emit_local_get(sarm_body, 4)
+    emit_call(sarm_body, join_idx)
+    emit_i64_const(sarm_body, 0)
+    comp_emit_encode_i64_value(sarm_body, tag_mode)
+    bytebuf_push(sarm_body, 11)
+    leb128_encode_u32(code_sec, Bytes::length(sarm_body))
+    bytebuf_push_buf(code_sec, sarm_body)
   } else {
     ()
   }
@@ -7386,7 +7597,7 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
     let ifn = Array::get(imp_names, ii)
     if im == "wasi_snapshot_preview1" && ifn == "fd_write" {
       ()
-    } else if im == "vibe" && (comp_is_host_future_get_import(ifn) || ifn == "host_future_wait" || ifn == "host_future_arm" || ifn == "host_future_wait_any" || comp_is_host_stream_get_import(ifn) || ifn == "host_stream_read" || ifn == "host_stream_close" || ifn == "sleep" || ifn == "stderr_write_stream" || (ifn == "process_exit" && comp_core_imports_func(main_core_wasm, "vibe", "stderr_write_stream"))) {
+    } else if im == "vibe" && (comp_is_host_future_get_import(ifn) || ifn == "host_future_wait" || ifn == "host_future_arm" || ifn == "host_future_wait_any" || ifn == "host_stream_arm" || comp_is_host_stream_get_import(ifn) || ifn == "host_stream_read" || ifn == "host_stream_close" || ifn == "sleep" || ifn == "stderr_write_stream" || (ifn == "process_exit" && comp_core_imports_func(main_core_wasm, "vibe", "stderr_write_stream"))) {
       ()
     } else {
       throw("component(async-hostfuture): core module uses host import '\{im}.\{ifn}' (only fd_write, sleep and the host-future/host-stream imports are satisfiable in this composition)")
@@ -7595,6 +7806,7 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   emit_core_module_section(buf, comp_generate_memhost_module())
   // #1537: tasks awaiting host futures wait on them together.
   let want_wait_any = comp_core_imports_vibe_name(main_core_wasm, "host_future_arm") || comp_core_imports_vibe_name(main_core_wasm, "host_future_wait_any")
+  let want_stream_arm = comp_core_imports_vibe_name(main_core_wasm, "host_stream_arm")
   // #1537: an entry whose row carries `Exception` exits through its boundary
   // (stderr diagnosis, then process_exit); the adapter serves both as
   // trapping stubs, as the p1 wrap does (#2976). A program's own
@@ -7610,7 +7822,7 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   } else {
     ()
   }
-  emit_core_module_section(buf, comp_generate_hostfuture_adapter_core_module(hf_names, hs_names, hs_wants_close, want_sleep, tag_mode, future_s64, response_mode, want_wait_any, exit_stubs))
+  emit_core_module_section(buf, comp_generate_hostfuture_adapter_core_module(hf_names, hs_names, hs_wants_close, want_sleep, tag_mode, future_s64, response_mode, want_wait_any, want_stream_arm, exit_stubs))
   emit_core_module_section(buf, comp_generate_async_trampoline_hostfuture())
   emit_core_module_section(buf, comp_generate_wasi_fd_write_stub())
   // A component-instance export alias must follow embedded core-module

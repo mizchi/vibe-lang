@@ -1051,24 +1051,24 @@ export fn TaskGroup::spawn_suspend[rg, e, T: Send](n: TaskGroup[rg, e], f: () ->
       SDone(v)
     } with { Async::Suspend(r) => {
       // Payload convention: 0 = yield, 1 = poll wait, NEGATIVE = a sleep
-      // debt of -r ms (#1227), [2, 2047] = a host future (handle + 2,
-      // ADR-0089 D2's third wait kind). A host future parks on its handle
-      // when the program's entry boundary settles host futures (#1537:
-      // `__conc_host_arm` answers >= 0), and the group waits on every such
-      // handle at once. Without that boundary nothing in-guest can complete
-      // a host waitable, so it parks as a POLLER and the backend degrades to
-      // the deadlock trap rather than to a silent yield livelock (a yielder
-      // is resumed for free forever and never counts as stalled). Stream
-      // reads (>= 2048) stay pollers: the entry refuses a host stream beside
-      // spawned tasks.
+      // debt of -r ms (#1227), [2, 2047] = a host future (handle + 2),
+      // [2048, 3071] = a host stream read (handle + 2048) -- ADR-0089 D2's
+      // third wait kind. Either parks on its waitable when the program's
+      // entry boundary settles host waitables (#1537: `__conc_host_arm`
+      // answers >= 0), and the group waits on all of them at once. Without
+      // that boundary nothing in-guest can complete a host waitable, so it
+      // parks as a POLLER and the backend degrades to the deadlock trap
+      // rather than to a silent yield livelock (a yielder is resumed for
+      // free forever and never counts as stalled).
       if r < 0 {
         TaskHandle::park_kind(h, resume, true, 0 - r)
-      } else if r >= 2 && r < 2048 && __conc_host_arm(r - 2) >= 0 {
-        // #1537: a host future (handle + 2) in a program whose entry
-        // boundary settles host waitables. The group waits on it together
-        // with every other pending one (conc_settle_host_waits).
+      } else if r >= 2 && __conc_host_arm(r) >= 0 {
+        // #1537: a host future (handle + 2) or host stream read (handle +
+        // 2048) in a program whose entry boundary settles host waitables.
+        // The group waits on it together with every other pending one
+        // (conc_settle_host_waits); the payload itself names it.
         TaskHandle::park_kind(h, resume, false, 0)
-        h.cell.host_wait = r - 2
+        h.cell.host_wait = r
       } else {
         TaskHandle::park_kind(h, resume, r >= 1, 0)
       }
@@ -1469,20 +1469,23 @@ fn conc_settle_host_waits[rg, e](n: TaskGroup[rg, e]) -> Bool {
 // their bodies with the adapter calls exactly when that boundary is built, so
 // a program without host futures imports nothing new.
 
-/// Arm `waitable` for the next `__conc_host_wait_any`: 1 when its value has
-/// already landed, 0 when it is now waiting in the set, -1 when this program
-/// has no host waitables (the task then parks as a poller, as before).
+/// Arm the waitable a task parked on (its suspend payload: handle + 2 for a
+/// future, handle + 2048 for a stream read) for the next
+/// `__conc_host_wait_any`: 1 when its result is already there, 0 when it is
+/// now waiting in the set, -1 when this program has no host waitables (the
+/// task then parks as a poller, as before).
 export fn __conc_host_arm(waitable: Int) -> Int {
   let _ = waitable
   0 - 1
 }
 
-/// Block until one armed handle's value lands; returns that handle.
+/// Block until one armed waitable completes; returns its payload.
 export fn __conc_host_wait_any() -> Int {
   0 - 1
 }
 
-/// The landed value of `waitable`, releasing its readable end.
+/// The result for `waitable` (a payload): a future's value, releasing its
+/// readable end, or a stream's next byte (-1 at its end).
 export fn __conc_host_take(waitable: Int) -> Int {
   waitable
 }

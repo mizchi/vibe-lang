@@ -3434,10 +3434,10 @@ echo "[compiler-gate] ADR-0091 #zero_alloc allocation check ok"
 # (async_sleep_boundary_test.vibe -- behavior parity with the old blocking
 # builtin). Since #2065 wall 2, spawning suspend-class tasks (TaskGroup
 # spawn_suspend) under an Async-row entry COMPILES and answers 42
-# (async_boundary_spawn_suspend_test.vibe); since #1537 a host future beside
-# such tasks compiles too (test_named_hostfutures_component_gate.sh runs it),
-# and a host STREAM stays REJECTED with the stream-read diagnostic, in both positions
-# (err_async_boundary_host_waitable_spawn.vibe, err_async_boundary_mixed_operand.vibe).
+# (async_boundary_spawn_suspend_test.vibe); since #1537 host futures and host
+# stream reads beside such tasks compile too, and tasks park on them
+# (test_named_hostfutures_component_gate.sh / test_named_hoststreams_component_gate.sh
+# run them).
 echo "[compiler-gate] 77/77 ADR-0089 D1 async sleep boundary (#1218)"
 asb89dir="_build/_gate_async_sleep89"
 rm -rf "$asb89dir"; mkdir -p "$asb89dir"
@@ -3469,40 +3469,9 @@ if [ "$asb89_spawn_out" != "42" ]; then
   echo "[compiler-gate] FAIL: async_boundary_spawn_suspend_test.vibe got '$asb89_spawn_out' (want 42)" >&2
   exit 1
 fi
-cp fixtures/err_async_boundary_host_waitable_spawn.vibe "$asb89dir/neg.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$asb89dir/neg.vibe" "$asb89dir/neg.wasm" main >/dev/null 2>&1 || true
-if [ -s "$asb89dir/neg.wasm" ]; then
-  echo "[compiler-gate] FAIL: err_async_boundary_host_waitable_spawn.vibe compiled -- a spawned task cannot park on a host stream read yet, so this must be rejected" >&2
-  exit 1
-fi
-if ! grep -qF 'cannot yet park on a host stream read' "$asb89dir/neg.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: err_async_boundary_host_waitable_spawn.vibe did not produce the host-stream diagnostic" >&2
-  cat "$asb89dir/neg.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
-# #1342: the same guard must be POSITION-INDEPENDENT and must key on the
-# boundary that is actually injected.
-#   - err_async_boundary_mixed_operand.vibe puts the `spawn_suspend` call in an
-#     OPERAND. Its walker was missing EBinOp (and most other arms), so this
-#     exact program COMPILED while the let-bound spelling above was rejected.
-#   - async_boundary_user_sleep_test.vibe supplies its OWN `sleep`, so no
-#     boundary is built and there is nothing to mix -- it must COMPILE and
-#     return 42. The guard used to omit that half of the injection's condition.
-cp fixtures/err_async_boundary_mixed_operand.vibe "$asb89dir/negop.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$asb89dir/negop.vibe" "$asb89dir/negop.wasm" main >/dev/null 2>&1 || true
-if [ -s "$asb89dir/negop.wasm" ]; then
-  echo "[compiler-gate] FAIL: err_async_boundary_mixed_operand.vibe compiled -- the mixing guard is position-dependent again (#1342)" >&2
-  exit 1
-fi
-if ! grep -qF 'cannot yet park on a host stream read' "$asb89dir/negop.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: err_async_boundary_mixed_operand.vibe did not produce the host-stream diagnostic" >&2
-  cat "$asb89dir/negop.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+# #1342: the boundary must key on what is actually injected:
+# async_boundary_user_sleep_test.vibe supplies its OWN `sleep`, so no
+# boundary is built -- it must COMPILE and return 42.
 cp fixtures/async_boundary_user_sleep_test.vibe "$asb89dir/usersleep.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \

@@ -221,9 +221,9 @@ byte-exact emitter), the order is:
    Since #2065 wall 2, an Async-row entry that spawns suspend-class tasks
    (TaskGroup) compiles as well: the boundary arm takes its suspend-class
    spelling and sits inside the exception boundary
-   (`async_boundary_spawn_suspend_test.vibe`). Host futures and streams
-   beside such tasks stay refused, because a task cannot park on a host
-   waitable yet (`err_async_boundary_host_waitable_spawn.vibe`).
+   (`async_boundary_spawn_suspend_test.vibe`). Since #1537 a task that
+   awaits a host future or reads a host stream parks on it, and the group
+   waits on all of them at once (`fixtures/async_spawn_host_futures/`).
 
    **A latent bug found on the way:** a top-level `fn sleep` with the
    builtin's name was already an arity miscompile with the old compiler ("not
@@ -377,10 +377,9 @@ byte-exact emitter), the order is:
      exempts a value argument only in such a position
      (`fixtures/async_boundary_spawn_suspend_test.vibe`). The laundering
      shapes stay refused (`err_effect_closure_literal_launder.vibe`).
-   - What remains is ADR-0089 D2's third park kind. A spawned task cannot
-     park on a host waitable, so an Async entry that settles a host future or
-     stream beside spawned tasks is refused
-     (`err_async_boundary_host_waitable_spawn.vibe`).
+   - ADR-0089 D2's third park kind landed with #1537: a spawned task parks
+     on a host future or stream read, and the group waits on every pending
+     one through the adapter's shared waitable set.
 
    **Decision 3's named host streams landed too (spec §3.18).** Following the
    measurements of the D3 terminal probe (§3.17):

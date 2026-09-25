@@ -183,9 +183,10 @@ override silently contradicting a module that says `raw` is the hazard #2903's
   handle's read already completed, else joins the handle to ONE shared
   waitable set (created on first use, its handle kept in the adapter's scratch
   word 40) and answers `0`. `host_future_wait_any () -> i64` blocks on that
-  set; the event must be FUTURE_READ, its `payload[0]` names the future, which
-  leaves the set and is marked completed, so `host_future_wait` then takes its
-  value without blocking. Both are imported only when a program's entry
+  set; for a FUTURE_READ event `payload[0]` names the future, which leaves the
+  set and is marked completed, so `host_future_wait` then takes its value
+  without blocking. It returns the suspend payload (`handle + 2`). Both are
+  imported only when a program's entry
   boundary settles host futures AND it links `@vibe/concurrent`: the library's
   `__conc_host_arm` / `__conc_host_wait_any` / `__conc_host_take` default to
   "no host waitables", and linked_compile gives them these bodies
@@ -194,6 +195,17 @@ override silently contradicting a module that says `raw` is the hazard #2903's
   once nothing else can run. An `Exception` entry beside them exits through
   its boundary; the adapter serves `stderr_write_stream` / `process_exit` as
   trapping stubs, #2976's rule for the p1 wrap.
+- **Streams in the same set** (#1537). A task's byte read parks too:
+  `host_stream_arm (i64) -> i64` starts a one-byte `stream.read` into the
+  handle's byte slot and joins the shared set (or answers `1` when the read
+  completed inline, or the CLOSED latch is set), recording the read as
+  pending (band 20480) with its status (band 24576). `host_future_wait_any`
+  answers a STREAM_READ event by recording `payload[1]` as that status and
+  returning `handle + 2048`; a FUTURE_READ returns `handle + 2`. These are the
+  suspend payloads the tasks parked with, so the scheduler matches them
+  directly. `host_stream_read` then settles the armed read instead of issuing
+  a second one, and interprets its status exactly as before (a byte, the
+  inline CLOSED latch, or `-1` at the end).
 - **Drop** is conditional -- this is *the conditional-drop rule* the
   runtime-neutral list below names. A call that completed eagerly (status
   RETURNED, code `2`) created no subtask, so it is neither joined nor dropped

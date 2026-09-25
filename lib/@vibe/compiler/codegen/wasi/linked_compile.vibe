@@ -2045,9 +2045,9 @@ fn lc_entry_declares_async(stmts: Array[Stmt], entry_name: String) -> Bool {
 ///      spawns suspend-class tasks (`TaskGroup::spawn_suspend`) gets the
 ///      suspend-class spelling of the same arm (`resume` bound first),
 ///      placed inside the exception boundary (#2065 wall 2,
-///      async_boundary_spawn_suspend_test.vibe). Host futures and streams
-///      beside such tasks stay refused: a task cannot park on a host
-///      waitable yet (err_async_boundary_host_waitable_spawn.vibe).
+///      async_boundary_spawn_suspend_test.vibe). A task awaiting a host
+///      future or reading a host stream parks on it (#1537,
+///      lc_host_hooks_install).
 ///
 /// Keyed on the entry row (like lc_wrap_entry_error_boundary): programs
 /// whose entry row has no `Async` -- including the `__no_entry__`
@@ -3369,8 +3369,8 @@ fn lc_is_hook_name(name: String, base: String) -> Bool {
 /// whose entry boundary settles host futures gets `vibe_hf_arm_raw` /
 /// `vibe_hf_wait_any_raw` / `vibe_hf_wait_raw` instead, so only such a
 /// program imports them.
-fn lc_host_hooks_install(stmts: Array[Stmt], hf_machinery: Bool) -> Unit {
-  if hf_machinery {
+fn lc_host_hooks_install(stmts: Array[Stmt], hf_machinery: Bool, hs_machinery: Bool) -> Unit {
+  if hf_machinery || hs_machinery {
     let mut i = 0
     while i < Array::length(stmts) {
       match Array::get(stmts, i) {
@@ -3381,11 +3381,11 @@ fn lc_host_hooks_install(stmts: Array[Stmt], hf_machinery: Bool) -> Unit {
             EInt(0)
           }
           let replaced = if lc_is_hook_name(name, "__conc_host_arm") {
-            Some(ECall(EIdent("vibe_hf_arm_raw", -1), [param], -1))
+            Some(lc_host_hook_dispatch(param, hf_machinery, hs_machinery, "vibe_hf_arm_raw", "vibe_hs_arm_raw"))
           } else if lc_is_hook_name(name, "__conc_host_wait_any") {
             Some(ECall(EIdent("vibe_hf_wait_any_raw", -1), lc_fresh_expr_array(), -1))
           } else if lc_is_hook_name(name, "__conc_host_take") {
-            Some(ECall(EIdent("vibe_hf_wait_raw", -1), [param], -1))
+            Some(lc_host_hook_dispatch(param, hf_machinery, hs_machinery, "vibe_hf_wait_raw", "vibe_hs_read_raw"))
           } else {
             None
           }
@@ -3400,6 +3400,26 @@ fn lc_host_hooks_install(stmts: Array[Stmt], hf_machinery: Bool) -> Unit {
     }
   } else {
     ()
+  }
+}
+
+/// A hook body over a suspend PAYLOAD: the stream band (handle +
+/// lc_hs_req_base()) goes to `stream_fn`, the future band (handle + 2) to
+/// `future_fn`. Only the halves this program has are named, so a program
+/// without host streams never references the stream imports, and vice versa.
+fn lc_host_hook_dispatch(payload: Expr, hf_machinery: Bool, hs_machinery: Bool, future_fn: String, stream_fn: String) -> Expr {
+  let future_call = ECall(EIdent(future_fn, -1), [
+    EBinOp("-", payload, EInt(2), -1)
+  ], -1)
+  let stream_call = ECall(EIdent(stream_fn, -1), [
+    EBinOp("-", payload, EInt(lc_hs_req_base()), -1)
+  ], -1)
+  if hf_machinery && hs_machinery {
+    EIf(EBinOp("<", EInt(lc_hs_req_base() - 1), payload, -1), stream_call, future_call)
+  } else if hs_machinery {
+    stream_call
+  } else {
+    future_call
   }
 }
 
@@ -4010,406 +4030,402 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
   // handler suspend-class, and `TaskGroup::spawn_suspend` discharges its
   // tasks' `Async` (its own row has none) so the body handed to
   // `TaskGroup::run` is Async-free at the call site. A task that awaits a
-  // host FUTURE parks on its handle (#1537, ADR-0089 D2's third park kind):
-  // @vibe/concurrent's `__conc_host_*` hooks get the adapter's bodies below.
-  // Host STREAMS under suspend-class tasks stay refused: a byte read is not
-  // yet a parkable waitable in the group's set.
-  if entry_has_async && hs_machinery && has_spawn_suspend {
-    "the entry's Async boundary settles host streams, and TaskGroup::spawn_suspend tasks cannot yet park on a host stream read. Either drop `Async` from the entry row and let TaskGroup discharge it (row-free entry + TaskGroup::run), or keep the Async entry and read the host stream directly instead of from a spawned task (#1537)"
+  // host future, or reads a host stream, parks on the handle (#1537, ADR-0089
+  // D2's third park kind): @vibe/concurrent's `__conc_host_*` hooks get the
+  // adapter's bodies (lc_host_hooks_install).
+  //
+  // Keying (#1218, tightened after gate 19 regressed on the first cut):
+  //
+  //   sleep machinery (retarget + optional boundary): the program must
+  //   actually CALL `sleep` somewhere. The first cut keyed on the entry
+  //   row alone, which wrapped every Async-row entry in the boundary
+  //   handle -- and the evidence migration then demanded eligibility of
+  //   the WHOLE entry body. Gate 19's for-await program (Async row, trait
+  //   dict calls, zero sleeps) was ineligible and failed to compile, a
+  //   regression for programs that never needed the machinery at all.
+  //
+  //   effect-decl injection: needed by the sleep machinery, and ALSO when
+  //   awaits expanded (__aw_poll present, injected by await_poll_pass just
+  //   before this) into a program that handles Async -- the migration of
+  //   that handle needs the declaration's operation list.
+  //
+  // Increment 2 keying is unchanged within the sleep machinery: a
+  // `handle ... with Async` anywhere also enables the retarget (the
+  // checker lets such a handle discharge the builtin row, so its body's
+  // sleeps MUST become performs the handler can receive); the boundary
+  // wrap itself stays entry-row-keyed.
+  // sleep_machinery / hf_machinery / hs_machinery are computed ABOVE now, so
+  // the guard and the injection cannot drift apart (#1342). Their original
+  // rationale:
+  //
+  // ADR-0089 step 4 (#1218): the host-future machinery -- a program that
+  // calls `host_future_get` under an Async-row entry gets the boundary
+  // handler (with the waitable settle arm below) even with zero sleeps.
+  // Entry-row-keyed only: under a user `handle ... with Async` the
+  // Suspend(handle + 2) payload reaches that handler instead, where the
+  // in-guest scheduler parks it as a poller (deadlock trap -- no
+  // completion source exists in-guest, spec §3.13).
+  //
+  // ADR-0089 Decision 3 (#1218): the host-stream machinery -- same keying
+  // discipline as hf_machinery (entry-row-keyed only; under a user
+  // `handle ... with Async` the stream payload would reach a handler with
+  // no read source, where the in-guest scheduler's poller arm turns it
+  // into a deterministic deadlock trap, spec §3.13).
+  let decl_needed = !has_async_decl && (sleep_machinery || hf_machinery || hs_machinery || (has_aw_poll && has_async_handle))
+  if decl_needed {
+    let ops: Array[(String, Array[TypeExpr], TypeExpr)] = [
+      ("Suspend", [TyName("Int")], TyName("Int"))
+    ]
+    Array::push(stmts, SEffectDef(false, "Async", lc_fresh_string_array(), ops))
   } else {
-    // Keying (#1218, tightened after gate 19 regressed on the first cut):
-    //
-    //   sleep machinery (retarget + optional boundary): the program must
-    //   actually CALL `sleep` somewhere. The first cut keyed on the entry
-    //   row alone, which wrapped every Async-row entry in the boundary
-    //   handle -- and the evidence migration then demanded eligibility of
-    //   the WHOLE entry body. Gate 19's for-await program (Async row, trait
-    //   dict calls, zero sleeps) was ineligible and failed to compile, a
-    //   regression for programs that never needed the machinery at all.
-    //
-    //   effect-decl injection: needed by the sleep machinery, and ALSO when
-    //   awaits expanded (__aw_poll present, injected by await_poll_pass just
-    //   before this) into a program that handles Async -- the migration of
-    //   that handle needs the declaration's operation list.
-    //
-    // Increment 2 keying is unchanged within the sleep machinery: a
-    // `handle ... with Async` anywhere also enables the retarget (the
-    // checker lets such a handle discharge the builtin row, so its body's
-    // sleeps MUST become performs the handler can receive); the boundary
-    // wrap itself stays entry-row-keyed.
-    // sleep_machinery / hf_machinery / hs_machinery are computed ABOVE now, so
-    // the guard and the injection cannot drift apart (#1342). Their original
-    // rationale:
-    //
-    // ADR-0089 step 4 (#1218): the host-future machinery -- a program that
-    // calls `host_future_get` under an Async-row entry gets the boundary
-    // handler (with the waitable settle arm below) even with zero sleeps.
-    // Entry-row-keyed only: under a user `handle ... with Async` the
-    // Suspend(handle + 2) payload reaches that handler instead, where the
-    // in-guest scheduler parks it as a poller (deadlock trap -- no
-    // completion source exists in-guest, spec §3.13).
-    //
-    // ADR-0089 Decision 3 (#1218): the host-stream machinery -- same keying
-    // discipline as hf_machinery (entry-row-keyed only; under a user
-    // `handle ... with Async` the stream payload would reach a handler with
-    // no read source, where the in-guest scheduler's poller arm turns it
-    // into a deterministic deadlock trap, spec §3.13).
-    let decl_needed = !has_async_decl && (sleep_machinery || hf_machinery || hs_machinery || (has_aw_poll && has_async_handle))
-    if decl_needed {
-      let ops: Array[(String, Array[TypeExpr], TypeExpr)] = [
-        ("Suspend", [TyName("Int")], TyName("Int"))
-      ]
-      Array::push(stmts, SEffectDef(false, "Async", lc_fresh_string_array(), ops))
-    } else {
-      ()
-    }
-    if !sleep_machinery {
-      ()
-    } else {
-      let ms = EIdent("__slp_ms", -1)
-      let suspend = ECall(EIdent("perform", -1), [
-        ECall(EIdent("Async::Suspend", -1), [EBinOp("-", EInt(0), ms, -1)], -1)
-      ], -1)
-      let sleep_body = EIf(EBinOp("<", EInt(0), ms, -1), ELet("__slp_w", suspend, EUnit, -1), EUnit)
-      // review-lint: allow-fixed-synthetic-name
-      let sleep_params: Array[(String, Option[TypeExpr])] = [
-        ("__slp_ms", Some(TyName("Int")))
-      ]
-      Array::push(stmts, SLet(false, false, "__slp_perform", None, EFn(lc_fresh_string_array(), array_empty(), sleep_params, Some(TyName("Unit")), Some("Async"), sleep_body)))
-      // Retarget `sleep(..)` calls to the injected fn -- see
-      // lc_rename_sleep_calls for why the fn cannot itself be named `sleep`.
-      // Codex P1 on #1312: which WALK depends on whether the boundary is
-      // installed. Under an Async-row entry the boundary catches every
-      // otherwise-unhandled perform, so the program-wide (shadow-aware)
-      // rewrite is sound. Without it, only positions guaranteed a handler
-      // are rewritten (lc_rename_sleep_scoped) -- everything else keeps the
-      // blocking builtin rather than gaining a perform nothing handles.
-      let rename_stmt_expr = (rexpr: Expr) -> Expr {
-        if entry_has_async {
-          lc_rename_sleep_calls(rexpr, true)
-        } else {
-          // A TOP-LEVEL fn's own EFn node is not a rewrite context in scoped
-          // mode -- only nested closure LITERALS are. An Async-row top-level
-          // fn (e.g. `fn delay() with Async { sleep(1) }`) may be called
-          // from row-free code with no handler in sight, so its sleeps must
-          // keep the blocking builtin; a row-annotated literal, by contrast,
-          // is step-split by Vertical B and its performs always bubble to
-          // the handler that drives it.
-          match rexpr {
-            EFn(rtps, rtbs, rparams, rret, reff, rbody) => EFn(rtps, rtbs, rparams, rret, reff, lc_rename_sleep_scoped(rbody)),
-            _ => lc_rename_sleep_scoped(rexpr)
-          }
-        }
-      }
-      let mut r = 0
-      while r < Array::length(stmts) {
-        match Array::get(stmts, r) {
-          SLet(rex, rrec, rname, rty, rexpr) => if rname == "__slp_perform" {
-            ()
-          } else {
-            Array::set(stmts, r, SLet(rex, rrec, rname, rty, rename_stmt_expr(rexpr)))
-          },
-          SLetMut(mname, mty, mexpr) => {
-            Array::set(stmts, r, SLetMut(mname, mty, rename_stmt_expr(mexpr)))
-          },
-          STest(tname, texpr) => {
-            // The unit-test lane (__no_entry__) compiles STest bodies as
-            // entries of their own; a sleep inside one must retarget exactly
-            // like fn-body sleeps or it stays an opaque builtin call that the
-            // suspend lowering rejects (found live: the spawn_suspend +
-            // plain-sleep test failed Vertical-B eligibility until this arm
-            // existed). Same stmt coverage as await_poll_pass.
-            Array::set(stmts, r, STest(tname, rename_stmt_expr(texpr)))
-          },
-          SBench(bname, bexpr) => {
-            Array::set(stmts, r, SBench(bname, rename_stmt_expr(bexpr)))
-          },
-          SExpr(sexpr) => {
-            Array::set(stmts, r, SExpr(rename_stmt_expr(sexpr)))
-          },
-          _ => ()
-        }
-        r = r + 1
-      }
-    }
-    if !hs_machinery {
-      ()
-    } else {
-      // ADR-0089 Decision 3 (#1218): the read half of the host-stream
-      // surface. `host_stream_next(s)` retargets to the injected
-      // `__hs_next`, which performs `Async::Suspend` with the reserved
-      // STREAM payload band (handle + lc_hs_req_base(); the future band is
-      // handle + 2, and the composer's adapter caps handles at 1023, so
-      // the bands can never overlap). The entry boundary's stream arm
-      // resumes with the byte the adapter read -- or -1 at end of stream,
-      // which the row-free finisher `__hs_fin` latches into the cell
-      // (state 3 -> 0) so every later read returns -1 without performing.
-      // The perform sits on a let-spine with a row-free tail call, the
-      // same shape as __aw_poll's pay/settle chain, so the suspend CPS
-      // split accepts it.
-      let hsn_s = EIdent("__hsn_s", -1)
-      let hsn_state = ECall(EIdent("Array::get", -1), [hsn_s, EInt(0)], -1)
-      let hsn_hnd = ECall(EIdent("Array::get", -1), [hsn_s, EInt(1)], -1)
-      let hsn_suspend = ECall(EIdent("perform", -1), [
-        ECall(EIdent("Async::Suspend", -1), [
-          EBinOp("+", hsn_hnd, EInt(lc_hs_req_base()), -1)
-        ], -1)
-      ], -1)
-      let hsn_body = EIf(EBinOp("==", hsn_state, EInt(3), -1), ELet("__hsn_v", hsn_suspend, ECall(EIdent("__hs_fin", -1), [
-        // review-lint: allow-fixed-synthetic-name
-        hsn_s,
-        EIdent("__hsn_v", -1)
-      ], -1), -1), EBinOp("-", EInt(0), EInt(1), -1))
-      let hsn_params: Array[(String, Option[TypeExpr])] = [("__hsn_s", None)]
-      Array::push(stmts, SLet(false, false, "__hs_next", None, EFn(lc_fresh_string_array(), array_empty(), hsn_params, Some(TyName("Int")), Some("Async"), hsn_body)))
-      // #1955: public source protocol. Authority remains in the Async row and
-      // the stateful HostStream handle is consumed in place, so no Future or
-      // redundant Self value is returned.
-      if calls_host_stream_option_next {
-        let hso_s = EIdent("__hso_s", -1)
-        let hso_v = EIdent("__hso_v", -1)
-        let hso_raw = EIdent("__hso_raw", -1)
-        let hso_state = ECall(EIdent("Array::get", -1), [hso_s, EInt(0)], -1)
-        let hso_hnd = ECall(EIdent("Array::get", -1), [hso_s, EInt(1)], -1)
-        let hso_suspend = ECall(EIdent("perform", -1), [
-          ECall(EIdent("Async::Suspend", -1), [
-            EBinOp("+", hso_hnd, EInt(lc_hs_req_base()), -1)
-          ], -1)
-        ], -1)
-        let hso_finished = ECall(EIdent("__hs_fin", -1), [hso_s, hso_v], -1)
-        let hso_option = EIf(EBinOp("<", hso_raw, EInt(0), -1), EIdent("None", -1), ECall(EIdent("Some", -1), [
-          hso_raw
-        ], -1))
-        let hso_settle = ELet(lc_fixed_synthetic_name("__hso_raw", "review-lint: allow-fixed-synthetic-name"), hso_finished, hso_option, -1)
-        let hso_read = ELet(lc_fixed_synthetic_name("__hso_v", "review-lint: allow-fixed-synthetic-name"), hso_suspend, hso_settle, -1)
-        let hso_body = EIf(EBinOp("==", hso_state, EInt(3), -1), hso_read, EIdent("None", -1))
-        let hso_params: Array[(String, Option[TypeExpr])] = [("__hso_s", None)]
-        let hso_fn = EFn(lc_fresh_string_array(), array_empty(), hso_params, Some(TyApp("Option", [
-          TyName("Int")
-        ])), Some("Async"), hso_body)
-        let hso_binding = SLet(false, false, lc_fixed_synthetic_name("__hs_next_option", "review-lint: allow-fixed-synthetic-name"), None, hso_fn)
-        Array::push(stmts, hso_binding)
-      } else {
-        ()
-      }
-      let hsf_s = EIdent("__hsf_s", -1)
-      let hsf_v = EIdent("__hsf_v", -1)
-      let hsf_close = ECall(EIdent("Array::set", -1), [hsf_s, EInt(0), EInt(0)], -1)
-      let hsf_body = EIf(EBinOp("<", hsf_v, EInt(0), -1), ESeq(hsf_close, EBinOp("-", EInt(0), EInt(1), -1)), hsf_v)
-      let hsf_params: Array[(String, Option[TypeExpr])] = [
-        ("__hsf_s", None),
-        ("__hsf_v", None)
-      ]
-      Array::push(stmts, SLet(false, false, "__hs_fin", None, EFn(lc_fresh_string_array(), array_empty(), hsf_params, Some(TyName("Int")), None, hsf_body)))
-      // ADR-0089 Decision 3 follow-up (#1218): the DROP half. The read half
-      // releases the readable end only once it reaches end of stream, so a
-      // guest that stops reading early (`take the first 4 bytes`) used to
-      // pin that handle for the component instance's whole lifetime -- the
-      // limitation recorded at the end of spec §3.18.
-      //
-      // `host_stream_close(s)` retargets to this injected `__hs_close`,
-      // which is ROW-FREE: dropping a readable end is a canon call that
-      // never blocks, so unlike the read there is no perform, no reserved
-      // band and no boundary settle arm -- it calls the adapter directly.
-      //
-      // The cell's state word is what makes it idempotent and safe: the
-      // drop happens only for state 3 (open host stream), and the same
-      // write that closes the cell (3 -> 0) is what stops a second close --
-      // or a later read, which returns -1 through `__hs_next`'s state test
-      // -- from reaching the adapter again. A double `stream.drop-readable`
-      // on one handle would trap host-side, so this is load-bearing, not
-      // just tidy.
-      let hsc_s = EIdent("__hsc_s", -1)
-      let hsc_state = ECall(EIdent("Array::get", -1), [hsc_s, EInt(0)], -1)
-      let hsc_hnd = ECall(EIdent("Array::get", -1), [hsc_s, EInt(1)], -1)
-      let hsc_drop = ECall(EIdent("vibe_hs_close_raw", -1), [hsc_hnd], -1)
-      let hsc_mark = ECall(EIdent("Array::set", -1), [hsc_s, EInt(0), EInt(0)], -1)
-      let hsc_body = EIf(EBinOp("==", hsc_state, EInt(3), -1), ELet("__hsc_r", hsc_drop, hsc_mark, -1), EUnit)
-      // review-lint: allow-fixed-synthetic-name
-      let hsc_params: Array[(String, Option[TypeExpr])] = [("__hsc_s", None)]
-      // Injected ONLY when the source actually closes. `__hs_close`'s body is
-      // the sole reference to `vibe_hs_close_raw`, and the import is gated on
-      // that name being used -- so injecting it unconditionally would hand
-      // the close import (and the adapter's drop func) to every draining
-      // program too, silently changing bytes that are pinned elsewhere.
-      if calls_host_stream_close {
-        Array::push(stmts, SLet(false, false, "__hs_close", None, EFn(lc_fresh_string_array(), array_empty(), hsc_params, Some(TyName("Unit")), None, hsc_body)))
-      } else {
-        ()
-      }
-      // Program-wide retarget (shadow-aware): the machinery is
-      // entry-row-keyed, so the boundary catches every otherwise-unhandled
-      // perform -- the same soundness argument as the sleep rewrite's
-      // entry_has_async arm. Both surfaces are rewritten here, each by its
-      // own pass (shadowing is per-name, see lc_rename_hs_close_calls).
-      let mut hsr = 0
-      while hsr < Array::length(stmts) {
-        match Array::get(stmts, hsr) {
-          SLet(hrex, hrrec, hrname, hrty, hrexpr) => if hrname == "__hs_next" || hrname == "__hs_next_option" || hrname == "__hs_fin" || hrname == "__hs_close" {
-            ()
-          } else {
-            let with_raw_next = lc_rename_hs_next_calls(hrexpr, true)
-            let with_option_next = if calls_host_stream_option_next {
-              lc_rename_hs_option_next_calls(with_raw_next, true)
-            } else {
-              with_raw_next
-            }
-            Array::set(stmts, hsr, SLet(hrex, hrrec, hrname, hrty, lc_rename_hs_maybe_close(calls_host_stream_close, with_option_next, true)))
-          },
-          SLetMut(hmname, hmty, hmexpr) => {
-            Array::set(stmts, hsr, SLetMut(hmname, hmty, lc_rename_hs_maybe_close(calls_host_stream_close, lc_rename_hs_option_next_calls(lc_rename_hs_next_calls(hmexpr, true), true), true)))
-          },
-          STest(htname, htexpr) => {
-            Array::set(stmts, hsr, STest(htname, lc_rename_hs_maybe_close(calls_host_stream_close, lc_rename_hs_option_next_calls(lc_rename_hs_next_calls(htexpr, true), true), true)))
-          },
-          SBench(hbname, hbexpr) => {
-            Array::set(stmts, hsr, SBench(hbname, lc_rename_hs_maybe_close(calls_host_stream_close, lc_rename_hs_option_next_calls(lc_rename_hs_next_calls(hbexpr, true), true), true)))
-          },
-          SExpr(hsexpr) => {
-            Array::set(stmts, hsr, SExpr(lc_rename_hs_maybe_close(calls_host_stream_close, lc_rename_hs_option_next_calls(lc_rename_hs_next_calls(hsexpr, true), true), true)))
-          },
-          _ => ()
-        }
-        hsr = hsr + 1
-      }
-    }
-    if entry_has_async && (sleep_machinery || hf_machinery || hs_machinery) {
-      let req = EIdent("__entry_slp_req", -1)
-      // ADR-0089 D2 (#1218): the boundary is tail-resumptive -- nothing
-      // else can run between the perform and the resume -- so a POLL-WAIT
-      // payload (req == 1, __aw_poll's retry convention) can never be
-      // satisfied here: resuming it would re-poll the same unresolved
-      // future forever, a silent livelock. Trap deterministically instead
-      // (`assert` lowers to `unreachable` on false -- an unshadowable
-      // inline builtin, see compile_call.vibe's #1095 note), mirroring the
-      // scheduler's own deadlock-trap rule (conc_require in
-      // @vibe/concurrent). Sleep debts (req < 0) settle by blocking;
-      // cooperative yields (req == 0) resume for free.
-      //
-      // ADR-0089 step 4 (#1218): a WAITABLE payload (req >= 2, the reserved
-      // band -- req - 2 is a host future handle from `host_future_get`) IS
-      // satisfiable here, unlike the poll-wait: `vibe_hf_wait_raw` performs
-      // the future.read -> BLOCKED -> waitable.join -> waitable-set.wait
-      // sequence in the component adapter (spec §3.13), where the CANONICAL
-      // ABI suspends the whole task until the host resolves the future --
-      // so a tail-resumptive arm that blocks in it is exactly right. The
-      // arm resumes with the value that landed in the read buffer, and
-      // __aw_poll's settle writes it into the future cell. Emitted via a
-      // synthesized row-free `__entry_settle` fn only when the program
-      // calls `host_future_get`, so sleep-only boundaries keep their
-      // original (byte-identical) inline arm.
-      let arm = if hf_machinery || hs_machinery {
-        let q = EIdent("__entry_hf_q", -1)
-        let wait_call = ECall(EIdent("vibe_hf_wait_raw", -1), [
-          EBinOp("-", q, EInt(2), -1)
-        ], -1)
-        let trap_zero = ESeq(ECall(EIdent("assert", -1), [
-          EBinOp("==", q, EInt(0), -1)
-        ], -1), EInt(0))
-        let low = if sleep_machinery {
-          EIf(EBinOp("<", q, EInt(0), -1), ESeq(ECall(EIdent("sleep_blocking", -1), [
-            EBinOp("-", EInt(0), q, -1)
-          ], -1), EInt(0)), trap_zero)
-        } else {
-          trap_zero
-        }
-        let mid = if hf_machinery {
-          EIf(EBinOp("<", EInt(1), q, -1), wait_call, low)
-        } else {
-          low
-        }
-        // ADR-0089 Decision 3 (#1218): the STREAM band (q >= 2048, q -
-        // lc_hs_req_base() = the readable end's handle) settles by one
-        // blocking `vibe_hs_read_raw` -- the adapter's stream.read +
-        // waitable-set.wait when it blocks -- resuming with the byte, or
-        // -1 at end of stream. Emitted only under hs_machinery so future-
-        // and sleep-only boundaries keep their bytes.
-        let settle_body = if hs_machinery {
-          let hs_read_call = ECall(EIdent("vibe_hs_read_raw", -1), [
-            EBinOp("-", q, EInt(lc_hs_req_base()), -1)
-          ], -1)
-          EIf(EBinOp("<", EInt(lc_hs_req_base() - 1), q, -1), hs_read_call, mid)
-        } else {
-          mid
-        }
-        let settle_params: Array[(String, Option[TypeExpr])] = [
-          ("__entry_hf_q", Some(TyName("Int")))
-        ]
-        Array::push(stmts, SLet(false, false, "__entry_settle", None, EFn(lc_fresh_string_array(), array_empty(), settle_params, Some(TyName("Int")), None, settle_body)))
-        let settled = ECall(EIdent("__entry_settle", -1), [req], -1)
-        if has_spawn_suspend {
-          // #1537: the suspend-class spelling, as in the sleep-only arm
-          // below -- bind `resume` first, so this handler takes the step
-          // convention the spawned tasks use.
-          let k_resumed = ECall(EIdent("__entry_k", -1), [
-            EIdent("__entry_slp_v", -1)
-          ], -1)
-          ELet(lc_fixed_synthetic_name("__entry_slp_v", "review-lint: allow-fixed-synthetic-name"), settled, ELet(lc_fixed_synthetic_name("__entry_k", "review-lint: allow-fixed-synthetic-name"), EIdent("resume", -1), k_resumed, -1), -1)
-        } else {
-          let resumed = ECall(EIdent("resume", -1), [
-            EIdent("__entry_slp_v", -1)
-          ], -1)
-          ELet(lc_fixed_synthetic_name("__entry_slp_v", "review-lint: allow-fixed-synthetic-name"), settled, resumed, -1)
-        }
-      } else {
-        let settle = EIf(EBinOp("<", req, EInt(0), -1), ECall(EIdent("sleep_blocking", -1), [
-          EBinOp("-", EInt(0), req, -1)
-        ], -1), ECall(EIdent("assert", -1), [EBinOp("<", req, EInt(1), -1)], -1))
-        if has_spawn_suspend {
-          // #2065 wall 2: suspend-class spelling -- see the guard above.
-          ESeq(settle, ELet(lc_fixed_synthetic_name("__entry_k", "review-lint: allow-fixed-synthetic-name"), EIdent("resume", -1), ECall(EIdent("__entry_k", -1), [
-            EInt(0)
-          ], -1), -1))
-        } else {
-          ESeq(settle, ECall(EIdent("resume", -1), [EInt(0)], -1))
-        }
-      }
-      let mut j = 0
-      while j < Array::length(stmts) {
-        match Array::get(stmts, j) {
-          SLet(exported, is_rec, name, ty, EFn(tps, tbs, params, ret, eff, body)) => if name == boundary_name {
-            // The cell rebinding goes INSIDE the handler: it is ordinary code
-            // that runs on entry, not something the boundary needs to see.
-            let with_cells = if hs_machinery {
-              lc_wrap_host_stream_params(params, body)
-            } else {
-              body
-            }
-            let async_arms: Array[(Pat, Expr)] = [
-              (PCtor("Async::Suspend", [PBind("__entry_slp_req")]), arm)
-            ]
-            // #2065 wall 2: a suspend-class boundary goes INSIDE the entry's
-            // exception boundary. The suspend lowering refuses a handle nested
-            // in its handled body, and the exception boundary (installed
-            // first) would otherwise be exactly that. Inside-out is the shape
-            // `TaskGroup::spawn_suspend` already uses -- the abortive
-            // Exception handle outside, the CPS-lowered Async handle inside --
-            // so a throw from the body still reaches the boundary diagnostic.
-            let wrapped = if has_spawn_suspend {
-              match with_cells {
-                EHandle(inner, earms) => if lc_is_exception_boundary_arms(earms) {
-                  EHandle(EHandle(inner, async_arms), earms)
-                } else {
-                  EHandle(with_cells, async_arms)
-                },
-                _ => EHandle(with_cells, async_arms)
-              }
-            } else {
-              EHandle(with_cells, async_arms)
-            }
-            Array::set(stmts, j, SLet(exported, is_rec, name, ty, EFn(tps, tbs, params, ret, eff, wrapped)))
-          } else {
-            ()
-          },
-          _ => ()
-        }
-        j = j + 1
-      }
-    } else {
-      ()
-    }
-    ""
+    ()
   }
+  if !sleep_machinery {
+    ()
+  } else {
+    let ms = EIdent("__slp_ms", -1)
+    let suspend = ECall(EIdent("perform", -1), [
+      ECall(EIdent("Async::Suspend", -1), [EBinOp("-", EInt(0), ms, -1)], -1)
+    ], -1)
+    let sleep_body = EIf(EBinOp("<", EInt(0), ms, -1), ELet("__slp_w", suspend, EUnit, -1), EUnit)
+    // review-lint: allow-fixed-synthetic-name
+    let sleep_params: Array[(String, Option[TypeExpr])] = [
+      ("__slp_ms", Some(TyName("Int")))
+    ]
+    Array::push(stmts, SLet(false, false, lc_fixed_synthetic_name("__slp_perform", "review-lint: allow-fixed-synthetic-name"), None, EFn(lc_fresh_string_array(), array_empty(), sleep_params, Some(TyName("Unit")), Some("Async"), sleep_body)))
+    // Retarget `sleep(..)` calls to the injected fn -- see
+    // lc_rename_sleep_calls for why the fn cannot itself be named `sleep`.
+    // Codex P1 on #1312: which WALK depends on whether the boundary is
+    // installed. Under an Async-row entry the boundary catches every
+    // otherwise-unhandled perform, so the program-wide (shadow-aware)
+    // rewrite is sound. Without it, only positions guaranteed a handler
+    // are rewritten (lc_rename_sleep_scoped) -- everything else keeps the
+    // blocking builtin rather than gaining a perform nothing handles.
+    let rename_stmt_expr = (rexpr: Expr) -> Expr {
+      if entry_has_async {
+        lc_rename_sleep_calls(rexpr, true)
+      } else {
+        // A TOP-LEVEL fn's own EFn node is not a rewrite context in scoped
+        // mode -- only nested closure LITERALS are. An Async-row top-level
+        // fn (e.g. `fn delay() with Async { sleep(1) }`) may be called
+        // from row-free code with no handler in sight, so its sleeps must
+        // keep the blocking builtin; a row-annotated literal, by contrast,
+        // is step-split by Vertical B and its performs always bubble to
+        // the handler that drives it.
+        match rexpr {
+          EFn(rtps, rtbs, rparams, rret, reff, rbody) => EFn(rtps, rtbs, rparams, rret, reff, lc_rename_sleep_scoped(rbody)),
+          _ => lc_rename_sleep_scoped(rexpr)
+        }
+      }
+    }
+    let mut r = 0
+    while r < Array::length(stmts) {
+      match Array::get(stmts, r) {
+        SLet(rex, rrec, rname, rty, rexpr) => if rname == "__slp_perform" {
+          ()
+        } else {
+          Array::set(stmts, r, SLet(rex, rrec, rname, rty, rename_stmt_expr(rexpr)))
+        },
+        SLetMut(mname, mty, mexpr) => {
+          Array::set(stmts, r, SLetMut(mname, mty, rename_stmt_expr(mexpr)))
+        },
+        STest(tname, texpr) => {
+          // The unit-test lane (__no_entry__) compiles STest bodies as
+          // entries of their own; a sleep inside one must retarget exactly
+          // like fn-body sleeps or it stays an opaque builtin call that the
+          // suspend lowering rejects (found live: the spawn_suspend +
+          // plain-sleep test failed Vertical-B eligibility until this arm
+          // existed). Same stmt coverage as await_poll_pass.
+          Array::set(stmts, r, STest(tname, rename_stmt_expr(texpr)))
+        },
+        SBench(bname, bexpr) => {
+          Array::set(stmts, r, SBench(bname, rename_stmt_expr(bexpr)))
+        },
+        SExpr(sexpr) => {
+          Array::set(stmts, r, SExpr(rename_stmt_expr(sexpr)))
+        },
+        _ => ()
+      }
+      r = r + 1
+    }
+  }
+  if !hs_machinery {
+    ()
+  } else {
+    // ADR-0089 Decision 3 (#1218): the read half of the host-stream
+    // surface. `host_stream_next(s)` retargets to the injected
+    // `__hs_next`, which performs `Async::Suspend` with the reserved
+    // STREAM payload band (handle + lc_hs_req_base(); the future band is
+    // handle + 2, and the composer's adapter caps handles at 1023, so
+    // the bands can never overlap). The entry boundary's stream arm
+    // resumes with the byte the adapter read -- or -1 at end of stream,
+    // which the row-free finisher `__hs_fin` latches into the cell
+    // (state 3 -> 0) so every later read returns -1 without performing.
+    // The perform sits on a let-spine with a row-free tail call, the
+    // same shape as __aw_poll's pay/settle chain, so the suspend CPS
+    // split accepts it.
+    let hsn_s = EIdent("__hsn_s", -1)
+    let hsn_state = ECall(EIdent("Array::get", -1), [hsn_s, EInt(0)], -1)
+    let hsn_hnd = ECall(EIdent("Array::get", -1), [hsn_s, EInt(1)], -1)
+    let hsn_suspend = ECall(EIdent("perform", -1), [
+      ECall(EIdent("Async::Suspend", -1), [
+        EBinOp("+", hsn_hnd, EInt(lc_hs_req_base()), -1)
+      ], -1)
+    ], -1)
+    let hsn_body = EIf(EBinOp("==", hsn_state, EInt(3), -1), ELet("__hsn_v", hsn_suspend, ECall(EIdent("__hs_fin", -1), [
+      // review-lint: allow-fixed-synthetic-name
+      hsn_s,
+      EIdent("__hsn_v", -1)
+    ], -1), -1), EBinOp("-", EInt(0), EInt(1), -1))
+    let hsn_params: Array[(String, Option[TypeExpr])] = [("__hsn_s", None)]
+    Array::push(stmts, SLet(false, false, lc_fixed_synthetic_name("__hs_next", "review-lint: allow-fixed-synthetic-name"), None, EFn(lc_fresh_string_array(), array_empty(), hsn_params, Some(TyName("Int")), Some("Async"), hsn_body)))
+    // #1955: public source protocol. Authority remains in the Async row and
+    // the stateful HostStream handle is consumed in place, so no Future or
+    // redundant Self value is returned.
+    if calls_host_stream_option_next {
+      let hso_s = EIdent("__hso_s", -1)
+      let hso_v = EIdent("__hso_v", -1)
+      let hso_raw = EIdent("__hso_raw", -1)
+      let hso_state = ECall(EIdent("Array::get", -1), [hso_s, EInt(0)], -1)
+      let hso_hnd = ECall(EIdent("Array::get", -1), [hso_s, EInt(1)], -1)
+      let hso_suspend = ECall(EIdent("perform", -1), [
+        ECall(EIdent("Async::Suspend", -1), [
+          EBinOp("+", hso_hnd, EInt(lc_hs_req_base()), -1)
+        ], -1)
+      ], -1)
+      let hso_finished = ECall(EIdent("__hs_fin", -1), [hso_s, hso_v], -1)
+      let hso_option = EIf(EBinOp("<", hso_raw, EInt(0), -1), EIdent("None", -1), ECall(EIdent("Some", -1), [
+        hso_raw
+      ], -1))
+      let hso_settle = ELet(lc_fixed_synthetic_name("__hso_raw", "review-lint: allow-fixed-synthetic-name"), hso_finished, hso_option, -1)
+      let hso_read = ELet(lc_fixed_synthetic_name("__hso_v", "review-lint: allow-fixed-synthetic-name"), hso_suspend, hso_settle, -1)
+      let hso_body = EIf(EBinOp("==", hso_state, EInt(3), -1), hso_read, EIdent("None", -1))
+      let hso_params: Array[(String, Option[TypeExpr])] = [("__hso_s", None)]
+      let hso_fn = EFn(lc_fresh_string_array(), array_empty(), hso_params, Some(TyApp("Option", [
+        TyName("Int")
+      ])), Some("Async"), hso_body)
+      let hso_binding = SLet(false, false, lc_fixed_synthetic_name("__hs_next_option", "review-lint: allow-fixed-synthetic-name"), None, hso_fn)
+      Array::push(stmts, hso_binding)
+    } else {
+      ()
+    }
+    let hsf_s = EIdent("__hsf_s", -1)
+    let hsf_v = EIdent("__hsf_v", -1)
+    let hsf_close = ECall(EIdent("Array::set", -1), [hsf_s, EInt(0), EInt(0)], -1)
+    let hsf_body = EIf(EBinOp("<", hsf_v, EInt(0), -1), ESeq(hsf_close, EBinOp("-", EInt(0), EInt(1), -1)), hsf_v)
+    let hsf_params: Array[(String, Option[TypeExpr])] = [
+      ("__hsf_s", None),
+      ("__hsf_v", None)
+    ]
+    Array::push(stmts, SLet(false, false, lc_fixed_synthetic_name("__hs_fin", "review-lint: allow-fixed-synthetic-name"), None, EFn(lc_fresh_string_array(), array_empty(), hsf_params, Some(TyName("Int")), None, hsf_body)))
+    // ADR-0089 Decision 3 follow-up (#1218): the DROP half. The read half
+    // releases the readable end only once it reaches end of stream, so a
+    // guest that stops reading early (`take the first 4 bytes`) used to
+    // pin that handle for the component instance's whole lifetime -- the
+    // limitation recorded at the end of spec §3.18.
+    //
+    // `host_stream_close(s)` retargets to this injected `__hs_close`,
+    // which is ROW-FREE: dropping a readable end is a canon call that
+    // never blocks, so unlike the read there is no perform, no reserved
+    // band and no boundary settle arm -- it calls the adapter directly.
+    //
+    // The cell's state word is what makes it idempotent and safe: the
+    // drop happens only for state 3 (open host stream), and the same
+    // write that closes the cell (3 -> 0) is what stops a second close --
+    // or a later read, which returns -1 through `__hs_next`'s state test
+    // -- from reaching the adapter again. A double `stream.drop-readable`
+    // on one handle would trap host-side, so this is load-bearing, not
+    // just tidy.
+    let hsc_s = EIdent("__hsc_s", -1)
+    let hsc_state = ECall(EIdent("Array::get", -1), [hsc_s, EInt(0)], -1)
+    let hsc_hnd = ECall(EIdent("Array::get", -1), [hsc_s, EInt(1)], -1)
+    let hsc_drop = ECall(EIdent("vibe_hs_close_raw", -1), [hsc_hnd], -1)
+    let hsc_mark = ECall(EIdent("Array::set", -1), [hsc_s, EInt(0), EInt(0)], -1)
+    let hsc_body = EIf(EBinOp("==", hsc_state, EInt(3), -1), ELet("__hsc_r", hsc_drop, hsc_mark, -1), EUnit)
+    // review-lint: allow-fixed-synthetic-name
+    let hsc_params: Array[(String, Option[TypeExpr])] = [("__hsc_s", None)]
+    // Injected ONLY when the source actually closes. `__hs_close`'s body is
+    // the sole reference to `vibe_hs_close_raw`, and the import is gated on
+    // that name being used -- so injecting it unconditionally would hand
+    // the close import (and the adapter's drop func) to every draining
+    // program too, silently changing bytes that are pinned elsewhere.
+    if calls_host_stream_close {
+      Array::push(stmts, SLet(false, false, lc_fixed_synthetic_name("__hs_close", "review-lint: allow-fixed-synthetic-name"), None, EFn(lc_fresh_string_array(), array_empty(), hsc_params, Some(TyName("Unit")), None, hsc_body)))
+    } else {
+      ()
+    }
+    // Program-wide retarget (shadow-aware): the machinery is
+    // entry-row-keyed, so the boundary catches every otherwise-unhandled
+    // perform -- the same soundness argument as the sleep rewrite's
+    // entry_has_async arm. Both surfaces are rewritten here, each by its
+    // own pass (shadowing is per-name, see lc_rename_hs_close_calls).
+    let mut hsr = 0
+    while hsr < Array::length(stmts) {
+      match Array::get(stmts, hsr) {
+        SLet(hrex, hrrec, hrname, hrty, hrexpr) => if hrname == "__hs_next" || hrname == "__hs_next_option" || hrname == "__hs_fin" || hrname == "__hs_close" {
+          ()
+        } else {
+          let with_raw_next = lc_rename_hs_next_calls(hrexpr, true)
+          let with_option_next = if calls_host_stream_option_next {
+            lc_rename_hs_option_next_calls(with_raw_next, true)
+          } else {
+            with_raw_next
+          }
+          Array::set(stmts, hsr, SLet(hrex, hrrec, hrname, hrty, lc_rename_hs_maybe_close(calls_host_stream_close, with_option_next, true)))
+        },
+        SLetMut(hmname, hmty, hmexpr) => {
+          Array::set(stmts, hsr, SLetMut(hmname, hmty, lc_rename_hs_maybe_close(calls_host_stream_close, lc_rename_hs_option_next_calls(lc_rename_hs_next_calls(hmexpr, true), true), true)))
+        },
+        STest(htname, htexpr) => {
+          Array::set(stmts, hsr, STest(htname, lc_rename_hs_maybe_close(calls_host_stream_close, lc_rename_hs_option_next_calls(lc_rename_hs_next_calls(htexpr, true), true), true)))
+        },
+        SBench(hbname, hbexpr) => {
+          Array::set(stmts, hsr, SBench(hbname, lc_rename_hs_maybe_close(calls_host_stream_close, lc_rename_hs_option_next_calls(lc_rename_hs_next_calls(hbexpr, true), true), true)))
+        },
+        SExpr(hsexpr) => {
+          Array::set(stmts, hsr, SExpr(lc_rename_hs_maybe_close(calls_host_stream_close, lc_rename_hs_option_next_calls(lc_rename_hs_next_calls(hsexpr, true), true), true)))
+        },
+        _ => ()
+      }
+      hsr = hsr + 1
+    }
+  }
+  if entry_has_async && (sleep_machinery || hf_machinery || hs_machinery) {
+    let req = EIdent("__entry_slp_req", -1)
+    // ADR-0089 D2 (#1218): the boundary is tail-resumptive -- nothing
+    // else can run between the perform and the resume -- so a POLL-WAIT
+    // payload (req == 1, __aw_poll's retry convention) can never be
+    // satisfied here: resuming it would re-poll the same unresolved
+    // future forever, a silent livelock. Trap deterministically instead
+    // (`assert` lowers to `unreachable` on false -- an unshadowable
+    // inline builtin, see compile_call.vibe's #1095 note), mirroring the
+    // scheduler's own deadlock-trap rule (conc_require in
+    // @vibe/concurrent). Sleep debts (req < 0) settle by blocking;
+    // cooperative yields (req == 0) resume for free.
+    //
+    // ADR-0089 step 4 (#1218): a WAITABLE payload (req >= 2, the reserved
+    // band -- req - 2 is a host future handle from `host_future_get`) IS
+    // satisfiable here, unlike the poll-wait: `vibe_hf_wait_raw` performs
+    // the future.read -> BLOCKED -> waitable.join -> waitable-set.wait
+    // sequence in the component adapter (spec §3.13), where the CANONICAL
+    // ABI suspends the whole task until the host resolves the future --
+    // so a tail-resumptive arm that blocks in it is exactly right. The
+    // arm resumes with the value that landed in the read buffer, and
+    // __aw_poll's settle writes it into the future cell. Emitted via a
+    // synthesized row-free `__entry_settle` fn only when the program
+    // calls `host_future_get`, so sleep-only boundaries keep their
+    // original (byte-identical) inline arm.
+    let arm = if hf_machinery || hs_machinery {
+      let q = EIdent("__entry_hf_q", -1)
+      let wait_call = ECall(EIdent("vibe_hf_wait_raw", -1), [
+        EBinOp("-", q, EInt(2), -1)
+      ], -1)
+      let trap_zero = ESeq(ECall(EIdent("assert", -1), [
+        EBinOp("==", q, EInt(0), -1)
+      ], -1), EInt(0))
+      let low = if sleep_machinery {
+        EIf(EBinOp("<", q, EInt(0), -1), ESeq(ECall(EIdent("sleep_blocking", -1), [
+          EBinOp("-", EInt(0), q, -1)
+        ], -1), EInt(0)), trap_zero)
+      } else {
+        trap_zero
+      }
+      let mid = if hf_machinery {
+        EIf(EBinOp("<", EInt(1), q, -1), wait_call, low)
+      } else {
+        low
+      }
+      // ADR-0089 Decision 3 (#1218): the STREAM band (q >= 2048, q -
+      // lc_hs_req_base() = the readable end's handle) settles by one
+      // blocking `vibe_hs_read_raw` -- the adapter's stream.read +
+      // waitable-set.wait when it blocks -- resuming with the byte, or
+      // -1 at end of stream. Emitted only under hs_machinery so future-
+      // and sleep-only boundaries keep their bytes.
+      let settle_body = if hs_machinery {
+        let hs_read_call = ECall(EIdent("vibe_hs_read_raw", -1), [
+          EBinOp("-", q, EInt(lc_hs_req_base()), -1)
+        ], -1)
+        EIf(EBinOp("<", EInt(lc_hs_req_base() - 1), q, -1), hs_read_call, mid)
+      } else {
+        mid
+      }
+      let settle_params: Array[(String, Option[TypeExpr])] = [
+        ("__entry_hf_q", Some(TyName("Int")))
+      ]
+      Array::push(stmts, SLet(false, false, lc_fixed_synthetic_name("__entry_settle", "review-lint: allow-fixed-synthetic-name"), None, EFn(lc_fresh_string_array(), array_empty(), settle_params, Some(TyName("Int")), None, settle_body)))
+      let settled = ECall(EIdent("__entry_settle", -1), [req], -1)
+      if has_spawn_suspend {
+        // #1537: the suspend-class spelling, as in the sleep-only arm
+        // below -- bind `resume` first, so this handler takes the step
+        // convention the spawned tasks use.
+        let k_resumed = ECall(EIdent("__entry_k", -1), [
+          EIdent("__entry_slp_v", -1)
+        ], -1)
+        ELet(lc_fixed_synthetic_name("__entry_slp_v", "review-lint: allow-fixed-synthetic-name"), settled, ELet(lc_fixed_synthetic_name("__entry_k", "review-lint: allow-fixed-synthetic-name"), EIdent("resume", -1), k_resumed, -1), -1)
+      } else {
+        let resumed = ECall(EIdent("resume", -1), [EIdent("__entry_slp_v", -1)], -1)
+        ELet(lc_fixed_synthetic_name("__entry_slp_v", "review-lint: allow-fixed-synthetic-name"), settled, resumed, -1)
+      }
+    } else {
+      let settle = EIf(EBinOp("<", req, EInt(0), -1), ECall(EIdent("sleep_blocking", -1), [
+        EBinOp("-", EInt(0), req, -1)
+      ], -1), ECall(EIdent("assert", -1), [EBinOp("<", req, EInt(1), -1)], -1))
+      if has_spawn_suspend {
+        // #2065 wall 2: suspend-class spelling -- see the guard above.
+        ESeq(settle, ELet(lc_fixed_synthetic_name("__entry_k", "review-lint: allow-fixed-synthetic-name"), EIdent("resume", -1), ECall(EIdent("__entry_k", -1), [
+          EInt(0)
+        ], -1), -1))
+      } else {
+        ESeq(settle, ECall(EIdent("resume", -1), [EInt(0)], -1))
+      }
+    }
+    let mut j = 0
+    while j < Array::length(stmts) {
+      match Array::get(stmts, j) {
+        SLet(exported, is_rec, name, ty, EFn(tps, tbs, params, ret, eff, body)) => if name == boundary_name {
+          // The cell rebinding goes INSIDE the handler: it is ordinary code
+          // that runs on entry, not something the boundary needs to see.
+          let with_cells = if hs_machinery {
+            lc_wrap_host_stream_params(params, body)
+          } else {
+            body
+          }
+          let async_arms: Array[(Pat, Expr)] = [
+            (PCtor("Async::Suspend", [
+              PBind(lc_fixed_synthetic_name("__entry_slp_req", "review-lint: allow-fixed-synthetic-name"))
+            ]), arm)
+          ]
+          // #2065 wall 2: a suspend-class boundary goes INSIDE the entry's
+          // exception boundary. The suspend lowering refuses a handle nested
+          // in its handled body, and the exception boundary (installed
+          // first) would otherwise be exactly that. Inside-out is the shape
+          // `TaskGroup::spawn_suspend` already uses -- the abortive
+          // Exception handle outside, the CPS-lowered Async handle inside --
+          // so a throw from the body still reaches the boundary diagnostic.
+          let wrapped = if has_spawn_suspend {
+            match with_cells {
+              EHandle(inner, earms) => if lc_is_exception_boundary_arms(earms) {
+                EHandle(EHandle(inner, async_arms), earms)
+              } else {
+                EHandle(with_cells, async_arms)
+              },
+              _ => EHandle(with_cells, async_arms)
+            }
+          } else {
+            EHandle(with_cells, async_arms)
+          }
+          Array::set(stmts, j, SLet(exported, is_rec, name, ty, EFn(tps, tbs, params, ret, eff, wrapped)))
+        } else {
+          ()
+        },
+        _ => ()
+      }
+      j = j + 1
+    }
+  } else {
+    ()
+  }
+  ""
 }
 
 /// #1536(c) / #1511(b): the ADR-0076 effect-lowering pass prefix of
@@ -9566,7 +9582,7 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
   // #1537: the program is linked here, @vibe/concurrent included, so this is
   // where its host-waitable hooks can get the adapter's bodies -- when the
   // entry boundary settles host futures (it injected `__entry_settle`).
-  lc_host_hooks_install(stmts, lc_program_defines_top_level(stmts, "__entry_settle") && lc_stmts_call_host_future(stmts))
+  lc_host_hooks_install(stmts, lc_program_defines_top_level(stmts, "__entry_settle") && lc_stmts_call_host_future(stmts), lc_program_defines_top_level(stmts, "__entry_settle") && lc_program_defines_top_level(stmts, "__hs_next"))
   let used_builtin_names = collect_used_builtin_names(stmts, fn_names_list)
   let need_array_capacity = Map::has_key(used_builtin_names, "Array::with_capacity")
   let need_bytes_capacity = Map::has_key(used_builtin_names, "Bytes::with_capacity")
@@ -9843,6 +9859,7 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
   // lc_host_hooks_install gives @vibe/concurrent's hooks.
   let need_host_future_arm_builtin = Map::has_key(used_builtin_names, "vibe_hf_arm_raw")
   let need_host_future_wait_any_builtin = Map::has_key(used_builtin_names, "vibe_hf_wait_any_raw")
+  let need_host_stream_arm_builtin = Map::has_key(used_builtin_names, "vibe_hs_arm_raw")
   // ADR-0089 Decision 3 (#1218): the program's NAMED host streams (sorted,
   // deduped). Each gets its own `vibe.host_stream_get$<name>` core import;
   // they all share the single `vibe.host_stream_read` half (park is per
@@ -10121,6 +10138,13 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
     -1
   }
   let hf_wait_any_import_idx = if need_host_future_wait_any_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let hs_arm_import_idx = if need_host_stream_arm_builtin {
     let idx = next_import_idx
     next_import_idx = next_import_idx + 1
     idx
@@ -10780,6 +10804,11 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
   } else {
     env_args_len_idx
   }
+  let hs_arm_idx = if hs_arm_import_idx >= 0 {
+    hs_arm_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
   // ADR-0089 Decision 3: the shared host-stream READ half, same stub
   // discipline as hf_wait (`(i64) -> i64`; the call site only exists when
   // the import is reserved).
@@ -11262,6 +11291,7 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
         "vibe_hf_wait_raw" => hf_wait_idx,
         "vibe_hf_arm_raw" => hf_arm_idx,
         "vibe_hf_wait_any_raw" => hf_wait_any_idx,
+        "vibe_hs_arm_raw" => hs_arm_idx,
         // ADR-0089 Decision 3: shared read half of the named host streams.
         "vibe_hs_read_raw" => hs_read_idx,
         // ADR-0089 Decision 3 follow-up: shared drop half of the named host
@@ -13811,6 +13841,14 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
     emit_name(import_content, "host_future_wait_any")
     bytebuf_push(import_content, 0)
     leb128_encode_u32(import_content, 5)
+  } else {
+    ()
+  }
+  if hs_arm_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "host_stream_arm")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
   } else {
     ()
   }

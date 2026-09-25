@@ -551,4 +551,31 @@ OPTION_GOT="$(cat "$OPTION_LOG")"
   || { echo "named hoststreams component gate FAILED: Option protocol expected 42, got: $OPTION_GOT" >&2; exit 1; }
 echo "[named-hoststreams-component-gate] Option protocol: 42 (same run through HostStream::next, None at EOS) (#2856)"
 
+# --- spawned tasks draining host streams interleave (#1537) -----------------
+# fixtures/async_spawn_host_futures/streams.vibe: two tasks each drain a
+# three-byte stream at 100ms a byte. Each read parks its task; the group waits
+# on every pending read at once, so both drain in ~300ms. One after the other
+# would take ~600ms, so the 450ms bound separates the two.
+SPAWN_OUT="$OUT_DIR/spawn_streams.component.wasm"
+rm -f "$SPAWN_OUT" "$SPAWN_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/streams.vibe "$SPAWN_OUT" run >/dev/null 2>&1 || true
+[ -s "$SPAWN_OUT" ] || { echo "named hoststreams component gate FAILED: fixtures/async_spawn_host_futures/streams.vibe did not compile: $(cat "$SPAWN_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+SPAWN_LOG="$OUT_DIR/spawn_streams.log"
+SPAWN_START_NS=$(date +%s%N)
+if ! VIBE_ASYNC_STREAMS="left=1|2|3@100,right=10|20|30@100" timeout 60 "$RUNNER" "$SPAWN_OUT" >"$SPAWN_LOG" 2>&1; then
+  echo "named hoststreams component gate FAILED: spawned stream readers did not exit 0" >&2
+  cat "$SPAWN_LOG" >&2
+  exit 1
+fi
+SPAWN_ELAPSED_MS=$(( ( $(date +%s%N) - SPAWN_START_NS ) / 1000000 ))
+[ "$(cat "$SPAWN_LOG")" = "66" ] \
+  || { echo "named hoststreams component gate FAILED: spawned stream readers expected 66, got: $(cat "$SPAWN_LOG")" >&2; exit 1; }
+if [ "$SPAWN_ELAPSED_MS" -ge 450 ] || [ "$SPAWN_ELAPSED_MS" -lt 240 ]; then
+  echo "named hoststreams component gate FAILED: spawned stream readers took ${SPAWN_ELAPSED_MS}ms (want ~300ms: interleaved and parked)" >&2
+  exit 1
+fi
+echo "[named-hoststreams-component-gate] spawned stream readers: 66 in ${SPAWN_ELAPSED_MS}ms (< 450: interleaved)"
+
 echo "named hoststreams component gate OK"
