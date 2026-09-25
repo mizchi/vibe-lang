@@ -47,7 +47,7 @@ trap 'rm -rf "$WORK"' EXIT
 
 PROG="$WORK/prog.vibex"
 cat > "$PROG" <<'VIBE'
-fn main() -> Unit allows Stdout + Fs::read_file {
+fn main() -> Unit allows Console + Fs::read_file {
   println("ok")
 }
 VIBE
@@ -71,7 +71,7 @@ run_case() {
 # exactly what happened on the first CI run of this gate.
 CONTROL="$WORK/control.vibex"
 cat > "$CONTROL" <<'VIBE'
-fn main() -> Unit allows Stdout {
+fn main() -> Unit allows Console {
   println("control")
 }
 VIBE
@@ -155,7 +155,7 @@ OPT="$WORK/opt.vibex"
 DATA="$WORK/data.txt"
 printf 'hello-from-file\n' > "$DATA"
 cat > "$OPT" <<VIBE
-fn main() -> Unit allows Stdout + Fs::read_file? {
+fn main() -> Unit allows Console + Fs::read_file? {
   let a = perform? Fs::read_file("$DATA")
   match a {
     Granted(v) => println("GRANTED:" + v),

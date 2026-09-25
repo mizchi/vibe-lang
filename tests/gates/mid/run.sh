@@ -3182,7 +3182,7 @@ SCEOF
   cat > "$scdir/main.vibex" <<'SCEOF'
 import ./worker.vibe { work }
 
-fn main() -> Unit allows Stdout {
+fn main() -> Unit allows Console {
   println(Int::to_string(work()))
 }
 SCEOF
@@ -3226,7 +3226,7 @@ SCEOF
   fi
   # 4. ...and a program with no unstable import still builds, cold and warm,
   #    so the guard is not simply refusing everything.
-  printf 'fn main() -> Unit allows Stdout {\n  println("ok")\n}\n' > "$scdir/clean.vibex"
+  printf 'fn main() -> Unit allows Console {\n  println("ok")\n}\n' > "$scdir/clean.vibex"
   for round in cold warm; do
     rm -f "$scdir/c.wasm"
     sc_clean="$(env -u VIBE_UNSTABLE VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
@@ -3264,7 +3264,7 @@ SCEOF
 cat > "$cfsdir/main.vibex" <<'SCEOF'
 import ./dep.vibe { f }
 
-fn main() -> Unit allows Stdout {
+fn main() -> Unit allows Console {
   println(Int::to_string(f(1)))
 }
 SCEOF

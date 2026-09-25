@@ -21,9 +21,9 @@ rest of the tty surface (`eprint` / `eprintln` on `Stderr`, `read_line`,
 `read_all`). `@vibe/builtin`'s older `stdout_write` / `stdout_writeln` are
 gone (#2102) -- they duplicated names above.
 
-The row you write is `Console`. A missing `println` row is reported as
-`Console`, not as the legacy `Stdout` label `println` still carries
-internally. Declaring `Console` authorizes that label and the legacy three
+The row you write is `Console`, and a missing `println` row is reported
+as `Console`. Codegen still emits the stdout host imports. Declaring
+`Console` authorizes the legacy `Stdin` / `Stdout` / `Stderr` labels
 (#2102/#2117) -- one way only, so a row declaring just `Stdout` cannot reach
 `Console::read_stream`. The book, README and installer teach this same
 program; `scripts/test_vibe_install_hello.sh` checks they still agree.
@@ -3107,7 +3107,7 @@ test "n" with Fs { .. }          // NG: a block grants its row -- write `allows 
 **A named `test` / `bench` / `example` may write a row after its name**
 (#1508). A test is an entry point, so the row is a **grant** and the keyword
 is `allows`, as on `fn main allows ..` (ADR-0088). The declared row
-**widens** the ambient row (`{ Fs, Env, Console, Stdin, Console, Stderr,
+**widens** the ambient row (`{ Fs, Env, Stdin, Stdout, Stderr, Console,
 Process, Profiler, Error, Exception }`; `Console` is the current name for the
 tty, the three older labels are legacy) rather than replacing it -- writing
 `allows Http` keeps the defaults `assert` needs, such as `Exception`. An

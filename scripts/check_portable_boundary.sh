@@ -989,8 +989,8 @@ forbid_capability_authority \
 # an allow-list of what this boundary IS entitled to costs nothing and closes
 # the one class no call pattern can -- an UNQUALIFIED capability builtin.
 # `println` has no namespace token to match, so no regex over the call reaches
-# it, but the checker requires `with Stdout` on the declaration, and the row is
-# a name the scanner can read. Measured: `fn f() -> Unit with Stdout {
+# it, but the checker requires `with Console` on the declaration, and the row is
+# a name the scanner can read. Measured: `fn f() -> Unit with Console {
 # println("leaked") }` passed every call pattern and is caught here.
 #
 # The three effects are what the file declares today: Exception, Fs (both

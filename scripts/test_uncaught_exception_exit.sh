@@ -114,7 +114,7 @@ done
 # instead of printing the diagnosis. `entry_module_value` pins the same init without an exception: it
 # printed `0` instead of `20`, silently.
 cat >"$WORK/entry_uncaught.vibe" <<'EOF'
-fn main() -> Unit allows Exception + Stdout {
+fn main() -> Unit allows Exception + Console {
   println("before")
   throw("boom")
 }
@@ -122,7 +122,7 @@ EOF
 cat >"$WORK/entry_module_value.vibe" <<'EOF'
 let table = [10, 20, 30]
 
-fn main() -> Unit allows Stdout {
+fn main() -> Unit allows Console {
   println("\{Array::get(table, 1)}")
 }
 EOF

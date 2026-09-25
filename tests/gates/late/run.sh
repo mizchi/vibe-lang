@@ -4020,7 +4020,7 @@ if ! grep -q "missing { Env }" "$lcdir/neg.wasm.diag" 2>/dev/null; then
   exit 1
 fi
 cat > "$lcdir/pos.vibe" <<'EOF'
-let main = () -> Unit with Stdout + Env {
+let main = () -> Unit with Console + Env {
   let read_home = () -> String with Env {
     Env::get("HOME")
   }
@@ -4036,7 +4036,7 @@ if [ ! -s "$lcdir/pos.wasm" ]; then
   exit 1
 fi
 cat > "$lcdir/pure.vibe" <<'EOF'
-let main = () -> Unit with Stdout {
+let main = () -> Unit with Console {
   let twice = (n: Int) -> Int {
     n * 2
   }
@@ -4453,12 +4453,12 @@ enum Boom {
   Bang(Int)
 }
 
-fn Boom::to_string(self: Boom) -> String with Stdout {
+fn Boom::to_string(self: Boom) -> String with Console {
   println("FORMATTER RAN")
   "boom"
 }
 
-let _start = () -> Int with Stdout {
+let _start = () -> Int with Console {
   println("interp=\{Bang(1)}")
   handle {
     throw(Bang(1))
@@ -4663,32 +4663,32 @@ res_case() {
 }
 res_case basic ok 'resource Posts : S3::Bucket
 
-fn main allows Stdout {
+fn main allows Console {
   println("ok")
 }
 '
 res_case unqualified err 'resource Posts : Bucket
 
-fn main allows Stdout {
+fn main allows Console {
   println("ok")
 }
 ' 'must be qualified'
 res_case duplicate err 'resource Posts : S3::Bucket
 resource Posts : S3::Table
 
-fn main allows Stdout {
+fn main allows Console {
   println("ok")
 }
 ' 'already declared'
 res_case singleton err 'resource Home : Process::Root
 
-fn main allows Stdout {
+fn main allows Console {
   println("ok")
 }
 ' 'singleton'
 res_case exported err 'export resource Posts : S3::Bucket
 
-fn main allows Stdout {
+fn main allows Console {
   println("ok")
 }
 ' 'cannot be exported'
@@ -4697,7 +4697,7 @@ fn main allows Stdout {
 # position, so nothing that used the name breaks.
 res_case as_name ok 'let resource = 1
 
-fn main allows Stdout {
+fn main allows Console {
   println("ok")
 }
 '
@@ -4895,7 +4895,7 @@ en_case() {
 #    no way to WRITE a qualified reference to an imported constructor.
 en_case qualified ok 'import ./dep.vibe { Box, Mk, Nil }
 
-fn main allows Stdout {
+fn main allows Console {
   let b = Box::Mk(7)
   let r = match b {
     Mk(n) => n,
@@ -4910,7 +4910,7 @@ fn main allows Stdout {
 #    one: a hole in checking, not a message-quality complaint.
 en_case payload_checked err 'import ./dep.vibe { Box, Mk, Nil }
 
-fn main allows Stdout {
+fn main allows Console {
   let b = Mk(7)
   match b {
     Mk(n) => println(String::concat(n, "!")),
@@ -4923,7 +4923,7 @@ fn main allows Stdout {
 #    variant trapped at runtime instead.
 en_case exhaustive err 'import ./dep.vibe { Box, Mk }
 
-fn main allows Stdout {
+fn main allows Console {
   let b = Mk(7)
   let r = match b {
     Mk(n) => n
@@ -4939,7 +4939,7 @@ fn main allows Stdout {
 #    env_lookup that could not see the imported scheme.
 en_case parameterized ok 'import ./dep.vibe { Attempt, Got, Missed }
 
-fn main allows Stdout {
+fn main allows Console {
   let a = Got(3)
   let r = match a {
     Got(v) => v,
@@ -4950,7 +4950,7 @@ fn main allows Stdout {
 '
 en_case parameterized_qualified ok 'import ./dep.vibe { Attempt, Got, Missed }
 
-fn main allows Stdout {
+fn main allows Console {
   let a = Attempt::Got(3)
   let r = match a {
     Attempt::Got(v) => v,
@@ -4978,7 +4978,7 @@ fn second() -> String {
   }
 }
 
-fn main allows Stdout {
+fn main allows Console {
   println(String::concat(__to_string(first()), second()))
 }
 '
@@ -4990,7 +4990,7 @@ fn main allows Stdout {
 #     `Box` is a real enum here, just not the one that owns `Missed`.
 en_case pattern_qualifier_wrong_enum err 'import ./dep.vibe { Attempt, Box, Got, Missed }
 
-fn main allows Stdout {
+fn main allows Console {
   let a = Got(3)
   let r = match a {
     Got(v) => v,
@@ -5011,7 +5011,7 @@ fn shout(s: String) -> String with Log {
   s
 }
 
-fn main allows Stdout {
+fn main allows Console {
   let r = handle {
     shout("hi")
   } with Log {
@@ -5034,7 +5034,7 @@ enum Color {
   Green
 }
 
-fn main allows Stdout {
+fn main allows Console {
   let c = Red
   match c {
     Red => println("red"),
@@ -5053,7 +5053,7 @@ enum B {
   Mk(String)
 }
 
-fn main allows Stdout {
+fn main allows Console {
   println("unreachable")
 }
 ' 'constructor name collision'
@@ -5509,7 +5509,7 @@ rm -rf "$inspdir"; mkdir -p "$inspdir"
 # the arguments already reference. With a fixed temp name this compared the
 # literal against ITSELF and passed; the assertion has to see "wrong".
 cat > "$inspdir/hygiene.vibe" <<'INSPH'
-fn main() -> Int allows Stdout {
+fn main() -> Int allows Console {
   let __vibe_inspect_actual = "wrong"
   inspect(1, __vibe_inspect_actual)
   0
@@ -5576,14 +5576,14 @@ fi
 # the observable: the rewrite runs a snapshot assertion instead and traps.
 cat > "$inspdir/shadow_pat.vibe" <<'INSPP'
 enum Box {
-  B((Int, String) -> Unit with Stdout)
+  B((Int, String) -> Unit with Console)
 }
 
-fn shout(v: Int, c: String) -> Unit with Stdout {
+fn shout(v: Int, c: String) -> Unit with Console {
   println(c)
 }
 
-fn main() -> Int allows Stdout {
+fn main() -> Int allows Console {
   match B(shout) {
     B(inspect) => {
       inspect(1, "SIDE EFFECT RAN")
@@ -6961,7 +6961,7 @@ fn assert_eq(a: Int, b: Int) -> String {
   Int::to_string(a + b)
 }
 
-fn main() -> Unit allows Stdout {
+fn main() -> Unit allows Console {
   println(assert_eq(1, 2))
 }
 ASEOF
@@ -7038,7 +7038,7 @@ fn use_param(assert_eq: (Int, Int) -> Int) -> Int {
   assert_eq(1, 2)
 }
 
-fn main() -> Unit allows Stdout {
+fn main() -> Unit allows Console {
   match make_cmp() {
     assert_eq => println(Int::to_string(assert_eq(1, 2)))
   }
@@ -7091,7 +7091,7 @@ fi
 # `call_indirect` of a nonexistent closure -- #1095, exactly. That regression is
 # silent in every other case, so it gets its own probe.
 cat > "$asdir/lambda.vibe" <<'ASEOF'
-fn main() -> Unit allows Stdout {
+fn main() -> Unit allows Console {
   let f = () -> Unit { assert_eq(1, 1) }
   f()
   let g = () -> Unit { assert_true(1 == 1) }
@@ -7241,7 +7241,7 @@ echo "[compiler-gate] 111/111 a binding named eq is the function that runs (#230
 eqdir="_build/_gate_eq_shadow"
 rm -rf "$eqdir"; mkdir -p "$eqdir"
 cat > "$eqdir/eq.vibe" <<'EQEOF'
-fn main() -> Unit allows Stdout {
+fn main() -> Unit allows Console {
   let eq = (a: Int, b: Int) -> Int { a + b }
   println(Int::to_string(eq(1, 2)))
   let feq = (a: Double, b: Double) -> Double { a + b }
@@ -7252,7 +7252,7 @@ EQEOF
 # it only misfires under RC -- the production default -- so a non-RC probe would
 # pass while every shipped build was wrong.
 cat > "$eqdir/eqf.vibe" <<'EQEOF'
-fn main() -> Unit allows Stdout {
+fn main() -> Unit allows Console {
   let eq = (a: Double, b: Double) -> Double { a + b }
   println(Double::to_string(eq(1.5, 2.5)))
 }
@@ -7286,7 +7286,7 @@ fi
 # take the INLINE path for the #705 reason the disjunct exists: a bound `eq`'s
 # string fallback reads OOB on Int values that resemble fat pointers.
 cat > "$eqdir/builtin.vibe" <<'EQEOF'
-fn main() -> Unit allows Stdout {
+fn main() -> Unit allows Console {
   println(if eq(1, 2) { "y" } else { "n" })
   println(if eq(7, 7) { "y" } else { "n" })
   println(if eq(0.5, 0.5) { "y" } else { "n" })
@@ -7318,7 +7318,7 @@ fn eq(a: Int, b: Int) -> Int {
   a + b
 }
 
-fn main() -> Unit allows Stdout {
+fn main() -> Unit allows Console {
   println(Int::to_string(eq(1, 2)))
 }
 EQEOF
@@ -7345,7 +7345,7 @@ fi
 cat > "$eqdir/withsemver.vibe" <<'EQEOF'
 import @vibe/semver { parse }
 
-fn main() -> Unit allows Stdout {
+fn main() -> Unit allows Console {
   let _ = parse("1.0.0")
   println(if eq(7, 7) { "y" } else { "n" })
   println(if eq(1, 2) { "y" } else { "n" })
