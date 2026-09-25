@@ -2844,6 +2844,14 @@ run_test_block_fixtures_gc "substring clamp (gc)" fixtures/string_substring_clam
 run_test_block_fixtures_rc "substring clamp (linear, RC)" fixtures/string_substring_clamp_test.vibe
 echo '[compiler-gate] substring clamp ok'
 
+# 15b-3c''. #3078: `Array::slice` clamps its bounds on every lane. The gc body
+#           copied from `start` with no bounds checks, so
+#           `Array::slice([3, 1, 2], -1, 2)` read index -1 (`[, 3, 1]`). The
+#           linear lanes already run this file through the unit runner.
+echo '[compiler-gate] 15b-3c'"''"' Array::slice clamps on the gc lane (#3078)'
+run_test_block_fixtures_gc "slice clamp (gc)" fixtures/slice_clamp_test.vibe
+echo '[compiler-gate] slice clamp (gc) ok'
+
 # 15b-3d. #2652: `Double::to_string` is shortest-round-trip and `Double::parse`
 #         is correctly rounded. Both are ONE runtime prelude in vibe source
 #         (codegen/common_base/double_runtime.vibe) appended to the program by
