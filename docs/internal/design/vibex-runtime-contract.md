@@ -149,7 +149,7 @@ fn load[B: S3::Bucket]() -> Bytes with S3::Read[B] {
 }
 
 fn main allows S3::Read[Posts] + Console::write {
-  Stdout::write(load[Posts]())
+  Console::write(load[Posts]())
 }
 ```
 

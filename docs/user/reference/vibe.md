@@ -92,6 +92,8 @@ Rules:
   - `sh(...)` requires `{Process}`
   - `Console::write_char(...)` requires `{Console}`
   - `Console::write_stream(...)` requires `{Console}`
+  - `Stdout::write_char(...)` requires `{Stdout}`
+  - `Stdout::write_stream(...)` requires `{Stdout}`
   - `Stdin::read_char()` requires `{Stdin}`
   - `Stdin::read_stream(...)` requires `{Stdin}`
   - `sleep(...)` requires `{Async}`
@@ -353,11 +355,15 @@ String:
 StdIO (wasi stream primitives for wasm/component-friendly interop):
 - `Console::write_char(code)` -> `Unit` with `{Console}`
 - `Console::write_stream(text)` -> `Unit` with `{Console}` (chunk write)
+- `Stdout::write_char(code)` -> `Unit` with `{Stdout}`
+- `Stdout::write_stream(text)` -> `Unit` with `{Stdout}` (chunk write)
 - `Stdin::read_char()` -> `Int` with `{Stdin}` (`-1` = EOF)
 - `Stdin::read_stream(max-bytes)` -> `String` with `{Stdin}` (`""` = EOF/error)
 - component WIT/wasm import mapping:
   - `Console::write_char` -> `wasi:cli/stdout@0.2.0#get-stdout` + `wasi:io/streams@0.2.0#[method]output-stream.blocking-write-and-flush`
   - `Console::write_stream` -> same as `Console::write_char` (single host call for whole chunk)
+  - `Stdout::write_char` -> same stdout import as `Console::write_char`
+  - `Stdout::write_stream` -> same stdout import as `Console::write_stream`
   - `Stdin::read_char` -> `wasi:cli/stdin@0.2.0#get-stdin` + `wasi:io/streams@0.2.0#[method]input-stream.blocking-read`
   - `Stdin::read_stream` -> same as `Stdin::read_char` (cabi read-buffer -> vibe string)
 

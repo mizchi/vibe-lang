@@ -5408,7 +5408,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
               // fname)` in expr/compile_call.vibe, #929) and the gate pins it:
               // `fn println(s: String) -> Unit { print("S\n") }` must compile
               // and win over the builtin lowering. Without this the checker
-              // would demand `with Stdout` from callers of a user function that
+              // would demand `with Console` from callers of a user function that
               // merely reuses the name.
               ()
             } else {
@@ -7324,31 +7324,164 @@ export fn file_entry_cacheable(stmts: Array[Stmt], entry_name: String) -> Bool {
       // real top-level `main` is never itself row-polymorphic, so this is a
       // cheap, purely-additive net that catches the common/direct case
       // (`fn main allows Stdout + Env { ... }`) even in scenarios the
-      // deeper walk alone would miss.
+      // deeper walk alone would miss. Bare `Console` is not in that safe
+      // set -- it can read -- but `println` requires it. When the body is
+      // provably only stdout writes, cache it; a nested function stays out.
       let declared_ok = match entry_declared {
         None => true,
         Some(row) => labels_are_entry_cache_safe(row)
       }
+      // `body` (from SLet/SLetMut) is the closure VALUE bound to
+      // entry_name, e.g. `EFn(type_params, bounds, params, ret_ty,
+      // effect, fn_body)` for `fn main allows <row> { ... }` -- checking
+      // the EFn NODE itself would trivially find zero reachable effects
+      // (defining a closure performs nothing; only CALLING it would),
+      // silently marking every entry cacheable regardless of what it
+      // does. The walk needs `fn_body`, the 6th field, not the literal.
+      let exec_body = match body {
+        EFn(_, _, _, _, _, fn_body) => fn_body,
+        _ => body
+      }
       if !declared_ok {
-        false
-      } else {
-        // `body` (from SLet/SLetMut) is the closure VALUE bound to
-        // entry_name, e.g. `EFn(type_params, bounds, params, ret_ty,
-        // effect, fn_body)` for `fn main allows <row> { ... }` -- checking
-        // the EFn NODE itself would trivially find zero reachable effects
-        // (defining a closure performs nothing; only CALLING it would),
-        // silently marking every entry cacheable regardless of what it
-        // does. The walk needs `fn_body`, the 6th field, not the literal.
-        let exec_body = match body {
-          EFn(_, _, _, _, _, fn_body) => fn_body,
-          _ => body
+        match entry_declared {
+          Some(row) => console_entry_is_output_only(row, exec_body),
+          None => false
         }
+      } else {
         set_callee_sigs(stmts, EnvEmpty)
         let errs = check_perform_effects_expr_tx_indexed(exec_body, cache_safe_row, false, fn_names, fn_effs, program_fn_index(fn_names), no_str_labels(), no_ov_effs())
         Array::length(errs) == 0
       }
     }
   }
+}
+
+/// A declared `Console` row includes input, so it is not cache-safe by
+/// itself (`is_entry_cache_safe_operation`). `println` / `print` require
+/// that broad label anyway. An entry is still cacheable when every other
+/// declared label is cache-safe and the body is provably output-only:
+/// `println`, `print`, and the stdout `write_stream` / `write_char`
+/// spellings. A nested function is not inspected -- the effect walk does
+/// not see into one -- so the entry stays uncacheable rather than caching
+/// a read.
+fn call_is_captured_output(callee: Expr) -> Bool {
+  match callee {
+    EIdent(name, _) => name == "println" || name == "print" || name == "Console::write_stream" || name == "Console::write_char" || name == "Stdout::write_stream" || name == "Stdout::write_char",
+    EDot(recv, field, _, _) => {
+      match recv {
+        EIdent(head, _) => (head == "Console" || head == "Stdout") && (field == "write_stream" || field == "write_char"),
+        _ => false
+      }
+    },
+    _ => false
+  }
+}
+
+fn exprs_are_captured_output(xs: Array[Expr]) -> Bool {
+  let mut i = 0
+  let mut ok = true
+  while i < Array::length(xs) {
+    if !expr_is_captured_output(Array::get(xs, i)) {
+      ok = false
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ok
+}
+
+fn expr_pairs_are_captured_output(xs: Array[(String, Expr)]) -> Bool {
+  let mut i = 0
+  let mut ok = true
+  while i < Array::length(xs) {
+    let (_, value) = Array::get(xs, i)
+    if !expr_is_captured_output(value) {
+      ok = false
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ok
+}
+
+fn arms_are_captured_output(arms: Array[(Pat, Expr)]) -> Bool {
+  let mut i = 0
+  let mut ok = true
+  while i < Array::length(arms) {
+    let (_, body) = Array::get(arms, i)
+    if !expr_is_captured_output(body) {
+      ok = false
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ok
+}
+
+fn expr_is_captured_output(expr: Expr) -> Bool {
+  match expr {
+    EInt(_) => true,
+    EFloat(_) => true,
+    EBool(_) => true,
+    EUnit => true,
+    EIdent(_, _) => true,
+    EStringInterp(_) => true,
+    EString(_, _) => true,
+    ETuple(xs) => exprs_are_captured_output(xs),
+    EArray(xs) => exprs_are_captured_output(xs),
+    EContinue(xs) => exprs_are_captured_output(xs),
+    ERecord(_, fields, _) => expr_pairs_are_captured_output(fields),
+    EMap(fields) => expr_pairs_are_captured_output(fields),
+    EIf(cond, then_branch, else_branch) => expr_is_captured_output(cond) && expr_is_captured_output(then_branch) && expr_is_captured_output(else_branch),
+    ELet(_, value, body, _) => expr_is_captured_output(value) && expr_is_captured_output(body),
+    ELetRec(_, value, body) => expr_is_captured_output(value) && expr_is_captured_output(body),
+    ELetMut(_, value, body, _) => expr_is_captured_output(value) && expr_is_captured_output(body),
+    EAssign(_, value, body) => expr_is_captured_output(value) && expr_is_captured_output(body),
+    EAssignOp(_, _, value, body) => expr_is_captured_output(value) && expr_is_captured_output(body),
+    ESeq(left, right) => expr_is_captured_output(left) && expr_is_captured_output(right),
+    EWhile(cond, body) => expr_is_captured_output(cond) && expr_is_captured_output(body),
+    EForIn(_, _, iter, body) => expr_is_captured_output(iter) && expr_is_captured_output(body),
+    EBinOp(_, left, right, _) => expr_is_captured_output(left) && expr_is_captured_output(right),
+    EUnaryOp(_, arg) => expr_is_captured_output(arg),
+    EReturn(arg) => expr_is_captured_output(arg),
+    ESpread(arg) => expr_is_captured_output(arg),
+    ELabeledArg(_, _, arg) => expr_is_captured_output(arg),
+    EDot(recv, _, _, _) => expr_is_captured_output(recv),
+    EBreak(value) => {
+      match value {
+        Some(inner) => expr_is_captured_output(inner),
+        None => true
+      }
+    },
+    EMatch(scrut, arms) => expr_is_captured_output(scrut) && arms_are_captured_output(arms),
+    ELoop(inits, body) => expr_pairs_are_captured_output(inits) && expr_is_captured_output(body),
+    ECall(callee, args, _) => call_is_captured_output(callee) && exprs_are_captured_output(args),
+    // A nested function is invisible to the effect walk. Caching it would
+    // hide a read. A handler can discharge a read the same way.
+    EFn(_, _, _, _, _, _) => false,
+    EHandle(_, _) => false
+  }
+}
+
+fn console_entry_is_output_only(row: Array[String], body: Expr) -> Bool {
+  let mut i = 0
+  let mut saw_console = false
+  let mut ok = true
+  while i < Array::length(row) {
+    let label = Array::get(row, i)
+    if label == "Console" {
+      saw_console = true
+    } else if !is_entry_cache_safe_operation(label) {
+      ok = false
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ok && saw_console && expr_is_captured_output(body)
 }
 
 /// Every label in `row` must appear in `safe` -- unlike decl_authorizes_
