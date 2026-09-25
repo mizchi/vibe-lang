@@ -5910,12 +5910,15 @@ fn comp_timer_band_base() -> Int {
   4096
 }
 
+/// The counter is an i64 (8-aligned), so it cannot wrap in any run: an i32
+/// counter would reissue ids after 2^32 timers while a stale mailbox entry
+/// still holds one (Codex on #3091).
 fn comp_timer_counter_slot() -> Int {
-  52
+  56
 }
 
-/// Per-subtask-handle word holding that timer's id, past the stream status
-/// band (24576 + 1024 * 4).
+/// Per-subtask-handle i64 holding that timer's id, past the stream status
+/// band (24576 + 1024 * 4); 1024 handles * 8 bytes ends at 36864.
 fn comp_timer_id_base() -> Int {
   28672
 }
@@ -7115,12 +7118,14 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
       emit_call(any_body, subtask_drop_idx)
       // its id, recorded by host_sleep_arm (the handle is free for reuse now)
       emit_local_get(any_body, 2)
-      emit_i32_const(any_body, 2)
+      emit_i32_const(any_body, 3)
       emit_i32_shl(any_body)
       emit_i32_const(any_body, comp_timer_id_base())
       emit_i32_add(any_body)
-      emit_i32_load(any_body, 2, 0)
-      bytebuf_push(any_body, 173)
+      // i64.load align=3
+      bytebuf_push(any_body, 41)
+      leb128_encode_u32(any_body, 3)
+      leb128_encode_u32(any_body, 0)
       emit_i64_const(any_body, comp_timer_band_base())
       bytebuf_push(any_body, 124)
       comp_emit_encode_i64_value(any_body, tag_mode)
@@ -7301,9 +7306,12 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     // (no subtask). Every call is its own timer, so task groups nested in one
     // another each wait on theirs.
     let tarm_body = bytebuf_new()
-    leb128_encode_u32(tarm_body, 1)
+    // locals: (i32) 1=packed, 2=sub, 3=ws; (i64) 4=id
+    leb128_encode_u32(tarm_body, 2)
     leb128_encode_u32(tarm_body, 3)
     bytebuf_push(tarm_body, 127)
+    leb128_encode_u32(tarm_body, 1)
+    bytebuf_push(tarm_body, 126)
     emit_local_get(tarm_body, 0)
     comp_emit_decode_i64_value(tarm_body, tag_mode)
     emit_i32_wrap_i64(tarm_body)
@@ -7346,24 +7354,31 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     emit_if_void(tarm_body)
     bytebuf_push(tarm_body, 0)
     emit_end(tarm_body)
-    // id = ++counter, recorded for this subtask; local 3 is free again.
+    // id = ++counter (i64), recorded for this subtask.
     emit_i32_const(tarm_body, comp_timer_counter_slot())
-    emit_i32_load(tarm_body, 2, 0)
-    emit_i32_const(tarm_body, 1)
-    emit_i32_add(tarm_body)
-    emit_local_set(tarm_body, 3)
+    // i64.load align=3
+    bytebuf_push(tarm_body, 41)
+    leb128_encode_u32(tarm_body, 3)
+    leb128_encode_u32(tarm_body, 0)
+    emit_i64_const(tarm_body, 1)
+    bytebuf_push(tarm_body, 124)
+    emit_local_set(tarm_body, 4)
     emit_i32_const(tarm_body, comp_timer_counter_slot())
-    emit_local_get(tarm_body, 3)
-    emit_i32_store(tarm_body, 2, 0)
+    emit_local_get(tarm_body, 4)
+    // i64.store align=3
+    bytebuf_push(tarm_body, 55)
+    leb128_encode_u32(tarm_body, 3)
+    leb128_encode_u32(tarm_body, 0)
     emit_local_get(tarm_body, 2)
-    emit_i32_const(tarm_body, 2)
+    emit_i32_const(tarm_body, 3)
     emit_i32_shl(tarm_body)
     emit_i32_const(tarm_body, comp_timer_id_base())
     emit_i32_add(tarm_body)
-    emit_local_get(tarm_body, 3)
-    emit_i32_store(tarm_body, 2, 0)
-    emit_local_get(tarm_body, 3)
-    bytebuf_push(tarm_body, 173)
+    emit_local_get(tarm_body, 4)
+    bytebuf_push(tarm_body, 55)
+    leb128_encode_u32(tarm_body, 3)
+    leb128_encode_u32(tarm_body, 0)
+    emit_local_get(tarm_body, 4)
     emit_i64_const(tarm_body, comp_timer_band_base())
     bytebuf_push(tarm_body, 124)
     comp_emit_encode_i64_value(tarm_body, tag_mode)

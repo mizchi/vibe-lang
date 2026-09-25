@@ -273,6 +273,19 @@ let conc_fut_waiter_cells: Array[TaskCell] = []
 
 let conc_fut_id_ctr: Array[Int] = [0]
 
+// #1537: every task parked on a host waitable, across ALL groups (a group
+// nested inside another group's task shares the one waitable set). Stale
+// entries -- resumed or cancelled cells -- are pruned whenever a task parks,
+// so a cell appears at most once. Cells are counted, never compared: `==` on
+// a struct compares content.
+let conc_host_parked: Array[TaskCell] = []
+
+// #1537: a host value a group TOOK while tasks of another group still waited
+// on the same waitable (a future captured by both): payloads and values,
+// consumed by the owning group's next settle.
+let conc_host_landed_keys: Array[Int] = []
+let conc_host_landed_vals: Array[Int] = []
+
 // #1537: timers that fired while ANOTHER group was waiting on the shared set
 // (their ids). The owning group finds its own here on its next settle.
 let conc_host_fired_timers: Array[Int] = []
@@ -1094,6 +1107,7 @@ export fn TaskGroup::spawn_suspend[rg, e, T: Send](n: TaskGroup[rg, e], f: () ->
         // (conc_settle_host_waits); the payload itself names it.
         TaskHandle::park_kind(h, resume, false, 0)
         h.cell.host_wait = r
+        conc_host_register_parked(h.cell)
       } else {
         TaskHandle::park_kind(h, resume, r >= 1, 0)
       }
@@ -1428,6 +1442,19 @@ fn conc_pump_once[rg, e](n: TaskGroup[rg, e]) -> Bool {
 /// futures interleave in completion order instead of the order they parked.
 /// False when no task waits on the host.
 fn conc_settle_host_waits[rg, e](n: TaskGroup[rg, e]) -> Bool {
+  // A value another group took while this group's tasks waited on it comes
+  // first -- before any arm: its handle is already released, and arming a
+  // released handle traps.
+  let landed = conc_host_local_landed(n)
+  if landed >= 0 {
+    conc_host_resume_landed(n, landed)
+    true
+  } else {
+    conc_settle_host_waits_armed(n)
+  }
+}
+
+fn conc_settle_host_waits_armed[rg, e](n: TaskGroup[rg, e]) -> Bool {
   let total = Array::length(n.adopted)
   let mut pending = false
   let mut ready = 0 - 1
@@ -1594,17 +1621,9 @@ fn conc_host_sleep_elapsed[rg, e](n: TaskGroup[rg, e], ms: Int) -> Unit {
 /// Another task still parked on the same future keeps it.
 fn conc_host_release_orphan[rg, e](n: TaskGroup[rg, e], waited: Int) -> Unit {
   if waited >= 0 {
-    let mut shared = false
-    let mut j = 0
-    while j < Array::length(n.adopted) {
-      let c = Array::get(n.adopted, j)
-      if c.status == 5 && c.host_wait == waited {
-        shared = true
-      } else {
-        ()
-      }
-      j = j + 1
-    }
+    // Any group's task still parked on it keeps it -- including a task of an
+    // enclosing group that captured the same future (Codex on #3091).
+    let shared = conc_host_waiters_on(waited) > 0 || conc_host_landed_index(waited) >= 0
     if shared {
       ()
     } else {
@@ -1613,6 +1632,119 @@ fn conc_host_release_orphan[rg, e](n: TaskGroup[rg, e], waited: Int) -> Unit {
     }
   } else {
     ()
+  }
+}
+
+/// #1537: record a task that just parked on a host waitable, dropping stale
+/// entries first so a cell that parks again is listed once.
+fn conc_host_register_parked(cell: TaskCell) -> Unit {
+  let live: Array[TaskCell] = []
+  let mut i = 0
+  while i < Array::length(conc_host_parked) {
+    let c = Array::get(conc_host_parked, i)
+    if c.status == 5 && c.host_wait >= 0 {
+      Array::push(live, c)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  Array::truncate(conc_host_parked, 0)
+  let mut k = 0
+  while k < Array::length(live) {
+    Array::push(conc_host_parked, Array::get(live, k))
+    k = k + 1
+  }
+  Array::push(conc_host_parked, cell)
+}
+
+/// #1537: how many tasks, in any group, are parked on `waitable` right now.
+fn conc_host_waiters_on(waitable: Int) -> Int {
+  let mut count = 0
+  let mut i = 0
+  while i < Array::length(conc_host_parked) {
+    let c = Array::get(conc_host_parked, i)
+    if c.status == 5 && c.host_wait == waitable {
+      count = count + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  count
+}
+
+fn conc_host_landed_index(waitable: Int) -> Int {
+  let mut found = 0 - 1
+  let mut i = 0
+  while i < Array::length(conc_host_landed_keys) {
+    if found < 0 && Array::get(conc_host_landed_keys, i) == waitable {
+      found = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// #1537: a landed payload one of this group's parked tasks waits on, or -1.
+fn conc_host_local_landed[rg, e](n: TaskGroup[rg, e]) -> Int {
+  let mut found = 0 - 1
+  if Array::length(conc_host_landed_keys) > 0 {
+    let mut i = 0
+    while i < Array::length(n.adopted) {
+      let c = Array::get(n.adopted, i)
+      if found < 0 && c.status == 5 && c.host_wait >= 0 && conc_host_landed_index(c.host_wait) >= 0 {
+        found = c.host_wait
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+  } else {
+    ()
+  }
+  found
+}
+
+/// #1537: resume this group's tasks parked on `waitable` with the value
+/// another group took; the entry goes once no task anywhere waits on it.
+fn conc_host_resume_landed[rg, e](n: TaskGroup[rg, e], waitable: Int) -> Unit {
+  let li = conc_host_landed_index(waitable)
+  let v = Array::get(conc_host_landed_vals, li)
+  let woken: Array[TaskCell] = []
+  let mut j = 0
+  while j < Array::length(n.adopted) {
+    let c = Array::get(n.adopted, j)
+    if c.status == 5 && c.host_wait == waitable {
+      c.host_wait = 0 - 1
+      Array::push(woken, c)
+    } else {
+      ()
+    }
+    j = j + 1
+  }
+  if conc_host_waiters_on(waitable) == 0 {
+    let last = Array::length(conc_host_landed_keys) - 1
+    Array::set(conc_host_landed_keys, li, Array::get(conc_host_landed_keys, last))
+    Array::set(conc_host_landed_vals, li, Array::get(conc_host_landed_vals, last))
+    Array::truncate(conc_host_landed_keys, last)
+    Array::truncate(conc_host_landed_vals, last)
+  } else {
+    ()
+  }
+  let mut w = 0
+  while w < Array::length(woken) {
+    let c = Array::get(woken, w)
+    match c.cont {
+      Some(k) => {
+        c.cont = None
+        k(v)
+      },
+      None => ()
+    }
+    w = w + 1
   }
 }
 
@@ -1644,6 +1776,15 @@ fn conc_host_resume[rg, e](n: TaskGroup[rg, e], fired: Int) -> Bool {
     true
   } else {
     let v = __conc_host_take(fired)
+    // Tasks of ANOTHER group still parked on it (the woken cells above were
+    // already cleared): the value was taken once, so leave it for them
+    // instead of their group arming a released handle (Codex on #3091).
+    if conc_host_waiters_on(fired) > 0 {
+      Array::push(conc_host_landed_keys, fired)
+      Array::push(conc_host_landed_vals, v)
+    } else {
+      ()
+    }
     let mut w = 0
     while w < Array::length(woken) {
       let c = Array::get(woken, w)

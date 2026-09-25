@@ -607,4 +607,23 @@ if [ "$NTR_ELAPSED_MS" -lt 500 ] || [ "$NTR_ELAPSED_MS" -ge 800 ]; then
 fi
 echo "[named-hostfutures-component-gate] nested_timer_reuse: 43 in ${NTR_ELAPSED_MS}ms (the nested timer is its own, not the outer one left in the mailbox)"
 
+# An enclosing task and a nested group's task await the SAME host future: the
+# nested group takes the value, and the enclosing task must still resume with
+# it (the old scheduler left it arming a released handle, which trapped).
+NS_OUT="$OUT_DIR/spawn_nested_shared.component.wasm"
+rm -f "$NS_OUT" "$NS_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/nested_shared.vibe "$NS_OUT" run >/dev/null 2>&1 || true
+[ -s "$NS_OUT" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/nested_shared.vibe did not compile: $(cat "$NS_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+NS_LOG="$OUT_DIR/spawn_nested_shared.log"
+if ! VIBE_ASYNC_FUTURES="fast=1:100,slow=20:300" timeout 60 "$RUNNER" "$NS_OUT" >"$NS_LOG" 2>&1; then
+  echo "named hostfutures component gate FAILED: nested_shared did not exit 0" >&2
+  cat "$NS_LOG" >&2
+  exit 1
+fi
+[ "$(cat "$NS_LOG")" = "41" ] \
+  || { echo "named hostfutures component gate FAILED: nested_shared expected 41, got: $(cat "$NS_LOG")" >&2; exit 1; }
+echo "[named-hostfutures-component-gate] nested_shared: 41 (the enclosing waiter resumed with the value the nested group took)"
+
 echo "named hostfutures component gate OK"

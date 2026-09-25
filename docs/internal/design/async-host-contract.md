@@ -212,8 +212,8 @@ override silently contradicting a module that says `raw` is the hazard #2903's
   joins its subtask to the shared set (the results land in scratch word 48,
   which nothing reads). It answers `1` when the call returned inline, else
   the timer's id in the TIMER band, `n + 4096` for an adapter counter `n`
-  recorded per subtask (word 52 holds the counter, band 28672 the per-handle
-  ids), so an id never repeats even though a dropped subtask handle is reused
+  recorded per subtask (an i64 counter at word 56, an i64 per handle in band
+  28672), so an id never repeats even though a dropped subtask handle is reused
   (the future band is [2, 1025], the stream band [2048, 3071]).
   `host_future_wait_any` answers
   the subtask's RETURNED event (status `2`) by dropping the subtask and
