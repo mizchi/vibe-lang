@@ -124,6 +124,14 @@ world vibec-hosted {
   export compile-file: func(input-path: string, request: string) -> string;
 }
 EOF
+# A hosted core built by a compiler from before #2957 (the committed seed, the
+# default above) imports the "\n"-framed `fs_read_dir`, and the componentizer
+# then wraps it with the legacy `read-dir` import; declare what the component
+# actually imports.
+if ! LC_ALL=C grep -aq 'fs_read_dir_nul' "$HOSTED_CORE"; then
+  awk '{ if ($0 ~ /import read-dir-nul:/) print "  import read-dir:   func(path: string) -> string;        // newline-joined names (pre-#2957 core)"; else print }' \
+    "$HOSTED_WIT" > "$HOSTED_WIT.tmp" && mv "$HOSTED_WIT.tmp" "$HOSTED_WIT"
+fi
 
 echo "vibec core             -> $CORE ($(wc -c <"$CORE") bytes)"
 echo "vibec component        -> $COMPONENT ($(wc -c <"$COMPONENT") bytes)"

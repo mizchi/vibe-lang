@@ -30,6 +30,14 @@ const files = new Map([
 ]);
 const norm = (p) => p.replace(/^\.\//, "");
 const calls = { readFile: 0, exists: 0, readDir: 0, statToken: 0 };
+const dirNames = (path) => {
+  calls.readDir++;
+  const prefix = norm(path) === "." ? "" : norm(path) + "/";
+  const names = [...files.keys()]
+    .filter((k) => k.startsWith(prefix))
+    .map((k) => k.slice(prefix.length).split("/")[0]);
+  return [...new Set(names)].sort();
+};
 const vfs = {
   "read-file": {
     default(path) {
@@ -47,13 +55,16 @@ const vfs = {
   },
   "read-dir-nul": {
     default(path) {
-      calls.readDir++;
-      const prefix = norm(path) === "." ? "" : norm(path) + "/";
-      const names = [...files.keys()]
-        .filter((k) => k.startsWith(prefix))
-        .map((k) => k.slice(prefix.length).split("/")[0]);
       // NUL-joined: a name may contain "\n" but never NUL (#2957).
-      return [...new Set(names)].sort().join("\0");
+      return dirNames(path).join("\0");
+    },
+  },
+  // A component wrapped around a core built by a pre-#2957 compiler (the
+  // committed seed, build_vibec.sh's default) imports the "\n"-framed
+  // `read-dir` instead; a host serves whichever the component asks for.
+  "read-dir": {
+    default(path) {
+      return dirNames(path).join("\n");
     },
   },
   "stat-token": {
