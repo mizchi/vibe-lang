@@ -13,7 +13,7 @@ import @vibe/compiler/codegen/common_base {
 }
 
 import @vibe/compiler/core {
-  Expr, Stmt, dir_of_path, executable_export_kept_bytes, is_contract_ext, unstable_package_note
+  Expr, Stmt, dir_of_path, executable_export_kept_bytes, is_contract_ext, merged_offset_owner, unstable_package_note
 }
 
 import @vibe/compiler/cache {
@@ -298,11 +298,128 @@ export fn verify_culprit_off_marker(source: String, msg: String) -> String {
 /// FS/build compilation does not yet return the grouped-source snapshot that
 /// produced a Throw. Without same-snapshot ownership evidence, keep the culprit
 /// name but strip its unproven transport offset (#1596).
+///
+/// #3090: an interpolation refusal thrown after the merge (normalize, or
+/// either codegen lane) carries an offset in the MERGED program's disjoint
+/// offset space, which the merge recorded together with the exact text of
+/// each file (core/merged_offset_space.vibe). That record IS the snapshot, so
+/// such a refusal is located against its own file and path-prefixed the way a
+/// checker diagnostic is.
 export fn verify_culprit_off_marker_fs_fail_closed(msg: String) -> String {
   if String::contains(msg, " [@off=") && String::contains(msg, " (here: the call to '") {
     verify_culprit_off_marker("", msg)
+  } else if String::starts_with(msg, "cannot interpolate ") && String::contains(msg, " [@off=") {
+    locate_merged_interp_refusal(msg)
   } else {
     msg
+  }
+}
+
+/// #3090: resolve an interpolation refusal's merged `[@off=N]` (or
+/// `[@off=N:M]`) to `path: line L:C: ...` against the file the merge placed at
+/// N. Fails closed -- returns `msg` unchanged, and the caller strips the
+/// marker -- when no file owns N, when that file's text is a loader transform
+/// rather than what the reader wrote, or when N names neither an interpolation
+/// nor the start of a name (a render argument is keyed by its identifier, its
+/// field name or its callee, and `__to_string(v)` is a render with no
+/// interpolation around it): an offset anywhere else says the basis is not
+/// this record, and no position beats a wrong one.
+fn locate_merged_interp_refusal(msg: String) -> String {
+  let marker = " [@off="
+  let mi = String::index_of(msg, marker)
+  let inner_start = mi + String::length(marker)
+  let rest = String::substring(msg, inner_start, String::length(msg))
+  let rel = String::index_of(rest, "]")
+  if rel < 0 {
+    msg
+  } else {
+    let inner = String::substring(rest, 0, rel)
+    let colon = String::index_of(inner, ":")
+    let start = parse_marker_digits(if colon < 0 {
+      inner
+    } else {
+      String::substring(inner, 0, colon)
+    })
+    let end = if colon < 0 {
+      -1
+    } else {
+      parse_marker_digits(String::substring(inner, colon + 1, String::length(inner)))
+    }
+    if start < 0 || (colon >= 0 && end < start) {
+      msg
+    } else {
+      match merged_offset_owner(start) {
+        Some((path, source, local)) => {
+          let transformed = String::starts_with(source, vpkg_shared_import_marker) || String::starts_with(source, contract_facade_marker)
+          if transformed || !(offset_inside_interpolation(source, local) || offset_starts_name(source, local)) {
+            msg
+          } else {
+            let local_inner = if colon < 0 {
+              __to_string(local)
+            } else {
+              String::concat(__to_string(local), String::concat(":", __to_string(local + end - start)))
+            }
+            let rebased = String::concat(String::substring(msg, 0, inner_start), String::concat(local_inner, String::substring(msg, inner_start + rel, String::length(msg))))
+            let located = locate_type_error(source, rebased)
+            if String::starts_with(located, "line ") {
+              String::concat(path, String::concat(": ", located))
+            } else {
+              msg
+            }
+          }
+        },
+        None => msg
+      }
+    }
+  }
+}
+
+/// Does byte `off` of `source` start a name -- an identifier character that no
+/// identifier character precedes?
+fn offset_starts_name(source: String, off: Int) -> Bool {
+  if off < 0 || off >= String::length(source) {
+    false
+  } else {
+    let c = String::char_code_at(source, off)
+    let starts = (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || c == 95
+    starts && (off == 0 || !marker_ident_char(String::char_code_at(source, off - 1)))
+  }
+}
+
+/// Does byte `off` of `source` lie in an interpolation? True at the backslash
+/// of an interpolation opener itself (the anchor the normalize refusals use),
+/// or when the nearest unmatched `{` before `off` on the same line is one
+/// opened by a backslash.
+fn offset_inside_interpolation(source: String, off: Int) -> Bool {
+  let n = String::length(source)
+  if off < 0 || off >= n {
+    false
+  } else if off + 1 < n && String::char_code_at(source, off) == 92 && String::char_code_at(source, off + 1) == 123 {
+    true
+  } else {
+    let mut depth = 0
+    let mut i = off - 1
+    let mut answer = false
+    while i >= 0 {
+      let c = String::char_code_at(source, i)
+      if c == 10 {
+        i = -1
+      } else if c == 125 {
+        depth = depth + 1
+        i = i - 1
+      } else if c == 123 {
+        if depth == 0 {
+          answer = i > 0 && String::char_code_at(source, i - 1) == 92
+          i = -1
+        } else {
+          depth = depth - 1
+          i = i - 1
+        }
+      } else {
+        i = i - 1
+      }
+    }
+    answer
   }
 }
 
