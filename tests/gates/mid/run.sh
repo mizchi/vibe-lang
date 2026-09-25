@@ -799,6 +799,39 @@ done
 rm -rf "$vadir"
 echo "[compiler-gate] borrowed-view alias guard ok (6354332566498532 on bump/rc/shadow/gc)"
 
+# 40f0d. #3134: `let w = p` inside a loop body, with `p` bound outside the
+#        loop, transferred `p`'s one reference into `w` on every iteration,
+#        so the first iteration's consumer freed `p` and the next read freed
+#        memory (RC answered 529 for 18; shadow trapped). Nine loop shapes at
+#        distinct decimal places (while / for / nested / `loop` with continue
+#        and break, parameter and outer-let sources, chain, push, consumed
+#        twice), on all four lanes; the release side is the unit-lane
+#        rc_loop_carried_alias_release_test.vibe.
+echo "[compiler-gate] 40f0d/40 alias of a loop-carried binding is retained per iteration (#3134)"
+lcdir="_build/_gate_rc_loop_carried_alias"
+rm -rf "$lcdir"; mkdir -p "$lcdir"
+for lc_lane in bump rc shadow gc; do
+  rm -f "$lcdir/lc.wasm" "$lcdir/lc.wasm.diag"
+  case "$lc_lane" in
+    bump) env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_loop_carried_alias_test.vibe" "$lcdir/lc.wasm" main >/dev/null 2>&1 || true ;;
+    rc) env VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_loop_carried_alias_test.vibe" "$lcdir/lc.wasm" main >/dev/null 2>&1 || true ;;
+    shadow) env VIBE_RC=shadow VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_loop_carried_alias_test.vibe" "$lcdir/lc.wasm" main >/dev/null 2>&1 || true ;;
+    gc) env VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_loop_carried_alias_test.vibe" "$lcdir/lc.wasm" main >/dev/null 2>&1 || true ;;
+  esac
+  if [ ! -s "$lcdir/lc.wasm" ]; then
+    echo "[compiler-gate] FAIL: rc_loop_carried_alias fixture did not compile on the $lc_lane lane (#3134)" >&2
+    cat "$lcdir/lc.wasm.diag" >&2 2>/dev/null || true
+    exit 1
+  fi
+  lc_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$lcdir/lc.wasm" 2>&1 | tail -1)"
+  if [ "$lc_out" != "362412181109361818" ]; then
+    echo "[compiler-gate] FAIL: rc_loop_carried_alias got '$lc_out' on the $lc_lane lane (want 362412181109361818). Each loop shape owns a two-digit block -- see all_shapes in the fixture. A trap means an alias inside a loop body spent a reference of a binding declared outside it (#3134)." >&2
+    exit 1
+  fi
+done
+rm -rf "$lcdir"
+echo "[compiler-gate] loop-carried alias guard ok (362412181109361818 on bump/rc/shadow/gc)"
+
 # 40f1a. #2427: the shadow table must not overlap the heap it describes.
 #        40f above proves the marks catch a real dup/drop-of-freed; this
 #        proves they are marks at all. The table sat at a FIXED 256 MiB while

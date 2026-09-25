@@ -1,0 +1,167 @@
+// #3134: `let w = p` inside a loop body, where `p` is bound OUTSIDE the loop
+// (a parameter or an outer `let`), was planned as the last use of `p` and so
+// TRANSFERRED `p`'s one reference into `w`. The body runs once per iteration:
+// the first iteration's consumer (`keep(w)`) released `p`, and the next
+// iteration read freed memory. The RC lane answered 529 for 18, shadow
+// trapped, and `VIBE_RC=0` answered 18. The direct spelling `keep(p)` was
+// already right -- codegen retains a loop-carried argument at a consuming
+// call (#706) -- but the call names `w`, declared inside the body, so that
+// retain never saw it.
+//
+// The Perceus plan now knows the innermost loop body's first binding id; an
+// alias of a binding declared before it always acquires its own reference,
+// and the source keeps its initial one for its own scope-end drop.
+//
+// Every shape runs the body 3 times, and each contributes a digit block of
+// its own in `all_shapes`, so a wrong answer names the shape that broke.
+// The bump lane (no RC) is the oracle; the leak side is
+// rc_loop_carried_alias_release_test.vibe, kept apart because it measures the
+// heap through `Profiler`, which the wasm-gc lane this file also runs on does
+// not provide.
+
+fn keep(a: Array[Int]) -> Int {
+  let outer = [a]
+  Array::length(outer) + Array::get(a, 0)
+}
+
+/// The issue's own program: 3 * (1 + 5) = 18.
+fn s_plain(p: Array[Int], n: Int) -> Int {
+  let mut s = 0
+  let mut i = 0
+  while i < n {
+    let w = p
+    s = s + keep(w)
+    i = i + 1
+  }
+  s
+}
+
+/// An alias chain: the second alias is of a body-local, the first is not.
+fn s_chain(p: Array[Int], n: Int) -> Int {
+  let mut s = 0
+  let mut i = 0
+  while i < n {
+    let w = p
+    let u = w
+    s = s + keep(u)
+    i = i + 1
+  }
+  s
+}
+
+/// The alias consumed twice per iteration: 3 * 2 * 6 = 36.
+fn s_twice(p: Array[Int], n: Int) -> Int {
+  let mut s = 0
+  let mut i = 0
+  while i < n {
+    let w = p
+    s = s + keep(w) + keep(w)
+    i = i + 1
+  }
+  s
+}
+
+/// The alias stored into an array that outlives the loop: 3 + 6 = 9.
+fn s_pushed(p: Array[Int], n: Int) -> Int {
+  let ys: Array[Array[Int]] = []
+  let mut i = 0
+  while i < n {
+    let w = p
+    Array::push(ys, w)
+    i = i + 1
+  }
+  Array::length(ys) + Array::get(Array::get(ys, n - 1), 1)
+}
+
+/// The alias leaves the loop through a `break` value: 6 + 5 = 11.
+fn s_break(p: Array[Int], n: Int) -> Int {
+  let got = loop (i = 0) {
+    let w = p
+    if i == n - 1 {
+      break w
+    } else {
+      ()
+    }
+    continue (i + 1)
+  }
+  Array::get(got, 1) + Array::get(p, 0)
+}
+
+/// A parameterized `loop` re-enters its body through `continue`: 18.
+fn s_loop_continue(p: Array[Int], n: Int) -> Int {
+  loop (i = 0, s = 0) {
+    if i >= n {
+      break s
+    } else {
+      ()
+    }
+    let w = p
+    continue (i + 1, s + keep(w))
+  }
+}
+
+/// The source is an outer `let`, not a parameter: 3 * (1 + 3) = 12.
+fn s_let_src(n: Int) -> Int {
+  let q = [n, n + 1]
+  let mut s = 0
+  let mut i = 0
+  while i < n {
+    let w = q
+    s = s + keep(w)
+    i = i + 1
+  }
+  s
+}
+
+/// A `for` body: 3 * 6 + (1 + 2 + 3) = 24.
+fn s_forin(p: Array[Int], xs: Array[Int]) -> Int {
+  let mut s = 0
+  for x in xs {
+    let w = p
+    s = s + keep(w) + x
+  }
+  s
+}
+
+/// Nested loops: 3 * 2 * 6 = 36.
+fn s_nested(p: Array[Int], n: Int) -> Int {
+  let mut s = 0
+  let mut i = 0
+  while i < n {
+    let mut j = 0
+    while j < 2 {
+      let w = p
+      s = s + keep(w)
+      j = j + 1
+    }
+    i = i + 1
+  }
+  s
+}
+
+/// The source is consumed again after the loop: 18 + 6 = 24.
+fn s_after(p: Array[Int], n: Int) -> Int {
+  let mut s = 0
+  let mut i = 0
+  while i < n {
+    let w = p
+    s = s + keep(w)
+    i = i + 1
+  }
+  s + keep(p)
+}
+
+fn all_shapes() -> Int {
+  let p = [5, 6]
+  let xs = [1, 2, 3]
+  s_plain(p, 3) + s_chain(p, 3) * 100 + s_twice(p, 3) * 10000 + s_pushed(p, 3) * 1000000 + s_break(p, 3) * 100000000 + s_loop_continue(p, 3) * 10000000000 + s_let_src(3) * 1000000000000 + s_forin(p, xs) * 100000000000000 + s_nested(p, 3) * 10000000000000000
+}
+
+export fn main() -> Int {
+  all_shapes() + s_after([5, 6], 3) - 24
+}
+
+test "an alias of a loop-carried binding is retained per iteration" {
+  inspect(all_shapes(), content = "362412181109361818")
+  inspect(s_after([5, 6], 3), content = "24")
+}

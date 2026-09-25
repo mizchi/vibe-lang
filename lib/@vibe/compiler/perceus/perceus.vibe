@@ -155,6 +155,14 @@ struct PCtx {
   // took the binding's reference by transfer removed that drop, so the
   // retain never ran and the alias released a reference nobody took.
   mut branch_value: Array[Bool];
+  // #3134: the first binding id declared inside the innermost enclosing
+  // `while` / `for` / `loop` body during pc_emit, or 0 outside any loop. A binding
+  // with a smaller id is LOOP-CARRIED: the body re-executes, so a textual
+  // "last use" of it inside the body runs once per iteration and cannot
+  // transfer the binding's one initial reference. The plan is otherwise
+  // loop-blind (codegen's #706 retains a loop-carried argument at a
+  // consuming call); this floor is what lets a `let` alias see the loop.
+  mut loop_floor: Int;
   // #2389 per-path release. Per binding id, the bits below (PF_*); and the
   // occurrences that spend a binding's initial reference, as three aligned
   // arrays (id, source offset, name) filtered into PaConsumeMark rows once
@@ -372,6 +380,7 @@ fn pctx_new(borrow_ret_names: Array[String], borrow_param_fns: Array[String], bo
     move_hit: false,
     borrowed_view: [],
     branch_value: [],
+    loop_floor: 0,
     decl_flags: [],
     mark_ids: [],
     mark_offs: [],
@@ -459,6 +468,7 @@ fn pctx_reset(ctx: PCtx) -> Int {
   ctx.borrowed_view = bview0
   let bval0: Array[Bool] = []
   ctx.branch_value = bval0
+  ctx.loop_floor = 0
   let flags0: Array[Int] = []
   ctx.decl_flags = flags0
   let mids0: Array[Int] = []
@@ -2525,7 +2535,19 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
             // alias would leave the alias releasing an unretained view. The
             // alias acquires its own reference instead, as for a source with
             // later uses.
-            let src_keeps = Array::get(ctx.branch_value, sid)
+            // #3134: a source declared OUTSIDE the enclosing loop body is
+            // loop-carried. `let w = p` inside the body runs every
+            // iteration, so it cannot be the transfer of `p`'s one initial
+            // reference that a straight-line last use would be: the first
+            // iteration's consumer (`keep(w)`) freed `p` and the next
+            // iteration read freed memory. The alias always ACQUIRES its
+            // own reference instead, and `p` keeps its initial one for its
+            // own scope-end drop (the `remaining` floor below). The direct
+            // spelling `keep(p)` is protected by codegen's #706 retain;
+            // an alias never reached that, because the consuming call names
+            // `w`, which is declared inside the body.
+            let src_loop_carried = sid < ctx.loop_floor
+            let src_keeps = Array::get(ctx.branch_value, sid) || src_loop_carried
             if (rem > 1 || src_last_view || src_keeps) && !Array::get(ctx.scalar, sid) {
               // #1056 (almide `alias_safety.rs` comparison, rc check
               // elision): this occurrence of `let name = src` would dup
@@ -2757,8 +2779,13 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
       }
     },
     EWhile(cond, body) => {
+      // #3134: bindings declared from here on belong to the loop body.
+      let saved_floor = ctx.loop_floor
+      ctx.loop_floor = ctx.next_id
       pc_emit(ctx, scope, cond)
       pc_emit(ctx, scope, body)
+      ctx.loop_floor = saved_floor
+      0
     },
     EReturn(e) => pc_emit(ctx, scope, e),
     ESpread(e) => pc_emit(ctx, scope, e),
@@ -2779,6 +2806,10 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
     },
     EForIn(value_name, index_opt, iterable, fbody) => {
       pc_emit(ctx, scope, iterable)
+      // #3134: the iterable runs once; the element binding and the body
+      // run per element (see the EWhile arm).
+      let saved_floor = ctx.loop_floor
+      ctx.loop_floor = ctx.next_id
       let idv = pe_declare(ctx, value_name)
       let s2 = Map::set(scope, value_name, idv)
       let s3 = match index_opt {
@@ -2790,8 +2821,15 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
       }
       pc_emit(ctx, s3, fbody)
       pe_scope_end(ctx, idv, value_name)
+      ctx.loop_floor = saved_floor
+      0
     },
     ELoop(params, lbody) => {
+      // #3134: `continue` re-enters the body, so it is a loop body like
+      // EWhile's. The parameters count as inside: each iteration rebinds
+      // them to the values `continue` passes.
+      let saved_floor = ctx.loop_floor
+      ctx.loop_floor = ctx.next_id
       let mut s = scope
       let pids: Array[Int] = []
       let pnames: Array[String] = []
@@ -2811,6 +2849,7 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
         pe_scope_end(ctx, Array::get(pids, j), Array::get(pnames, j))
         j = j + 1
       }
+      ctx.loop_floor = saved_floor
       0
     },
     EMatch(scrut, arms) => {
