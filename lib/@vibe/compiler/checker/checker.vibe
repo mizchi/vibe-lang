@@ -3875,10 +3875,10 @@ fn check_interp_formal(ty: Type, s: Subst, env: TypeEnv, errors: Array[String], 
       Array::push(errors, String::concat(edit, String::concat(name, String::concat("` is erased here and has no renderer witness; a marker `Show` bound does not provide one", off_marker(off)))))
     }
   }
-  if interp_mentions_bytes(subst_apply(s, ty), s) {
+  if interp_mentions_bytes(subst_apply(s, ty), s, env) {
     Array::push(errors, String::concat("cannot interpolate a `Bytes` value: `Bytes` has no renderer -- convert it first: `let a: Array[Int] = Bytes::to_array(b)`, then interpolate `a` (#2987)", off_marker(off)))
   }
-  if interp_mentions_fn(subst_apply(s, ty), s) {
+  if interp_mentions_fn(subst_apply(s, ty), s, env) {
     Array::push(errors, String::concat("cannot interpolate a function value: a function has no text form, and rendering it would print a memory address -- interpolate what it returns (`f(x)`), or a description you write (#3075)", off_marker(off)))
   }
 }
@@ -3886,38 +3886,138 @@ fn check_interp_formal(ty: Type, s: Subst, env: TypeEnv, errors: Array[String], 
 /// #3075: a function value (bare or inside the containers the renderer
 /// descends) has no rendering; it printed its table index or closure address
 /// (`Some(<address>)` for `Some((x: Int) -> x + 1)`).
-fn interp_mentions_fn(ty: Type, s: Subst) -> Bool {
+fn interp_mentions_fn(ty: Type, s: Subst, env: TypeEnv) -> Bool {
   match ty {
     CtFn(_, _, _) => true,
-    CtForAll(_, _, inner) => interp_mentions_fn(inner, s),
+    CtForAll(_, _, inner) => interp_mentions_fn(inner, s, env),
     CtVar(id) => match subst_apply(s, CtVar(id)) {
       CtVar(_) => false,
-      other => interp_mentions_fn(other, s)
+      other => interp_mentions_fn(other, s, env)
     },
-    CtArray(element) => interp_mentions_fn(element, s),
-    CtOption(element) => interp_mentions_fn(element, s),
+    CtArray(element) => interp_mentions_fn(element, s, env),
+    CtOption(element) => interp_mentions_fn(element, s, env),
     CtTuple(items) => {
       let mut found = false
       let mut i = 0
       while i < Array::length(items) && !found {
-        found = interp_mentions_fn(Array::get(items, i), s)
+        found = interp_mentions_fn(Array::get(items, i), s, env)
         i = i + 1
       }
       found
     },
     // #3092: a nominal type's arguments reach the renderer too
     // (`Box[(Int) -> Int]` rendered `Box { v: 1 }`).
-    CtNamed(_, args) => interp_mentions_fn_any(args, s),
-    CtApplied(head, args) => interp_mentions_fn(head, s) || interp_mentions_fn_any(args, s),
+    CtNamed(n, args) => interp_mentions_fn_any(interp_rendered_args(env, n, args), s, env),
+    CtApplied(head, args) => interp_mentions_fn(head, s, env) || interp_mentions_fn_any(args, s, env),
     _ => false
   }
 }
 
-fn interp_mentions_fn_any(items: Array[Type], s: Subst) -> Bool {
+fn interp_mentions_fn_any(items: Array[Type], s: Subst, env: TypeEnv) -> Bool {
   let mut found = false
   let mut i = 0
   while i < Array::length(items) && !found {
-    found = interp_mentions_fn(Array::get(items, i), s)
+    found = interp_mentions_fn(Array::get(items, i), s, env)
+    i = i + 1
+  }
+  found
+}
+
+/// #3092: the type arguments of `n[args]` its fields or payloads actually
+/// read. A phantom parameter (`struct Label[T] { text: String }`) is not
+/// rendered, so a function or `Bytes` there is no reason to refuse. A
+/// nominal with no declaration in scope keeps every argument, and the
+/// declarations are read only when there are arguments to filter.
+fn interp_rendered_args(env: TypeEnv, n: String, args: Array[Type]) -> Array[Type] {
+  if Array::length(args) == 0 {
+    args
+  } else {
+    interp_rendered_args_of(find_typedef(env_type_defs(env), n), args)
+  }
+}
+
+fn interp_rendered_args_of(decl: Option[TypeDef], args: Array[Type]) -> Array[Type] {
+  match decl {
+    Some(TDStruct(_, fields, _, tparams)) => {
+      let tys: Array[Type] = []
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fty) = Array::get(fields, i)
+        Array::push(tys, fty)
+        i = i + 1
+      }
+      interp_args_read_by(tparams, args, tys)
+    },
+    Some(TDEnum(_, tparams, variants)) => {
+      let tys: Array[Type] = []
+      let mut i = 0
+      while i < Array::length(variants) {
+        let (_, payload) = Array::get(variants, i)
+        let mut j = 0
+        while j < Array::length(payload) {
+          Array::push(tys, Array::get(payload, j))
+          j = j + 1
+        }
+        i = i + 1
+      }
+      interp_args_read_by(tparams, args, tys)
+    },
+    _ => args
+  }
+}
+
+fn interp_args_read_by(tparams: Array[String], args: Array[Type], tys: Array[Type]) -> Array[Type] {
+  if Array::length(tparams) != Array::length(args) {
+    args
+  } else {
+    let kept: Array[Type] = []
+    let mut i = 0
+    while i < Array::length(args) {
+      let p = Array::get(tparams, i)
+      let mut used = false
+      let mut k = 0
+      while k < Array::length(tys) && !used {
+        used = interp_type_mentions_param(Array::get(tys, k), p)
+        k = k + 1
+      }
+      if used {
+        Array::push(kept, Array::get(args, i))
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    kept
+  }
+}
+
+/// Whether `t` mentions the type parameter `p`. A shape not walked here
+/// answers `true`, so an unrecognised field keeps its argument.
+fn interp_type_mentions_param(t: Type, p: String) -> Bool {
+  match t {
+    CtNamed(n, targs) => (n == p && Array::length(targs) == 0) || interp_types_mention_param(targs, p),
+    CtArray(e) => interp_type_mentions_param(e, p),
+    CtOption(e) => interp_type_mentions_param(e, p),
+    CtTuple(items) => interp_types_mention_param(items, p),
+    CtApplied(h, targs) => interp_type_mentions_param(h, p) || interp_types_mention_param(targs, p),
+    CtInt => false,
+    CtDouble => false,
+    CtBool => false,
+    CtString => false,
+    CtChar => false,
+    CtBytes => false,
+    CtUnit => false,
+    CtEnum(_) => false,
+    CtStruct(_) => false,
+    _ => true
+  }
+}
+
+fn interp_types_mention_param(ts: Array[Type], p: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(ts) && !found {
+    found = interp_type_mentions_param(Array::get(ts, i), p)
     i = i + 1
   }
   found
@@ -3926,37 +4026,37 @@ fn interp_mentions_fn_any(items: Array[Type], s: Subst) -> Bool {
 /// #2987: `Bytes` has no renderer, and nothing can be derived for a builtin,
 /// so interpolating one (bare or inside a container) printed its allocation
 /// address. Walk the shapes the interpolation renderer descends.
-fn interp_mentions_bytes(ty: Type, s: Subst) -> Bool {
+fn interp_mentions_bytes(ty: Type, s: Subst, env: TypeEnv) -> Bool {
   match ty {
     CtBytes => true,
     CtVar(id) => match subst_apply(s, CtVar(id)) {
       CtVar(_) => false,
-      other => interp_mentions_bytes(other, s)
+      other => interp_mentions_bytes(other, s, env)
     },
-    CtArray(element) => interp_mentions_bytes(element, s),
-    CtOption(element) => interp_mentions_bytes(element, s),
+    CtArray(element) => interp_mentions_bytes(element, s, env),
+    CtOption(element) => interp_mentions_bytes(element, s, env),
     CtTuple(items) => {
       let mut found = false
       let mut i = 0
       while i < Array::length(items) && !found {
-        found = interp_mentions_bytes(Array::get(items, i), s)
+        found = interp_mentions_bytes(Array::get(items, i), s, env)
         i = i + 1
       }
       found
     },
     // #3092: a nominal type's arguments reach the renderer too
     // (`Box[(Int) -> Int]` rendered `Box { v: 1 }`).
-    CtNamed(_, args) => interp_mentions_bytes_any(args, s),
-    CtApplied(head, args) => interp_mentions_bytes(head, s) || interp_mentions_bytes_any(args, s),
+    CtNamed(n, args) => interp_mentions_bytes_any(interp_rendered_args(env, n, args), s, env),
+    CtApplied(head, args) => interp_mentions_bytes(head, s, env) || interp_mentions_bytes_any(args, s, env),
     _ => false
   }
 }
 
-fn interp_mentions_bytes_any(items: Array[Type], s: Subst) -> Bool {
+fn interp_mentions_bytes_any(items: Array[Type], s: Subst, env: TypeEnv) -> Bool {
   let mut found = false
   let mut i = 0
   while i < Array::length(items) && !found {
-    found = interp_mentions_bytes(Array::get(items, i), s)
+    found = interp_mentions_bytes(Array::get(items, i), s, env)
     i = i + 1
   }
   found
