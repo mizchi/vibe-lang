@@ -15,6 +15,7 @@
 # Usage:
 #   bash scripts/module_job_dir_test.sh <stage2.wasm>
 set -euo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/run_bounded.sh" # portable timeout(1), #2958
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -48,7 +49,7 @@ run_job() {
   # against the process working directory, not against VIBE_PREOPEN_DIR, so
   # a relative "." would read the caller's tree instead of the sandbox.
   VIBE_PREOPEN_DIR="$dir" VIBE_MODULE_JOB_DIR=1 VIBE_IMPORT_ABI=raw \
-    timeout 300 bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" \
+    run_bounded 300 bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" \
     --invoke cli_main "$STAGE2_ABS" "$dir" "$dir/worker.out" "__no_entry__" \
     >/dev/null 2>&1
   JOB_EXIT=$?

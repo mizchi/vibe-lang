@@ -23,10 +23,11 @@
 # the change (AGENTS.md, "Which compiler answered?"). Sharing the lanes' matrix
 # means this lane's environment is the late lane's by construction.
 #
-# STILL SERIAL INSIDE, and it has to be: the companions share the working tree.
-# check_portable_boundary_test.sh mutates tracked files under lib/ and restores
-# them with `git checkout`, and running the set over `xargs -P 4` produced
-# failures that differed run to run -- the long comment in
+# STILL SERIAL INSIDE: the companions share the working tree, and
+# check_gate_self_tests.sh snapshots it around each one so a companion that
+# changes it is named (#2899). check_portable_boundary_test.sh used to mutate
+# tracked files under lib/ in place, and running the set over `xargs -P 4`
+# produced failures that differed run to run -- the long comment in
 # check_gate_self_tests.sh records both interleavings. A lane is a whole tree
 # of its own, so the parallelism is between lanes, not inside one.
 set -euo pipefail
@@ -67,6 +68,11 @@ bash "$ROOT_DIR/scripts/incremental_kpi_test.sh"
 # compiler that does not contain the change, with nothing in the report saying
 # so (#2836 §1). Cheap: no compiler, synthetic git trees.
 bash "$ROOT_DIR/scripts/resolve_stage2_test.sh"
+# The portable timeout(1) every bounded call in scripts/ and tests/ goes
+# through (#2958). Its shell watchdog only runs where GNU timeout is absent --
+# never in CI by accident -- so the companion forces it and holds it to
+# timeout(1)'s contract, with a mutant per property. No compiler; ~35s.
+bash "$ROOT_DIR/scripts/run_bounded_test.sh"
 # The host half of the capability contract (#2825 step 1,
 # docs/internal/design/capability-host-contract.md). Same glob reason again -- and this one is
 # a case where the gate that already exists could not see the property:

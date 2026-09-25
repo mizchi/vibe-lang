@@ -3,6 +3,7 @@
 # component boundary, and run lifecycle/wrapper/reacquisition scenarios on the
 # pinned Wasmtime 47 lane.
 set -euo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/run_bounded.sh" # portable timeout(1), #2958
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(dirname "$SCRIPT_DIR")"
@@ -604,7 +605,7 @@ FLAGS=(-Sp3 -W component-model-async=y -W component-model-async-stackful=y -W co
 run_lane() {
   local name="$1" expected="$2" input="${3:-$LEGACY_INPUT}"
   local actual
-  actual="$(timeout 60 "$WT" run "${FLAGS[@]}" --invoke 'run()' "$OUT/$name.component.wasm" <"$input")"
+  actual="$(run_bounded 60 "$WT" run "${FLAGS[@]}" --invoke 'run()' "$OUT/$name.component.wasm" <"$input")"
   [ "$actual" = "$expected" ] || { echo "stdin provider source gate FAILED: $name expected $expected, got $actual" >&2; exit 1; }
   echo "[stdin-provider-source] $name: $actual"
 }

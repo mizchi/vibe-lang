@@ -13,6 +13,7 @@
 #   WASMTIME_BIN                 wasmtime binary under test (default: PATH)
 #   VIBE_P3_GATE_REQUIRE_TOOLS=1 missing/wrong-version tools = FAIL, not skip
 set -euo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/run_bounded.sh" # portable timeout(1), #2958
 
 PINNED_WASMTIME_VERSION="wasmtime 47.0.2"
 
@@ -112,7 +113,7 @@ printf '\012\017\021' >"$INPUT"
 run_lane() {
   local lane="$1" expected="$2" log got
   log="$OUT_DIR/$lane.log"
-  if ! timeout 60 "$WASMTIME_BIN" run -Sp3 \
+  if ! run_bounded 60 "$WASMTIME_BIN" run -Sp3 \
       -W component-model-async=y -W component-model-async-stackful=y \
       -W component-model-more-async-builtins=y \
       --invoke "$lane()" "$COMPONENT" <"$INPUT" >"$log" 2>&1; then

@@ -33,6 +33,7 @@
 #   VIBE_CLI_WASM  the compiler to ask. Unset, scripts/resolve_stage2.sh picks
 #                  HEAD's generation and SAYS which.
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/run_bounded.sh" # portable timeout(1), #2958
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -52,7 +53,7 @@ note() { printf '%s\n' "$*"; }
 drive() { # drive <file> <entry> -> OUT, DIAG, WASM_NONEMPTY
   local f="$1" entry="$2"
   rm -f "$WORK/out.wasm" "$WORK/out.wasm.diag"
-  OUT="$(VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw timeout 120 \
+  OUT="$(VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw run_bounded 120 \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$CLI" \
     "$WORK/$f" "$WORK/out.wasm" "$entry" 2>&1)"
   DIAG=""

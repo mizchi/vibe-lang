@@ -28,6 +28,7 @@
 #                  HEAD's generation and SAYS which -- never silently, since
 #                  the committed seed is a different compiler.
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/run_bounded.sh" # portable timeout(1), #2958
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -61,7 +62,7 @@ mk_main pdep.vibe helper2 parsemain
 mk_main okdep.vibe helper3 okmain
 
 ask() { # ask <verb> <file> -> OUT
-  OUT="$(VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" timeout 600 \
+  OUT="$(VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" run_bounded 600 \
     bash runtime/vibe "$1" "$WORK/$2" 2>&1)"
 }
 

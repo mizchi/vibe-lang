@@ -24,6 +24,7 @@
 # Env:
 #   VIBE_DEP_ORDER_SEEDS   space-separated seeds (default "0 1 2 7 4242")
 set -euo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/run_bounded.sh" # portable timeout(1), #2958
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -84,7 +85,7 @@ for seed in $SEEDS; do
   rm -f "$out" "$out.diag"
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     VIBE_BUILD_CACHE_DIR="$cache" VIBE_DEP_ORDER_SEED="$seed" \
-    timeout 600 bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \
+    run_bounded 600 bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \
     "$STAGE2" "$INPUT" "$out" "$ENTRY" >/dev/null 2>&1 || true
   if [ ! -s "$out" ]; then
     echo "[dep-order-oracle] FAIL: seed=$seed did not compile $INPUT" >&2

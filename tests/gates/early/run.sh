@@ -383,12 +383,12 @@ if [ ! -s "$hmdir/fill.wasm" ]; then
   exit 1
 fi
 set +e
-hm_out="$(timeout 60 env VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$hmdir/fill.wasm" 2>&1)"
+hm_out="$(run_bounded 60 env VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$hmdir/fill.wasm" 2>&1)"
 hm_rc=$?
 set -e
 rm -rf "$hmdir"
 if [ "$hm_rc" -eq 124 ]; then
-  echo "[compiler-gate] FAIL: a full table made insert_raw spin -- the probe had to be killed at the timeout (#2362)" >&2
+  echo "[compiler-gate] FAIL: a full table made insert_raw spin -- the probe had to be killed at the time limit (#2362)" >&2
   printf '%s\n' "$hm_out" >&2
   exit 1
 fi

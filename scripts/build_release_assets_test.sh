@@ -19,6 +19,7 @@
 # the real one, so these cases keep saying the same thing after the tree's own
 # version moves on.
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/run_bounded.sh" # portable timeout(1), #2958
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/vibe-release-assets-test.XXXXXX")"
@@ -49,7 +50,7 @@ setup() { # setup <launcher version>
 }
 
 run() { # run <tag> -> OUT, RC. Times out: past validation it would really build.
-  OUT="$(timeout 25 bash "$WORK/t/scripts/build_release_assets.sh" "$1" 2>&1)"
+  OUT="$(run_bounded 25 bash "$WORK/t/scripts/build_release_assets.sh" "$1" 2>&1)"
   RC=$?
 }
 

@@ -3577,7 +3577,7 @@ if [ ! -s "$asb89dir/fd.wasm" ]; then
   cat "$asb89dir/fd.wasm.diag" >&2 2>/dev/null || true
   exit 1
 fi
-asb89_fd_out="$(timeout 30 bash -c "VIBE_PREOPEN_DIR='$ROOT_DIR' bash scripts/run_wasm_vibe_host_runner.sh --invoke main '$asb89dir/fd.wasm' 2>&1" || true)"
+asb89_fd_out="$(run_bounded 30 bash -c "VIBE_PREOPEN_DIR='$ROOT_DIR' bash scripts/run_wasm_vibe_host_runner.sh --invoke main '$asb89dir/fd.wasm' 2>&1" || true)"
 if [ "$(printf '%s\n' "$asb89_fd_out" | tail -1)" = "42" ]; then
   echo "[compiler-gate] FAIL: async_future_boundary_deadlock_test.vibe returned 42 -- an unresolvable await under the boundary must trap, not complete" >&2
   exit 1

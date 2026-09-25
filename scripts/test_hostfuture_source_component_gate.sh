@@ -42,6 +42,7 @@
 #                                         on a slow machine)
 #   VIBE_P3_GATE_REQUIRE_TOOLS=1          missing tools = FAIL instead of skip
 set -euo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/run_bounded.sh" # portable timeout(1), #2958
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -130,7 +131,7 @@ wasm-tools validate --features all "$COMPONENT" \
 
 # --- warmup (JIT) then the timed blocked run ---------------------------------
 WARM_LOG="$OUT_DIR/run.warmup.log"
-if ! VIBE_ASYNC_GET_DELAY_MS=1 timeout 60 "$RUNNER" "$COMPONENT" >"$WARM_LOG" 2>&1; then
+if ! VIBE_ASYNC_GET_DELAY_MS=1 run_bounded 60 "$RUNNER" "$COMPONENT" >"$WARM_LOG" 2>&1; then
   echo "hostfuture source component gate FAILED: warmup run did not exit 0" >&2
   cat "$WARM_LOG" >&2
   exit 1
@@ -140,7 +141,7 @@ fi
 
 RESULT_LOG="$OUT_DIR/run.blocked.log"
 START_NS=$(date +%s%N)
-if ! VIBE_ASYNC_GET_DELAY_MS="$DELAY_MS" timeout 60 "$RUNNER" "$COMPONENT" >"$RESULT_LOG" 2>&1; then
+if ! VIBE_ASYNC_GET_DELAY_MS="$DELAY_MS" run_bounded 60 "$RUNNER" "$COMPONENT" >"$RESULT_LOG" 2>&1; then
   echo "hostfuture source component gate FAILED: viberun did not exit 0" >&2
   cat "$RESULT_LOG" >&2
   exit 1
@@ -184,14 +185,14 @@ VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_IMPORT_ABI=raw \
   "$COMPILER" "$DOUBLE_SRC" "$DOUBLE_OUT" run >/dev/null \
   || { echo "hostfuture source component gate FAILED: double-await fixture did not compile: $(cat "$DOUBLE_OUT.diag" 2>/dev/null)" >&2; exit 1; }
 DOUBLE_WARM_LOG="$OUT_DIR/run.double.warmup.log"
-if ! VIBE_ASYNC_GET_DELAY_MS=1 timeout 60 "$RUNNER" "$DOUBLE_OUT" >"$DOUBLE_WARM_LOG" 2>&1; then
+if ! VIBE_ASYNC_GET_DELAY_MS=1 run_bounded 60 "$RUNNER" "$DOUBLE_OUT" >"$DOUBLE_WARM_LOG" 2>&1; then
   echo "hostfuture source component gate FAILED: double-await warmup did not exit 0 (a second future.read on the same future is a canonical-ABI error)" >&2
   cat "$DOUBLE_WARM_LOG" >&2
   exit 1
 fi
 DOUBLE_LOG="$OUT_DIR/run.double.log"
 DOUBLE_START_NS=$(date +%s%N)
-if ! VIBE_ASYNC_GET_DELAY_MS="$DELAY_MS" timeout 60 "$RUNNER" "$DOUBLE_OUT" >"$DOUBLE_LOG" 2>&1; then
+if ! VIBE_ASYNC_GET_DELAY_MS="$DELAY_MS" run_bounded 60 "$RUNNER" "$DOUBLE_OUT" >"$DOUBLE_LOG" 2>&1; then
   echo "hostfuture source component gate FAILED: double-await run did not exit 0 (a second future.read on the same future is a canonical-ABI error)" >&2
   cat "$DOUBLE_LOG" >&2
   exit 1

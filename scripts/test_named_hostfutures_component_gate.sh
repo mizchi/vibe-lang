@@ -46,6 +46,7 @@
 #                                         on a slow machine.
 #   VIBE_P3_GATE_REQUIRE_TOOLS=1          missing tools = FAIL instead of skip
 set -euo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/run_bounded.sh" # portable timeout(1), #2958
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -163,7 +164,7 @@ echo "[named-hostfutures-component-gate] imports: price + qty, no anonymous get-
 # --- warmup (JIT) then the timed run -----------------------------------------
 FUTURES="price=40:$LONG_MS,qty=2:$SHORT_MS"
 WARM_LOG="$OUT_DIR/run.warmup.log"
-if ! VIBE_ASYNC_FUTURES="price=40:1,qty=2:1" timeout 60 "$RUNNER" "$COMPONENT" >"$WARM_LOG" 2>&1; then
+if ! VIBE_ASYNC_FUTURES="price=40:1,qty=2:1" run_bounded 60 "$RUNNER" "$COMPONENT" >"$WARM_LOG" 2>&1; then
   echo "named hostfutures component gate FAILED: warmup run did not exit 0" >&2
   cat "$WARM_LOG" >&2
   exit 1
@@ -171,7 +172,7 @@ fi
 [ "$(cat "$WARM_LOG")" = "42" ] \
   || { echo "named hostfutures component gate FAILED: warmup expected 42, got: $(cat "$WARM_LOG")" >&2; exit 1; }
 RC0_WARM_LOG="$OUT_DIR/run.rc0.warmup.log"
-if ! VIBE_ASYNC_FUTURES="price=40:1,qty=2:1" timeout 60 "$RUNNER" "$RC0_COMPONENT" >"$RC0_WARM_LOG" 2>&1; then
+if ! VIBE_ASYNC_FUTURES="price=40:1,qty=2:1" run_bounded 60 "$RUNNER" "$RC0_COMPONENT" >"$RC0_WARM_LOG" 2>&1; then
   echo "named hostfutures component gate FAILED: RC=0 warmup run did not exit 0" >&2
   cat "$RC0_WARM_LOG" >&2
   exit 1
@@ -181,7 +182,7 @@ fi
 
 RESULT_LOG="$OUT_DIR/run.blocked.log"
 START_NS=$(date +%s%N)
-if ! VIBE_ASYNC_FUTURES="$FUTURES" timeout 60 "$RUNNER" "$COMPONENT" >"$RESULT_LOG" 2>&1; then
+if ! VIBE_ASYNC_FUTURES="$FUTURES" run_bounded 60 "$RUNNER" "$COMPONENT" >"$RESULT_LOG" 2>&1; then
   echo "named hostfutures component gate FAILED: viberun did not exit 0" >&2
   cat "$RESULT_LOG" >&2
   exit 1
@@ -192,7 +193,7 @@ GOT="$(cat "$RESULT_LOG")"
 [ "$GOT" = "42" ] \
   || { echo "named hostfutures component gate FAILED: expected 42 (40 from price + 2 from qty), got: $GOT" >&2; exit 1; }
 RC0_RESULT_LOG="$OUT_DIR/run.rc0.blocked.log"
-if ! VIBE_ASYNC_FUTURES="$FUTURES" timeout 60 "$RUNNER" "$RC0_COMPONENT" >"$RC0_RESULT_LOG" 2>&1; then
+if ! VIBE_ASYNC_FUTURES="$FUTURES" run_bounded 60 "$RUNNER" "$RC0_COMPONENT" >"$RC0_RESULT_LOG" 2>&1; then
   echo "named hostfutures component gate FAILED: RC=0 blocked run did not exit 0" >&2
   cat "$RC0_RESULT_LOG" >&2
   exit 1
@@ -236,7 +237,7 @@ EOF
 NEST_OUT="$OUT_DIR/nested_named_await.component.wasm"
 compile_fixture "$NEST_SRC" "$NEST_OUT"
 NEST_LOG="$OUT_DIR/nested.log"
-if ! VIBE_ASYNC_FUTURES="price=40:1" timeout 60 "$RUNNER" "$NEST_OUT" >"$NEST_LOG" 2>&1; then
+if ! VIBE_ASYNC_FUTURES="price=40:1" run_bounded 60 "$RUNNER" "$NEST_OUT" >"$NEST_LOG" 2>&1; then
   echo "named hostfutures component gate FAILED: record-nested run did not exit 0" >&2
   cat "$NEST_LOG" >&2
   exit 1
@@ -322,7 +323,7 @@ DOUBLE_OUT="$OUT_DIR/double_await.component.wasm"
 compile_fixture "$DOUBLE_SRC" "$DOUBLE_OUT"
 
 DOUBLE_WARM_LOG="$OUT_DIR/run.double.warmup.log"
-if ! VIBE_ASYNC_FUTURES="price=14:1" timeout 60 "$RUNNER" "$DOUBLE_OUT" >"$DOUBLE_WARM_LOG" 2>&1; then
+if ! VIBE_ASYNC_FUTURES="price=14:1" run_bounded 60 "$RUNNER" "$DOUBLE_OUT" >"$DOUBLE_WARM_LOG" 2>&1; then
   echo "named hostfutures component gate FAILED: double-await warmup did not exit 0 (a second future.read on the same future is a canonical-ABI error)" >&2
   cat "$DOUBLE_WARM_LOG" >&2
   exit 1
@@ -332,7 +333,7 @@ fi
 
 DOUBLE_LOG="$OUT_DIR/run.double.log"
 DOUBLE_START_NS=$(date +%s%N)
-if ! VIBE_ASYNC_FUTURES="price=14:$LONG_MS" timeout 60 "$RUNNER" "$DOUBLE_OUT" >"$DOUBLE_LOG" 2>&1; then
+if ! VIBE_ASYNC_FUTURES="price=14:$LONG_MS" run_bounded 60 "$RUNNER" "$DOUBLE_OUT" >"$DOUBLE_LOG" 2>&1; then
   echo "named hostfutures component gate FAILED: double-await run did not exit 0 (a second future.read on the same future is a canonical-ABI error)" >&2
   cat "$DOUBLE_LOG" >&2
   exit 1
@@ -374,7 +375,7 @@ SEQ_OUT="$OUT_DIR/sequential_two_reads.component.wasm"
 compile_fixture "$SEQ_SRC" "$SEQ_OUT"
 SEQ_LOG="$OUT_DIR/run.sequential.log"
 SEQ_START_NS=$(date +%s%N)
-if ! VIBE_ASYNC_FUTURES="price=14:$LONG_MS,qty=14:$LONG_MS" timeout 60 "$RUNNER" "$SEQ_OUT" >"$SEQ_LOG" 2>&1; then
+if ! VIBE_ASYNC_FUTURES="price=14:$LONG_MS,qty=14:$LONG_MS" run_bounded 60 "$RUNNER" "$SEQ_OUT" >"$SEQ_LOG" 2>&1; then
   echo "named hostfutures component gate FAILED: sequential two-read control did not exit 0" >&2
   cat "$SEQ_LOG" >&2
   exit 1
@@ -408,7 +409,7 @@ if grep -Eq "^[[:space:]]*import qty:" "$CTRL_WIT"; then
   exit 1
 fi
 CTRL_LOG="$OUT_DIR/single.log"
-if ! VIBE_ASYNC_FUTURES="price=41:1" timeout 60 "$RUNNER" "$CTRL_OUT" >"$CTRL_LOG" 2>&1; then
+if ! VIBE_ASYNC_FUTURES="price=41:1" run_bounded 60 "$RUNNER" "$CTRL_OUT" >"$CTRL_LOG" 2>&1; then
   echo "named hostfutures component gate FAILED: control run did not exit 0" >&2
   cat "$CTRL_LOG" >&2
   exit 1
@@ -431,7 +432,7 @@ VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_A
 [ -s "$SPAWN_OUT" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/main.vibe did not compile: $(cat "$SPAWN_OUT.diag" 2>/dev/null)" >&2; exit 1; }
 SPAWN_LOG="$OUT_DIR/spawn_host_futures.log"
 SPAWN_START_NS=$(date +%s%N)
-if ! VIBE_ASYNC_FUTURES="slow=40:300,fast=1:150" timeout 60 "$RUNNER" "$SPAWN_OUT" >"$SPAWN_LOG" 2>&1; then
+if ! VIBE_ASYNC_FUTURES="slow=40:300,fast=1:150" run_bounded 60 "$RUNNER" "$SPAWN_OUT" >"$SPAWN_LOG" 2>&1; then
   echo "named hostfutures component gate FAILED: spawned-task run did not exit 0" >&2
   cat "$SPAWN_LOG" >&2
   exit 1
@@ -456,7 +457,7 @@ VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_A
   "$COMPILER" fixtures/async_spawn_host_futures/shared.vibe "$SHARED_OUT" run >/dev/null 2>&1 || true
 [ -s "$SHARED_OUT" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/shared.vibe did not compile: $(cat "$SHARED_OUT.diag" 2>/dev/null)" >&2; exit 1; }
 SHARED_LOG="$OUT_DIR/spawn_shared_future.log"
-if ! VIBE_ASYNC_FUTURES="slow=20:200" timeout 60 "$RUNNER" "$SHARED_OUT" >"$SHARED_LOG" 2>&1; then
+if ! VIBE_ASYNC_FUTURES="slow=20:200" run_bounded 60 "$RUNNER" "$SHARED_OUT" >"$SHARED_LOG" 2>&1; then
   echo "named hostfutures component gate FAILED: shared-future run did not exit 0" >&2
   cat "$SHARED_LOG" >&2
   exit 1
@@ -472,7 +473,7 @@ VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_A
   "$COMPILER" fixtures/async_spawn_host_futures/cancelled.vibe "$CANCEL_OUT" run >/dev/null 2>&1 || true
 [ -s "$CANCEL_OUT" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/cancelled.vibe did not compile: $(cat "$CANCEL_OUT.diag" 2>/dev/null)" >&2; exit 1; }
 CANCEL_LOG="$OUT_DIR/spawn_cancelled_waiter.log"
-if ! VIBE_ASYNC_FUTURES="slow=40:300,fast=1:100" timeout 60 "$RUNNER" "$CANCEL_OUT" >"$CANCEL_LOG" 2>&1; then
+if ! VIBE_ASYNC_FUTURES="slow=40:300,fast=1:100" run_bounded 60 "$RUNNER" "$CANCEL_OUT" >"$CANCEL_LOG" 2>&1; then
   echo "named hostfutures component gate FAILED: cancelled-waiter run did not exit 0" >&2
   cat "$CANCEL_LOG" >&2
   exit 1
@@ -492,7 +493,7 @@ wasm-tools print "$MANY_OUT" >"$MANY_OUT.wat" 2>/dev/null || true
 grep -q 'canon future.cancel-read' "$MANY_OUT.wat" \
   || { echo "named hostfutures component gate FAILED: cancel_many composed without future.cancel-read" >&2; exit 1; }
 MANY_LOG="$OUT_DIR/spawn_cancel_many.log"
-if ! VIBE_ASYNC_FUTURES="slow=40:300,fast=1:100" timeout 60 "$RUNNER" "$MANY_OUT" >"$MANY_LOG" 2>&1; then
+if ! VIBE_ASYNC_FUTURES="slow=40:300,fast=1:100" run_bounded 60 "$RUNNER" "$MANY_OUT" >"$MANY_LOG" 2>&1; then
   echo "named hostfutures component gate FAILED: cancel_many run did not exit 0 (a cancelled future kept its handle?)" >&2
   cat "$MANY_LOG" >&2
   exit 1
@@ -516,7 +517,7 @@ for timer_case in "sleep_and_host:42" "sleep_short:41"; do
   [ -s "$TC_OUT" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/${tc_name}.vibe did not compile: $(cat "$TC_OUT.diag" 2>/dev/null)" >&2; exit 1; }
   TC_LOG="$OUT_DIR/spawn_${tc_name}.log"
   TC_START_NS=$(date +%s%N)
-  if ! VIBE_ASYNC_FUTURES="slow=40:300,fast=1:100" timeout 60 "$RUNNER" "$TC_OUT" >"$TC_LOG" 2>&1; then
+  if ! VIBE_ASYNC_FUTURES="slow=40:300,fast=1:100" run_bounded 60 "$RUNNER" "$TC_OUT" >"$TC_LOG" 2>&1; then
     echo "named hostfutures component gate FAILED: ${tc_name} did not exit 0" >&2
     cat "$TC_LOG" >&2
     exit 1
@@ -543,7 +544,7 @@ VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_A
 [ -s "$SAH_OUT" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/sleep_after_host.vibe did not compile: $(cat "$SAH_OUT.diag" 2>/dev/null)" >&2; exit 1; }
 SAH_LOG="$OUT_DIR/spawn_sleep_after_host.log"
 SAH_START_NS=$(date +%s%N)
-if ! VIBE_ASYNC_FUTURES="slow=40:900" timeout 60 "$RUNNER" "$SAH_OUT" >"$SAH_LOG" 2>&1; then
+if ! VIBE_ASYNC_FUTURES="slow=40:900" run_bounded 60 "$RUNNER" "$SAH_OUT" >"$SAH_LOG" 2>&1; then
   echo "named hostfutures component gate FAILED: sleep_after_host did not exit 0" >&2
   cat "$SAH_LOG" >&2
   exit 1

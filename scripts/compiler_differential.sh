@@ -19,6 +19,7 @@
 # With no inputs at all, a default corpus spanning the shapes that matter
 # (deep import DAG, cache paths, closures, variants) is used.
 set -euo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/run_bounded.sh" # portable timeout(1), #2958
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -54,7 +55,7 @@ compile_with() {
   rm -rf "$cache"; mkdir -p "$cache"
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     VIBE_BUILD_CACHE_DIR="$cache" \
-    timeout 900 bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \
+    run_bounded 900 bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \
     "$1" "$2" "$3" "$4" >/dev/null 2>&1 || true
   rm -rf "$cache"
 }
