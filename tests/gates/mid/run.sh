@@ -772,6 +772,8 @@ echo "[compiler-gate] alias of a pinned view across a released truncate ok on sh
 #        second release; the plain RC lane corrupted the free list and died in
 #        a later allocation. Nine alias shapes at distinct decimal places, on
 #        all four lanes -- gc and bump are the value oracle, shadow is the pin.
+#        Above them, seven shapes whose source hands the view back through a
+#        block, a `let` chain, or an `if` / `match` of views (#3114 review).
 echo "[compiler-gate] 40f0c/40 alias of a borrowed view is not released twice (#3114)"
 vadir="_build/_gate_rc_view_alias"
 rm -rf "$vadir"; mkdir -p "$vadir"
@@ -789,13 +791,13 @@ for va_lane in bump rc shadow gc; do
     exit 1
   fi
   va_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$vadir/va.wasm" 2>&1 | tail -1)"
-  if [ "$va_out" != "566498532" ]; then
-    echo "[compiler-gate] FAIL: rc_view_alias_drop got '$va_out' on the $va_lane lane (want 566498532). Each alias shape sits at its own decimal place -- see the fixture header for which digit is which. A trap means an alias of a borrowed view released a reference it never took (#3114)." >&2
+  if [ "$va_out" != "6354332566498532" ]; then
+    echo "[compiler-gate] FAIL: rc_view_alias_drop got '$va_out' on the $va_lane lane (want 6354332566498532). Each alias shape sits at its own decimal place -- see the fixture header for which digit is which. A trap means an alias of a borrowed view released a reference it never took (#3114)." >&2
     exit 1
   fi
 done
 rm -rf "$vadir"
-echo "[compiler-gate] borrowed-view alias guard ok (566498532 on bump/rc/shadow/gc)"
+echo "[compiler-gate] borrowed-view alias guard ok (6354332566498532 on bump/rc/shadow/gc)"
 
 # 40f1a. #2427: the shadow table must not overlap the heap it describes.
 #        40f above proves the marks catch a real dup/drop-of-freed; this

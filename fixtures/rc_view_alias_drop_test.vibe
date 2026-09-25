@@ -26,6 +26,22 @@
 //
 // Expected: 566498532
 //
+// #3114 review: the source may hand back its view through a WRAPPER -- a
+// block, a `let` chain inside it -- or a branch whose tails are views. The
+// plan read only the source's top node, so the alias took a reference by
+// transfer that the source never had. `all_wrapped` holds those shapes, one
+// digit each, and `main` places it above `all_shapes`:
+//
+//   x1          block wrapper, borrowed read          2
+//   x10         `let` chain inside the block, alias chain  3
+//   x100        `if` whose arms are both views        3
+//   x1000       block wrapper, alias consumed         4
+//   x10000      `if` of views, alias consumed         5
+//   x100000     `if` of a view and a fresh array      3
+//   x1000000    `match` whose arms are both views     6
+//
+// Expected: all_wrapped(1) = 6354332, main = 6354332566498532
+//
 // The owned side -- an alias of an OWNED value must still be released -- is
 // rc_view_alias_owned_release_test.vibe, kept apart because it measures the
 // heap through `Profiler`, which the wasm-gc lane this file also runs on does
@@ -133,10 +149,93 @@ fn all_shapes(n: Int) -> Int {
   shape_plain(n) + shape_chain(n) * 10 + shape_branch(n, true) * 100 + shape_consumed(n) * 1000 + shape_returned(n) * 10000 + shape_pushed(n) * 100000 + shape_shadowed(n) * 1000000 + shape_in_loop(n) * 10000000 + shape_projection(n) * 100000000
 }
 
+fn w_block(n: Int) -> Int {
+  let xs = [[n, n + 1]]
+  let v = {
+    let i = 0
+    Array::get(xs, i)
+  }
+  let w = v
+  Array::get(w, 1)
+}
+
+fn w_block_chain(n: Int) -> Int {
+  let xs = [[n, n + 1]]
+  let v = {
+    let i = 0
+    let j = i
+    Array::get(xs, j)
+  }
+  let w = v
+  let u = w
+  Array::get(u, 1) + Array::get(Array::get(xs, 0), 0)
+}
+
+fn w_if(n: Int, c: Bool) -> Int {
+  let xs = [[n, n + 1], [n + 2, n + 3]]
+  let v = if c {
+    Array::get(xs, 0)
+  } else {
+    Array::get(xs, 1)
+  }
+  let w = v
+  Array::get(w, 0)
+}
+
+fn w_block_consumed(n: Int) -> Int {
+  let xs = [[n, n + 1]]
+  let v = {
+    let i = 0
+    Array::get(xs, i)
+  }
+  let w = v
+  keep(w) + Array::get(Array::get(xs, 0), 1)
+}
+
+fn w_if_consumed(n: Int, c: Bool) -> Int {
+  let xs = [[n, n + 1], [n + 2, n + 3]]
+  let v = if c {
+    Array::get(xs, 0)
+  } else {
+    Array::get(xs, 1)
+  }
+  let w = v
+  keep(w) + Array::get(Array::get(xs, 1), 0)
+}
+
+fn w_if_mixed(n: Int, c: Bool) -> Int {
+  let xs = [[n, n + 1]]
+  let v = if c {
+    Array::get(xs, 0)
+  } else {
+    [n + 7, n + 8]
+  }
+  let w = v
+  Array::get(w, 1) + Array::get(Array::get(xs, 0), 0)
+}
+
+fn w_match(n: Int) -> Int {
+  let xs = [[n + 5, n], [n, n]]
+  let v = match n {
+    1 => Array::get(xs, 0),
+    _ => Array::get(xs, 1)
+  }
+  let w = v
+  Array::get(w, 0)
+}
+
+fn all_wrapped(n: Int) -> Int {
+  w_block(n) + w_block_chain(n) * 10 + w_if(n, false) * 100 + w_block_consumed(n) * 1000 + w_if_consumed(n, true) * 10000 + w_if_mixed(n, true) * 100000 + w_match(n) * 1000000
+}
+
 export fn main() -> Int {
-  all_shapes(1)
+  all_shapes(1) + all_wrapped(1) * 1000000000
 }
 
 test "an alias of a borrowed view is not released twice" {
   inspect(all_shapes(1), content = "566498532")
+}
+
+test "an alias of a view handed back through a wrapper or branch is not released twice" {
+  inspect(all_wrapped(1), content = "6354332")
 }
