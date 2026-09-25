@@ -1,5 +1,5 @@
 import ./compile_lambda.vibe {
-  cl_return_operand
+  cl_return_operand, rs_has_tail, rs_keep_bind, rs_map
 }
 
 //# Imports
@@ -677,42 +677,31 @@ fn cc_is_ref_cell_read(e: Expr, ctx: CompileCtx) -> Bool {
   }
 }
 
-/// A read of a captured cell, directly or through a projection off one.
-fn cc_is_cell_read_path(e: Expr, ctx: CompileCtx) -> Bool {
+/// A read of a captured cell, directly or through a projection off one, not
+/// shadowed on the way to it.
+fn cc_is_cell_read_path(e: Expr, shadow: Array[String], ctx: CompileCtx) -> Bool {
   match e {
-    EIdent(n, _) => array_contains_str(ctx.ref_cell_names, n),
-    EDot(obj, _, _, _) => cc_is_cell_read_path(obj, ctx),
+    EIdent(n, _) => array_contains_str(ctx.ref_cell_names, n) && !array_contains_str(shadow, n),
+    EDot(obj, _, _, _) => cc_is_cell_read_path(obj, shadow, ctx),
     _ => false
   }
 }
 
-/// Retain every cell read on a result path of a COMPOUND argument -- the tail
-/// of an if / match / block. `top` is false for the argument itself: a bare
-/// cell read or projection is already retained by the per-site checks
-/// (`cc_is_ref_cell_read`, `cc_is_projection`), and wrapping it here would
-/// hide it from them without changing the count.
-fn cc_retain_cell_tails(e: Expr, ctx: CompileCtx, top: Bool) -> Expr {
-  if !top && cc_is_cell_read_path(e, ctx) {
-    ECall(EIdent("__loop_tail_retain", -1), [e], -1)
+/// Retain every cell read on a result path (`rs_map`) of a COMPOUND argument.
+/// A bare cell read or projection is left to the per-site checks
+/// (`cc_is_ref_cell_read`, `cc_is_projection`); wrapping it here would hide it
+/// from them without changing the count.
+fn cc_retain_cell_tails(e: Expr, ctx: CompileCtx) -> Expr {
+  if rs_has_tail(e) {
+    rs_map(e, array_empty(), (x: Expr, shadow: Array[String]) -> Expr {
+      if cc_is_cell_read_path(x, shadow, ctx) {
+        ECall(EIdent("__loop_tail_retain", -1), [x], -1)
+      } else {
+        x
+      }
+    }, rs_keep_bind)
   } else {
-    match e {
-      EIf(c, t, f) => EIf(c, cc_retain_cell_tails(t, ctx, false), cc_retain_cell_tails(f, ctx, false)),
-      EMatch(sc, arms) => {
-        let out = array_empty()
-        for arm in arms {
-          Array::push(out, (arm.0, cc_retain_cell_tails(arm.1, ctx, false)))
-        }
-        EMatch(sc, out)
-      },
-      ELet(n, v, b, off) => ELet(n, v, cc_retain_cell_tails(b, ctx, false), off),
-      ELetMut(n, v, b, off) => ELetMut(n, v, cc_retain_cell_tails(b, ctx, false), off),
-      ELetRec(n, v, b) => ELetRec(n, v, cc_retain_cell_tails(b, ctx, false)),
-      ESeq(a, b) => ESeq(a, cc_retain_cell_tails(b, ctx, false)),
-      EAssign(n, v, b) => EAssign(n, v, cc_retain_cell_tails(b, ctx, false)),
-      EAssignOp(n, op, v, b) => EAssignOp(n, op, v, cc_retain_cell_tails(b, ctx, false)),
-      ELabeledArg(n, l, v) => ELabeledArg(n, l, cc_retain_cell_tails(v, ctx, top)),
-      _ => e
-    }
+    e
   }
 }
 
@@ -748,7 +737,7 @@ fn cc_own_cell_compound_args(callee: Expr, args: Array[Expr], local_names: Array
         if cc_bmask_has(mask, i) {
           Array::push(out, a)
         } else {
-          Array::push(out, cc_retain_cell_tails(a, ctx, true))
+          Array::push(out, cc_retain_cell_tails(a, ctx))
         }
         i = i + 1
       }

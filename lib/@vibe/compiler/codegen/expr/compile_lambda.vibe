@@ -662,49 +662,228 @@ fn cl_agg_fields_cells(fields: Array[(String, Expr)], cells: Array[String]) -> A
   out
 }
 
-/// Is `e` a read of a cell, directly or through a projection off one?
-fn cl_is_cell_read(e: Expr, cells: Array[String], through_dot: Bool) -> Bool {
+/// #3113 / #3130 review: the ONE walk of an expression's RESULT SPINE -- the
+/// sub-expressions whose value becomes the whole expression's value. Every
+/// captured-cell marker goes through it (the store into a cell, a cell read in
+/// an aggregate item or a binding value, a cell read in an owning call
+/// argument), so a result-bearing form is either walked for all of them or
+/// for none. Each review round of #3130 found one more form one of the
+/// hand-written copies had skipped (`if` / `match` / block, then `handle`).
+///
+/// The `Expr` constructors (lib/@vibe/ast/index.vpkg), and which carry a
+/// result tail:
+///
+///   EIf(_, t, f)            t and f
+///   EMatch(_, arms)         every arm body; the arm's pattern binders shadow
+///   EHandle(body, arms)     the body and every handler-arm body; an arm's
+///                           pattern binders shadow
+///   ELet / ELetMut / ELetRec(n, _, b)   b; `n` shadows
+///   ESeq(_, b)              b
+///   EAssign / EAssignOp(_, .., b)       b (the continuation)
+///   ELabeledArg(_, _, v)    v (a transparent wrapper)
+///   ELoop(params, body)     each `break v` in the body that targets this
+///                           loop: v; the params shadow. The payload is
+///                           searched through the same statement / tail
+///                           positions this walk descends, not into operands.
+///
+///   No result tail -- the walk stops there and hands the node to `leaf`:
+///   EInt EFloat EString EBool EUnit EStringInterp EIdent EDot ECall ETuple
+///   EArray ERecord EMap EBinOp EUnaryOp ESpread; EFn (a value, not run);
+///   EWhile (Unit); EForIn (a fresh array: its BODY is an owning place, which
+///   `cl_own_cells` marks as an aggregate item, not a tail of the for-in);
+///   EReturn / EBreak / EContinue (they leave the expression instead of
+///   producing its value).
+///
+/// A new constructor falls into the `_` arm, i.e. is treated as a leaf; add it
+/// to this list either way.
+///
+/// `leaf(node, shadow)` rewrites a leaf; `shadow` holds the names bound
+/// between the root and that leaf. `bind(n, v)` rewrites a `let`'s value
+/// after its body has been walked (the store walk uses it to normalize a
+/// binding that feeds a result path); a walk with no use for it passes
+/// `rs_keep_bind`.
+export fn rs_map(e: Expr, shadow: Array[String], leaf: (Expr, Array[String]) -> Expr, bind: (String, Expr) -> Expr) -> Expr {
   match e {
-    EIdent(x, _) => array_contains_str(cells, x),
-    EDot(obj, _, _, _) => through_dot && cl_is_cell_read(obj, cells, true),
+    EIf(c, t, f) => EIf(c, rs_map(t, shadow, leaf, bind), rs_map(f, shadow, leaf, bind)),
+    EMatch(sc, arms) => EMatch(sc, rs_map_arms(arms, shadow, leaf, bind)),
+    EHandle(body, arms) => EHandle(rs_map(body, shadow, leaf, bind), rs_map_arms(arms, shadow, leaf, bind)),
+    ELet(n, v, b, off) => {
+      let b2 = rs_map(b, rs_with(shadow, n), leaf, bind)
+      ELet(n, bind(n, v), b2, off)
+    },
+    ELetMut(n, v, b, off) => ELetMut(n, v, rs_map(b, rs_with(shadow, n), leaf, bind), off),
+    ELetRec(n, v, b) => ELetRec(n, v, rs_map(b, rs_with(shadow, n), leaf, bind)),
+    ESeq(a, b) => ESeq(a, rs_map(b, shadow, leaf, bind)),
+    EAssign(n, v, b) => EAssign(n, v, rs_map(b, shadow, leaf, bind)),
+    EAssignOp(n, op, v, b) => EAssignOp(n, op, v, rs_map(b, shadow, leaf, bind)),
+    ELabeledArg(n, l, v) => ELabeledArg(n, l, rs_map(v, shadow, leaf, bind)),
+    ELoop(params, body) => {
+      let names = array_empty()
+      for p in params {
+        Array::push(names, p.0)
+      }
+      ELoop(params, rs_breaks(body, rs_with_all(shadow, names), leaf, bind))
+    },
+    _ => leaf(e, shadow)
+  }
+}
+
+/// Does `e` have a result tail `rs_map` walks into (see its table)?
+export fn rs_has_tail(e: Expr) -> Bool {
+  match e {
+    EIf(_, _, _) => true,
+    EMatch(_, _) => true,
+    EHandle(_, _) => true,
+    ELet(_, _, _, _) => true,
+    ELetMut(_, _, _, _) => true,
+    ELetRec(_, _, _) => true,
+    ESeq(_, _) => true,
+    EAssign(_, _, _) => true,
+    EAssignOp(_, _, _, _) => true,
+    ELabeledArg(_, _, _) => true,
+    ELoop(_, _) => true,
     _ => false
   }
 }
 
-/// Mark the result paths of `e` that read a cell. Walks the same result spine
-/// `cl_own_return_into` does, keeping the cell set scoped: a binder that
-/// shadows a cell's name hides it from the paths below it.
-fn cl_cell_tails(e: Expr, cells: Array[String], through_dot: Bool) -> Expr {
-  if Array::length(cells) == 0 {
-    e
-  } else if cl_is_cell_read(e, cells, through_dot) {
-    ECall(EIdent("__lambda_return_owned", -1), [e], -1)
-  } else {
-    match e {
-      EIf(c, t, f) => EIf(c, cl_cell_tails(t, cells, through_dot), cl_cell_tails(f, cells, through_dot)),
-      EMatch(s, arms) => {
-        let out = array_empty()
-        for arm in arms {
-          let binds = array_empty()
-          cl_pat_binds(arm.0, binds)
-          Array::push(out, (arm.0, cl_cell_tails(arm.1, cl_cells_without_all(cells, binds), through_dot)))
-        }
-        EMatch(s, out)
-      },
-      ELet(n, v, b, off) => ELet(n, v, cl_cell_tails(b, cl_cells_without(cells, n), through_dot), off),
-      ELetMut(n, v, b, off) => ELetMut(n, v, cl_cell_tails(b, cl_cells_without(cells, n), through_dot), off),
-      ELetRec(n, v, b) => ELetRec(n, v, cl_cell_tails(b, cl_cells_without(cells, n), through_dot)),
-      ESeq(a, b) => ESeq(a, cl_cell_tails(b, cells, through_dot)),
-      EAssign(n, v, b) => EAssign(n, v, cl_cell_tails(b, cells, through_dot)),
-      EAssignOp(n, op, v, b) => EAssignOp(n, op, v, cl_cell_tails(b, cells, through_dot)),
-      _ => e
-    }
+/// The value-less walk callback: leave every `let` value as it is.
+export fn rs_keep_bind(n: String, v: Expr) -> Expr {
+  let _ = n
+  v
+}
+
+fn rs_map_arms(arms: Array[(Pat, Expr)], shadow: Array[String], leaf: (Expr, Array[String]) -> Expr, bind: (String, Expr) -> Expr) -> Array[(Pat, Expr)] {
+  let out = array_empty()
+  for arm in arms {
+    let binds = array_empty()
+    cl_pat_binds(arm.0, binds)
+    Array::push(out, (arm.0, rs_map(arm.1, rs_with_all(shadow, binds), leaf, bind)))
+  }
+  out
+}
+
+/// `break v` payloads of the enclosing `loop`, reached through the positions
+/// a statement or a tail can occupy. A nested loop / while / for-in / lambda
+/// owns its own breaks and is not entered.
+fn rs_breaks(e: Expr, shadow: Array[String], leaf: (Expr, Array[String]) -> Expr, bind: (String, Expr) -> Expr) -> Expr {
+  match e {
+    EBreak(Some(v)) => EBreak(Some(rs_map(v, shadow, leaf, bind))),
+    EIf(c, t, f) => EIf(c, rs_breaks(t, shadow, leaf, bind), rs_breaks(f, shadow, leaf, bind)),
+    EMatch(sc, arms) => {
+      let out = array_empty()
+      for arm in arms {
+        let binds = array_empty()
+        cl_pat_binds(arm.0, binds)
+        Array::push(out, (arm.0, rs_breaks(arm.1, rs_with_all(shadow, binds), leaf, bind)))
+      }
+      EMatch(sc, out)
+    },
+    EHandle(body, arms) => {
+      let out = array_empty()
+      for arm in arms {
+        let binds = array_empty()
+        cl_pat_binds(arm.0, binds)
+        Array::push(out, (arm.0, rs_breaks(arm.1, rs_with_all(shadow, binds), leaf, bind)))
+      }
+      EHandle(rs_breaks(body, shadow, leaf, bind), out)
+    },
+    ELet(n, v, b, off) => ELet(n, rs_breaks(v, shadow, leaf, bind), rs_breaks(b, rs_with(shadow, n), leaf, bind), off),
+    ELetMut(n, v, b, off) => ELetMut(n, rs_breaks(v, shadow, leaf, bind), rs_breaks(b, rs_with(shadow, n), leaf, bind), off),
+    ELetRec(n, v, b) => ELetRec(n, v, rs_breaks(b, rs_with(shadow, n), leaf, bind)),
+    ESeq(a, b) => ESeq(rs_breaks(a, shadow, leaf, bind), rs_breaks(b, shadow, leaf, bind)),
+    EAssign(n, v, b) => EAssign(n, rs_breaks(v, shadow, leaf, bind), rs_breaks(b, shadow, leaf, bind)),
+    EAssignOp(n, op, v, b) => EAssignOp(n, op, rs_breaks(v, shadow, leaf, bind), rs_breaks(b, shadow, leaf, bind)),
+    _ => e
   }
 }
 
-/// The value stored into a cell, normalized to the owning contract.
+fn rs_with(shadow: Array[String], n: String) -> Array[String] {
+  let out = Array::slice(shadow, 0, Array::length(shadow))
+  Array::push(out, n)
+  out
+}
+
+fn rs_with_all(shadow: Array[String], names: Array[String]) -> Array[String] {
+  let out = Array::slice(shadow, 0, Array::length(shadow))
+  for n in names {
+    Array::push(out, n)
+  }
+  out
+}
+
+/// Is `e` a read of a cell not shadowed on the way to it, directly or (with
+/// `through_dot`) through a projection off one?
+fn cl_is_cell_read(e: Expr, cells: Array[String], shadow: Array[String], through_dot: Bool) -> Bool {
+  match e {
+    EIdent(x, _) => array_contains_str(cells, x) && !array_contains_str(shadow, x),
+    EDot(obj, _, _, _) => through_dot && cl_is_cell_read(obj, cells, shadow, true),
+    _ => false
+  }
+}
+
+/// Mark the result paths of `e` that read a cell (`rs_map`).
+fn cl_cell_tails(e: Expr, cells: Array[String], through_dot: Bool) -> Expr {
+  if Array::length(cells) == 0 {
+    e
+  } else {
+    rs_map(e, array_empty(), (x: Expr, shadow: Array[String]) -> Expr {
+      if cl_is_cell_read(x, cells, shadow, through_dot) {
+        ECall(EIdent("__lambda_return_owned", -1), [x], -1)
+      } else {
+        x
+      }
+    }, rs_keep_bind)
+  }
+}
+
+/// The value stored into a cell, normalized to the owning contract: every
+/// result leaf that can hold a reference is marked, and codegen retains the
+/// ones that are borrows. A `let` whose name reaches a result leaf has its own
+/// value normalized the same way, so a block ending in a borrow-bound name is
+/// owned by the time it reaches the cell.
 fn cl_cell_store_value(v: Expr) -> Expr {
-  cl_own_return_into(v, array_empty(), true)
+  let needed: Array[String] = []
+  cl_store_walk(v, needed)
+}
+
+fn cl_store_walk(v: Expr, needed: Array[String]) -> Expr {
+  rs_map(v, array_empty(), (x: Expr, shadow: Array[String]) -> Expr {
+    let _ = shadow
+    cl_store_leaf(x, needed)
+  }, (n: String, bv: Expr) -> Expr {
+    if array_contains_str(needed, n) {
+      match bv {
+        EIdent(src, _) => {
+          Array::push(needed, src)
+          bv
+        },
+        _ => if rs_has_tail(bv) {
+          cl_store_walk(bv, needed)
+        } else {
+          bv
+        }
+      }
+    } else {
+      bv
+    }
+  })
+}
+
+fn cl_store_leaf(x: Expr, needed: Array[String]) -> Expr {
+  match x {
+    EIdent(n, _) => {
+      Array::push(needed, n)
+      ECall(EIdent("__lambda_return_owned", -1), [x], -1)
+    },
+    EDot(_, _, _, _) => ECall(EIdent("__lambda_return_owned", -1), [x], -1),
+    ECall(EIdent("__lambda_return_owned", off), _, _) => if off < 0 {
+      x
+    } else {
+      ECall(EIdent("__lambda_return_owned", -1), [x], -1)
+    },
+    ECall(_, _, _) => ECall(EIdent("__lambda_return_owned", -1), [x], -1),
+    _ => x
+  }
 }
 
 fn cl_own_cells(e: Expr, cells: Array[String]) -> Expr {
@@ -772,7 +951,9 @@ fn cl_own_cells(e: Expr, cells: Array[String]) -> Expr {
         Some(l) => cl_cells_without(cl_cells_without(cells, n), l),
         None => cl_cells_without(cells, n)
       }
-      EForIn(n, label, cl_own_cells(iter, cells), cl_own_cells(body, inner))
+      // The body's value is collected into the fresh result array, so a
+      // cell read on its result path is an aggregate item.
+      EForIn(n, label, cl_own_cells(iter, cells), cl_cell_tails(cl_own_cells(body, inner), inner, true))
     },
     EBinOp(op, a, b, off) => EBinOp(op, cl_own_cells(a, cells), cl_own_cells(b, cells), off),
     EUnaryOp(op, value) => EUnaryOp(op, cl_own_cells(value, cells)),

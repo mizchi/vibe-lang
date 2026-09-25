@@ -296,6 +296,196 @@ fn consume_if(xs: Array[D], c: Bool) -> String {
   consume(if c { d } else { B("fresh") })
 }
 
+// #3130 review, second round. The result-spine walk missed `handle`: a cell
+// read as a handle body's or handler arm's value reached an owning place with
+// no reference of its own. All the cell markers now share one walk
+// (`rs_map`, compile_lambda.vibe), so these cover each result-bearing form in
+// each owning position. Measured on a stage2 built from 0e8f30a11, one test
+// per file: the handle body and handler-arm array item and call argument, and
+// the for-in body, trapped under VIBE_RC=shadow. The `let rec` / statement
+// block tails and the store positions already passed there; they pin that the
+// shared walk keeps them.
+
+fn consume_name(d: D) -> String {
+  let held: Array[D] = [d]
+  name_of(Array::get(held, 0))
+}
+
+fn fail_if(c: Bool) -> Int with Exception {
+  if c {
+    throw("no")
+  } else {
+    0
+  }
+}
+
+fn tail_handle_body_agg(xs: Array[D], c: Bool) -> String {
+  let log: Array[Int] = []
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  let held = [handle {
+    let _ = fail_if(!c)
+    d
+  } with {
+    Exception::Throw(_) => B("fresh")
+  }]
+  name_of(Array::get(held, 0))
+}
+
+fn tail_handle_body_arg(xs: Array[D], c: Bool) -> String {
+  let log: Array[Int] = []
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  consume_name(handle {
+    let _ = fail_if(!c)
+    d
+  } with {
+    Exception::Throw(_) => B("fresh")
+  })
+}
+
+fn tail_handle_body_store(xs: Array[D], c: Bool) -> String {
+  let log: Array[Int] = []
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  let mut e = handle {
+    let _ = fail_if(!c)
+    d
+  } with {
+    Exception::Throw(_) => B("fresh")
+  }
+  let g2 = () -> String { name_of(e) }
+  g2()
+}
+
+fn tail_handle_arm_agg(xs: Array[D], c: Bool) -> String {
+  let log: Array[Int] = []
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  let held = [handle {
+    let _ = fail_if(c)
+    B("fresh")
+  } with {
+    Exception::Throw(_) => d
+  }]
+  name_of(Array::get(held, 0))
+}
+
+fn tail_handle_arm_arg(xs: Array[D], c: Bool) -> String {
+  let log: Array[Int] = []
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  consume_name(handle {
+    let _ = fail_if(c)
+    B("fresh")
+  } with {
+    Exception::Throw(_) => d
+  })
+}
+
+fn tail_handle_arm_store(xs: Array[D], c: Bool) -> String {
+  let log: Array[Int] = []
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  let mut e = handle {
+    let _ = fail_if(c)
+    B("fresh")
+  } with {
+    Exception::Throw(_) => d
+  }
+  let g2 = () -> String { name_of(e) }
+  g2()
+}
+
+fn tail_letrec_tail_agg(xs: Array[D], c: Bool) -> String {
+  let log: Array[Int] = []
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  let held = [{
+    let rec g = (n: Int) -> Int { if n <= 0 { 0 } else { g(n - 1) } }
+    let _ = g(2)
+    if c { d } else { B("fresh") }
+  }]
+  name_of(Array::get(held, 0))
+}
+
+fn tail_letrec_tail_arg(xs: Array[D], c: Bool) -> String {
+  let log: Array[Int] = []
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  consume_name({
+    let rec g = (n: Int) -> Int { if n <= 0 { 0 } else { g(n - 1) } }
+    let _ = g(2)
+    if c { d } else { B("fresh") }
+  })
+}
+
+fn tail_letrec_tail_store(xs: Array[D], c: Bool) -> String {
+  let log: Array[Int] = []
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  let mut e = {
+    let rec g = (n: Int) -> Int { if n <= 0 { 0 } else { g(n - 1) } }
+    let _ = g(2)
+    if c { d } else { B("fresh") }
+  }
+  let g2 = () -> String { name_of(e) }
+  g2()
+}
+
+fn tail_seq_tail_agg(xs: Array[D], c: Bool) -> String {
+  let log: Array[Int] = []
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  let held = [{
+    Array::push(log, 1);
+    if c { d } else { B("fresh") }
+  }]
+  name_of(Array::get(held, 0))
+}
+
+fn tail_seq_tail_arg(xs: Array[D], c: Bool) -> String {
+  let log: Array[Int] = []
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  consume_name({
+    Array::push(log, 1);
+    if c { d } else { B("fresh") }
+  })
+}
+
+fn tail_seq_tail_store(xs: Array[D], c: Bool) -> String {
+  let log: Array[Int] = []
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  let mut e = {
+    Array::push(log, 1);
+    if c { d } else { B("fresh") }
+  }
+  let g2 = () -> String { name_of(e) }
+  g2()
+}
+
+fn tail_forin_agg(xs: Array[D], c: Bool) -> String {
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  let held = for x in [1, 2] { if c { d } else { B("fresh") } }
+  name_of(Array::get(held, 1))
+}
+
 test "a captured let mut holding an if/match borrow keeps the element alive" {
   let xs = mk()
   let out: Array[String] = []
@@ -490,4 +680,69 @@ test "a captured cell on a branch tail of a map value keeps the element alive" {
   let a = map_if(xs, true)
   let b = map_if(xs, true)
   inspect(String::join([name_of(Map::get(a, "k")), name_of(Map::get(a, "j")), name_of(Map::get(b, "k")), names(xs)], ";"), content = "ax;ax;ax;ax,by,cz")
+}
+
+test "a captured cell reaching an array item through a handle body keeps the element alive" {
+  let xs = mk()
+  inspect(String::join([tail_handle_body_agg(xs, true), tail_handle_body_agg(xs, true), tail_handle_body_agg(xs, false), names(xs)], ";"), content = "ax;ax;fresh;ax,by,cz")
+}
+
+test "a captured cell reaching an owning call argument through a handle body keeps the element alive" {
+  let xs = mk()
+  inspect(String::join([tail_handle_body_arg(xs, true), tail_handle_body_arg(xs, true), tail_handle_body_arg(xs, false), names(xs)], ";"), content = "ax;ax;fresh;ax,by,cz")
+}
+
+test "a captured cell reaching a captured cell initializer through a handle body keeps the element alive" {
+  let xs = mk()
+  inspect(String::join([tail_handle_body_store(xs, true), tail_handle_body_store(xs, true), tail_handle_body_store(xs, false), names(xs)], ";"), content = "ax;ax;fresh;ax,by,cz")
+}
+
+test "a captured cell reaching an array item through a handler arm keeps the element alive" {
+  let xs = mk()
+  inspect(String::join([tail_handle_arm_agg(xs, true), tail_handle_arm_agg(xs, true), tail_handle_arm_agg(xs, false), names(xs)], ";"), content = "ax;ax;fresh;ax,by,cz")
+}
+
+test "a captured cell reaching an owning call argument through a handler arm keeps the element alive" {
+  let xs = mk()
+  inspect(String::join([tail_handle_arm_arg(xs, true), tail_handle_arm_arg(xs, true), tail_handle_arm_arg(xs, false), names(xs)], ";"), content = "ax;ax;fresh;ax,by,cz")
+}
+
+test "a captured cell reaching a captured cell initializer through a handler arm keeps the element alive" {
+  let xs = mk()
+  inspect(String::join([tail_handle_arm_store(xs, true), tail_handle_arm_store(xs, true), tail_handle_arm_store(xs, false), names(xs)], ";"), content = "ax;ax;fresh;ax,by,cz")
+}
+
+test "a captured cell reaching an array item through a block after a let rec keeps the element alive" {
+  let xs = mk()
+  inspect(String::join([tail_letrec_tail_agg(xs, true), tail_letrec_tail_agg(xs, true), tail_letrec_tail_agg(xs, false), names(xs)], ";"), content = "ax;ax;fresh;ax,by,cz")
+}
+
+test "a captured cell reaching an owning call argument through a block after a let rec keeps the element alive" {
+  let xs = mk()
+  inspect(String::join([tail_letrec_tail_arg(xs, true), tail_letrec_tail_arg(xs, true), tail_letrec_tail_arg(xs, false), names(xs)], ";"), content = "ax;ax;fresh;ax,by,cz")
+}
+
+test "a captured cell reaching a captured cell initializer through a block after a let rec keeps the element alive" {
+  let xs = mk()
+  inspect(String::join([tail_letrec_tail_store(xs, true), tail_letrec_tail_store(xs, true), tail_letrec_tail_store(xs, false), names(xs)], ";"), content = "ax;ax;fresh;ax,by,cz")
+}
+
+test "a captured cell reaching an array item through a block after a statement keeps the element alive" {
+  let xs = mk()
+  inspect(String::join([tail_seq_tail_agg(xs, true), tail_seq_tail_agg(xs, true), tail_seq_tail_agg(xs, false), names(xs)], ";"), content = "ax;ax;fresh;ax,by,cz")
+}
+
+test "a captured cell reaching an owning call argument through a block after a statement keeps the element alive" {
+  let xs = mk()
+  inspect(String::join([tail_seq_tail_arg(xs, true), tail_seq_tail_arg(xs, true), tail_seq_tail_arg(xs, false), names(xs)], ";"), content = "ax;ax;fresh;ax,by,cz")
+}
+
+test "a captured cell reaching a captured cell initializer through a block after a statement keeps the element alive" {
+  let xs = mk()
+  inspect(String::join([tail_seq_tail_store(xs, true), tail_seq_tail_store(xs, true), tail_seq_tail_store(xs, false), names(xs)], ";"), content = "ax;ax;fresh;ax,by,cz")
+}
+
+test "a captured cell reaching an array item through a for-in body keeps the element alive" {
+  let xs = mk()
+  inspect(String::join([tail_forin_agg(xs, true), tail_forin_agg(xs, true), tail_forin_agg(xs, false), names(xs)], ";"), content = "ax;ax;fresh;ax,by,cz")
 }
