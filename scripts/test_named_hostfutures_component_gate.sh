@@ -582,4 +582,29 @@ if [ "$NG_ELAPSED_MS" -lt 350 ] || [ "$NG_ELAPSED_MS" -ge 600 ]; then
 fi
 echo "[named-hostfutures-component-gate] nested_groups: 43 in ${NG_ELAPSED_MS}ms (the nested group left the outer group's events for it)"
 
+# A nested group arms its own timer after the outer timer fired during its
+# wait; its sleeper sleeps its full 200ms (~550ms total), not ended by the
+# outer entry left in the mailbox.
+NTR_OUT="$OUT_DIR/spawn_nested_timer_reuse.component.wasm"
+rm -f "$NTR_OUT" "$NTR_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/nested_timer_reuse.vibe "$NTR_OUT" run >/dev/null 2>&1 || true
+[ -s "$NTR_OUT" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/nested_timer_reuse.vibe did not compile: $(cat "$NTR_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+NTR_LOG="$OUT_DIR/spawn_nested_timer_reuse.log"
+NTR_START_NS=$(date +%s%N)
+if ! VIBE_ASYNC_FUTURES="fast=1:100,mid=2:250,slow=40:300" timeout 60 "$RUNNER" "$NTR_OUT" >"$NTR_LOG" 2>&1; then
+  echo "named hostfutures component gate FAILED: nested_timer_reuse did not exit 0" >&2
+  cat "$NTR_LOG" >&2
+  exit 1
+fi
+NTR_ELAPSED_MS=$(( ( $(date +%s%N) - NTR_START_NS ) / 1000000 ))
+[ "$(cat "$NTR_LOG")" = "43" ] \
+  || { echo "named hostfutures component gate FAILED: nested_timer_reuse expected 43, got: $(cat "$NTR_LOG")" >&2; exit 1; }
+if [ "$NTR_ELAPSED_MS" -lt 500 ] || [ "$NTR_ELAPSED_MS" -ge 800 ]; then
+  echo "named hostfutures component gate FAILED: nested_timer_reuse took ${NTR_ELAPSED_MS}ms (want ~550ms: the nested sleeper keeps its whole debt)" >&2
+  exit 1
+fi
+echo "[named-hostfutures-component-gate] nested_timer_reuse: 43 in ${NTR_ELAPSED_MS}ms (the nested timer is its own, not the outer one left in the mailbox)"
+
 echo "named hostfutures component gate OK"
