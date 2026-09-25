@@ -3118,7 +3118,7 @@ test "n" with Fs { .. }          // NG: a block grants its row -- write `allows 
 (#1508). A test is an entry point, so the row is a **grant** and the keyword
 is `allows`, as on `fn main allows ..` (ADR-0088). The declared row
 **widens** the ambient row (`{ Fs, Env, Stdin, Stdout, Stderr, Console,
-Process, Profiler, Error, Exception }`; `Console` is the current name for the
+Process, Profiler, Error, Exception, Async }`; `Console` is the current name for the
 tty, the three older labels are legacy) rather than replacing it -- writing
 `allows Http` keeps the defaults `assert` needs, such as `Exception`. An
 anonymous `test { .. }` / `bench { .. }` cannot carry a row (there is no name

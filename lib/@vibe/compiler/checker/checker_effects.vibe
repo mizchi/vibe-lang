@@ -7344,7 +7344,7 @@ export fn file_entry_cacheable(stmts: Array[Stmt], entry_name: String) -> Bool {
       }
       if !declared_ok {
         match entry_declared {
-          Some(row) => console_entry_is_output_only(row, exec_body),
+          Some(row) => console_entry_is_output_only(row, exec_body, fn_names),
           None => false
         }
       } else {
@@ -7360,16 +7360,88 @@ export fn file_entry_cacheable(stmts: Array[Stmt], entry_name: String) -> Bool {
 /// itself (`is_entry_cache_safe_operation`). `println` / `print` require
 /// that broad label anyway. An entry is still cacheable when every other
 /// declared label is cache-safe and the body is provably output-only:
-/// `println`, `print`, and the stdout `write_stream` / `write_char`
-/// spellings. A nested function is not inspected -- the effect walk does
-/// not see into one -- so the entry stays uncacheable rather than caching
-/// a read.
-fn call_is_captured_output(callee: Expr) -> Bool {
+/// the builtin `println` / `print` and the stdout `write_stream` /
+/// `write_char` spellings, and only when nothing in the module shadows
+/// those names. A nested function, a `for` (its desugar inserts the
+/// iterator call), and an interpolation are not inspected.
+fn str_list_has(xs: Array[String], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(xs) {
+    if Array::get(xs, i) == name {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn binding_hides_stdout_write(name: String) -> Bool {
+  name == "println" || name == "print" || name == "Console" || name == "Stdout"
+}
+
+fn pats_hide_stdout_write(pats: Array[Pat]) -> Bool {
+  let mut i = 0
+  let mut hide = false
+  while i < Array::length(pats) {
+    if pat_hides_stdout_write(Array::get(pats, i)) {
+      hide = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hide
+}
+
+fn pat_hides_stdout_write(pat: Pat) -> Bool {
+  match pat {
+    PWild => false,
+    PBind(name) => binding_hides_stdout_write(name),
+    PInt(_) => false,
+    PFloat(_) => false,
+    PString(_) => false,
+    PBool(_) => false,
+    PCtor(_, args) => pats_hide_stdout_write(args),
+    PTuple(args) => pats_hide_stdout_write(args),
+    POr(left, right) => pat_hides_stdout_write(left) || pat_hides_stdout_write(right),
+    PStruct(_, fields) => {
+      let mut i = 0
+      let mut hide = false
+      while i < Array::length(fields) {
+        let (_, inner) = Array::get(fields, i)
+        if pat_hides_stdout_write(inner) {
+          hide = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hide
+    }
+  }
+}
+
+fn call_is_captured_output(callee: Expr, fn_names: Array[String]) -> Bool {
   match callee {
-    EIdent(name, _) => name == "println" || name == "print" || name == "Console::write_stream" || name == "Console::write_char" || name == "Stdout::write_stream" || name == "Stdout::write_char",
+    EIdent(name, _) => {
+      if str_list_has(fn_names, name) {
+        false
+      } else {
+        name == "println" || name == "print" || name == "Console::write_stream" || name == "Console::write_char" || name == "Stdout::write_stream" || name == "Stdout::write_char"
+      }
+    },
     EDot(recv, field, _, _) => {
       match recv {
-        EIdent(head, _) => (head == "Console" || head == "Stdout") && (field == "write_stream" || field == "write_char"),
+        EIdent(head, _) => {
+          if str_list_has(fn_names, head) {
+            false
+          } else {
+            (head == "Console" || head == "Stdout") && (field == "write_stream" || field == "write_char")
+          }
+        },
         _ => false
       }
     },
@@ -7377,11 +7449,11 @@ fn call_is_captured_output(callee: Expr) -> Bool {
   }
 }
 
-fn exprs_are_captured_output(xs: Array[Expr]) -> Bool {
+fn exprs_are_captured_output(xs: Array[Expr], fn_names: Array[String]) -> Bool {
   let mut i = 0
   let mut ok = true
   while i < Array::length(xs) {
-    if !expr_is_captured_output(Array::get(xs, i)) {
+    if !expr_is_captured_output(Array::get(xs, i), fn_names) {
       ok = false
     } else {
       ()
@@ -7391,12 +7463,12 @@ fn exprs_are_captured_output(xs: Array[Expr]) -> Bool {
   ok
 }
 
-fn expr_pairs_are_captured_output(xs: Array[(String, Expr)]) -> Bool {
+fn expr_pairs_are_captured_output(xs: Array[(String, Expr)], fn_names: Array[String]) -> Bool {
   let mut i = 0
   let mut ok = true
   while i < Array::length(xs) {
     let (_, value) = Array::get(xs, i)
-    if !expr_is_captured_output(value) {
+    if !expr_is_captured_output(value, fn_names) {
       ok = false
     } else {
       ()
@@ -7406,12 +7478,27 @@ fn expr_pairs_are_captured_output(xs: Array[(String, Expr)]) -> Bool {
   ok
 }
 
-fn arms_are_captured_output(arms: Array[(Pat, Expr)]) -> Bool {
+fn loop_inits_hide_stdout_write(inits: Array[(String, Expr)]) -> Bool {
+  let mut i = 0
+  let mut hide = false
+  while i < Array::length(inits) {
+    let (name, _) = Array::get(inits, i)
+    if binding_hides_stdout_write(name) {
+      hide = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hide
+}
+
+fn arms_are_captured_output(arms: Array[(Pat, Expr)], fn_names: Array[String]) -> Bool {
   let mut i = 0
   let mut ok = true
   while i < Array::length(arms) {
-    let (_, body) = Array::get(arms, i)
-    if !expr_is_captured_output(body) {
+    let (pat, body) = Array::get(arms, i)
+    if pat_hides_stdout_write(pat) || !expr_is_captured_output(body, fn_names) {
       ok = false
     } else {
       ()
@@ -7421,7 +7508,15 @@ fn arms_are_captured_output(arms: Array[(Pat, Expr)]) -> Bool {
   ok
 }
 
-fn expr_is_captured_output(expr: Expr) -> Bool {
+fn expr_keeps_stdout_write(name: String, value: Expr, body: Expr, fn_names: Array[String]) -> Bool {
+  if binding_hides_stdout_write(name) {
+    false
+  } else {
+    expr_is_captured_output(value, fn_names) && expr_is_captured_output(body, fn_names)
+  }
+}
+
+fn expr_is_captured_output(expr: Expr, fn_names: Array[String]) -> Bool {
   match expr {
     EInt(_) => true,
     EFloat(_) => true,
@@ -7432,35 +7527,37 @@ fn expr_is_captured_output(expr: Expr) -> Bool {
     // not run. A hole can be a read. Refuse the entry instead of caching it.
     EStringInterp(_) => false,
     EString(_, _) => true,
-    ETuple(xs) => exprs_are_captured_output(xs),
-    EArray(xs) => exprs_are_captured_output(xs),
-    EContinue(xs) => exprs_are_captured_output(xs),
-    ERecord(_, fields, _) => expr_pairs_are_captured_output(fields),
-    EMap(fields) => expr_pairs_are_captured_output(fields),
-    EIf(cond, then_branch, else_branch) => expr_is_captured_output(cond) && expr_is_captured_output(then_branch) && expr_is_captured_output(else_branch),
-    ELet(_, value, body, _) => expr_is_captured_output(value) && expr_is_captured_output(body),
-    ELetRec(_, value, body) => expr_is_captured_output(value) && expr_is_captured_output(body),
-    ELetMut(_, value, body, _) => expr_is_captured_output(value) && expr_is_captured_output(body),
-    EAssign(_, value, body) => expr_is_captured_output(value) && expr_is_captured_output(body),
-    EAssignOp(_, _, value, body) => expr_is_captured_output(value) && expr_is_captured_output(body),
-    ESeq(left, right) => expr_is_captured_output(left) && expr_is_captured_output(right),
-    EWhile(cond, body) => expr_is_captured_output(cond) && expr_is_captured_output(body),
-    EForIn(_, _, iter, body) => expr_is_captured_output(iter) && expr_is_captured_output(body),
-    EBinOp(_, left, right, _) => expr_is_captured_output(left) && expr_is_captured_output(right),
-    EUnaryOp(_, arg) => expr_is_captured_output(arg),
-    EReturn(arg) => expr_is_captured_output(arg),
-    ESpread(arg) => expr_is_captured_output(arg),
-    ELabeledArg(_, _, arg) => expr_is_captured_output(arg),
-    EDot(recv, _, _, _) => expr_is_captured_output(recv),
+    ETuple(xs) => exprs_are_captured_output(xs, fn_names),
+    EArray(xs) => exprs_are_captured_output(xs, fn_names),
+    EContinue(xs) => exprs_are_captured_output(xs, fn_names),
+    ERecord(_, fields, _) => expr_pairs_are_captured_output(fields, fn_names),
+    EMap(fields) => expr_pairs_are_captured_output(fields, fn_names),
+    EIf(cond, then_branch, else_branch) => expr_is_captured_output(cond, fn_names) && expr_is_captured_output(then_branch, fn_names) && expr_is_captured_output(else_branch, fn_names),
+    ELet(name, value, body, _) => expr_keeps_stdout_write(name, value, body, fn_names),
+    ELetRec(name, value, body) => expr_keeps_stdout_write(name, value, body, fn_names),
+    ELetMut(name, value, body, _) => expr_keeps_stdout_write(name, value, body, fn_names),
+    EAssign(name, value, body) => expr_keeps_stdout_write(name, value, body, fn_names),
+    EAssignOp(name, _, value, body) => expr_keeps_stdout_write(name, value, body, fn_names),
+    ESeq(left, right) => expr_is_captured_output(left, fn_names) && expr_is_captured_output(right, fn_names),
+    EWhile(cond, body) => expr_is_captured_output(cond, fn_names) && expr_is_captured_output(body, fn_names),
+    // Desugar rewrites `for` into iter_get / host_stream_next, which can
+    // read. Those calls are not in this AST, so the surface node is refused.
+    EForIn(_, _, _, _) => false,
+    EBinOp(_, left, right, _) => expr_is_captured_output(left, fn_names) && expr_is_captured_output(right, fn_names),
+    EUnaryOp(_, arg) => expr_is_captured_output(arg, fn_names),
+    EReturn(arg) => expr_is_captured_output(arg, fn_names),
+    ESpread(arg) => expr_is_captured_output(arg, fn_names),
+    ELabeledArg(_, _, arg) => expr_is_captured_output(arg, fn_names),
+    EDot(recv, _, _, _) => expr_is_captured_output(recv, fn_names),
     EBreak(value) => {
       match value {
-        Some(inner) => expr_is_captured_output(inner),
+        Some(inner) => expr_is_captured_output(inner, fn_names),
         None => true
       }
     },
-    EMatch(scrut, arms) => expr_is_captured_output(scrut) && arms_are_captured_output(arms),
-    ELoop(inits, body) => expr_pairs_are_captured_output(inits) && expr_is_captured_output(body),
-    ECall(callee, args, _) => call_is_captured_output(callee) && exprs_are_captured_output(args),
+    EMatch(scrut, arms) => expr_is_captured_output(scrut, fn_names) && arms_are_captured_output(arms, fn_names),
+    ELoop(inits, body) => !loop_inits_hide_stdout_write(inits) && expr_pairs_are_captured_output(inits, fn_names) && expr_is_captured_output(body, fn_names),
+    ECall(callee, args, _) => call_is_captured_output(callee, fn_names) && exprs_are_captured_output(args, fn_names),
     // A nested function is invisible to the effect walk. Caching it would
     // hide a read. A handler can discharge a read the same way.
     EFn(_, _, _, _, _, _) => false,
@@ -7468,7 +7565,7 @@ fn expr_is_captured_output(expr: Expr) -> Bool {
   }
 }
 
-fn console_entry_is_output_only(row: Array[String], body: Expr) -> Bool {
+fn console_entry_is_output_only(row: Array[String], body: Expr, fn_names: Array[String]) -> Bool {
   let mut i = 0
   let mut saw_console = false
   let mut ok = true
@@ -7483,7 +7580,7 @@ fn console_entry_is_output_only(row: Array[String], body: Expr) -> Bool {
     }
     i = i + 1
   }
-  ok && saw_console && expr_is_captured_output(body)
+  ok && saw_console && expr_is_captured_output(body, fn_names)
 }
 
 /// Every label in `row` must appear in `safe` -- unlike decl_authorizes_
