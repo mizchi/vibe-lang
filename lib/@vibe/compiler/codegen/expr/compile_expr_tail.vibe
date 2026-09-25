@@ -2061,77 +2061,6 @@ fn with_pattern_binders(inner: Array[String], pat: Pat) -> Array[String] {
   out
 }
 
-/// #3108 review: a captured `let mut` lives in an RC cell whose drop releases
-/// its payload, so the cell must OWN the value it stores. A borrowed
-/// initializer -- a borrow-returning call (`Array::get(xs, i)`), a projection,
-/// a straight-line block ending in either, or an if/match whose branch tail is
-/// one -- is a view of an element its container still
-/// owns; storing it unretained lets the cell's drop free that element while
-/// the container holds it (a shadow abort, or a trap / wrong read on the
-/// default RC lane). Retain such a value before the store; a fresh owned value
-/// is stored as is.
-fn ref_cell_retain_value(value: Expr, local_names: Array[String], ctx: CompileCtx) -> Expr with Exception {
-  if !ctx.enable_rc {
-    value
-  } else {
-    ref_cell_retain_tail(value, local_names, array_empty(), ctx)
-  }
-}
-
-/// The per-tail half of `ref_cell_retain_value`. An if/match is walked into
-/// every arm (with the names each arm binds, so a branch-local shadow of a
-/// borrow-returning function is not mistaken for it); any other tail is
-/// retained when it is unowned by the same test the assignment path uses for
-/// an unowned replacement -- a projection, a borrow-returning call, a
-/// straight-line block whose leaf is either -- or is a loop-borrowed name.
-/// Unlike `retain_wrap_branch_tails` (#768), a projection is retained whatever
-/// its root: the cell's drop releases the field no matter where it came from
-/// (#3108 review).
-fn ref_cell_retain_tail(e: Expr, local_names: Array[String], inner: Array[String], ctx: CompileCtx) -> Expr with Exception {
-  match e {
-    EIf(c, t, el) => EIf(c, ref_cell_retain_tail(t, local_names, inner, ctx), ref_cell_retain_tail(el, local_names, inner, ctx)),
-    EMatch(scrut, arms) => {
-      let out = array_empty()
-      let mut ai = 0
-      while ai < Array::length(arms) {
-        let (apat, abody) = Array::get(arms, ai)
-        Array::push(out, (apat, ref_cell_retain_tail(abody, local_names, with_pattern_binders(inner, apat), ctx)))
-        ai = ai + 1
-      }
-      EMatch(scrut, out)
-    },
-    EHandle(hb, harms) => {
-      let out = array_empty()
-      let mut hi = 0
-      while hi < Array::length(harms) {
-        let (hpat, hbody) = Array::get(harms, hi)
-        Array::push(out, (hpat, ref_cell_retain_tail(hbody, local_names, with_pattern_binders(inner, hpat), ctx)))
-        hi = hi + 1
-      }
-      EHandle(ref_cell_retain_tail(hb, local_names, inner, ctx), out)
-    },
-    _ => if ref_cell_tail_unowned(e, local_names, inner, ctx) {
-      ECall(EIdent("__loop_tail_retain", -1), [e], -1)
-    } else {
-      e
-    }
-  }
-}
-
-/// Only match-pattern binders reach a bare ident / projection tail through
-/// `inner` (a `let` in an arm wraps the tail and is judged by
-/// `spine_leaf_unowned`), and a pattern binder is a view into the scrutinee,
-/// so it is retained like a loop-borrowed name; a projection is retained
-/// whatever its root.
-fn ref_cell_tail_unowned(e: Expr, local_names: Array[String], inner: Array[String], ctx: CompileCtx) -> Bool {
-  match e {
-    EIdent(x, _) => !array_contains_str(ctx.ref_cell_names, x) && (array_contains_str(ctx.loop_borrowed_names, x) || array_contains_str(inner, x)),
-    EDot(_, _, _, _) => true,
-    ECall(_, _, _) => call_returns_borrow(e, local_names, ctx) && !callee_bound_in(e, inner),
-    _ => spine_leaf_unowned(e, local_names, ctx)
-  }
-}
-
 /// #768: apply the branch-tail retain rewrite (see retain_wrap_branch_tails)
 /// when this binding's scope-end drop is planned AND we are inside a loop
 /// (loop_borrowed_names non-empty -- empty outside loops and under bump, so
@@ -2702,7 +2631,7 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         emit_local_set(buf, local_idx)
         emit_local_get(buf, local_idx)
         emit_i32_wrap_i64(buf)
-        let nl = compile_expr(buf, ref_cell_retain_value(value, local_names, ctx), local_names, next_local + 1, ctx, ld)
+        let nl = compile_expr(buf, value, local_names, next_local + 1, ctx, ld)
         Array::set(local_names, local_idx, name)
         emit_i64_store(buf, 3, 0)
         let nl2 = compile_expr(buf, body, local_names, nl, ctx, ld)

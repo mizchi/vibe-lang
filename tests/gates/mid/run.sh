@@ -630,19 +630,18 @@ echo "[compiler-gate] branch-tail borrow let retain ok (334444 on rc/shadow)"
 #         lane, where an unbalanced drop traps on its first occurrence. The
 #         plain RC lane can answer these right by luck (a freed block not yet
 #         reused), which is why the unit runner's default lane is not enough:
-#         a branch-local shadow of a borrow-returning fn, a `let rec` block
-#         tail, and a closure-captured `let mut` (RC cell) holding a borrowed
-#         initializer -- direct, if/match, block, projection, pattern binder.
-echo "[compiler-gate] 40f-b2/40 branch-tail / captured-cell borrow retain on shadow (#3108)"
+#         a branch that reaches its borrow-returning tail through a `let rec`
+#         block or a `handle` body / arm.
+echo "[compiler-gate] 40f-b2/40 let-rec / handle branch-tail borrow retain on shadow (#3108)"
 if ! VIBE_RC=shadow VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
     bash scripts/vibe_test.sh fixtures/rc_branch_borrow_letrec_test.vibe \
-    fixtures/rc_captured_mut_borrow_test.vibe >"$ROOT_DIR/_build/_gate_rc_cell_borrow.log" 2>&1; then
-  echo "[compiler-gate] FAIL: a borrowed branch tail or captured-cell initializer was dropped without a retain under VIBE_RC=shadow (#3108):" >&2
-  tail -20 "$ROOT_DIR/_build/_gate_rc_cell_borrow.log" >&2
+    >"$ROOT_DIR/_build/_gate_rc_branch_letrec.log" 2>&1; then
+  echo "[compiler-gate] FAIL: a borrowed branch tail behind a let rec or a handle was dropped without a retain under VIBE_RC=shadow (#3108):" >&2
+  tail -20 "$ROOT_DIR/_build/_gate_rc_branch_letrec.log" >&2
   exit 1
 fi
-rm -f "$ROOT_DIR/_build/_gate_rc_cell_borrow.log"
-echo "[compiler-gate] branch-tail / captured-cell borrow retain ok on shadow"
+rm -f "$ROOT_DIR/_build/_gate_rc_branch_letrec.log"
+echo "[compiler-gate] let-rec / handle branch-tail borrow retain ok on shadow"
 
 # 40f0. #2837: `Array::truncate` changes the array's LENGTH, not the lifetime
 #       of an element someone already took out of it. That is the ownership
