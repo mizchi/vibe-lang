@@ -9956,6 +9956,9 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
   // lowering, after the used-name collect ran over the source, so the
   // request-parameter responses the collector found demand it too.
   let need_host_arg_push_builtin = Map::has_key(used_builtin_names, "vibe_hf_arg_push_raw") || Array::length(hf_response_arg_names) > 0
+  // #2066: `HostResponse::body` lowers to the claim, also after the collect,
+  // so any response in the program demands it.
+  let need_host_claim_builtin = Map::has_key(used_builtin_names, "vibe_hs_claim_raw") || Array::length(hf_response_arg_names) > 0 || Array::length(hf_response_names) > 0
   // ADR-0089 Decision 3 (#1218): the program's NAMED host streams (sorted,
   // deduped). Each gets its own `vibe.host_stream_get$<name>` core import;
   // they all share the single `vibe.host_stream_read` half (park is per
@@ -10278,6 +10281,14 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
   // #1537: `host_sleep_cancel` -- a task group ending with its timer still
   // pending cancels the timer's subtask rather than hold its handle.
   let hsl_cancel_import_idx = if need_host_sleep_cancel_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // #2066: `host_stream_claim` -- a response body's one-time claim.
+  let hs_claim_import_idx = if need_host_claim_builtin {
     let idx = next_import_idx
     next_import_idx = next_import_idx + 1
     idx
@@ -10967,6 +10978,11 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
   } else {
     fs_read_file_stub_idx
   }
+  let hs_claim_idx = if hs_claim_import_idx >= 0 {
+    hs_claim_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
   // ADR-0089 Decision 3: the shared host-stream READ half, same stub
   // discipline as hf_wait (`(i64) -> i64`; the call site only exists when
   // the import is reserved).
@@ -11455,6 +11471,7 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
         "vibe_hs_cancel_raw" => hs_cancel_idx,
         "vibe_hf_arg_push_raw" => hf_arg_push_idx,
         "vibe_hf_sleep_cancel_raw" => hsl_cancel_idx,
+        "vibe_hs_claim_raw" => hs_claim_idx,
         // ADR-0089 Decision 3: shared read half of the named host streams.
         "vibe_hs_read_raw" => hs_read_idx,
         // ADR-0089 Decision 3 follow-up: shared drop half of the named host
@@ -14050,6 +14067,14 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
   if hsl_cancel_import_idx >= 0 {
     emit_name(import_content, "vibe")
     emit_name(import_content, "host_sleep_cancel")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  if hs_claim_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "host_stream_claim")
     bytebuf_push(import_content, 0)
     leb128_encode_u32(import_content, 3)
   } else {

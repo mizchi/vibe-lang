@@ -6157,16 +6157,136 @@ fn comp_emit_response_value(buf: Bytes, addr_local: Int, tag_mode: Int) -> Unit 
   emit_if_void(buf)
   bytebuf_push(buf, 0)
   emit_end(buf)
+  // The body handle must fit the claim bands.
+  emit_local_get(buf, addr_local)
+  emit_i32_load(buf, 2, 4)
+  emit_i32_const(buf, comp_hf_max_handles())
+  emit_i32_gt_u(buf)
+  emit_if_void(buf)
+  bytebuf_push(buf, 0)
+  emit_end(buf)
+  // #2066: a fresh GENERATION for this body handle, so a claim made with a
+  // value from before the handle was reused is told apart from this one.
+  comp_emit_body_gen_addr(buf, addr_local)
+  comp_emit_body_gen_addr(buf, addr_local)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_const(buf, 1)
+  emit_i32_add(buf)
+  emit_i32_const(buf, comp_body_gen_mask())
+  emit_i32_and(buf)
+  emit_i32_store(buf, 2, 0)
   emit_local_get(buf, addr_local)
   emit_i32_load(buf, 2, 0)
   bytebuf_push(buf, 172)
   emit_i64_const(buf, 32)
   emit_i64_shl(buf)
+  // low 32 bits: handle | generation << 10
   emit_local_get(buf, addr_local)
   emit_i32_load(buf, 2, 4)
+  comp_emit_body_gen_addr(buf, addr_local)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_const(buf, 10)
+  emit_i32_shl(buf)
+  // i32.or
+  bytebuf_push(buf, 114)
   bytebuf_push(buf, 173)
   emit_i64_or(buf)
   comp_emit_encode_i64_value(buf, tag_mode)
+}
+
+/// #2066: a response's body end has ONE owner. The packed response carries,
+/// beside the body handle, the handle's generation at the moment the response
+/// landed (bumped per response in comp_body_gen_base); `HostResponse::body`
+/// must CLAIM that (handle, generation) before reading, and a claim succeeds
+/// once. So a second `body` of the same response -- a future shared between
+/// tasks, a value copied through a closure the capture check cannot see -- and
+/// a stale value whose handle was since reused by another response both trap
+/// here instead of reading a stream that belongs to someone else.
+fn comp_body_gen_base() -> Int {
+  53248
+}
+
+/// The last claimed generation + 1 per handle (0 = never claimed).
+fn comp_body_claimed_base() -> Int {
+  57344
+}
+
+fn comp_body_gen_mask() -> Int {
+  2097151
+}
+
+/// Push `comp_body_gen_base() + body_handle * 4`, the handle read from the
+/// landed record at `addr_local + 4`.
+fn comp_emit_body_gen_addr(buf: Bytes, addr_local: Int) -> Unit {
+  emit_local_get(buf, addr_local)
+  emit_i32_load(buf, 2, 4)
+  emit_i32_const(buf, 2)
+  emit_i32_shl(buf)
+  emit_i32_const(buf, comp_body_gen_base())
+  emit_i32_add(buf)
+}
+
+/// host_stream_claim(v): v = handle | generation << 10 (the response's low
+/// half). Answers the handle; traps on a generation that is not the handle's
+/// current one, or one already claimed.
+fn comp_body_claim_body(tag_mode: Int) -> Bytes {
+  let b = bytebuf_new()
+  // param 0; locals (i32): 1 handle, 2 generation
+  leb128_encode_u32(b, 1)
+  leb128_encode_u32(b, 2)
+  bytebuf_push(b, 127)
+  emit_local_get(b, 0)
+  comp_emit_decode_i64_value(b, tag_mode)
+  emit_i32_wrap_i64(b)
+  emit_local_set(b, 1)
+  emit_local_get(b, 1)
+  emit_i32_const(b, 10)
+  emit_i32_shr_u(b)
+  emit_local_set(b, 2)
+  emit_local_get(b, 1)
+  emit_i32_const(b, 1023)
+  emit_i32_and(b)
+  emit_local_set(b, 1)
+  // current generation?
+  emit_local_get(b, 1)
+  emit_i32_const(b, 2)
+  emit_i32_shl(b)
+  emit_i32_const(b, comp_body_gen_base())
+  emit_i32_add(b)
+  emit_i32_load(b, 2, 0)
+  emit_local_get(b, 2)
+  emit_i32_ne(b)
+  emit_if_void(b)
+  bytebuf_push(b, 0)
+  emit_end(b)
+  // not claimed yet?
+  emit_local_get(b, 1)
+  emit_i32_const(b, 2)
+  emit_i32_shl(b)
+  emit_i32_const(b, comp_body_claimed_base())
+  emit_i32_add(b)
+  emit_i32_load(b, 2, 0)
+  emit_local_get(b, 2)
+  emit_i32_const(b, 1)
+  emit_i32_add(b)
+  emit_i32_eq(b)
+  emit_if_void(b)
+  bytebuf_push(b, 0)
+  emit_end(b)
+  emit_local_get(b, 1)
+  emit_i32_const(b, 2)
+  emit_i32_shl(b)
+  emit_i32_const(b, comp_body_claimed_base())
+  emit_i32_add(b)
+  emit_local_get(b, 2)
+  emit_i32_const(b, 1)
+  emit_i32_add(b)
+  emit_i32_store(b, 2, 0)
+  emit_local_get(b, 1)
+  bytebuf_push(b, 173)
+  comp_emit_encode_i64_value(b, tag_mode)
+  bytebuf_push(b, 11)
+  b
 }
 
 /// #3131: a WIT-derived async import is lowered as WRITTEN -- `async func()
@@ -6861,7 +6981,7 @@ fn comp_sleep_wait_payload_slot() -> Int {
   32
 }
 
-fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], stream_core_names: Array[String], want_stream_close: Bool, want_sleep: Bool, tag_mode: Int, future_s64: Bool, response_payload: Bool, want_wait_any: Bool, want_stream_arm: Bool, want_sleep_arm: Bool, want_cancel: Bool, want_stream_cancel: Bool, response_kinds: Array[Bool], want_arg_push: Bool, want_timer_cancel: Bool, exit_stubs: Array[String]) -> Bytes with Exception {
+fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], stream_core_names: Array[String], want_stream_close: Bool, want_sleep: Bool, tag_mode: Int, future_s64: Bool, response_payload: Bool, want_wait_any: Bool, want_stream_arm: Bool, want_sleep_arm: Bool, want_cancel: Bool, want_stream_cancel: Bool, response_kinds: Array[Bool], want_arg_push: Bool, want_timer_cancel: Bool, exit_stubs: Array[String], want_claim: Bool) -> Bytes with Exception {
   // #1342: a THIRD half -- `vibe.sleep`. It is not a getter/wait pair like the
   // other two: the host side is an `async func(ms) -> ms`, so its
   // async-lowered call yields a SUBTASK rather than a future/stream handle,
@@ -7313,6 +7433,14 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     Array::push(fn_types, exit_type_idx)
     Array::push(export_names, Array::get(exit_stubs, xs_i))
     xs_i = xs_i + 1
+  }
+  // #2066: the body-claim half, last of all.
+  if want_claim {
+    Array::push(export_indices, nfunc_imports + Array::length(fn_types))
+    Array::push(fn_types, 6)
+    Array::push(export_names, "host_stream_claim")
+  } else {
+    ()
   }
   emit_function_section(out, fn_types)
   emit_export_section_multi(out, export_names, export_indices)
@@ -8727,6 +8855,13 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     bytebuf_push(code_sec, 11)
     xb_i = xb_i + 1
   }
+  if want_claim {
+    let claim_body = comp_body_claim_body(tag_mode)
+    leb128_encode_u32(code_sec, Bytes::length(claim_body))
+    bytebuf_push_buf(code_sec, claim_body)
+  } else {
+    ()
+  }
   bytebuf_push_section(out, 10, code_sec)
   bytebuf_to_bytes(out)
 }
@@ -9214,7 +9349,7 @@ fn comp_emit_async_host_composition(main_core_wasm: Bytes, export_name: String, 
     let ifn = Array::get(imp_names, ii)
     if im == "wasi_snapshot_preview1" && ifn == "fd_write" {
       ()
-    } else if im == "vibe" && (comp_is_host_future_get_import(ifn) || ifn == "host_future_wait" || ifn == "host_future_arm" || ifn == "host_future_wait_any" || ifn == "host_stream_arm" || ifn == "host_sleep_arm" || ifn == "host_future_cancel" || ifn == "host_stream_cancel" || ifn == "host_arg_push" || ifn == "host_sleep_cancel" || comp_is_host_stream_get_import(ifn) || ifn == "host_stream_read" || ifn == "host_stream_close" || ifn == "sleep" || ifn == "stderr_write_stream" || (ifn == "process_exit" && comp_core_imports_func(main_core_wasm, "vibe", "stderr_write_stream"))) {
+    } else if im == "vibe" && (comp_is_host_future_get_import(ifn) || ifn == "host_future_wait" || ifn == "host_future_arm" || ifn == "host_future_wait_any" || ifn == "host_stream_arm" || ifn == "host_sleep_arm" || ifn == "host_future_cancel" || ifn == "host_stream_cancel" || ifn == "host_arg_push" || ifn == "host_sleep_cancel" || ifn == "host_stream_claim" || comp_is_host_stream_get_import(ifn) || ifn == "host_stream_read" || ifn == "host_stream_close" || ifn == "sleep" || ifn == "stderr_write_stream" || (ifn == "process_exit" && comp_core_imports_func(main_core_wasm, "vibe", "stderr_write_stream"))) {
       ()
     } else {
       throw("component(async-hostfuture): core module uses host import '\{im}.\{ifn}' (only fd_write, sleep and the host-future/host-stream imports are satisfiable in this composition)")
@@ -9493,7 +9628,7 @@ fn comp_emit_async_host_composition(main_core_wasm: Bytes, export_name: String, 
   } else {
     ()
   }
-  emit_core_module_section(buf, comp_generate_hostfuture_adapter_core_module(hf_names, hs_names, hs_wants_close, want_sleep, tag_mode, future_s64, response_mode, want_wait_any, want_stream_arm, want_sleep_arm, want_cancel, want_stream_cancel, response_kinds, want_arg_push, want_timer_cancel, exit_stubs))
+  emit_core_module_section(buf, comp_generate_hostfuture_adapter_core_module(hf_names, hs_names, hs_wants_close, want_sleep, tag_mode, future_s64, response_mode, want_wait_any, want_stream_arm, want_sleep_arm, want_cancel, want_stream_cancel, response_kinds, want_arg_push, want_timer_cancel, exit_stubs, comp_core_imports_vibe_name(main_core_wasm, "host_stream_claim")))
   if handler_mode {
     emit_core_module_section(buf, comp_generate_string_trampoline_packed_async_opt(handler_string_count, export_name, true))
   } else {
