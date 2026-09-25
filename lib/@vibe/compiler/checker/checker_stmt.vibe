@@ -124,6 +124,8 @@ import ./checker.vibe {
   is_array_builder_ty,
   is_region_tagged_ty,
   let_generalize,
+  local_let_types_begin,
+  local_let_types_end,
   note_toplevel_generic_binding,
   pat_binds_resume,
   preserve_generic_instantiation,
@@ -10292,6 +10294,8 @@ export fn check_program_type_table(stmts: Array[Stmt]) -> (Array[(Int, Type)], S
   reset_eq_formal_vars()
   reset_throw_payload_sites()
   set_generic_fn_decls(stmts)
+  // #3050: also record each local `let`'s value type, for hover alone.
+  local_let_types_begin()
   handle {
     // #3042: hover sees the prelude `Ordering` the check does.
     let prelude_binders = array_empty()
@@ -10305,8 +10309,12 @@ export fn check_program_type_table(stmts: Array[Stmt]) -> (Array[(Int, Type)], S
     // or `p.value` under `let f: (Holder) -> Int = (p) -> { p.value }` would
     // show the variable instead of `Int`.
     let final_s = resolve_deferred_field_reads(final_s0, empty_defs, frozen_errors, false)
+    local_let_types_end()
     (tytab, final_s)
-  } with { Exception::Throw(_) => (tytab, SubstEmpty) }
+  } with { Exception::Throw(_) => {
+    local_let_types_end()
+    (tytab, SubstEmpty)
+  } }
 }
 
 /// As `check_program_result`, seeded with an importing module's environment.
