@@ -57,6 +57,7 @@ the minimized single-file program's decls into defs.vibe/main.vibe).
 
 Usage:
   python3 tests/fuzz/reduce.py <seed-or-path.vibe> --class CLASS [--cli PATH] [--out PATH] [--budget N] [--extended]
+                     [--fold-addresses auto|always|never]
 
 Examples:
   python3 tests/fuzz/reduce.py 217 --class MISMATCH
@@ -102,7 +103,7 @@ class Oracle:
     and reports whether it still reproduces the target finding class."""
 
     def __init__(self, workdir, target_cls, cli, budget, timeout=180,
-                 expected=None):
+                 expected=None, fold_addresses="auto"):
         self.workdir = Path(workdir)
         self.target_cls = target_cls
         self.cli = cli
@@ -115,6 +116,7 @@ class Oracle:
         # that a candidate must keep -- see oracle_signature.
         self.expected = expected or []
         self.signature = None
+        self.fold_addresses = fold_addresses
 
     def write_expected(self, text):
         """Keep only the expectations whose `println("<ID>|` survives in the
@@ -126,14 +128,29 @@ class Oracle:
             "".join(l + "\n" for l in kept))
 
     @staticmethod
-    def oracle_signature(detail):
-        """(failing id, {lane: printed text}) with runs of 3+ digits folded
-        to `#`: a wrong answer that is an allocation ADDRESS moves whenever
-        the reducer deletes an allocation, and must still count as the same
-        finding; a short wrong value must stay exactly what it was."""
+    def oracle_signature(detail, fold_addresses="auto"):
+        """(failing id, {lane: printed text}). A wrong answer that is an
+        allocation ADDRESS moves whenever the reducer deletes an allocation,
+        and must still count as the same finding, so runs of 3+ digits are
+        folded to `#`. Whether a long number is an address cannot be read
+        off the text when the right answer is itself a long number: a wrong
+        shift result (`1440` for `1441`) and an address (`257` for `1024`)
+        look alike. `fold_addresses` decides:
+          auto   -- fold only when the expected text has no 3+ digit run, so
+                    a long right answer keeps the lanes' digits exact;
+          always -- fold regardless (an address where a number was expected);
+          never  -- keep every lane's text exact."""
         m = ID_RE.search(detail)
-        lanes = {k: LONG_DIGITS_RE.sub("#", v)
-                 for k, v in DETAIL_RE.findall(detail) if k != "expected"}
+        pairs = DETAIL_RE.findall(detail)
+        expected = "".join(v for k, v in pairs if k == "expected")
+        if fold_addresses == "always":
+            fold = True
+        elif fold_addresses == "never":
+            fold = False
+        else:
+            fold = not LONG_DIGITS_RE.search(expected)
+        lanes = {k: (LONG_DIGITS_RE.sub("#", v) if fold else v)
+                 for k, v in pairs if k != "expected"}
         return (m.group(1) if m else None, lanes)
 
     def test(self, lines):
@@ -166,7 +183,7 @@ class Oracle:
             # The class alone is too coarse here: any deletion that changes
             # a printed value would "reproduce" it. Keep the original's
             # failing id and per-lane answer (see oracle_signature).
-            sig = self.oracle_signature(out)
+            sig = self.oracle_signature(out, self.fold_addresses)
             if self.signature is None:
                 self.signature = sig
             ok = sig == self.signature
@@ -396,6 +413,12 @@ def main():
                           "--extended (the #2979 productions and oracle)")
     ap.add_argument("--classic", action="store_true",
                      help="regenerate a SEED target with --classic")
+    ap.add_argument("--fold-addresses", choices=["auto", "always", "never"],
+                     default="auto",
+                     help="ORACLE_* only: treat 3+ digit runs in a lane's "
+                          "answer as an allocation address (see "
+                          "Oracle.oracle_signature); `always` when an "
+                          "address stands where a long number was expected")
     args = ap.parse_args()
     if args.cls in DIAG_CLASSES and args.target.isdigit():
         ap.error(f"{args.cls} is a mutation-mode class: pass the finding's "
@@ -409,7 +432,7 @@ def main():
         ap.error(f"{args.cls} needs the program's expected.txt (a seed with "
                  "--extended, or a finding directory's single.vibe)")
     oracle = Oracle(workdir, args.cls, args.cli, args.budget,
-                    expected=expected)
+                    expected=expected, fold_addresses=args.fold_addresses)
 
     print(f"[reduce] target={args.target} class={args.cls} "
           f"lines={len(lines)} budget={args.budget}")

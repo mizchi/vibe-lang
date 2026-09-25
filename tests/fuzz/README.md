@@ -161,7 +161,6 @@ does not compile those lanes and reports them as `skipped` in every verdict.
 | construct | lanes skipped | why (measured 2026-09-24) |
 | --------- | ------------- | ------------------------- |
 | trait impls / bounded generics | bump, rc | the flat single-source linear lane answers ``no impl `Tr` for `Self` `` (and a `__dict_` reserved-prefix error) for a program the gc and FS lanes accept |
-| `suberror` kinds | fs | `export suberror K(..)` is not exported: `imported name 'K' is not exported` |
 
 Two more gaps are avoided rather than skipped, because they would reject every
 program: the gc lane refuses a program with an UNCALLED function that performs
