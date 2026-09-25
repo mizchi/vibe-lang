@@ -336,8 +336,9 @@ override silently contradicting a module that says `raw` is the hazard #2903's
   `async func(url: string) -> response`); the derivation spells it
   `host_response_named_with("<address>?<label>", url)`. The guest pushes the
   argument's bytes one at a time through `vibe.host_arg_push` into the
-  adapter's argument buffer (length at word 64, bytes at 40960, 24576 bytes;
-  overflowing it traps), then calls `vibe.wit_response_arg_get$<address>`,
+  adapter's argument buffer (length at word 64, bytes from 65536 -- page 1,
+  above every fixed band -- growing the memory a page at a time, so a string
+  has no length bound short of a failed grow), then calls `vibe.wit_response_arg_get$<address>`,
   which passes `(buffer, length)` as the lowered string, starts the call and
   resets the length, so each request starts from an empty buffer. Any other
   parameter shape is refused by name.

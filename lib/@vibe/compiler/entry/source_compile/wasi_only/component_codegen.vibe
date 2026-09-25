@@ -6146,12 +6146,11 @@ fn comp_arg_len_slot() -> Int {
   64
 }
 
+/// #2066: the argument buffer starts at page 1, above every fixed adapter
+/// band, and grows the memory as a string needs it (Codex on #3091): a WIT
+/// `string` has no length bound, so neither does the buffer.
 fn comp_arg_buf_base() -> Int {
-  40960
-}
-
-fn comp_arg_buf_cap() -> Int {
-  24576
+  65536
 }
 
 /// #2066: per-handle payload KIND of a mixed composition (1 = a response, 0 =
@@ -7915,8 +7914,9 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
   }
   if want_arg_push {
     // host_arg_push(b): param 0 = the tagged byte; local (i32) 1=len. Appends
-    // one byte to the argument buffer the next argument getter lowers; a
-    // string past the buffer traps rather than overwriting what follows.
+    // one byte to the argument buffer the next argument getter lowers. The
+    // buffer is the memory's tail from page 1: a byte past the current end
+    // grows the memory by a page first, and only a failed grow traps.
     let apush_body = bytebuf_new()
     leb128_encode_u32(apush_body, 1)
     leb128_encode_u32(apush_body, 1)
@@ -7924,11 +7924,27 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     emit_i32_const(apush_body, comp_arg_len_slot())
     emit_i32_load(apush_body, 2, 0)
     emit_local_set(apush_body, 1)
+    // base + len >= memory.size << 16 (unsigned)
     emit_local_get(apush_body, 1)
-    emit_i32_const(apush_body, comp_arg_buf_cap())
+    emit_i32_const(apush_body, comp_arg_buf_base())
+    emit_i32_add(apush_body)
+    // memory.size 0
+    bytebuf_push(apush_body, 63)
+    bytebuf_push(apush_body, 0)
+    emit_i32_const(apush_body, 16)
+    emit_i32_shl(apush_body)
     bytebuf_push(apush_body, 79)
     emit_if_void(apush_body)
+    emit_i32_const(apush_body, 1)
+    // memory.grow 0; a negative answer is a failed grow
+    bytebuf_push(apush_body, 64)
     bytebuf_push(apush_body, 0)
+    emit_i32_const(apush_body, 0)
+    // i32.lt_s
+    bytebuf_push(apush_body, 72)
+    emit_if_void(apush_body)
+    bytebuf_push(apush_body, 0)
+    emit_end(apush_body)
     emit_end(apush_body)
     emit_local_get(apush_body, 1)
     emit_i32_const(apush_body, comp_arg_buf_base())

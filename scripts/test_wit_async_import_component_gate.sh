@@ -375,7 +375,9 @@ echo "[wit-async-import] response + scalar future from one interface: 211 in ${E
 # bytes into the adapter's argument buffer and the adapter lowers it as the
 # string parameter; the runner's `echo` response streams the argument back as
 # the body. 200 + ("abc" = 294) + ("d" = 100) = 594 -- the second request
-# proves the buffer is reset between calls rather than appended to.
+# proves the buffer is reset between calls rather than appended to -- and a
+# third, 70000 bytes of "a" (97 each), outgrows the buffer's first page, so
+# the adapter must grow its memory: 594 + 6790000 = 6790594.
 REQ_DIR="$OUT/response_request"
 rm -rf "$REQ_DIR"
 mkdir -p "$REQ_DIR"
@@ -393,11 +395,11 @@ GOT="$(VIBE_ASYNC_RESPONSES="$IFACE#fetch=200:0:echo" timeout 60 "$RUNNER" "$REQ
   echo "WIT async import gate FAILED: viberun did not exit 0 on the request-parameter program: $GOT" >&2
   exit 1
 }
-[ "$GOT" = "594" ] || {
-  echo "WIT async import gate FAILED: request parameter expected 594 (status 200, echoed \"abc\" 294, echoed \"d\" 100), got: $GOT" >&2
+[ "$GOT" = "6790594" ] || {
+  echo "WIT async import gate FAILED: request parameter expected 6790594 (status 200, echoed \"abc\" 294, \"d\" 100, 70000 x \"a\" 6790000), got: $GOT" >&2
   exit 1
 }
-echo "[wit-async-import] response taking a string parameter: 594"
+echo "[wit-async-import] response taking a string parameter (up to 70000 bytes): 6790594"
 # #2066 NAMED STREAMS beside WIT imports. A named host stream is a ROOT
 # import, so it takes the component funcs before the WIT interface's aliased
 # functions (after it, in spawn_main, comes `sleep-for`); the lowers keep the
