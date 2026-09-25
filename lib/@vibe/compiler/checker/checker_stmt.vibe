@@ -22,6 +22,7 @@ import ./checker_effects.vibe {
   env_row_labels,
   row_text_labels,
   set_call_formal_bindings,
+  set_decl_type_formals,
   set_shadowed_builtin_type_names,
   set_throw_site_kinds,
   stmt_type_rows
@@ -7209,6 +7210,130 @@ fn builtin_named_type_params(stmts: Array[Stmt]) -> Array[(String, Array[String]
   out
 }
 
+/// #3053: per top-level declaration, the type parameter names its binders
+/// declare -- the declaration's own `[S]` and every nested lambda's. Inside
+/// the declaration such a name in an effect row is a RIGID formal: it stands
+/// for one type the body cannot choose, so `with State[S]` does not authorize
+/// a call that requires `State[String]`. A name that is also a builtin type or
+/// a type this module declares or imports is left out, so a row spelling that
+/// might name the type rather than the formal is never judged by it. Keyed by
+/// `effect_shadow_key`, like `builtin_named_type_params`.
+fn decl_type_formal_names(stmts: Array[Stmt]) -> Array[(String, Array[String])] {
+  let builtin = [
+    "Int",
+    "String",
+    "Bool",
+    "Double",
+    "Char",
+    "Bytes",
+    "Unit",
+    "Array",
+    "Option"
+  ]
+  let excluded = [
+    "Int",
+    "String",
+    "Bool",
+    "Double",
+    "Char",
+    "Bytes",
+    "Unit",
+    "Array",
+    "Option"
+  ]
+  let mut ti = 0
+  while ti < Array::length(stmts) {
+    match Array::get(stmts, ti) {
+      SStruct(_, name, _, _, _, _) => Array::push(excluded, name),
+      SEnum(_, name, _, _, _) => Array::push(excluded, name),
+      STypeAlias(_, name, _, _) => Array::push(excluded, name),
+      // #3096 review: an imported name (`import ./m { N }` bringing
+      // `type N = String`) may be the type an outer row spells, while an
+      // unrelated nested lambda binds `[N]`; the formal set is per
+      // declaration, not per scope, so such a name is left unjudged.
+      SImport(_, items) => push_import_item_scope_names(items, excluded),
+      _ => ()
+    }
+    ti = ti + 1
+  }
+  let out = array_empty()
+  let mut si = 0
+  while si < Array::length(stmts) {
+    let stmt = Array::get(stmts, si)
+    let key = effect_shadow_key(stmt)
+    if String::length(key) > 0 {
+      let names = array_empty()
+      match stmt {
+        SLet(_, _, _, _, e) => decl_type_formals_top(e, builtin, excluded, names),
+        SLetMut(_, _, e) => decl_type_formals_top(e, builtin, excluded, names),
+        STest(_, e) => decl_type_formals_expr(e, excluded, names),
+        SBench(_, e) => decl_type_formals_expr(e, excluded, names),
+        _ => ()
+      }
+      if Array::length(names) > 0 {
+        Array::push(out, (key, names))
+      }
+    }
+    si = si + 1
+  }
+  out
+}
+
+/// #3096 review: the declaration's OWN binder (`fn caller[N](x: N) with
+/// State[N]`) scopes over its header and whole body, so its formal shadows a
+/// module-level or imported `N` wherever the declaration's rows are read and
+/// stays rigid; only a builtin spelling is left out (#3054 owns that case).
+/// Nested binders go through `decl_type_formals_expr`, where a name the module
+/// declares or imports is left unjudged, because the outer header cannot see
+/// them.
+fn decl_type_formals_top(e: Expr, builtin: Array[String], excluded: Array[String], out: Array[String]) -> Unit {
+  match e {
+    EFn(tparams, _, _, _, _, _) => {
+      let mut i = 0
+      while i < Array::length(tparams) {
+        let tp = type_param_name(Array::get(tparams, i))
+        if !tps_names_contains(builtin, tp) && !tps_names_contains(out, tp) {
+          Array::push(out, tp)
+        }
+        i = i + 1
+      }
+      let mark = expr_children_push(e)
+      let end = expr_children_top()
+      let mut c = mark
+      while c < end {
+        decl_type_formals_expr(expr_child_at(c), excluded, out)
+        c = c + 1
+      }
+      expr_children_pop(mark)
+    },
+    _ => decl_type_formals_expr(e, excluded, out)
+  }
+}
+
+fn decl_type_formals_expr(e: Expr, excluded: Array[String], out: Array[String]) -> Unit {
+  match e {
+    EFn(tparams, _, _, _, _, _) => {
+      let mut i = 0
+      while i < Array::length(tparams) {
+        let tp = type_param_name(Array::get(tparams, i))
+        if !tps_names_contains(excluded, tp) && !tps_names_contains(out, tp) {
+          Array::push(out, tp)
+        }
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+  let mark = expr_children_push(e)
+  let end = expr_children_top()
+  let mut i = mark
+  while i < end {
+    decl_type_formals_expr(expr_child_at(i), excluded, out)
+    i = i + 1
+  }
+  expr_children_pop(mark)
+}
+
 fn collect_type_param_shadowing_errors(stmts: Array[Stmt], errors: Array[String]) -> Unit {
   collect_formal_exception_kind_errors(stmts, errors)
   collect_reserved_type_prefix_errors(stmts, errors)
@@ -8193,6 +8318,7 @@ fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: Option[
   publish_throw_site_kinds(final_s)
   set_call_formal_bindings(callee_formal_bindings(empty_defs, final_s))
   set_shadowed_builtin_type_names(builtin_named_type_params(stmts))
+  set_decl_type_formals(decl_type_formal_names(stmts))
   collect_async_effect_errors(expanded_stmts, env, empty_defs, frozen_errors)
   // #1455 step 3: `empty_defs` is the finished enum table by now, so the
   // qualifiers drained above can finally be checked against it.
@@ -10308,6 +10434,7 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
       publish_throw_site_kinds(final_s)
       set_call_formal_bindings(callee_formal_bindings(empty_defs, final_s))
       set_shadowed_builtin_type_names(builtin_named_type_params(stmts))
+      set_decl_type_formals(decl_type_formal_names(stmts))
       collect_async_effect_errors(expanded_stmts, env, empty_defs, frozen_errors)
       // #1455 step 3: `empty_defs` holds the imported enums seeded above plus
       // this module's own, which is exactly the set a qualifier may name.
