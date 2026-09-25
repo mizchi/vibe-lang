@@ -1626,6 +1626,8 @@ fn retain_wrap_branch_tails(e: Expr, local_names: Array[String], inner: Array[St
         EMatch(scrut, out)
       }
     },
+    // #3108 review: a handler's value is its body's, or an arm's.
+    EHandle(hb, harms) => EHandle(retain_wrap_branch_tails(hb, local_names, inner, ctx), retain_wrap_arms(harms, local_names, inner, ctx)),
     ELet(n, v, b, soff) => ELet(n, v, retain_wrap_branch_tails(b, local_names, with_name(inner, n), ctx), soff),
     ELetMut(n, v, b, soff) => ELetMut(n, v, retain_wrap_branch_tails(b, local_names, with_name(inner, n), ctx), soff),
     // #3108 review: `let rec` is a let form too; its binder is in scope for
@@ -1673,6 +1675,7 @@ fn value_has_borrowed_branch_tail(e: Expr, local_names: Array[String], inner: Ar
       }
       found
     },
+    EHandle(hb, harms) => value_has_borrowed_branch_tail(hb, local_names, inner, ctx) || arms_have_borrowed_tail(harms, local_names, inner, ctx),
     ELet(n, _, b, _) => value_has_borrowed_branch_tail(b, local_names, with_name(inner, n), ctx),
     ELetMut(n, _, b, _) => value_has_borrowed_branch_tail(b, local_names, with_name(inner, n), ctx),
     ELetRec(n, _, b) => value_has_borrowed_branch_tail(b, local_names, with_name(inner, n), ctx),
@@ -1991,6 +1994,49 @@ fn vsb_under_binder(n: String, v: Expr, b: Expr, local_names: Array[String], bou
   r
 }
 
+/// An if / match / handle value: its result is one of several arm tails.
+fn is_branching_value(value: Expr) -> Bool {
+  match value {
+    EIf(_, _, _) => true,
+    EMatch(_, _) => true,
+    EHandle(_, _) => true,
+    _ => false
+  }
+}
+
+fn retain_wrap_arms(arms: Array[(Pat, Expr)], local_names: Array[String], inner: Array[String], ctx: CompileCtx) -> Array[(Pat, Expr)] with Exception {
+  let out = array_empty()
+  let mut ai = 0
+  while ai < Array::length(arms) {
+    let (apat, abody) = Array::get(arms, ai)
+    Array::push(out, (apat, retain_wrap_branch_tails(abody, local_names, with_pattern_binders(inner, apat), ctx)))
+    ai = ai + 1
+  }
+  out
+}
+
+fn arms_have_borrowed_tail(arms: Array[(Pat, Expr)], local_names: Array[String], inner: Array[String], ctx: CompileCtx) -> Bool {
+  let mut found = false
+  let mut ai = 0
+  while ai < Array::length(arms) && !found {
+    let (apat, abody) = Array::get(arms, ai)
+    found = value_has_borrowed_branch_tail(abody, local_names, with_pattern_binders(inner, apat), ctx)
+    ai = ai + 1
+  }
+  found
+}
+
+fn arms_tail_call_borrow(arms: Array[(Pat, Expr)], local_names: Array[String], inner: Array[String], ctx: CompileCtx) -> Bool {
+  let mut found = false
+  let mut ai = 0
+  while ai < Array::length(arms) && !found {
+    let (apat, abody) = Array::get(arms, ai)
+    found = branch_tail_calls_borrow(abody, local_names, with_pattern_binders(inner, apat), ctx)
+    ai = ai + 1
+  }
+  found
+}
+
 /// #3108 review: the names a branch binds on the way down to its tail -- a
 /// `let` / `let mut` in the arm, a match pattern's binders. A tail call whose
 /// callee is one of them calls the LOCAL binding, not the top-level
@@ -2054,6 +2100,16 @@ fn ref_cell_retain_tail(e: Expr, local_names: Array[String], inner: Array[String
       }
       EMatch(scrut, out)
     },
+    EHandle(hb, harms) => {
+      let out = array_empty()
+      let mut hi = 0
+      while hi < Array::length(harms) {
+        let (hpat, hbody) = Array::get(harms, hi)
+        Array::push(out, (hpat, ref_cell_retain_tail(hbody, local_names, with_pattern_binders(inner, hpat), ctx)))
+        hi = hi + 1
+      }
+      EHandle(ref_cell_retain_tail(hb, local_names, inner, ctx), out)
+    },
     _ => if ref_cell_tail_unowned(e, local_names, inner, ctx) {
       ECall(EIdent("__loop_tail_retain", -1), [e], -1)
     } else {
@@ -2089,7 +2145,7 @@ fn ref_cell_tail_unowned(e: Expr, local_names: Array[String], inner: Array[Strin
 /// the rewrite outside a loop too. A value with no such tail keeps the
 /// loop-only gate, so its codegen is unchanged.
 fn retain_wrap_let_value(value: Expr, name: String, local_names: Array[String], ctx: CompileCtx) -> Expr with Exception {
-  if ctx.enable_rc && (expr_tag(value) == 7 || expr_tag(value) == 16) && array_contains_str(ctx.rc_drop_names, name) && (Array::length(ctx.loop_borrowed_names) > 0 || branch_tail_calls_borrow(value, local_names, array_empty(), ctx)) {
+  if ctx.enable_rc && is_branching_value(value) && array_contains_str(ctx.rc_drop_names, name) && (Array::length(ctx.loop_borrowed_names) > 0 || branch_tail_calls_borrow(value, local_names, array_empty(), ctx)) {
     retain_wrap_branch_tails(value, local_names, array_empty(), ctx)
   } else {
     value
@@ -2116,6 +2172,7 @@ fn branch_tail_calls_borrow(e: Expr, local_names: Array[String], inner: Array[St
       }
       found
     },
+    EHandle(hb, harms) => branch_tail_calls_borrow(hb, local_names, inner, ctx) || arms_tail_call_borrow(harms, local_names, inner, ctx),
     ELet(n, _, b, _) => branch_tail_calls_borrow(b, local_names, with_name(inner, n), ctx),
     ELetMut(n, _, b, _) => branch_tail_calls_borrow(b, local_names, with_name(inner, n), ctx),
     ELetRec(n, _, b) => branch_tail_calls_borrow(b, local_names, with_name(inner, n), ctx),
@@ -2313,7 +2370,7 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     // #768: an if/match value with a borrowed branch tail makes this binding a
     // (conditional) borrowed view too -- mark it borrow-bound for the body
     // scope so consuming calls dup it (see value_has_borrowed_branch_tail).
-    let value_borrow_like = ctx.enable_rc && (expr_tag(value) == 7 || expr_tag(value) == 16) && value_has_borrowed_branch_tail(value, local_names, array_empty(), ctx)
+    let value_borrow_like = ctx.enable_rc && is_branching_value(value) && value_has_borrowed_branch_tail(value, local_names, array_empty(), ctx)
     if ctx.enable_rc && (is_borrow_ret_ext || value_borrow_like) {
       Array::push(ctx.loop_borrowed_names, name)
     } else {

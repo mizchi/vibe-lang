@@ -42,6 +42,43 @@ fn scan(xs: Array[D], out: Array[String]) -> Unit {
   }
 }
 
+// A checked accessor: a borrow-returning wrapper that can throw, so the
+// handler below is reachable.
+fn at(xs: Array[D], i: Int) -> D with Exception {
+  if i >= Array::length(xs) {
+    throw("out of range")
+  }
+  Array::get(xs, i)
+}
+
+fn scan_handle(xs: Array[D], out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(xs) {
+    let d = if i % 2 == 0 {
+      handle {
+        at(xs, i)
+      } with { Exception::Throw(_) => Array::get(xs, 0) }
+    } else {
+      Array::get(xs, i)
+    }
+    match d {
+      A(n, _) => Array::push(out, n),
+      B(n) => Array::push(out, n)
+    }
+    let _ = [String::concat("z", "z")]
+    i = i + 1
+  }
+}
+
+test "a handle arm ending in a borrow-returning call keeps its element alive" {
+  let xs = mk()
+  let out: Array[String] = []
+  scan_handle(xs, out)
+  scan_handle(xs, out)
+  scan_handle(xs, out)
+  inspect(String::join(out, ","), content = "ax,b,cy,ax,b,cy,ax,b,cy")
+}
+
 test "a let rec block ending in a borrow-returning call keeps its element alive" {
   let xs = mk()
   let out: Array[String] = []
