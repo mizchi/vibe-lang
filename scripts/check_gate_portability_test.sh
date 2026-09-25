@@ -233,13 +233,16 @@ for spelled in \
   'cmd=(timeout "$secs")' \
   '/usr/bin/timeout 5 true' \
   'gtimeout 5 true' \
+  '"timeout" 5 true' \
+  "'/usr/bin/timeout' 5 true" \
+  '"gtimeout" -k 2 5 true' \
   'if command -v timeout >/dev/null 2>&1; then timeout 5 true; fi'; do
   reset_tree
   printf '%s\n' "$spelled" >> "$TMP_ROOT/scripts/clean.sh"
   grep -qF "$spelled" "$TMP_ROOT/scripts/clean.sh" || fail "fixture 8b did not land: $spelled"
   run && { cat "$TMP_ROOT/out" >&2; fail "a timeout spelling was accepted: $spelled"; }
 done
-ok "prefixed / negated / substituted / array / absolute-path / gtimeout / guarded-line calls are rejected"
+ok "prefixed / negated / substituted / array / absolute-path / gtimeout / quoted / guarded-line calls are rejected"
 
 # --- red 8c: the corpus is wider than scripts/*.sh. tests/ carried two of
 # the calls, and scripts/vibe_md.vibex built five inside shell command
@@ -282,6 +285,8 @@ run_with_timeout "$timeout_sec" true
 wasmtime --timeout 5 run x.wasm
 echo "$timeout_sec" "${timeout_s:-120}"
 echo "no GNU timeout(1) on this host"
+if [ "$impl" = "timeout" ]; then :; fi
+case "$impl" in "timeout" | "gtimeout") : ;; esac
 # timeout 60 "$RUNNER"   -- a whole-line comment is not a call
 EOF
 printf '%s\n' '// timeout 5 in a vibex comment' 'let cmd = "bash scripts/run_bounded.sh \{secs} env X=1"' > "$TMP_ROOT/scripts/tool.vibex"
