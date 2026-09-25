@@ -236,6 +236,8 @@ for spelled in \
   '"timeout" 5 true' \
   "'/usr/bin/timeout' 5 true" \
   '"gtimeout" -k 2 5 true' \
+  '"time""out" 5 true' \
+  "t'imeout' 5 true" \
   'if command -v timeout >/dev/null 2>&1; then timeout 5 true; fi'; do
   reset_tree
   printf '%s\n' "$spelled" >> "$TMP_ROOT/scripts/clean.sh"

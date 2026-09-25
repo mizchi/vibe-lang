@@ -257,6 +257,11 @@ if [ "${#timeout_scan_files[@]}" -gt 0 ]; then
         # Two alternatives, as for rg: a bare word, and a path ending in the
         # tool (the left boundary excludes `/`, so `/usr/bin/timeout` needs
         # its own arm or it walks straight past).
+        # The shell joins adjacent quoted fragments into one word
+        # (`"time""out"`), so the third arm reads the line with every quote
+        # character removed (#3099 review).
+        unquoted = line
+        gsub(/["\047]/, "", unquoted)
         # A third arm for a QUOTED tool token (`"timeout" 5 cmd`,
         # `'\''/usr/bin/timeout'\'' 5 cmd`): the closing quote hides the space the
         # first two need. It must be followed by what a duration or an option
@@ -264,7 +269,7 @@ if [ "${#timeout_scan_files[@]}" -gt 0 ]; then
         # `"timeout" | "gtimeout")` case label) is not a call (#3099 review).
         if (line ~ /(^|[^A-Za-z0-9_.$\/{-])g?timeout([[:space:]]|$)/ ||
             line ~ /(^|[^A-Za-z0-9_.-])[A-Za-z0-9_.\/-]*\/g?timeout([[:space:]]|$)/ ||
-            line ~ /["\047]([A-Za-z0-9_.\/-]*\/)?g?timeout["\047][[:space:]]+[-0-9$"\047]/) {
+            unquoted ~ /(^|[^A-Za-z0-9_.$\/{-])([A-Za-z0-9_.\/-]*\/)?g?timeout[[:space:]]+[-0-9$]/) {
           printf "  %s:%d: bare `timeout`/`gtimeout` call; stock macOS has no GNU timeout (exit 127) -- source scripts/run_bounded.sh and call `run_bounded SECS cmd...`, or run `bash scripts/run_bounded.sh SECS cmd...` from a command string (#2958)\n", rel, FNR
         }
       }
