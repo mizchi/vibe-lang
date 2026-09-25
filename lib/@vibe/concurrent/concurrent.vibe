@@ -123,6 +123,9 @@ export struct TaskCell {
   // armed, so that timer's duration is what it may be debited when it fires.
   // A sleep that began after the arm is not covered and keeps its debt.
   mut timer_covered: Bool;
+  // #1537: a stable identity for the host-wait registry, which cannot compare
+  // cells (`==` on a struct compares content). Assigned once, never reused.
+  serial: Int;
   // Tasks parked waiting for THIS cell to reach a terminal status
   // (TaskHandle::result_wait). Every terminal transition clears their
   // direct_wait via conc_notify_waiters.
@@ -698,6 +701,7 @@ export fn TaskGroup::spawn[rg, e, T: Send](n: TaskGroup[rg, e], f: () -> T with 
     direct_wait: false,
     host_wait: 0 - 1,
     timer_covered: false,
+    serial: conc_next_cell_serial(),
     waiters: empty_cells()
   }
   let runner: () -> Unit with e = () -> {
@@ -1144,6 +1148,7 @@ export fn TaskGroup::adopt[rg, e, T: Send](n: TaskGroup[rg, e]) -> TaskHandle[rg
     direct_wait: false,
     host_wait: 0 - 1,
     timer_covered: false,
+    serial: conc_next_cell_serial(),
     waiters: empty_cells()
   }
   Array::push(n.adopted, cell)
@@ -1623,9 +1628,15 @@ fn conc_host_release_orphan[rg, e](n: TaskGroup[rg, e], waited: Int) -> Unit {
   if waited >= 0 {
     // Any group's task still parked on it keeps it -- including a task of an
     // enclosing group that captured the same future (Codex on #3091).
-    let shared = conc_host_waiters_on(waited) > 0 || conc_host_landed_index(waited) >= 0
-    if shared {
+    let li = conc_host_landed_index(waited)
+    if conc_host_waiters_on(waited) > 0 {
       ()
+    } else if li >= 0 {
+      // Its value already landed in the mailbox (another group took it and
+      // released the handle) and this was the last task waiting on it: drop
+      // the entry, or a later waitable reusing the handle would read this
+      // stale value (Codex on #3091). Nothing is left to cancel.
+      conc_host_landed_remove(li)
     } else {
       let _ = __conc_host_cancel(waited)
       ()
@@ -1635,14 +1646,23 @@ fn conc_host_release_orphan[rg, e](n: TaskGroup[rg, e], waited: Int) -> Unit {
   }
 }
 
+let conc_cell_serial_ctr: Array[Int] = [0]
+
+fn conc_next_cell_serial() -> Int {
+  Array::set(conc_cell_serial_ctr, 0, Array::get(conc_cell_serial_ctr, 0) + 1)
+  Array::get(conc_cell_serial_ctr, 0)
+}
+
 /// #1537: record a task that just parked on a host waitable, dropping stale
-/// entries first so a cell that parks again is listed once.
+/// entries first -- and this cell's own earlier entry, which looks live again
+/// once the same task parks a second time (Codex on #3091) -- so every cell is
+/// listed at most once.
 fn conc_host_register_parked(cell: TaskCell) -> Unit {
   let live: Array[TaskCell] = []
   let mut i = 0
   while i < Array::length(conc_host_parked) {
     let c = Array::get(conc_host_parked, i)
-    if c.status == 5 && c.host_wait >= 0 {
+    if c.status == 5 && c.host_wait >= 0 && c.serial != cell.serial {
       Array::push(live, c)
     } else {
       ()
@@ -1672,6 +1692,14 @@ fn conc_host_waiters_on(waitable: Int) -> Int {
     i = i + 1
   }
   count
+}
+
+fn conc_host_landed_remove(li: Int) -> Unit {
+  let last = Array::length(conc_host_landed_keys) - 1
+  Array::set(conc_host_landed_keys, li, Array::get(conc_host_landed_keys, last))
+  Array::set(conc_host_landed_vals, li, Array::get(conc_host_landed_vals, last))
+  Array::truncate(conc_host_landed_keys, last)
+  Array::truncate(conc_host_landed_vals, last)
 }
 
 fn conc_host_landed_index(waitable: Int) -> Int {
@@ -1726,11 +1754,7 @@ fn conc_host_resume_landed[rg, e](n: TaskGroup[rg, e], waitable: Int) -> Unit {
     j = j + 1
   }
   if conc_host_waiters_on(waitable) == 0 {
-    let last = Array::length(conc_host_landed_keys) - 1
-    Array::set(conc_host_landed_keys, li, Array::get(conc_host_landed_keys, last))
-    Array::set(conc_host_landed_vals, li, Array::get(conc_host_landed_vals, last))
-    Array::truncate(conc_host_landed_keys, last)
-    Array::truncate(conc_host_landed_vals, last)
+    conc_host_landed_remove(li)
   } else {
     ()
   }
