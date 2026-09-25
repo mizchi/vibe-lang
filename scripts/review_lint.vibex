@@ -229,8 +229,12 @@ fn effect_name_compare_patterns() -> Array[String] {
   let names = policy_effect_names()
   let mut i = 0
   while i < Array::length(names) {
+    // The matcher compares operands positionally, so the literal-first
+    // spelling (`"Async" == label`) needs its own pattern (Codex on #3091).
     Array::push(out, "$(x:exp) == \"" + Array::get(names, i) + "\"")
     Array::push(out, "$(x:exp) != \"" + Array::get(names, i) + "\"")
+    Array::push(out, "\"" + Array::get(names, i) + "\" == $(x:exp)")
+    Array::push(out, "\"" + Array::get(names, i) + "\" != $(x:exp)")
     i = i + 1
   }
   out
@@ -249,11 +253,15 @@ fn is_generated_bundle(path: String) -> Bool {
   String::ends_with(path, "/_cli_adapter_module_source.vibe")
 }
 
+// The compare's own line, or the line AFTER it -- where `pkf run fmt` moves a
+// trailing comment -- and never the line before, exactly as is_allowed does:
+// a marker between two compares then belongs to the one above it only, so
+// deleting the second one's own marker cannot leave it allowed (Codex on
+// #3091).
 fn effect_name_compare_suppressed(path: String, line: Int) -> Bool with Fs {
   let marker = "review-lint: allow-effect-name-compare"
   String::contains(source_line(path, line), marker) ||
-  String::contains(source_line(path, line + 1), marker) ||
-  String::contains(source_line(path, line - 1), marker)
+  String::contains(source_line(path, line + 1), marker)
 }
 
 fn report_effect_name_compare_hits(raw: String, literal: String, emit: Bool) -> Int with Fs + Stderr {
@@ -523,8 +531,8 @@ fn lint(root: String, vibe: String) -> Int with Fs + Process + Stderr {
           violations = violations + report_gc_bare_builtin_hits(output, ledger, true)
         }
       } else {
-        // patterns 6.. are effect_name_compare_patterns(): two per name.
-        let name = Array::get(policy_effect_names(), (i - 6) / 2)
+        // patterns 6.. are effect_name_compare_patterns(): four per name.
+        let name = Array::get(policy_effect_names(), (i - 6) / 4)
         violations = violations + report_effect_name_compare_hits(output, "\"" + name + "\"", true)
       }
     }
@@ -632,8 +640,8 @@ fn self_test() -> Int with Fs + Stderr {
   } else if report_effect_name_compare_hits(effect_compare_hit("/repo/lib/@vibe/compiler/core/standard_effect_policy.vibe", "\\\"Async\\\""), "\"Async\"", false) != 0 {
     Stderr::write_stream("review-lint self-test: the policy owner's own compare was reported\n")
     1
-  } else if Array::length(effect_name_compare_patterns()) != 10 || !String::contains(Array::get(effect_name_compare_patterns(), 0), "== \"Async\"") {
-    Stderr::write_stream("review-lint self-test: the effect-name patterns are not one per name and operator\n")
+  } else if Array::length(effect_name_compare_patterns()) != 20 || !String::contains(Array::get(effect_name_compare_patterns(), 0), "== \"Async\"") || !String::starts_with(Array::get(effect_name_compare_patterns(), 2), "\"Async\" ==") {
+    Stderr::write_stream("review-lint self-test: the effect-name patterns are not one per name, operator and operand order\n")
     1
   } else if report_effect_name_compare_hits(effect_compare_hit("/repo/lib/@vibe/compiler/_cli_adapter_module_source.vibe", "\\\"Async\\\""), "\"Async\"", false) != 0 {
     Stderr::write_stream("review-lint self-test: a generated bundle was reported\n")
