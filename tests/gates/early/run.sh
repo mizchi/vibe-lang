@@ -2368,6 +2368,11 @@ ur_refused fixtures/err_interp_unrenderable_field_refused.vibe 'cannot interpola
 ur_refused fixtures/err_interp_unrenderable_shadow_refused.vibe 'cannot interpolate `shadowed`' 'bind it with a type annotation' gc
 ur_refused fixtures/err_interp_unrenderable_parse_call_refused.vibe 'cannot interpolate the result of `Int::parse`' 'bind it with a type annotation' gc
 ur_refused fixtures/err_interp_unrenderable_parse_bound_refused.vibe 'cannot interpolate `p`' 'bind it with a type annotation' gc
+# #3080: an index-form slice whose subject's shape is unresolved. The slice call
+# had no source offset, so no row reached codegen and both lanes printed an
+# address. The message names the syntax, not the internal `__slice`.
+ur_refused fixtures/err_interp_unrenderable_slice_field_refused.vibe 'cannot interpolate this slice (`xs[a:b]`)' 'bind it with a type annotation'
+ur_refused fixtures/err_interp_unrenderable_slice_field_refused.vibe 'cannot interpolate this slice (`xs[a:b]`)' 'bind it with a type annotation' gc
 # #3019 rides the same helper: a lowering-time refusal asserted on its message
 # and its edit, not on the bare fact that the build failed.
 ur_refused fixtures/err_handle_resume_capture_loop_break_refused.vibe 'leaves a loop outside it' 'set a flag inside the handle'
@@ -2851,6 +2856,15 @@ echo '[compiler-gate] substring clamp ok'
 echo '[compiler-gate] 15b-3c'"''"' Array::slice clamps on the gc lane (#3078)'
 run_test_block_fixtures_gc "slice clamp (gc)" fixtures/slice_clamp_test.vibe
 echo '[compiler-gate] slice clamp (gc) ok'
+
+# 15b-3c'''. #3080: the index-form slice `xs[a:b]` renders by content on every
+#            lane, like `Array::slice(xs, a, b)`. It printed a heap address on
+#            both lanes; its refusal side is the slice_field ur_refused row.
+echo '[compiler-gate] 15b-3c'"'''"' index-form slice renders by content (#3080)'
+run_test_block_fixtures "slice render (linear, bump)" fixtures/interp_slice_render_test.vibe
+run_test_block_fixtures_gc "slice render (gc)" fixtures/interp_slice_render_test.vibe
+run_test_block_fixtures_rc "slice render (linear, RC)" fixtures/interp_slice_render_test.vibe
+echo '[compiler-gate] slice render ok'
 
 # 15b-3d. #2652: `Double::to_string` is shortest-round-trip and `Double::parse`
 #         is correctly rounded. Both are ONE runtime prelude in vibe source

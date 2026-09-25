@@ -227,12 +227,17 @@ fn has_placeholder_arg(arg: Expr) -> Bool {
   }
 }
 
-fn slice_from_idx_expr(cur_expr: Expr, idx: Expr, end_expr: Expr) -> Expr {
+/// #3080: the call node carries the `[` token's offset (`off`). Without one
+/// the checker filed no typed-lowering row for the slice, so a render of a
+/// slice whose shape normalize could not resolve reached the runtime
+/// heuristic and printed its address instead of being refused (#2987). The
+/// `[` token belongs to no other node, so the key collides with nothing.
+fn slice_from_idx_expr(cur_expr: Expr, idx: Expr, end_expr: Expr, off: Int) -> Expr {
   let args = empty_exprs()
   Array::push(args, cur_expr)
   Array::push(args, idx)
   Array::push(args, end_expr)
-  ECall(EIdent("__slice", -1), args, -1)
+  ECall(EIdent("__slice", -1), args, off)
 }
 
 fn has_placeholder_args(args: Array[Expr]) -> Bool {
@@ -278,12 +283,13 @@ fn parse_call_args_rest(tokens: Array[Token], starts: Array[Int], pos: Int, b: A
   (ArrayBuilder::freeze(b), p)
 }
 
-fn slice_from_zero_expr(cur_expr: Expr, end_expr: Expr) -> Expr {
+/// #3080: see `slice_from_idx_expr`.
+fn slice_from_zero_expr(cur_expr: Expr, end_expr: Expr, off: Int) -> Expr {
   let args = empty_exprs()
   Array::push(args, cur_expr)
   Array::push(args, EInt(0))
   Array::push(args, end_expr)
-  ECall(EIdent("__slice", -1), args, -1)
+  ECall(EIdent("__slice", -1), args, off)
 }
 
 fn wrap_placeholder_arg(arg: Expr, _context: Option[ParserBinderContext]) -> Expr {
@@ -615,7 +621,7 @@ fn parse_postfix(tokens: Array[Token], starts: Array[Int], first: Int, pos: Int,
       TColon => match peek(tokens, pos + 2) {
         TRBracket => {
           let end_expr = ECall(EIdent("__len", -1), [expr], -1)
-          parse_postfix(tokens, starts, first, pos + 3, slice_from_zero_expr(expr, end_expr), parse_recur, context)
+          parse_postfix(tokens, starts, first, pos + 3, slice_from_zero_expr(expr, end_expr, field_offset_at(starts, pos)), parse_recur, context)
         },
         _ => {
           let (end_expr, end_next) = parse_recur(tokens, pos + 2, 0, context)
@@ -623,7 +629,7 @@ fn parse_postfix(tokens: Array[Token], starts: Array[Int], first: Int, pos: Int,
             TRBracket => end_next + 1,
             _ => throw("expected ']'")
           }
-          parse_postfix(tokens, starts, first, close_pos, slice_from_zero_expr(expr, end_expr), parse_recur, context)
+          parse_postfix(tokens, starts, first, close_pos, slice_from_zero_expr(expr, end_expr, field_offset_at(starts, pos)), parse_recur, context)
         }
       },
       _ => {
@@ -632,7 +638,7 @@ fn parse_postfix(tokens: Array[Token], starts: Array[Int], first: Int, pos: Int,
           TColon => match peek(tokens, idx_next + 1) {
             TRBracket => {
               let end_expr = ECall(EIdent("__len", -1), [expr], -1)
-              parse_postfix(tokens, starts, first, idx_next + 2, slice_from_idx_expr(expr, idx, end_expr), parse_recur, context)
+              parse_postfix(tokens, starts, first, idx_next + 2, slice_from_idx_expr(expr, idx, end_expr, field_offset_at(starts, pos)), parse_recur, context)
             },
             _ => {
               let (end_expr, end_next) = parse_recur(tokens, idx_next + 1, 0, context)
@@ -640,7 +646,7 @@ fn parse_postfix(tokens: Array[Token], starts: Array[Int], first: Int, pos: Int,
                 TRBracket => end_next + 1,
                 _ => throw("expected ']'")
               }
-              parse_postfix(tokens, starts, first, close_pos, slice_from_idx_expr(expr, idx, end_expr), parse_recur, context)
+              parse_postfix(tokens, starts, first, close_pos, slice_from_idx_expr(expr, idx, end_expr, field_offset_at(starts, pos)), parse_recur, context)
             }
           },
           _ => {

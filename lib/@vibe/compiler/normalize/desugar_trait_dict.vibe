@@ -5632,7 +5632,13 @@ fn infer_shape(e: Expr, struct_sets: Array[(String, Array[String])], var_types: 
 /// spelling that reached here, a wrong-arity call) from being reported as an
 /// array shape.
 fn dtd_elem_preserving_shape(fname: String, cargs: Array[Expr], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
-  let preserves = fname == "Array::filter" || fname == "Array::slice" || fname == "Array::reverse" || fname == "Array::concat"
+  // #3080: `xs[a:b]` parses to `__slice(xs, a, b)`, the same operation as
+  // `Array::slice` on an array subject, but only the spelled-out call was
+  // listed, so the slice syntax resolved no shape and its render printed a
+  // heap address. The `[` guard below keeps a `String` / `Bytes` subject out.
+  // It is NOT added to `dtd_names_an_array_builtin`: `__slice` also slices
+  // strings, so an unresolved one is not known to be an array.
+  let preserves = fname == "Array::filter" || fname == "Array::slice" || fname == "__slice" || fname == "Array::reverse" || fname == "Array::concat"
   if preserves && Array::length(cargs) >= 1 {
     let sh = infer_shape(Array::get(cargs, 0), struct_sets, var_types, fn_returns)
     if String::starts_with(sh, "[") {
