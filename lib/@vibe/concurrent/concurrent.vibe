@@ -1423,26 +1423,35 @@ fn conc_settle_host_waits[rg, e](n: TaskGroup[rg, e]) -> Bool {
       __conc_host_wait_any()
     }
     let v = __conc_host_take(fired)
-    let mut resumed = false
+    // Several tasks may await the SAME future: the value is taken once (the
+    // readable end is released) and every task parked on that handle
+    // resumes with it. The matching cells are collected before any resumes,
+    // since a resumed task may park again (Codex on #3059).
+    let woken: Array[TaskCell] = []
     let mut j = 0
     while j < total {
       let c = Array::get(n.adopted, j)
-      if !resumed && c.status == 5 && c.host_wait == fired {
-        resumed = true
+      if c.status == 5 && c.host_wait == fired {
         c.host_wait = 0 - 1
-        match c.cont {
-          Some(k) => {
-            c.cont = None
-            k(v)
-          },
-          None => ()
-        }
+        Array::push(woken, c)
       } else {
         ()
       }
       j = j + 1
     }
-    conc_require(resumed)
+    conc_require(Array::length(woken) > 0)
+    let mut w = 0
+    while w < Array::length(woken) {
+      let c = Array::get(woken, w)
+      match c.cont {
+        Some(k) => {
+          c.cont = None
+          k(v)
+        },
+        None => ()
+      }
+      w = w + 1
+    }
     true
   }
 }

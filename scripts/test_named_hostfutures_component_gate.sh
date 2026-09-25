@@ -426,5 +426,21 @@ if [ "$SPAWN_ELAPSED_MS" -lt 240 ]; then
   exit 1
 fi
 echo "[named-hostfutures-component-gate] spawned tasks: 42 in ${SPAWN_ELAPSED_MS}ms (< 400: interleaved, not park order)"
+# Two tasks awaiting ONE future: both resume with its value (41 = 20 + 21).
+SHARED_OUT="$OUT_DIR/spawn_shared_future.component.wasm"
+rm -f "$SHARED_OUT" "$SHARED_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/shared.vibe "$SHARED_OUT" run >/dev/null 2>&1 || true
+[ -s "$SHARED_OUT" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/shared.vibe did not compile: $(cat "$SHARED_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+SHARED_LOG="$OUT_DIR/spawn_shared_future.log"
+if ! VIBE_ASYNC_FUTURES="slow=20:200" timeout 60 "$RUNNER" "$SHARED_OUT" >"$SHARED_LOG" 2>&1; then
+  echo "named hostfutures component gate FAILED: shared-future run did not exit 0" >&2
+  cat "$SHARED_LOG" >&2
+  exit 1
+fi
+[ "$(cat "$SHARED_LOG")" = "41" ] \
+  || { echo "named hostfutures component gate FAILED: two tasks awaiting one future expected 41, got: $(cat "$SHARED_LOG")" >&2; exit 1; }
+echo "[named-hostfutures-component-gate] shared future: 41 (every task parked on the handle resumed with its value)"
 
 echo "named hostfutures component gate OK"
