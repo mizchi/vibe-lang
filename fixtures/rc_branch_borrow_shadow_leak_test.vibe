@@ -1,0 +1,119 @@
+// #3108 review: a branch tail that calls a LOCAL binding which shadows a
+// top-level borrow-returning function must not be retained as a borrow. The
+// #3103 retain rewrite matched the callee's spelling against the module's
+// borrow-returning set without seeing the `let` inside the branch, so the
+// local `peek()` -- a fresh allocation the binding owns -- got an extra retain
+// that no drop ever spent: one leaked array per execution on the RC lane.
+//
+// The value is the same either way; only the heap frontier tells them apart.
+// After a warmup the loop reuses freed blocks, so the extra allocation over
+// 2000 more executions stays far below one leaked array per execution.
+
+fn peek(xs: Array[Array[Int]]) -> Array[Int] {
+  Array::get(xs, 0)
+}
+
+fn step(xs: Array[Array[Int]], fresh: Bool) -> Int {
+  let d = if fresh {
+    let peek = (n: Int) -> Array[Int] { [n, n + 1, n + 2] }
+    peek(7)
+  } else {
+    peek(xs)
+  }
+  Array::length(d)
+}
+
+// The same shadow through `let rec`, with the branch result handed to a
+// function that takes it: a result misread as a borrow gets a guarded dup at
+// that call which no drop spends. A local `let rec` closure refers to itself
+// and so leaks on its own (24 B per call, independent of this fix), so this
+// shape is measured against a control that differs only in the closure's
+// name: `grow` shadows nothing, `peek` shadows the borrow-returning `peek`.
+fn keep(a: Array[Int]) -> Int {
+  let b = a
+  Array::length(b)
+}
+
+fn step_rec(xs: Array[Array[Int]], fresh: Bool) -> Int {
+  let d = if fresh {
+    let rec peek = (n: Int) -> Array[Int] {
+      if n > 9 {
+        [n]
+      } else {
+        peek(n + 5)
+      }
+    }
+    peek(7)
+  } else {
+    peek(xs)
+  }
+  keep(d)
+}
+
+fn step_rec_control(xs: Array[Array[Int]], fresh: Bool) -> Int {
+  let d = if fresh {
+    let rec grow = (n: Int) -> Array[Int] {
+      if n > 9 {
+        [n]
+      } else {
+        grow(n + 5)
+      }
+    }
+    grow(7)
+  } else {
+    peek(xs)
+  }
+  keep(d)
+}
+
+fn run(xs: Array[Array[Int]], rounds: Int) -> Int {
+  let mut total = 0
+  let mut i = 0
+  while i < rounds {
+    total = total + step(xs, true) + step(xs, false)
+    i = i + 1
+  }
+  total
+}
+
+fn run_rec(xs: Array[Array[Int]], rounds: Int, shadowed: Bool) -> Int {
+  let mut total = 0
+  let mut i = 0
+  while i < rounds {
+    total = total + if shadowed {
+      step_rec(xs, true)
+    } else {
+      step_rec_control(xs, true)
+    }
+    i = i + 1
+  }
+  total
+}
+
+test "a branch-local shadow of a borrow-returning fn is not retained" {
+  let xs = [[1, 2], [3, 4, 5]]
+  let warm = run(xs, 200)
+  let before = Profiler::heap_bytes()
+  let total = run(xs, 2000)
+  let grown = Profiler::heap_bytes() - before
+  inspect(warm, content = "1000")
+  inspect(total, content = "10000")
+  // One leaked 3-element array per execution would be well over 2000 * 32 B.
+  inspect(grown < 2000 * 16, content = "true")
+}
+
+test "a let rec shadow passed to an owning callee leaks no more than its control" {
+  let xs = [[1, 2], [3, 4, 5]]
+  let _ = run_rec(xs, 200, true)
+  let _ = run_rec(xs, 200, false)
+  let before_ctl = Profiler::heap_bytes()
+  let ctl = run_rec(xs, 2000, false)
+  let grown_ctl = Profiler::heap_bytes() - before_ctl
+  let before = Profiler::heap_bytes()
+  let shadowed = run_rec(xs, 2000, true)
+  let grown = Profiler::heap_bytes() - before
+  inspect(ctl, content = "2000")
+  inspect(shadowed, content = "2000")
+  // An extra leaked 1-element array per execution adds well over 2000 * 16 B.
+  inspect(grown - grown_ctl < 2000 * 8, content = "true")
+}

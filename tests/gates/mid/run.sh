@@ -596,6 +596,53 @@ fi
 rm -rf "$shdir"
 echo "[compiler-gate] RC shadow-liveness regression guard ok (25377489)"
 
+# 40f-b. #3103: a `let` bound to an if/match whose branch tail calls a
+#        borrow-returning function (`Array::get`) holds a view of an element
+#        its container still owns. The plan gives the binding a scope-end
+#        drop, so the lowering must retain that tail -- in a loop and in
+#        straight-line code alike. Before the fix the shadow build aborted
+#        with `drop of freed value`, and the plain RC build answered 134444
+#        without a trap: the freed element was reused and read as garbage.
+#        Six shapes at distinct decimal places (see the fixture header).
+echo "[compiler-gate] 40f-b/40 branch-tail borrow let retain (#3103)"
+bbdir="_build/_gate_rc_branch_borrow_let"
+rm -rf "$bbdir"; mkdir -p "$bbdir"
+for bb_lane in rc shadow; do
+  rm -f "$bbdir/bb.wasm" "$bbdir/bb.wasm.diag"
+  case "$bb_lane" in
+    rc) env VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_branch_borrow_let_test.vibe" "$bbdir/bb.wasm" main >/dev/null 2>&1 || true ;;
+    shadow) env VIBE_RC=shadow VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_branch_borrow_let_test.vibe" "$bbdir/bb.wasm" main >/dev/null 2>&1 || true ;;
+  esac
+  if [ ! -s "$bbdir/bb.wasm" ]; then
+    echo "[compiler-gate] FAIL: rc_branch_borrow_let fixture did not compile on the $bb_lane lane (#3103)" >&2
+    cat "$bbdir/bb.wasm.diag" >&2 2>/dev/null || true
+    exit 1
+  fi
+  bb_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$bbdir/bb.wasm" 2>&1 | tail -1)"
+  if [ "$bb_out" != "334444" ]; then
+    echo "[compiler-gate] FAIL: rc_branch_borrow_let got '$bb_out' on the $bb_lane lane (want 334444). The digit that moved names the shape (see fixtures/rc_branch_borrow_let_test.vibe); a shadow abort means an if/match branch tail's borrowed element was dropped without a retain (#3103)." >&2
+    exit 1
+  fi
+done
+rm -rf "$bbdir"
+echo "[compiler-gate] branch-tail borrow let retain ok (334444 on rc/shadow)"
+# 40f-b2. #3108 review: the follow-ups of the same retain on the shadow
+#         lane, where an unbalanced drop traps on its first occurrence. The
+#         plain RC lane can answer these right by luck (a freed block not yet
+#         reused), which is why the unit runner's default lane is not enough:
+#         a branch that reaches its borrow-returning tail through a `let rec`
+#         block or a `handle` body / arm.
+echo "[compiler-gate] 40f-b2/40 let-rec / handle branch-tail borrow retain on shadow (#3108)"
+if ! VIBE_RC=shadow VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+    bash scripts/vibe_test.sh fixtures/rc_branch_borrow_letrec_test.vibe \
+    >"$ROOT_DIR/_build/_gate_rc_branch_letrec.log" 2>&1; then
+  echo "[compiler-gate] FAIL: a borrowed branch tail behind a let rec or a handle was dropped without a retain under VIBE_RC=shadow (#3108):" >&2
+  tail -20 "$ROOT_DIR/_build/_gate_rc_branch_letrec.log" >&2
+  exit 1
+fi
+rm -f "$ROOT_DIR/_build/_gate_rc_branch_letrec.log"
+echo "[compiler-gate] let-rec / handle branch-tail borrow retain ok on shadow"
+
 # 40f0. #2837: `Array::truncate` changes the array's LENGTH, not the lifetime
 #       of an element someone already took out of it. That is the ownership
 #       rule stable-surface.md §2.2a freezes and the one #2837 asks to define
