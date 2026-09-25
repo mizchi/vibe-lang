@@ -85,13 +85,16 @@ run_bounded() { # <seconds> <cmd...>
       # later, as the watchdog does (#3099 review).
       #
       # After that escalation timeout(1) exits 137, not 124, which reads as a
-      # crash to callers that classify 124 as a hang (tests/fuzz). A 137 at or
-      # past the bound is the escalation; one before it is a real SIGKILL
-      # (the OOM killer), and stays 137.
+      # crash to callers that classify 124 as a hang (tests/fuzz). A 137 past
+      # the bound is the escalation; one before it is a real SIGKILL (the OOM
+      # killer), and stays 137.
       local bin="$impl" start rc=0
       start="$(date +%s)"
       "$bin" -k 2 "$secs" "$@" || rc=$?
-      if [ "$rc" -eq 137 ] && [ $(($(date +%s) - start)) -ge "$secs" ]; then
+      # Whole seconds: a kill before the bound reads at most `secs` elapsed
+      # (it can round UP to it), so only a 137 strictly past it -- where the
+      # bound's TERM was already sent -- is the escalation (#3099 review).
+      if [ "$rc" -eq 137 ] && [ $(($(date +%s) - start)) -gt "$secs" ]; then
         rc=124
       fi
       return "$rc"

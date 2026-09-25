@@ -59,6 +59,13 @@ contract() { # <lib> <impl>
   #     ...and it still answers 124: timeout(1) exits 137 after its own KILL
   #     escalation, which reads as a crash to a caller classifying hangs.
   [ "$r" = "rc=124" ] || echo "term-ignoring status: $r"
+  # 3c. A real SIGKILL shortly BEFORE the bound stays 137, even when whole-
+  #     second arithmetic rounds its elapsed time up to the bound.
+  local k
+  for k in 1 2 3; do
+    r="$(VIBE_RUN_BOUNDED_IMPL="$impl" bash -c '. "$1"; run_bounded 2 bash -c "sleep 1.6; kill -KILL \$\$"; echo "rc=$?"' _ "$lib" 2>/dev/null | tail -1)"
+    [ "$r" = "rc=137" ] || { echo "early-kill: $r"; break; }
+  done
   # 4. Assignment prefixes and stdin reach the command, as they do through
   #    timeout(1): `VAR=x timeout 60 cmd <in` was the commonest call shape.
   r="$(printf 'piped\n' | VIBE_RUN_BOUNDED_IMPL="$impl" bash -c '. "$1"; PROBE_VAR=seen run_bounded 10 sh -c "read -r l; echo \"\$PROBE_VAR/\$l\""' _ "$lib" 2>/dev/null | tail -1)"

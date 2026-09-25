@@ -232,7 +232,12 @@ untracked_digest() {
         [ -x "$ROOT_DIR/$p" ] && x="x"
         printf 'file %s %s %s\n' "$x" "$p" "$(cksum < "$ROOT_DIR/$p")"
       else
-        printf 'unreadable %s\n' "$p"
+        # Unreadable content still has a type and an executable bit git
+        # would record; keep both (#3099 review).
+        local t="other" ux="-"
+        [ -f "$ROOT_DIR/$p" ] && t="file"
+        [ -x "$ROOT_DIR/$p" ] && ux="x"
+        printf 'unreadable %s %s %s\n' "$t" "$ux" "$p"
       fi
     done
 }
