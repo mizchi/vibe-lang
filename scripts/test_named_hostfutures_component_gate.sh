@@ -726,4 +726,80 @@ fi
   || { echo "named hostfutures component gate FAILED: timer_release_many expected 1100, got: $(cat "$TR_LOG")" >&2; exit 1; }
 echo "[named-hostfutures-component-gate] timer_release_many: 1100 (each closing group cancelled its pending timer)"
 
+# timer_pump_after_cancel: the group's only covered sleeper (10s) is
+# cancelled while the group stays open, then the group pumps. The timer is
+# released at that point, so the pump returns at once instead of waiting out
+# the cancelled sleep.
+TP_OUT="$OUT_DIR/spawn_timer_pump_after_cancel.component.wasm"
+rm -f "$TP_OUT" "$TP_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/timer_pump_after_cancel.vibe "$TP_OUT" run >/dev/null 2>&1 || true
+[ -s "$TP_OUT" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/timer_pump_after_cancel.vibe did not compile: $(cat "$TP_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+TP_LOG="$OUT_DIR/spawn_timer_pump_after_cancel.log"
+TP_T0=$(date +%s%N)
+if ! VIBE_ASYNC_FUTURES="fast=1:1" run_bounded 60 "$RUNNER" "$TP_OUT" >"$TP_LOG" 2>&1; then
+  echo "named hostfutures component gate FAILED: timer_pump_after_cancel did not exit 0" >&2
+  cat "$TP_LOG" >&2
+  exit 1
+fi
+TP_MS=$(( ($(date +%s%N) - TP_T0) / 1000000 ))
+[ "$(cat "$TP_LOG")" = "1" ] \
+  || { echo "named hostfutures component gate FAILED: timer_pump_after_cancel expected 1, got: $(cat "$TP_LOG")" >&2; exit 1; }
+[ "$TP_MS" -lt 5000 ] \
+  || { echo "named hostfutures component gate FAILED: timer_pump_after_cancel took ${TP_MS}ms -- the pump waited out the cancelled 10s sleeper" >&2; exit 1; }
+echo "[named-hostfutures-component-gate] timer_pump_after_cancel: 1 in ${TP_MS}ms (the timer is released when its last sleeper is cancelled)"
+
+# timer_release_thrown: 1100 groups each throw from their body with a timer
+# armed, and the entry catches and repeats. The body's release handler frees
+# each timer, so the run does not exhaust the 1024-handle band.
+TT_OUT="$OUT_DIR/spawn_timer_release_thrown.component.wasm"
+rm -f "$TT_OUT" "$TT_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/timer_release_thrown.vibe "$TT_OUT" run >/dev/null 2>&1 || true
+[ -s "$TT_OUT" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/timer_release_thrown.vibe did not compile: $(cat "$TT_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+TT_LOG="$OUT_DIR/spawn_timer_release_thrown.log"
+if ! VIBE_ASYNC_FUTURES="fast=1:1" run_bounded 120 "$RUNNER" "$TT_OUT" >"$TT_LOG" 2>&1; then
+  echo "named hostfutures component gate FAILED: timer_release_thrown did not exit 0" >&2
+  cat "$TT_LOG" >&2
+  exit 1
+fi
+[ "$(cat "$TT_LOG")" = "1100" ] \
+  || { echo "named hostfutures component gate FAILED: timer_release_thrown expected 1100, got: $(cat "$TT_LOG")" >&2; exit 1; }
+echo "[named-hostfutures-component-gate] timer_release_thrown: 1100 (each thrown group released its timer)"
+
+# spawn_future_formal_refused: a generic helper shares a `Future[T]` whose
+# `T` has no `Send` bound with a spawned task. Instantiated at a host response,
+# that would hand the body's one end to every waiter, so it is refused.
+FF_OUT="$OUT_DIR/spawn_future_formal_refused.component.wasm"
+rm -f "$FF_OUT" "$FF_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/spawn_future_formal_refused.vibe "$FF_OUT" run >/dev/null 2>&1 || true
+if [ -s "$FF_OUT" ]; then
+  echo "named hostfutures component gate FAILED: spawn_future_formal_refused compiled -- an unbounded Future[T] capture must be refused" >&2
+  exit 1
+fi
+grep -qF "add \`Send\` to that type parameter's bounds" "$FF_OUT.diag" 2>/dev/null \
+  || { echo "named hostfutures component gate FAILED: spawn_future_formal_refused gave an unexpected diagnostic: $(cat "$FF_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+echo "[named-hostfutures-component-gate] spawn_future_formal_refused: refused (the payload formal has no Send bound)"
+
+# spawn_future_formal_send: the same helper with `[T: Send]` compiles and runs.
+FS_OUT="$OUT_DIR/spawn_future_formal_send.component.wasm"
+rm -f "$FS_OUT" "$FS_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/spawn_future_formal_send.vibe "$FS_OUT" run >/dev/null 2>&1 || true
+[ -s "$FS_OUT" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/spawn_future_formal_send.vibe did not compile: $(cat "$FS_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+FS_LOG="$OUT_DIR/spawn_future_formal_send.log"
+if ! VIBE_ASYNC_FUTURES="fast=1:1" run_bounded 60 "$RUNNER" "$FS_OUT" >"$FS_LOG" 2>&1; then
+  echo "named hostfutures component gate FAILED: spawn_future_formal_send did not exit 0" >&2
+  cat "$FS_LOG" >&2
+  exit 1
+fi
+[ "$(cat "$FS_LOG")" = "42" ] \
+  || { echo "named hostfutures component gate FAILED: spawn_future_formal_send expected 42, got: $(cat "$FS_LOG")" >&2; exit 1; }
+echo "[named-hostfutures-component-gate] spawn_future_formal_send: 42 (a Send-bounded payload may be shared)"
+
 echo "named hostfutures component gate OK"

@@ -369,7 +369,9 @@ override silently contradicting a module that says `raw` is the hazard #2903's
   (`VIBE_HTTP_BODY_LIMIT`, default 16 MiB) and the whole request is bounded
   (`VIBE_HTTP_TIMEOUT_MS`, default 30s): a larger body or a stalled server
   fails the future with a message naming the limit, rather than growing host
-  memory or holding the runner open on a thread it cannot abort. The provider is the runner's, over the same `fetch(url)` WIT
+  memory or holding the runner open on a thread it cannot abort. Handing the
+  response reader to the `stream<u8>` producer instead, so a long-lived body
+  delivers bytes before EOF, is not done yet. The provider is the runner's, over the same `fetch(url)` WIT
   function -- the guest does not import `wasi:http` itself. The gate runs
   `fixtures/wit_response_import/main.vibe` with two 300ms responses, gets 440
   (both statuses plus every body byte) and bounds the wall clock the same way.
@@ -480,7 +482,11 @@ cancels, all synchronous: `future.cancel-read` (`host_future_cancel`),
 (`host_sleep_cancel`, a group's pending timer). Each runs when the last task
 that could take a value is gone -- cancelled, failed fast, or its group
 closed -- and is followed by the drop of the handle it cancelled; the bullets
-under `### Host futures` say when. `future.cancel-write` and `task.cancel` are
+under `### Host futures` say when. A group's timer is released at the first
+of three points: the group's next settle round once no sleeper it covered is
+left (so a later `pump_all` does not wait out a cancelled sleep), the group's
+normal close, or a throw escaping the group's body, which `TaskGroup::run`
+re-throws unchanged after the release. `future.cancel-write` and `task.cancel` are
 not emitted: the guest never writes a host future, and a guest task is not a
 Component Model task (#1537 scope item 3).
 

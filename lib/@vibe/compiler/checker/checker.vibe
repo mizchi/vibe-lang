@@ -2889,7 +2889,7 @@ fn env_reachable_tvars(val: Expr, env: TypeEnv, s: Subst, self_name: Option[Stri
 /// slot (#2459). A function value holds a container only when it CAPTURED one,
 /// which is (B)'s question, not (A)'s -- so the `CtFn` case is decided by
 /// environment reachability and every other case by (A) as before.
-export fn let_generalize(val: Expr, vt: Type, env: TypeEnv, s: Subst, self_name: Option[String]) -> Type {
+export fn let_generalize(val: Expr, vt: Type, env: TypeEnv, defs: Array[TypeDef], s: Subst, self_name: Option[String]) -> Type {
   let vt_resolved = subst_apply(s, vt)
   if Array::length(collect_tvars(vt_resolved)) == 0 {
     // Nothing to quantify; skip the right-hand-side walk entirely. Most
@@ -2897,7 +2897,7 @@ export fn let_generalize(val: Expr, vt: Type, env: TypeEnv, s: Subst, self_name:
     generalize(s, vt)
   } else {
     let env_ids = env_reachable_tvars(val, env, s, self_name)
-    let holds_container = is_array_builder_ty(vt_resolved) || is_region_tagged_ty(vt_resolved) || ty_has_open_array_elem(vt_resolved) || is_future_cell_ty(vt_resolved)
+    let holds_container = is_array_builder_ty(vt_resolved) || is_region_tagged_ty(vt_resolved) || ty_has_open_array_elem(vt_resolved) || is_future_cell_ty(vt_resolved, defs, 0)
     let restricted = if !holds_container {
       false
     } else {
@@ -3785,6 +3785,43 @@ fn eq_formal_names_for_var(id: Int, s: Subst, env: TypeEnv, out: Array[(Int, Str
     }
     i = i + 1
   }
+}
+
+/// #2066: the variables that stand for a type parameter of an open generic
+/// declaration with no `Send` bound, resolved through `s`. The spawn-capture
+/// check treats a `Future` payload that is one of these as possibly owning a
+/// host stream (Codex on #3091); a `Send` bound rules that out, since a
+/// `HostResponse` is not `Send`, and the call site checks the bound.
+fn unsent_open_formal_vars(s: Subst) -> Array[Int] {
+  let out: Array[Int] = []
+  let mut i = 0
+  while i < Array::length(eq_formal_vars) {
+    let (vid, _) = Array::get(eq_formal_vars, i)
+    if eq_group_is_open(Array::get(eq_formal_group, i)) {
+      match subst_apply(s, CtVar(vid)) {
+        CtVar(rep) => if !bounds_name_send(subst_bounds_for(s, vid)) && !bounds_name_send(subst_bounds_for(s, rep)) {
+          Array::push(out, rep)
+        } else {
+          ()
+        },
+        _ => ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn bounds_name_send(bounds: Array[String]) -> Bool {
+  let mut hit = false
+  let mut i = 0
+  while i < Array::length(bounds) && !hit {
+    hit = Array::get(bounds, i) == "Send"
+    i = i + 1
+  }
+  hit
 }
 
 fn eq_formals_has_vid(items: Array[(Int, String)], vid: Int) -> Bool {
@@ -7168,25 +7205,65 @@ export fn is_region_tagged_ty(t: Type) -> Bool {
 /// variable stays a monotype like an array builder's element: quantified, a
 /// `let f = Future::pending()` would re-instantiate a fresh payload at every
 /// use, and `resolve(f, 40)` could not constrain `await(f)`.
-fn is_future_cell_ty(t: Type) -> Bool {
-  match t {
-    CtNamed(n, _) => n == "Future",
-    CtTuple(elems) => {
-      let mut hit = false
-      let mut i = 0
-      while i < Array::length(elems) {
-        if is_future_cell_ty(Array::get(elems, i)) {
-          hit = true
-        } else {
-          ()
+fn is_future_cell_ty(t: Type, defs: Array[TypeDef], depth: Int) -> Bool {
+  if depth > 16 {
+    // Too deep to finish: answer as holding one, which only keeps the
+    // binding monomorphic.
+    true
+  } else {
+    match t {
+      CtNamed(n, targs) => n == "Future" || is_future_cell_ty_any(targs, defs, depth + 1) || decl_holds_future_cell(n, defs, depth + 1),
+      CtStruct(n) => decl_holds_future_cell(n, defs, depth + 1),
+      CtEnum(n) => decl_holds_future_cell(n, defs, depth + 1),
+      CtTuple(elems) => is_future_cell_ty_any(elems, defs, depth + 1),
+      CtOption(e) => is_future_cell_ty(e, defs, depth + 1),
+      CtArray(e) => is_future_cell_ty(e, defs, depth + 1),
+      CtApplied(h, args) => is_future_cell_ty(h, defs, depth + 1) || is_future_cell_ty_any(args, defs, depth + 1),
+      CtRecord(fields) => is_future_cell_ty_any(for f in fields {
+        let (_, ft) = f
+        ft
+      }, defs, depth + 1),
+      _ => false
+    }
+  }
+}
+
+fn is_future_cell_ty_any(ts: Array[Type], defs: Array[TypeDef], depth: Int) -> Bool {
+  let mut hit = false
+  let mut i = 0
+  while i < Array::length(ts) && !hit {
+    hit = is_future_cell_ty(Array::get(ts, i), defs, depth)
+    i = i + 1
+  }
+  hit
+}
+
+/// Whether a declared struct's fields, an enum's payloads, or an alias's body
+/// mention a `Future` (Codex on #3091): `struct Box[T] { f: Future[T] }`
+/// holds the cell as surely as a bare `Future[T]` does. Only the presence of
+/// the head is asked, so the declaration's own type parameters need no
+/// instantiation.
+fn decl_holds_future_cell(name: String, defs: Array[TypeDef], depth: Int) -> Bool {
+  match find_typedef(defs, name) {
+    Some(td) => match td {
+      TDStruct(_, fields, _, _) => is_future_cell_ty_any(for f in fields {
+        let (_, ft) = f
+        ft
+      }, defs, depth),
+      TDEnum(_, _, variants) => {
+        let mut hit = false
+        let mut i = 0
+        while i < Array::length(variants) && !hit {
+          let (_, payload) = Array::get(variants, i)
+          hit = is_future_cell_ty_any(payload, defs, depth)
+          i = i + 1
         }
-        i = i + 1
-      }
-      hit
+        hit
+      },
+      TDAlias(_, _, body) => is_future_cell_ty(body, defs, depth),
+      _ => false
     },
-    CtOption(e) => is_future_cell_ty(e),
-    CtArray(e) => is_future_cell_ty(e),
-    _ => false
+    None => false
   }
 }
 
@@ -8807,7 +8884,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         // a builder's; #2459: a variable free in the ENVIRONMENT is not this
         // binding's to quantify. See let_generalize for why those are two
         // rules and not one.
-        let gen0 = let_generalize(val, vt, cenv, ns, None)
+        let gen0 = let_generalize(val, vt, cenv, defs, ns, None)
         // #3057: a local alias (`let h = f`) is quantified afresh, possibly
         // in another order than `f`, so the row markers it copied are
         // respelled against its own quantifier list, as a top-level one's are.
@@ -8886,7 +8963,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         // to the unchecked arm. `ELet` above already passes the value's type
         // (`vt`); after the `unify(tv, vt, ..)` just above the two agree, so
         // this is the same binding through a type the call path can read.
-        let gen = let_generalize(val, subst_apply(s2, tv), cenv, s2, Some(name))
+        let gen = let_generalize(val, subst_apply(s2, tv), cenv, defs, s2, Some(name))
         // #2848: see the ELet arm.
         refuse_generalized_field_reads(gen, s2, errors)
         note_local_generic_binding(val, gen, cenv)
@@ -12178,7 +12255,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                   let s3 = unify_call_args(param_tys, arg_tys, args, s2, errors, name, callee_off)
                   match subst_apply(s3, a0_ty) {
                     CtNamed(tg_name, tg_args) => if tg_name == "TaskGroup" && Array::length(tg_args) == 2 {
-                      let violations = check_spawnable_captures(env, s3, defs, Array::get(args, 1), Array::get(tg_args, 0))
+                      let violations = check_spawnable_captures(env, s3, defs, Array::get(args, 1), Array::get(tg_args, 0), unsent_open_formal_vars(s3))
                       let mut vi = 0
                       while vi < Array::length(violations) {
                         Array::push(errors, String::concat(Array::get(violations, vi), off_marker_len(callee_off, String::length(name))))

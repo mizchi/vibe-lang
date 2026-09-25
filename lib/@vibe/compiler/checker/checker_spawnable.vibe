@@ -384,9 +384,19 @@ fn sp_same_region(a: Type, b: Type) -> Bool {
   }
 }
 
-fn sp_is_stream_owning_future(s: Subst, defs: Array[TypeDef], t: Type) -> Bool {
+fn sp_formals_has(formals: Array[Int], id: Int) -> Bool {
+  let mut hit = false
+  let mut i = 0
+  while i < Array::length(formals) && !hit {
+    hit = Array::get(formals, i) == id
+    i = i + 1
+  }
+  hit
+}
+
+fn sp_is_stream_owning_future(s: Subst, defs: Array[TypeDef], t: Type, formals: Array[Int]) -> Bool {
   match t {
-    CtNamed(n, targs) => n == "Future" && Array::length(targs) == 1 && sp_owns_host_stream(s, defs, Array::get(targs, 0), 0),
+    CtNamed(n, targs) => n == "Future" && Array::length(targs) == 1 && sp_owns_host_stream(s, defs, Array::get(targs, 0), 0, formals),
     _ => false
   }
 }
@@ -396,8 +406,12 @@ fn sp_is_stream_owning_future(s: Subst, defs: Array[TypeDef], t: Type) -> Bool {
 /// `Array`, tuples, records, the arguments of a named type, and the fields
 /// and payloads of a declared struct or enum (Codex on #3091). The descent
 /// is capped; a type too deep to finish is answered as owning, which only
-/// refuses a capture.
-fn sp_owns_host_stream(s: Subst, defs: Array[TypeDef], t: Type, depth: Int) -> Bool {
+/// refuses a capture. So is a type parameter of an open generic declaration
+/// with no `Send` bound (`formals`): the helper is checked once, and a later
+/// instantiation at `HostResponse` would share the body end with every task
+/// the helper spawns (Codex on #3091). `Send` excludes a host stream, so the
+/// bound is what makes such a capture sound, and the call site checks it.
+fn sp_owns_host_stream(s: Subst, defs: Array[TypeDef], t: Type, depth: Int, formals: Array[Int]) -> Bool {
   if depth > 16 {
     true
   } else {
@@ -405,20 +419,21 @@ fn sp_owns_host_stream(s: Subst, defs: Array[TypeDef], t: Type, depth: Int) -> B
       CtNamed(n, targs) => if n == "HostResponse" || n == "HostStream" {
         true
       } else {
-        sp_owns_host_stream_all(s, defs, targs, depth + 1) || sp_decl_owns_host_stream(s, defs, n, targs, depth + 1)
+        sp_owns_host_stream_all(s, defs, targs, depth + 1, formals) || sp_decl_owns_host_stream(s, defs, n, targs, depth + 1, formals)
       },
-      CtStruct(n) => sp_decl_owns_host_stream(s, defs, n, [], depth + 1),
-      CtEnum(n) => sp_decl_owns_host_stream(s, defs, n, [], depth + 1),
-      CtTuple(ts) => sp_owns_host_stream_all(s, defs, ts, depth + 1),
-      CtArray(e) => sp_owns_host_stream(s, defs, e, depth + 1),
-      CtOption(e) => sp_owns_host_stream(s, defs, e, depth + 1),
-      CtApplied(h, args) => sp_owns_host_stream(s, defs, h, depth + 1) || sp_owns_host_stream_all(s, defs, args, depth + 1),
+      CtVar(id) => sp_formals_has(formals, id),
+      CtStruct(n) => sp_decl_owns_host_stream(s, defs, n, [], depth + 1, formals),
+      CtEnum(n) => sp_decl_owns_host_stream(s, defs, n, [], depth + 1, formals),
+      CtTuple(ts) => sp_owns_host_stream_all(s, defs, ts, depth + 1, formals),
+      CtArray(e) => sp_owns_host_stream(s, defs, e, depth + 1, formals),
+      CtOption(e) => sp_owns_host_stream(s, defs, e, depth + 1, formals),
+      CtApplied(h, args) => sp_owns_host_stream(s, defs, h, depth + 1, formals) || sp_owns_host_stream_all(s, defs, args, depth + 1, formals),
       CtRecord(fields) => {
         let mut hit = false
         let mut i = 0
         while i < Array::length(fields) {
           let (_, ft) = Array::get(fields, i)
-          if sp_owns_host_stream(s, defs, ft, depth + 1) {
+          if sp_owns_host_stream(s, defs, ft, depth + 1, formals) {
             hit = true
           } else {
             ()
@@ -432,11 +447,11 @@ fn sp_owns_host_stream(s: Subst, defs: Array[TypeDef], t: Type, depth: Int) -> B
   }
 }
 
-fn sp_owns_host_stream_all(s: Subst, defs: Array[TypeDef], ts: Array[Type], depth: Int) -> Bool {
+fn sp_owns_host_stream_all(s: Subst, defs: Array[TypeDef], ts: Array[Type], depth: Int, formals: Array[Int]) -> Bool {
   let mut hit = false
   let mut i = 0
   while i < Array::length(ts) {
-    if sp_owns_host_stream(s, defs, Array::get(ts, i), depth) {
+    if sp_owns_host_stream(s, defs, Array::get(ts, i), depth, formals) {
       hit = true
     } else {
       ()
@@ -448,7 +463,7 @@ fn sp_owns_host_stream_all(s: Subst, defs: Array[TypeDef], ts: Array[Type], dept
 
 /// The fields of a declared struct, or the payloads of a declared enum's
 /// variants, instantiated at `targs`.
-fn sp_decl_owns_host_stream(s: Subst, defs: Array[TypeDef], name: String, targs: Array[Type], depth: Int) -> Bool {
+fn sp_decl_owns_host_stream(s: Subst, defs: Array[TypeDef], name: String, targs: Array[Type], depth: Int, formals: Array[Int]) -> Bool {
   match find_typedef(defs, name) {
     Some(td) => match td {
       TDStruct(_, fields, _, tparams) => {
@@ -461,7 +476,7 @@ fn sp_decl_owns_host_stream(s: Subst, defs: Array[TypeDef], name: String, targs:
           } else {
             ft
           }
-          if sp_owns_host_stream(s, defs, inst, depth) {
+          if sp_owns_host_stream(s, defs, inst, depth, formals) {
             hit = true
           } else {
             ()
@@ -483,7 +498,7 @@ fn sp_decl_owns_host_stream(s: Subst, defs: Array[TypeDef], name: String, targs:
             } else {
               pt
             }
-            if sp_owns_host_stream(s, defs, inst, depth) {
+            if sp_owns_host_stream(s, defs, inst, depth, formals) {
               hit = true
             } else {
               ()
@@ -498,7 +513,7 @@ fn sp_decl_owns_host_stream(s: Subst, defs: Array[TypeDef], name: String, targs:
         subst_type_params(body, aparams, targs)
       } else {
         body
-      }, depth),
+      }, depth, formals),
       _ => false
     },
     None => false
@@ -509,7 +524,7 @@ fn sp_decl_owns_host_stream(s: Subst, defs: Array[TypeDef], name: String, targs:
 /// is a `TaskGroup[r]` / `TaskHandle[r,_]` / `Sender[r,_]` / `Receiver[r,_]`
 /// tagged with THIS spawn call's own region (`r_here`) -- an endpoint from
 /// a DIFFERENT nursery is rejected exactly like any other non-Send value.
-fn sp_spawnable_ok(env: TypeEnv, s: Subst, defs: Array[TypeDef], ty: Type, r_here: Type) -> Bool {
+fn sp_spawnable_ok(env: TypeEnv, s: Subst, defs: Array[TypeDef], ty: Type, r_here: Type, formals: Array[Int]) -> Bool {
   if type_send_ok(env, s, defs, ty) {
     true
   } else {
@@ -538,7 +553,7 @@ fn sp_spawnable_ok(env: TypeEnv, s: Subst, defs: Array[TypeDef], ty: Type, r_her
         // end; once one drains or closes it, another reads a dropped -- or
         // reused -- handle (Codex on #3091). Like a `HostStream`, it has one
         // owner: the task that makes the request.
-        !sp_owns_host_stream(s, defs, Array::get(targs, 0), 0)
+        !sp_owns_host_stream(s, defs, Array::get(targs, 0), 0, formals)
       } else {
         false
       },
@@ -554,7 +569,7 @@ fn sp_spawnable_ok(env: TypeEnv, s: Subst, defs: Array[TypeDef], ty: Type, r_her
 /// (empty when the check passes). A non-literal closure argument (`let f =
 /// ...; TaskGroup::spawn(n, f)`) is opaque to this analysis and tolerated --
 /// same documented-gap shape as the region-escape check's alias bypass.
-export fn check_spawnable_captures(env: TypeEnv, s: Subst, defs: Array[TypeDef], f_expr: Expr, r_here: Type) -> Array[String] {
+export fn check_spawnable_captures(env: TypeEnv, s: Subst, defs: Array[TypeDef], f_expr: Expr, r_here: Type, formals: Array[Int]) -> Array[String] {
   match f_expr {
     EFn(_, _, params, _, _, body) => {
       let pnames = sp_empty_strings()
@@ -587,9 +602,12 @@ export fn check_spawnable_captures(env: TypeEnv, s: Subst, defs: Array[TypeDef],
         match env_lookup(env, vname) {
           Some(vty) => {
             let resolved = subst_apply(s, vty)
-            if sp_spawnable_ok(env, s, defs, resolved, r_here) {
+            if sp_spawnable_ok(env, s, defs, resolved, r_here, formals) {
               ()
-            } else if sp_is_stream_owning_future(s, defs, resolved) {
+            } else if sp_is_stream_owning_future(s, defs, resolved, formals) && !sp_is_stream_owning_future(s, defs, resolved, [
+            ]) {
+              Array::push(out, String::concat("capture `", String::concat(vname, "` is a future whose value type is a type parameter with no `Send` bound; it may be instantiated at a host response, whose body only one task may read: add `Send` to that type parameter's bounds, or start the future inside the spawned task")))
+            } else if sp_is_stream_owning_future(s, defs, resolved, formals) {
               Array::push(out, String::concat("capture `", String::concat(vname, "` is a future whose value owns a host stream (a response body), which only one task may read: start the request inside the spawned task and await it there, rather than sharing the future")))
             } else {
               Array::push(out, String::concat("no impl `Spawnable` for `", String::concat(type_to_string(resolved), String::concat("`: capture `", String::concat(vname, "` is neither Send nor a same-nursery endpoint")))))

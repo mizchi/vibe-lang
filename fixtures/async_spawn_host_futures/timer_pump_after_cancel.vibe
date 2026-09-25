@@ -1,0 +1,26 @@
+// #1537: a group whose last covered sleeper is cancelled while it stays open
+// cancels its timer then, not only at close. The group arms a timer for a 10s
+// sleeper beside a fast host future, joins the future, cancels the sleeper,
+// and pumps again before closing. With the timer left armed, that pump waited
+// out the cancelled sleeper's 10s (Codex on #3091); now it returns at once.
+// Answers 1. Executed by scripts/test_named_hostfutures_component_gate.sh,
+// which bounds the wall clock.
+import @vibe/concurrent {
+  TaskGroup, TaskHandle, sleep_wait
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  TaskGroup::run((g) -> {
+    let s = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      sleep_wait(10000)
+      0
+    })
+    let a = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      await(host_future_named("fast"))
+    })
+    let v = TaskHandle::join(a)
+    TaskHandle::cancel(s)
+    TaskGroup::pump_all(g)
+    v
+  })
+}
