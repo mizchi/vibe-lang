@@ -98,7 +98,8 @@ import @vibe/compiler/core {
   type_to_string,
   typed_lowering_arg_offset,
   typed_lowering_float_key,
-  typed_render_refuse_key
+  typed_render_refuse_key,
+  typed_render_row_head
 }
 
 import ./checker.vibe {
@@ -8905,6 +8906,21 @@ fn irc_show_shim_names(stmts: Array[Stmt]) -> Array[String] {
 /// here survives `irc_render_arg_offsets_pair` only when EVERY typed occurrence
 /// at it resolves to the wanted type, so recording a candidate can never
 /// promote a non-Int.
+/// #3081: the arg-offset keys of the ELEMENTS of a composite literal in
+/// render-argument position, collected by `irc_push_arg_key` below and read by
+/// `irc_render_arg_offsets_quad`, which truncates it before its own walk.
+/// A render row filed at one of these may carry a SCALAR type as well: the
+/// interpolation pass renders the element from the literal's shape, where a
+/// scalar leaf it could not type went through the pointer heuristic.
+let irc_literal_item_keys: Array[Int] = []
+
+/// #3081 review: how many composite-literal elements the key walk is inside.
+/// An element that has no key of its own (`if` / `match` / a binder block)
+/// hands the walk to its arms, and the keys found there are literal elements
+/// as much as a directly keyed element is -- they are what the interpolation
+/// pass renders from the literal's shape.
+let irc_literal_depth: Array[Int] = [0]
+
 fn irc_push_arg_key(arg: Expr, out: Array[Int], want: Int) -> Unit {
   let aoff = if want == 4 {
     typed_lowering_float_key(arg)
@@ -8913,6 +8929,11 @@ fn irc_push_arg_key(arg: Expr, out: Array[Int], want: Int) -> Unit {
   }
   if aoff >= 0 {
     Array::push(out, aoff)
+    if want != 4 && Array::get(irc_literal_depth, 0) > 0 {
+      Array::push(irc_literal_item_keys, aoff)
+    } else {
+      ()
+    }
   } else {
     match arg {
       EIf(_, t, f) => {
@@ -8938,12 +8959,31 @@ fn irc_push_arg_key(arg: Expr, out: Array[Int], want: Int) -> Unit {
         ()
       },
       EMatch(_, arms) => irc_push_arm_keys(arms, out, want),
+      // #3081: an array / tuple LITERAL has no key of its own, and the
+      // interpolation pass renders it element by element from its SHAPE. An
+      // element it cannot type (`[Some(k())]`, `(k(), 1)`) went through the
+      // pointer heuristic -- `[Some(0)]` for `[Some(false)]` -- although the
+      // checker had typed it. So its elements are candidates too, recursively
+      // through nested literals.
+      EArray(items) => irc_push_literal_item_keys(items, out, want),
+      ETuple(items) => irc_push_literal_item_keys(items, out, want),
       ELet(nm, val, body, _) => irc_push_binder_key(nm, val, body, out, want),
       ELetRec(nm, val, body) => irc_push_binder_key(nm, val, body, out, want),
       ELetMut(nm, val, body, _) => irc_push_binder_key(nm, val, body, out, want),
       _ => ()
     }
   }
+}
+
+/// #3081: every element of a composite literal in render-argument position.
+fn irc_push_literal_item_keys(items: Array[Expr], out: Array[Int], want: Int) -> Unit {
+  Array::set(irc_literal_depth, 0, Array::get(irc_literal_depth, 0) + 1)
+  let mut i = 0
+  while i < Array::length(items) {
+    irc_push_arg_key(Array::get(items, i), out, want)
+    i = i + 1
+  }
+  Array::set(irc_literal_depth, 0, Array::get(irc_literal_depth, 0) - 1)
 }
 
 /// #2585: every arm body of a `match` in render-argument position.
@@ -9144,25 +9184,50 @@ fn irc_render_arg_offsets_pair(checked: CheckedProgram, want_a: Int, want_b: Int
 /// none) answered from the same candidate set. Only tag 6 uses it, and it
 /// shares tag 3's key, so no candidate is filed under a key nobody reads.
 fn irc_render_arg_offsets_triple(checked: CheckedProgram, want_a: Int, want_b: Int, want_c: Int) -> (Array[Int], Array[Int], Array[Int]) {
+  let (a, b, c, _, _) = irc_render_arg_offsets_quad(checked, want_a, want_b, want_c, false)
+  (a, b, c)
+}
+
+/// #3066: the triple plus the RENDER ROWS, from the same walk and the same
+/// occurrence loop (`want_rows`). A row is `(argument offset,
+/// impl_target_key(__render[T]))` for a render argument whose every typed
+/// occurrence resolves to the SAME `Option` / `Array` / tuple type `T` that the
+/// typed-`==` channel can spell -- see `irc_render_row_key`. Anything else
+/// (no occurrence, a disagreement, a type variable, a record) files nothing,
+/// so the interpolation pass keeps its own answer: absent, never wrong.
+fn irc_render_arg_offsets_quad(checked: CheckedProgram, want_a: Int, want_b: Int, want_c: Int, want_rows: Bool) -> (Array[Int], Array[Int], Array[Int], Array[Int], Array[String]) {
   let raw: Array[Int] = []
   let shims = irc_shim_set(irc_show_shim_names(checked.checked_stmts))
+  Array::truncate(irc_literal_item_keys, 0)
+  Array::set(irc_literal_depth, 0, 0)
   irc_collect_stmts(checked.checked_stmts, raw, want_a, shims)
   let cands = irc_sorted_unique(raw)
-  let shim_args = if want_c >= 0 {
+  let literal_items = irc_sorted_unique(irc_literal_item_keys)
+  let shim_args = if want_c >= 0 || want_rows {
     irc_shim_body_arg_offsets(checked.checked_stmts)
   } else {
     []
   }
   let n = Array::length(cands)
   if n == 0 {
-    ([], [], [])
+    ([], [], [], [], [])
   } else {
     let seen_any: Array[Int] = []
     let all_a: Array[Int] = []
     let all_b: Array[Int] = []
     let all_c: Array[Int] = []
+    // #3066: per candidate, the render-row key its occurrences agree on, and
+    // 0 = no occurrence yet / 1 = agreeing / 2 = poisoned.
+    let row_keys: Array[String] = []
+    let row_state: Array[Int] = []
     let mut k = 0
     while k < n {
+      if want_rows {
+        Array::push(row_keys, "")
+        Array::push(row_state, 0)
+      } else {
+        ()
+      }
       Array::push(seen_any, 0)
       Array::push(all_a, 1)
       Array::push(all_b, 1)
@@ -9191,6 +9256,21 @@ fn irc_render_arg_offsets_triple(checked: CheckedProgram, want_a: Int, want_b: I
           } else {
             Array::set(all_c, idx, 0)
           }
+          if want_rows && Array::get(row_state, idx) != 2 {
+            let rk = irc_render_row_key(checked, oty, irc_index_of(literal_items, ooff) >= 0)
+            if String::length(rk) == 0 {
+              Array::set(row_state, idx, 2)
+            } else if Array::get(row_state, idx) == 0 {
+              Array::set(row_state, idx, 1)
+              Array::set(row_keys, idx, rk)
+            } else if Array::get(row_keys, idx) != rk {
+              Array::set(row_state, idx, 2)
+            } else {
+              ()
+            }
+          } else {
+            ()
+          }
         } else {
           ()
         }
@@ -9202,6 +9282,8 @@ fn irc_render_arg_offsets_triple(checked: CheckedProgram, want_a: Int, want_b: I
     let out_a: Array[Int] = []
     let out_b: Array[Int] = []
     let out_c: Array[Int] = []
+    let out_row_offs: Array[Int] = []
+    let out_row_keys: Array[String] = []
     let mut m = 0
     while m < n {
       if Array::get(seen_any, m) == 1 {
@@ -9220,12 +9302,47 @@ fn irc_render_arg_offsets_triple(checked: CheckedProgram, want_a: Int, want_b: I
         } else {
           ()
         }
+        if want_rows && Array::get(row_state, m) == 1 && !irc_int_array_has(shim_args, Array::get(cands, m)) {
+          Array::push(out_row_offs, Array::get(cands, m))
+          Array::push(out_row_keys, Array::get(row_keys, m))
+        } else {
+          ()
+        }
       } else {
         ()
       }
       m = m + 1
     }
-    (out_a, out_b, out_c)
+    (out_a, out_b, out_c, out_row_offs, out_row_keys)
+  }
+}
+
+/// #3066: the render-row key for one typed occurrence, or "" when it cannot
+/// be one. Only an `Option` / `Array` / tuple: those are the shapes the
+/// interpolation pass expands, and the ones whose payload positions it had to
+/// guess from syntax -- `Some(k())` through a local lambda rendered
+/// `Some(0)` for `Some(false)`. The type must be fully spelled by
+/// `eq_channel_type_expr` (no variable, function or record anywhere in it).
+///
+/// #3081: an ELEMENT of a composite literal (`literal_item`) files any type
+/// the channel can spell, scalars included -- the pass renders an element from
+/// the literal's shape, so a Bool or Double leaf needs the row as much as an
+/// Option does.
+fn irc_render_row_key(checked: CheckedProgram, oty: Type, literal_item: Bool) -> String {
+  let t = subst_apply(checked.final_subst, oty)
+  let composite = match t {
+    CtOption(_) => true,
+    CtArray(_) => true,
+    CtTuple(_) => true,
+    _ => false
+  }
+  if composite || literal_item {
+    match eq_channel_type_expr(t) {
+      Some(te) => impl_target_key(TyApp(typed_render_row_head(), [te])),
+      None => ""
+    }
+  } else {
+    ""
   }
 }
 
@@ -9252,6 +9369,39 @@ export fn checked_int_and_bool_render_offsets(checked: CheckedProgram) -> (Array
 /// ONE walk the pair already runs.
 export fn checked_int_bool_and_unrenderable_render_offsets(checked: CheckedProgram) -> (Array[Int], Array[Int], Array[Int]) {
   irc_render_arg_offsets_triple(checked, 3, 5, 6)
+}
+
+/// #3066: the same three tables plus the render rows (see
+/// `irc_render_arg_offsets_quad`), from the one walk.
+fn checked_render_offsets_and_rows(checked: CheckedProgram) -> (Array[Int], Array[Int], Array[Int], Array[Int], Array[String]) {
+  irc_render_arg_offsets_quad(checked, 3, 5, 6, true)
+}
+
+/// #3066: only the render rows, for a lane that asks for none of the tables.
+fn checked_render_rows(checked: CheckedProgram) -> (Array[Int], Array[String]) {
+  let (_, _, _, offs, keys) = irc_render_arg_offsets_quad(checked, 3, 0 - 1, 0 - 1, true)
+  (offs, keys)
+}
+
+/// #3066: the typed-`==` rows with the render rows appended. They share one
+/// channel on purpose (see `typed_render_row_head`); the head keeps a lookup of
+/// one kind from ever reading the other.
+fn append_render_rows(eq_offs: Array[Int], eq_keys: Array[String], row_offs: Array[Int], row_keys: Array[String]) -> (Array[Int], Array[String]) {
+  let offs: Array[Int] = []
+  let keys: Array[String] = []
+  let mut i = 0
+  while i < Array::length(eq_offs) {
+    Array::push(offs, Array::get(eq_offs, i))
+    Array::push(keys, Array::get(eq_keys, i))
+    i = i + 1
+  }
+  let mut j = 0
+  while j < Array::length(row_offs) {
+    Array::push(offs, Array::get(row_offs, j))
+    Array::push(keys, Array::get(row_keys, j))
+    j = j + 1
+  }
+  (offs, keys)
 }
 
 /// #2987: the Int channel with the tag-6 rows folded in under
@@ -9446,7 +9596,10 @@ fn check_program_double_call_result_observation_impl(stmts: Array[Stmt]) -> Opti
       // (the record site's `anchor_off >= 0` guard), and an offset claimed
       // by two binops with different types is poisoned at extraction --
       // with the SAME type, rewriting both is correct.
-      let (eq_offs, eq_keys) = eq_binop_type_keys_from_capture(checked, capture)
+      let (eq_only_offs, eq_only_keys) = eq_binop_type_keys_from_capture(checked, capture)
+      // #3066: the render rows ride the same channel.
+      let (row_offs, row_keys) = checked_render_rows(checked)
+      let (eq_offs, eq_keys) = append_render_rows(eq_only_offs, eq_only_keys, row_offs, row_keys)
       // #2424: the Double table is the union of the call results above and
       // the render/`eq` ARGUMENTS the checker typed Double (tag 4 on the
       // modular channel) -- see union_double_render_arg_offsets.
@@ -9570,7 +9723,7 @@ fn typed_lowering_located_observation_impl(stmts: Array[Stmt], initial_env: Type
       // than a second one is the whole point of the slice-2 encoding: the
       // memo, the sidecar, the per-file rebase and the reuse arms are already
       // built and already require the sidecar before skipping a check.
-      let (int_renders, bool_renders, unrenderable) = checked_int_bool_and_unrenderable_render_offsets(checked)
+      let (int_renders, bool_renders, unrenderable, row_offs, row_keys) = checked_render_offsets_and_rows(checked)
       let mut ii = 0
       while ii < Array::length(int_renders) {
         Array::push(enc, typed_lowering_enc(Array::get(int_renders, ii), 3))
@@ -9611,7 +9764,9 @@ fn typed_lowering_located_observation_impl(stmts: Array[Stmt], initial_env: Type
       // TypeExpr's impl_target_key), so they cannot ride the Int-encoded
       // table -- they come back as their own pair of parallel arrays, under
       // the same located-channel refusal as the tables above.
-      let (eq_offs, eq_keys) = eq_binop_type_keys_from_capture(checked, capture)
+      let (eq_only_offs, eq_only_keys) = eq_binop_type_keys_from_capture(checked, capture)
+      // #3066: the render rows from the walk above, on the same channel.
+      let (eq_offs, eq_keys) = append_render_rows(eq_only_offs, eq_only_keys, row_offs, row_keys)
       (checked, Some(enc), eq_offs, eq_keys)
     }
   }
