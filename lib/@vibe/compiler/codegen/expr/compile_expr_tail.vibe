@@ -2027,15 +2027,52 @@ fn with_pattern_binders(inner: Array[String], pat: Pat) -> Array[String] {
 fn ref_cell_retain_value(value: Expr, local_names: Array[String], ctx: CompileCtx) -> Expr with Exception {
   if !ctx.enable_rc {
     value
-  } else if expr_tag(value) == 7 || expr_tag(value) == 16 {
-    retain_wrap_branch_tails(value, local_names, array_empty(), ctx)
-  } else if is_edot(value) || call_returns_borrow(value, local_names, ctx) || spine_leaf_unowned(value, local_names, ctx) {
-    // The same test the assignment path uses for an unowned replacement: a
-    // bare projection, a borrow-returning call, or a straight-line block whose
-    // leaf is either (`{ let i = 0; Array::get(xs, i) }`).
-    ECall(EIdent("__loop_tail_retain", -1), [value], -1)
   } else {
-    value
+    ref_cell_retain_tail(value, local_names, array_empty(), ctx)
+  }
+}
+
+/// The per-tail half of `ref_cell_retain_value`. An if/match is walked into
+/// every arm (with the names each arm binds, so a branch-local shadow of a
+/// borrow-returning function is not mistaken for it); any other tail is
+/// retained when it is unowned by the same test the assignment path uses for
+/// an unowned replacement -- a projection, a borrow-returning call, a
+/// straight-line block whose leaf is either -- or is a loop-borrowed name.
+/// Unlike `retain_wrap_branch_tails` (#768), a projection is retained whatever
+/// its root: the cell's drop releases the field no matter where it came from
+/// (#3108 review).
+fn ref_cell_retain_tail(e: Expr, local_names: Array[String], inner: Array[String], ctx: CompileCtx) -> Expr with Exception {
+  match e {
+    EIf(c, t, el) => EIf(c, ref_cell_retain_tail(t, local_names, inner, ctx), ref_cell_retain_tail(el, local_names, inner, ctx)),
+    EMatch(scrut, arms) => {
+      let out = array_empty()
+      let mut ai = 0
+      while ai < Array::length(arms) {
+        let (apat, abody) = Array::get(arms, ai)
+        Array::push(out, (apat, ref_cell_retain_tail(abody, local_names, with_pattern_binders(inner, apat), ctx)))
+        ai = ai + 1
+      }
+      EMatch(scrut, out)
+    },
+    _ => if ref_cell_tail_unowned(e, local_names, inner, ctx) {
+      ECall(EIdent("__loop_tail_retain", -1), [e], -1)
+    } else {
+      e
+    }
+  }
+}
+
+/// Only match-pattern binders reach a bare ident / projection tail through
+/// `inner` (a `let` in an arm wraps the tail and is judged by
+/// `spine_leaf_unowned`), and a pattern binder is a view into the scrutinee,
+/// so it is retained like a loop-borrowed name; a projection is retained
+/// whatever its root.
+fn ref_cell_tail_unowned(e: Expr, local_names: Array[String], inner: Array[String], ctx: CompileCtx) -> Bool {
+  match e {
+    EIdent(x, _) => !array_contains_str(ctx.ref_cell_names, x) && (array_contains_str(ctx.loop_borrowed_names, x) || array_contains_str(inner, x)),
+    EDot(_, _, _, _) => true,
+    ECall(_, _, _) => call_returns_borrow(e, local_names, ctx) && !callee_bound_in(e, inner),
+    _ => spine_leaf_unowned(e, local_names, ctx)
   }
 }
 
