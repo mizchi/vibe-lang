@@ -10,8 +10,12 @@
 # #2248 rule that a check nobody has seen fail is a filename.
 set -euo pipefail
 
-# #2252: inherit nothing the helper reads.
+# #2252: inherit nothing the helper reads. That includes the helper ITSELF:
+# the gate lanes source run_bounded.sh (tests/gates/lib.sh), which exports the
+# functions into this process's environment, and an inherited export would
+# satisfy the xargs-worker rung for a mutant that never exports them.
 unset VIBE_RUN_BOUNDED_IMPL
+unset -f run_bounded run_bounded_watchdog 2>/dev/null || true
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB="$SCRIPT_DIR/run_bounded.sh"
