@@ -49,12 +49,15 @@ test "an array that escapes through an alias is declined" {
   assert(!String::contains(plan, "view_pin"))
 }
 
-test "a derived binding the plan counts is declined" {
-  // `let w = v` over a view plans a scope-end drop for `w` that it never
-  // acquired. The unreleased element used to absorb that drop; a released
-  // one would be freed twice.
+test "an alias of a pinned view releases with the pin" {
+  // `let w = v` over a view used to plan a scope-end drop for `w` that it
+  // never acquired (#3114), so this shape was declined. With #3114 the alias
+  // plans no drop and no transfer, so the release goes ahead with `v` pinned;
+  // `fixtures/rc_truncate_alias_pin_test.vibe` runs the shape under shadow.
   let src = String::concat("let run: () -> Int = () -> {\n  let xs = [[1, 2]]\n  let v = Array::get(xs, 0)\n  Array::truncate(xs, 0)\n  let w = v\n  Array::get(w, 1)\n}", epilogue)
-  assert(!String::contains(plan_of(src), "truncate_release"))
+  let plan = plan_of(src)
+  assert(String::contains(plan, "truncate_release"))
+  assert(String::contains(plan, "view_pin"))
 }
 
 test "a derived let mut live across the truncate is declined" {
