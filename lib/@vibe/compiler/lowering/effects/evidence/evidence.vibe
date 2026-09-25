@@ -24,6 +24,9 @@ import @vibe/compiler/lowering/effects/direct {
 
 import @vibe/compiler/lowering/effects/queries {
   EdpReadQuery,
+  edp_argcond_note,
+  edp_argcond_note_binders,
+  edp_argcond_reset,
   edp_callee_is_resolvable,
   edp_effect_name_of,
   edp_efn_eligible_for_migration,
@@ -333,7 +336,10 @@ fn edp_v1_guard_error_msg(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, S
   let withheld = edp_rowvar_withheld_callees(stmts, fn_defs, ename, row_labels)
   if Array::length(withheld) > 0 {
     msg = String::concat(msg, String::concat(" -- the pass cannot see through ", edp_join_and(withheld)))
-    msg = String::concat(msg, ", whose declared row has a row variable and which takes or returns a function. Give it a concrete row, or make its parameters and return type mention no function type")
+    // #2065: a call is admitted when each function-typed argument is a
+    // closure literal that cannot perform the effect (queries.vibe,
+    // edp_argcond_admits), so that is the first edit to offer.
+    msg = String::concat(msg, String::concat(", whose declared row has a row variable and which takes or returns a function. At each call, pass a closure literal that does not perform ", String::concat(ename, " in every function-typed position (not a named function or a variable), give it a concrete row, or make its parameters and return type mention no function type")))
   } else {
     msg = String::concat(msg, " -- a handle body, a needing function, or a row-carrying closure literal calls something the pass cannot see through")
   }
@@ -3399,6 +3405,48 @@ fn edp_callee_first_order(stmts: Array[Stmt], name: String) -> Bool {
   found && ok
 }
 
+/// #2065: which parameters of this callee are FUNCTION-typed, when every
+/// parameter is annotated and the declared return type mentions no function
+/// (the same stricter-than-suspend return rule as `edp_callee_first_order`);
+/// `None` otherwise, which keeps the call-site rule from ever admitting it.
+fn edp_callee_fn_param_mask(stmts: Array[Stmt], name: String) -> Option[Array[Bool]] {
+  let mut out = None
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, snm, _, EFn(_, _, params, fret, _, _)) => if snm == name {
+        let mask: Array[Bool] = []
+        let mut all = true
+        let mut pi = 0
+        while pi < Array::length(params) {
+          let (_, pty) = Array::get(params, pi)
+          match pty {
+            Some(t) => Array::push(mask, scps_ty_has_fn(t)),
+            None => {
+              all = false
+            }
+          }
+          pi = pi + 1
+        }
+        let ret_ok = match fret {
+          Some(rt) => !scps_ty_has_fn(rt),
+          None => true
+        }
+        out = if all && ret_ok {
+          Some(mask)
+        } else {
+          None
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
 /// Is this callee withheld from `pure_fns` because its row mentions a
 /// VARIABLE the pass cannot rule out?
 ///
@@ -3443,6 +3491,12 @@ fn edp_rowvar_withheld_callees(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bo
 }
 
 fn edp_append_effect_irrelevant_row_fns(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], ename: String, pure_fns: Array[String], row_labels: Array[Array[String]]) -> Unit {
+  // #2065: the callees withheld below ONLY for being higher-order are
+  // recorded for the call-site argument-inertness rule (queries.vibe,
+  // edp_argcond_admits), which admits a call to one whose function-typed
+  // arguments cannot perform `ename`.
+  edp_argcond_reset(ename)
+  edp_argcond_note_binders(stmts)
   let base_len = Array::length(pure_fns)
   let mut names: Array[String] = []
   let mut i = 0
@@ -3457,7 +3511,10 @@ fn edp_append_effect_irrelevant_row_fns(stmts: Array[Stmt], fn_defs: Array[(Int,
       // machinery decides this one, and it must keep deciding it.
       ()
     } else if edp_rowvar_callee_withheld(stmts, labels, name) {
-      ()
+      match edp_callee_fn_param_mask(stmts, name) {
+        Some(mask) => edp_argcond_note(ename, name, mask),
+        None => ()
+      }
     } else {
       // Copy the existing prefix only when a row can contribute a name.
       if Array::length(names) == 0 {

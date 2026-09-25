@@ -1,18 +1,15 @@
-/// #2065 wall 1 (ADR-0076 追記34): the HIGHER-ORDER twin of
-/// fixtures/async_first_order_rowvar_boundary_test.vibe, which must stay
-/// REFUSED.
+/// #2065 wall 1 (ADR-0076 追記34): a HIGHER-ORDER row-variable callee whose
+/// function-typed argument the evidence pass cannot read must stay REFUSED.
 ///
-/// Identical in every respect except that the row-variable callee `via`
-/// takes a function-typed parameter. That single difference is what
-/// `edp_callee_first_order` keys on, and it is not cosmetic: an argument
-/// carrying `Async` in its own row instantiates `e` to `Async` at the call
-/// site, and the perform then happens inside `via` where the boundary
-/// handler cannot see it. Widening this needs the call-site
-/// argument-inertness rule the suspend pass has
-/// (`scps_callee_fn_args_inert`), which is not ported.
-///
-/// `TaskGroup::run[T, rg, e](body: (TaskGroup[rg, e]) -> T with e)` is this
-/// shape, which is why the first-order port does not unblock TaskGroup.
+/// `via` takes a function-typed parameter, so an argument carrying `Async` in
+/// its own row would instantiate `e` to `Async` at the call site, and the
+/// perform would then happen inside `via`, where the boundary handler cannot
+/// see it. The call-site argument-inertness rule (queries.vibe,
+/// `edp_argcond_admits`) admits such a call only when every function-typed
+/// argument is a closure LITERAL that cannot perform the effect -- that twin
+/// is fixtures/async_higher_order_rowvar_literal_boundary_test.vibe, which
+/// answers 42. Here the argument is a NAMED function: its row is not
+/// readable at the call site, so the rule fails closed.
 fn takes_async_fn[T](f: () -> T with Async) -> Int {
   0
 }
@@ -21,7 +18,11 @@ fn via[T, e](x: T, g: (T) -> T) -> T with e {
   g(x)
 }
 
+fn ident(y: Int) -> Int {
+  y
+}
+
 fn main() -> Int allows Async {
   sleep(1)
-  via(42, (y) -> y)
+  via(42, ident)
 }

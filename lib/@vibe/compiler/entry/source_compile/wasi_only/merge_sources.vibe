@@ -87,7 +87,7 @@ fn string_array_contains_local(items: Array[String], target: String) -> Bool {
 /// resolve_import_path returns `core.vibe`, which does not exist. Falls back
 /// to the first candidate so a genuinely missing import still reports its
 /// plain-file path.
-fn resolve_existing_import_path(base_dir: String, raw_path: String, self_path: String) -> String with Fs {
+fn resolve_existing_import_path(base_dir: String, raw_path: String, self_path: String) -> String with Env + Fs {
   // #1872 pilot: probe loop unified in core (resolve_import_path_probe,
   // `with Source`); observable behavior is unchanged (this copy broke out of
   // the scan early on a hit and set fallback only on a miss, but `found`
@@ -103,7 +103,7 @@ fn resolve_existing_import_path(base_dir: String, raw_path: String, self_path: S
 /// would double-bind the local. The copy gets the target file's export renames
 /// applied first, so its body's references to renamed sibling exports stay
 /// consistent with the merged program.
-fn append_fs_import_local_def(merged: Array[Stmt], current_path: String, raw_path: String, original: String, local: String, plan: ExportRenamePlan) -> Bool with Exception + Fs {
+fn append_fs_import_local_def(merged: Array[Stmt], current_path: String, raw_path: String, original: String, local: String, plan: ExportRenamePlan) -> Bool with Env + Exception + Fs {
   let resolved = resolve_existing_import_path(dir_of_path(current_path), raw_path, current_path)
   // Builtin read + ingest, same as collect_parsed_sources_recursive
   // (flatten-lane wiring constraint / #741).
@@ -124,7 +124,7 @@ fn append_fs_import_local_def(merged: Array[Stmt], current_path: String, raw_pat
   done
 }
 
-fn append_fs_import_alias_collision_defs(merged: Array[Stmt], current_path: String, stmts: Array[Stmt], plan: ExportRenamePlan, excluded_locals: Array[String]) -> Unit with Exception + Fs {
+fn append_fs_import_alias_collision_defs(merged: Array[Stmt], current_path: String, stmts: Array[Stmt], plan: ExportRenamePlan, excluded_locals: Array[String]) -> Unit with Env + Exception + Fs {
   let refs = collect_import_alias_collision_refs(stmts)
   let emitted = array_empty()
   let mut i = 0
@@ -145,7 +145,7 @@ fn append_fs_import_alias_collision_defs(merged: Array[Stmt], current_path: Stri
 /// target is also claimed by a publication-only re-export alias. A bare target
 /// name cannot carry both authorities through the merged AST; retaining the
 /// import's distinct local binding keeps the two source meanings separate.
-fn append_fs_selected_import_defs(merged: Array[Stmt], current_path: String, stmts: Array[Stmt], plan: ExportRenamePlan, selected_locals: Array[String]) -> Unit with Exception + Fs {
+fn append_fs_selected_import_defs(merged: Array[Stmt], current_path: String, stmts: Array[Stmt], plan: ExportRenamePlan, selected_locals: Array[String]) -> Unit with Env + Exception + Fs {
   let emitted = array_empty()
   // Import lookup is last-binding-wins. Preserve the same winner when more
   // than one import uses the selected local spelling.
@@ -246,7 +246,7 @@ fn append_unique_strings(target: Array[String], source: Array[String]) -> Unit {
 /// a second pass once the whole program is known, because the export-rename
 /// plan (ambiguous exported names + re-export facades) needs every file's
 /// export surface before any file can be rewritten.
-fn collect_parsed_sources_recursive(path: String, file_paths: Array[String], file_stmts: Array[Array[Stmt]], visited: Array[Array[String]]) -> Unit with Exception + Fs {
+fn collect_parsed_sources_recursive(path: String, file_paths: Array[String], file_stmts: Array[Array[Stmt]], visited: Array[Array[String]]) -> Unit with Env + Exception + Fs {
   if path_set_contains(visited, path) {
     ()
   }
@@ -382,7 +382,7 @@ fn validate_retained_entry_source_names(stmts: Array[Stmt], retained_originals: 
   }
 }
 
-fn append_parsed_merged_stmts(entry_path: String, file_paths: Array[String], file_stmts: Array[Array[Stmt]], merged: Array[Stmt]) -> ExportRenamePlan with Exception + Fs {
+fn append_parsed_merged_stmts(entry_path: String, file_paths: Array[String], file_stmts: Array[Array[Stmt]], merged: Array[Stmt]) -> ExportRenamePlan with Env + Exception + Fs {
   let plan = build_export_rename_plan(file_paths, file_stmts, entry_path)
   let mut fi = 0
   while fi < Array::length(file_paths) {
@@ -433,7 +433,7 @@ fn serialize_builtin_iterator_boundaries(stmts: Array[Stmt]) -> Unit {
   }
 }
 
-fn collect_merged_stmts_recursive(entry_path: String, merged: Array[Stmt], visited: Array[Array[String]]) -> Unit with Exception + Fs {
+fn collect_merged_stmts_recursive(entry_path: String, merged: Array[Stmt], visited: Array[Array[String]]) -> Unit with Env + Exception + Fs {
   let file_paths = array_empty()
   let file_stmts = array_empty()
   collect_parsed_sources_recursive(entry_path, file_paths, file_stmts, visited)
@@ -445,7 +445,7 @@ fn coverage_driver_import_error(driver_path: String, raw_path: String, name: Str
   throw(String::concat("coverage driver ", String::concat(driver_path, String::concat(" import ", String::concat(raw_path, String::concat(" { ", String::concat(name, String::concat(" } rejected: ", reason))))))))
 }
 
-fn closure_path_index_for_coverage_import(file_paths: Array[String], driver_path: String, raw_path: String, name: String) -> Int with Exception + Fs {
+fn closure_path_index_for_coverage_import(file_paths: Array[String], driver_path: String, raw_path: String, name: String) -> Int with Env + Exception + Fs {
   if !String::ends_with(raw_path, ".vibe") {
     coverage_driver_import_error(driver_path, raw_path, name, "use one exact .vibe file path; package/directory imports are unsupported")
     0 - 1
@@ -617,7 +617,7 @@ fn merged_value_name_count(stmts: Array[Stmt], name: String) -> Int {
   count
 }
 
-fn resolve_coverage_value_target(entry_path: String, file_paths: Array[String], file_stmts: Array[Array[Stmt]], plan: ExportRenamePlan, merged: Array[Stmt], driver_path: String, raw_path: String, original: String) -> String with Exception + Fs {
+fn resolve_coverage_value_target(entry_path: String, file_paths: Array[String], file_stmts: Array[Array[Stmt]], plan: ExportRenamePlan, merged: Array[Stmt], driver_path: String, raw_path: String, original: String) -> String with Env + Exception + Fs {
   if String::contains(original, "::") {
     coverage_driver_import_error(driver_path, raw_path, original, "method and qualified targets are unsupported")
     ""
@@ -673,7 +673,7 @@ fn resolve_coverage_value_target(entry_path: String, file_paths: Array[String], 
   }
 }
 
-fn append_coverage_driver_stmts(entry_path: String, driver_path: String, driver_stmts: Array[Stmt], file_paths: Array[String], file_stmts: Array[Array[Stmt]], plan: ExportRenamePlan, merged: Array[Stmt]) -> Unit with Exception + Fs {
+fn append_coverage_driver_stmts(entry_path: String, driver_path: String, driver_stmts: Array[Stmt], file_paths: Array[String], file_stmts: Array[Array[Stmt]], plan: ExportRenamePlan, merged: Array[Stmt]) -> Unit with Env + Exception + Fs {
   let renames = array_empty()
   let imported_locals = array_empty()
   let imported_finals = array_empty()
@@ -743,7 +743,7 @@ fn append_coverage_driver_stmts(entry_path: String, driver_path: String, driver_
 /// top-level immutable values. Their references are rewritten to the exact
 /// names produced by the ordinary export/private namespacing pipeline; no
 /// guessed mangling or visibility broadening is involved.
-export fn coverage_driver_program_source_fs(entry_path: String, driver_path: String) -> String with Exception + Fs {
+export fn coverage_driver_program_source_fs(entry_path: String, driver_path: String) -> String with Env + Exception + Fs {
   let file_paths = array_empty()
   let file_stmts = array_empty()
   let visited = path_set_new()
@@ -773,7 +773,7 @@ export fn coverage_driver_program_source_fs(entry_path: String, driver_path: Str
 /// merge machinery renames them so the flat source has ZERO duplicates and
 /// carries the #716 visibility guarantees. Comments are dropped (printer
 /// output) — acceptable for a generated bundle artifact.
-export fn merged_program_source_fs(entry_path: String) -> String with Exception + Fs {
+export fn merged_program_source_fs(entry_path: String) -> String with Env + Exception + Fs {
   // #2205: the rename table describes ONE merged program.
   namespace_rename_originals_reset()
   let stmts = empty_stmt_array()
@@ -791,7 +791,7 @@ export fn merged_program_source_fs(entry_path: String) -> String with Exception 
   print_program(stmts)
 }
 
-export fn compile_file_wasi_only(entry_path: String, entry_name: String) -> Bytes with Exception + Fs {
+export fn compile_file_wasi_only(entry_path: String, entry_name: String) -> Bytes with Env + Exception + Fs {
   // #2205: the rename table describes ONE merged program.
   namespace_rename_originals_reset()
   let stmts = empty_stmt_array()

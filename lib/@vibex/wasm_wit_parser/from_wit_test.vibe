@@ -1,0 +1,261 @@
+// ADR-0113 §7 (#2064): the inverse projection, driven from WIT TEXT through
+// `wit_parse`, so each row checks the reading a real `.wit` gets rather than a
+// hand-built type. The forward/inverse agreement with the compiler's
+// `wit_type_text` is pinned in lib/@vibe/compiler/tests/wit_inverse_law_test.vibe.
+
+import ./wit_parser.vibe {
+  IIFunction, IITypeDef, WitTypeDef, wit_parse
+}
+
+import ./from_wit.vibe {
+  from_wit_func, from_wit_future_imports, from_wit_type, from_wit_typedef, from_wit_typedefs
+}
+
+/// The vibe declaration of the one function `sig` declares, or the refusal.
+fn decl_of(sig: String) -> String {
+  let src = "package a:b@1.0.0;\ninterface api {\n  f: \{sig};\n}\n"
+  handle {
+    let (_, ifaces, _) = wit_parse(src)
+    let (_, _, items) = Array::get(ifaces, 0)
+    match Array::get(items, 0) {
+      IIFunction(name, _, is_async, params, result, _) => from_wit_func(name, is_async, params, result),
+      _ => "<not a function>"
+    }
+  } with { Exception::Throw(msg) => "REFUSED: \{msg}" }
+}
+
+/// The vibe spelling of the parameter type `ty`, or the refusal.
+fn type_of(ty: String) -> String {
+  let src = "package a:b@1.0.0;\ninterface api {\n  f: func(x: \{ty});\n}\n"
+  handle {
+    let (_, ifaces, _) = wit_parse(src)
+    let (_, _, items) = Array::get(ifaces, 0)
+    match Array::get(items, 0) {
+      IIFunction(_, _, _, params, _, _) => from_wit_type(Array::get(params, 0).1),
+      _ => "<not a function>"
+    }
+  } with { Exception::Throw(msg) => "REFUSED: \{msg}" }
+}
+
+test "the admitted scalars and containers read back as their vibe types" {
+  inspect([
+    type_of("s64"),
+    type_of("f64"),
+    type_of("bool"),
+    type_of("char"),
+    type_of("string"),
+    type_of("list<u8>"),
+    type_of("list<s64>"),
+    type_of("option<string>"),
+    type_of("tuple<s64, string>"),
+    type_of("future<s64>"),
+    type_of("stream<u8>")
+  ], content = "[Int, Double, Bool, Char, String, Bytes, Array[Int], Option[String], (Int, String), Future[Int], HostStream]")
+}
+
+test "a keyed list stays a list of pairs, never a Map" {
+  inspect(type_of("list<tuple<string, s64>>"), content = "Array[(String, Int)]")
+}
+
+test "a nested result stays the explicit Result type" {
+  inspect(type_of("option<result<s64, string>>"), content = "Option[Result[Int, String]]")
+}
+
+test "type names become PascalCase" {
+  inspect(type_of("price-info"), content = "PriceInfo")
+}
+
+test "types outside the admitted subset are refused, naming the type" {
+  inspect([
+    type_of("u32"),
+    type_of("u8"),
+    type_of("f32"),
+    type_of("stream<s64>")
+  ], content = "[REFUSED: wit: `u32` has no vibe mapping, REFUSED: wit: `u8 outside list<u8>` has no vibe mapping, REFUSED: wit: `f32` has no vibe mapping, REFUSED: wit: `stream<..> of anything but u8` has no vibe mapping]")
+}
+
+test "a function's own result moves into the row, async becomes Async" {
+  inspect([
+    decl_of("func(ticker: string) -> result<f64, string>"),
+    decl_of("async func() -> future<s64>"),
+    decl_of("async func(get-count: s64) -> result<s64, string>"),
+    decl_of("func()")
+  ], content = "[fn f(ticker: String) -> Double with Exception[String], fn f() -> Future[Int] with Async, fn f(get_count: Int) -> Int with Exception[String] + Async, fn f() -> Unit]")
+}
+
+test "a refusal inside a signature names the function" {
+  inspect(decl_of("func(n: u32) -> s64"), content = "REFUSED: wit: `u32` has no vibe mapping (in `f`)")
+}
+
+/// The vibe declarations of the one type definition `def` declares.
+fn typedef_of(def: String) -> String {
+  let src = "package a:b@1.0.0;\ninterface api {\n  \{def}\n}\n"
+  handle {
+    let (_, ifaces, _) = wit_parse(src)
+    let (_, _, items) = Array::get(ifaces, 0)
+    match Array::get(items, 0) {
+      IITypeDef(d) => from_wit_typedef(d),
+      _ => "<not a type definition>"
+    }
+  } with { Exception::Throw(msg) => "REFUSED: \{msg}" }
+}
+
+fn typedefs_of(defs: String) -> String {
+  let src = "package a:b@1.0.0;\ninterface api {\n  \{defs}\n}\n"
+  handle {
+    let (_, ifaces, _) = wit_parse(src)
+    let (_, _, items) = Array::get(ifaces, 0)
+    let out: Array[WitTypeDef] = []
+    for item in items {
+      match item {
+        IITypeDef(d) => Array::push(out, d),
+        _ => ()
+      }
+    }
+    from_wit_typedefs(out)
+  } with { Exception::Throw(msg) => "REFUSED: \{msg}" }
+}
+
+test "a record becomes an export struct" {
+  inspect(typedef_of("record price-info { ticker: string, last-price: f64 }"), content = "export struct PriceInfo {\n  ticker: String;\n  last_price: Double\n}")
+}
+
+test "an enum becomes a payload-less export enum" {
+  inspect(typedef_of("enum color { dark-red, green }"), content = "export enum Color {\n  DarkRed;\n  Green\n}")
+}
+
+test "a variant's tuple payload reads back as several payloads" {
+  inspect(typedef_of("variant shape { point, circle(f64), rect(tuple<f64, f64>) }"), content = "export enum Shape {\n  Point;\n  Circle(Double);\n  Rect(Double, Double)\n}")
+}
+
+test "a type alias keeps its name" {
+  inspect(typedef_of("type ticker-list = list<string>;"), content = "type TickerList = Array[String]")
+}
+
+test "a resource becomes an opaque type with its functions and an explicit drop" {
+  inspect(typedef_of("resource conn { constructor(addr: string); send: func(data: list<u8>) -> result<s64, string>; open: static func(addr: string) -> conn; }"), content = "opaque type Conn\nfn Conn::new(addr: String) -> Conn\nfn Conn::send(self: Conn, data: Bytes) -> Int with Exception[String]\nfn Conn::r#open(addr: String) -> Conn\nfn Conn::drop(self: Conn) -> Unit")
+}
+
+test "flags are refused" {
+  inspect(typedef_of("flags perms { read, write }"), content = "REFUSED: wit: `flags perms` has no vibe mapping")
+}
+
+test "a name that is a vibe keyword becomes a raw identifier, and fn is refused" {
+  inspect([
+    decl_of("func(loop: s64) -> s64"),
+    typedef_of("record job { handle: string, match: bool }")
+  ], content = "[fn f(r#loop: Int) -> Int, export struct Job {\n  r#handle: String;\n  r#match: Bool\n}]")
+}
+
+test "a function's own result<_, E> has no value, and a nested _ is refused" {
+  inspect([
+    decl_of("func() -> result<_, string>"),
+    type_of("option<result<_, string>>")
+  ], content = "[fn f() -> Unit with Exception[String], REFUSED: wit: `_ (no value) inside another type` has no vibe mapping]")
+}
+
+test "names and shapes vibe cannot spell are refused" {
+  inspect([
+    decl_of("func(true: s64)"),
+    type_of("tuple<s64>"),
+    typedef_of("resource conn { drop: func(); }")
+  ], content = "[REFUSED: wit: `identifier `true` (a vibe literal with no raw form)` has no vibe mapping (in `f`), REFUSED: wit: `tuple<..> with one element` has no vibe mapping, REFUSED: wit: `resource `conn` declaring its own `drop` (the derived handle release is `Conn::drop`)` has no vibe mapping]")
+}
+
+test "a type name that lands on a builtin, and a constructor beside new, are refused" {
+  inspect([
+    typedef_of("record int { value: s64 }"),
+    typedef_of("resource conn { constructor(); new: static func() -> conn; }")
+  ], content = "[REFUSED: wit: `type `int` (its vibe name `Int` is a builtin type)` has no vibe mapping, REFUSED: wit: `resource `conn` declaring both a constructor and a function named `new` (the derived constructor is `Conn::new`)` has no vibe mapping]")
+}
+
+test "shapes that would collide or change once spelled in vibe are refused" {
+  inspect([
+    typedef_of("variant v { c(tuple<s64>) }"),
+    typedef_of("record %future { value: s64 }"),
+    typedef_of("record host-stream { value: s64 }"),
+    typedef_of("resource conn { send: func(self: s64); }"),
+    typedefs_of("enum a { ready }\n  enum b { ready }")
+  ], content = "[REFUSED: wit: `tuple<..> with one element` has no vibe mapping (in variant `v`), REFUSED: wit: `type `future` (its vibe name `Future` is a builtin type)` has no vibe mapping, REFUSED: wit: `type `host-stream` (its vibe name `HostStream` is a builtin type)` has no vibe mapping, REFUSED: wit: `method `send` with a parameter named `self` (the receiver is `self`)` has no vibe mapping (in resource `conn`), REFUSED: wit: `case `ready` in both `a` and `b` (both would be the constructor `Ready`)` has no vibe mapping]")
+}
+
+test "sibling types without a shared case convert together" {
+  inspect(typedefs_of("enum a { ready }\n  enum b { fine }"), content = "export enum A {\n  Ready\n}\n\nexport enum B {\n  Fine\n}")
+}
+
+// #2064: the import half, derived from WIT text. Each admitted function is a
+// binding whose body names its versioned interface address, which
+// linked_compile turns into a `wit_future_get$` metadata import.
+test "an interface's async s64 functions become host-future bindings" {
+  let wit = "package example:prices@1.0.0;\ninterface api {\n  get-price: async func() -> s64;\n  get-tax: async func() -> s64;\n}\n"
+  inspect(from_wit_future_imports(wit), content = "/// `example:prices/api@1.0.0#get-price`, imported as a host future (#2064).\nexport fn get_price() -> Future[Int] {\n  host_future_named(\"example:prices/api@1.0.0#get-price\")\n}\n\n/// `example:prices/api@1.0.0#get-tax`, imported as a host future (#2064).\nexport fn get_tax() -> Future[Int] {\n  host_future_named(\"example:prices/api@1.0.0#get-tax\")\n}")
+}
+
+test "a host-future import vibe cannot bind is refused, not skipped" {
+  let refused = (src: String) -> String {
+    handle {
+      from_wit_future_imports(src)
+    } with { Exception::Throw(msg) => "REFUSED: \{msg}" }
+  }
+  inspect([
+    refused("package example:prices;\ninterface api {\n  get-price: async func() -> s64;\n}\n"),
+    refused("package example:prices@1.0.0;\ninterface api {\n  get-price: func() -> s64;\n}\n"),
+    refused("package example:prices@1.0.0;\ninterface a {\n  get: async func() -> s64;\n}\ninterface b {\n  get: async func() -> s64;\n}\n"),
+    refused("package example:prices@1.0.0;\ninterface api {\n  resource r {\n    get: async func() -> s64;\n  }\n}\n")
+  ], content = "[REFUSED: wit: `package `example:prices` without a version` has no vibe mapping (the composer imports a versioned interface), REFUSED: wit: `function `get-price` as a host-future import (only `async func() -> s64`, or `async func() -> response` over the `types` interface's `record response { status: s32, body: stream<u8> }`, is admitted)` has no vibe mapping (in interface `api`), REFUSED: wit: `function `get` declared by two interfaces (both would be the binding `get`)` has no vibe mapping (in interface `b`), REFUSED: wit: `function `get` of resource `r` as a host-future import (only a freestanding `async func() -> s64` is admitted)` has no vibe mapping (in interface `api`)]")
+}
+
+// The committed bindings of fixtures/wit_future_import are exactly the
+// derivation from its WIT, so the program there reaches the WIT route through
+// bindings no one wrote by hand.
+test "the committed prices bindings are the derivation from prices.wit" {
+  let derived = from_wit_future_imports(Fs::read_file("fixtures/wit_future_import/prices.wit"))
+  let committed = Fs::read_file("fixtures/wit_future_import/prices_bindings.vibe")
+  let start = String::index_of(committed, "///")
+  inspect(String::substring(committed, start, String::length(committed)) == String::concat(derived, "\n"), content = "true")
+}
+
+// #2066: a function returning the `types` interface's `response` record is a
+// host RESPONSE -- its binding awaits into `HostResponse` (status + body
+// stream) rather than an Int.
+test "the committed client bindings are the derivation from client.wit" {
+  let derived = from_wit_future_imports(Fs::read_file("fixtures/wit_response_import/client.wit"))
+  let committed = Fs::read_file("fixtures/wit_response_import/client_bindings.vibe")
+  let start = String::index_of(committed, "///")
+  inspect(String::substring(committed, start, String::length(committed)) == String::concat(derived, "\n"), content = "true")
+}
+
+test "a response whose record is not exactly status and a byte-stream body is refused" {
+  let refused = (src: String) -> String {
+    handle {
+      from_wit_future_imports(src)
+    } with { Exception::Throw(msg) => "REFUSED: \{msg}" }
+  }
+  inspect([
+    refused("package example:h@1.0.0;\ninterface types {\n  record response {\n    status: s32,\n    body: string,\n  }\n}\ninterface client {\n  use types.{response};\n  fetch: async func() -> response;\n}\n"),
+    refused("package example:h@1.0.0;\ninterface client {\n  record response {\n    status: s32,\n    body: stream<u8>,\n  }\n  fetch: async func() -> response;\n}\n")
+  ], content = "[REFUSED: wit: `function `fetch` as a host-future import (only `async func() -> s64`, or `async func() -> response` over the `types` interface's `record response { status: s32, body: stream<u8> }`, is admitted)` has no vibe mapping (in interface `client`), REFUSED: wit: `function `fetch` as a host-future import (only `async func() -> s64`, or `async func() -> response` over the `types` interface's `record response { status: s32, body: stream<u8> }`, is admitted)` has no vibe mapping (in interface `client`)]")
+}
+
+test "names the compiler owns are refused wherever a foreign definition lands on them" {
+  let refused = (src: String) -> String {
+    handle {
+      from_wit_future_imports(src)
+    } with { Exception::Throw(msg) => "REFUSED: \{msg}" }
+  }
+  inspect([
+    typedef_of("record float { value: s64 }"),
+    typedef_of("record stdin-stream { value: s64 }"),
+    typedef_of("variant choice { some(s64), other }"),
+    typedef_of("enum outcome { ok, err }"),
+    refused("package example:p@1.0.0;\ninterface api {\n  host-future-named: async func() -> s64;\n}\n"),
+    refused("package example:p@1.0.0;\ninterface api {\n  await: async func() -> s64;\n}\n"),
+    refused("package example:p@1.0.0;\ninterface api {\n  host-response-named: async func() -> s64;\n}\n"),
+    refused("package example:p@1.0.0;\ninterface api {\n  host-stream-next: async func() -> s64;\n}\n"),
+    refused("package example:p@1.0.0;\ninterface api {\n  host-future-get: async func() -> s64;\n}\n"),
+    refused("package example:p@1.0.0;\ninterface api {\n  sleep: async func() -> s64;\n}\n"),
+    refused("package example:p@1.0.0;\ninterface api {\n  vibe-hf-wait-raw: async func() -> s64;\n}\n"),
+    refused("package example:p@1.0.0;\ninterface api {\n  sleep-blocking: async func() -> s64;\n}\n"),
+    typedef_of("record host-response { value: s64 }")
+  ], content = "[REFUSED: wit: `type `float` (its vibe name `Float` is a builtin type)` has no vibe mapping, REFUSED: wit: `type `stdin-stream` (its vibe name `StdinStream` is a builtin type)` has no vibe mapping, REFUSED: wit: `case `some` (its vibe constructor `Some` is the builtin one)` has no vibe mapping (in variant `choice`), REFUSED: wit: `case `ok` (its vibe constructor `Ok` is the builtin one)` has no vibe mapping (in enum `outcome`), REFUSED: wit: `function `host-future-named` (its binding `host_future_named` would shadow a compiler-owned builtin)` has no vibe mapping (in interface `api`), REFUSED: wit: `function `await` (its binding `await` would shadow the builtin every consumer awaits with)` has no vibe mapping (in interface `api`), REFUSED: wit: `function `host-response-named` (its binding `host_response_named` would shadow a compiler-owned builtin)` has no vibe mapping (in interface `api`), REFUSED: wit: `function `host-stream-next` (its binding `host_stream_next` would shadow a compiler-owned builtin)` has no vibe mapping (in interface `api`), REFUSED: wit: `function `host-future-get` (its binding `host_future_get` would shadow a compiler-owned builtin)` has no vibe mapping (in interface `api`), REFUSED: wit: `function `sleep` (its binding `sleep` would shadow a compiler-owned builtin)` has no vibe mapping (in interface `api`), REFUSED: wit: `function `vibe-hf-wait-raw` (its binding `vibe_hf_wait_raw` would shadow a compiler-owned builtin)` has no vibe mapping (in interface `api`), REFUSED: wit: `function `sleep-blocking` (its binding `sleep_blocking` would shadow a compiler-owned builtin)` has no vibe mapping (in interface `api`), REFUSED: wit: `type `host-response` (its vibe name `HostResponse` is a builtin type)` has no vibe mapping]")
+}

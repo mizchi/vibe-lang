@@ -1,0 +1,55 @@
+// #2065 wall 2 negative lock: the literal spelling of
+// err_effect_closure_param_capture_launder.vibe. A callee with a concrete row
+// that lacks `Ask` discharges a performing argument only when the parameter's
+// declared function type CARRIES `Ask`, as `TaskGroup::spawn_suspend`'s does.
+// `apply1`'s `f: (y: Int) -> Int` carries nothing, so handing it a literal that
+// performs `Ask` is laundering, not a discharge, and the suspend lowering must
+// refuse it rather than treat the call as plain.
+effect Ask {
+  Get(Int) -> Int
+}
+
+fn apply1(f: (y: Int) -> Int, x: Int) -> Int {
+  f(x)
+}
+
+let pick = (xs: Array[Int], pred: (x: Int) -> Bool) -> Int with Ask {
+  let mut i = 0
+  let mut out = 0 - 1
+  let mut go = true
+  while go {
+    if i >= Array::length(xs) {
+      go = false
+    } else {
+      let v = Array::get(xs, i)
+      let bumped = perform Ask::Get(v)
+      if pred(bumped) {
+        out = bumped
+        go = false
+      } else {
+        i = i + 1
+      }
+    }
+  }
+  out
+}
+
+let _start = () -> Int {
+  handle {
+    pick([
+      1,
+      3,
+      4
+    ], (x: Int) -> Bool {
+      apply1((y: Int) -> Int {
+        perform Ask::Get(y)
+      }, x) > 0
+    })
+  } with {
+    Ask::Get(t) => {
+      let k = resume
+      k(t + 1)
+    }
+  }
+}
+_start()

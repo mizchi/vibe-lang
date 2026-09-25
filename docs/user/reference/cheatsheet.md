@@ -1462,6 +1462,16 @@ and standard provider builtins under the same row label. This coexistence is
 intentional: use the builtin for the host operation and a declaration when a
 program needs to intercept it with `handle`.
 
+A `handle` that names a host operation intercepts **both** spellings, in the
+handled body and in every function it calls: `Fs::read_file(p)` two calls
+down reaches `Fs::ReadFile(p) => ...` exactly as `perform Fs::ReadFile(p)`
+would (#1962). A host operation that no handler answers reaches the host, and
+so does a direct call outside every handler. So a `handle` is a real mock, and
+a handler that answers `""` to satisfy the checker makes every read inside it
+return `""`. Carry the effect on the row instead. The interception applies
+when every entry of the artifact is granted the operation. It stands down for
+a library whose exported functions the host may call directly.
+
 ### Failure-carrying pipeline
 
 > **推奨は `throw` + `Exception[E]` row** (ADR-0085 / #1324)。失敗は返り値では

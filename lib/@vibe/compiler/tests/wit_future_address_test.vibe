@@ -1,0 +1,36 @@
+// #2064: `host_future_named` takes either a root import label or a WIT
+// function address; only the second is emitted as a `wit_future_get$` metadata
+// import. What counts as an address is exactly what the composer can split
+// back into a versioned interface and a function label.
+
+import @vibe/compiler/codegen/expr {
+  cc_is_wit_future_address
+}
+
+/// Each candidate with whether it is an address.
+fn classify(names: Array[String]) -> Array[(String, Bool)] {
+  let out: Array[(String, Bool)] = []
+  for n in names {
+    Array::push(out, (n, cc_is_wit_future_address(n)))
+  }
+  out
+}
+
+test "a versioned interface address with a function label is an address" {
+  inspect(classify([
+    "example:prices/api@1.0.0#get-price",
+    "wasi:http/outgoing-handler@0.3.0#handle"
+  ]), "[(example:prices/api@1.0.0#get-price, true), (wasi:http/outgoing-handler@0.3.0#handle, true)]")
+}
+
+test "anything the composer could not split back is not" {
+  inspect(classify([
+    "price",
+    "example:prices/api#get-price",
+    "example:prices/api@1.0.0",
+    "example:prices/api@1.0.0#Get-Price",
+    "example:prices/api@1.0.0#a#b",
+    "#get-price",
+    "Example:prices/api@1.0.0#get-price"
+  ]), "[(price, false), (example:prices/api#get-price, false), (example:prices/api@1.0.0, false), (example:prices/api@1.0.0#Get-Price, false), (example:prices/api@1.0.0#a#b, false), (#get-price, false), (Example:prices/api@1.0.0#get-price, false)]")
+}

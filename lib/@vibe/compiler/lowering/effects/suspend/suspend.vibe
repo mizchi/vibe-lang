@@ -16,6 +16,8 @@ import @vibe/compiler/lowering/effects/evidence {
 
 import @vibe/compiler/lowering/effects/queries {
   EdpReadQuery,
+  edp_argcond_note_binders,
+  edp_is_program_binder,
   edp_row_is_exactly,
   edp_rq_arms,
   edp_rq_exprs,
@@ -184,6 +186,8 @@ export fn suspend_cps_pass(stmts: Array[Stmt]) -> Array[String] {
     let es_members_list = array_empty()
     edp_es_collect_into(stmts, es_names, es_members_list)
     let ctor_names = scps_collect_ctor_names(stmts)
+    // Locally bound names, for `scps_inert_taint`'s callee test.
+    edp_argcond_note_binders(stmts)
     let ctx = (stmts, effect_defs, fn_defs, es_names, es_members_list, ctor_names)
     let st = (scps_ctr_box(), array_empty_str(), array_empty_str(), array_empty_str(), array_empty_str(), scps_empty_stmts(), errs)
     // closure-CPS (追記31 Vertical B) phase 1: the CPS-mode effect set.
@@ -855,6 +859,70 @@ fn scps_literal_is_step_for(v: Expr, eff: String) -> Bool {
   }
 }
 
+/// #2065 wall 2: `scps_literal_is_step_for` at the literal's OWN level --
+/// step names inside a NESTED closure literal do not make this one a step
+/// literal. The prepass step-splits a closure handed to a suspend-class
+/// callee in place (`TaskGroup::spawn_suspend(g, () -> T with Async { .. })`
+/// inside a `TaskGroup::run` body), so the full fold found the inner
+/// literal's step names and disqualified the OUTER literal, whose own body
+/// returns an ordinary value. A step call the outer body makes itself is
+/// rewritten at the outer level, where this still sees it.
+fn scps_literal_is_own_step_for(v: Expr, eff: String) -> Bool {
+  match v {
+    EFn(_, _, _, _, _, b) => {
+      let dn = scps_done_name(eff)
+      let bn = scps_bubble_name(eff)
+      scps_mentions_step_shallow(b, dn, scps_y_name(eff, ""), bn) || scps_mentions_step_shallow(b, dn, scps_clone_name(eff, ""), bn)
+    },
+    _ => false
+  }
+}
+
+fn scps_mentions_step_shallow(e: Expr, dn: String, yprefix: String, bn: String) -> Bool {
+  match e {
+    EFn(_, _, _, _, _, _) => false,
+    EIdent(name, _) => name == dn || name == bn || String::starts_with(name, yprefix),
+    // A step clone handed on as an ARGUMENT is a value the callee receives in
+    // a step-source parameter (`TaskGroup::spawn_suspend(g, __scps_cps_..)`),
+    // not this literal's own control flow; only the callee position, and a
+    // done / bubble constructor anywhere, make the literal a step.
+    ECall(callee, args, _) => {
+      let mut found = scps_mentions_step_shallow(callee, dn, yprefix, bn)
+      let mut i = 0
+      while !found && i < Array::length(args) {
+        found = match Array::get(args, i) {
+          EIdent(name, _) => name == dn || name == bn,
+          a => scps_mentions_step_shallow(a, dn, yprefix, bn)
+        }
+        i = i + 1
+      }
+      found
+    },
+    EHandle(body, arms) => scps_mentions_step_shallow(body, dn, yprefix, bn) || scps_arms_mention_step_shallow(arms, dn, yprefix, bn),
+    EMatch(scrut, arms) => scps_mentions_step_shallow(scrut, dn, yprefix, bn) || scps_arms_mention_step_shallow(arms, dn, yprefix, bn),
+    _ => {
+      let kids = expr_children(e)
+      let mut found = false
+      let mut i = 0
+      while !found && i < Array::length(kids) {
+        found = scps_mentions_step_shallow(Array::get(kids, i), dn, yprefix, bn)
+        i = i + 1
+      }
+      found
+    }
+  }
+}
+
+fn scps_arms_mention_step_shallow(arms: Array[(Pat, Expr)], dn: String, yprefix: String, bn: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(arms) {
+    found = scps_mentions_step_shallow(Array::get(arms, i).1, dn, yprefix, bn)
+    i = i + 1
+  }
+  found
+}
+
 fn scps_mentions_step(e: Expr, dn: String, yprefix: String, bn: String) -> Bool {
   edp_rq_fold(RQMentionsStep(dn, yprefix, bn), e) > 0
 }
@@ -886,7 +954,7 @@ fn scps_is_inert_literal(v: Expr, eff: String, needing: Array[String], ctx: (Arr
         Some(row) => !scps_row_contains(ctx, row, eff) && !scps_row_has_var(row),
         None => true
       }
-      row_ok && !scps_literal_is_step_for(v, eff) && !scps_inert_taint(vb, eff, needing, scps_locals_with_params(array_empty_str(), vparams), ctx)
+      row_ok && !scps_literal_is_own_step_for(v, eff) && !scps_inert_taint(vb, eff, needing, scps_locals_with_params(array_empty_str(), vparams), ctx)
     },
     _ => false
   }
@@ -4434,11 +4502,28 @@ fn scps_inert_taint(e: Expr, eff: String, needing: Array[String], locals: Array[
         true
       } else if edp_str_array_contains(needing, nm) || String::starts_with(nm, "__scps_") || String::starts_with(nm, "__Scps") {
         true
+      } else if edp_is_program_binder(nm) {
+        // Some local binding in the program has this spelling -- an enclosing
+        // parameter the literal captures, say -- so the call may not reach
+        // the top-level function of that name at all, nor the builtin the
+        // spelling would otherwise name (Codex on #3059).
+        true
       } else if idp_is_pure_builtin_call(nm) || scps_is_safe_mut_builtin(nm) || scps_is_ctor_name(ctx, nm) {
         scps_inert_taint_exprs(args, eff, needing, locals, ctx)
       } else {
         let (is_fn, row) = scps_fn_row_of(ctx, nm)
-        if is_fn && !scps_row_contains(ctx, row, eff) && (!scps_row_has_var(row) || scps_callee_first_order(ctx, nm)) {
+        if is_fn && !scps_row_contains(ctx, row, eff) && !scps_row_has_var(row) {
+          // #2065 wall 2: a callee whose declared row is CONCRETE and lacks
+          // `eff`, taking a parameter whose declared function type DOES carry
+          // `eff`, discharges what an argument in that position performs:
+          // `TaskGroup::spawn_suspend(g, () -> T with Async + Exception { .. })`
+          // is `Async`-free at this call site. Only that position is exempt.
+          // A parameter whose function type has no `eff` in its row is a
+          // laundering route, not a discharge
+          // (err_effect_closure_param_capture_launder.vibe), and every other
+          // argument is still scanned as an ordinary expression.
+          scps_inert_taint_exprs(scps_undischarged_args(ctx, nm, args, eff), eff, needing, locals, ctx)
+        } else if is_fn && !scps_row_contains(ctx, row, eff) && scps_callee_first_order(ctx, nm) {
           scps_inert_taint_exprs(args, eff, needing, locals, ctx)
         } else {
           true
@@ -4550,6 +4635,57 @@ fn scps_pats_collect_binds(ps: Array[Pat], acc: Array[String]) -> Unit {
     scps_pat_collect_binds(Array::get(ps, i), acc)
     i = i + 1
   }
+}
+
+/// The arguments a discharging callee does NOT answer for (see the
+/// concrete-row arm of `scps_inert_taint`). A closure literal or a bare name --
+/// a value, not a computation -- is exempt only in a position whose declared
+/// parameter type is a function carrying `eff`: the callee's concrete row
+/// without `eff` then means it handles what that value performs. A name is
+/// what a literal becomes once lifted (`__hoisted_lam_..`, or its step clone
+/// `__scps_cps_Async_..` for a step-source parameter). Everything else is
+/// returned for the ordinary scan, and so is every argument when the callee
+/// cannot be found.
+fn scps_undischarged_args(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), name: String, args: Array[Expr], eff: String) -> Array[Expr] {
+  let (stmts, _, _, _, _, _) = ctx
+  let mut params: Array[(String, Option[TypeExpr])] = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, snm, _, EFn(_, _, ps, _, _, _)) => if snm == name {
+        params = ps
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  let out: Array[Expr] = []
+  let mut k = 0
+  while k < Array::length(args) {
+    let a = Array::get(args, k)
+    let is_value = match a {
+      EFn(_, _, _, _, _, _) => true,
+      EIdent(_, _) => true,
+      _ => false
+    }
+    let discharged = if is_value && k < Array::length(params) {
+      match Array::get(params, k).1 {
+        Some(TyFn(_, _, Some(row))) => scps_row_contains(ctx, row, eff) && !scps_row_has_var(row),
+        _ => false
+      }
+    } else {
+      false
+    }
+    if discharged {
+      ()
+    } else {
+      Array::push(out, a)
+    }
+    k = k + 1
+  }
+  out
 }
 
 fn scps_inert_taint_exprs(es: Array[Expr], eff: String, needing: Array[String], locals: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> Bool {

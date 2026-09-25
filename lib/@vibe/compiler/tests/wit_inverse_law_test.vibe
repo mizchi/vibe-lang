@@ -1,0 +1,100 @@
+// ADR-0113 §8's INVERSE law, for types (#2064): for every WIT type `w` in the
+// admitted subset, `to_wit(from_wit(w)) == w`.
+//
+// `from_wit_type` (@vibex/wasm_wit_parser) reads a WIT type as the vibe type a
+// derived contract carries; `wit_type_text` (wit_gen.vibe) is the forward
+// projection `vibe build --component` uses. #2064 asks for the two directions
+// to agree on ONE mapping, and this test is that agreement: each row parses
+// real WIT text, projects it into vibe, parses the vibe spelling back as a
+// type, and projects it forward again.
+//
+// A row whose forward text differs is a disagreement between the two files,
+// not a formatting nit -- the round trip is how a type a foreign package
+// declares comes back out when a vibe consumer re-exports it.
+
+import ../wit_gen.vibe {
+  wit_type_text
+}
+
+import @vibe/parser {
+  lex, parse_program, parse_type
+}
+
+import @vibex/wasm_wit_parser {
+  IIFunction, IITypeDef, from_wit_type, from_wit_typedef, wit_parse
+}
+
+fn round_trip(wit_ty: String) -> String with Exception {
+  let src = "package a:b@1.0.0;\ninterface api {\n  f: func(x: \{wit_ty});\n}\n"
+  let (_, ifaces, _) = wit_parse(src)
+  let (_, _, items) = Array::get(ifaces, 0)
+  let vibe_ty = match Array::get(items, 0) {
+    IIFunction(_, _, _, params, _, _) => from_wit_type(Array::get(params, 0).1),
+    _ => throw("not a function")
+  }
+  let (te, _) = parse_type(lex(vibe_ty), 0)
+  wit_type_text(te)
+}
+
+test "every admitted WIT type survives from_wit then to_wit unchanged" {
+  let admitted = [
+    "s64",
+    "f64",
+    "bool",
+    "char",
+    "string",
+    "list<u8>",
+    "list<s64>",
+    "list<list<string>>",
+    "option<s64>",
+    "option<option<bool>>",
+    "tuple<s64, string>",
+    "tuple<bool, tuple<f64, char>>",
+    "list<tuple<string, s64>>",
+    "result<s64, string>",
+    "option<result<string, s64>>",
+    "future<s64>",
+    "stream<u8>"
+  ]
+  let mut disagree = ""
+  let mut i = 0
+  while i < Array::length(admitted) {
+    let w = Array::get(admitted, i)
+    let back = round_trip(w)
+    if back != w {
+      disagree = "\{disagree} \{w}->\{back}"
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  inspect(disagree, content = "")
+}
+
+/// How many statements the vibe text derived from the type definition `def`
+/// parses to -- "PARSE ERROR: .." when it does not parse.
+fn parsed_decls(def: String) -> String {
+  let src = "package a:b@1.0.0;\ninterface api {\n  \{def}\n}\n"
+  handle {
+    let (_, ifaces, _) = wit_parse(src)
+    let (_, _, items) = Array::get(ifaces, 0)
+    let text = match Array::get(items, 0) {
+      IITypeDef(d) => from_wit_typedef(d),
+      _ => throw("not a type definition")
+    }
+    "\{Array::length(parse_program(lex(text)))}"
+  } with { Exception::Throw(msg) => "PARSE ERROR: \{msg}" }
+}
+
+// §7's derived declarations are vibe source a contract carries, so each must
+// parse as one declaration -- a projection that emits text the parser rejects
+// would fail at `vibe add` time with an error about the wrong file.
+test "derived type definitions parse as vibe declarations" {
+  inspect([
+    parsed_decls("record price-info { ticker: string, last-price: f64 }"),
+    parsed_decls("enum color { dark-red, green }"),
+    parsed_decls("variant shape { point, circle(f64), rect(tuple<f64, f64>) }"),
+    parsed_decls("type ticker-list = list<string>;"),
+    parsed_decls("record job { handle: string, match: bool }")
+  ], content = "[1, 1, 1, 1, 1]")
+}

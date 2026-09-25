@@ -37,6 +37,7 @@ import @vibe/compiler/core {
   is_exception_effect_name,
   is_exception_label,
   is_exception_throw_operation,
+  is_legacy_console_provider,
   resolve_type_alias_params,
   standard_host_provider_names,
   strip_published_formal_suffixes,
@@ -273,7 +274,9 @@ fn missing_is_erased_exception_only(missing: String) -> Bool {
   let mut i = 0
   while i < Array::length(parts) {
     let p = String::trim(Array::get(parts, i))
-    if p != "Exception" && p != "Exception::Throw" {
+    // #1963: the exception policy's predicates, not the spelling -- the
+    // legacy `Error` alias is the same erased exception.
+    if !is_exception_label(p) || String::length(exception_label_kind(p)) > 0 {
       ok = false
     } else {
       ()
@@ -291,12 +294,12 @@ fn declared_is_kinded_exception(declared: String) -> Bool {
   let mut i = 0
   while i < Array::length(parts) {
     let p = String::trim(Array::get(parts, i))
-    if String::starts_with(p, "Exception[") {
-      kinded = true
-    } else if p == "Exception" || p == "Exception::Throw" {
-      erased = true
-    } else {
+    if !is_exception_label(p) {
       ()
+    } else if String::length(exception_label_kind(p)) > 0 {
+      kinded = true
+    } else {
+      erased = true
     }
     i = i + 1
   }
@@ -2637,12 +2640,12 @@ fn row_base_membership(labels: Array[String], eff_name: String) -> Bool {
 /// (#1539's StdinStream) has no `Console::` counterpart, so `Console` is not
 /// yet a complete replacement for `Stdin` at the operation level. That is
 /// #1460's problem to close, not this predicate's to hide.
-fn is_legacy_console_label(name: String) -> Bool {
-  name == "Stdin" || name == "Stdout" || name == "Stderr"
-}
-
+///
+/// Which providers are legacy is policy metadata and lives with the provider
+/// table (`is_legacy_console_provider`, #1963); the containment direction is
+/// the checker's.
 fn console_authorizes_legacy(labels: Array[String], eff_name: String) -> Bool {
-  is_legacy_console_label(eff_name) && effect_row_has_label(Some(labels), "Console")
+  is_legacy_console_provider(eff_name) && effect_row_has_label(Some(labels), "Console")
 }
 
 /// #2985 review (Codex P0): the pseudo-label a handle with a KINDED exception
@@ -4160,7 +4163,7 @@ fn authority_covers_operation(auth: String, emitted: String) -> Bool {
     true
   } else if String::index_of(auth, "::") < 0 && standard_provider_owns_operation(emitted) {
     effect_name_of_op(emitted) == auth
-  } else if auth == "Console" && is_legacy_console_label(effect_name_of_op(emitted)) {
+  } else if auth == "Console" && is_legacy_console_provider(effect_name_of_op(emitted)) {
     // The instantiate-grant half of #2102's containment. `allows` is a
     // SEPARATE authorization path from the `with` row (ADR-0075/0084/0088:
     // authority is fixed once, at instantiate), so teaching only

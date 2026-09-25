@@ -1,9 +1,9 @@
-// Real-FS exercise of the Fs builtins against the preopen filesystem. As in
-// fixtures/fs_readdir_test.vibe, the `handle ... with Fs { ... }` blocks only
-// discharge the Fs effect for the checker — the builtin Fs ops
-// (Fs::write_file / Fs::read_file / Fs::exists / Fs::stat_token) compile to
-// direct host-import calls, so the arms are never invoked and the writes/reads
-// hit the real filesystem. (fs.vibe's perform-based wrappers are covered,
+// Real-FS exercise of the Fs builtins against the preopen filesystem. A test
+// block is granted the host effects, so the calls below reach the real
+// filesystem with no handler around them. They used to sit under `handle`
+// blocks whose arms answered "" / false "for the checker only"; since #1962 a
+// handler intercepts the operations it names, direct calls included, so those
+// arms would now answer. (fs.vibe's perform-based wrappers are covered,
 // mocked, by fs_effect_test.vibe.)
 
 import ./fs_effect.vibe {
@@ -40,36 +40,26 @@ fn do_stat_changed() -> Bool with Fs {
 }
 
 test "write_file and read_file roundtrip" {
-  let ok = handle {
-    do_roundtrip()
-  } with { Fs::ReadFile(_p) => resume(""); Fs::WriteFile(_p, _c) => resume(0); Fs::Exists(_p) => resume(false); Fs::Mkdir(_p) => resume(0) }
+  let ok = do_roundtrip()
   assert(ok)
 }
 
 test "exists returns true for existing file" {
-  let ok = handle {
-    do_exists_true()
-  } with { Fs::ReadFile(_p) => resume(""); Fs::WriteFile(_p, _c) => resume(0); Fs::Exists(_p) => resume(false); Fs::Mkdir(_p) => resume(0) }
+  let ok = do_exists_true()
   assert(ok)
 }
 
 test "exists returns false for nonexistent file" {
-  let absent = handle {
-    do_exists_false()
-  } with { Fs::ReadFile(_p) => resume(""); Fs::WriteFile(_p, _c) => resume(0); Fs::Exists(_p) => resume(false); Fs::Mkdir(_p) => resume(0) }
+  let absent = do_exists_false()
   assert(not(absent))
 }
 
 test "stat_token is stable for unchanged file" {
-  let ok = handle {
-    do_stat_stable()
-  } with { Fs::ReadFile(_p) => resume(""); Fs::WriteFile(_p, _c) => resume(0); Fs::Exists(_p) => resume(false); Fs::Mkdir(_p) => resume(0) }
+  let ok = do_stat_stable()
   assert(ok)
 }
 
 test "stat_token changes after write" {
-  let changed = handle {
-    do_stat_changed()
-  } with { Fs::ReadFile(_p) => resume(""); Fs::WriteFile(_p, _c) => resume(0); Fs::Exists(_p) => resume(false); Fs::Mkdir(_p) => resume(0) }
+  let changed = do_stat_changed()
   assert(changed)
 }
