@@ -1034,6 +1034,25 @@ if [ "$gchb_out" != "$gchb_want" ]; then
   echo "[compiler-gate] FAIL: gc host builtin probe returned '$gchb_out' (want $gchb_want) on both lanes (#1262)" >&2
   exit 1
 fi
+# Console::write_stream / write_char are aliases onto the stdout imports.
+# The gc host table used to register only Stdout::write_stream, so
+# @vibe/console's print compiled on linear and died in gc codegen.
+printf '%s\n' 'fn main() -> Int allows Console {' '  Console::write_char(99)' '  Console::write_stream("onsole-gc")' '  1' '}' > "$gchbdir/console_write.vibe"
+for gchb_be in linear gc; do
+  env -u VIBE_FS_COMPILE VIBE_BACKEND="$gchb_be" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$gchbdir/console_write.vibe" "$gchbdir/console_$gchb_be.wasm" main >/dev/null 2>&1 || true
+  if [ ! -s "$gchbdir/console_$gchb_be.wasm" ]; then
+    echo "[compiler-gate] FAIL: Console::write_stream did not compile on the $gchb_be backend" >&2
+    cat "$gchbdir/console_$gchb_be.wasm.diag" >&2 2>/dev/null || true
+    exit 1
+  fi
+  gchb_con="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gchbdir/console_$gchb_be.wasm" 2>&1 | tail -1)"
+  if [ "$gchb_con" != "console-gc1" ]; then
+    echo "[compiler-gate] FAIL: Console write on $gchb_be returned '$gchb_con' (want console-gc1)" >&2
+    exit 1
+  fi
+done
 # `Fs::readdir` inside a CLOSURE, kept as its own check rather than folded
 # into the fixture value. The surface rewrite is guarded on the name not
 # resolving to anything real, and the gc capture scan collected `Fs::readdir`

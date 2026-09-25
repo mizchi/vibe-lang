@@ -256,10 +256,10 @@ fn sorted(xs: Array[Int]) -> Bool      // 述語はただの pure 関数
 「semver は守られているはず」ではなく「守られていないと publish できない」。
 `^` 制約が信頼できるのはこの検証があってこそ。
 
-## 9. 単一ファイルスクリプト
+## 9. Single-file scripts
 
 ```vibe
-// fetch_report.vibe — この 1 ファイルで永続的に再現可能
+// fetch_report.vibe — reproducible from this one file
 require @vibe/http ^1.2.0 = #77aa02
 require @vibe/json ^2.0.1 = #31bb9c
 
@@ -269,10 +269,11 @@ import @vibe/json { parse }
 fn main() -> Unit allows Console + Net { ... }
 ```
 
-- 任意のエントリ `.vibe` の先頭に `require` を書ける。
-- 開発中は pin なしの bare import を許容 (ツールが解決)。`vibe run --freeze`
-  (または初回実行時の自動追記) が `require ... = #hash` を書き込む。
-- CI / `vibe build --release` は pin 必須。
+- Any entry `.vibe` may start with `require`.
+- During development a bare import with no pin is allowed; the tool resolves
+  it. `vibe run --freeze` (or the first-run auto-write) records
+  `require ... = #hash`.
+- CI and `vibe build --release` require the pin.
 
 ## 10. 廃止するもの
 

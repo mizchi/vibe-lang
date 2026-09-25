@@ -3068,11 +3068,11 @@ cannot interpolate a value of type `F`: it has no Show renderer
 値 (generic の `T` など) は対象外 — このパスが「レンダラが無い」と断言できる
 のは宣言済みの集約型のときだけなので、それ以外は従来どおり。
 
-### capability builtin の呼び出しも arity と引数型が検査される (#1513 で解決)
+### Capability builtin calls are checked for arity and argument type (#1513)
 
-かつて `Stdout::*` / `Env::*` / `Stdin::*` / `Fs::read_file` は未検査で、
-`Console::write_stream(42)` が compile も実行も成功して garbage を出した。
-今は両方とも check 時にスパン付きで落ちる:
+`Stdout::*`, `Env::*`, `Stdin::*`, and `Fs::read_file` used to go unchecked,
+so `Console::write_stream(42)` compiled, ran, and wrote garbage. Both the
+argument type and the arity fail at check time, with a span:
 
 ```vibe skip
 // doctest-skip: intentionally rejected — the diagnostics are the point
@@ -3080,8 +3080,8 @@ Console::write_stream(42)      // argument type mismatch for Console::write_stre
 Console::write_stream()        // function arity mismatch: expected 1 args, got 0
 ```
 
-`Array::*` / `String::*` / `Bytes::*` / ユーザー定義関数と同じ扱いに
-揃っている。
+They are checked the same way as `Array::*`, `String::*`, `Bytes::*`, and a
+user-defined function.
 
 ### 区切り文字は文脈で違う
 

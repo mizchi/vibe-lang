@@ -103,7 +103,7 @@ AWS SDK、Http、proxy、in-memory mock のいずれでも実装できる。S3 �
 
 ### Main signature
 
-canonical entry は次の形である。
+The canonical entry has this shape.
 
 ```vibe skip
 fn main allows S3::Read[Posts] + Console::write {
@@ -111,26 +111,29 @@ fn main allows S3::Read[Posts] + Console::write {
 }
 ```
 
-- 型は `() -> Unit` 固定。
-- effect row は明示必須、closed で row variable を許可しない。
-- body と transitive callee、spawn された closure が要求する正規化 row を `Ractual`、
-  宣言 row を `Rdeclared` とすると `Ractual = Rdeclared` を要求する。
-- 通常関数の `Ractual ⊆ Rdeclared` は維持する。entry だけを exact にするのは、余分な
-  declaration が余分な runtime binding / IAM authority になるためである。
-- `Error::Throw` と `Async::suspend` も semantic requirement として transitive に含む。
-  provider/runtime boundary が処理するため WIT import に残らない場合でも source
-  contract から消さない。
-- 未処理 checked Error は ADR-0073 の outer handler が diagnosed failure へ変換する。
-- process exit code は暗黙の `Int` return/print にしない。必要なら明示的な
-  `Process::exit` operation として設計する。
+- The type is fixed at `() -> Unit`.
+- The effect row is required, closed, and may not contain a row variable.
+- `Ractual` is the normalized row demanded by the body, its transitive
+  callees, and spawned closures. `Rdeclared` is the declared row. An entry
+  requires `Ractual = Rdeclared`.
+- An ordinary function still uses `Ractual ⊆ Rdeclared`. The entry is exact
+  because an extra declaration is an extra runtime binding and an extra IAM
+  authority.
+- `Error::Throw` and `Async::suspend` count transitively as semantic
+  requirements. They stay in the source contract even when the provider
+  handles them and they do not become WIT imports.
+- An unhandled checked `Error` is turned into a diagnosed failure by the
+  outer handler in ADR-0073.
+- The process exit code is not an implicit `Int` return or an implicit
+  print. If a program needs one, it is an explicit `Process::exit`.
 
-value binding や `Int` return を entry とみなして stdout へ暗黙 print する挙動は
-canonical `.vibex` contract に含めない。
+Treating a value binding or an `Int` return as an entry and printing it
+implicitly is not part of the canonical `.vibex` contract.
 
 ## Logical resource identity
 
-初期 surface は次の形とする。これは resource の作成ではなく、executable が要求する
-logical binding の宣言である。
+The initial surface is the following. It does not create a resource. It
+declares the logical binding the executable requires.
 
 ```vibe skip
 resource Posts : S3::Bucket
@@ -153,21 +156,26 @@ fn main allows S3::Read[Posts] + Console::write {
 }
 ```
 
-決定事項:
+Decisions:
 
-- `resource Name : Kind` は `.vibex` root だけに置ける nominal logical identity。
-- reusable module は resource 名を hard-code せず、resource kind parameter で抽象化する。
-- normalized `EffectArgument` に `resourceId` kind を追加する。nursery の `regionId` と
-  resource identity を同じ atom として扱わない。
-- resource 名や physical ARN を通常の `String` として authority 判定しない。
-- contract/hash/WIT projection/policy diff は resource-qualified operation を保持する。
-- 動的に任意 resource を選ぶ API は、将来 `S3::AnyRead` 等の明示的に広い authority
-  として追加できる。静的 binding から暗黙に wildcard authority へ拡張しない。
+- `resource Name : Kind` is a nominal logical identity, and only a `.vibex`
+  root may declare one.
+- A reusable module does not hard-code a resource name. It abstracts over a
+  resource-kind parameter.
+- A normalized `EffectArgument` gains a `resourceId` kind. A nursery
+  `regionId` is not the same atom.
+- Authority is not decided by treating a resource name or a physical ARN as
+  an ordinary `String`.
+- Contract, hash, WIT projection, and policy diff keep the
+  resource-qualified operation.
+- An API that picks an arbitrary resource at run time can be added later as
+  an explicitly wide authority such as `S3::AnyRead`. A static binding does
+  not grow a wildcard by itself.
 
-resource kind の定義、logical id、physical name、secret/credential は別物である。
-特に raw cloud credential を guest へ binding value として渡さない。guest には scoped
-operation interface または forge 不能な resource handle を渡し、credential は host
-adapter/provider が保持する。
+A resource kind, a logical id, a physical name, and a secret are different
+things. A raw cloud credential is not passed to the guest as a binding
+value. The guest receives a scoped operation interface or an unforgeable
+resource handle. The host adapter keeps the credential.
 
 ## Path-scoped authority
 
