@@ -1581,8 +1581,22 @@ fn call_returns_borrow(value: Expr, local_names: Array[String], ctx: CompileCtx)
 /// unwrapped -- no new retention on the owned path. Guarded dup no-ops on
 /// scalars/non-RC values; worst case is the codebase-wide "leak, never corrupt"
 /// trade.
-fn retain_wrap_branch_tails(e: Expr, ctx: CompileCtx) -> Expr with Exception {
+fn retain_wrap_branch_tails(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Expr with Exception {
   match e {
+    // #3103: a branch tail that CALLS a borrow-returning function
+    // (`Array::get(xs, i)`, `Map::get`, a user wrapper) hands back a view of
+    // an element its container still owns, exactly like a loop-borrowed
+    // ident. The plan budgets the binding's scope-end drop as if the if/match
+    // produced an owned reference, so without this retain the drop frees the
+    // element in place and the next read of the container (the next call, the
+    // next iteration) reaches a freed block. Unlike an ident, this holds in
+    // straight-line code too, which is why retain_wrap_let_value does not
+    // require a loop for it.
+    ECall(_, _, _) => if call_returns_borrow(e, local_names, ctx) {
+      ECall(EIdent("__loop_tail_retain", -1), [e], -1)
+    } else {
+      e
+    },
     EIdent(x, p) => if array_contains_str(ctx.loop_borrowed_names, x) && !array_contains_str(ctx.ref_cell_names, x) {
       ECall(EIdent("__loop_tail_retain", -1), [EIdent(x, p)], -1)
     } else {
@@ -1596,7 +1610,7 @@ fn retain_wrap_branch_tails(e: Expr, ctx: CompileCtx) -> Expr with Exception {
         e
       }
     },
-    EIf(c, t, el) => EIf(c, retain_wrap_branch_tails(t, ctx), retain_wrap_branch_tails(el, ctx)),
+    EIf(c, t, el) => EIf(c, retain_wrap_branch_tails(t, local_names, ctx), retain_wrap_branch_tails(el, local_names, ctx)),
     EMatch(scrut, arms) => {
       if Array::length(arms) == 0 {
         e
@@ -1605,17 +1619,17 @@ fn retain_wrap_branch_tails(e: Expr, ctx: CompileCtx) -> Expr with Exception {
         let mut ai = 0
         while ai < Array::length(arms) {
           let (apat, abody) = Array::get(arms, ai)
-          Array::push(out, (apat, retain_wrap_branch_tails(abody, ctx)))
+          Array::push(out, (apat, retain_wrap_branch_tails(abody, local_names, ctx)))
           ai = ai + 1
         }
         EMatch(scrut, out)
       }
     },
-    ELet(n, v, b, soff) => ELet(n, v, retain_wrap_branch_tails(b, ctx), soff),
-    ELetMut(n, v, b, soff) => ELetMut(n, v, retain_wrap_branch_tails(b, ctx), soff),
-    ESeq(a, b) => ESeq(a, retain_wrap_branch_tails(b, ctx)),
-    EAssign(n, v, b) => EAssign(n, v, retain_wrap_branch_tails(b, ctx)),
-    EAssignOp(n, op, v, b) => EAssignOp(n, op, v, retain_wrap_branch_tails(b, ctx)),
+    ELet(n, v, b, soff) => ELet(n, v, retain_wrap_branch_tails(b, local_names, ctx), soff),
+    ELetMut(n, v, b, soff) => ELetMut(n, v, retain_wrap_branch_tails(b, local_names, ctx), soff),
+    ESeq(a, b) => ESeq(a, retain_wrap_branch_tails(b, local_names, ctx)),
+    EAssign(n, v, b) => EAssign(n, v, retain_wrap_branch_tails(b, local_names, ctx)),
+    EAssignOp(n, op, v, b) => EAssignOp(n, op, v, retain_wrap_branch_tails(b, local_names, ctx)),
     _ => e
   }
 }
@@ -1979,11 +1993,46 @@ fn vsb_under_binder(n: String, v: Expr, b: Expr, local_names: Array[String], bou
 /// codegen elsewhere is byte-identical). Only if/match values are rewritten;
 /// the top-level node kind is preserved, so classification of the ORIGINAL
 /// `value` below stays valid.
-fn retain_wrap_let_value(value: Expr, name: String, ctx: CompileCtx) -> Expr with Exception {
-  if ctx.enable_rc && (expr_tag(value) == 7 || expr_tag(value) == 16) && Array::length(ctx.loop_borrowed_names) > 0 && array_contains_str(ctx.rc_drop_names, name) {
-    retain_wrap_branch_tails(value, ctx)
+///
+/// #3103: a branch tail that calls a borrow-returning function needs the
+/// retain whether or not a loop encloses the `let` -- nothing else gives the
+/// binding the reference its planned drop spends -- so such a tail triggers
+/// the rewrite outside a loop too. A value with no such tail keeps the
+/// loop-only gate, so its codegen is unchanged.
+fn retain_wrap_let_value(value: Expr, name: String, local_names: Array[String], ctx: CompileCtx) -> Expr with Exception {
+  if ctx.enable_rc && (expr_tag(value) == 7 || expr_tag(value) == 16) && array_contains_str(ctx.rc_drop_names, name) && (Array::length(ctx.loop_borrowed_names) > 0 || branch_tail_calls_borrow(value, local_names, ctx)) {
+    retain_wrap_branch_tails(value, local_names, ctx)
   } else {
     value
+  }
+}
+
+/// #3103: does any if/match branch tail of `e` call a borrow-returning
+/// function -- a tail retain_wrap_branch_tails' `ECall` arm retains?
+fn branch_tail_calls_borrow(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool {
+  match e {
+    ECall(_, _, _) => call_returns_borrow(e, local_names, ctx),
+    EIf(_, t, el) => branch_tail_calls_borrow(t, local_names, ctx) || branch_tail_calls_borrow(el, local_names, ctx),
+    EMatch(_, arms) => {
+      let mut found = false
+      let mut ai = 0
+      while ai < Array::length(arms) {
+        let (_, abody) = Array::get(arms, ai)
+        if branch_tail_calls_borrow(abody, local_names, ctx) {
+          found = true
+          ai = Array::length(arms)
+        } else {
+          ai = ai + 1
+        }
+      }
+      found
+    },
+    ELet(_, _, b, _) => branch_tail_calls_borrow(b, local_names, ctx),
+    ELetMut(_, _, b, _) => branch_tail_calls_borrow(b, local_names, ctx),
+    ESeq(_, b) => branch_tail_calls_borrow(b, local_names, ctx),
+    EAssign(_, _, b) => branch_tail_calls_borrow(b, local_names, ctx),
+    EAssignOp(_, _, _, b) => branch_tail_calls_borrow(b, local_names, ctx),
+    _ => false
   }
 }
 
@@ -2006,7 +2055,7 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     // what makes self-reference work (see ctx.pending_letrec_self_name).
     Array::push(local_names, name)
     Array::set(local_names, local_idx, "")
-    let nl = compile_expr(buf, retain_wrap_let_value(value, name, ctx), local_names, next_local + 1, ctx, ld)
+    let nl = compile_expr(buf, retain_wrap_let_value(value, name, local_names, ctx), local_names, next_local + 1, ctx, ld)
     Array::set(local_names, local_idx, name)
     emit_local_set(buf, local_idx)
     let val_is_float = expr_is_floatish(value, local_names, ctx)
@@ -2534,7 +2583,7 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
       }
     } else {
       // #768: same branch-tail retain rewrite as ELet (see retain_wrap_let_value).
-      let nl = compile_expr(buf, retain_wrap_let_value(value, name, ctx), local_names, next_local + 1, ctx, ld)
+      let nl = compile_expr(buf, retain_wrap_let_value(value, name, local_names, ctx), local_names, next_local + 1, ctx, ld)
       emit_local_set(buf, local_idx)
       // #791: classify AFTER the value is compiled + stored (local_idx now
       // holds it), matching ELet's ordering -- classify_let_value_heap's
