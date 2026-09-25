@@ -2897,7 +2897,7 @@ export fn let_generalize(val: Expr, vt: Type, env: TypeEnv, s: Subst, self_name:
     generalize(s, vt)
   } else {
     let env_ids = env_reachable_tvars(val, env, s, self_name)
-    let holds_container = is_array_builder_ty(vt_resolved) || is_region_tagged_ty(vt_resolved) || ty_has_open_array_elem(vt_resolved)
+    let holds_container = is_array_builder_ty(vt_resolved) || is_region_tagged_ty(vt_resolved) || ty_has_open_array_elem(vt_resolved) || is_future_cell_ty(vt_resolved)
     let restricted = if !holds_container {
       false
     } else {
@@ -7094,6 +7094,32 @@ export fn is_region_tagged_ty(t: Type) -> Bool {
 /// mixed pushes type-checked again). CtFn is deliberately NOT descended:
 /// a function value creates a NEW builder per call, so generalizing
 /// `() -> ArrayBuilder[v]` is sound and useful.
+/// #3112: a `Future` is a cell a later `Future::resolve` fills, so its payload
+/// variable stays a monotype like an array builder's element: quantified, a
+/// `let f = Future::pending()` would re-instantiate a fresh payload at every
+/// use, and `resolve(f, 40)` could not constrain `await(f)`.
+fn is_future_cell_ty(t: Type) -> Bool {
+  match t {
+    CtNamed(n, _) => n == "Future",
+    CtTuple(elems) => {
+      let mut hit = false
+      let mut i = 0
+      while i < Array::length(elems) {
+        if is_future_cell_ty(Array::get(elems, i)) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    CtOption(e) => is_future_cell_ty(e),
+    CtArray(e) => is_future_cell_ty(e),
+    _ => false
+  }
+}
+
 export fn is_array_builder_ty(t: Type) -> Bool {
   if is_array_builder_head(t) {
     true
@@ -7338,6 +7364,43 @@ fn builtin_is_unshadowed(env: TypeEnv, name: String) -> Bool {
       },
       _ => false
     }
+  }
+}
+
+/// #3112: how many arguments a guest-future builtin takes, or -1 when `name`
+/// is not one.
+fn future_builtin_arity(name: String) -> Int {
+  if name == "Future::ready" || name == "await" {
+    1
+  } else if name == "Future::pending" {
+    0
+  } else if name == "Future::resolve" {
+    2
+  } else {
+    0 - 1
+  }
+}
+
+/// #3112: the result of a guest-future builtin call, with its payload.
+/// `Future::ready(x)` is `Future[typeof x]`, `Future::pending()` a `Future`
+/// of a fresh variable, `await(f)` the payload of `f`'s `Future` (a
+/// non-future argument is the same mismatch the table row reported), and
+/// `Future::resolve(f, v)` unifies that payload with `v`, so a pending
+/// future's variable is settled by what resolves it.
+fn future_builtin_type(name: String, arg_tys: Array[Type], args: Array[Expr], s: Subst, c: Int, errors: Array[String], callee_off: Int) -> (Type, Subst, Int) {
+  if name == "Future::ready" {
+    (CtNamed("Future", [subst_apply(s, Array::get(arg_tys, 0))]), s, c)
+  } else if name == "Future::pending" {
+    (CtNamed("Future", [CtVar(c)]), s, c + 1)
+  } else if name == "await" {
+    let payload = CtVar(c)
+    let s2 = unify_call_args([CtNamed("Future", [payload])], arg_tys, args, s, errors, name, callee_off)
+    (subst_apply(s2, payload), s2, c + 1)
+  } else {
+    // Future::resolve(f, v)
+    let payload = CtVar(c)
+    let s2 = unify_call_args([CtNamed("Future", [payload]), payload], arg_tys, args, s, errors, name, callee_off)
+    (CtUnit, s2, c + 1)
   }
 }
 
@@ -11993,6 +12056,25 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               }
             }
           }
+        } else if future_builtin_arity(name) == Array::length(args) && builtin_is_unshadowed(env, name) {
+          // #3112: the guest-future builtins carry their payload type. Their
+          // table rows erase it to `?`, so `Future::ready(x)` hid what the
+          // future holds from every later check -- a response captured by a
+          // spawned task through it escaped the one-owner rule -- and `await`
+          // answered `?`. Checked here, argument by argument, then refined.
+          let mut ai = 0
+          let mut s1 = s
+          let mut c1 = c
+          let arg_tys: Array[Type] = []
+          while ai < Array::length(args) {
+            let (at, ns, nc) = check_expr_capture(Array::get(args, ai), env, defs, s1, c1, errors, tytab, capture, lane)
+            Array::push(arg_tys, at)
+            s1 = ns
+            c1 = nc
+            ai = ai + 1
+          }
+          let (rt, s2, c2) = future_builtin_type(name, arg_tys, args, s1, c1, errors, callee_off)
+          (tab_call_ty(tytab, call_off, rt, capture, lane), s2, c2)
         } else if (name == "TaskGroup::spawn" || name == "TaskGroup::spawn_suspend") && Array::length(args) == 2 {
           // #1081 step 3 Phase B: `Spawnable[r]` capture check. Like
           // `TaskGroup::run` above, there is no general `Spawnable`
