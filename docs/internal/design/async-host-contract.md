@@ -375,6 +375,24 @@ override silently contradicting a module that says `raw` is the hazard #2903's
   function -- the guest does not import `wasi:http` itself. The gate runs
   `fixtures/wit_response_import/main.vibe` with two 300ms responses, gets 440
   (both statuses plus every body byte) and bounds the wall clock the same way.
+- **Service world** (#2066). A `vibe serve` handler (`body: HostStream`) that
+  awaits WIT responses is composed by `comp_emit_component_wasm_service_handler`:
+  - the run lane's import half: the response instance imports, this adapter,
+    and the canon defs over memhost;
+  - under the stream lane's export half: the string trampoline, and a
+    `task.return` and async lift over MAIN's memory.
+
+  The request body and every response body share the one `stream<u8>` type,
+  so one `stream.read` reads both, and the adapter runs at the core's
+  `vibe.tagmode` (0 on the serve lane). A serve handler awaiting any other
+  host future is refused by name, since nothing behind `wasmtime serve`
+  provides it. A handler whose core imports anything the plain stream lane
+  cannot provide is refused the same way; it used to build an invalid
+  component with a success status.
+
+  `scripts/build_http_client_provider.sh` builds the other side: a component
+  exporting the binding's interface, whose `fetch` sends a GET through
+  `wasi:http/client` and hands over the upstream body stream uncollected.
 
 ### Host streams
 

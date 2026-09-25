@@ -8518,6 +8518,42 @@ export fn comp_emit_component_wasm_async_stdin_provider_fixture(mode: Int) -> By
 /// 2=env(memory), 3=adapter, 4=wasi-stub, 5=main, 6=main-arg, 7=cm-arg,
 /// 8=trampoline.
 export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, export_name: String) -> Bytes with Exception {
+  comp_emit_async_host_composition(main_core_wasm, export_name, "", [])
+}
+
+/// #2066: the `wasi:http/service` shape -- a serve handler that is ALSO a
+/// client. The handler takes the request body as a `stream<u8>` (the serve
+/// stream lane's export) and awaits WIT responses (the run lane's imports), so
+/// one component exports `handler` and imports the client interface. Both
+/// halves already existed; this composes them: the run lane's import, adapter
+/// and canon sections, then the stream lane's string trampoline, `task.return`
+/// and async lift in place of the `run` export.
+///
+/// The request body and every response body are the same `stream<u8>` type,
+/// so the adapter's one stream half reads both. The core is compiled with
+/// plain i64 values (the serve lane's convention), which the adapter follows
+/// through `vibe.tagmode`.
+export fn comp_emit_component_wasm_service_handler(core_wasm: Bytes, target_func_name: String, export_name: String, param_names: Array[String]) -> Bytes with Exception {
+  comp_emit_async_host_composition(core_wasm, export_name, target_func_name, param_names)
+}
+
+/// Whether a serve core awaits a host future or response, which routes it to
+/// the service composer: the plain stream lane has no provider for either.
+fn comp_core_awaits_host_future(core_wasm: Bytes) -> Bool with Exception {
+  Array::length(comp_core_host_future_names(core_wasm)) > 0
+}
+
+/// `handler_target` empty: the `run` export. Otherwise the serve handler
+/// export of `comp_emit_component_wasm_service_handler`.
+fn comp_emit_async_host_composition(main_core_wasm: Bytes, export_name: String, handler_target: String, handler_params: Array[String]) -> Bytes with Exception {
+  let handler_mode = handler_target != ""
+  let handler_string_count = Array::length(handler_params) - 1
+  if handler_mode {
+    comp_require_tag_mode(main_core_wasm, 0, "component(service-handler)")
+    comp_check_stream_handler_target(main_core_wasm, handler_target, handler_string_count)
+  } else {
+    ()
+  }
   // The compiled entry must be exported as `run : (i64) -> i64` (entry
   // name "run" -- the same constraint the trampolined-p1 wrap has).
   let export_names = array_empty()
@@ -8539,7 +8575,7 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
       ei = ei + 1
     }
   }
-  if !run_ok {
+  if !run_ok && !handler_mode {
     throw("component(async-hostfuture): core module must export 'run : (i64) -> i64' (compile with entry name \"run\")")
   } else {
     ()
@@ -8615,6 +8651,11 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
       Array::push(response_kinds, comp_is_wit_response_get_import(Array::get(hf_names, rk_i)))
       rk_i = rk_i + 1
     }
+  } else {
+    ()
+  }
+  if handler_mode && !response_mode {
+    throw("component(service-handler): a serve handler composed with host imports must await a WIT response (`Future[HostResponse]` from a `from_wit` binding); other host futures have no provider behind `wasmtime serve`")
   } else {
     ()
   }
@@ -8834,7 +8875,11 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
     ()
   }
   emit_core_module_section(buf, comp_generate_hostfuture_adapter_core_module(hf_names, hs_names, hs_wants_close, want_sleep, tag_mode, future_s64, response_mode, want_wait_any, want_stream_arm, want_sleep_arm, want_cancel, want_stream_cancel, response_kinds, want_arg_push, want_timer_cancel, exit_stubs))
-  emit_core_module_section(buf, comp_generate_async_trampoline_hostfuture())
+  if handler_mode {
+    emit_core_module_section(buf, comp_generate_string_trampoline_packed_async_opt(handler_string_count, export_name, true))
+  } else {
+    emit_core_module_section(buf, comp_generate_async_trampoline_hostfuture())
+  }
   emit_core_module_section(buf, comp_generate_wasi_fd_write_stub())
   // A component-instance export alias must follow embedded core-module
   // sections. Root function imports need no alias; the WIT instance route does.
@@ -9108,24 +9153,77 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   } else {
     subtask_cancel_core_idx
   }
-  emit_alias_section(buf, main_inst, ["run"], [core_sort_func])
-  let main_arg_inst = 6
-  emit_core_instance_from_exports(buf, 1, [1], ["run"], [main_run_func_idx])
-  let cm_arg_inst = 7
-  emit_core_instance_from_exports(buf, 1, [1], ["task-return"], [
-    task_return_core_idx
-  ])
-  let tramp_inst = 8
-  emit_core_instance_instantiate_args(buf, 3, ["main", "cm"], [
-    main_arg_inst,
-    cm_arg_inst
-  ])
-  emit_comp_async_functype_section(buf, comp_valtype_u32)
-  let tramp_run_func_idx = main_run_func_idx + 1
-  emit_alias_section(buf, tramp_inst, ["run"], [core_sort_func])
-  emit_canon_lift_async_section(buf, tramp_run_func_idx, export_functype_idx)
-  emit_comp_export_section(buf, export_name, nimports)
+  if handler_mode {
+    comp_emit_service_handler_export(buf, main_inst, main_run_func_idx, handler_target, export_name, handler_params, stream_type_idx, export_functype_idx, nimports)
+  } else {
+    emit_alias_section(buf, main_inst, ["run"], [core_sort_func])
+    let main_arg_inst = 6
+    emit_core_instance_from_exports(buf, 1, [1], ["run"], [main_run_func_idx])
+    let cm_arg_inst = 7
+    emit_core_instance_from_exports(buf, 1, [1], ["task-return"], [
+      task_return_core_idx
+    ])
+    let tramp_inst = 8
+    emit_core_instance_instantiate_args(buf, 3, ["main", "cm"], [
+      main_arg_inst,
+      cm_arg_inst
+    ])
+    emit_comp_async_functype_section(buf, comp_valtype_u32)
+    let tramp_run_func_idx = main_run_func_idx + 1
+    emit_alias_section(buf, tramp_inst, ["run"], [core_sort_func])
+    emit_canon_lift_async_section(buf, tramp_run_func_idx, export_functype_idx)
+    emit_comp_export_section(buf, export_name, nimports)
+  }
   bytebuf_to_bytes(buf)
+}
+
+/// #2066: the service handler's export tail, after `main` is instantiated as
+/// core instance `main_inst` and the next core func index is `next_func`.
+/// It is the stream lane's export (comp_emit_component_wasm_stream_handler):
+/// the handler's result string and lowered params live in MAIN's memory, so
+/// `task.return` and the lift take main's memory (core memory 1; 0 is the
+/// memhost page the canons use) and the trampoline's `cabi_realloc`, which
+/// writes main's `__heap_ptr` back.
+///
+///   core func      next = alias(main, target), +1 = task.return (string),
+///                  +2 = alias(trampoline, canon_func), +3 = cabi_realloc
+///   core instance  main_inst+1 = env {target, __heap_ptr, memory},
+///                  +2 = [export]$root, +3 = the trampoline (module 3)
+fn comp_emit_service_handler_export(buf: Bytes, main_inst: Int, next_func: Int, target_func_name: String, export_name: String, param_names: Array[String], stream_type_idx: Int, functype_idx: Int, comp_func_count: Int) -> Unit with Exception {
+  let string_param_count = Array::length(param_names) - 1
+  emit_alias_section(buf, main_inst, [target_func_name], [core_sort_func])
+  emit_alias_section(buf, main_inst, ["memory"], [core_sort_mem])
+  emit_alias_section(buf, main_inst, ["__heap_ptr"], [core_sort_global])
+  let main_mem = 1
+  emit_canon_task_return_opts(buf, comp_valtype_string, main_mem, true)
+  emit_core_instance_from_exports_sorted(buf, [
+    "target_func",
+    "__heap_ptr",
+    "memory"
+  ], [core_sort_func, core_sort_global, core_sort_mem], [next_func, 0, main_mem])
+  emit_core_instance_from_exports(buf, 1, [1], [
+    String::concat("[task-return]", export_name)
+  ], [next_func + 1])
+  emit_core_instance_instantiate_args(buf, 3, ["env", "[export]$root"], [
+    main_inst + 1,
+    main_inst + 2
+  ])
+  emit_alias_section(buf, main_inst + 3, ["canon_func", "cabi_realloc"], [
+    core_sort_func,
+    core_sort_func
+  ])
+  let comp_param_valtypes = new_int_array()
+  let mut pt = 0
+  while pt < string_param_count {
+    Array::push(comp_param_valtypes, comp_valtype_string)
+    pt = pt + 1
+  }
+  // The body param's valtype is the stream TYPE INDEX -- the same
+  // `stream<u8>` the response bodies use, so one canon read serves both.
+  Array::push(comp_param_valtypes, stream_type_idx)
+  emit_comp_async_functype_params(buf, param_names, comp_param_valtypes, comp_valtype_string)
+  emit_canon_lift_async_opts(buf, next_func + 2, functype_idx, main_mem, next_func + 3, true)
+  emit_comp_export_section(buf, export_name, comp_func_count)
 }
 
 /// Validation fixture for #2064's first end-to-end WIT-derived import route.
@@ -10357,7 +10455,16 @@ fn comp_generate_serve_stream_adapter_module() -> Bytes {
 ///                  8 = [export]$root, 9 = trampoline
 ///   component type 0 = stream u8, 1 = the async functype
 export fn comp_emit_component_wasm_stream_handler(core_wasm: Bytes, target_func_name: String, export_name: String, param_names: Array[String]) -> Bytes with Exception {
+  if comp_core_awaits_host_future(core_wasm) {
+    comp_emit_component_wasm_service_handler(core_wasm, target_func_name, export_name, param_names)
+  } else {
+    comp_emit_component_wasm_stream_handler_plain(core_wasm, target_func_name, export_name, param_names)
+  }
+}
+
+fn comp_emit_component_wasm_stream_handler_plain(core_wasm: Bytes, target_func_name: String, export_name: String, param_names: Array[String]) -> Bytes with Exception {
   comp_require_tag_mode(core_wasm, 0, "component(async-stream-handler)")
+  comp_check_stream_handler_vibe_imports(core_wasm)
   let string_param_count = Array::length(param_names) - 1
   comp_check_stream_handler_target(core_wasm, target_func_name, string_param_count)
   let buf = bytebuf_new()
@@ -10442,6 +10549,29 @@ export fn comp_emit_component_wasm_stream_handler(core_wasm: Bytes, target_func_
   emit_canon_lift_async_opts(buf, 10, 1, 1, 11, true)
   emit_comp_export_section(buf, export_name, 0)
   bytebuf_to_bytes(buf)
+}
+
+/// The plain stream lane's `vibe` instance supplies the body reader and
+/// nothing else. A core importing anything more (a sleep, a host stream by
+/// name) used to compose into a component that failed validation while the
+/// build reported success; name the import instead (#2066).
+fn comp_check_stream_handler_vibe_imports(core_wasm: Bytes) -> Unit with Exception {
+  let imp_modules = array_empty()
+  let imp_names = array_empty()
+  let imp_type_indices = new_int_array()
+  let imp_type_sigs = array_empty()
+  let count = parse_core_imports(core_wasm, imp_modules, imp_names, imp_type_indices, imp_type_sigs)
+  let mut i = 0
+  while i < count {
+    let m = Array::get(imp_modules, i)
+    let n = Array::get(imp_names, i)
+    if m == "vibe" && n != "host_stream_read" && n != "host_stream_close" {
+      throw("component(async-stream-handler): the handler uses host import 'vibe.\{n}', which `vibe serve` cannot provide; a serve handler may read its body and await WIT responses (`from_wit` bindings), nothing else yet")
+    } else {
+      ()
+    }
+    i = i + 1
+  }
 }
 
 /// #1540 scope 4: the stream handler's target-export contract.

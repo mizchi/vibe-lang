@@ -1,0 +1,38 @@
+// #2066: a `wasi:http/service` handler -- a serve handler that is also a
+// client. It reads its own request body (a `HostStream`), starts two upstream
+// fetches through the `from_wit` binding before awaiting either, and answers
+// with each response's status and body. `vibe serve` composes it into one
+// component that exports `handler` and imports the client interface;
+// scripts/test_serve_service_world_gate.sh plugs in a provider that implements
+// that interface over `wasi:http/client` and serves the result with
+// `wasmtime serve`, against an upstream that delays `/slow/*` by one second.
+// Both fetches are in flight together, so the request takes about one second,
+// not two.
+import ../wit_response_request/client_bindings.vibe {
+  fetch
+}
+
+fn drain(s: HostStream) -> String with Async {
+  let mut out = ""
+  let mut go = true
+  while go {
+    let b = host_stream_next(s)
+    if b < 0 {
+      go = false
+    } else {
+      out = String::concat(out, String::from_char_code(b))
+    }
+  }
+  out
+}
+
+export let handler = (method: String, url: String, headers: String, body: HostStream) -> String with Async {
+  let request_body = drain(body)
+  let a = fetch("http://127.0.0.1:18767/slow/left")
+  let b = fetch("http://127.0.0.1:18767/slow/right")
+  let ra = await(a)
+  let rb = await(b)
+  let left = drain(HostResponse::body(ra))
+  let right = drain(HostResponse::body(rb))
+  "200\n\n\{HostResponse::status(ra)}:\{left}|\{HostResponse::status(rb)}:\{right}|\{request_body}"
+}
