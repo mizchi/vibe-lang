@@ -175,6 +175,15 @@ if run_exec; then cat "$WORK/out" >&2; fail "a companion that edited a pre-exist
 grep -q '^probe$' "$WORK/lib/stray_probe.vibe" || fail "case (d): the probe did not land"
 echo "  ok  a companion that edits a pre-existing untracked file is rejected"
 
+# (e) The same, for an untracked file whose name starts with `-`: handed to
+# cksum bare it reads as an option and hashes nothing (#3099 review).
+restore_scratch
+printf 'a\n' > "$WORK/-probe"
+printf '#!/usr/bin/env bash\nprintf "b\\n" > "$(dirname "$0")/../-probe"\nexit 0\n' > "$WORK/scripts/check_thing_test.sh"
+if run_exec; then cat "$WORK/out" >&2; fail "a companion that edited a pre-existing untracked -dash file was accepted"; fi
+rm -f -- "$WORK/-probe"
+echo "  ok  a companion that edits a pre-existing untracked -dash file is rejected"
+
 # ...and a pre-existing dirty tree by itself is NOT a finding: the check is
 # "unchanged by the suite", not "clean", or it could never run mid-work.
 restore_scratch
