@@ -1019,6 +1019,22 @@ fn edp_ls_push_pat(p: Pat, ls_names: Array[String], ls_flags: Array[Bool]) -> Un
   }
 }
 
+/// Is `(p) -> p` -- one parameter, a body that is exactly that parameter --
+/// the ascription closure codegen recognises (`__asc`, or its shadow-renamed
+/// `__shadow_*___asc` spelling)?
+fn edp_is_identity_ascription(params: Array[(String, Option[TypeExpr])], body: Expr) -> Bool {
+  if Array::length(params) != 1 {
+    false
+  } else {
+    let (pname, _) = Array::get(params, 0)
+    let is_asc = pname == "__asc" || (String::starts_with(pname, "__shadow_") && String::ends_with(pname, "___asc"))
+    is_asc && match body {
+      EIdent(bname, _) => bname == pname,
+      _ => false
+    }
+  }
+}
+
 fn edp_has_unsafe_construct_sc(expr: Expr, needing: Array[String], ename: String, pure_fns: Array[String], ls_names: Array[String], ls_flags: Array[Bool]) -> Bool {
   match expr {
     EFn(_, _, params, _, _, body) => {
@@ -1123,6 +1139,19 @@ fn edp_has_unsafe_construct_sc(expr: Expr, needing: Array[String], ename: String
     },
     ESeq(a, b) => edp_has_unsafe_construct_sc(a, needing, ename, pure_fns, ls_names, ls_flags) || edp_has_unsafe_construct_sc(b, needing, ename, pure_fns, ls_names, ls_flags),
     ECall(callee, args, _) => match callee {
+      // A type ascription -- how an annotated `let x: T = v` reaches this
+      // pass, `((__asc: T) -> __asc)(v)` -- is an identity closure applied on
+      // the spot: it performs nothing and runs nothing but its argument, so
+      // only the argument is scanned. Treating it as an opaque call refused
+      // every handle whose body held an annotated `let` next to a nested
+      // handle of the same effect -- including the entry provider around a
+      // test that records into `let seen: Array[String] = []` from a mock
+      // arm (#1962).
+      EFn(_, _, aparams, _, _, abody) => if edp_is_identity_ascription(aparams, abody) && Array::length(args) == 1 {
+        edp_has_unsafe_construct_sc(Array::get(args, 0), needing, ename, pure_fns, ls_names, ls_flags)
+      } else {
+        true
+      },
       EIdent(nm, _) => if nm == "perform" && Array::length(args) == 1 {
         edp_perform_operand_has_unsafe_construct(Array::get(args, 0), needing, ename, pure_fns, ls_names, ls_flags)
       } else if nm == "resume" {

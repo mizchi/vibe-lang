@@ -1457,10 +1457,9 @@ Declared operations use CamelCase because `Log::Emit` is a constructor-like
 operation record, not a function. Standard provider builtins are functions, so
 they use `snake_case` and leave the row to carry the execution requirement.
 
-`Fs`, `Env`, and `Profiler` currently expose both a declared-operation surface
-and standard provider builtins under the same row label. This coexistence is
-intentional: use the builtin for the host operation and a declaration when a
-program needs to intercept it with `handle`.
+`Fs`, `Env`, and `Profiler` expose both spellings under the same row label:
+the capability builtin (`Fs::read_file(p)`) and the operation
+(`perform Fs::ReadFile(p)`). They are one operation, not two surfaces.
 
 A `handle` that names a host operation intercepts **both** spellings, in the
 handled body and in every function it calls: `Fs::read_file(p)` two calls
@@ -1471,6 +1470,38 @@ a handler that answers `""` to satisfy the checker makes every read inside it
 return `""`. Carry the effect on the row instead. The interception applies
 when every entry of the artifact is granted the operation. It stands down for
 a library whose exported functions the host may call directly.
+
+**Migrating code that calls a capability builtin** (#1962). Nothing in the
+calling code changes: keep `Fs::read_file(p)` and keep `Fs` on the row. To mock,
+record, or replay it, name the operation in a `handle` around the call -- no
+`import` and no `effect Fs { .. }` declaration is needed:
+
+```vibe
+fn read_config() -> String with Fs {
+  Fs::read_file("config.toml")
+}
+
+test "a handle mocks the capability call" {
+  let got = handle {
+    read_config()
+  } with {
+    Fs::ReadFile(_path) => resume("name = \"demo\"")
+  }
+  assert_eq(got, "name = \"demo\"")
+}
+```
+
+- **Mock:** answer with `resume(value)`; the host is never reached.
+- **Record:** an arm may push into a local of the test (`let seen: Array[String]
+  = []`) and then forward with `resume(Fs::exists(path))` -- an arm runs
+  outside its own handle, so its own capability call reaches the host
+  (`fixtures/host_mock_record_test.vibe`).
+- **Replay:** answer from a table the test builds.
+
+The operation name is the builtin's name in CamelCase (`Fs::read_file` ↔
+`Fs::ReadFile`, `Env::get` ↔ `Env::Get`). A program that defines its own
+`fn Fs::exists` or binds `let Fs::exists = other` keeps that definition: its
+calls are not rewritten into the operation.
 
 ### Failure-carrying pipeline
 

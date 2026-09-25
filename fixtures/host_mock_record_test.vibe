@@ -1,0 +1,38 @@
+// #1962: a `handle` naming a host operation is a real mock, and a RECORDING
+// one: its arm may push into a local the test declares with an annotation,
+// and forward to the host by calling the capability itself (an arm runs
+// outside its own handle). The entry provider wraps this test body in a handle
+// of its own, which used to refuse the annotated `let` beside the nested
+// handle ("calls through an expression").
+
+fn has_config() -> Bool with Fs {
+  Fs::exists("definitely-missing-config.toml")
+}
+
+fn read_config() -> String with Fs {
+  Fs::read_file("config.toml")
+}
+
+test "a recording mock observes the direct capability call" {
+  let seen: Array[String] = []
+  let got = handle {
+    has_config()
+  } with {
+    Fs::Exists(path) => {
+      Array::push(seen, path)
+      resume(Fs::exists(path))
+    }
+  }
+  inspect(got, content = "false")
+  inspect(seen, content = "[definitely-missing-config.toml]")
+}
+
+test "a replaying mock answers from a table" {
+  let replies: Array[String] = ["name = \"demo\""]
+  let got = handle {
+    read_config()
+  } with {
+    Fs::ReadFile(_path) => resume(Array::get(replies, 0))
+  }
+  inspect(got, content = "name = \"demo\"")
+}
