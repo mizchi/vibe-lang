@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/codegen/common_analysis {
-  collect_free_vars, md_borrow_mask_of, md_consume_count, md_consume_count_pre
+  collect_free_vars, is_branching_value, md_borrow_mask_of, md_consume_count, md_consume_count_pre
 }
 
 import @vibe/core {
@@ -139,6 +139,31 @@ struct PCtx {
   // ..)` value MOVES (see the EAssign arm of pc_emit); -1 outside one.
   mut move_use_id: Int;
   mut move_hit: Bool;
+  // #3114: per binding id, true when the binding holds a BORROWED VIEW --
+  // its value is a call to a borrow-returning callee (is_borrow_ret_fname:
+  // `Array::get`, `Map::get`, ...), a wrapper block whose result spine ends
+  // in a view (pv_spine_is_view), or a plain `let` alias of such a binding.
+  // Narrower than `scalar` on purpose: `scalar` also covers a `Double`
+  // literal, which codegen boxes on the heap, and a parameter that is merely
+  // not proven heap. Only a view holds no reference of its own, so only a
+  // view's alias may inherit "nothing to release".
+  mut borrowed_view: Array[Bool];
+  // #3114 review: per binding id, true when the binding's value is an
+  // `if` / `match` / `handle` (top node; is_branching_value, the predicate
+  // codegen asks too). Codegen gives such a binding a reference of
+  // its own -- it retains a borrowed branch tail (#768 / #3103) -- but only
+  // while the binding keeps its planned scope-end drop. A `let` alias that
+  // took the binding's reference by transfer removed that drop, so the
+  // retain never ran and the alias released a reference nobody took.
+  mut branch_value: Array[Bool];
+  // #3134: the first binding id declared inside the innermost enclosing
+  // `while` / `for` / `loop` body during pc_emit, or 0 outside any loop. A binding
+  // with a smaller id is LOOP-CARRIED: the body re-executes, so a textual
+  // "last use" of it inside the body runs once per iteration and cannot
+  // transfer the binding's one initial reference. The plan is otherwise
+  // loop-blind (codegen's #706 retains a loop-carried argument at a
+  // consuming call); this floor is what lets a `let` alias see the loop.
+  mut loop_floor: Int;
   // #2389 per-path release. Per binding id, the bits below (PF_*); and the
   // occurrences that spend a binding's initial reference, as three aligned
   // arrays (id, source offset, name) filtered into PaConsumeMark rows once
@@ -354,6 +379,9 @@ fn pctx_new(borrow_ret_names: Array[String], borrow_param_fns: Array[String], bo
     view_src: [],
     move_use_id: 0 - 1,
     move_hit: false,
+    borrowed_view: [],
+    branch_value: [],
+    loop_floor: 0,
     decl_flags: [],
     mark_ids: [],
     mark_offs: [],
@@ -437,6 +465,11 @@ fn pctx_reset(ctx: PCtx) -> Int {
   ctx.view_src = vsrc0
   ctx.move_use_id = 0 - 1
   ctx.move_hit = false
+  let bview0: Array[Bool] = []
+  ctx.borrowed_view = bview0
+  let bval0: Array[Bool] = []
+  ctx.branch_value = bval0
+  ctx.loop_floor = 0
   let flags0: Array[Int] = []
   ctx.decl_flags = flags0
   let mids0: Array[Int] = []
@@ -608,6 +641,8 @@ fn pc_declare(ctx: PCtx, _name: String, scalar: Bool) -> Int {
   Array::push(ctx.scalar, scalar)
   Array::push(ctx.view_call_let, false)
   Array::push(ctx.view_src, 0 - 1)
+  Array::push(ctx.borrowed_view, false)
+  Array::push(ctx.branch_value, false)
   ctx.next_id = id + 1
   id
 }
@@ -634,6 +669,59 @@ fn pmvc_spine_leaf(e: Expr, binders: Array[String]) -> Expr {
     EAssignOp(_, _, _, b) => pmvc_spine_leaf(b, binders),
     _ => e
   }
+}
+
+/// #3114 review: does the result spine of a WRAPPER value end in a borrowed
+/// view? The plan-side mirror of codegen's `value_spine_borrowed`
+/// (compile_expr_tail), which is what decides that such a binding holds no
+/// reference of its own: a leaf is a view when it calls a borrow-returning
+/// callee, projects a field, or names an enclosing binding already known to
+/// be a view; a branch is a view when ANY tail is, exactly as codegen reads
+/// it. Names the spine binds on the way (`binders`, and a match arm's
+/// pattern names) are locals, not the enclosing binding of the same
+/// spelling, so a leaf naming one is not resolved through `scope` -- the
+/// same scoping `pmvc_spine_leaf` gives `pctx_mark_view_call`. Erring toward
+/// "view" is the safe side: it can leak an alias's reference, never release
+/// one twice.
+fn pv_spine_is_view(ctx: PCtx, scope: Map[String, Int], e: Expr, binders: Array[String]) -> Bool {
+  match e {
+    ECall(EIdent(fname, _), _, _) => !array_contains_str_pctx(binders, fname) && !Map::has_key(scope, fname) && is_borrow_ret_fname(ctx, fname),
+    EIdent(x, _) => !array_contains_str_pctx(binders, x) && Map::has_key(scope, x) && Array::get(ctx.borrowed_view, Map::get(scope, x)),
+    EDot(_, _, _, _) => true,
+    EIf(_, t, el) => pv_spine_is_view(ctx, scope, t, binders) || pv_spine_is_view(ctx, scope, el, binders),
+    EMatch(_, arms) => {
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(arms) && !found {
+        let (ap, ab) = Array::get(arms, i)
+        let mark = Array::length(binders)
+        pat_names(ap, binders)
+        if pv_spine_is_view(ctx, scope, ab, binders) {
+          found = true
+        } else {
+          ()
+        }
+        Array::truncate(binders, mark)
+        i = i + 1
+      }
+      found
+    },
+    ELet(n, _, b, _) => pv_spine_under_binder(ctx, scope, n, b, binders),
+    ELetMut(n, _, b, _) => pv_spine_under_binder(ctx, scope, n, b, binders),
+    ELetRec(n, _, b) => pv_spine_under_binder(ctx, scope, n, b, binders),
+    ESeq(_, b) => pv_spine_is_view(ctx, scope, b, binders),
+    EAssign(_, _, b) => pv_spine_is_view(ctx, scope, b, binders),
+    EAssignOp(_, _, _, b) => pv_spine_is_view(ctx, scope, b, binders),
+    _ => false
+  }
+}
+
+fn pv_spine_under_binder(ctx: PCtx, scope: Map[String, Int], n: String, b: Expr, binders: Array[String]) -> Bool {
+  let mark = Array::length(binders)
+  Array::push(binders, n)
+  let r = pv_spine_is_view(ctx, scope, b, binders)
+  Array::truncate(binders, mark)
+  r
 }
 
 /// ADR-0092 per-use pairing: mark `id` as a view-call let-binding when its
@@ -1541,13 +1629,25 @@ export fn compute_scalar_returning_names(stmts: Array[Stmt]) -> Array[String] {
   out
 }
 
-fn is_scalar_expr(ctx: PCtx, e: Expr) -> Bool {
+/// `scope` holds the binding's enclosing locals: a callee spelled like a
+/// borrow-returning global but bound to a LOCAL (a closure parameter, a
+/// `let pick = (..) -> ..`) is that local, which returns whatever it
+/// returns -- codegen's `call_returns_borrow` declines the same way, so a
+/// fresh result the plan called scalar was never released (#3114 review).
+///
+/// A `Double` literal is NOT scalar (#3135): codegen boxes every Double on the
+/// heap (classify_let_value_heap's `expr_is_floatish` arm gives the binding
+/// rc_kind 2), so a plan that called `let x = 1.5` scalar planned no drop for
+/// a box codegen allocated -- 16 B leaked per evaluation -- and an alias of
+/// it inside a loop (#3134) took no reference of its own, so the alias's
+/// scope-end drop freed the box on the first iteration. The literals left
+/// here are exactly the ones codegen does not allocate: Int, Bool, Unit.
+fn is_scalar_expr(ctx: PCtx, scope: Map[String, Int], e: Expr) -> Bool {
   match e {
     EInt(_) => true,
     EBool(_) => true,
-    EFloat(_) => true,
     EUnit => true,
-    ECall(EIdent(fname, _), _, _) => fname == "Stdin::read_via_stream" || is_borrow_ret_fname(ctx, fname),
+    ECall(EIdent(fname, _), _, _) => fname == "Stdin::read_via_stream" || (!Map::has_key(scope, fname) && is_borrow_ret_fname(ctx, fname)),
     _ => false
   }
 }
@@ -2437,7 +2537,26 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
             // alias always ACQUIRES ownership and needs no view marking
             // of its own.
             let src_last_view = rem == 1 && Array::get(ctx.view_call_let, sid)
-            if (rem > 1 || src_last_view) && !Array::get(ctx.scalar, sid) {
+            // #3114 review: an `if` / `match` source keeps its own reference
+            // (and so its scope-end drop): codegen's retain of a borrowed
+            // branch tail is keyed on that drop, so transferring it to the
+            // alias would leave the alias releasing an unretained view. The
+            // alias acquires its own reference instead, as for a source with
+            // later uses.
+            // #3134: a source declared OUTSIDE the enclosing loop body is
+            // loop-carried. `let w = p` inside the body runs every
+            // iteration, so it cannot be the transfer of `p`'s one initial
+            // reference that a straight-line last use would be: the first
+            // iteration's consumer (`keep(w)`) freed `p` and the next
+            // iteration read freed memory. The alias always ACQUIRES its
+            // own reference instead, and `p` keeps its initial one for its
+            // own scope-end drop (the `remaining` floor below). The direct
+            // spelling `keep(p)` is protected by codegen's #706 retain;
+            // an alias never reached that, because the consuming call names
+            // `w`, which is declared inside the body.
+            let src_loop_carried = sid < ctx.loop_floor
+            let src_keeps = Array::get(ctx.branch_value, sid) || src_loop_carried
+            if (rem > 1 || src_last_view || src_keeps) && !Array::get(ctx.scalar, sid) {
               // #1056 (almide `alias_safety.rs` comparison, rc check
               // elision): this occurrence of `let name = src` would dup
               // src's reference into `name`'s own slot. `ctx.next_id` is
@@ -2476,9 +2595,11 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
             // #2389: with no dup emitted above this occurrence TRANSFERS the
             // source's initial reference, exactly as pe_use's last owning use
             // does -- same condition, negated.
-            pe_note_initial_ref_spent(ctx, sid, src, src_off, rem == 1 && !src_last_view && !Array::get(ctx.scalar, sid))
-            if rem > 0 {
+            pe_note_initial_ref_spent(ctx, sid, src, src_off, rem == 1 && !src_last_view && !src_keeps && !Array::get(ctx.scalar, sid))
+            if rem > 1 || (rem == 1 && !(src_keeps && !Array::get(ctx.scalar, sid))) {
               Array::set(ctx.remaining, sid, rem - 1)
+            } else {
+              ()
             }
           } else {
             ()
@@ -2666,8 +2787,13 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
       }
     },
     EWhile(cond, body) => {
+      // #3134: bindings declared from here on belong to the loop body.
+      let saved_floor = ctx.loop_floor
+      ctx.loop_floor = ctx.next_id
       pc_emit(ctx, scope, cond)
       pc_emit(ctx, scope, body)
+      ctx.loop_floor = saved_floor
+      0
     },
     EReturn(e) => pc_emit(ctx, scope, e),
     ESpread(e) => pc_emit(ctx, scope, e),
@@ -2688,6 +2814,10 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
     },
     EForIn(value_name, index_opt, iterable, fbody) => {
       pc_emit(ctx, scope, iterable)
+      // #3134: the iterable runs once; the element binding and the body
+      // run per element (see the EWhile arm).
+      let saved_floor = ctx.loop_floor
+      ctx.loop_floor = ctx.next_id
       let idv = pe_declare(ctx, value_name)
       let s2 = Map::set(scope, value_name, idv)
       let s3 = match index_opt {
@@ -2699,8 +2829,15 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
       }
       pc_emit(ctx, s3, fbody)
       pe_scope_end(ctx, idv, value_name)
+      ctx.loop_floor = saved_floor
+      0
     },
     ELoop(params, lbody) => {
+      // #3134: `continue` re-enters the body, so it is a loop body like
+      // EWhile's. The parameters count as inside: each iteration rebinds
+      // them to the values `continue` passes.
+      let saved_floor = ctx.loop_floor
+      ctx.loop_floor = ctx.next_id
       let mut s = scope
       let pids: Array[Int] = []
       let pnames: Array[String] = []
@@ -2720,6 +2857,7 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
         pe_scope_end(ctx, Array::get(pids, j), Array::get(pnames, j))
         j = j + 1
       }
+      ctx.loop_floor = saved_floor
       0
     },
     EMatch(scrut, arms) => {
@@ -2963,7 +3101,49 @@ export fn pc_count(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
     ,
     ELet(name, value, body, _) => {
       pc_count(ctx, scope, value)
-      let id = pc_declare(ctx, name, is_scalar_expr(ctx, value))
+      // #3114: `let w = v` where `v` is a borrowed view (`Array::get` and
+      // the other borrow-returning callees, which is_scalar_expr classifies
+      // scalar) hands `w` nothing to own either. Planning `w` as an owned
+      // binding gave it a scope-end drop (or a last-use transfer into a
+      // consuming call / a return) for a reference it never took, releasing
+      // the element the container still owns. The alias inherits the view's
+      // classification; codegen marks it borrow-bound alongside (see the
+      // `let` lowering in compile_expr_tail), so an owning use still retains
+      // it the way it retains `v`.
+      //
+      // Only a VIEW is inherited, not `scalar` at large: a `Double` literal
+      // is `scalar` here yet boxed by codegen, so an alias of one that
+      // inherited the flag lost the scope-end drop that released the box
+      // (16 B per round, fixtures/rc_float_alias_release_test.vibe).
+      //
+      // #3114 review: a WRAPPER value -- a block, a binder chain -- hands
+      // back whatever its result spine ends in, and codegen classifies it
+      // that way (value_spine_borrowed: a view there declines the scope-end
+      // drop and marks the binding borrow-bound). Reading only the top node
+      // here called `{ let i = 0; Array::get(xs, i) }` owned, so its alias
+      // took a reference by transfer that codegen never gave the source.
+      let borrowed_view = match value {
+        ECall(EIdent(fname, _), _, _) => !Map::has_key(scope, fname) && is_borrow_ret_fname(ctx, fname),
+        EIdent(src, _) => Map::has_key(scope, src) && Array::get(ctx.borrowed_view, Map::get(scope, src)),
+        ELet(_, _, _, _) => pv_spine_is_view(ctx, scope, value, array_empty()),
+        ELetMut(_, _, _, _) => pv_spine_is_view(ctx, scope, value, array_empty()),
+        ELetRec(_, _, _) => pv_spine_is_view(ctx, scope, value, array_empty()),
+        ESeq(_, _) => pv_spine_is_view(ctx, scope, value, array_empty()),
+        EAssign(_, _, _) => pv_spine_is_view(ctx, scope, value, array_empty()),
+        EAssignOp(_, _, _, _) => pv_spine_is_view(ctx, scope, value, array_empty()),
+        _ => false
+      }
+      let id = pc_declare(ctx, name, borrowed_view || is_scalar_expr(ctx, scope, value))
+      if borrowed_view {
+        Array::set(ctx.borrowed_view, id, true)
+      } else {
+        ()
+      }
+      if is_branching_value(value) {
+        Array::set(ctx.branch_value, id, true)
+      } else {
+        ()
+      }
       let _ = pctx_mark_view_call(ctx, scope, id, value)
       pc_count(ctx, Map::set(scope, name, id), body)
     },
@@ -2988,7 +3168,7 @@ export fn pc_count(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
         ECall(EIdent(fname, _), _, _) => !array_contains_str_pctx(bc_binders, fname) && is_borrow_ret_fname(ctx, fname),
         _ => false
       }
-      let id = pc_declare(ctx, name, !borrowed_call && is_scalar_expr(ctx, value))
+      let id = pc_declare(ctx, name, !borrowed_call && is_scalar_expr(ctx, scope, value))
       if !borrowed_call {
         let _ = pctx_mark_view_call(ctx, scope, id, value)
         ()
@@ -3014,7 +3194,7 @@ export fn pc_count(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
     ESeq(a, b) => {
       pc_count(ctx, scope, a)
       let nm = next_seq_name(ctx)
-      let sq_id = pc_declare(ctx, nm, is_scalar_expr(ctx, a))
+      let sq_id = pc_declare(ctx, nm, is_scalar_expr(ctx, scope, a))
       // ADR-0092 per-use pairing: a DISCARDED view-call result gets a seq-temp
       // drop it never owned -- same class as a view-call let-binding.
       let _ = pctx_mark_view_call(ctx, scope, sq_id, a)
@@ -3132,7 +3312,7 @@ export fn pc_count(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
       while i < Array::length(params) {
         let p = Array::get(params, i)
         pc_count(ctx, scope, p.1)
-        let pid = pc_declare(ctx, p.0, is_scalar_expr(ctx, p.1))
+        let pid = pc_declare(ctx, p.0, is_scalar_expr(ctx, scope, p.1))
         s = Map::set(s, p.0, pid)
         i = i + 1
       }

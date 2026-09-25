@@ -1,0 +1,35 @@
+// #3114 x #2837: an alias of a view read out of an array before a released
+// truncate. The plan releases the removed suffix with the view `v` pinned;
+// the alias `w` takes no reference of its own (#3114), whether it is only
+// read or handed to an owning place (`Array::push`). A freed element would
+// read the same-sized literal after it, and VIBE_RC=shadow would trap.
+
+fn run(r: Int) -> Int {
+  let xs = [[1, r]]
+  let v = Array::get(xs, 0)
+  Array::truncate(xs, 0)
+  let w = v
+  let _ = [5, 5]
+  Array::get(w, 1)
+}
+
+fn run2(r: Int) -> Int {
+  let xs = [[1, r]]
+  let v = Array::get(xs, 0)
+  Array::truncate(xs, 0)
+  let w = v
+  let sink: Array[Array[Int]] = []
+  Array::push(sink, w)
+  let _ = [5, 5]
+  Array::get(Array::get(sink, 0), 1) + Array::get(v, 1)
+}
+
+test "alias of a pinned view survives a released truncate" {
+  let mut t = 0
+  let mut i = 0
+  while i < 100 {
+    t = t + run(i) + run2(i)
+    i = i + 1
+  }
+  inspect(t, content = "14850")
+}

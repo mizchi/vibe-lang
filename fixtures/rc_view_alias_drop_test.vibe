@@ -1,0 +1,277 @@
+// #3114: `let w = v`, where `v` is a borrowed `Array::get` view, used to be
+// planned as an OWNED binding. `v` holds no reference of its own -- the array
+// still owns the element -- but `w` got a scope-end drop for a reference it
+// never took (or, when its last use was a consuming call, a push, or a
+// return, handed that phantom reference away). Either way the element was
+// released once too often and the container's own drop then touched a freed
+// block. Under `VIBE_RC=shadow` that traps at the second release; on the
+// plain RC lane it silently corrupts the free list.
+//
+// The alias now inherits the source's no-reference class in the Perceus plan
+// (no drop, no transfer), and codegen marks it borrow-bound for its scope the
+// way it marks `v`, so an owning use still retains it.
+//
+// Each shape contributes one digit at its own decimal place, so a wrong
+// answer names the shape that broke:
+//
+//   x1          plain alias, borrowed read            2
+//   x10         alias chain `let u = w`               3
+//   x100        alias read in a branch                5
+//   x1000       alias passed to a consuming call      8
+//   x10000      alias returned from a function        9
+//   x100000     alias pushed into another array       4
+//   x1000000    shadowing `let v = v`, then an owned rebinding of `v`  6
+//   x10000000   alias inside a loop body              6
+//   x100000000  alias of a projection off a view      5
+//
+// Expected: 566498532
+//
+// #3114 review: the source may hand back its view through a WRAPPER -- a
+// block, a `let` chain inside it -- or a branch whose tails are views. The
+// plan read only the source's top node, so the alias took a reference by
+// transfer that the source never had. `all_wrapped` holds those shapes, one
+// digit each, and `main` places it above `all_shapes`:
+//
+//   x1          block wrapper, borrowed read          2
+//   x10         `let` chain inside the block, alias chain  3
+//   x100        `if` whose arms are both views        3
+//   x1000       block wrapper, alias consumed         4
+//   x10000      `if` of views, alias consumed         5
+//   x100000     `if` of a view and a fresh array      3
+//   x1000000    `match` whose arms are both views     6
+//   x10000000   `handle` whose BODY is the view       2
+//   x100000000  `handle` whose ARM is the view        1
+//
+// The `handle` rows are the third branching form: codegen treated it as
+// branching and retained its borrowed tails, the plan did not, so an alias
+// took the source's reference by transfer and the retain never ran.
+//
+// Expected: all_wrapped(1) = 126354332, main = 126354332566498532
+//
+// The owned side -- an alias of an OWNED value must still be released -- is
+// rc_view_alias_owned_release_test.vibe, kept apart because it measures the
+// heap through `Profiler`, which the wasm-gc lane this file also runs on does
+// not provide.
+
+struct Bag {
+  items: Array[Int];
+  n: Int
+}
+
+/// Consumes its argument: the one-element outer array owns `a` and is
+/// dropped on return, releasing `a` with it.
+fn keep(a: Array[Int]) -> Int {
+  let outer = [a]
+  Array::length(outer) + Array::get(a, 0)
+}
+
+fn shape_plain(n: Int) -> Int {
+  let xs = [[n, n + 1]]
+  let v = Array::get(xs, 0)
+  let w = v
+  Array::get(w, 1)
+}
+
+fn shape_chain(n: Int) -> Int {
+  let xs = [[n, n + 1]]
+  let v = Array::get(xs, 0)
+  let w = v
+  let u = w
+  Array::get(u, 1) + Array::get(Array::get(xs, 0), 0)
+}
+
+fn shape_branch(n: Int, c: Bool) -> Int {
+  let xs = [[n + 4, n + 5]]
+  let v = Array::get(xs, 0)
+  let w = v
+  if c {
+    Array::get(w, 0)
+  } else {
+    Array::get(w, 1)
+  }
+}
+
+fn shape_consumed(n: Int) -> Int {
+  let xs = [[n + 2, n + 3]]
+  let v = Array::get(xs, 0)
+  let w = v
+  let r = keep(w)
+  r + Array::get(Array::get(xs, 0), 1)
+}
+
+fn pick(xs: Array[Array[Int]]) -> Array[Int] {
+  let v = Array::get(xs, 0)
+  let w = v
+  w
+}
+
+fn shape_returned(n: Int) -> Int {
+  let xs = [[n + 1, n + 7]]
+  let p = pick(xs)
+  Array::get(p, 1) + Array::get(Array::get(xs, 0), 0) - n
+}
+
+fn shape_pushed(n: Int) -> Int {
+  let xs = [[n + 1, n + 2]]
+  let ys: Array[Array[Int]] = []
+  let v = Array::get(xs, 0)
+  let w = v
+  Array::push(ys, w)
+  Array::get(Array::get(ys, 0), 0) + Array::get(Array::get(xs, 0), 0)
+}
+
+fn shape_shadowed(n: Int) -> Int {
+  let xs = [[n, n + 2]]
+  let v = Array::get(xs, 0)
+  let v = v
+  let w = v
+  let v = [n + 2, n + 20]
+  let z = v
+  Array::get(w, 1) + Array::get(z, 0)
+}
+
+fn shape_in_loop(n: Int) -> Int {
+  let xs = [[n, n + 1], [n + 2, n + 3]]
+  let mut s = 0
+  let mut i = 0
+  while i < 2 {
+    let v = Array::get(xs, i)
+    let w = v
+    s = s + Array::get(w, 1)
+    i = i + 1
+  }
+  s
+}
+
+fn shape_projection(n: Int) -> Int {
+  let bags = [Bag::{ items: [n + 2, n + 3], n: n }]
+  let b = Array::get(bags, 0)
+  let f = b.items
+  let g = f
+  Array::get(g, 1) + Array::get(Array::get(bags, 0).items, 0) - n - 1
+}
+
+fn all_shapes(n: Int) -> Int {
+  shape_plain(n) + shape_chain(n) * 10 + shape_branch(n, true) * 100 + shape_consumed(n) * 1000 + shape_returned(n) * 10000 + shape_pushed(n) * 100000 + shape_shadowed(n) * 1000000 + shape_in_loop(n) * 10000000 + shape_projection(n) * 100000000
+}
+
+fn w_block(n: Int) -> Int {
+  let xs = [[n, n + 1]]
+  let v = {
+    let i = 0
+    Array::get(xs, i)
+  }
+  let w = v
+  Array::get(w, 1)
+}
+
+fn w_block_chain(n: Int) -> Int {
+  let xs = [[n, n + 1]]
+  let v = {
+    let i = 0
+    let j = i
+    Array::get(xs, j)
+  }
+  let w = v
+  let u = w
+  Array::get(u, 1) + Array::get(Array::get(xs, 0), 0)
+}
+
+fn w_if(n: Int, c: Bool) -> Int {
+  let xs = [[n, n + 1], [n + 2, n + 3]]
+  let v = if c {
+    Array::get(xs, 0)
+  } else {
+    Array::get(xs, 1)
+  }
+  let w = v
+  Array::get(w, 0)
+}
+
+fn w_block_consumed(n: Int) -> Int {
+  let xs = [[n, n + 1]]
+  let v = {
+    let i = 0
+    Array::get(xs, i)
+  }
+  let w = v
+  keep(w) + Array::get(Array::get(xs, 0), 1)
+}
+
+fn w_if_consumed(n: Int, c: Bool) -> Int {
+  let xs = [[n, n + 1], [n + 2, n + 3]]
+  let v = if c {
+    Array::get(xs, 0)
+  } else {
+    Array::get(xs, 1)
+  }
+  let w = v
+  keep(w) + Array::get(Array::get(xs, 1), 0)
+}
+
+fn w_if_mixed(n: Int, c: Bool) -> Int {
+  let xs = [[n, n + 1]]
+  let v = if c {
+    Array::get(xs, 0)
+  } else {
+    [n + 7, n + 8]
+  }
+  let w = v
+  Array::get(w, 1) + Array::get(Array::get(xs, 0), 0)
+}
+
+fn w_match(n: Int) -> Int {
+  let xs = [[n + 5, n], [n, n]]
+  let v = match n {
+    1 => Array::get(xs, 0),
+    _ => Array::get(xs, 1)
+  }
+  let w = v
+  Array::get(w, 0)
+}
+
+fn fail_if(c: Bool) -> Int with Exception {
+  if c {
+    throw("no")
+  } else {
+    0
+  }
+}
+
+/// The `handle` body hands back the view: [1, 2][1] + 1 - 1 = 2.
+fn w_handle_body(n: Int) -> Int {
+  let xs = [[n, n + 1]]
+  let v = handle {
+    let _ = fail_if(n < 0)
+    Array::get(xs, 0)
+  } with { Exception::Throw(_) => [n + 7, n + 8] }
+  let w = v
+  Array::get(w, 1) + Array::get(Array::get(xs, 0), 0) - n
+}
+
+/// The handler arm hands back the view: [1, 2][0] + 2 - 1 - 1 = 1.
+fn w_handle_arm(n: Int) -> Int {
+  let xs = [[n, n + 1]]
+  let v = handle {
+    let _ = fail_if(n >= 0)
+    [n + 7, n + 8]
+  } with { Exception::Throw(_) => Array::get(xs, 0) }
+  let w = v
+  Array::get(w, 0) + Array::get(Array::get(xs, 0), 1) - n - 1
+}
+
+fn all_wrapped(n: Int) -> Int {
+  w_block(n) + w_block_chain(n) * 10 + w_if(n, false) * 100 + w_block_consumed(n) * 1000 + w_if_consumed(n, true) * 10000 + w_if_mixed(n, true) * 100000 + w_match(n) * 1000000 + w_handle_body(n) * 10000000 + w_handle_arm(n) * 100000000
+}
+
+export fn main() -> Int {
+  all_shapes(1) + all_wrapped(1) * 1000000000
+}
+
+test "an alias of a borrowed view is not released twice" {
+  inspect(all_shapes(1), content = "566498532")
+}
+
+test "an alias of a view handed back through a wrapper or branch is not released twice" {
+  inspect(all_wrapped(1), content = "126354332")
+}

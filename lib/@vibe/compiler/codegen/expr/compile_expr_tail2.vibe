@@ -220,6 +220,17 @@ import ./compile_match.vibe {
 
 //# Functions
 
+/// #3113: a read of a captured `let mut` is a borrowed view of its RC cell's
+/// payload (the cell keeps owning it), so a literal that stores it retains it,
+/// as it does a projection. File-local copy of compile_call.vibe's
+/// `cc_is_ref_cell_read`.
+fn cet2_is_ref_cell_read(e: Expr, ctx: CompileCtx) -> Bool {
+  match e {
+    EIdent(n, _) => array_contains_str(ctx.ref_cell_names, n),
+    _ => false
+  }
+}
+
 export fn compile_expr_tail2(buf: Bytes, expr: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
   let __tag = expr_tag(expr)
   if __tag == 15 {
@@ -299,7 +310,7 @@ export fn compile_expr_tail2(buf: Bytes, expr: Expr, local_names: Array[String],
           EDot(_, _, _, _) => true,
           _ => false
         }
-        if ctx.enable_rc && (__tup_is_proj || cc_is_borrow_ret_call(__tup_elem, ctx) || cc_is_loop_borrowed_ident(__tup_elem, ctx)) {
+        if ctx.enable_rc && (__tup_is_proj || cet2_is_ref_cell_read(__tup_elem, ctx) || cc_is_borrow_ret_call(__tup_elem, ctx) || cc_is_loop_borrowed_ident(__tup_elem, ctx)) {
           emit_rc_dup_guarded(buf, __tup_val_local, ctx.rc_shadow, ctx.rc_dup_func_idx)
         } else {
           ()
@@ -419,7 +430,7 @@ export fn compile_expr_tail2(buf: Bytes, expr: Expr, local_names: Array[String],
           EDot(_, _, _, _) => true,
           _ => false
         }
-        if __arr_is_proj || cc_is_borrow_ret_call(__arr_elem, ctx) || cc_is_loop_borrowed_ident(__arr_elem, ctx) {
+        if __arr_is_proj || (ctx.enable_rc && cet2_is_ref_cell_read(__arr_elem, ctx)) || cc_is_borrow_ret_call(__arr_elem, ctx) || cc_is_loop_borrowed_ident(__arr_elem, ctx) {
           emit_rc_dup_guarded(buf, __arr_val_local, ctx.rc_shadow, ctx.rc_dup_func_idx)
         } else {
           ()

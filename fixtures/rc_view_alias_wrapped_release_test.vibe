@@ -1,0 +1,136 @@
+// #3114 review, the release side of the wrapped-view alias shapes in
+// rc_view_alias_drop_test.vibe. Classifying more sources as views must not
+// turn an owned value into a leak, so every round below is bounded:
+//
+//   - an alias of a view handed back through a block, and through an `if`
+//     whose arms are both views (the `if` source keeps its own retained
+//     reference, and the alias acquires another);
+//   - an `if` of a view and a FRESH array, taking each arm, so the fresh
+//     array is released through whichever binding holds it;
+//   - a LOCAL closure that shadows a top-level borrow-returning function but
+//     returns a fresh array. The plan used to call its result a view by
+//     spelling alone, with and without an alias, and never released it:
+//     88 B per round, measured.
+//
+// On VIBE_RC=0 every round grows the heap, so these bounds are also what
+// shows the probe measures a release at all.
+
+fn keep(a: Array[Int]) -> Int {
+  let outer = [a]
+  Array::length(outer) + Array::get(a, 0)
+}
+
+/// Top-level and borrow-returning, so its NAME is in the whole-program view
+/// set; the locals below shadow it.
+fn pick(xs: Array[Array[Int]]) -> Array[Int] {
+  Array::get(xs, 0)
+}
+
+fn r_shadow_alias(i: Int) -> Int {
+  let pick = (n: Int) -> [n, n + 1]
+  let v = pick(i)
+  let w = v
+  Array::get(w, 1) - i
+}
+
+fn r_shadow_noalias(i: Int) -> Int {
+  let pick = (n: Int) -> [n, n + 1]
+  let v = pick(i)
+  Array::get(v, 1) - i
+}
+
+fn r_toplevel_pick(i: Int) -> Int {
+  let xs = [[i, i + 1]]
+  let v = pick(xs)
+  let w = v
+  Array::get(w, 1) - i
+}
+
+fn r_block(i: Int) -> Int {
+  let xs = [[i, i + 1]]
+  let v = {
+    let k = 0
+    Array::get(xs, k)
+  }
+  let w = v
+  keep(w) - i
+}
+
+fn r_if_views(i: Int) -> Int {
+  let xs = [[i, i + 1], [i + 2, i + 3]]
+  let v = if i % 2 == 0 {
+    Array::get(xs, 0)
+  } else {
+    Array::get(xs, 1)
+  }
+  let w = v
+  keep(w) - i
+}
+
+fn r_if_mixed_fresh(i: Int) -> Int {
+  let xs = [[i, i + 1]]
+  let v = if i < 0 {
+    Array::get(xs, 0)
+  } else {
+    [i + 7, i + 8]
+  }
+  let w = v
+  Array::get(w, 1) - i
+}
+
+fn r_if_mixed_view(i: Int) -> Int {
+  let xs = [[i, i + 1]]
+  let v = if i >= 0 {
+    Array::get(xs, 0)
+  } else {
+    [i + 7, i + 8]
+  }
+  let w = v
+  Array::get(w, 1) - i
+}
+
+fn growth(f: (Int) -> Int) -> Int with Profiler::heap_bytes {
+  let mut i = 0
+  while i < 100 {
+    let _ = f(i)
+    i = i + 1
+  }
+  let before = Profiler::heap_bytes()
+  while i < 10100 {
+    let _ = f(i)
+    i = i + 1
+  }
+  Profiler::heap_bytes() - before
+}
+
+test "values" {
+  inspect(r_shadow_alias(5) + r_shadow_noalias(5) * 10 + r_toplevel_pick(5) * 100 + r_block(5) * 1000 + r_if_views(5) * 10000 + r_if_mixed_fresh(5) * 100000 + r_if_mixed_view(5) * 1000000, content = "1831111")
+}
+
+test "no leak: local closure shadowing a view-returning name, aliased" {
+  inspect(growth(r_shadow_alias) < 4000, content = "true")
+}
+
+test "no leak: local closure shadowing a view-returning name" {
+  inspect(growth(r_shadow_noalias) < 4000, content = "true")
+}
+
+test "no leak: alias of a top-level view-returning call" {
+  inspect(growth(r_toplevel_pick) < 4000, content = "true")
+}
+
+test "no leak: alias of a block-wrapped view, consumed" {
+  inspect(growth(r_block) < 4000, content = "true")
+}
+
+test "no leak: alias of an if of views, consumed" {
+  inspect(growth(r_if_views) < 4000, content = "true")
+}
+
+test "no leak: alias of an if of a view and a fresh array, fresh arm" {
+  inspect(growth(r_if_mixed_fresh) < 4000, content = "true")
+}
+
+test "no leak: alias of an if of a view and a fresh array, view arm" {
+  inspect(growth(r_if_mixed_view) < 4000, content = "true")
+}

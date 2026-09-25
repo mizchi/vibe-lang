@@ -1,0 +1,100 @@
+// #3134 review / #3135: the Perceus plan called a `Double` literal scalar --
+// "holds no reference" -- while codegen boxes every `Double` on the heap. So
+// `let x = 1.5` got no scope-end drop (the #3135 leak, 16 B per evaluation),
+// and `let y = x` inside a loop body took no reference of its own: `x` was
+// "scalar", so the #3134 rule that makes a loop-carried alias acquire one
+// never fired, while `y` itself was planned owned. The first iteration's
+// release of `y` freed `x`'s box and the next iteration touched freed memory
+// -- `memory access out of bounds` on the RC lane, a trap under shadow, 33 on
+// the other lanes.
+//
+// The plan now calls only Int, Bool and Unit literals scalar, the ones codegen
+// does not allocate. Each shape contributes one decimal place:
+//
+//   x1      alias unused, source read after the loop    3
+//   x10     alias read twice per iteration              3
+//   x100    alias chain `let z = y`, source read after  3
+//   x1000   nested loops                                6
+//
+// Expected: 6333. The release side is rc_float_alias_release_test.vibe.
+
+fn s_unused(n: Int) -> Int {
+  let x = 1.5
+  let mut s = 0
+  let mut i = 0
+  while i < n {
+    let y = x
+    s = s + 1
+    i = i + 1
+  }
+  if x > 1.0 {
+    s
+  } else {
+    0
+  }
+}
+
+fn s_twice(n: Int) -> Int {
+  let x = 1.5
+  let mut s = 0
+  let mut i = 0
+  while i < n {
+    let y = x
+    if y > 1.0 && y < 2.0 {
+      s = s + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  s
+}
+
+fn s_chain(n: Int) -> Int {
+  let x = 2.5
+  let mut s = 0
+  let mut i = 0
+  while i < n {
+    let y = x
+    let z = y
+    s = s + 1
+    i = i + 1
+  }
+  if x > 2.0 {
+    s
+  } else {
+    0
+  }
+}
+
+fn s_nested(n: Int) -> Int {
+  let x = 1.5
+  let mut s = 0
+  let mut i = 0
+  while i < n {
+    let mut j = 0
+    while j < 2 {
+      let y = x
+      if y > 1.0 {
+        s = s + 1
+      } else {
+        ()
+      }
+      j = j + 1
+    }
+    i = i + 1
+  }
+  s
+}
+
+fn all_shapes() -> Int {
+  s_unused(3) + s_twice(3) * 10 + s_chain(3) * 100 + s_nested(3) * 1000
+}
+
+export fn main() -> Int {
+  all_shapes()
+}
+
+test "an alias of a Double inside a loop does not free the source's box" {
+  inspect(all_shapes(), content = "6333")
+}

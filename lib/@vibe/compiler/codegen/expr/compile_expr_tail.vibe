@@ -32,6 +32,7 @@ import @vibe/compiler/codegen/common_analysis {
   emit_closure_call_tail,
   emit_closure_resolve,
   emit_i64_extend_i32_u,
+  is_branching_value,
   md_consume_count_b,
   md_self_reassign_move_arg,
   mut_needs_ref_cell,
@@ -248,7 +249,7 @@ import ./compile_expr_tail2.vibe {
 }
 
 import ./compile_lambda.vibe {
-  cl_return_operand, compile_lambda
+  cl_return_operand, compile_lambda, forin_is_discarded_seq_head
 }
 
 import ./compile_match.vibe {
@@ -1148,6 +1149,18 @@ fn classify_let_value_heap(buf: Bytes, value: Expr, name: String, local_idx: Int
     if expr_is_floatish(value, local_names, ctx) {
       rc_kind = 2
       Array::push(ctx.heap_binding_names, name)
+      // #3135: a `Double` is a heap box, and the plan now says so, so an
+      // alias of a `Double` binding gets the same PaAliasDup as any other
+      // heap alias (a source with later uses, or a loop-carried one). This
+      // arm is reached before the `is_eident` arm below, which is the one
+      // that applies an alias dup -- without this the plan's dup was
+      // silently dropped for a floatish alias, and the alias's own drop
+      // released the source's box.
+      if is_eident(value) && array_contains_str(ctx.rc_alias_dup_names, name) {
+        emit_rc_dup_guarded(buf, local_idx, ctx.rc_shadow, ctx.rc_dup_func_idx)
+      } else {
+        ()
+      }
     } else if is_etuple(value) {
       rc_kind = 2
       Array::push(ctx.heap_binding_names, name)
@@ -1994,16 +2007,6 @@ fn vsb_under_binder(n: String, v: Expr, b: Expr, local_names: Array[String], bou
   r
 }
 
-/// An if / match / handle value: its result is one of several arm tails.
-fn is_branching_value(value: Expr) -> Bool {
-  match value {
-    EIf(_, _, _) => true,
-    EMatch(_, _) => true,
-    EHandle(_, _) => true,
-    _ => false
-  }
-}
-
 fn retain_wrap_arms(arms: Array[(Pat, Expr)], local_names: Array[String], inner: Array[String], ctx: CompileCtx) -> Array[(Pat, Expr)] with Exception {
   let out = array_empty()
   let mut ai = 0
@@ -2059,6 +2062,43 @@ fn with_pattern_binders(inner: Array[String], pat: Pat) -> Array[String] {
   let out = Array::slice(inner, 0, Array::length(inner))
   collect_pattern_bindings(pat, out)
   out
+}
+
+/// #3113: `value` with the owning-store markers `cl_own_cell_stmts` put on
+/// its result paths removed. Only the slot's CLASSIFICATION reads this (float /
+/// int / bool / string): a marker changes who owns the value, not what it is,
+/// and an intish initializer hidden behind one would send a later `==` on the
+/// slot down the generic path.
+fn cet_strip_owned_markers(e: Expr) -> Expr {
+  match e {
+    ECall(EIdent(n, off), args, _) => if n == "__lambda_return_owned" && off < 0 && Array::length(args) == 1 {
+      cet_strip_owned_markers(Array::get(args, 0))
+    } else {
+      e
+    },
+    EIf(c, t, f) => EIf(c, cet_strip_owned_markers(t), cet_strip_owned_markers(f)),
+    EMatch(s, arms) => {
+      let out = array_empty()
+      for arm in arms {
+        Array::push(out, (arm.0, cet_strip_owned_markers(arm.1)))
+      }
+      EMatch(s, out)
+    },
+    EHandle(b, arms) => {
+      let out = array_empty()
+      for arm in arms {
+        Array::push(out, (arm.0, cet_strip_owned_markers(arm.1)))
+      }
+      EHandle(cet_strip_owned_markers(b), out)
+    },
+    ELet(n, v, b, off) => ELet(n, v, cet_strip_owned_markers(b), off),
+    ELetMut(n, v, b, off) => ELetMut(n, v, cet_strip_owned_markers(b), off),
+    ELetRec(n, v, b) => ELetRec(n, v, cet_strip_owned_markers(b)),
+    ESeq(a, b) => ESeq(a, cet_strip_owned_markers(b)),
+    EAssign(n, v, b) => EAssign(n, v, cet_strip_owned_markers(b)),
+    EAssignOp(n, op, v, b) => EAssignOp(n, op, v, cet_strip_owned_markers(b)),
+    _ => e
+  }
 }
 
 /// #768: apply the branch-tail retain rewrite (see retain_wrap_branch_tails)
@@ -2134,7 +2174,10 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     let nl = compile_expr(buf, retain_wrap_let_value(value, name, local_names, ctx), local_names, next_local + 1, ctx, ld)
     Array::set(local_names, local_idx, name)
     emit_local_set(buf, local_idx)
-    let val_is_float = expr_is_floatish(value, local_names, ctx)
+    // #3113: a read of a captured cell arrives behind an owning-store marker
+    // (cl_own_cell_stmts); classify the slot from the value it wraps.
+    let class_value = cet_strip_owned_markers(value)
+    let val_is_float = expr_is_floatish(class_value, local_names, ctx)
     if val_is_float {
       Array::push(ctx.float_local_slots, local_idx * 2 + 1)
     } else if slot_is_floatish(ctx, local_idx) {
@@ -2145,11 +2188,11 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     // Always (re)log when the slot was previously classified, so a rebind of a
     // reused slot overrides the earlier entry. #769/#950 encoding: slot*4 +
     // kind (0 clear / 1 int / 2 string / 3 bool) -- see slot_is_intish.
-    if expr_is_boolish(value, local_names, ctx) {
+    if expr_is_boolish(class_value, local_names, ctx) {
       Array::push(ctx.int_local_slots, local_idx * 4 + 3)
-    } else if expr_is_intish(value, local_names, ctx) {
+    } else if expr_is_intish(class_value, local_names, ctx) {
       Array::push(ctx.int_local_slots, local_idx * 4 + 1)
-    } else if cc_expr_is_stringish(value, local_names, ctx) {
+    } else if cc_expr_is_stringish(class_value, local_names, ctx) {
       Array::push(ctx.int_local_slots, local_idx * 4 + 2)
     } else if slot_is_intish(ctx, local_idx) || slot_is_stringish(ctx, local_idx) {
       Array::push(ctx.int_local_slots, local_idx * 4)
@@ -2246,6 +2289,14 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     Array::push(ctx.agg_local_slots, local_idx * 256 + agg_entry)
     Array::push(ctx.agg_local_exprs, agg_shape_expr)
     let (rc_kind, is_borrow_ret_ext) = classify_let_value_heap(buf, value, name, local_idx, local_names, ctx)
+    // #3114: `let w = v` over a borrow-bound `v` that left `w` owning nothing
+    // (rc_kind 0: the Perceus plan inherits `v`'s no-reference class, so `w`
+    // has no scope-end drop) is the same borrowed view under another name.
+    // Mark it borrow-bound for its body like `v`, so a consuming call, a
+    // push, or a return retains it exactly as it would retain `v`. Read here,
+    // before the #712 mask below removes `name` -- `let v = v` must still see
+    // the outer `v`.
+    let alias_borrow_like = ctx.enable_rc && rc_kind == 0 && is_eident(value) && array_contains_str(ctx.loop_borrowed_names, get_eident_name(value)) && !array_contains_str(ctx.ref_cell_names, get_eident_name(value))
     if ctx.enable_rc && rc_kind > 0 {
       let mut dbi = 0
       while dbi < Array::length(ctx.rc_dup_names) {
@@ -2315,7 +2366,7 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     // (conditional) borrowed view too -- mark it borrow-bound for the body
     // scope so consuming calls dup it (see value_has_borrowed_branch_tail).
     let value_borrow_like = ctx.enable_rc && is_branching_value(value) && value_has_borrowed_branch_tail(value, local_names, array_empty(), ctx)
-    if ctx.enable_rc && (is_borrow_ret_ext || value_borrow_like) {
+    if ctx.enable_rc && (is_borrow_ret_ext || value_borrow_like || alias_borrow_like) {
       Array::push(ctx.loop_borrowed_names, name)
     } else {
       ()
@@ -2452,7 +2503,7 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     } else {
       ()
     }
-    if ctx.enable_rc && (is_borrow_ret_ext || value_borrow_like) {
+    if ctx.enable_rc && (is_borrow_ret_ext || value_borrow_like || alias_borrow_like) {
       Array::truncate(ctx.loop_borrowed_names, lb_mark)
     } else {
       ()
@@ -2592,7 +2643,11 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     // add. Keep it masked through initializer ownership classification too;
     // restore it before compiling the body, where the binder IS in scope.
     Array::set(local_names, local_idx, "")
-    if expr_is_floatish(value, local_names, ctx) {
+    // #3113: a captured cell's initializer arrives wrapped in owning-store
+    // markers (cl_own_cell_stmts). They change who owns the value, never its
+    // representation, so the slot is classified from the unwrapped value.
+    let class_value = cet_strip_owned_markers(value)
+    if expr_is_floatish(class_value, local_names, ctx) {
       Array::push(ctx.float_local_slots, local_idx * 2 + 1)
     } else if slot_is_floatish(ctx, local_idx) {
       Array::push(ctx.float_local_slots, local_idx * 2)
@@ -2602,11 +2657,11 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     // `==` on it uses the direct i64 path. #769/#950: slot*4 + kind encoding,
     // bool tracked as kind 3, string as kind 2 (a mut Bool/String stays that
     // type across reassignments too).
-    if expr_is_boolish(value, local_names, ctx) {
+    if expr_is_boolish(class_value, local_names, ctx) {
       Array::push(ctx.int_local_slots, local_idx * 4 + 3)
-    } else if expr_is_intish(value, local_names, ctx) {
+    } else if expr_is_intish(class_value, local_names, ctx) {
       Array::push(ctx.int_local_slots, local_idx * 4 + 1)
-    } else if cc_expr_is_stringish(value, local_names, ctx) {
+    } else if cc_expr_is_stringish(class_value, local_names, ctx) {
       Array::push(ctx.int_local_slots, local_idx * 4 + 2)
     } else if slot_is_intish(ctx, local_idx) || slot_is_stringish(ctx, local_idx) {
       Array::push(ctx.int_local_slots, local_idx * 4)
@@ -2621,9 +2676,12 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         // read/write/assign-op sites are byte-identical to the raw-box path. The
         // capturing closure dups it (compile_lambda.vibe) and drops it via the
         // class-7 owned-capture recursion (gen_rc_drop_body); the defining scope
-        // drops it inline below. class-8 means the payload itself is never
-        // dropped with the cell, so a heap payload leaks rather than being
-        // freed out from under the body -- no use-after-free either way.
+        // drops it inline below. The class-8 drop releases the payload with
+        // the cell (__rt_rc_drop), so the cell OWNS one reference to it:
+        // #3113 made every store an owned one (cl_own_cell_stmts marks the
+        // initializer and each assignment, the assignment releases the value
+        // it replaces) and every read that leaves for an owning place a
+        // retained one (cc_is_ref_cell_read).
         //
         // ADR-0092 (#1262): this used to ALSO require
         // `expr_is_intish(value, ..)`, which made the two sides of the ref-cell
@@ -2772,7 +2830,32 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     let value = get_eassign_val(expr)
     let body = get_eassign_body(expr)
     let idx = resolve_local(local_names, name, "assign")
-    if array_contains_str(ctx.ref_cell_names, name) {
+    if array_contains_str(ctx.ref_cell_names, name) && ctx.enable_rc && ctx.rc_drop_func_idx >= 0 {
+      // #3113: the RC cell owns its payload (its drop releases it), and
+      // cl_own_cell_stmts has already made the stored value an owned one. So
+      // the assignment replaces one owned reference with another: compute the
+      // new value first -- it may read the cell -- then store it and release
+      // the old payload, which no longer has an owner.
+      let vnl = compile_expr(buf, value, local_names, next_local, ctx, ld)
+      // Expression compilation can reserve unnamed scratch slots; claim two
+      // past them, the way the lambda-return marker does.
+      let new_l = vnl
+      let old_l = vnl + 1
+      cet_record_local_slot(local_names, old_l)
+      let nl = vnl + 2
+      emit_local_set(buf, new_l)
+      emit_local_get(buf, idx)
+      emit_i32_wrap_i64(buf)
+      emit_i64_load(buf, 3, 0)
+      emit_local_set(buf, old_l)
+      emit_local_get(buf, idx)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, new_l)
+      emit_i64_store(buf, 3, 0)
+      emit_local_get(buf, old_l)
+      emit_call(buf, ctx.rc_drop_func_idx)
+      compile_expr(buf, body, local_names, nl, ctx, ld)
+    } else if array_contains_str(ctx.ref_cell_names, name) {
       emit_local_get(buf, idx)
       emit_i32_wrap_i64(buf)
       let nl = compile_expr(buf, value, local_names, next_local, ctx, ld)
@@ -3030,9 +3113,12 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     // classification the checker uses, #1679) -- its comprehension result is
     // discarded right here by the emit_drop below, so compile it in the
     // no-collect form instead of materializing an array nobody reads.
-    let nl = match first {
-      EForIn(_, _, _, _) => compile_forin_loop(buf, first, local_names, next_local, ctx, ld, compile_expr, false),
-      _ => compile_expr(buf, first, local_names, next_local, ctx, ld)
+    // `forin_is_discarded_seq_head` is shared with the captured-cell marker
+    // (cl_own_cells), which must not retain a body value this form drops.
+    let nl = if forin_is_discarded_seq_head(first) {
+      compile_forin_loop(buf, first, local_names, next_local, ctx, ld, compile_expr, false)
+    } else {
+      compile_expr(buf, first, local_names, next_local, ctx, ld)
     }
     emit_drop(buf)
     compile_expr(buf, second, local_names, nl, ctx, ld)

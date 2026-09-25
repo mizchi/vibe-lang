@@ -1,0 +1,1052 @@
+// #3113: a `let mut` that a closure captures is stored in an RC cell, and the
+// cell's drop releases its payload -- so the cell OWNS one reference to it.
+// Two sides broke that.
+//
+// The STORE side: the initializer was stored as compiled. A borrowed one --
+// `Array::get(xs, i)`, a projection, an if/match or block ending in either --
+// entered the cell with no reference of its own, and the cell's drop freed an
+// element `xs` still owned. An assignment of a borrow did the same, and the
+// scope's tail (`{ ..; d }`) handed out a payload the cell then released.
+//
+// The READ side: a read of the cell passed to an owning place (a consuming
+// parameter such as `Array::push`'s element, or a `let` alias that is later
+// consumed) spent the cell's own reference, so the cell's drop released the
+// same block a second time.
+//
+// Measured on a stage2 built from main at 2aa4f1be5, one test per file: every
+// test below trapped under VIBE_RC=shadow, and all but the tail-escape and
+// if-arm-projection tests also trapped on the RC lane -- the assignment test
+// after first answering `ax,by,cz,ax,qq,cz`, a freed element read back as the
+// value that reused its block. The two that pass on the RC lane only show under
+// shadow, which is why the gate runs this file on both (tests/gates/mid/run.sh,
+// 40f-b3).
+
+enum D {
+  A(String, Array[String]);
+  B(String)
+}
+
+fn name_of(d: D) -> String {
+  match d {
+    A(n, _) => n,
+    B(n) => n
+  }
+}
+
+fn scan_if(xs: Array[D], out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(xs) {
+    let mut d = if i % 2 == 0 {
+      Array::get(xs, i)
+    } else {
+      Array::get(xs, i)
+    }
+    let f = () -> String { name_of(d) }
+    Array::push(out, f())
+    i = i + 1
+  }
+}
+
+fn scan_direct(xs: Array[D], out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(xs) {
+    let mut d = Array::get(xs, i)
+    let f = () -> String { name_of(d) }
+    Array::push(out, f())
+    i = i + 1
+  }
+}
+
+fn scan_block(xs: Array[D], out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(xs) {
+    let mut d = {
+      let j = i
+      Array::get(xs, j)
+    }
+    let f = () -> String { name_of(d) }
+    Array::push(out, f())
+    i = i + 1
+  }
+}
+
+// The block's tail is a NAME bound to a borrow, not the borrowing call itself.
+fn scan_block_let(xs: Array[D], out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(xs) {
+    let mut d = {
+      let h = Array::get(xs, i)
+      h
+    }
+    let f = () -> String { name_of(d) }
+    Array::push(out, f())
+    i = i + 1
+  }
+}
+
+// A borrow assigned into the cell after the closure captured it.
+fn assign_borrow(xs: Array[D], out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(xs) {
+    let mut d = B(String::concat("q", "q"))
+    let f = () -> String { name_of(d) }
+    d = Array::get(xs, i)
+    Array::push(out, f())
+    i = i + 1
+  }
+}
+
+// The closure hands the cell's payload to an owning parameter.
+fn sink_from_closure(xs: Array[D], sink: Array[D]) -> Unit {
+  let mut i = 0
+  while i < Array::length(xs) {
+    let mut d = Array::get(xs, i)
+    let f = () -> Unit { Array::push(sink, d) }
+    f()
+    i = i + 1
+  }
+}
+
+// The defining scope does the same, directly and through a `let` alias.
+fn sink_from_scope(xs: Array[D], sink: Array[D]) -> Unit {
+  let mut i = 0
+  while i < Array::length(xs) {
+    let mut d = Array::get(xs, i)
+    let f = () -> String { name_of(d) }
+    let _ = f()
+    Array::push(sink, d)
+    let e = d
+    Array::push(sink, e)
+    i = i + 1
+  }
+}
+
+// The payload leaves as the scope's tail.
+fn get_cell(xs: Array[D], i: Int) -> D {
+  let mut d = Array::get(xs, i)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  d
+}
+
+struct Box {
+  inner: D
+}
+
+fn scan_field(bs: Array[Box], out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(bs) {
+    let b = Array::get(bs, i)
+    let mut d = b.inner
+    let f = () -> String { name_of(d) }
+    Array::push(out, f())
+    i = i + 1
+  }
+}
+
+fn pick_field(b: Box, first: Bool) -> String {
+  let mut d = if first {
+    b.inner
+  } else {
+    b.inner
+  }
+  let f = () -> String { name_of(d) }
+  f()
+}
+
+// A match pattern binder: the match lowering already retains it, so the store
+// must not retain it again (that leaked in #3108's first attempt).
+fn pick_arm(b: Box) -> String {
+  let mut d = match b {
+    Box::{ inner } => inner
+  }
+  let f = () -> String { name_of(d) }
+  f()
+}
+
+fn mk() -> Array[D] {
+  [A(String::concat("a", "x"), ["p"]), B(String::concat("b", "y")), A(String::concat("c", "z"), [])]
+}
+
+fn names(ds: Array[D]) -> String {
+  String::join(Array::map(ds, (d) -> String { name_of(d) }), ",")
+}
+
+// #3130 review. A captured cell read that reaches an OWNING place through a
+// branch or block tail -- an array / tuple / record / map item, a constructor
+// field, an owning call argument -- was not retained: only a bare read was.
+// And a captured `let mut` written directly in a `test` / `bench` block was
+// not rewritten at all, because those are lowered to functions after the
+// rewrite ran. Measured on a stage2 built from 72bbc9efe, one test per file:
+// every test from here down trapped under VIBE_RC=shadow except the closure
+// call argument, and the two test-block ones also on the RC lane (the
+// assignment first answering `ax,qq,cz`). The helpers ending in `_names` drop
+// their result before returning; that is what makes a reference the result
+// holds without owning it visible.
+
+
+fn keep(sink: Array[D], d: D) -> Unit {
+  Array::push(sink, d)
+}
+
+fn arr_if(xs: Array[D], c: Bool) -> Array[D] {
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  [if c { d } else { B("fresh") }]
+}
+
+fn arr_block(xs: Array[D]) -> Array[D] {
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  [{
+    let j = 0
+    {
+      let k = j
+      d
+    }
+  }]
+}
+
+fn tup_match(xs: Array[D], k: Int) -> (D, Int) {
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  (match k {
+    0 => d,
+    _ => B("fresh")
+  }, 1)
+}
+
+fn rec_if(xs: Array[D], c: Bool) -> Box {
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  Box::{ inner: if c { d } else { B("fresh") } }
+}
+
+fn ctor_if(xs: Array[D], c: Bool) -> Option[D] {
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  Some(if c { d } else { B("fresh") })
+}
+
+fn call_if(xs: Array[D], sink: Array[D], c: Bool) -> Unit {
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  keep(sink, if c { d } else { B("fresh") })
+  Array::push(sink, match c {
+    true => d,
+    false => B("fresh")
+  })
+}
+
+fn closure_call_if(xs: Array[D], sink: Array[D], c: Bool) -> Unit {
+  let mut d = Array::get(xs, 0)
+  let g = (x: D) -> Unit { Array::push(sink, x) }
+  let f = () -> Unit { g(if c { d } else { B("fresh") }) }
+  f()
+}
+
+fn map_if(xs: Array[D], c: Bool) -> StringMap[D] {
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  let m = Map::from_pairs([("k", if c { d } else { B("fresh") })])
+  Map::set(m, "j", if c { d } else { B("fresh") })
+}
+
+// Each of these drops its result before returning, so a reference the result
+// holds without owning it is released while `xs` still lists the element.
+fn arr_if_names(xs: Array[D], c: Bool) -> String {
+  let a = arr_if(xs, c)
+  name_of(Array::get(a, 0))
+}
+
+fn arr_block_names(xs: Array[D]) -> String {
+  let a = arr_block(xs)
+  name_of(Array::get(a, 0))
+}
+
+fn call_if_names(xs: Array[D], c: Bool) -> String {
+  let sink: Array[D] = []
+  call_if(xs, sink, c)
+  String::concat(name_of(Array::get(sink, 0)), name_of(Array::get(sink, 1)))
+}
+
+fn closure_call_if_names(xs: Array[D], c: Bool) -> String {
+  let sink: Array[D] = []
+  closure_call_if(xs, sink, c)
+  name_of(Array::get(sink, 0))
+}
+
+fn consume(d: D) -> String {
+  let s = name_of(d)
+  let keep_it: Array[D] = [d]
+  String::concat(s, __to_string(Array::length(keep_it)))
+}
+
+fn consume_if(xs: Array[D], c: Bool) -> String {
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  consume(if c { d } else { B("fresh") })
+}
+
+// #3130 review, second round. The result-spine walk missed `handle`: a cell
+// read as a handle body's or handler arm's value reached an owning place with
+// no reference of its own. All the cell markers now share one walk
+// (`rs_map`, compile_lambda.vibe), so these cover each result-bearing form in
+// each owning position. Measured on a stage2 built from 0e8f30a11, one test
+// per file: the handle body and handler-arm array item and call argument, and
+// the for-in body, trapped under VIBE_RC=shadow. The `let rec` / statement
+// block tails and the store positions already passed there; they pin that the
+// shared walk keeps them.
+
+fn consume_name(d: D) -> String {
+  let held: Array[D] = [d]
+  name_of(Array::get(held, 0))
+}
+
+fn fail_if(c: Bool) -> Int with Exception {
+  if c {
+    throw("no")
+  } else {
+    0
+  }
+}
+
+fn tail_handle_body_agg(xs: Array[D], c: Bool) -> String {
+  let log: Array[Int] = []
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  let held = [handle {
+    let _ = fail_if(!c)
+    d
+  } with {
+    Exception::Throw(_) => B("fresh")
+  }]
+  name_of(Array::get(held, 0))
+}
+
+fn tail_handle_body_arg(xs: Array[D], c: Bool) -> String {
+  let log: Array[Int] = []
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  consume_name(handle {
+    let _ = fail_if(!c)
+    d
+  } with {
+    Exception::Throw(_) => B("fresh")
+  })
+}
+
+fn tail_handle_body_store(xs: Array[D], c: Bool) -> String {
+  let log: Array[Int] = []
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  let mut e = handle {
+    let _ = fail_if(!c)
+    d
+  } with {
+    Exception::Throw(_) => B("fresh")
+  }
+  let g2 = () -> String { name_of(e) }
+  g2()
+}
+
+fn tail_handle_arm_agg(xs: Array[D], c: Bool) -> String {
+  let log: Array[Int] = []
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  let held = [handle {
+    let _ = fail_if(c)
+    B("fresh")
+  } with {
+    Exception::Throw(_) => d
+  }]
+  name_of(Array::get(held, 0))
+}
+
+fn tail_handle_arm_arg(xs: Array[D], c: Bool) -> String {
+  let log: Array[Int] = []
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  consume_name(handle {
+    let _ = fail_if(c)
+    B("fresh")
+  } with {
+    Exception::Throw(_) => d
+  })
+}
+
+fn tail_handle_arm_store(xs: Array[D], c: Bool) -> String {
+  let log: Array[Int] = []
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  let mut e = handle {
+    let _ = fail_if(c)
+    B("fresh")
+  } with {
+    Exception::Throw(_) => d
+  }
+  let g2 = () -> String { name_of(e) }
+  g2()
+}
+
+fn tail_letrec_tail_agg(xs: Array[D], c: Bool) -> String {
+  let log: Array[Int] = []
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  let held = [{
+    let rec g = (n: Int) -> Int { if n <= 0 { 0 } else { g(n - 1) } }
+    let _ = g(2)
+    if c { d } else { B("fresh") }
+  }]
+  name_of(Array::get(held, 0))
+}
+
+fn tail_letrec_tail_arg(xs: Array[D], c: Bool) -> String {
+  let log: Array[Int] = []
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  consume_name({
+    let rec g = (n: Int) -> Int { if n <= 0 { 0 } else { g(n - 1) } }
+    let _ = g(2)
+    if c { d } else { B("fresh") }
+  })
+}
+
+fn tail_letrec_tail_store(xs: Array[D], c: Bool) -> String {
+  let log: Array[Int] = []
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  let mut e = {
+    let rec g = (n: Int) -> Int { if n <= 0 { 0 } else { g(n - 1) } }
+    let _ = g(2)
+    if c { d } else { B("fresh") }
+  }
+  let g2 = () -> String { name_of(e) }
+  g2()
+}
+
+fn tail_seq_tail_agg(xs: Array[D], c: Bool) -> String {
+  let log: Array[Int] = []
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  let held = [{
+    Array::push(log, 1);
+    if c { d } else { B("fresh") }
+  }]
+  name_of(Array::get(held, 0))
+}
+
+fn tail_seq_tail_arg(xs: Array[D], c: Bool) -> String {
+  let log: Array[Int] = []
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  consume_name({
+    Array::push(log, 1);
+    if c { d } else { B("fresh") }
+  })
+}
+
+fn tail_seq_tail_store(xs: Array[D], c: Bool) -> String {
+  let log: Array[Int] = []
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  let mut e = {
+    Array::push(log, 1);
+    if c { d } else { B("fresh") }
+  }
+  let g2 = () -> String { name_of(e) }
+  g2()
+}
+
+fn tail_forin_agg(xs: Array[D], c: Bool) -> String {
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  let held = for x in [1, 2] { if c { d } else { B("fresh") } }
+  name_of(Array::get(held, 1))
+}
+
+test "a captured let mut holding an if/match borrow keeps the element alive" {
+  let xs = mk()
+  let out: Array[String] = []
+  scan_if(xs, out)
+  scan_if(xs, out)
+  scan_if(xs, out)
+  inspect(String::join(out, ","), content = "ax,by,cz,ax,by,cz,ax,by,cz")
+}
+
+test "a captured let mut holding a direct borrow keeps the element alive" {
+  let xs = mk()
+  let out: Array[String] = []
+  scan_direct(xs, out)
+  scan_direct(xs, out)
+  scan_direct(xs, out)
+  inspect(String::join(out, ","), content = "ax,by,cz,ax,by,cz,ax,by,cz")
+}
+
+test "a captured let mut holding a block that ends in a borrow keeps the element alive" {
+  let xs = mk()
+  let out: Array[String] = []
+  scan_block(xs, out)
+  scan_block(xs, out)
+  scan_block(xs, out)
+  inspect(String::join(out, ","), content = "ax,by,cz,ax,by,cz,ax,by,cz")
+}
+
+test "a captured let mut holding a block that ends in a borrow-bound name keeps the element alive" {
+  let xs = mk()
+  let out: Array[String] = []
+  scan_block_let(xs, out)
+  scan_block_let(xs, out)
+  scan_block_let(xs, out)
+  inspect(String::join(out, ","), content = "ax,by,cz,ax,by,cz,ax,by,cz")
+}
+
+test "a borrow assigned into a captured cell keeps the element alive" {
+  let xs = mk()
+  let out: Array[String] = []
+  assign_borrow(xs, out)
+  assign_borrow(xs, out)
+  inspect(String::join(out, ","), content = "ax,by,cz,ax,by,cz")
+  inspect(names(xs), content = "ax,by,cz")
+}
+
+test "a closure handing a captured cell to an owning parameter keeps the element alive" {
+  let xs = mk()
+  let sink: Array[D] = []
+  sink_from_closure(xs, sink)
+  sink_from_closure(xs, sink)
+  inspect(names(sink), content = "ax,by,cz,ax,by,cz")
+  inspect(names(xs), content = "ax,by,cz")
+}
+
+test "the defining scope handing a captured cell to an owning parameter keeps the element alive" {
+  let xs = mk()
+  let sink: Array[D] = []
+  sink_from_scope(xs, sink)
+  sink_from_scope(xs, sink)
+  inspect(names(sink), content = "ax,ax,by,by,cz,cz,ax,ax,by,by,cz,cz")
+  inspect(names(xs), content = "ax,by,cz")
+}
+
+test "a captured cell leaving as the scope's tail keeps the element alive" {
+  let xs = mk()
+  let a = get_cell(xs, 0)
+  let b = get_cell(xs, 0)
+  let c = get_cell(xs, 2)
+  inspect(String::join([name_of(a), name_of(b), name_of(c)], ","), content = "ax,ax,cz")
+  inspect(names(xs), content = "ax,by,cz")
+}
+
+test "a captured let mut holding a projection keeps the field alive" {
+  let bs = [Box::{ inner: A(String::concat("a", "x"), ["p"]) }, Box::{ inner: B(String::concat("b", "y")) }]
+  let out: Array[String] = []
+  scan_field(bs, out)
+  scan_field(bs, out)
+  scan_field(bs, out)
+  inspect(String::join(out, ","), content = "ax,by,ax,by,ax,by")
+}
+
+test "a captured let mut holding a projection from an if arm keeps the field alive" {
+  let b = Box::{ inner: A(String::concat("a", "x"), ["p"]) }
+  let r1 = pick_field(b, true)
+  let r2 = pick_field(b, false)
+  let r3 = pick_arm(b)
+  inspect(String::join([r1, r2, r3, name_of(b.inner)], ","), content = "ax,ax,ax,ax")
+}
+
+test "a captured cell on a branch tail of an owning argument keeps the element alive" {
+  let xs = mk()
+  let a = consume_if(xs, true)
+  let b = consume_if(xs, true)
+  let c = consume_if(xs, false)
+  inspect(String::join([a, b, c, names(xs)], ";"), content = "ax1;ax1;fresh1;ax,by,cz")
+}
+
+test "a captured let mut declared in a test block holds a borrow safely" {
+  let xs = mk()
+  let out: Array[String] = []
+  let mut i = 0
+  while i < 3 {
+    let mut d = Array::get(xs, i)
+    let f = () -> String { name_of(d) }
+    Array::push(out, f())
+    i = i + 1
+  }
+  let mut j = 0
+  while j < 3 {
+    let mut e = Array::get(xs, j)
+    let g = () -> String { name_of(e) }
+    Array::push(out, g())
+    j = j + 1
+  }
+  inspect(String::join(out, ","), content = "ax,by,cz,ax,by,cz")
+  inspect(names(xs), content = "ax,by,cz")
+}
+
+test "a borrow assigned into a captured let mut in a test block keeps the element alive" {
+  let xs = mk()
+  let out: Array[String] = []
+  let mut i = 0
+  while i < 3 {
+    let mut d = B(String::concat("q", "q"))
+    let f = () -> String { name_of(d) }
+    d = Array::get(xs, i)
+    Array::push(out, f())
+    i = i + 1
+  }
+  inspect(String::join(out, ","), content = "ax,by,cz")
+  inspect(names(xs), content = "ax,by,cz")
+}
+
+test "a captured cell on a branch tail of an array element keeps the element alive" {
+  let xs = mk()
+  let a = arr_if_names(xs, true)
+  let b = arr_if_names(xs, true)
+  let c = arr_if_names(xs, false)
+  inspect(String::join([a, b, c, names(xs)], ";"), content = "ax;ax;fresh;ax,by,cz")
+}
+
+test "a captured cell on a nested block tail of an array element keeps the element alive" {
+  let xs = mk()
+  let a = arr_block_names(xs)
+  let b = arr_block_names(xs)
+  inspect(String::join([a, b, names(xs)], ";"), content = "ax;ax;ax,by,cz")
+}
+
+test "a captured cell on a match arm of a tuple element keeps the element alive" {
+  let xs = mk()
+  let a = tup_match(xs, 0)
+  let b = tup_match(xs, 0)
+  let c = tup_match(xs, 1)
+  inspect(String::join([name_of(a.0), name_of(b.0), name_of(c.0), names(xs)], ";"), content = "ax;ax;fresh;ax,by,cz")
+}
+
+test "a captured cell on a branch tail of a struct field keeps the element alive" {
+  let xs = mk()
+  let a = rec_if(xs, true)
+  let b = rec_if(xs, true)
+  inspect(String::join([name_of(a.inner), name_of(b.inner), names(xs)], ";"), content = "ax;ax;ax,by,cz")
+}
+
+test "a captured cell on a branch tail of a constructor field keeps the element alive" {
+  let xs = mk()
+  let a = ctor_if(xs, true)
+  let b = ctor_if(xs, true)
+  let s = match (a, b) {
+    (Some(p), Some(q)) => String::concat(name_of(p), name_of(q)),
+    _ => "none"
+  }
+  inspect(String::join([s, names(xs)], ";"), content = "axax;ax,by,cz")
+}
+
+test "a captured cell on a branch or arm tail of an owning call argument keeps the element alive" {
+  let xs = mk()
+  let a = call_if_names(xs, true)
+  let b = call_if_names(xs, true)
+  let c = call_if_names(xs, false)
+  inspect(String::join([a, b, c, names(xs)], ";"), content = "axax;axax;freshfresh;ax,by,cz")
+}
+
+test "a captured cell on a branch tail of a closure call argument keeps the element alive" {
+  let xs = mk()
+  let a = closure_call_if_names(xs, true)
+  let b = closure_call_if_names(xs, true)
+  inspect(String::join([a, b, names(xs)], ";"), content = "ax;ax;ax,by,cz")
+}
+
+test "a captured cell on a branch tail of a map value keeps the element alive" {
+  let xs = mk()
+  let a = map_if(xs, true)
+  let b = map_if(xs, true)
+  inspect(String::join([name_of(Map::get(a, "k")), name_of(Map::get(a, "j")), name_of(Map::get(b, "k")), names(xs)], ";"), content = "ax;ax;ax;ax,by,cz")
+}
+
+test "a captured cell reaching an array item through a handle body keeps the element alive" {
+  let xs = mk()
+  inspect(String::join([tail_handle_body_agg(xs, true), tail_handle_body_agg(xs, true), tail_handle_body_agg(xs, false), names(xs)], ";"), content = "ax;ax;fresh;ax,by,cz")
+}
+
+test "a captured cell reaching an owning call argument through a handle body keeps the element alive" {
+  let xs = mk()
+  inspect(String::join([tail_handle_body_arg(xs, true), tail_handle_body_arg(xs, true), tail_handle_body_arg(xs, false), names(xs)], ";"), content = "ax;ax;fresh;ax,by,cz")
+}
+
+test "a captured cell reaching a captured cell initializer through a handle body keeps the element alive" {
+  let xs = mk()
+  inspect(String::join([tail_handle_body_store(xs, true), tail_handle_body_store(xs, true), tail_handle_body_store(xs, false), names(xs)], ";"), content = "ax;ax;fresh;ax,by,cz")
+}
+
+test "a captured cell reaching an array item through a handler arm keeps the element alive" {
+  let xs = mk()
+  inspect(String::join([tail_handle_arm_agg(xs, true), tail_handle_arm_agg(xs, true), tail_handle_arm_agg(xs, false), names(xs)], ";"), content = "ax;ax;fresh;ax,by,cz")
+}
+
+test "a captured cell reaching an owning call argument through a handler arm keeps the element alive" {
+  let xs = mk()
+  inspect(String::join([tail_handle_arm_arg(xs, true), tail_handle_arm_arg(xs, true), tail_handle_arm_arg(xs, false), names(xs)], ";"), content = "ax;ax;fresh;ax,by,cz")
+}
+
+test "a captured cell reaching a captured cell initializer through a handler arm keeps the element alive" {
+  let xs = mk()
+  inspect(String::join([tail_handle_arm_store(xs, true), tail_handle_arm_store(xs, true), tail_handle_arm_store(xs, false), names(xs)], ";"), content = "ax;ax;fresh;ax,by,cz")
+}
+
+test "a captured cell reaching an array item through a block after a let rec keeps the element alive" {
+  let xs = mk()
+  inspect(String::join([tail_letrec_tail_agg(xs, true), tail_letrec_tail_agg(xs, true), tail_letrec_tail_agg(xs, false), names(xs)], ";"), content = "ax;ax;fresh;ax,by,cz")
+}
+
+test "a captured cell reaching an owning call argument through a block after a let rec keeps the element alive" {
+  let xs = mk()
+  inspect(String::join([tail_letrec_tail_arg(xs, true), tail_letrec_tail_arg(xs, true), tail_letrec_tail_arg(xs, false), names(xs)], ";"), content = "ax;ax;fresh;ax,by,cz")
+}
+
+test "a captured cell reaching a captured cell initializer through a block after a let rec keeps the element alive" {
+  let xs = mk()
+  inspect(String::join([tail_letrec_tail_store(xs, true), tail_letrec_tail_store(xs, true), tail_letrec_tail_store(xs, false), names(xs)], ";"), content = "ax;ax;fresh;ax,by,cz")
+}
+
+test "a captured cell reaching an array item through a block after a statement keeps the element alive" {
+  let xs = mk()
+  inspect(String::join([tail_seq_tail_agg(xs, true), tail_seq_tail_agg(xs, true), tail_seq_tail_agg(xs, false), names(xs)], ";"), content = "ax;ax;fresh;ax,by,cz")
+}
+
+test "a captured cell reaching an owning call argument through a block after a statement keeps the element alive" {
+  let xs = mk()
+  inspect(String::join([tail_seq_tail_arg(xs, true), tail_seq_tail_arg(xs, true), tail_seq_tail_arg(xs, false), names(xs)], ";"), content = "ax;ax;fresh;ax,by,cz")
+}
+
+test "a captured cell reaching a captured cell initializer through a block after a statement keeps the element alive" {
+  let xs = mk()
+  inspect(String::join([tail_seq_tail_store(xs, true), tail_seq_tail_store(xs, true), tail_seq_tail_store(xs, false), names(xs)], ";"), content = "ax;ax;fresh;ax,by,cz")
+}
+
+test "a captured cell reaching an array item through a for-in body keeps the element alive" {
+  let xs = mk()
+  inspect(String::join([tail_forin_agg(xs, true), tail_forin_agg(xs, true), tail_forin_agg(xs, false), names(xs)], ";"), content = "ax;ax;fresh;ax,by,cz")
+}
+
+// #3130 review, third round. A `for` at the head of a sequence is lowered
+// WITHOUT collecting (compile_forin_loop, collect = false): each body value is
+// dropped off the stack unreleased. The for-in body marker retained a cell read
+// there on every iteration, and nothing released it, so the cell's payload
+// never reached a count of zero. The payload here is allocated per call, so a
+// reference it never loses keeps all of it alive. Measured on a stage2 built
+// from ffc4ebfa6, 200 / 400 calls after 20 warmup calls: 25600 / 51200 B, and
+// 1600 / 3200 B for the control below -- its body produces nothing, and its
+// growth is the per-call String the two share, which is never reclaimed.
+fn discard_forin_cell(ns: Array[Int]) -> Int {
+  let mut d = A(String::concat("q", "q"), ["z"])
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  for x in ns {
+    d
+  }
+  1
+}
+
+fn discard_forin_control(ns: Array[Int]) -> Int {
+  let mut d = A(String::concat("q", "q"), ["z"])
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  for x in ns {
+    0
+  }
+  1
+}
+
+fn discard_forin_run(cell: Bool, ns: Array[Int], n: Int) -> Int {
+  let mut r = 0
+  let mut acc = 0
+  while r < n {
+    let x = if cell {
+      discard_forin_cell(ns)
+    } else {
+      discard_forin_control(ns)
+    }
+    acc = acc + x
+    r = r + 1
+  }
+  acc
+}
+
+fn discard_forin_growth(cell: Bool, n: Int) -> Int with Profiler {
+  let ns = [1, 2, 3, 4]
+  let _ = discard_forin_run(cell, ns, 20)
+  let before = Profiler::heap_bytes()
+  let _ = discard_forin_run(cell, ns, n)
+  Profiler::heap_bytes() - before
+}
+
+test "a discarded for-in over a captured cell retains nothing" {
+  let cell = discard_forin_growth(true, 400)
+  let control = discard_forin_growth(false, 400)
+  inspect(cell - control, content = "0")
+}
+
+// #3130 review, fourth round. `bx.inner = v` lowers to the internal builtin
+// `__set_field`, which stores `v` into the struct. The owning-argument retain
+// skipped every `__`-spelled callee, and the `__set_field` lowering stored the
+// value with no retain at all, so a captured cell read -- bare, or on an
+// if / match / handle tail -- left the struct and the cell sharing one
+// reference. Each helper builds its own array and returns the struct, so the
+// array's drop at the helper's exit is what frees an element the struct did
+// not retain. Measured on a stage2 built from 8db4d114d, the same on the
+// default and shadow lanes: all four answered `cz` where `ax` was stored --
+// the freed element's block reused by the next allocation.
+struct MBox {
+  mut inner: D
+}
+
+fn set_bare(c: Bool) -> MBox {
+  let xs = mk()
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  let bx = MBox::{ inner: B("start") }
+  bx.inner = d
+  bx
+}
+
+fn set_if(c: Bool) -> MBox {
+  let xs = mk()
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  let bx = MBox::{ inner: B("start") }
+  bx.inner = if c { d } else { B("fresh") }
+  bx
+}
+
+fn set_match(c: Bool) -> MBox {
+  let xs = mk()
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  let bx = MBox::{ inner: B("start") }
+  bx.inner = match c {
+    true => d,
+    false => B("fresh")
+  }
+  bx
+}
+
+fn set_handle(c: Bool) -> MBox {
+  let xs = mk()
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  let bx = MBox::{ inner: B("start") }
+  bx.inner = handle {
+    let _ = fail_if(!c)
+    d
+  } with {
+    Exception::Throw(_) => B("fresh")
+  }
+  bx
+}
+
+fn set_names(k: Int, c: Bool) -> String {
+  let bx = if k == 0 {
+    set_bare(c)
+  } else if k == 1 {
+    set_if(c)
+  } else if k == 2 {
+    set_match(c)
+  } else {
+    set_handle(c)
+  }
+  let churn = mk()
+  String::concat(name_of(bx.inner), names(churn))
+}
+
+test "a captured cell stored into a struct field keeps the element alive" {
+  inspect(String::join([set_names(0, true), set_names(0, true)], ";"), content = "axax,by,cz;axax,by,cz")
+}
+
+test "a captured cell on an if tail stored into a struct field keeps the element alive" {
+  inspect(String::join([set_names(1, true), set_names(1, false)], ";"), content = "axax,by,cz;freshax,by,cz")
+}
+
+test "a captured cell on a match arm stored into a struct field keeps the element alive" {
+  inspect(String::join([set_names(2, true), set_names(2, false)], ";"), content = "axax,by,cz;freshax,by,cz")
+}
+
+test "a captured cell on a handle tail stored into a struct field keeps the element alive" {
+  inspect(String::join([set_names(3, true), set_names(3, false)], ";"), content = "axax,by,cz;freshax,by,cz")
+}
+
+// #3130 review, fifth round. Exits that leave a captured cell's scope: an
+// early `return` (bare, if, match-arm block, from a closure), a parameterized
+// loop's `break` payload, and a thrown payload. A `return` / `throw` skips the
+// cell's scope-end drop, so the cell's own reference is what the receiver
+// gets and the operand is deliberately NOT retained (see `rs_map`'s table).
+// Measured on a stage2 built from 7241e2386: all seven already answer
+// correctly on the default and shadow lanes; these pin that.
+
+fn exit_return_bare(c: Bool) -> D {
+  let xs = mk()
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  if c {
+    return d
+  }
+  B("fresh")
+}
+
+fn exit_return_if(c: Bool) -> D {
+  let xs = mk()
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  return if c { d } else { B("fresh") }
+}
+
+fn exit_return_match_block(c: Bool) -> D {
+  let xs = mk()
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  return match c {
+    true => {
+      let k = 1
+      d
+    },
+    false => B("fresh")
+  }
+}
+
+fn exit_closure_return(c: Bool) -> D {
+  let xs = mk()
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  let g = () -> D {
+    let _ = f()
+    if c {
+      return d
+    }
+    B("fresh")
+  }
+  g()
+}
+
+fn exit_loop_break(c: Bool) -> D {
+  let xs = mk()
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  let r = loop (i = 0) {
+    if i >= 2 {
+      break if c { d } else { B("fresh") }
+    }
+    continue(i + 1)
+  }
+  r
+}
+
+fn exit_loop_break_tail(c: Bool) -> D {
+  let xs = mk()
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  loop (i = 0) {
+    if i >= 2 {
+      break if c { d } else { B("fresh") }
+    }
+    continue(i + 1)
+  }
+}
+
+fn exit_thrower(c: Bool) -> D with Exception[D] {
+  let xs = mk()
+  let mut d = Array::get(xs, 0)
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  if c {
+    throw(d)
+  }
+  B("fresh")
+}
+
+fn exit_throw_payload(c: Bool) -> D {
+  handle { exit_thrower(c) } with { Exception[D]::Throw(e) => e }
+}
+
+test "an early return of a captured cell hands the element over" {
+  let a = exit_return_bare(true)
+  let churn = mk()
+  let b = exit_return_bare(true)
+  let c = exit_return_bare(false)
+  inspect(String::join([name_of(a), name_of(b), name_of(c), names(churn)], ";"), content = "ax;ax;fresh;ax,by,cz")
+}
+
+test "a return of an if over a captured cell hands the element over" {
+  let a = exit_return_if(true)
+  let churn = mk()
+  let b = exit_return_if(true)
+  let c = exit_return_if(false)
+  inspect(String::join([name_of(a), name_of(b), name_of(c), names(churn)], ";"), content = "ax;ax;fresh;ax,by,cz")
+}
+
+test "a return of a match arm block over a captured cell hands the element over" {
+  let a = exit_return_match_block(true)
+  let churn = mk()
+  let b = exit_return_match_block(true)
+  let c = exit_return_match_block(false)
+  inspect(String::join([name_of(a), name_of(b), name_of(c), names(churn)], ";"), content = "ax;ax;fresh;ax,by,cz")
+}
+
+test "an early return from a closure over a captured cell hands the element over" {
+  let a = exit_closure_return(true)
+  let churn = mk()
+  let b = exit_closure_return(true)
+  let c = exit_closure_return(false)
+  inspect(String::join([name_of(a), name_of(b), name_of(c), names(churn)], ";"), content = "ax;ax;fresh;ax,by,cz")
+}
+
+test "a loop break payload bound to a let over a captured cell hands the element over" {
+  let a = exit_loop_break(true)
+  let churn = mk()
+  let b = exit_loop_break(true)
+  let c = exit_loop_break(false)
+  inspect(String::join([name_of(a), name_of(b), name_of(c), names(churn)], ";"), content = "ax;ax;fresh;ax,by,cz")
+}
+
+test "a loop break payload as the function tail over a captured cell hands the element over" {
+  let a = exit_loop_break_tail(true)
+  let churn = mk()
+  let b = exit_loop_break_tail(true)
+  let c = exit_loop_break_tail(false)
+  inspect(String::join([name_of(a), name_of(b), name_of(c), names(churn)], ";"), content = "ax;ax;fresh;ax,by,cz")
+}
+
+test "a thrown payload of a captured cell hands the element over" {
+  let a = exit_throw_payload(true)
+  let churn = mk()
+  let b = exit_throw_payload(true)
+  let c = exit_throw_payload(false)
+  inspect(String::join([name_of(a), name_of(b), name_of(c), names(churn)], ";"), content = "ax;ax;fresh;ax,by,cz")
+}
