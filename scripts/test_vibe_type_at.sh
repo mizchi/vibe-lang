@@ -244,5 +244,44 @@ binder 3 15 String "struct destructuring binder y"
 binder 9 16 Int "record destructuring binder x"
 binder 13 19 Int "guard binder v"
 
+# A local closure whose EVERY use is a call (#3050). A callee's table row is the
+# call RESULT, so there is no use to borrow a type from; the declaration and
+# the callee answer with the binding's own type, which the checker records per
+# local `let`. `f` in `main` shadows the top-level `f`: the callee must answer
+# for the local binding, never for the module-level name of the same spelling.
+b="$WORK/called_only.vibe"
+cat > "$b" <<'VIBE'
+fn f(s: String) -> String {
+  s
+}
+fn main() -> Int {
+  let f = (x: Int) -> x + 1
+  let mut g = (a: Int, b: String) -> String::length(b) - a
+  g(1, "xy") + f(1)
+}
+VIBE
+binder 5 7 "(Int) -> Int" "declaration of a closure only ever called"
+binder 7 16 "(Int) -> Int" "call of a local closure that shadows a top-level fn"
+binder 6 11 "(Int, String) -> Int" "declaration of a let mut closure only ever called"
+binder 7 3 "(Int, String) -> Int" "call of a let mut closure"
+binder 1 4 "(String) -> String" "shadowed top-level fn"
+
+# #3104 review: a polymorphic local answers with its generalized type (not the
+# monotype before quantification, whose variables no use ever solves), and a
+# comment between `let` and the name does not hide the binding's row.
+b="$WORK/called_only_review.vibe"
+cat > "$b" <<'VIBE'
+fn main() -> Int {
+  let id = (x) -> x
+  let // note
+    f = (x: Int) -> x + 1
+  id(1) + f(2)
+}
+VIBE
+binder 2 7 "forall ?t1. (?t1) -> ?t1" "declaration of a polymorphic local closure"
+binder 5 3 "forall ?t1. (?t1) -> ?t1" "call of a polymorphic local closure"
+binder 4 5 "(Int) -> Int" "declaration after a comment between let and the name"
+binder 5 11 "(Int) -> Int" "call of a closure declared after a comment"
+
 echo "[vibe-type-at] $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1

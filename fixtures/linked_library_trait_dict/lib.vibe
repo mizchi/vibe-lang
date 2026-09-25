@@ -1,0 +1,49 @@
+// #3098: a library module compiled on its own by `vibe build --debug`
+// (`compile_file_wasi_library`). It declares a method-bearing trait, two
+// impls, a `[T: Measured]` generic and a `[T: Eq]` generic applied to a
+// `derive (Eq)` struct and to `Double`.
+//
+// That lane used to run the trait-dictionary desugar BEFORE the checker, so
+// the checker saw its own lowering and refused this file: ``no impl `Measured`
+// for `Self` ``, `meas: parameter `__dict_Measured_T` uses the reserved
+// `__dict_` prefix`, and `EqDict::equals` at arity 3. The early gate builds
+// `main.vibe` here with `--debug`, which compiles this file as a linked
+// library.
+
+struct Pt {
+  x: Int;
+  y: Int
+} derive (Eq)
+
+trait Measured {
+  measure(Self) -> Int
+}
+
+impl Measured for Pt {
+  measure(a: Pt) -> Int { a.x + a.y }
+}
+
+impl Measured for Int {
+  measure(a: Int) -> Int { a * 2 }
+}
+
+fn meas[T: Measured](v: T) -> Int {
+  T::measure(v) * 10
+}
+
+fn eq2[T: Eq](a: T, b: T) -> Bool {
+  a == b
+}
+
+fn flag(b: Bool) -> Int {
+  if b { 1 } else { 0 }
+}
+
+/// 70 + 10 * n * 2 + 1 + 0 + 1: the impl for `Pt`, the impl for `Int`, then
+/// `[T: Eq]` at an equal and an unequal `Pt`, and at two equal `Double`s.
+export fn answer(n: Int) -> Int {
+  let p = Pt::{ x: 3, y: 4 }
+  let label = "m=\{meas(p)}"
+  let seen = if String::length(label) == 4 { 0 } else { 1000 }
+  meas(p) + meas(n) + flag(eq2(p, Pt::{ x: 3, y: 4 })) + flag(eq2(p, Pt::{ x: 3, y: 5 })) + flag(eq2(1.5, 1.5)) + seen
+}

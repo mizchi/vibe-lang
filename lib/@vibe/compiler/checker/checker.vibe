@@ -3389,6 +3389,41 @@ export fn throw_payload_site_types() -> Array[(String, Type)] {
   throw_payload_sites
 }
 
+/// #3050: the value type of every local `let` / `let mut`, keyed by the
+/// offset of its `let` keyword (the offset the parser gives `ELet` /
+/// `ELetMut`). `vibe type-at` answers a local binder's declaration with it
+/// when no use of the binder carries a row of its own -- a closure whose every
+/// use is a call has none, because a callee's row is the CALL RESULT. Kept
+/// apart from the per-node table so no consumer keyed by an expression offset
+/// can read one of these rows; the types are raw, resolved by the caller
+/// through the program's final substitution. Recorded only between
+/// `local_let_types_begin` and `local_let_types_end`, which only
+/// `check_program_type_table` calls, so a production check records nothing.
+let local_let_type_rows: Array[(Int, Type)] = []
+let local_let_type_recording: Array[Bool] = [false]
+
+export fn local_let_types_begin() -> Unit {
+  Array::truncate(local_let_type_rows, 0)
+  Array::set(local_let_type_recording, 0, true)
+}
+
+export fn local_let_types_end() -> Unit {
+  Array::set(local_let_type_recording, 0, false)
+}
+
+/// The rows the last `check_program_type_table` recorded.
+export fn local_let_types() -> Array[(Int, Type)] {
+  local_let_type_rows
+}
+
+fn record_local_let_type(let_off: Int, ty: Type, lane: String) -> Unit {
+  if let_off >= 0 && lane == "Primary" && Array::get(local_let_type_recording, 0) {
+    Array::push(local_let_type_rows, (let_off, ty))
+  } else {
+    ()
+  }
+}
+
 /// #2474 (a): the type-parameter variables bound so far in this check --
 /// `(var id, formal name)` for every `[T]` an `EFn` header introduced. A plain
 /// formal is a unification variable inside its body (#2130), so at a `==`
@@ -8626,7 +8661,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         typed_occurrence_capture_enter_virtual_child(capture, 1, Array::length(expr_children(right)))
         cur = right
       },
-      ELet(name, val, body, _) => {
+      ELet(name, val, body, let_off) => {
         let err_before = Array::length(errors)
         let (vt, ns, nc) = ce(val, cenv, defs, s1, c1, errors, tytab, capture, lane)
         attach_unlocated_decl_name_marker(errors, err_before, name)
@@ -8649,6 +8684,9 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         }
         // #2848: a field read on a parameter this binding just quantified.
         refuse_generalized_field_reads(gen, ns, errors)
+        // #3050: the binding's own type -- the generalized one its uses
+        // instantiate, not the monotype before quantification (#3104 review).
+        record_local_let_type(let_off, gen, lane)
         let aliases_outer = spine_region_active && expression_aliases_outer_binding(val, cenv)
         note_local_generic_binding(val, gen, cenv)
         cenv = env_bind(cenv, name, gen)
@@ -8663,10 +8701,11 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         typed_occurrence_capture_enter_virtual_child(capture, 1, Array::length(expr_children(body)))
         cur = body
       },
-      ELetMut(name, val, body, _) => {
+      ELetMut(name, val, body, let_off) => {
         let err_before = Array::length(errors)
         let (vt, ns, nc) = ce(val, cenv, defs, s1, c1, errors, tytab, capture, lane)
         attach_unlocated_decl_name_marker(errors, err_before, name)
+        record_local_let_type(let_off, vt, lane)
         // `loop` desugars to `let mut __loop_result = 0; while true { ...
         // __loop_result = <break value> ... }` (parser_expr_primary.vibe) —
         // the 0 is only a slot placeholder, but binding its CtInt here pinned

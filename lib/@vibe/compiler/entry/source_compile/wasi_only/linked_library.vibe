@@ -33,7 +33,11 @@ import ./path_utils.vibe {
 }
 
 import ./preprocess.vibe {
-  expand_interp_stmts, strip_generic_type_params
+  expand_interp_only, strip_generic_type_params
+}
+
+import @vibe/compiler/normalize {
+  desugar_trait_dicts_with_typed_eq
 }
 
 //# Functions
@@ -42,9 +46,17 @@ export fn compile_file_wasi_library(dep_path: String) -> Bytes with Env + Except
   let stmts = empty_stmt_array()
   let visited = path_set_new()
   collect_merged_stmts_recursive(dep_path, stmts, visited)
-  expand_interp_stmts(stmts)
+  // #3098: interpolation only, then check, then the trait-dictionary desugar,
+  // then strip generic binders -- the #3069 order. Desugaring before the check
+  // handed the checker its own lowering, so a library with a trait impl or a
+  // `[T: Tr]` function was refused (``no impl `Tr` for `Self` ``, the
+  // `__dict_` reserved-prefix rule, `EqDict::equals` at arity 3).
+  expand_interp_only(stmts)
   // Check before stripping generic type params (see merge_sources.vibe).
   let _ = check_program(stmts)
+  // No typed-`==` rows: this lane parses without offsets, so the checker has
+  // no site to key a row on, and the desugar keeps its untyped answer.
+  desugar_trait_dicts_with_typed_eq(stmts, array_empty(), array_empty())
   strip_generic_type_params(stmts)
   compile_wasi_module_linked_impl(stmts, "_start", array_empty(), array_empty(), true, false, false, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_discard(), 0, 0 - 1)
 }

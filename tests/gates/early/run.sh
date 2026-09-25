@@ -2951,6 +2951,35 @@ run_test_block_fixtures_gc "trait dict (gc)" fixtures/trait_dict_flat_lane_test.
 run_test_block_fixtures_flat "trait dict (flat single-source)" fixtures/trait_dict_flat_lane_test.vibe
 echo '[compiler-gate] trait dictionaries on the flat lane ok'
 
+# 15b-3c2'. #3098: the same order on the linked-library lane. `vibe build
+#           --debug` compiles each linked dependency alone through
+#           `compile_file_wasi_library`, which desugared trait dictionaries
+#           BEFORE the check: a library with an impl and a `[T: Tr]` generic
+#           was refused (``no impl `Measured` for `Self` ``, `__dict_` prefix,
+#           `EqDict::equals` at arity 3). Build it, then run the entry with the
+#           library preloaded: 70 + 100 + 1 + 0 + 1.
+echo '[compiler-gate] 15b-3c2'"'"' trait dictionaries in a linked debug library (#3098)'
+lldir="_build/_gate_linked_library_trait_dict"
+rm -rf "$lldir"; mkdir -p "$lldir"
+ll_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  build --debug fixtures/linked_library_trait_dict/main.vibe -o "$lldir/main.wasm" --entry _start 2>&1 || true)"
+if [ ! -s "$lldir/main.wasm" ] || [ ! -s "$lldir/main.debug/lib.wasm" ]; then
+  echo "[compiler-gate] FAIL: build --debug of a trait library produced no main/lib wasm (#3098)" >&2
+  printf '%s\n' "$ll_out" >&2; exit 1
+fi
+if bash scripts/wasmtime_run.sh --version >/dev/null 2>&1; then
+  ll_res="$(run_bounded 60 bash scripts/wasmtime_run.sh run --preload lib="$lldir/main.debug/lib.wasm" \
+    --invoke _start "$lldir/main.wasm" 2>&1 | tr -dc '0-9-' || true)"
+  if [ "$ll_res" != "172" ]; then
+    echo "[compiler-gate] FAIL: linked debug trait library answered '$ll_res' (expected 172) (#3098)" >&2; exit 1
+  fi
+  echo '[compiler-gate] linked debug trait library ok (172)'
+else
+  echo '[compiler-gate] linked debug trait library compiled; SKIP run: wasmtime not available'
+fi
+rm -rf "$lldir"
+
 # 15b-3c'. #3067: `String::substring` clamps its indices on every lane. The gc
 #          lane used its own body with no bounds checks and read the bytes
 #          around the string (`("beta", 0, 5)` answered `beta]`).
