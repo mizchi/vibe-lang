@@ -9248,6 +9248,12 @@ export fn desugar_railway_binds(stmts: Array[Stmt]) -> Unit {
 /// scalars -- so this guards user-written renderers.)
 let dtd_show_self_fn = [""]
 
+/// #3090: the offset of the interpolation (`\{` of the `__to_string` call)
+/// whose argument is being expanded, or `-1` outside one. A refusal raised deep
+/// in the expansion, on a synthesized binder that carries no offset of its own,
+/// anchors here instead of carrying no position.
+let dtd_interp_site_off = [-1]
+
 fn show_self_fn_set(name: String) -> Unit {
   Array::set(dtd_show_self_fn, 0, name)
 }
@@ -10129,7 +10135,19 @@ fn show_generic_recursive_render(subject: Expr, sh: String, head: String) -> Exp
     ECall(EIdent(String::concat(head, "::to_string"), -1), [subject], -1)
   } else {
     let shown = namespace_rename_original(head)
-    throw(String::concat("cannot interpolate a recursive `", String::concat(shown, String::concat("` whose type arguments are not `Int` or `String`: its derived renderer erases the type parameter, so a nested value would print through it -- render the value with a function you write (e.g. `fn show(v: ", String::concat(shown, "[..]) -> String`) (#3074, #3082)")))))
+    let base = String::concat("cannot interpolate a recursive `", String::concat(shown, String::concat("` whose type arguments are not `Int` or `String`: its derived renderer erases the type parameter, so a nested value would print through it -- render the value with a function you write (e.g. `fn show(v: ", String::concat(shown, "[..]) -> String`) (#3074, #3082)"))))
+    // #3090: anchor at the interpolated value when it carries an offset, else
+    // at the interpolation the expansion started from.
+    let soff = if typed_lowering_arg_offset(subject) >= 0 {
+      typed_lowering_arg_offset(subject)
+    } else {
+      Array::get(dtd_interp_site_off, 0)
+    }
+    if soff >= 0 {
+      throw(String::concat(base, String::concat(" [@off=", String::concat(__to_string(soff), "]"))))
+    } else {
+      throw(base)
+    }
   }
 }
 
@@ -11116,7 +11134,10 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
           // #3075: a `Unit` printed `0` (`Some(())` -> `Some(0)`).
           Some(unit_render_expr(rewrite_expr(Array::get(args, 0), gens, traits, struct_sets, dict_binds, var_types, fn_returns)))
         } else {
+          let saved_site_off = Array::get(dtd_interp_site_off, 0)
+          Array::set(dtd_interp_site_off, 0, off)
           let expanded = interp_expand(Array::get(args, 0), false, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+          Array::set(dtd_interp_site_off, 0, saved_site_off)
           // #1445: nothing rendered it structurally AND the type is a declared
           // aggregate with no renderer -- that is a missing `derive(Show)`, and
           // falling through here would print a pointer decimal.

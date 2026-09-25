@@ -1,0 +1,60 @@
+//# The merged program's offset space
+//
+// The import-resolving compile lanes merge every file of the closure into one
+// program, and before merging they shift each file's parser offsets into a
+// disjoint range (`[base, base + length]`, one spare byte between files), so a
+// typed-lowering row keyed by offset names exactly one expression. A refusal
+// thrown AFTER the merge -- in normalize or in either codegen lane -- carries
+// an offset in that merged space, and nothing downstream knew which file it
+// indexed, so the build reported the edit with no `line:col` (#3090).
+//
+// The merge records here, per file, the path, the exact text it parsed and its
+// base. That is the same snapshot the offsets were computed from, so resolving
+// a merged offset against it needs no second read of the file system. The
+// record describes ONE compile: every merge resets it first, and the CLI
+// resets it before each compile, so a refusal thrown before the merge (the
+// per-module typecheck, which locates its own diagnostics) cannot be resolved
+// against the previous compile's files.
+
+let merged_offset_paths: Array[String] = []
+
+let merged_offset_sources: Array[String] = []
+
+let merged_offset_bases: Array[Int] = []
+
+/// Forget the recorded merge. Called by every merge before it records, and by
+/// the CLI before each compile.
+export fn merged_offset_space_reset() -> Unit {
+  Array::truncate(merged_offset_paths, 0)
+  Array::truncate(merged_offset_sources, 0)
+  Array::truncate(merged_offset_bases, 0)
+}
+
+/// Record that `path`, parsed from `source`, occupies merged offsets
+/// `[base, base + length(source)]`.
+export fn merged_offset_space_add(path: String, source: String, base: Int) -> Unit {
+  Array::push(merged_offset_paths, path)
+  Array::push(merged_offset_sources, source)
+  Array::push(merged_offset_bases, base)
+}
+
+/// The file that owns merged offset `off`, as `(path, source, local offset)`.
+/// `None` when no merge is recorded or `off` lies outside every file's range
+/// -- an alias-collision clone's range sits past the last file, and a clone is
+/// a second copy of code whose position is not the one the reader wrote.
+export fn merged_offset_owner(off: Int) -> Option[(String, String, Int)] {
+  let n = Array::length(merged_offset_paths)
+  let mut found: Option[(String, String, Int)] = None
+  let mut i = 0
+  while i < n {
+    let base = Array::get(merged_offset_bases, i)
+    let source = Array::get(merged_offset_sources, i)
+    if off >= base && off <= base + String::length(source) {
+      found = Some((Array::get(merged_offset_paths, i), source, off - base))
+      i = n
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
