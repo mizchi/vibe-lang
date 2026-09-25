@@ -1,5 +1,5 @@
 import @vibe/compiler/core {
-  Expr, Pat, Type, TypeExpr, expr_children, lookup_registry_builtin
+  Expr, Pat, Stmt, Type, TypeExpr, expr_children, lookup_registry_builtin
 }
 
 import @vibe/core {
@@ -226,7 +226,10 @@ export fn edp_rq_arms(q: EdpReadQuery, arms: Array[(Pat, Expr)], is_handle: Bool
   while i < Array::length(arms) && !(edp_rq_stops_array_on_hit(q) && total > 0) {
     let (pat, body) = Array::get(arms, i)
     let local = match q {
-      RQTrigger => if is_handle && scps_arm_refs_resume_value(body, scps_pat_binds_resume(pat)) {
+      // #3064: an arm that leaves the function with `return` may need the
+      // suspend driver too (scps_arm_return_needs_driver decides precisely);
+      // this pre-scan only has to be conservative.
+      RQTrigger => if is_handle && (scps_arm_refs_resume_value(body, scps_pat_binds_resume(pat)) || edp_rq_fold(RQBodyReturn, body) > 0) {
         1
       } else {
         0
@@ -1140,6 +1143,11 @@ fn edp_has_unsafe_construct_sc(expr: Expr, needing: Array[String], ename: String
           edp_exprs_have_unsafe_construct(args, needing, ename, pure_fns, ls_names, ls_flags)
         } else if edp_str_array_contains(pure_fns, nm) {
           edp_exprs_have_unsafe_construct(args, needing, ename, pure_fns, ls_names, ls_flags)
+        } else if edp_argcond_admits(nm, args, ename, needing, pure_fns) {
+          // #2065: a higher-order row-variable callee, every one of whose
+          // function-typed parameters receives a literal that cannot perform
+          // `ename` here -- see edp_argcond_admits.
+          edp_exprs_have_unsafe_construct(args, needing, ename, pure_fns, ls_names, ls_flags)
         } else {
           true
         }
@@ -1182,6 +1190,283 @@ fn edp_has_unsafe_construct_sc(expr: Expr, needing: Array[String], ename: String
     // re-investigate from scratch.
     _ => false
   }
+}
+
+//# #2065 wall 1: the call-site argument-inertness rule (evidence side)
+//
+// A callee whose row carries a VARIABLE is withheld from `pure_fns`, because
+// the variable can be instantiated to the migrated effect at the call site
+// and the perform then happens inside the callee, out of this handle's
+// sight. `edp_callee_first_order` (evidence.vibe) admits the callees whose
+// parameters take no function: no argument can carry a row, so the variable
+// can only be the empty row. That leaves every HIGHER-ORDER one refused --
+// and `TaskGroup::run((g) -> { 42 })` is higher-order.
+//
+// Whether the variable can become `ename` is a property of what actually
+// arrives at THIS call, which is the argument the suspend pass has made
+// since #1727 (`scps_callee_fn_args_inert`). This is its evidence-side port:
+// when every function-typed parameter receives a closure LITERAL that cannot
+// perform `ename` -- its declared row names neither `ename` nor a variable,
+// and its body neither performs `ename` nor calls a function that needs it --
+// no argument can instantiate the variable to `ename`, so the call is
+// `ename`-free for the same reason a first-order one is. The literal's own
+// body is still scanned by the ordinary recursion over the arguments.
+//
+// Fails closed on everything else: a name, a call result or a field access in
+// a function-typed position (their rows are not readable here), a missing
+// argument, and any callee the evidence pass did not record -- it records only
+// callees whose every parameter is annotated.
+//
+// Pass state, written by the evidence pass (`edp_argcond_reset` /
+// `edp_argcond_note`) before it scans for an effect; consulted only for the
+// effect it names.
+let edp_argcond_effect: Array[String] = [""]
+let edp_argcond_names: Array[String] = []
+let edp_argcond_masks: Array[Array[Bool]] = []
+// Every name the program binds locally (a parameter, a `let`, a pattern), so
+// a callee spelled like a pure top-level function is trusted only when no
+// local binding could be what it resolves to (Codex on #3059).
+let edp_argcond_binders: Array[String] = []
+
+/// Record every locally bound name in `stmts` for `edp_expr_reaches_effect`.
+export fn edp_argcond_note_binders(stmts: Array[Stmt]) -> Unit {
+  Array::truncate(edp_argcond_binders, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, e) => edp_collect_binders(e),
+      SLetMut(_, _, e) => edp_collect_binders(e),
+      STest(_, e) => edp_collect_binders(e),
+      SBench(_, e) => edp_collect_binders(e),
+      SExpr(e) => edp_collect_binders(e),
+      SLetPat(p, e) => {
+        edp_note_pat_binders(p)
+        edp_collect_binders(e)
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+/// Does some local binding in the program last passed to
+/// `edp_argcond_note_binders` have this spelling?
+export fn edp_is_program_binder(name: String) -> Bool {
+  edp_str_array_contains(edp_argcond_binders, name)
+}
+
+fn edp_note_binder(name: String) -> Unit {
+  if !edp_str_array_contains(edp_argcond_binders, name) {
+    Array::push(edp_argcond_binders, name)
+  } else {
+    ()
+  }
+}
+
+fn edp_note_pat_binders(p: Pat) -> Unit {
+  match p {
+    PBind(n) => edp_note_binder(n),
+    PCtor(_, ps) => {
+      for q in ps {
+        edp_note_pat_binders(q)
+      }
+      ()
+    },
+    PTuple(ps) => {
+      for q in ps {
+        edp_note_pat_binders(q)
+      }
+      ()
+    },
+    POr(a, b) => {
+      edp_note_pat_binders(a)
+      edp_note_pat_binders(b)
+    },
+    PStruct(_, fields) => {
+      for f in fields {
+        edp_note_pat_binders(f.1)
+      }
+      ()
+    },
+    _ => ()
+  }
+}
+
+fn edp_collect_binders(e: Expr) -> Unit {
+  match e {
+    EFn(_, _, params, _, _, _) => {
+      for param in params {
+        edp_note_binder(param.0)
+      }
+      ()
+    },
+    ELet(nm, _, _, _) => edp_note_binder(nm),
+    ELetMut(nm, _, _, _) => edp_note_binder(nm),
+    ELetRec(nm, _, _) => edp_note_binder(nm),
+    // Loop-state names (`loop (h = f) { .. }`) are bindings too (Codex on
+    // #3059).
+    ELoop(states, _) => {
+      for state in states {
+        edp_note_binder(state.0)
+      }
+      ()
+    },
+    EForIn(nm, idx, _, _) => {
+      edp_note_binder(nm)
+      match idx {
+        Some(n) => edp_note_binder(n),
+        None => ()
+      }
+    },
+    EMatch(_, arms) => {
+      for arm in arms {
+        edp_note_pat_binders(arm.0)
+      }
+      ()
+    },
+    EHandle(_, arms) => {
+      for arm in arms {
+        edp_note_pat_binders(arm.0)
+      }
+      ()
+    },
+    _ => ()
+  }
+  for child in expr_children(e) {
+    edp_collect_binders(child)
+  }
+  ()
+}
+
+export fn edp_argcond_reset(ename: String) -> Unit {
+  Array::set(edp_argcond_effect, 0, ename)
+  Array::truncate(edp_argcond_names, 0)
+  Array::truncate(edp_argcond_masks, 0)
+}
+
+/// `fn_params[i]` is true when parameter `i` is function-typed.
+export fn edp_argcond_note(ename: String, name: String, fn_params: Array[Bool]) -> Unit {
+  if Array::get(edp_argcond_effect, 0) == ename && !edp_str_array_contains(edp_argcond_names, name) {
+    Array::push(edp_argcond_names, name)
+    Array::push(edp_argcond_masks, fn_params)
+  } else {
+    ()
+  }
+}
+
+fn edp_argcond_admits(nm: String, args: Array[Expr], ename: String, needing: Array[String], pure_fns: Array[String]) -> Bool {
+  if Array::get(edp_argcond_effect, 0) != ename {
+    false
+  } else {
+    let mut slot = -1
+    let mut i = 0
+    while i < Array::length(edp_argcond_names) {
+      if slot < 0 && Array::get(edp_argcond_names, i) == nm {
+        slot = i
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    if slot < 0 {
+      false
+    } else {
+      let mask = Array::get(edp_argcond_masks, slot)
+      let mut ok = Array::length(args) >= Array::length(mask)
+      let mut p = 0
+      while ok && p < Array::length(mask) {
+        if Array::get(mask, p) && !edp_literal_cannot_perform(Array::get(args, p), ename, needing, pure_fns) {
+          ok = false
+        } else {
+          ()
+        }
+        p = p + 1
+      }
+      ok
+    }
+  }
+}
+
+fn edp_literal_cannot_perform(arg: Expr, ename: String, needing: Array[String], pure_fns: Array[String]) -> Bool {
+  match arg {
+    EFn(_, _, _, _, eff, body) => {
+      let row_ok = match eff {
+        Some(row) => {
+          let parts = String::split(row, ",")
+          let mut clean = true
+          let mut i = 0
+          while i < Array::length(parts) {
+            let label = String::trim(Array::get(parts, i))
+            let first = if String::length(label) > 0 {
+              String::char_code_at(label, 0)
+            } else {
+              0
+            }
+            if edp_effect_name_of(label) == ename || (first >= 97 && first <= 122) {
+              clean = false
+            } else {
+              ()
+            }
+            i = i + 1
+          }
+          clean
+        },
+        None => true
+      }
+      row_ok && !edp_expr_reaches_effect(body, ename, needing, pure_fns)
+    },
+    _ => false
+  }
+}
+
+/// Could `e` perform `ename`? Conservative, the evidence-side mirror of the
+/// suspend pass's `scps_inert_taint`: a call counts as SAFE only when its
+/// callee is a pure or first-order builtin (neither can run user code that
+/// performs) or a top-level function already proven irrelevant to `ename`
+/// (`pure_fns`). Every other callee taints the literal -- a function that
+/// needs `ename`, and equally a name the literal CAPTURES or binds locally,
+/// whose row is not readable here: `(y) -> h(y)` with a captured
+/// `h: (Int) -> Int with Ask` performs `Ask` without naming it (Codex on
+/// #3059). So does a callee that is not a name at all.
+fn edp_expr_reaches_effect(e: Expr, ename: String, needing: Array[String], pure_fns: Array[String]) -> Bool {
+  if edp_user_perform_effect_of(e) == ename {
+    true
+  } else {
+    match e {
+      ECall(EIdent(nm, _), args, _) => {
+        // A builtin's spelling reaches the builtin only when no binder in the
+        // program has it: `not: (Bool) -> Bool with Async` captured by the
+        // literal makes `not(true)` perform (Codex on #3059).
+        let unshadowed = !edp_str_array_contains(edp_argcond_binders, nm)
+        let callee_ok = nm == "perform" || nm == "resume" || (unshadowed && (edp_is_pure_builtin_call(nm) || edp_builtin_is_first_order(nm) || (edp_str_array_contains(pure_fns, nm) && !edp_str_array_contains(needing, nm))))
+        !callee_ok || edp_exprs_reach_effect(args, ename, needing, pure_fns)
+      },
+      ECall(_, _, _) => true,
+      EHandle(body, arms) => edp_expr_reaches_effect(body, ename, needing, pure_fns) || edp_arm_bodies_reach_effect(arms, ename, needing, pure_fns),
+      EMatch(scrut, arms) => edp_expr_reaches_effect(scrut, ename, needing, pure_fns) || edp_arm_bodies_reach_effect(arms, ename, needing, pure_fns),
+      _ => edp_exprs_reach_effect(expr_children(e), ename, needing, pure_fns)
+    }
+  }
+}
+
+fn edp_exprs_reach_effect(es: Array[Expr], ename: String, needing: Array[String], pure_fns: Array[String]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(es) {
+    found = edp_expr_reaches_effect(Array::get(es, i), ename, needing, pure_fns)
+    i = i + 1
+  }
+  found
+}
+
+fn edp_arm_bodies_reach_effect(arms: Array[(Pat, Expr)], ename: String, needing: Array[String], pure_fns: Array[String]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(arms) {
+    found = edp_expr_reaches_effect(Array::get(arms, i).1, ename, needing, pure_fns)
+    i = i + 1
+  }
+  found
 }
 
 /// #2109: is this builtin FIRST-ORDER -- does its signature take no function
@@ -1227,6 +1512,13 @@ fn edp_types_have_fn(ts: Array[Type]) -> Bool {
 }
 
 fn edp_builtin_is_first_order(nm: String) -> Bool {
+  // `Fs::readdir` (String -> Array[String]) is checker/codegen-special and has
+  // no registry row, but it is exactly as first order as its raw half. The
+  // entry host provider's `Fs::ReadDir` arm calls it (#1962), and without
+  // this an enclosing handle could not see through that arm.
+  if nm == "Fs::readdir" {
+    return true
+  }
   match lookup_registry_builtin(nm) {
     Some(ty) => match ty {
       CtFn(params, _, _) => !edp_types_have_fn(params),

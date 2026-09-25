@@ -1,0 +1,163 @@
+// #3066: an unannotated NESTED literal describes its own type, so
+// interpolating it must render every position BY CONTENT. Before the fix the
+// interpolation pass read `Some(x)` as the bare head `Option` and rendered the
+// payload through the pointer heuristic:
+//   let a = Some(Some(false))    -> Some(Some(0))
+//   let b = [Some(true)]         -> [Some(1)]
+//   let c = [Some([1]), None]    -> [Some(<address>), None]
+//   let f = (Some(true), 1)      -> (Some(1), 1)
+//   let xs = [None, Some(true)]  -> [None, Some(1)]
+// with an annotation each one rendered correctly. A payload the syntax cannot
+// type -- a local lambda's or a generic function's result -- is rendered from
+// the type the checker gave the interpolated value (`Some(k())` printed
+// `Some(0)` for `Some(false)`, `wrap(true)` printed `Some(1)`).
+
+fn flag() -> Bool {
+  true
+}
+
+fn wrap[T](x: T) -> Option[T] {
+  Some(x)
+}
+
+test "nested option of bool" {
+  let a = Some(Some(false))
+  inspect("\{a}", content = "Some(Some(false))")
+}
+
+test "array of option of bool" {
+  let b = [Some(true)]
+  inspect("\{b}", content = "[Some(true)]")
+}
+
+test "array of option of array" {
+  let c = [Some([1]), None]
+  inspect("\{c}", content = "[Some([1]), None]")
+}
+
+test "option of array" {
+  let d = Some([1])
+  inspect("\{d}", content = "Some([1])")
+}
+
+test "array of array of option" {
+  let e = [[Some(1)]]
+  inspect("\{e}", content = "[[Some(1)]]")
+}
+
+test "tuple of option of bool" {
+  let f = (Some(true), 1)
+  inspect("\{f}", content = "(Some(true), 1)")
+}
+
+test "option of double" {
+  let g = Some(1.5)
+  inspect("\{g}", content = "Some(1.5)")
+}
+
+test "a leading None does not hide the payload type" {
+  let xs = [None, Some(true)]
+  inspect("\{xs}", content = "[None, Some(true)]")
+}
+
+test "inline nested literals" {
+  inspect("\{Some(Some(false))} \{[Some(true)]}", content = "Some(Some(false)) [Some(true)]")
+}
+
+test "payload from a declared function" {
+  let h = Some(flag())
+  inspect("\{h}", content = "Some(true)")
+}
+
+test "payload from a local lambda" {
+  let k = () -> false
+  let m = Some(k())
+  inspect("\{m}", content = "Some(false)")
+}
+
+test "payload from a generic function" {
+  let o = wrap(true)
+  let n = Some(wrap(false))
+  let xs = [wrap(true)]
+  inspect("\{o} \{n} \{xs}", content = "Some(true) Some(Some(false)) [Some(true)]")
+}
+
+// #3081: the same payloads written INLINE, inside a composite literal that is
+// itself the interpolated value. The literal has no offset of its own, so the
+// checker's type reached neither it nor its elements: `[Some(0)]`,
+// `(Some(0), 1)`, `[[Some(0)]]`, and a bare scalar element `[0]` / `(0, 1)` /
+// a Double element printed as its box, `[668]`.
+test "inline array of a lambda payload" {
+  let k = () -> false
+  inspect("\{[Some(k())]}", content = "[Some(false)]")
+}
+
+test "inline tuple of a lambda payload" {
+  let k = () -> false
+  inspect("\{(Some(k()), 1)}", content = "(Some(false), 1)")
+}
+
+test "nested inline arrays of a lambda payload" {
+  let k = () -> false
+  inspect("\{[[Some(k())]]}", content = "[[Some(false)]]")
+}
+
+test "inline scalar elements from a lambda" {
+  let k = () -> false
+  let d = () -> 1.5
+  inspect("\{[k()]} \{(k(), 1)} \{[d()]}", content = "[false] (false, 1) [1.5]")
+}
+
+test "inline tuple inside an inline array" {
+  let k = () -> false
+  inspect("\{[(Some(k()), [k()])]}", content = "[(Some(false), [false])]")
+}
+
+// #3081 review: an element that is an `if` / `match` / binder block has no
+// offset of its own; its arms do. The literal-element status has to reach the
+// arms, or their scalar rows were refused and `[if c { k() } else { false }]`
+// rendered `[0]`.
+test "inline element that is an if" {
+  let k = () -> false
+  let c = String::length("x") == 1
+  inspect("\{[if c { k() } else { false }]}", content = "[false]")
+}
+
+test "inline element that is a match" {
+  let k = () -> false
+  let n = String::length("x")
+  inspect("\{(match n { 1 => k(), _ => true }, 1)}", content = "(false, 1)")
+}
+
+test "inline element that is a binder block" {
+  let k = () -> false
+  inspect("\{[{
+    let t = k()
+    t
+  }]}", content = "[false]")
+}
+
+test "inline option element that is an if" {
+  let k = () -> false
+  let c = String::length("x") == 1
+  inspect("\{[if c { Some(k()) } else { None }]}", content = "[Some(false)]")
+}
+
+test "annotated controls are unchanged" {
+  let a: Option[Option[Bool]] = Some(Some(false))
+  let b: Array[Option[Bool]] = [Some(true)]
+  let c: Array[Option[Array[Int]]] = [Some([1]), None]
+  inspect("\{a} \{b} \{c}", content = "Some(Some(false)) [Some(true)] [Some([1]), None]")
+}
+
+test "top-level if whose arms are options" {
+  let k = () -> false
+  let c = String::length("x") == 1
+  inspect("\{if c { Some(k()) } else { Some(false) }}", content = "Some(false)")
+}
+
+test "top-level match whose arms are arrays" {
+  let k = () -> false
+  let n = String::length("x")
+  inspect("\{match n { 1 => [k()], _ => [true] }}", content = "[false]")
+}

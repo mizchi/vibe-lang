@@ -1,0 +1,58 @@
+// #1962: the entry host provider with `@vibe/fs` imported.
+//
+// `@vibe/fs` DECLARES `effect Fs` with four operations and binds value aliases
+// (`Fs::exists = exists`, #795) to perform-based wrappers. Two things the
+// provider has to get right here that a program without the import does not
+// exercise:
+//
+//   - its wrappers, called with NO mock handler, reach the host. They used to
+//     fail: the wrapper performed, nothing handled it, and the program died
+//     with a raw wasm exception;
+//   - a registered operation the declaration omits (`Fs::Remove`) still
+//     compiles and runs: the provider appends it to the declaration, where the
+//     evidence dictionary is built from (Codex on #3059 -- measured before,
+//     `unknown struct field: Remove`).
+import @vibe/fs {
+  exists
+}
+
+fn remove_via_perform(path: String) -> Unit with Fs {
+  perform Fs::Remove(path)
+}
+
+fn write_via_perform(path: String, text: String) -> Unit with Fs {
+  perform Fs::WriteFile(path, text)
+}
+
+test "a @vibe/fs wrapper with no mock handler reaches the host" {
+  inspect(exists("fixtures/host_provider_declared_effect_test.vibe"), "true")
+}
+
+test "an operation the declaration omits is provided too" {
+  let path = "_build/host_provider_declared_effect_test.txt"
+  write_via_perform(path, "x")
+  inspect(exists(path), "true")
+  remove_via_perform(path)
+  inspect(exists(path), "false")
+}
+
+// Codex on #3059: a user handler written against `@vibe/fs`'s four operations
+// answers only those. `Fs::Remove` joined the declaration after checking, so
+// the handler's evidence dictionary held a trapping slot for it, and a callee
+// performing it inside the handler aborted. The provider now gives such a
+// handler a forwarding arm, so the perform reaches the entry provider as if
+// the handler were not there.
+test "an operation added after checking passes through a handler that omits it" {
+  let path = "_build/host_provider_declared_effect_test_fwd.txt"
+  write_via_perform(path, "x")
+  let seen = handle {
+    remove_via_perform(path)
+    exists(path)
+  } with {
+    Fs::ReadFile(_p) => resume("");
+    Fs::WriteFile(_p, _c) => resume(());
+    Fs::Exists(p) => resume(Fs::exists(p));
+    Fs::Mkdir(_p) => resume(())
+  }
+  inspect(seen, "false")
+}

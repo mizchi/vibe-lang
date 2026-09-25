@@ -1,11 +1,16 @@
 import @vibe/compiler/cache {
-  ast_binary_write_string, ast_binary_write_varint, load_persistent_artifact, persistent_artifact_input_context, store_persistent_artifact
+  ast_binary_write_string,
+  ast_binary_write_varint,
+  load_persistent_artifact,
+  persistent_artifact_input_context,
+  persistent_artifact_input_context_with_resolution,
+  store_persistent_artifact
 }
 import @vibe/compiler/checker/artifacts/module {
   CheckedModuleArtifact, checked_module_input_fingerprint, decode_checked_module_artifact, encode_checked_module_artifact
 }
 import @vibe/compiler/core {
-  Stmt, TypeEnv, normalize_path
+  Stmt, TypeEnv, normalize_path, resolution_env_seed
 }
 import @vibe/compiler/checker/artifacts/program {
   write_checked_environment
@@ -17,8 +22,10 @@ let checked_cache_sources: Array[String] = []
 let checked_cache_stmts: Array[Array[Stmt]] = []
 let checked_cache_counts: Array[Int] = [0, 0, 0]
 let checked_cache_version: Array[String] = []
+// The resolution seed captured at reset; see `checked_module_artifact_stmts`.
+let checked_cache_resolution: Array[String] = []
 
-export fn set_checked_module_cache_mode(mode: String) -> Unit with Exception {
+export fn set_checked_module_cache_mode(mode: String) -> Unit with Env + Exception {
   if mode != "off" && mode != "verify" && mode != "on" {
     throw("set VIBE_CHECKED_MODULE_CACHE to off, verify, or on")
   }
@@ -32,12 +39,15 @@ export fn checked_module_cache_mode() -> String {
 
 /// Rows belong to one completed module walk. No previous compilation or mode
 /// may supply the AST of a file that this walk did not validate.
-export fn checked_module_cache_reset() -> Unit {
+export fn checked_module_cache_reset() -> Unit with Env {
   Array::truncate(checked_cache_paths, 0)
   Array::truncate(checked_cache_sources, 0)
   Array::truncate(checked_cache_stmts, 0)
   Array::truncate(checked_cache_version, 0)
-  Array::push(checked_cache_version, persistent_artifact_input_context())
+  Array::truncate(checked_cache_resolution, 0)
+  let resolution = resolution_env_seed()
+  Array::push(checked_cache_resolution, resolution)
+  Array::push(checked_cache_version, persistent_artifact_input_context_with_resolution(resolution))
   let mut i = 0
   while i < 3 {
     Array::set(checked_cache_counts, i, 0)
@@ -50,7 +60,7 @@ export fn checked_module_cache_stats() -> (Int, Int, Int) {
   (Array::get(checked_cache_counts, 0), Array::get(checked_cache_counts, 1), Array::get(checked_cache_counts, 2))
 }
 
-export fn checked_module_cache_input_identity(path: String, source: String, semantics_seed: String, deps: Array[(String, TypeEnv)]) -> Bytes {
+export fn checked_module_cache_input_identity(path: String, source: String, semantics_seed: String, deps: Array[(String, TypeEnv)]) -> Bytes with Env {
   let out = Bytes::new()
   ast_binary_write_string(out, "checked-module-input-v1")
   ast_binary_write_string(out, persistent_artifact_input_context())
@@ -65,14 +75,14 @@ export fn checked_module_cache_input_identity(path: String, source: String, sema
   out
 }
 
-export fn load_checked_module_artifact(path: String, input_identity: Bytes) -> Option[CheckedModuleArtifact] with Exception + Fs {
+export fn load_checked_module_artifact(path: String, input_identity: Bytes) -> Option[CheckedModuleArtifact] with Env + Exception + Fs {
   match load_persistent_artifact("checked-module-v1", path, checked_module_input_fingerprint(input_identity)) {
     Some(bytes) => decode_checked_module_artifact(bytes, input_identity),
     None => None
   }
 }
 
-export fn commit_checked_module_artifact(path: String, source: String, artifact: CheckedModuleArtifact, fresh: Bool) -> Unit with Exception + Fs {
+export fn commit_checked_module_artifact(path: String, source: String, artifact: CheckedModuleArtifact, fresh: Bool) -> Unit with Env + Exception + Fs {
   if fresh {
     let encoded = encode_checked_module_artifact(artifact)
     let fingerprint = checked_module_input_fingerprint(artifact.input_identity)
@@ -109,9 +119,15 @@ export fn commit_checked_module_artifact(path: String, source: String, artifact:
   Array::push(checked_cache_stmts, artifact.parsed_stmts)
 }
 
+/// The environment half of the input context is the value captured at reset:
+/// the environment cannot change during a run, so re-reading it here would
+/// only make every parse -- including the in-memory component compile, which
+/// must stay free of host capabilities -- require `Env` (#1962). The rest
+/// (compiler version, cfg, typing mode) is recomputed, as before.
 export fn checked_module_artifact_stmts(path: String, source: String) -> Option[Array[Stmt]] {
   if checked_module_cache_mode() == "off" || Array::length(checked_cache_version) == 0 ||
-  Array::get(checked_cache_version, 0) != persistent_artifact_input_context() {
+  Array::length(checked_cache_resolution) == 0 ||
+  Array::get(checked_cache_version, 0) != persistent_artifact_input_context_with_resolution(Array::get(checked_cache_resolution, 0)) {
     return None
   }
   let mut i = 0

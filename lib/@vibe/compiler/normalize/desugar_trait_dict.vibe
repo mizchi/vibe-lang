@@ -27,6 +27,7 @@ import @vibe/compiler/core {
   ImportKind,
   Pat,
   Stmt,
+  Type,
   TypeEnv,
   TypeExpr,
   __to_string,
@@ -36,23 +37,30 @@ import @vibe/compiler/core {
   builtin_value_form_arity,
   canonical_builtin_name,
   compiler_owned_type_arity,
+  exception_effect_kind,
   expr_child_at,
   expr_children,
   expr_children_pop,
   expr_children_push,
   expr_children_top,
+  has_standard_host_provider,
   is_exception_effect_name,
   is_exception_throw_operation,
+  lookup_registry_builtin,
   namespace_rename_original,
   namespace_rename_originals_reset,
   prelude_ordering_stmt,
+  resolve_builtin,
   sort_perm_by_names,
   stmts_declare_prelude_ordering_shape,
   stmts_shadow_prelude_ordering,
   stmts_use_prelude_ordering,
   str_lt,
+  test_bench_default_effects,
   trait_definition,
-  trait_method_sig_binders_deep
+  trait_method_sig_binders_deep,
+  typed_lowering_arg_offset,
+  typed_render_row_head
 }
 
 import @vibe/ast {
@@ -87,8 +95,10 @@ import @vibe/parser {
   binder_authority_slot_binder,
   binder_authority_slot_role,
   detach_stmts,
+  lex,
   located_program_binder_authority_nodes,
   located_program_binder_authority_program,
+  parse_type,
   resolve_interp_expr,
   source_pat
 }
@@ -1288,6 +1298,7 @@ fn infer_arg_type_name(arg: Expr, struct_sets: Array[(String, Array[String])], v
       // Tightening argument-position nominal checking is cross-cutting work
       // beyond HostStream. Tracked on #1341.
       EIdent("host_stream_named", _) => Some("HostStream"),
+      EIdent("HostResponse::body", _) => Some("HostStream"),
       EIdent("String::concat", _) => Some("String"),
       EIdent("String::join", _) => Some("String"),
       EIdent("String::substring", _) => Some("String"),
@@ -5627,7 +5638,13 @@ fn infer_shape(e: Expr, struct_sets: Array[(String, Array[String])], var_types: 
 /// spelling that reached here, a wrong-arity call) from being reported as an
 /// array shape.
 fn dtd_elem_preserving_shape(fname: String, cargs: Array[Expr], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
-  let preserves = fname == "Array::filter" || fname == "Array::slice" || fname == "Array::reverse" || fname == "Array::concat"
+  // #3080: `xs[a:b]` parses to `__slice(xs, a, b)`, the same operation as
+  // `Array::slice` on an array subject, but only the spelled-out call was
+  // listed, so the slice syntax resolved no shape and its render printed a
+  // heap address. The `[` guard below keeps a `String` / `Bytes` subject out.
+  // It is NOT added to `dtd_names_an_array_builtin`: `__slice` also slices
+  // strings, so an unresolved one is not known to be an array.
+  let preserves = fname == "Array::filter" || fname == "Array::slice" || fname == "__slice" || fname == "Array::reverse" || fname == "Array::concat"
   if preserves && Array::length(cargs) >= 1 {
     let sh = infer_shape(Array::get(cargs, 0), struct_sets, var_types, fn_returns)
     if String::starts_with(sh, "[") {
@@ -5833,7 +5850,7 @@ fn infer_shape_by_syntax(e: Expr, struct_sets: Array[(String, Array[String])], v
       let mut acc = "("
       let mut i = 0
       while i < Array::length(items) {
-        let sub = infer_shape(Array::get(items, i), struct_sets, var_types, fn_returns)
+        let sub = infer_item_shape(Array::get(items, i), struct_sets, var_types, fn_returns)
         acc = if i == 0 {
           String::concat(acc, sub)
         } else {
@@ -5879,10 +5896,34 @@ fn infer_shape_by_syntax(e: Expr, struct_sets: Array[(String, Array[String])], v
     },
     // The first element stands for all of them: this pass has no unifier, and
     // a heterogeneous array literal does not type-check anyway.
+    // #3066: except when the first element says nothing about the payload --
+    // a `None` (head `Option`, no payload) or an element this pass cannot
+    // type -- and a later one does: `[None, Some(true)]` is an
+    // `Array[Option[Bool]]`, and reading only the `None` rendered the `true`
+    // through the pointer heuristic as `1`. Every element has the same type
+    // (the checker rejects anything else), so the first COMPOSITE shape is
+    // the element type. The scan runs only for those two heads, so a large
+    // literal of scalars costs what it did.
     EArray(items) => if Array::length(items) == 0 {
       ""
     } else {
-      String::concat("[", String::concat(infer_shape(Array::get(items, 0), struct_sets, var_types, fn_returns), "]"))
+      let first = infer_item_shape(Array::get(items, 0), struct_sets, var_types, fn_returns)
+      let mut best = first
+      if String::length(first) == 0 || first == "Option" {
+        let mut i = 1
+        while i < Array::length(items) && !shape_is_composite(best) {
+          let later = infer_item_shape(Array::get(items, i), struct_sets, var_types, fn_returns)
+          if shape_is_composite(later) {
+            best = later
+          } else {
+            ()
+          }
+          i = i + 1
+        }
+      } else {
+        ()
+      }
+      String::concat("[", String::concat(best, "]"))
     },
     // #1880: `for x in xs { .. }` is an EXPRESSION that evaluates to the mapped
     // array, and it was the single most common way to reach the bug -- the
@@ -5943,8 +5984,17 @@ fn infer_shape_by_syntax(e: Expr, struct_sets: Array[(String, Array[String])], v
         }
       }
     },
+    // #3066: `Some(x)` describes its own type, `Option[<x's type>]`. With no
+    // arm here it answered the bare head `Option`, so the payload of a NESTED
+    // literal was rendered by the pointer heuristic: `Some(Some(false))`
+    // printed `Some(Some(0))`, `[Some(true)]` printed `[Some(1)]`, and
+    // `[Some([1]), None]` printed an address. Equality's `infer_eq_shape`
+    // already spells the same encoding. A payload this pass cannot type keeps
+    // the old answer (the head), never a guessed shape.
     ECall(callee, cargs, _) => match callee {
-      EIdent(fname, _) => match lookup_var_type(var_types, eq_shape_key(fname)) {
+      EIdent(fname, _) => if (fname == "Some" || fname == "Option::Some") && Array::length(cargs) == 1 && String::length(infer_shape(Array::get(cargs, 0), struct_sets, var_types, fn_returns)) > 0 {
+        String::concat("{o:", String::concat(infer_shape(Array::get(cargs, 0), struct_sets, var_types, fn_returns), "}"))
+      } else match lookup_var_type(var_types, eq_shape_key(fname)) {
         Some(sh) => interp_shape(sh),
         None => match fn_return_type(fn_returns, fn_eq_shape_key(fname)) {
           Some(sh) => interp_shape(sh),
@@ -6118,6 +6168,42 @@ fn dtd_mask_shadowed_fn_into(out: Array[(String, String)], name: String, fn_retu
     Array::push(out, (constructor_mask_key(name), ""))
   } else {
     ()
+  }
+}
+
+/// #3065: a KINDED exception arm (`Exception[K]::Throw(e)`) binds `e` at the
+/// kind's type -- the checker has done so since #2963 -- but this pass never
+/// recorded it, so `"\{e}"` had no head to find `K::to_string` by and fell to
+/// codegen's pointer heuristic: `caught 268` for `caught KA(5)`, while
+/// `let k: K = e` rendered correctly. The binder is seeded exactly the way a
+/// parameter annotated with the kind is, so every shape an annotation already
+/// renders (a nominal, `Array[..]`, `Option[..]`, a tuple) renders here too.
+/// A kind the type parser cannot read leaves `var_types` untouched, which is
+/// what the arm had before. The erased `Exception::Throw(m)` has no kind and
+/// keeps the throw-site rendered message channel.
+fn dtd_exception_kind_arm_var_types(p: Pat, var_types: Array[(String, String)]) -> Array[(String, String)] {
+  match p {
+    PCtor(name, sub) => if Array::length(sub) == 1 && String::ends_with(name, "::Throw") {
+      let kind = exception_effect_kind(String::substring(name, 0, String::length(name) - 7))
+      match Array::get(sub, 0) {
+        PBind(v) => if String::length(kind) > 0 {
+          let parsed: Option[TypeExpr] = handle {
+            let (kind_te, _) = parse_type(lex(kind), 0)
+            Some(kind_te)
+          } with { Exception::Throw(_unreadable) => None }
+          match parsed {
+            Some(te) => seed_var_types([(v, Some(te))], dtd_scope_formals, var_types),
+            None => var_types
+          }
+        } else {
+          var_types
+        },
+        _ => var_types
+      }
+    } else {
+      var_types
+    },
+    _ => var_types
   }
 }
 
@@ -10034,7 +10120,28 @@ fn interp_expand_checked(arg: Expr, derived_only: Bool, gens: Array[DictGen], tr
     Some(h) => h,
     None => ""
   }
-  let sh = interp_shape(infer_shape(arg, struct_sets, var_types, fn_returns))
+  let syn_sh = interp_shape(infer_shape(arg, struct_sets, var_types, fn_returns))
+  // #3066: where this pass expands the argument itself, the checker's type
+  // (a render row) outranks the syntactic shape. The syntax is exact for a
+  // literal, but a payload it cannot type -- `Some(k())` through a local
+  // lambda -- was rendered by the pointer heuristic (`Some(0)` for
+  // `Some(false)`); the checker knows it.
+  // #3081 review: an argument with no offset (an `if`, a `match`, a block)
+  // has no syntactic head either, so the gate below would never ask; it is
+  // shaped from its arms (`dtd_offsetless_shape`), and `interp_shape` keeps
+  // only a composite answer.
+  let typed_sh = if typed_lowering_arg_offset(arg) < 0 {
+    interp_shape(dtd_offsetless_shape(arg, struct_sets, var_types, fn_returns))
+  } else if dtd_interp_expands_itself(syn_sh, head) {
+    dtd_typed_render_shape_for(arg)
+  } else {
+    ""
+  }
+  let sh = if String::length(typed_sh) > 0 {
+    typed_sh
+  } else {
+    syn_sh
+  }
   if String::length(sh) > 0 {
     Some(interp_expand_shape(arg, sh, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns))
   } else {
@@ -11190,11 +11297,11 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
       let mut i = 0
       while i < Array::length(arms) {
         let (p, b) = Array::get(arms, i)
-        let arm_vars = dtd_mask_shadowed_pat(if Array::get(dtd_constructor_tracking, 0) {
+        let arm_vars = dtd_exception_kind_arm_var_types(p, dtd_mask_shadowed_pat(if Array::get(dtd_constructor_tracking, 0) {
           constructor_handler_arm_var_types(scrut, p, gens, struct_sets, var_types, fn_returns)
         } else {
           var_types
-        }, p, fn_returns)
+        }, p, fn_returns))
         Array::push(out, (p, rewrite_expr(b, gens, traits, struct_sets, dict_binds, arm_vars, fn_returns)))
         i = i + 1
       }
@@ -13718,7 +13825,7 @@ fn eq_name_is_unmintable_builtin(n: String) -> Bool {
     false
   } else {
     match compiler_owned_type_arity(n) {
-      Some(_) => n == "HostStream" || n == "ByteStream" || n == "StringBuilder" || n == "PromptText" || n == "Future" || n == "Task" || n == "MutList" || n == "Array" || n == "Option" || n == "StringMap" || n == "ArrayBuilder" || n == "FixedArray" || n == "FrozenArray" || n == "MutBytes" || n == "MapBuilder",
+      Some(_) => n == "HostStream" || n == "HostResponse" || n == "ByteStream" || n == "StringBuilder" || n == "PromptText" || n == "Future" || n == "Task" || n == "MutList" || n == "Array" || n == "Option" || n == "StringMap" || n == "ArrayBuilder" || n == "FixedArray" || n == "FrozenArray" || n == "MutBytes" || n == "MapBuilder",
       None => false
     }
   }
@@ -22004,6 +22111,238 @@ fn dtd_trait_declared_here(stmts: Array[Stmt], trait_name: String) -> Bool {
 
 let dtd_typed_eq_keys: Array[String] = []
 
+/// #3066: the checker's render rows for THIS program -- (render argument
+/// offset, `impl_target_key(__render[T])`), split out of the typed-`==` rows
+/// they ride in and repopulated at every `dtd_run` like the table above.
+let dtd_typed_render_offs: Array[Int] = []
+
+let dtd_typed_render_keys: Array[String] = []
+
+/// #3066: the interpolation shape of the type the checker gave this render
+/// argument, or "" when it filed none. A type naming a formal in scope here is
+/// "" too: a formal renders through its witness, which the syntactic path
+/// already finds.
+fn dtd_typed_render_shape_for(arg: Expr) -> String {
+  let off = typed_lowering_arg_offset(arg)
+  let mut key = ""
+  if off >= 0 {
+    let mut i = 0
+    while i < Array::length(dtd_typed_render_offs) {
+      if Array::get(dtd_typed_render_offs, i) == off {
+        key = Array::get(dtd_typed_render_keys, i)
+        i = Array::length(dtd_typed_render_offs)
+      } else {
+        i = i + 1
+      }
+    }
+  } else {
+    ()
+  }
+  if String::length(key) == 0 {
+    ""
+  } else {
+    match impl_target_from_key(key) {
+      Some(TyApp(head, args)) => if head == typed_render_row_head() && Array::length(args) == 1 && !eq_ty_mentions_scope_formal(Array::get(args, 0)) {
+        interp_shape(ty_to_eq_shape(Array::get(args, 0)))
+      } else {
+        ""
+      },
+      _ => ""
+    }
+  }
+}
+
+/// #3081: the shape of the type the checker filed for an ELEMENT of a
+/// composite literal (or a `Some` payload), scalars included, or "" when it
+/// filed none. Unlike `dtd_typed_render_shape_for` this is not restricted to
+/// the shapes a top-level render expands: the element is rendered from the
+/// literal's shape, where a `Bool` / `Double` leaf is exactly what the pointer
+/// heuristic got wrong.
+fn dtd_typed_item_shape_for(e: Expr) -> String {
+  let off = typed_lowering_arg_offset(e)
+  if off < 0 {
+    dtd_typed_item_shape_through_wrapper(e)
+  } else {
+    dtd_typed_item_shape_at(off)
+  }
+}
+
+/// #3081 review: an element with no offset of its own -- an `if`, a `match`,
+/// a block, a binder whose body is its own name -- answers from its arms, the
+/// same descent the checker's key walk (`irc_push_arg_key`) makes. Every arm
+/// that answers must agree; an arm with no row, or two arms that disagree,
+/// answer "" and the syntactic shape stays in charge.
+fn dtd_typed_item_shape_through_wrapper(e: Expr) -> String {
+  match e {
+    EIf(_, t, f) => dtd_typed_item_shape_join(dtd_typed_item_shape_for(t), dtd_typed_item_shape_for(f)),
+    ESeq(_, second) => dtd_typed_item_shape_for(second),
+    EMatch(_, arms) => {
+      let mut acc = ""
+      let mut ok = true
+      let mut i = 0
+      while i < Array::length(arms) && ok {
+        let (_, body) = Array::get(arms, i)
+        let sh = dtd_typed_item_shape_for(body)
+        if String::length(sh) == 0 {
+          ()
+        } else if String::length(acc) == 0 {
+          acc = sh
+        } else if acc != sh {
+          ok = false
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      if ok {
+        acc
+      } else {
+        ""
+      }
+    },
+    ELet(nm, val, body, _) => dtd_typed_item_shape_through_binder(nm, val, body),
+    ELetRec(nm, val, body) => dtd_typed_item_shape_through_binder(nm, val, body),
+    ELetMut(nm, val, body, _) => dtd_typed_item_shape_through_binder(nm, val, body),
+    _ => ""
+  }
+}
+
+/// Two arms' answers: the one that answered when only one did, the shared one
+/// when both agree, "" when they disagree.
+fn dtd_typed_item_shape_join(a: String, b: String) -> String {
+  if String::length(a) == 0 {
+    b
+  } else if String::length(b) == 0 || a == b {
+    a
+  } else {
+    ""
+  }
+}
+
+/// The one binder shape the checker's walk follows: the body is exactly the
+/// bound name, so the VALUE answers for it.
+fn dtd_typed_item_shape_through_binder(name: String, value: Expr, body: Expr) -> String {
+  match body {
+    EIdent(bn, _) => if bn == name {
+      dtd_typed_item_shape_for(value)
+    } else {
+      ""
+    },
+    _ => ""
+  }
+}
+
+fn dtd_typed_item_shape_at(off: Int) -> String {
+  let mut key = ""
+  if off >= 0 {
+    let mut i = 0
+    while i < Array::length(dtd_typed_render_offs) {
+      if Array::get(dtd_typed_render_offs, i) == off {
+        key = Array::get(dtd_typed_render_keys, i)
+        i = Array::length(dtd_typed_render_offs)
+      } else {
+        i = i + 1
+      }
+    }
+  } else {
+    ()
+  }
+  if String::length(key) == 0 {
+    ""
+  } else {
+    match impl_target_from_key(key) {
+      Some(TyApp(head, args)) => if head == typed_render_row_head() && Array::length(args) == 1 && !eq_ty_mentions_scope_formal(Array::get(args, 0)) {
+        ty_to_eq_shape(Array::get(args, 0))
+      } else {
+        ""
+      },
+      _ => ""
+    }
+  }
+}
+
+/// #3081: an element's shape -- the checker's when it filed one, else the
+/// syntactic answer.
+/// #3081 review: the shape of an argument with no offset of its own -- an
+/// `if`, a `match`, a block, a binder -- from its arms. Each arm answers with
+/// its own wrapper descent, else the checker's row at its offset, else its
+/// syntactic shape (which reads a literal's elements through their rows,
+/// `infer_item_shape`). Arms that answer must agree; a disagreement answers
+/// "" and the argument keeps its old path.
+fn dtd_offsetless_shape(e: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
+  match e {
+    EIf(_, t, f) => dtd_typed_item_shape_join(dtd_offsetless_arm_shape(t, struct_sets, var_types, fn_returns), dtd_offsetless_arm_shape(f, struct_sets, var_types, fn_returns)),
+    ESeq(_, second) => dtd_offsetless_arm_shape(second, struct_sets, var_types, fn_returns),
+    EMatch(_, arms) => {
+      let mut acc = ""
+      let mut ok = true
+      let mut i = 0
+      while i < Array::length(arms) && ok {
+        let (_, body) = Array::get(arms, i)
+        let sh = dtd_offsetless_arm_shape(body, struct_sets, var_types, fn_returns)
+        if String::length(sh) == 0 {
+          ()
+        } else if String::length(acc) == 0 {
+          acc = sh
+        } else if acc != sh {
+          ok = false
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      if ok {
+        acc
+      } else {
+        ""
+      }
+    },
+    ELet(nm, val, body, _) => dtd_offsetless_binder_shape(nm, val, body, struct_sets, var_types, fn_returns),
+    ELetRec(nm, val, body) => dtd_offsetless_binder_shape(nm, val, body, struct_sets, var_types, fn_returns),
+    ELetMut(nm, val, body, _) => dtd_offsetless_binder_shape(nm, val, body, struct_sets, var_types, fn_returns),
+    _ => ""
+  }
+}
+
+fn dtd_offsetless_arm_shape(e: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
+  let through = dtd_offsetless_shape(e, struct_sets, var_types, fn_returns)
+  if String::length(through) > 0 {
+    through
+  } else {
+    infer_item_shape(e, struct_sets, var_types, fn_returns)
+  }
+}
+
+fn dtd_offsetless_binder_shape(name: String, value: Expr, body: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
+  match body {
+    EIdent(bn, _) => if bn == name {
+      dtd_offsetless_arm_shape(value, struct_sets, var_types, fn_returns)
+    } else {
+      ""
+    },
+    _ => ""
+  }
+}
+
+fn infer_item_shape(e: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
+  let typed = dtd_typed_item_shape_for(e)
+  if String::length(typed) > 0 {
+    typed
+  } else {
+    infer_shape(e, struct_sets, var_types, fn_returns)
+  }
+}
+
+/// #3066: does the interpolation pass EXPAND this argument itself, reading the
+/// payload positions from syntax? Those are the renders a render row corrects:
+/// a composite shape it inferred, or an `Option` / `Result` head (`Some(v)` with
+/// `v` untyped here). An argument it does not expand keeps reaching codegen,
+/// where the checker's own refusal (#2987) still answers -- a row never turns a
+/// refusal into a render.
+fn dtd_interp_expands_itself(sh: String, head: String) -> Bool {
+  String::length(sh) > 0 || head == "Option" || head == "Result"
+}
+
 fn dtd_typed_eq_key_for(boff: Int) -> String {
   if boff < 0 {
     ""
@@ -22502,10 +22841,26 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
   // rewrite can read it.
   Array::truncate(dtd_typed_eq_offs, 0)
   Array::truncate(dtd_typed_eq_keys, 0)
+  // #3066: the render rows ride the same channel under the
+  // `typed_render_row_head` wrapper; they are split off here so a `==` lookup
+  // never reads one.
+  Array::truncate(dtd_typed_render_offs, 0)
+  Array::truncate(dtd_typed_render_keys, 0)
+  let render_prefix = impl_target_key(TyApp(typed_render_row_head(), [
+    TyName("Int")
+  ]))
+  let render_head_len = String::index_of(render_prefix, impl_target_key(TyName("Int")))
+  let render_head = String::substring(render_prefix, 0, render_head_len)
   let mut teq_i = 0
   while teq_i < Array::length(typed_eq_offsets) {
-    Array::push(dtd_typed_eq_offs, Array::get(typed_eq_offsets, teq_i))
-    Array::push(dtd_typed_eq_keys, Array::get(typed_eq_keys, teq_i))
+    let tkey = Array::get(typed_eq_keys, teq_i)
+    if render_head_len > 0 && String::starts_with(tkey, render_head) {
+      Array::push(dtd_typed_render_offs, Array::get(typed_eq_offsets, teq_i))
+      Array::push(dtd_typed_render_keys, tkey)
+    } else {
+      Array::push(dtd_typed_eq_offs, Array::get(typed_eq_offsets, teq_i))
+      Array::push(dtd_typed_eq_keys, tkey)
+    }
     teq_i = teq_i + 1
   }
   // #2286: the record describes THIS program. The unit-test batch compiles
@@ -22786,6 +23141,18 @@ fn eq_refusals_report() -> Unit with Exception {
 //# #1962 (Option 1): direct host builtins handled by a lexical `handle`
 
 let dhhc_changed_cell = [0]
+// Builtin spellings a top-level declaration of the program occupies
+// (`fn Fs::exists(..)`): a call of that name resolves to the declaration, so
+// it is never rewritten into the operation's perform (Codex on #3059).
+let dhhc_shadowed_names: Array[String] = []
+// Operations the entry provider appended to an existing declaration after
+// checking, with their arities; see `ehp_forward_added_ops`.
+let dhhc_forward_ops: Array[(String, Int)] = []
+// Set while `wrap_entry_host_provider` adds forwarding arms: that walk must
+// not rewrite any call -- the provider's own arms call the builtins
+// (`resume(Fs::exists(a))`), and turning those into performs would make each
+// arm perform the operation it answers.
+let dhhc_forward_only: Array[Bool] = [false]
 
 /// The operation names an arm set NAMES, restricted to host operations --
 /// i.e. those `canonical_builtin_name` rewrites, which is exactly the
@@ -22811,8 +23178,70 @@ fn dhhc_arm_ops(arms: Array[(Pat, Expr)], out: Array[String]) -> Unit {
   }
 }
 
+/// `arms` plus a forwarding arm for each operation in `dhhc_forward_ops` that
+/// this handler's effect gained after checking and it has no arm for:
+/// `Fs::Remove(a) => resume(perform Fs::Remove(a))`. An arm body runs outside
+/// its own handler, so the perform reaches the next handler out -- which is
+/// what "this handler does not handle it" means. Without the arm, the
+/// handler's evidence dictionary held a trapping slot for the operation, and a
+/// callee performing it aborted instead of reaching the entry provider (Codex
+/// on #3059).
+fn dhhc_with_forward_arms(arms: Array[(Pat, Expr)], own: Array[String]) -> Array[(Pat, Expr)] {
+  if Array::length(dhhc_forward_ops) == 0 || Array::length(own) == 0 {
+    arms
+  } else {
+    let out: Array[(Pat, Expr)] = []
+    let mut i = 0
+    while i < Array::length(arms) {
+      Array::push(out, Array::get(arms, i))
+      i = i + 1
+    }
+    let mut f = 0
+    while f < Array::length(dhhc_forward_ops) {
+      let (op, arity) = Array::get(dhhc_forward_ops, f)
+      let effect = ehp_effect_of(op)
+      let mut handles_effect = false
+      let mut o = 0
+      while o < Array::length(own) {
+        if ehp_effect_of(Array::get(own, o)) == effect {
+          handles_effect = true
+        } else {
+          ()
+        }
+        o = o + 1
+      }
+      if handles_effect && !str_array_contains(own, op) {
+        let pats: Array[Pat] = []
+        let args: Array[Expr] = []
+        let mut a = 0
+        while a < arity {
+          let bind = String::concat("__ehp_fwd_", idx_str(a))
+          Array::push(pats, PBind(bind))
+          Array::push(args, EIdent(bind, -1))
+          a = a + 1
+        }
+        let operand = if arity == 0 {
+          EIdent(op, -1)
+        } else {
+          ECall(EIdent(op, -1), args, -1)
+        }
+        Array::push(out, (PCtor(op, pats), ECall(EIdent("resume", -1), [
+          ECall(EIdent("perform", -1), [operand], -1)
+        ], -1)))
+      } else {
+        ()
+      }
+      f = f + 1
+    }
+    out
+  }
+}
+
 /// The arm-named operation whose builtin spelling is `name`, if any.
 fn dhhc_op_for_call(ops: Array[String], name: String) -> Option[String] {
+  if Array::get(dhhc_forward_only, 0) || str_array_contains(dhhc_shadowed_names, name) {
+    return None
+  }
   let mut i = 0
   let mut found = None
   while i < Array::length(ops) {
@@ -22903,7 +23332,7 @@ fn dhhc_expr(expr: Expr, ops: Array[String]) -> Expr {
     EHandle(body, arms) => {
       let own = empty_str_array()
       dhhc_arm_ops(arms, own)
-      EHandle(dhhc_expr(body, dhhc_union(ops, own)), dhhc_arms(arms, ops))
+      EHandle(dhhc_expr(body, dhhc_union(ops, own)), dhhc_with_forward_arms(dhhc_arms(arms, ops), own))
     },
     EInt(_) => expr,
     EFloat(_) => expr,
@@ -23063,8 +23492,103 @@ fn dhhc_stmt(stmt: Stmt) -> Stmt {
 /// handler in a CALLER cannot intercept a direct call in a callee's body --
 /// that is the same evidence-passing rule `perform` itself follows
 /// (ADR-0076), so the two spellings agree on scope as well as on effect.
+/// Fill `dhhc_shadowed_names` from `stmts`: every top-level binding whose
+/// name is a qualified builtin spelling, except a value alias to a PERFORM
+/// WRAPPER (`let Fs::exists = exists` over `fn exists(p) { perform
+/// Fs::Exists(p) }`, @vibe/fs's shape), whose call performs the operation
+/// anyway. Any other alias (`let Fs::exists = fake`) is a shadow: rewriting
+/// its call into the perform would replace `fake`'s answer with the
+/// handler's (Codex on #3059).
+fn dhhc_note_shadowed_names(stmts: Array[Stmt]) -> Unit {
+  Array::truncate(dhhc_shadowed_names, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let name = match Array::get(stmts, i) {
+      SLet(_, _, n, _, EIdent(target, _)) => if dhhc_is_perform_wrapper(stmts, target, n) {
+        ""
+      } else {
+        n
+      },
+      SLet(_, _, n, _, _) => n,
+      SFnDecl(_, n, _, _, _) => n,
+      _ => ""
+    }
+    if String::index_of(name, "::") > 0 && !str_array_contains(dhhc_shadowed_names, name) {
+      Array::push(dhhc_shadowed_names, name)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
+/// Is `target` a top-level function whose whole body is `perform Op(params)`,
+/// its own parameters in order, for the operation whose capability spelling
+/// is `alias`?
+fn dhhc_is_perform_wrapper(stmts: Array[Stmt], target: String, alias: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let fn_value = match Array::get(stmts, i) {
+      SLet(_, _, n, _, value) => if n == target {
+        Some(value)
+      } else {
+        None
+      },
+      SFnDecl(_, n, value, _, _) => if n == target {
+        Some(value)
+      } else {
+        None
+      },
+      _ => None
+    }
+    match fn_value {
+      Some(EFn(_, _, params, _, _, body)) => {
+        let (op, args) = match body {
+          ECall(EIdent("perform", _), perform_args, _) => if Array::length(perform_args) == 1 {
+            match Array::get(perform_args, 0) {
+              ECall(EIdent(o, _), a, _) => (o, a),
+              EIdent(o, _) => (o, empty_expr_array()),
+              _ => ("", empty_expr_array())
+            }
+          } else {
+            ("", empty_expr_array())
+          },
+          _ => ("", empty_expr_array())
+        }
+        if op != "" && canonical_builtin_name(op) == alias && Array::length(args) == Array::length(params) {
+          let mut same = true
+          let mut a = 0
+          while a < Array::length(args) {
+            match Array::get(args, a) {
+              EIdent(arg, _) => if arg != Array::get(params, a).0 {
+                same = false
+              } else {
+                ()
+              },
+              _ => same = false
+            }
+            a = a + 1
+          }
+          if same {
+            found = true
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 export fn desugar_handled_host_calls_reporting_change(stmts: Array[Stmt]) -> Bool {
   Array::set(dhhc_changed_cell, 0, 0)
+  dhhc_note_shadowed_names(stmts)
   dhhc_rewrite_stmts(stmts)
   Array::get(dhhc_changed_cell, 0) != 0
 }
@@ -23073,3 +23597,1036 @@ export fn desugar_handled_host_calls(stmts: Array[Stmt]) -> Unit {
   let _changed = desugar_handled_host_calls_reporting_change(stmts)
   ()
 }
+
+//# #1962: the standard host provider at the entry boundary
+//
+// `perform Fs::Exists(p)` names the host OPERATION; `Fs::exists(p)` is the
+// capability builtin that carries it out. A `handle` naming the operation
+// intercepts the perform -- and, since #2918, a direct call lexically inside
+// it -- which is what makes `@vibe/fs` a mockable wrapper. But nothing
+// handled the operation when no user handler was installed: the entry row
+// admits `Fs` (`is_entry_admitted_effect` -- "host-provider effects are
+// supplied by the process host"), so the program checked clean, and at run
+// time the perform unwound to the top as a raw `WebAssembly.Exception`.
+// Measured on a stage1 from main at 0f0ba36:
+//
+//   fn reader() -> Bool with Fs { perform Fs::Exists("nope") }
+//   fn main() -> Unit allows Stdout + Fs { println("before")
+//                                          println("after \{reader()}") }
+//
+//   before
+//   [object WebAssembly.Exception]        (exit 1, "after" never printed)
+//
+// The process host IS the provider the policy promises, so the entry installs
+// it: a tail-resumptive `handle` around the entry body whose arm for each
+// operation resumes with the direct builtin --
+// `Fs::Exists(a) => resume(Fs::exists(a))`. An inner user handler still wins,
+// because it is nearer; the provider only answers what nothing else did.
+//
+// WHAT IT IS KEYED ON. Only operations the program actually PERFORMS get an
+// arm, so a program with no host perform -- the compiler's own sources, and
+// every program that calls the builtins directly -- is untouched: no new
+// handle, no new host import, no evidence threading. And only operations the
+// entry is GRANTED get one: `fn main` must name the effect (or the operation)
+// in its `allows` row, and a `test` / `bench` block's ambient row is
+// `test_bench_default_effects`, which carries every provider with CamelCase
+// operations (`Fs`, `Env`, `Profiler`). An ungranted operation keeps today's
+// behaviour rather than silently acquiring authority: the arm would be the
+// only reference to that host import, so installing it would widen what the
+// artifact can do.
+//
+// This runs AFTER `desugar_handled_host_calls`, so the provider's own direct
+// calls are never rewritten into performs of the handler they belong to.
+
+/// `(operation, arity)` for every host operation the program performs, and
+/// separately for every one a `handle` arm names, each in first-seen order.
+fn ehp_collect_stmts(stmts: Array[Stmt], performed: Array[(String, Int)], handled: Array[(String, Int)]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, body) => ehp_collect_expr(body, performed, handled),
+      SLetMut(_, _, body) => ehp_collect_expr(body, performed, handled),
+      SLetPat(_, body) => ehp_collect_expr(body, performed, handled),
+      STest(_, body) => ehp_collect_expr(body, performed, handled),
+      SBench(_, body) => ehp_collect_expr(body, performed, handled),
+      SExample(_, body) => ehp_collect_expr(body, performed, handled),
+      SExpr(body) => ehp_collect_expr(body, performed, handled),
+      SFnDecl(_, _, body, _, _) => ehp_collect_expr(body, performed, handled),
+      SModule(_, _, body) => ehp_collect_stmts(body, performed, handled),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+/// A host OPERATION spelling: a standard host provider's name that
+/// `canonical_builtin_name` maps to a different (builtin) spelling. That is
+/// exactly the CamelCase operations of `Fs` / `Env` / `Profiler`; a user
+/// effect that happens to share a provider's name declares operations the
+/// mapping does not know, and is left alone.
+fn ehp_is_host_operation(name: String) -> Bool {
+  String::index_of(name, "::") > 0 && has_standard_host_provider(name) && canonical_builtin_name(name) != name
+}
+
+fn ehp_effect_of(op: String) -> String {
+  String::substring(op, 0, String::index_of(op, "::"))
+}
+
+fn ehp_note(out: Array[(String, Int)], op: String, arity: Int) -> Unit {
+  let mut i = 0
+  let mut seen = false
+  while i < Array::length(out) {
+    if Array::get(out, i).0 == op {
+      seen = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if seen {
+    ()
+  } else {
+    Array::push(out, (op, arity))
+  }
+}
+
+fn ehp_collect_expr(e: Expr, performed: Array[(String, Int)], handled: Array[(String, Int)]) -> Unit {
+  match e {
+    ECall(EIdent(head, _), args, _) => {
+      if head == "perform" && Array::length(args) == 1 {
+        match Array::get(args, 0) {
+          ECall(EIdent(op, _), op_args, _) => if ehp_is_host_operation(op) {
+            ehp_note(performed, op, Array::length(op_args))
+          } else {
+            ()
+          },
+          // The bare spelling of a zero-argument operation:
+          // `perform Env::ArgsLen`, `perform Profiler::NowUs`.
+          EIdent(op, _) => if ehp_is_host_operation(op) {
+            ehp_note(performed, op, 0)
+          } else {
+            ()
+          },
+          _ => ()
+        }
+      } else {
+        ()
+      }
+      ehp_collect_children(e, performed, handled)
+    },
+    // The generic child walk does not descend into ARM bodies (see
+    // `dhhc_expr_has_host_handler`), and an arm can perform too.
+    EHandle(body, arms) => {
+      let mut i = 0
+      while i < Array::length(arms) {
+        // Arm patterns carry a source-span wrapper (`source_pat`).
+        match source_pat(Array::get(arms, i).0) {
+          PCtor(op, binders) => if ehp_is_host_operation(op) {
+            ehp_note(handled, op, Array::length(binders))
+          } else {
+            ()
+          },
+          _ => ()
+        }
+        i = i + 1
+      }
+      ehp_collect_expr(body, performed, handled)
+      ehp_collect_arms(arms, performed, handled)
+    },
+    EMatch(scrut, arms) => {
+      ehp_collect_expr(scrut, performed, handled)
+      ehp_collect_arms(arms, performed, handled)
+    },
+    _ => ehp_collect_children(e, performed, handled)
+  }
+}
+
+fn ehp_collect_arms(arms: Array[(Pat, Expr)], performed: Array[(String, Int)], handled: Array[(String, Int)]) -> Unit {
+  let mut i = 0
+  while i < Array::length(arms) {
+    ehp_collect_expr(Array::get(arms, i).1, performed, handled)
+    i = i + 1
+  }
+}
+
+fn ehp_collect_children(e: Expr, performed: Array[(String, Int)], handled: Array[(String, Int)]) -> Unit {
+  let mark = expr_children_push(e)
+  let end = expr_children_top()
+  let mut i = mark
+  while i < end {
+    ehp_collect_expr(expr_child_at(i), performed, handled)
+    i = i + 1
+  }
+  expr_children_pop(mark)
+}
+
+/// Does an `allows` row (comma-separated, as the parser stores it) grant
+/// `op`? The effect itself (`Fs`), the operation (`Fs::Exists`) or its
+/// capability spelling (`Fs::exists`) each do. An OPTIONAL label
+/// (`Fs::exists?`) does not: whether it is granted is decided later, by the
+/// optional-capability resolution, and the provider must not pre-empt it.
+fn ehp_row_grants(row: String, op: String) -> Bool {
+  let effect = ehp_effect_of(op)
+  let capability = canonical_builtin_name(op)
+  let parts = String::split(row, ",")
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(parts) {
+    let label = String::trim(Array::get(parts, i))
+    if label == effect || label == op || label == capability {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn ehp_test_grants(op: String) -> Bool {
+  str_array_contains(test_bench_default_effects(), ehp_effect_of(op))
+}
+
+/// The provider around `body`, or `body` itself when no performed operation
+/// is granted. Each effect that gets arms is noted in `provided`.
+///
+/// ONE `handle` PER EFFECT, nested in first-seen order. A single handle whose
+/// arms span two effects is not what the effect passes lower: measured on a
+/// program performing both `Fs::Exists` and `Env::Get`, the combined handle
+/// answered the `Fs` perform and left the `Env` one to fail, while either
+/// effect alone passed.
+fn ehp_wrap(body: Expr, performed: Array[(String, Int)], granted: (String) -> Bool, provided: Array[String]) -> Expr {
+  let order: Array[String] = []
+  let mut i = 0
+  while i < Array::length(performed) {
+    let (op, _) = Array::get(performed, i)
+    if granted(op) && !str_array_contains(order, ehp_effect_of(op)) {
+      Array::push(order, ehp_effect_of(op))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  let mut out = body
+  let mut ei = 0
+  while ei < Array::length(order) {
+    let effect = Array::get(order, ei)
+    let arms: Array[(Pat, Expr)] = []
+    let mut j = 0
+    while j < Array::length(performed) {
+      let (op, arity) = Array::get(performed, j)
+      if ehp_effect_of(op) == effect && granted(op) {
+        let binders: Array[Pat] = []
+        let actuals: Array[Expr] = []
+        let mut a = 0
+        while a < arity {
+          let pname = dinsp_fresh_name(String::concat("__host_arg", __to_string(a)), body, body)
+          Array::push(binders, PBind(pname))
+          Array::push(actuals, EIdent(pname, -1))
+          a = a + 1
+        }
+        let direct = ECall(EIdent(canonical_builtin_name(op), -1), actuals, -1)
+        Array::push(arms, (PCtor(op, binders), ECall(EIdent("resume", -1), [
+          direct
+        ], -1)))
+      } else {
+        ()
+      }
+      j = j + 1
+    }
+    out = EHandle(out, arms)
+    if !str_array_contains(provided, effect) {
+      Array::push(provided, effect)
+    } else {
+      ()
+    }
+    ei = ei + 1
+  }
+  out
+}
+
+/// The source spelling of a registry type, for the handful of types host
+/// operations traffic in; `None` for anything else.
+fn ehp_type_expr(t: Type) -> Option[TypeExpr] {
+  match t {
+    CtInt => Some(TyName("Int")),
+    CtDouble => Some(TyName("Double")),
+    CtBool => Some(TyName("Bool")),
+    CtString => Some(TyName("String")),
+    CtUnit => Some(TyName("Unit")),
+    CtBytes => Some(TyName("Bytes")),
+    CtArray(el) => match ehp_type_expr(el) {
+      Some(te) => Some(TyApp("Array", [te])),
+      None => None
+    },
+    CtOption(el) => match ehp_type_expr(el) {
+      Some(te) => Some(TyApp("Option", [te])),
+      None => None
+    },
+    _ => None
+  }
+}
+
+/// `(short op name, params, result)` read off the builtin registry row the
+/// operation lowers to.
+fn ehp_op_signature(op: String) -> Option[(String, Array[TypeExpr], TypeExpr)] {
+  // `Fs::readdir` is typed by the checker and lowered by codegen as a special
+  // case (a `String::split` over the raw host import), so the registry has no
+  // row for it -- the only registered host operation without one, measured
+  // over every CamelCase operation `canonical_builtin_name` knows. Without
+  // this, `perform Fs::ReadDir(p)` got a provider arm but no declared slot
+  // (Codex on #3059).
+  if canonical_builtin_name(op) == "Fs::readdir" {
+    return Some(("ReadDir", [TyName("String")], TyApp("Array", [
+      TyName("String")
+    ])))
+  }
+  match lookup_registry_builtin(canonical_builtin_name(op)) {
+    Some(CtFn(params, ret, _)) => {
+      let ptes: Array[TypeExpr] = []
+      let mut ok = true
+      let mut i = 0
+      while i < Array::length(params) {
+        match ehp_type_expr(Array::get(params, i)) {
+          Some(te) => Array::push(ptes, te),
+          None => {
+            ok = false
+          }
+        }
+        i = i + 1
+      }
+      match ehp_type_expr(ret) {
+        Some(rte) => if ok {
+          Some((String::substring(op, String::index_of(op, "::") + 2, String::length(op)), ptes, rte))
+        } else {
+          None
+        },
+        None => None
+      }
+    },
+    _ => None
+  }
+}
+
+/// A host effect is a builtin: a program can perform `Fs::Exists` without
+/// importing `@vibe/fs`, which is where `effect Fs { .. }` is declared. The
+/// effect passes only lower a `handle` for an effect the program DECLARES --
+/// for any other they refuse it, naming an unrelated call (`println`) -- so
+/// the provider's own handle needs the declaration. Declare it from the
+/// registry, with exactly the operations the program performs or handles.
+fn ehp_declare_missing_effects(stmts: Array[Stmt], effects: Array[String], performed: Array[(String, Int)], handled: Array[(String, Int)]) -> Unit {
+  let mut ei = 0
+  while ei < Array::length(effects) {
+    let effect = Array::get(effects, ei)
+    // The operations this program performs or handles, each once.
+    let wanted: Array[(String, Array[TypeExpr], TypeExpr)] = []
+    let names: Array[String] = []
+    let mut pass = 0
+    while pass < 2 {
+      let src = if pass == 0 {
+        performed
+      } else {
+        handled
+      }
+      let mut i = 0
+      while i < Array::length(src) {
+        let (op, _) = Array::get(src, i)
+        if ehp_effect_of(op) == effect && !str_array_contains(names, op) {
+          match ehp_op_signature(op) {
+            Some(sig) => {
+              Array::push(names, op)
+              Array::push(wanted, sig)
+            },
+            None => ()
+          }
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      pass = pass + 1
+    }
+    let slots = ehp_effect_decl_indices(stmts, effect)
+    if Array::length(slots) == 0 {
+      if Array::length(wanted) > 0 {
+        let no_params: Array[String] = []
+        Array::push(stmts, SEffectDef(false, effect, no_params, wanted))
+      } else {
+        ()
+      }
+    } else {
+      // A declaration that omits an operation the provider now handles --
+      // `@vibe/fs` declares four `Fs` operations, and a program may perform any
+      // registered one (`Fs::Remove`). The evidence dictionary is built from
+      // the declaration, so the missing operation would have no slot
+      // (measured: `unknown struct field: Remove`). Append it to every
+      // declaration of the effect, keeping the program's own operations and
+      // their order.
+      let mut si = 0
+      while si < Array::length(slots) {
+        let slot = Array::get(slots, si)
+        match Array::get(stmts, slot) {
+          SEffectDef(exported, name, tparams, ops) => {
+            let merged: Array[(String, Array[TypeExpr], TypeExpr)] = []
+            let mut k = 0
+            while k < Array::length(ops) {
+              Array::push(merged, Array::get(ops, k))
+              k = k + 1
+            }
+            let mut w = 0
+            while w < Array::length(wanted) {
+              let (short, _, _) = Array::get(wanted, w)
+              let mut present = false
+              let mut j = 0
+              while j < Array::length(ops) {
+                let (have, _, _) = Array::get(ops, j)
+                if have == short {
+                  present = true
+                } else {
+                  ()
+                }
+                j = j + 1
+              }
+              if !present {
+                Array::push(merged, Array::get(wanted, w))
+                let (_, added_params, _) = Array::get(wanted, w)
+                let qualified = String::concat(String::concat(effect, "::"), short)
+                let mut known = false
+                let mut q = 0
+                while q < Array::length(dhhc_forward_ops) {
+                  if Array::get(dhhc_forward_ops, q).0 == qualified {
+                    known = true
+                  } else {
+                    ()
+                  }
+                  q = q + 1
+                }
+                if !known {
+                  Array::push(dhhc_forward_ops, (qualified, Array::length(added_params)))
+                } else {
+                  ()
+                }
+              } else {
+                ()
+              }
+              w = w + 1
+            }
+            Array::set(stmts, slot, SEffectDef(exported, name, tparams, merged))
+          },
+          _ => ()
+        }
+        si = si + 1
+      }
+    }
+    ei = ei + 1
+  }
+}
+
+/// The indices of every top-level declaration of `effect`.
+/// Does a declaration in the program give `op` a signature other than the
+/// host's (`effect Fs { Exists(Int, Int) -> Bool }`)? Such an operation is the
+/// program's own, whatever its spelling: the provider must not answer it with
+/// the builtin, and a direct builtin call must not be rewritten into it --
+/// both run after checking, so the mismatched call would never be type
+/// checked (Codex on #3059).
+fn ehp_declared_incompatibly(stmts: Array[Stmt], op: String) -> Bool {
+  let effect = ehp_effect_of(op)
+  let short = String::substring(op, String::index_of(op, "::") + 2, String::length(op))
+  let host = ehp_op_signature(op)
+  let mut bad = false
+  let slots = ehp_effect_decl_indices(stmts, effect)
+  let mut si = 0
+  while si < Array::length(slots) {
+    match Array::get(stmts, Array::get(slots, si)) {
+      SEffectDef(_, _, _, ops) => {
+        let mut k = 0
+        while k < Array::length(ops) {
+          let (name, params, ret) = Array::get(ops, k)
+          if name == short {
+            let same = match host {
+              Some((_, hparams, hret)) => Array::length(hparams) == Array::length(params) && ehp_type_key(stmts, hret) == ehp_type_key(stmts, ret) && {
+                let mut eq = true
+                let mut j = 0
+                while j < Array::length(params) {
+                  if ehp_type_key(stmts, Array::get(params, j)) != ehp_type_key(stmts, Array::get(hparams, j)) {
+                    eq = false
+                  } else {
+                    ()
+                  }
+                  j = j + 1
+                }
+                eq
+              },
+              None => false
+            }
+            if !same {
+              bad = true
+            } else {
+              ()
+            }
+          } else {
+            ()
+          }
+          k = k + 1
+        }
+      },
+      _ => ()
+    }
+    si = si + 1
+  }
+  bad
+}
+
+/// `impl_target_key` of `ty` with the program's type aliases expanded, so a
+/// transparent `type Path = String` in a host operation's declaration still
+/// matches the host's `String` (Codex on #3059).
+fn ehp_type_key(stmts: Array[Stmt], ty: TypeExpr) -> String {
+  impl_target_key(ehp_expand_aliases(stmts, ty, 32))
+}
+
+fn ehp_expand_aliases(stmts: Array[Stmt], ty: TypeExpr, fuel: Int) -> TypeExpr {
+  if fuel <= 0 {
+    ty
+  } else {
+    match ty {
+      // A builtin has several spellings the checker resolves to one type
+      // (`()` / `Unit`, `i32` / `Int`, `Float` / `Double`), so each is
+      // compared under the registry's spelling (Codex on #3059).
+      TyName(name) => match ehp_find_alias(stmts, name, 0) {
+        Some((_, target)) => ehp_expand_aliases(stmts, target, fuel - 1),
+        None => match resolve_builtin(name) {
+          Some(t) => match ehp_type_expr(t) {
+            Some(canonical) => canonical,
+            None => ty
+          },
+          None => ty
+        }
+      },
+      TyApp(head, args) => {
+        let expanded = for arg in args {
+          ehp_expand_aliases(stmts, arg, fuel - 1)
+        }
+        match ehp_find_alias(stmts, head, Array::length(args)) {
+          Some((formals, target)) => ehp_expand_aliases(stmts, eq_subst_ty(target, formals, expanded), fuel - 1),
+          None => TyApp(head, expanded)
+        }
+      },
+      TyFn(params, result, row) => TyFn(for param in params {
+        ehp_expand_aliases(stmts, param, fuel - 1)
+      }, ehp_expand_aliases(stmts, result, fuel - 1), row),
+      TyTuple(items) => TyTuple(for item in items {
+        ehp_expand_aliases(stmts, item, fuel - 1)
+      }),
+      TyUnit => TyName("Unit")
+    }
+  }
+}
+
+fn ehp_find_alias(stmts: Array[Stmt], name: String, arity: Int) -> Option[(Array[String], TypeExpr)] {
+  let mut found: Option[(Array[String], TypeExpr)] = None
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      STypeAlias(_, n, formals, target) => if n == name && Array::length(formals) == arity {
+        found = Some((formals, target))
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn ehp_effect_decl_indices(stmts: Array[Stmt], effect: String) -> Array[Int] {
+  let out: Array[Int] = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SEffectDef(_, name, _, _) => if name == effect {
+        Array::push(out, i)
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Does the program perform, or handle, a host operation anywhere -- i.e. could
+/// `wrap_entry_host_provider` change it? The module-split prelude asks this
+/// before partitioning: the provider needs the WHOLE program's performs (an
+/// entry's partition sees an imported helper only through its interface), so
+/// such a program takes the whole-program prelude instead.
+export fn program_performs_host_operation(stmts: Array[Stmt]) -> Bool {
+  let performed: Array[(String, Int)] = []
+  let handled: Array[(String, Int)] = []
+  ehp_collect_stmts(stmts, performed, handled)
+  // A handle naming a host operation counts too: the callee interception
+  // (`intercept_handled_host_calls_everywhere`) rewrites direct calls in
+  // OTHER modules into performs, so it must see the whole program.
+  Array::length(performed) > 0 || Array::length(handled) > 0
+}
+
+//# #1962: a handler for a host operation sees the direct spelling in CALLEES
+//
+// `desugar_handled_host_calls` rewrites a direct `Fs::read_file(p)` into
+// `perform Fs::ReadFile(p)` only where a `handle` naming the operation is
+// LEXICALLY around it. A direct call in a function the handled body merely
+// calls still reached the host, while a `perform` in that same position was
+// intercepted -- the split this issue says must not be retained. Measured on
+// a stage2 from main at 0f0ba36:
+//
+//   fn inner() -> String with Fs::read_file { Fs::read_file("data.txt") }
+//   test { handle { inner() } with { Fs::ReadFile(_p) => resume("MOCKED") } }
+//
+//   actual: REAL   (the file's contents; the handler never ran)
+//
+// That rewrite could not be widened before the entry had a provider: an
+// unhandled host perform threw, so turning every direct call into one would
+// have broken every call site no handler covers. `wrap_entry_host_provider`
+// removed that obstacle, and this pass is the rest of it.
+//
+// WHEN IT FIRES. Only for an operation some `handle` in the program names --
+// a program that never handles a host operation (the compiler's own sources,
+// and most programs) is untouched. And only when EVERY entry in the artifact
+// is granted the operation, so the provider is guaranteed to catch whatever
+// no user handler does; otherwise the direct spelling is left alone rather
+// than turned into a perform nothing may handle.
+//
+// WHAT IT DOES. Every direct call of the operation becomes the perform --
+// handler arm bodies included: an arm runs outside its own handler, so its
+// perform reaches the next one out, which is exactly where the direct call
+// was going. Every top-level function whose declared row names the operation
+// (its capability spelling, its operation spelling) gains the effect itself,
+// so evidence passing threads the handler down to it. The checker already
+// required every function that reaches the call to carry that label, so the
+// widened rows are exactly the call chain.
+//
+// It runs after checking: the rows it widens are the checked rows, and the
+// checker keeps seeing the program as written.
+
+fn ihc_arm_ops_stmts(stmts: Array[Stmt], out: Array[String]) -> Unit {
+  let performed: Array[(String, Int)] = []
+  let handled: Array[(String, Int)] = []
+  ehp_collect_stmts(stmts, performed, handled)
+  let mut i = 0
+  while i < Array::length(handled) {
+    Array::push(out, Array::get(handled, i).0)
+    i = i + 1
+  }
+}
+
+/// Is `op` granted at every entry this artifact has -- `entry_name`'s
+/// function, and every `test` / `bench` block -- and are those ALL of its
+/// entries?
+///
+/// The second half is what makes the rewrite sound. The provider is installed
+/// only around those entries, so a direct call turned into a perform must be
+/// unreachable from anywhere else. With no `entry_name` function
+/// (`__no_entry__`), an exported declaration is an entry the host may call
+/// directly, outside every provider, so the program is left alone. With no
+/// entry at all, it is left alone too.
+fn ihc_granted_everywhere(stmts: Array[Stmt], entry_name: String, op: String) -> Bool {
+  let mut ok = true
+  let mut has_entry_fn = false
+  let mut has_block = false
+  let mut has_export = false
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(exported, _, name, binding_ty, value) => {
+        if exported {
+          has_export = true
+        } else {
+          ()
+        }
+        match value {
+          EFn(_, _, _, _, eff, _) => if name == entry_name {
+            has_entry_fn = true
+            let row = ehp_entry_row(stmts, binding_ty, eff)
+            if !ehp_row_grants(row, op) {
+              ok = false
+            } else {
+              ()
+            }
+          } else {
+            ()
+          },
+          _ => ()
+        }
+      },
+      // An exported module's exported functions are entries the host may
+      // call too, outside every provider.
+      SModule(true, _, _) => {
+        has_export = true
+      },
+      STest(_, _) => {
+        has_block = true
+        if !ehp_test_grants(op) {
+          ok = false
+        } else {
+          ()
+        }
+      },
+      SBench(_, _) => {
+        has_block = true
+        if !ehp_test_grants(op) {
+          ok = false
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  ok && (has_entry_fn || (has_block && !has_export))
+}
+
+/// `row` with `effect` appended when one of its labels names an operation in
+/// `ops` (either spelling) and the effect itself is absent.
+fn ihc_widen_row(row: String, ops: Array[String]) -> String {
+  let parts = String::split(row, ",")
+  let labels: Array[String] = []
+  let mut i = 0
+  while i < Array::length(parts) {
+    Array::push(labels, String::trim(Array::get(parts, i)))
+    i = i + 1
+  }
+  let mut out = row
+  let mut j = 0
+  while j < Array::length(ops) {
+    let op = Array::get(ops, j)
+    let effect = ehp_effect_of(op)
+    let names_op = str_array_contains(labels, op) || str_array_contains(labels, canonical_builtin_name(op))
+    if names_op && !str_array_contains(labels, effect) {
+      Array::push(labels, effect)
+      out = if String::length(String::trim(out)) == 0 {
+        effect
+      } else {
+        String::concat(out, String::concat(", ", effect))
+      }
+    } else {
+      ()
+    }
+    j = j + 1
+  }
+  out
+}
+
+/// In place, over the whole program. `entry_name` is the artifact's entry
+/// (`__no_entry__` on the unit-test lane, which has only test blocks).
+export fn intercept_handled_host_calls_everywhere(stmts: Array[Stmt], entry_name: String) -> Unit {
+  dhhc_note_shadowed_names(stmts)
+  let named: Array[String] = []
+  ihc_arm_ops_stmts(stmts, named)
+  let ops: Array[String] = []
+  let mut i = 0
+  while i < Array::length(named) {
+    let op = Array::get(named, i)
+    if ihc_granted_everywhere(stmts, entry_name, op) && !ehp_declared_incompatibly(stmts, op) && !str_array_contains(ops, op) {
+      Array::push(ops, op)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if Array::length(ops) == 0 {
+    ()
+  } else {
+    let mut s = 0
+    while s < Array::length(stmts) {
+      Array::set(stmts, s, ihc_rewrite_stmt(Array::get(stmts, s), ops))
+      s = s + 1
+    }
+  }
+}
+
+/// One statement of `intercept_handled_host_calls_everywhere`'s rewrite. A
+/// source `module M { .. }` is walked like the top level: a handled helper
+/// inside it is still reached through `M::reader()` (Codex on #3059).
+fn ihc_rewrite_stmt(stmt: Stmt, ops: Array[String]) -> Stmt {
+  match stmt {
+    SLet(e, r, n, t, EFn(tps, tbs, params, ret, eff, body)) => {
+      // The signature may sit on the BINDING instead (`let read: () -> String
+      // with Fs::read_file = () -> ..`); the checker reads that annotation as
+      // the row, and the evidence pass reads only the EFn slot. So the
+      // annotation is widened too, and its widened row is materialized into
+      // an empty EFn slot -- else the helper gets no handler dictionary and a
+      // caller's handler is bypassed (Codex on #3059).
+      let widened_ty = match t {
+        Some(TyFn(pts, rt, Some(row))) => Some(TyFn(pts, rt, Some(ihc_widen_row(row, ops)))),
+        _ => t
+      }
+      let widened = match eff {
+        Some(row) => Some(ihc_widen_row(row, ops)),
+        None => match widened_ty {
+          Some(TyFn(_, _, Some(row))) => Some(row),
+          _ => None
+        }
+      }
+      SLet(e, r, n, widened_ty, EFn(tps, tbs, params, ret, widened, dhhc_expr(body, ops)))
+    },
+    SLet(e, r, n, t, body) => SLet(e, r, n, t, dhhc_expr(body, ops)),
+    SLetMut(n, t, body) => SLetMut(n, t, dhhc_expr(body, ops)),
+    SLetPat(p, body) => SLetPat(p, dhhc_expr(body, ops)),
+    STest(n, body) => STest(n, dhhc_expr(body, ops)),
+    SBench(n, body) => SBench(n, dhhc_expr(body, ops)),
+    SExample(n, body) => SExample(n, dhhc_expr(body, ops)),
+    SExpr(body) => SExpr(dhhc_expr(body, ops)),
+    SModule(exported, name, body) => {
+      let inner: Array[Stmt] = []
+      let mut i = 0
+      while i < Array::length(body) {
+        Array::push(inner, ihc_rewrite_stmt(Array::get(body, i), ops))
+        i = i + 1
+      }
+      SModule(exported, name, inner)
+    },
+    other => other
+  }
+}
+
+/// Install the standard host provider around every entry: `entry_name`'s
+/// body, and each `test` / `bench` body (the unit-test lane compiles those as
+/// entries of their own). Then declare any host effect the provider now
+/// handles but the program never declared. A no-op for a program that
+/// performs no host operation. See the section comment above.
+///
+/// Only a PROVIDED effect is declared. Declaring one merely because a user
+/// `handle` names its operation would be a wider change than this pass makes:
+/// the compiler's own sources carry two such handlers
+/// (`core/module_graph_path.vibe`, `cache/cache_underlying.vibe`), and a
+/// declared `Env` sends every `Env`-row closure in the CLI through evidence
+/// migration -- measured, the stage1 -> stage2 self-compile then fails. A
+/// handler for an undeclared host effect keeps today's refusal.
+export fn wrap_entry_host_provider(stmts: Array[Stmt], entry_name: String) -> Unit {
+  // The provider is what makes the callee interception sound: every direct
+  // call it turns into a perform is caught here when no user handler is.
+  intercept_handled_host_calls_everywhere(stmts, entry_name)
+  let performed: Array[(String, Int)] = []
+  let handled: Array[(String, Int)] = []
+  ehp_collect_stmts(stmts, performed, handled)
+  if Array::length(performed) == 0 {
+    ()
+  } else {
+    // A top-level FUNCTION already named like the builtin would capture the
+    // provider's call; leave that operation unprovided (today's behaviour).
+    let fn_bound: Array[String] = []
+    ehp_bound_builtin_names(stmts, performed, false, fn_bound)
+    let effects: Array[String] = []
+    let provided_ops: Array[String] = []
+    let mut i = 0
+    while i < Array::length(stmts) {
+      match Array::get(stmts, i) {
+        SLet(exported, is_rec, name, ty, EFn(tps, tbs, params, ret, eff, body)) => if name == entry_name {
+          let row = ehp_entry_row(stmts, ty, eff)
+          let wrapped = ehp_wrap(body, performed, (op) -> {
+            ehp_row_grants(row, op) && !ehp_declared_incompatibly(stmts, op) && ehp_unshadowed(fn_bound, op, provided_ops)
+          }, effects)
+          Array::set(stmts, i, SLet(exported, is_rec, name, ty, EFn(tps, tbs, params, ret, eff, wrapped)))
+        } else {
+          ()
+        },
+        STest(tname, body) => {
+          Array::set(stmts, i, STest(tname, ehp_wrap(body, performed, (op) -> {
+            ehp_test_grants(op) && !ehp_declared_incompatibly(stmts, op) && ehp_unshadowed(fn_bound, op, provided_ops)
+          }, effects)))
+        },
+        SBench(bname, body) => {
+          Array::set(stmts, i, SBench(bname, ehp_wrap(body, performed, (op) -> {
+            ehp_test_grants(op) && !ehp_declared_incompatibly(stmts, op) && ehp_unshadowed(fn_bound, op, provided_ops)
+          }, effects)))
+        },
+        _ => ()
+      }
+      i = i + 1
+    }
+    ehp_move_aside_aliases(stmts, provided_ops)
+    Array::truncate(dhhc_forward_ops, 0)
+    ehp_declare_missing_effects(stmts, effects, performed, handled)
+    if Array::length(dhhc_forward_ops) > 0 {
+      // A user handler of an effect the declaration just grew answers only
+      // the operations it names; give it a forwarding arm for each new one.
+      Array::set(dhhc_forward_only, 0, true)
+      dhhc_rewrite_stmts(stmts)
+      Array::set(dhhc_forward_only, 0, false)
+      Array::truncate(dhhc_forward_ops, 0)
+    } else {
+      ()
+    }
+  }
+}
+
+/// The entry's granted row: its `EFn` row joined with the row a binding
+/// annotation carries (`let main: () -> Unit with Fs = () -> { .. }`). The
+/// checker treats the annotation's row as the grant too (`fn_binding_effects`),
+/// so reading only the `EFn` row left such an entry's performs unprovided
+/// (Codex on #3059).
+fn ehp_entry_row(stmts: Array[Stmt], ty: Option[TypeExpr], eff: Option[String]) -> String {
+  let own = match eff {
+    Some(r) => r,
+    None => ""
+  }
+  let annotated = match ty {
+    Some(TyFn(_, _, Some(r))) => r,
+    _ => ""
+  }
+  let row = if String::length(String::trim(annotated)) == 0 {
+    own
+  } else if String::length(String::trim(own)) == 0 {
+    annotated
+  } else {
+    String::concat(own, String::concat(", ", annotated))
+  }
+  ehp_expand_effectsets(stmts, row)
+}
+
+/// `row` with every label that names an `effectset` replaced by its members,
+/// transitively. The checker expands `allows AppCaps` the same way, so an
+/// entry granted `Fs` through a set must get the provider an entry granted
+/// `Fs` directly gets (Codex on #3059).
+fn ehp_expand_effectsets(stmts: Array[Stmt], row: String) -> String {
+  let pending: Array[String] = []
+  let parts = String::split(row, ",")
+  let mut i = 0
+  while i < Array::length(parts) {
+    let label = String::trim(Array::get(parts, i))
+    if String::length(label) > 0 {
+      Array::push(pending, label)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  let seen_sets: Array[String] = []
+  let out: Array[String] = []
+  let mut k = 0
+  while k < Array::length(pending) {
+    let label = Array::get(pending, k)
+    let members = ehp_effectset_members(stmts, label)
+    match members {
+      Some(ms) => if !str_array_contains(seen_sets, label) {
+        Array::push(seen_sets, label)
+        let mut m = 0
+        while m < Array::length(ms) {
+          Array::push(pending, String::trim(Array::get(ms, m)))
+          m = m + 1
+        }
+      } else {
+        ()
+      },
+      None => if !str_array_contains(out, label) {
+        Array::push(out, label)
+      } else {
+        ()
+      }
+    }
+    k = k + 1
+  }
+  String::join(out, ", ")
+}
+
+fn ehp_effectset_members(stmts: Array[Stmt], name: String) -> Option[Array[String]] {
+  let mut found: Option[Array[String]] = None
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SEffectSet(_, n, members) => if n == name {
+        found = Some(members)
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// True when no top-level function occupies `op`'s builtin name; notes the
+/// operation as provided.
+fn ehp_unshadowed(fn_bound: Array[String], op: String, provided_ops: Array[String]) -> Bool {
+  if str_array_contains(fn_bound, canonical_builtin_name(op)) {
+    false
+  } else {
+    if !str_array_contains(provided_ops, op) {
+      Array::push(provided_ops, op)
+    } else {
+      ()
+    }
+    true
+  }
+}
+
+/// The builtin names of `performed` that a top-level binding occupies:
+/// value aliases (`let Fs::exists = exists`) when `aliases`, other bindings
+/// (a real `fn`) otherwise.
+fn ehp_bound_builtin_names(stmts: Array[Stmt], performed: Array[(String, Int)], aliases: Bool, out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let (bound, is_alias) = match Array::get(stmts, i) {
+      SLet(_, _, name, _, EIdent(_, _)) => (name, true),
+      SLet(_, _, name, _, _) => (name, false),
+      SFnDecl(_, name, _, _, _) => (name, false),
+      _ => ("", false)
+    }
+    if String::length(bound) > 0 && is_alias == aliases {
+      let mut j = 0
+      while j < Array::length(performed) {
+        if canonical_builtin_name(Array::get(performed, j).0) == bound && !str_array_contains(out, bound) {
+          Array::push(out, bound)
+        } else {
+          ()
+        }
+        j = j + 1
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
+/// `@vibe/fs` binds `export let Fs::exists = exists` (#795) -- a VALUE ALIAS
+/// occupying the builtin's name. `rewrite_top_level_fn_alias_refs` has
+/// already retargeted every reference the source made to it, so the only
+/// call still naming `Fs::exists` is the provider's own arm, and codegen
+/// resolves a name to the first binding it finds: the alias, i.e. the
+/// perform-based wrapper, called from inside its own provider. Measured:
+/// `null function or function signature mismatch`. The alias is dead at this
+/// point, so move it to a name nothing spells, and the arm reaches the
+/// builtin. Executables do not export these bindings (measured: `_start main
+/// memory __heap_ptr error __exception_throw_tag`), and a library build has no
+/// entry for the provider to wrap.
+fn ehp_move_aside_aliases(stmts: Array[Stmt], provided_ops: Array[String]) -> Unit {
+  let as_pairs: Array[(String, Int)] = []
+  let mut k = 0
+  while k < Array::length(provided_ops) {
+    Array::push(as_pairs, (Array::get(provided_ops, k), 0))
+    k = k + 1
+  }
+  let aliased: Array[String] = []
+  ehp_bound_builtin_names(stmts, as_pairs, true, aliased)
+  if Array::length(aliased) == 0 {
+    ()
+  } else {
+    let mut i = 0
+    while i < Array::length(stmts) {
+      match Array::get(stmts, i) {
+        SLet(e, r, name, t, EIdent(target, off)) => if str_array_contains(aliased, name) {
+          Array::set(stmts, i, SLet(e, r, String::concat("__host_provider_moved_alias$", name), t, EIdent(target, off)))
+        } else {
+          ()
+        },
+        _ => ()
+      }
+      i = i + 1
+    }
+  }
+}
+

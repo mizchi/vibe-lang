@@ -1,0 +1,180 @@
+// #1962: once a `handle` names a host operation, a direct call of it in a
+// CALLEE must be intercepted too. The pass rewrites every direct call of the
+// operation into its perform and widens each declared row that names the
+// capability with the effect itself -- but only when every entry is granted
+// the operation, so the entry provider is guaranteed to catch the rest.
+
+import @vibe/compiler/core {
+  Expr, Stmt, TypeExpr
+}
+
+import @vibe/parser {
+  lex, parse_program
+}
+
+import ./desugar_trait_dict.vibe {
+  intercept_handled_host_calls_everywhere
+}
+
+fn has_perform(e: Expr, op: String) -> Bool {
+  match e {
+    ECall(EIdent("perform", _), args, _) => match Array::get(args, 0) {
+      ECall(EIdent(n, _), _, _) => n == op,
+      _ => false
+    },
+    ECall(callee, args, _) => {
+      let mut found = has_perform(callee, op)
+      let mut i = 0
+      while i < Array::length(args) {
+        if has_perform(Array::get(args, i), op) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    ELet(_, v, b, _) => has_perform(v, op) || has_perform(b, op),
+    ESeq(a, b) => has_perform(a, op) || has_perform(b, op),
+    EHandle(b, arms) => {
+      let mut found = has_perform(b, op)
+      let mut i = 0
+      while i < Array::length(arms) {
+        if has_perform(Array::get(arms, i).1, op) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+/// `row|rewritten` for the named fn inside the first module node.
+fn module_fn_row(stmts: Array[Stmt], name: String, op: String) -> String {
+  let mut out = "<not found>"
+  for stmt in stmts {
+    match stmt {
+      SModule(_, _, body) => for inner in body {
+        match inner {
+          SLet(_, _, n, _, EFn(_, _, _, _, eff, fbody)) => if n == name {
+            let row = match eff {
+              Some(r) => r,
+              None => ""
+            }
+            out = "\{row}|\{has_perform(fbody, op)}"
+          } else {
+            ()
+          },
+          _ => ()
+        }
+      },
+      _ => ()
+    }
+  }
+  out
+}
+
+/// `row|rewritten` for the named top-level fn after the pass.
+fn after(source: String, entry: String, name: String, op: String) -> String with Exception {
+  let stmts = parse_program(lex(source))
+  intercept_handled_host_calls_everywhere(stmts, entry)
+  let mut out = "<not found>"
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, n, _, EFn(_, _, _, _, eff, body)) => if n == name {
+        let row = match eff {
+          Some(r) => r,
+          None => ""
+        }
+        out = "\{row}|\{has_perform(body, op)}"
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+let callee_program = "fn inner() -> String with Fs::read_file {\n  Fs::read_file(\"p\")\n}\n\nfn other() -> Int {\n  1\n}\n\ntest \"t\" {\n  let r = handle {\n    inner()\n  } with {\n    Fs::ReadFile(_p) => resume(\"m\")\n  }\n  inspect(r, \"m\")\n}\n"
+
+test "a callee's direct call is rewritten and its row gains the effect" {
+  inspect(after(callee_program, "__no_entry__", "inner", "Fs::ReadFile"), "Fs::read_file, Fs|true")
+}
+
+test "a function that does not name the operation keeps its row" {
+  inspect(after(callee_program, "__no_entry__", "other", "Fs::ReadFile"), "|false")
+}
+
+test "with no handler naming the operation nothing changes" {
+  let src = "fn inner() -> String with Fs::read_file {\n  Fs::read_file(\"p\")\n}\n\ntest \"t\" {\n  inspect(inner(), \"x\")\n}\n"
+  inspect(after(src, "__no_entry__", "inner", "Fs::ReadFile"), "Fs::read_file|false")
+}
+
+test "an entry that is not granted the operation leaves the direct spelling alone" {
+  let src = "fn inner() -> String with Fs::read_file {\n  Fs::read_file(\"p\")\n}\n\nfn main() -> Unit allows Stdout {\n  let r = handle {\n    \"x\"\n  } with {\n    Fs::ReadFile(_p) => resume(\"m\")\n  }\n  println(r)\n}\n"
+  inspect(after(src, "main", "inner", "Fs::ReadFile"), "Fs::read_file|false")
+}
+
+test "a granted main is rewritten, and so is a direct call in a handler arm" {
+  let src = "fn inner() -> String with Fs::read_file {\n  Fs::read_file(\"p\")\n}\n\nfn main() -> Unit allows Stdout + Fs::read_file {\n  let r = handle {\n    inner()\n  } with {\n    Fs::ReadFile(p) => resume(Fs::read_file(p))\n  }\n  println(r)\n}\n"
+  inspect(after(src, "main", "inner", "Fs::ReadFile"), "Fs::read_file, Fs|true")
+  inspect(after(src, "main", "main", "Fs::ReadFile"), "Stdout, Fs::read_file, Fs|true")
+}
+
+test "an exported declaration is an entry outside the provider, so nothing changes" {
+  let src = "export fn inner() -> String with Fs::read_file {\n  Fs::read_file(\"p\")\n}\n\ntest \"t\" {\n  let r = handle {\n    inner()\n  } with {\n    Fs::ReadFile(_p) => resume(\"m\")\n  }\n  inspect(r, \"m\")\n}\n"
+  inspect(after(src, "__no_entry__", "inner", "Fs::ReadFile"), "Fs::read_file|false")
+}
+
+test "a helper inside a module node is rewritten too" {
+  // Source `module` blocks are gone (#728), so the node is built directly:
+  // the pass must still walk one wherever a lowering produces it.
+  let src = "fn reader() -> String with Fs::read_file {\n  Fs::read_file(\"p\")\n}\n\ntest \"t\" {\n  let r = handle {\n    reader()\n  } with {\n    Fs::ReadFile(_p) => resume(\"m\")\n  }\n  inspect(r, \"m\")\n}\n"
+  let parsed = parse_program(lex(src))
+  let stmts: Array[Stmt] = [
+    SModule(false, "m", [Array::get(parsed, 0)]),
+    Array::get(parsed, 1)
+  ]
+  intercept_handled_host_calls_everywhere(stmts, "__no_entry__")
+  inspect(module_fn_row(stmts, "reader", "Fs::ReadFile"), "Fs::read_file, Fs|true")
+}
+
+test "a direct call is not rewritten into an operation declared with another signature" {
+  let src = "effect Fs {\n  Exists(Int, Int) -> Bool\n}\n\nfn inner() -> Bool with Fs::exists {\n  Fs::exists(\"p\")\n}\n\ntest \"t\" {\n  let r = handle {\n    inner()\n  } with {\n    Fs::Exists(_a, _b) => resume(true)\n  }\n  inspect(r, \"true\")\n}\n"
+  inspect(after(src, "__no_entry__", "inner", "Fs::Exists"), "Fs::exists|false")
+}
+
+/// The row of the named top-level binding's TYPE ANNOTATION after the pass.
+fn annotated_row(source: String, name: String) -> String with Exception {
+  let stmts = parse_program(lex(source))
+  intercept_handled_host_calls_everywhere(stmts, "__no_entry__")
+  let mut out = "<not found>"
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, n, Some(TyFn(_, _, Some(r))), _) => if n == name {
+        out = r
+      } else {
+        ()
+      },
+      _ => ()
+    }
+  }
+  out
+}
+
+test "a row written only on the binding's annotation is widened, and reaches the fn" {
+  // The checker reads `let f: () -> R with row = ..` as f's row; the
+  // evidence pass reads only the EFn slot, so both must carry the effect
+  // (Codex on #3059).
+  let src = "let inner: () -> String with Fs::read_file = () -> Fs::read_file(\"p\")\n\ntest \"t\" {\n  let r = handle {\n    inner()\n  } with {\n    Fs::ReadFile(_p) => resume(\"m\")\n  }\n  inspect(r, \"m\")\n}\n"
+  inspect(after(src, "__no_entry__", "inner", "Fs::ReadFile"), "Fs::read_file, Fs|true")
+  inspect(annotated_row(src, "inner"), "Fs::read_file, Fs")
+}

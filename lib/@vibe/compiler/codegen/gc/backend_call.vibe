@@ -17,7 +17,9 @@ import @vibe/compiler/core {
   leb128_encode_s64,
   leb128_encode_u32,
   typed_lowering_arg_offset,
-  typed_lowering_float_key
+  typed_lowering_float_key,
+  typed_render_refuse_key,
+  unrenderable_render_message
 }
 
 import @vibe/core {
@@ -314,6 +316,17 @@ export fn gc_fn_returns_float(local_names: Array[String], ctx: CompileCtxGc, fna
 fn bc_offset_says_int(e: Expr, ctx: CompileCtxGc) -> Bool {
   let off = typed_lowering_arg_offset(e)
   off >= 0 && array_contains_int(ctx.gc_int_render_offsets, off)
+}
+
+/// #3068: gc mirror of the linear lane's `ts_offset_refuses_render`
+/// (compile_call.vibe). The checker filed this render argument as a shape the
+/// runtime renderer cannot print (#2987, tag 6, folded into the Int channel
+/// under `typed_render_refuse_key`). The linear lane refused the build while
+/// this lane had no such arm and sent the argument to the runtime-dispatching
+/// `__to_string`, which printed its allocation address.
+fn bc_offset_refuses_render(e: Expr, ctx: CompileCtxGc) -> Bool {
+  let off = typed_lowering_arg_offset(e)
+  off >= 0 && array_contains_int(ctx.gc_int_render_offsets, typed_render_refuse_key(off))
 }
 
 fn bc_expr_is_intish(e: Expr, local_names: Array[String], ctx: CompileCtxGc) -> Bool {
@@ -2184,49 +2197,16 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         nl
       }
       else if fname == "Array::slice" {
-        let (an_idx, _, _) = resolve_func(ctx.func_table, "array_new")
-        let (ap_idx, _, _) = resolve_func(ctx.func_table, "Array::push")
-        let (ag_idx, _, _) = resolve_func(ctx.func_table, "Array::get")
-        let arr_local = next_local
-        let start_local = next_local + 1
-        let end_local = next_local + 2
-        let new_arr_local = next_local + 3
-        let i_local = next_local + 4
-        Array::push(local_names, "[gc-temp]__slice_arr")
-        Array::push(local_names, "[gc-temp]__slice_start")
-        Array::push(local_names, "[gc-temp]__slice_end")
-        Array::push(local_names, "[gc-temp]__slice_new")
-        Array::push(local_names, "[gc-temp]__slice_i")
-        let mut nl = next_local + 5
-        nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
-        emit_local_set(buf, arr_local)
+        // #3078: call the builtin body (`gc_gen_arr_slice_body`) rather than
+        // inlining a second copy loop here. The inline copy had no bounds
+        // checks, so `Array::slice([3, 1, 2], -1, 2)` read index -1 while
+        // linear clamped; the builtin clamps with the linear lane's shared
+        // `emit_slice_bounds_clamp`, and one body cannot drift from another.
+        let as_idx = gc_resolve_builtin_last(ctx.func_table, "Array::slice")
+        let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
         nl = ce(buf, Array::get(args, 1), local_names, nl, ld)
-        emit_local_set(buf, start_local)
         nl = ce(buf, Array::get(args, 2), local_names, nl, ld)
-        emit_local_set(buf, end_local)
-        emit_call_resolved(buf, ctx, an_idx)
-        emit_local_set(buf, new_arr_local)
-        emit_local_get(buf, start_local)
-        emit_local_set(buf, i_local)
-        emit_block_void(buf)
-        emit_loop_void(buf)
-        emit_local_get(buf, i_local)
-        emit_local_get(buf, end_local)
-        emit_i64_ge_s(buf)
-        emit_br_if(buf, 1)
-        emit_local_get(buf, new_arr_local)
-        emit_local_get(buf, arr_local)
-        emit_local_get(buf, i_local)
-        emit_call_resolved(buf, ctx, ag_idx)
-        emit_call_resolved(buf, ctx, ap_idx)
-        emit_local_get(buf, i_local)
-        emit_i64_const(buf, 1)
-        emit_i64_add(buf)
-        emit_local_set(buf, i_local)
-        emit_br(buf, 0)
-        emit_end(buf)
-        emit_end(buf)
-        emit_local_get(buf, new_arr_local)
+        emit_call_resolved(buf, ctx, as_idx)
         nl
       }
       else if fname == "Array::concat" {
@@ -2552,6 +2532,11 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         emit_i64_const(buf, 4294967295)
         emit_i64_and(buf)
         nl
+      }
+      else if fname == "__to_string" && Array::length(args) == 1 && bc_offset_refuses_render(Array::get(args, 0), ctx) {
+        // #3068: refuse exactly where the linear lane refuses (#2987), with
+        // the same message, rather than print an address.
+        throw(unrenderable_render_message(Array::get(args, 0)))
       }
       else if fname == "__to_string" && Array::length(args) == 1 && bc_expr_is_floatish(Array::get(args, 0), local_names, ctx) {
         // #744 (gc mirror of the linear fix): a statically-floatish argument

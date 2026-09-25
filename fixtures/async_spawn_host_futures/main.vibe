@@ -1,0 +1,27 @@
+// #1537: two spawned tasks awaiting host futures interleave. Task `a` awaits
+// one 300ms future; task `b` awaits a 150ms future and only then requests a
+// second 150ms one. Each await parks its task on the future's handle, and when
+// no task can run the group blocks on every pending handle at once and resumes
+// whichever lands first -- so `b` finishes both of its futures while `a` is
+// still waiting, and the run takes about 300ms. Waiting on the tasks in the
+// order they parked would take about 450ms (b's second request would start
+// only once a's future landed). 40 + 1 + 1 = 42. Compiled and executed by
+// scripts/test_named_hostfutures_component_gate.sh.
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  TaskGroup::run((g) -> {
+    let a = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      await(host_future_named("slow"))
+    })
+    let b = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      let first = await(host_future_named("fast"))
+      let second = await(host_future_named("fast"))
+      first + second
+    })
+    TaskGroup::pump_all(g)
+    TaskHandle::join(a) + TaskHandle::join(b)
+  })
+}

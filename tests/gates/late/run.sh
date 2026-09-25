@@ -1469,6 +1469,10 @@ scps_check_reject "err_effect_closure_param_taint.vibe" "cannot see through" "in
 # closure and launders it into an eff-free helper must stay rejected --
 # only names bound within the literal are trusted by the inert scan.
 scps_check_reject "err_effect_closure_param_capture_launder.vibe" "cannot see through" "inertlaunder"
+# #2065 wall 2: the same laundering with the performing closure written as a
+# LITERAL argument. The discharge rule exempts a value argument only where the
+# callee's parameter type carries the effect, which `apply1`'s does not.
+scps_check_reject "err_effect_closure_literal_launder.vibe" "cannot see through" "litlaunder"
 # #1536: the former `break`-in-a-suspending-loop rejection now lives in the
 # inspect snapshot suite above. Its arm stores `resume` and never resumes, so
 # the first perform escapes with its value; the loop shape is what changed.
@@ -3428,10 +3432,12 @@ echo "[compiler-gate] ADR-0091 #zero_alloc allocation check ok"
 # lc_inject_async_sleep_boundary). Positive: a wrapper-fn `sleep` chain
 # under an Async-row main compiles and returns 42
 # (async_sleep_boundary_test.vibe -- behavior parity with the old blocking
-# builtin). Negative: adding suspend-class Async handling (TaskGroup
-# spawn_suspend) under an Async-row entry mixes conventions and must be
-# REJECTED by the ADR-0076 guard, not silently miscompiled
-# (err_async_boundary_mixed_convention.vibe).
+# builtin). Since #2065 wall 2, spawning suspend-class tasks (TaskGroup
+# spawn_suspend) under an Async-row entry COMPILES and answers 42
+# (async_boundary_spawn_suspend_test.vibe); since #1537 host futures and host
+# stream reads beside such tasks compile too, and tasks park on them
+# (test_named_hostfutures_component_gate.sh / test_named_hoststreams_component_gate.sh
+# run them).
 echo "[compiler-gate] 77/77 ADR-0089 D1 async sleep boundary (#1218)"
 asb89dir="_build/_gate_async_sleep89"
 rm -rf "$asb89dir"; mkdir -p "$asb89dir"
@@ -3449,45 +3455,23 @@ if [ "$asb89_pos_out" != "42" ]; then
   echo "[compiler-gate] FAIL: async_sleep_boundary_test.vibe got '$asb89_pos_out' (want 42)" >&2
   exit 1
 fi
-cp fixtures/err_async_boundary_mixed_convention.vibe "$asb89dir/neg.vibe"
+cp fixtures/async_boundary_spawn_suspend_test.vibe "$asb89dir/spawn.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$asb89dir/neg.vibe" "$asb89dir/neg.wasm" main >/dev/null 2>&1 || true
-if [ -s "$asb89dir/neg.wasm" ]; then
-  echo "[compiler-gate] FAIL: err_async_boundary_mixed_convention.vibe compiled successfully -- convention mixing must be rejected" >&2
+  "$asb89dir/spawn.vibe" "$asb89dir/spawn.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$asb89dir/spawn.wasm" ]; then
+  echo "[compiler-gate] FAIL: async_boundary_spawn_suspend_test.vibe did not compile -- an Async entry spawning suspend-class tasks is refused again (#2065 wall 2)" >&2
+  cat "$asb89dir/spawn.wasm.diag" >&2 2>/dev/null || true
   exit 1
 fi
-# Either guard may catch this: the ADR-0076 mixing guard, or #1707's more
-# specific one (a step-split literal landing in a plain-convention parameter,
-# which is the same root -- a step value meeting a plain call). What this pins
-# is that it is REJECTED with an actionable diagnostic, not miscompiled.
-if ! grep -qF 'mixing the step convention' "$asb89dir/neg.wasm.diag" 2>/dev/null \
-   && ! grep -qF 'hand the step object back as the value' "$asb89dir/neg.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: err_async_boundary_mixed_convention.vibe did not produce the expected diagnostic" >&2
-  cat "$asb89dir/neg.wasm.diag" >&2 2>/dev/null || true
+asb89_spawn_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$asb89dir/spawn.wasm" 2>/dev/null | tail -1)"
+if [ "$asb89_spawn_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: async_boundary_spawn_suspend_test.vibe got '$asb89_spawn_out' (want 42)" >&2
   exit 1
 fi
-# #1342: the same guard must be POSITION-INDEPENDENT and must key on the
-# boundary that is actually injected.
-#   - err_async_boundary_mixed_operand.vibe puts the `spawn_suspend` call in an
-#     OPERAND. Its walker was missing EBinOp (and most other arms), so this
-#     exact program COMPILED while the let-bound spelling above was rejected.
-#   - async_boundary_user_sleep_test.vibe supplies its OWN `sleep`, so no
-#     boundary is built and there is nothing to mix -- it must COMPILE and
-#     return 42. The guard used to omit that half of the injection's condition.
-cp fixtures/err_async_boundary_mixed_operand.vibe "$asb89dir/negop.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$asb89dir/negop.vibe" "$asb89dir/negop.wasm" main >/dev/null 2>&1 || true
-if [ -s "$asb89dir/negop.wasm" ]; then
-  echo "[compiler-gate] FAIL: err_async_boundary_mixed_operand.vibe compiled -- the mixing guard is position-dependent again (#1342)" >&2
-  exit 1
-fi
-if ! grep -qF 'mixing the step convention' "$asb89dir/negop.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: err_async_boundary_mixed_operand.vibe did not produce the mixing diagnostic" >&2
-  cat "$asb89dir/negop.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+# #1342: the boundary must key on what is actually injected:
+# async_boundary_user_sleep_test.vibe supplies its OWN `sleep`, so no
+# boundary is built -- it must COMPILE and return 42.
 cp fixtures/async_boundary_user_sleep_test.vibe "$asb89dir/usersleep.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
@@ -3649,9 +3633,58 @@ if [ "$fo65_pos_out" != "42" ]; then
   echo "[compiler-gate] FAIL: async_first_order_rowvar_boundary_test.vibe got '$fo65_pos_out' (want 42)" >&2
   exit 1
 fi
-# The HIGHER-ORDER twin differs by exactly one function-typed parameter and
-# must stay refused: there an argument really can instantiate the row
-# variable to Async, and the perform would happen where the injected
+# The HIGHER-ORDER twin, called with a closure LITERAL that cannot perform
+# Async, is admitted by the call-site argument-inertness rule
+# (edp_argcond_admits) and must answer 42 too.
+cp fixtures/async_higher_order_rowvar_literal_boundary_test.vibe "$fo65dir/lit.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$fo65dir/lit.vibe" "$fo65dir/lit.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$fo65dir/lit.wasm" ]; then
+  echo "[compiler-gate] FAIL: async_higher_order_rowvar_literal_boundary_test.vibe did not compile -- the #2065 call-site argument-inertness admission regressed" >&2
+  cat "$fo65dir/lit.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+fo65_lit_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$fo65dir/lit.wasm" 2>/dev/null | tail -1)"
+if [ "$fo65_lit_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: async_higher_order_rowvar_literal_boundary_test.vibe got '$fo65_lit_out' (want 42)" >&2
+  exit 1
+fi
+# The shape that motivates it: a spawn-free `TaskGroup::run` under the same
+# injected Async boundary, whose body parameter sits under a row variable.
+cp fixtures/async_taskgroup_run_boundary_test.vibe "$fo65dir/tg.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$fo65dir/tg.vibe" "$fo65dir/tg.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$fo65dir/tg.wasm" ]; then
+  echo "[compiler-gate] FAIL: async_taskgroup_run_boundary_test.vibe did not compile -- TaskGroup::run under an Async entry is refused again (#2065)" >&2
+  cat "$fo65dir/tg.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+fo65_tg_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$fo65dir/tg.wasm" 2>/dev/null | tail -1)"
+if [ "$fo65_tg_out" != "42" ]; then
+  echo "[compiler-gate] FAIL: async_taskgroup_run_boundary_test.vibe got '$fo65_tg_out' (want 42)" >&2
+  exit 1
+fi
+# #1962 (Codex on #3059): an entry granted through its binding annotation
+# (`let main: () -> Int with Fs = () -> { .. }`) gets the host provider too.
+cp fixtures/host_provider_annotated_entry.vibe "$fo65dir/annot.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$fo65dir/annot.vibe" "$fo65dir/annot.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$fo65dir/annot.wasm" ]; then
+  echo "[compiler-gate] FAIL: host_provider_annotated_entry.vibe did not compile" >&2
+  cat "$fo65dir/annot.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+fo65_annot_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$fo65dir/annot.wasm" 2>/dev/null | tail -1)"
+if [ "$fo65_annot_out" != "1" ]; then
+  echo "[compiler-gate] FAIL: host_provider_annotated_entry.vibe got '$fo65_annot_out' (want 1) -- an annotation-granted entry lost the host provider" >&2
+  exit 1
+fi
+# ... and with a NAMED function in that position it must stay refused: the
+# argument's row is not readable at the call site, so it could instantiate the
+# row variable to Async and the perform would happen where the injected
 # boundary cannot see it.
 cp fixtures/err_async_rowvar_higher_order_refused.vibe "$fo65dir/neg.vibe"
 rm -f "$fo65dir/neg.wasm"

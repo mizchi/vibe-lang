@@ -4,10 +4,11 @@
 // The checker has typed Fs::readdir since the host era — this locks the
 // selfhost codegen + both runners actually implementing it.
 //
-// The handles discharge the Fs effect for the checker only: builtin Fs ops
-// compile to direct host-import calls, so the arms are never invoked and the
-// writes/reads below hit the real preopen FS (same as Fs::stat_token in
-// vibe/fs/fs.vibe).
+// A test block is granted the host effects, so the writes/reads below hit the
+// real preopen FS with no handler around them. They used to sit under
+// `handle` blocks whose arms answered "" / 0 "for the checker only"; since
+// #1962 a handler intercepts the operations it names, direct calls included,
+// so those arms would now answer and the writes would never happen.
 
 // #897: this used to `import ../lib/@vibe/fs/fs_effect.vibe { Fs }`, but
 // @vibe/fs is a .vpkg contract package now and its internal files are
@@ -17,9 +18,8 @@
 // qualified exports being exempt from the #716 rename — they capture this
 // file's direct builtin `Fs::write_file` calls, so the writes above went to
 // the mock handler instead of the real preopen FS and readdir found
-// nothing. This test only needs the Fs effect ROW for checker discharge
-// (the arms are never invoked, see above), so declare it locally — same
-// declaration as lib/@vibe/fs/fs_effect.vibe.
+// nothing. This test only needs the Fs effect ROW, so declare it locally —
+// same declaration as lib/@vibe/fs/fs_effect.vibe.
 effect Fs {
   ReadFile(String) -> String;
   WriteFile(String, String) -> Unit;
@@ -56,25 +56,11 @@ let count_vibe_entries: () -> Int with Fs = () -> {
 }
 
 test "readdir lists entry names byte-sorted" {
-  let n = handle {
-    write_and_list()
-  } with {
-    Fs::ReadFile(_p) => resume("");
-    Fs::WriteFile(_p, _c) => resume(0);
-    Fs::Exists(_p) => resume(false);
-    Fs::Mkdir(_p) => resume(0)
-  }
+  let n = write_and_list()
   assert(n == 3)
 }
 
 test "readdir result behaves as a normal array" {
-  let vibes = handle {
-    count_vibe_entries()
-  } with {
-    Fs::ReadFile(_p) => resume("");
-    Fs::WriteFile(_p, _c) => resume(0);
-    Fs::Exists(_p) => resume(false);
-    Fs::Mkdir(_p) => resume(0)
-  }
+  let vibes = count_vibe_entries()
   assert(vibes == 1)
 }

@@ -1,0 +1,58 @@
+// #1962: an UNHANDLED perform of a host operation reaches the host.
+//
+// The entry row admits host effects ("supplied by the process host"), so a
+// program performing `Fs::Exists` with no handler of its own checked clean --
+// and then unwound to the top as a raw `WebAssembly.Exception`, after the
+// host call had already run. The entry now installs the standard provider:
+// each performed, granted operation resumes with its direct builtin, and a
+// nearer user handler still wins.
+//
+// No `effect Fs` / `effect Env` declaration here on purpose: the builtin
+// effects are usable undeclared, and the provider has to declare them itself.
+
+fn exists_via_perform(path: String) -> Bool with Fs {
+  perform Fs::Exists(path)
+}
+
+fn env_via_perform(name: String) -> String with Env {
+  perform Env::Get(name)
+}
+
+// The bare spelling of a zero-argument operation (Codex on #3059).
+fn args_len_via_perform() -> Int with Env {
+  perform Env::ArgsLen
+}
+
+test "an unhandled Fs perform answers from the host" {
+  inspect(exists_via_perform("_build/host_provider_entry_test/absent"), "false")
+  inspect(exists_via_perform("fixtures/host_provider_entry_test.vibe"), "true")
+}
+
+test "an unhandled Env perform answers from the host" {
+  inspect(env_via_perform("VIBE_HOST_PROVIDER_ENTRY_TEST_UNSET"), "")
+}
+
+test "a nearer user handler still wins over the provider" {
+  let r = handle {
+    exists_via_perform("_build/host_provider_entry_test/absent")
+  } with {
+    Fs::Exists(_p) => resume(true)
+  }
+  inspect(r, "true")
+}
+
+test "a bare zero-argument perform answers from the host" {
+  inspect(args_len_via_perform() >= 0, "true")
+}
+
+// Codex on #3059: `Fs::ReadDir` is the one host operation with no registry
+// signature (the checker special-cases `Fs::readdir`), so the provider could
+// not declare it and the perform failed in evidence lowering.
+fn readdir_via_perform(path: String) -> Array[String] with Fs {
+  perform Fs::ReadDir(path)
+}
+
+test "an unhandled Fs::ReadDir perform answers from the host" {
+  let names = readdir_via_perform("lib/@vibe/fs")
+  inspect(Array::length(names) > 0, "true")
+}

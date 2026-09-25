@@ -1,0 +1,22 @@
+// #1537: two spawned tasks awaiting the SAME host future both receive its
+// value. The value is taken once (the readable end is released) and every
+// task parked on that handle resumes with it; waking only the first left the
+// other parked on a consumed end, which trapped. 20 + (20 + 1) = 41.
+// Executed by scripts/test_named_hostfutures_component_gate.sh.
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  let shared = host_future_named("slow")
+  TaskGroup::run((g) -> {
+    let a = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      await(shared)
+    })
+    let b = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      await(shared) + 1
+    })
+    TaskGroup::pump_all(g)
+    TaskHandle::join(a) + TaskHandle::join(b)
+  })
+}

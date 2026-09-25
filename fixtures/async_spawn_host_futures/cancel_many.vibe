@@ -1,0 +1,26 @@
+// #1537: cancelling the only task parked on a host future releases that
+// future's handle. 1100 tasks park on a fresh future and are cancelled -- more
+// than the adapter's 1023-handle ceiling, so a run that kept each cancelled
+// future's handle would trap before the live task's read. 40 + 2 = 42.
+// Executed by scripts/test_named_hostfutures_component_gate.sh.
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  TaskGroup::run((g) -> {
+    let mut i = 0
+    while i < 1100 {
+      let c = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+        await(host_future_named("fast"))
+      })
+      TaskHandle::cancel(c)
+      i = i + 1
+    }
+    let a = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      await(host_future_named("slow"))
+    })
+    TaskGroup::pump_all(g)
+    TaskHandle::join(a) + 2
+  })
+}

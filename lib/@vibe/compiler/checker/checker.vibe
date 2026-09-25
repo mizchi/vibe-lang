@@ -10307,6 +10307,43 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                         }
                       },
                       None => {
+                        // A HOST operation with no source declaration
+                        // (`perform Fs::Exists(p)` without `@vibe/fs`) is
+                        // answered by the entry's provider with a direct call
+                        // to its builtin, synthesized after checking -- so its
+                        // arguments are checked here against the builtin's
+                        // registry signature, or an ill-typed perform would
+                        // first fail in codegen or at run time (Codex on
+                        // #3059). The perform's value is the builtin's result,
+                        // since that is what the provider resumes it with.
+                        let host_canon = canonical_builtin_name(op_qname)
+                        let mut host_ret: Option[Type] = None
+                        if host_canon != op_qname {
+                          match registry_builtin_scheme(host_canon) {
+                            Some(scheme) => {
+                              let (hty, c1h, _) = instantiate(scheme, c1)
+                              c1 = c1h
+                              match hty {
+                                CtFn(hparams, hret, _) => {
+                                  host_ret = Some(hret)
+                                  if Array::length(hparams) != oalen {
+                                    Array::push(errors, String::concat("perform ", String::concat(op_qname, String::concat(" expects ", String::concat(__to_string(Array::length(hparams)), String::concat(" argument(s), got ", String::concat(__to_string(oalen), off_marker(op_off))))))))
+                                  } else {
+                                    let mut hi = 0
+                                    while hi < oalen {
+                                      s1 = check_assignable_for(subst_apply(s1, Array::get(hparams, hi)), subst_apply(s1, Array::get(oparg_tys, hi)), s1, errors, "perform argument type mismatch for ", op_qname, op_off)
+                                      hi = hi + 1
+                                    }
+                                  }
+                                },
+                                _ => ()
+                              }
+                            },
+                            None => ()
+                          }
+                        } else {
+                          ()
+                        }
                         // Unknown op of a DECLARED effect: the typo'd op would
                         // never be matched by any handler arm — report it.
                         let ci2 = String::index_of(op_qname, "::")
@@ -10315,8 +10352,13 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                         } else {
                           ()
                         }
-                        let (tv, c2) = fresh_var(c1)
-                        (tv, s1, c2)
+                        match host_ret {
+                          Some(r) => (r, s1, c1),
+                          None => {
+                            let (tv, c2) = fresh_var(c1)
+                            (tv, s1, c2)
+                          }
+                        }
                       }
                     },
                     _ => {
@@ -10362,8 +10404,37 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                     }
                   },
                   None => {
-                    let (tv, c2) = fresh_var(c)
-                    (tv, s, c2)
+                    // An undeclared HOST operation performed bare: the same
+                    // registry check as the call form above (Codex on #3059).
+                    let bare_canon = canonical_builtin_name(bare_qname)
+                    let bare_host = if bare_canon != bare_qname {
+                      registry_builtin_scheme(bare_canon)
+                    } else {
+                      None
+                    }
+                    match bare_host {
+                      Some(scheme) => {
+                        let (hty, c1h, _) = instantiate(scheme, c)
+                        match hty {
+                          CtFn(hparams, hret, _) => {
+                            if Array::length(hparams) != 0 {
+                              Array::push(errors, String::concat("perform ", String::concat(bare_qname, String::concat(" expects ", String::concat(__to_string(Array::length(hparams)), String::concat(" argument(s), got 0", off_marker(bare_off)))))))
+                            } else {
+                              ()
+                            }
+                            (hret, s, c1h)
+                          },
+                          _ => {
+                            let (tv, c2) = fresh_var(c1h)
+                            (tv, s, c2)
+                          }
+                        }
+                      },
+                      None => {
+                        let (tv, c2) = fresh_var(c)
+                        (tv, s, c2)
+                      }
+                    }
                   }
                 }
               },

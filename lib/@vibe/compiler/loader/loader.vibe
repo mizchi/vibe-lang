@@ -176,7 +176,7 @@ fn exported_type_params_entry_cfg_matches(path: String, cfg: String) -> Bool {
 /// effect with a handler, and that call chain inside an Option match arm is
 /// the #708 trap shape (it trapped here, `unreachable`, on the first hit
 /// with a recorded resolution).
-fn exported_type_params_entry_fresh(reads: Array[(String, Int)], resolves: Array[(String, String, String)]) -> Bool with Fs {
+fn exported_type_params_entry_fresh(reads: Array[(String, Int)], resolves: Array[(String, String, String)]) -> Bool with Env + Fs {
   let mut same = true
   let mut ri = 0
   while ri < Array::length(reads) && same {
@@ -251,7 +251,7 @@ export fn set_exported_type_params_memo_row_bound(rows: Int) -> Unit {
   Array::set(exported_type_params_memo_row_bound, 0, rows)
 }
 
-fn exported_type_params_fs(path: String, dep_paths: Array[String], dep_fingerprints: Array[String], visiting: Array[String]) -> Array[(String, Array[String])] with Exception + Fs {
+fn exported_type_params_fs(path: String, dep_paths: Array[String], dep_fingerprints: Array[String], visiting: Array[String]) -> Array[(String, Array[String])] with Env + Exception + Fs {
   if contains_path(visiting, path) {
     Array::set(exported_type_params_cycle_hits, 0, Array::get(exported_type_params_cycle_hits, 0) + 1)
     return array_empty()
@@ -315,7 +315,7 @@ fn exported_type_params_fs(path: String, dep_paths: Array[String], dep_fingerpri
   }
 }
 
-fn exported_type_params_uncached_fs(path: String, dep_paths: Array[String], dep_fingerprints: Array[String], visiting: Array[String]) -> Array[(String, Array[String])] with Exception + Fs {
+fn exported_type_params_uncached_fs(path: String, dep_paths: Array[String], dep_fingerprints: Array[String], visiting: Array[String]) -> Array[(String, Array[String])] with Env + Exception + Fs {
   let out = array_empty()
   let visiting_mark = Array::length(visiting)
   Array::push(visiting, path)
@@ -423,7 +423,7 @@ fn lookup_exported_type_params(defs: Array[(String, Array[String])], name: Strin
 /// Resolve the declared kinds behind implementation-file re-exports before
 /// contract conformance. SReExport itself carries names only; the source
 /// contract or source declaration owns the type-parameter keys.
-fn resolved_reexported_type_defs_fs(unit_path: String, stmts: Array[Stmt], dep_paths: Array[String], dep_fingerprints: Array[String]) -> Array[(String, Array[String])] with Exception + Fs {
+fn resolved_reexported_type_defs_fs(unit_path: String, stmts: Array[Stmt], dep_paths: Array[String], dep_fingerprints: Array[String]) -> Array[(String, Array[String])] with Env + Exception + Fs {
   let out = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
@@ -461,6 +461,9 @@ import ./ingestion_pipeline_telemetry.vibe {
 
 import ./manifest_sources.vibe {
   build_grouped_sources_from_manifest_rows,
+  is_vpkg_companion_basename,
+  is_vpkg_direct_production_basename,
+  is_vpkg_explicit_only_basename,
   load_manifest_full_sources,
   try_collect_manifest_source_groups_fs,
   try_collect_manifest_sources_fs,
@@ -695,7 +698,7 @@ fn source_lookup(sources: Array[(String, String)], path_key: String) -> Option[S
   found
 }
 
-fn resolve_path_in_sources(base_dir: String, raw_path: String, sources: Array[(String, String)]) -> Option[(String, String)] {
+fn resolve_path_in_sources(base_dir: String, raw_path: String, sources: Array[(String, String)]) -> Option[(String, String)] with Env {
   let candidates = resolve_import_path_candidates(base_dir, raw_path)
   let mut i = 0
   let mut found = None
@@ -717,7 +720,7 @@ fn resolve_path_in_sources(base_dir: String, raw_path: String, sources: Array[(S
   found
 }
 
-fn resolve_path_fs(base_dir: String, raw_path: String) -> String with Fs {
+fn resolve_path_fs(base_dir: String, raw_path: String) -> String with Env + Fs {
   // #1872 pilot: the probe loop lives once in core (resolve_import_path_probe,
   // `with Source`); this wrapper only discharges Source with the real
   // capability builtins. self_path = "" -- this call site never needed the
@@ -981,7 +984,7 @@ fn push_context_packages_under(sb: StringBuilder, root: String) -> Unit with Exc
   }
 }
 
-export fn resolution_context_fingerprint_fs() -> String with Exception + Fs {
+export fn resolution_context_fingerprint_fs() -> String with Env + Exception + Fs {
   let sb = StringBuilder::new()
   push_context_packages_under(sb, ".vibe/store")
   push_context_packages_under(sb, "lib")
@@ -999,7 +1002,7 @@ export fn resolution_context_fingerprint_fs() -> String with Exception + Fs {
 /// nested boundary; owner contract content detects changed shared imports; and
 /// the direct-root listing detects production siblings added after a cache was
 /// written. This keeps cache hits observationally equivalent to a cold walk.
-fn module_policy_context_fingerprint_fs(entry_path: String, paths: Array[String]) -> String with Exception + Fs {
+fn module_policy_context_fingerprint_fs(entry_path: String, paths: Array[String]) -> String with Env + Exception + Fs {
   let sb = StringBuilder::new()
   let owners = array_empty()
   let all_paths = array_empty()
@@ -1057,7 +1060,7 @@ fn module_policy_context_fingerprint_fs(entry_path: String, paths: Array[String]
   compact_string_fingerprint(StringBuilder::freeze(sb))
 }
 
-fn persistent_resolution_context_fingerprint_fs(entry_path: String, paths: Array[String]) -> String with Exception + Fs {
+fn persistent_resolution_context_fingerprint_fs(entry_path: String, paths: Array[String]) -> String with Env + Exception + Fs {
   String::concat(resolution_context_fingerprint_fs(), String::concat(":", module_policy_context_fingerprint_fs(entry_path, paths)))
 }
 
@@ -1065,11 +1068,11 @@ fn persistent_resolution_context_fingerprint_fs(entry_path: String, paths: Array
 /// used by persistent source-group validation. The trace caller supplies a
 /// post-compile source-group recollection; this performs no reuse and does not
 /// claim an atomic snapshot with the production compile.
-export fn artifact_input_trace_resolution_context_fingerprint_fs(entry_path: String, groups: Array[(String, Array[(String, String)])]) -> String with Exception + Fs {
+export fn artifact_input_trace_resolution_context_fingerprint_fs(entry_path: String, groups: Array[(String, Array[(String, String)])]) -> String with Env + Exception + Fs {
   persistent_resolution_context_fingerprint_fs(entry_path, grouped_source_paths(groups))
 }
 
-fn resolution_context_is_valid(resctx: Option[String], entry_path: String, paths: Array[String]) -> Bool with Exception + Fs {
+fn resolution_context_is_valid(resctx: Option[String], entry_path: String, paths: Array[String]) -> Bool with Env + Exception + Fs {
   match resctx {
     Some(fp) => fp == persistent_resolution_context_fingerprint_fs(entry_path, paths),
     // No resctx row = written before #801 (or by a foreign writer): the
@@ -1253,7 +1256,7 @@ fn parse_persistent_source_group_cache(raw: String) -> (Int, Option[(String, Str
   (version, manifest, rows, resctx)
 }
 
-fn matches_cached_file_spec(path: String, stat_token_text: String, source_fingerprint: String) -> Bool with Exception + Fs {
+fn matches_cached_file_spec(path: String, stat_token_text: String, source_fingerprint: String) -> Bool with Env + Exception + Fs {
   if !(Fs::exists(path)) {
     false
   } else {
@@ -1333,20 +1336,11 @@ fn path_basename(path: String) -> String {
   }
 }
 
-fn is_vpkg_companion_basename(name: String) -> Bool {
-  String::ends_with(name, "_test.vibe") || String::ends_with(name, "_bench.vibe")
-}
-
-fn is_vpkg_explicit_only_basename(name: String) -> Bool {
-  String::ends_with(name, ".vibe") && (String::starts_with(name, "_") || String::ends_with(name, ".draft.vibe"))
-}
-
-/// This is intentionally the same direct-production filter used by implicit
-/// `.vpkg` discovery. Companions are handled separately: they are not package
-/// members, but an explicitly-run companion inherits the nearest package scope.
-fn is_vpkg_direct_production_basename(name: String) -> Bool {
-  name != "index.vibei" && name != "index.vibe" && name != "index.vpkg" && String::ends_with(name, ".vibe") && !is_vpkg_companion_basename(name) && !String::ends_with(name, ".draft.vibe") && !String::starts_with(name, "_")
-}
+// The `.vpkg` basename predicates (`is_vpkg_companion_basename`,
+// `is_vpkg_explicit_only_basename`, `is_vpkg_direct_production_basename`)
+// live in manifest_sources.vibe, whose header scan has to agree with
+// `vpkg_directory_shared_import_prefix_fs` about which sources inherit a
+// package's directory-shared imports.
 
 fn validate_index_layout_fs(path: String) -> Unit with Exception + Fs {
   ensure_regular_source_fs(path)
@@ -1529,7 +1523,7 @@ fn relative_spelling_from_dir(dir: String, canonical: String) -> String {
   StringBuilder::freeze(sb)
 }
 
-fn vpkg_directory_shared_import_prefix_fs(path: String) -> String with Exception + Fs {
+fn vpkg_directory_shared_import_prefix_fs(path: String) -> String with Env + Exception + Fs {
   if is_contract_ext(path) {
     ""
   } else {
@@ -1680,7 +1674,7 @@ fn vpkg_sibling_ident(path: String) -> String {
   StringBuilder::freeze(sb)
 }
 
-fn apply_vpkg_directory_shared_imports_fs(path: String, pin_blanked: String) -> String with Exception + Fs {
+fn apply_vpkg_directory_shared_imports_fs(path: String, pin_blanked: String) -> String with Env + Exception + Fs {
   if String::starts_with(pin_blanked, vpkg_shared_import_marker) {
     pin_blanked
   } else {
@@ -1751,7 +1745,7 @@ fn record_unstable_candidate(path: String, ingested: String) -> Unit {
   }
 }
 
-export fn ingest_source_text_fs(path: String, raw: String) -> String with Exception + Fs {
+export fn ingest_source_text_fs(path: String, raw: String) -> String with Env + Exception + Fs {
   // The serialized Iterator boundary is a trusted carrier only after sources
   // have been merged. Keep the common path allocation- and parse-free; a
   // comment mentioning the prefix pays one parse but remains accepted.
@@ -1822,7 +1816,7 @@ fn append_registered_vpkg_types_sources(groups: Array[(String, Array[(String, St
   }
 }
 
-fn ingest_grouped_sources_fs(groups: Array[(String, Array[(String, String)])]) -> Array[(String, Array[(String, String)])] with Exception + Fs {
+fn ingest_grouped_sources_fs(groups: Array[(String, Array[(String, String)])]) -> Array[(String, Array[(String, String)])] with Env + Exception + Fs {
   let out = empty_grouped_sources()
   let mut gi = 0
   while gi < Array::length(groups) {
@@ -1839,7 +1833,7 @@ fn ingest_grouped_sources_fs(groups: Array[(String, Array[(String, String)])]) -
   out
 }
 
-fn load_cached_sources_rec(specs: Array[(String, String, String)], index: Int, out: Array[(String, String)]) -> Option[Array[(String, String)]] with Exception + Fs {
+fn load_cached_sources_rec(specs: Array[(String, String, String)], index: Int, out: Array[(String, String)]) -> Option[Array[(String, String)]] with Env + Exception + Fs {
   if index >= Array::length(specs) {
     Some(out)
   } else {
@@ -1854,7 +1848,7 @@ fn load_cached_sources_rec(specs: Array[(String, String, String)], index: Int, o
   }
 }
 
-fn load_cached_grouped_sources_rec(rows: Array[(String, String, String, String)], index: Int, out: Array[(String, Array[(String, String)])]) -> Option[Array[(String, Array[(String, String)])]] with Exception + Fs {
+fn load_cached_grouped_sources_rec(rows: Array[(String, String, String, String)], index: Int, out: Array[(String, Array[(String, String)])]) -> Option[Array[(String, Array[(String, String)])]] with Env + Exception + Fs {
   if index >= Array::length(rows) {
     Some(out)
   } else {
@@ -1869,7 +1863,7 @@ fn load_cached_grouped_sources_rec(rows: Array[(String, String, String, String)]
   }
 }
 
-fn load_cached_group_fingerprint_rec(rows: Array[(String, String, String, String)], index: Int, out: Array[(String, Array[(String, String)])]) -> Option[Array[(String, Array[(String, String)])]] with Exception + Fs {
+fn load_cached_group_fingerprint_rec(rows: Array[(String, String, String, String)], index: Int, out: Array[(String, Array[(String, String)])]) -> Option[Array[(String, Array[(String, String)])]] with Env + Exception + Fs {
   if index >= Array::length(rows) {
     Some(out)
   } else {
@@ -1883,7 +1877,7 @@ fn load_cached_group_fingerprint_rec(rows: Array[(String, String, String, String
   }
 }
 
-fn manifest_cache_is_valid(manifest: Option[(String, String, String)]) -> Bool with Exception + Fs {
+fn manifest_cache_is_valid(manifest: Option[(String, String, String)]) -> Bool with Env + Exception + Fs {
   match manifest {
     Some((path, stat_token_text, source_fingerprint)) =>
     matches_cached_file_spec(path, stat_token_text, source_fingerprint),
@@ -1891,7 +1885,7 @@ fn manifest_cache_is_valid(manifest: Option[(String, String, String)]) -> Bool w
   }
 }
 
-fn load_persistent_sources_cache_if_valid(entry_path: String) -> Option[Array[(String, String)]] with Exception + Fs {
+fn load_persistent_sources_cache_if_valid(entry_path: String) -> Option[Array[(String, String)]] with Env + Exception + Fs {
   let cache_path = persistent_source_list_cache_path(entry_path)
   if !(Fs::exists(cache_path)) {
     None
@@ -1907,7 +1901,7 @@ fn load_persistent_sources_cache_if_valid(entry_path: String) -> Option[Array[(S
   }
 }
 
-fn load_persistent_source_groups_cache_if_valid(entry_path: String) -> Option[Array[(String, Array[(String, String)])]] with Exception + Fs {
+fn load_persistent_source_groups_cache_if_valid(entry_path: String) -> Option[Array[(String, Array[(String, String)])]] with Env + Exception + Fs {
   let cache_path = persistent_source_group_cache_path(entry_path)
   if !(Fs::exists(cache_path)) {
     None
@@ -1930,7 +1924,7 @@ fn manifest_path_of(manifest: Option[(String, String, String)]) -> Option[String
   }
 }
 
-fn load_persistent_source_groups_from_source_list_cache_if_valid(entry_path: String) -> Option[(Option[String], Array[(String, Array[(String, String)])])] with Exception + Fs {
+fn load_persistent_source_groups_from_source_list_cache_if_valid(entry_path: String) -> Option[(Option[String], Array[(String, Array[(String, String)])])] with Env + Exception + Fs {
   let cache_path = persistent_source_list_cache_path(entry_path)
   if !(Fs::exists(cache_path)) {
     None
@@ -1983,7 +1977,7 @@ fn load_persistent_source_groups_from_source_list_cache_if_valid(entry_path: Str
   }
 }
 
-export fn load_persistent_source_group_fingerprint_if_valid(entry_path: String) -> Option[String] with Exception + Fs {
+export fn load_persistent_source_group_fingerprint_if_valid(entry_path: String) -> Option[String] with Env + Exception + Fs {
   let cache_path = persistent_source_group_cache_path(entry_path)
   if !(Fs::exists(cache_path)) {
     None
@@ -2009,7 +2003,7 @@ export fn load_persistent_source_group_fingerprint_if_valid(entry_path: String) 
 /// ~3s (peak RSS 3.6GB measured) and memory.grow's ignored failure surfaced as
 /// a "memory access out of bounds" inside String::concat's memory.copy. Same
 /// fix and issue class as stable_cache_path's #366 note (lib/@vibe/cache).
-export fn build_persistent_sources_cache_text(entry_path: String, manifest_path: Option[String], sources: Array[(String, String)]) -> String with Exception + Fs {
+export fn build_persistent_sources_cache_text(entry_path: String, manifest_path: Option[String], sources: Array[(String, String)]) -> String with Env + Exception + Fs {
   let sb = StringBuilder::new()
   StringBuilder::push(sb, "version\t4\n")
   StringBuilder::push(sb, "resctx\t")
@@ -2054,7 +2048,7 @@ export fn build_persistent_sources_cache_text(entry_path: String, manifest_path:
 
 /// #769: O(N) via StringBuilder, same rationale as
 /// build_persistent_sources_cache_text above.
-fn build_persistent_source_groups_cache_text(entry_path: String, manifest_path: Option[String], groups: Array[(String, Array[(String, String)])]) -> String with Exception + Fs {
+fn build_persistent_source_groups_cache_text(entry_path: String, manifest_path: Option[String], groups: Array[(String, Array[(String, String)])]) -> String with Env + Exception + Fs {
   let sb = StringBuilder::new()
   StringBuilder::push(sb, "version\t4\n")
   StringBuilder::push(sb, "resctx\t")
@@ -2099,15 +2093,15 @@ fn build_persistent_source_groups_cache_text(entry_path: String, manifest_path: 
   StringBuilder::freeze(sb)
 }
 
-export fn load_or_parse_module_header_fs(path: String, source: String, parse_count: Int) -> (Array[String], Array[String], Int) with Exception + Fs {
+export fn load_or_parse_module_header_fs(path: String, source: String, parse_count: Int) -> (Array[String], Array[String], Int) with Env + Exception + Fs {
   load_or_parse_module_header_fs_impl(path, source, parse_count)
 }
 
-fn store_persistent_sources_cache(entry_path: String, manifest_path: Option[String], sources: Array[(String, String)]) -> Unit with Exception + Fs {
+fn store_persistent_sources_cache(entry_path: String, manifest_path: Option[String], sources: Array[(String, String)]) -> Unit with Env + Exception + Fs {
   Fs::write_file(persistent_source_list_cache_path(entry_path), build_persistent_sources_cache_text(entry_path, manifest_path, sources))
 }
 
-fn store_persistent_source_groups_cache(entry_path: String, manifest_path: Option[String], groups: Array[(String, Array[(String, String)])]) -> Unit with Exception + Fs {
+fn store_persistent_source_groups_cache(entry_path: String, manifest_path: Option[String], groups: Array[(String, Array[(String, String)])]) -> Unit with Env + Exception + Fs {
   Fs::write_file(persistent_source_group_cache_path(entry_path), build_persistent_source_groups_cache_text(entry_path, manifest_path, groups))
 }
 
@@ -2220,7 +2214,7 @@ fn bind_checked_imports(names: Array[ImportItem], i: Int, env: TypeEnv, mod_env:
 
 /// Check a module and return its TypeEnv, resolving imports recursively.
 /// resolve_imports is inlined to avoid mutual recursion (vibe has no forward references).
-export fn check_module(source: String, path: String, sources: Array[(String, String)], loading: Array[String], checked_cache: Array[(String, TypeEnv)]) -> TypeEnv with Exception {
+export fn check_module(source: String, path: String, sources: Array[(String, String)], loading: Array[String], checked_cache: Array[(String, TypeEnv)]) -> TypeEnv with Env + Exception {
   // Check cache first
   let cached = cache_lookup(checked_cache, path)
   match cached {
@@ -2302,7 +2296,7 @@ export fn check_module(source: String, path: String, sources: Array[(String, Str
 /// no .vibei awareness. Implementation files are DECLARED by the contract
 /// (`import ./impl.vibe {}`) rather than discovered: the Fs effect has no
 /// directory listing yet (auto-discovery arrives with Fs::ReadDir, #730).
-fn desugar_contract_source_fs(path: String, source: String) -> String with Exception + Fs {
+fn desugar_contract_source_fs(path: String, source: String) -> String with Env + Exception + Fs {
   let dir = dir_of_path(path)
   validate_index_layout_fs(path)
   // `lex_with_offsets`, because the declaration positions below need byte
@@ -2614,7 +2608,7 @@ fn desugar_contract_source_fs(path: String, source: String) -> String with Excep
 /// each impl's raw import spelling), so the hash is location-independent —
 /// the same function serves `vibe hash` on a working directory and store
 /// verification of an installed copy.
-fn collect_package_hash_inputs_fs(path: String) -> (Array[(String, String)], Array[(String, String)], Array[(String, Array[String])], Array[Stmt]) with Exception + Fs {
+fn collect_package_hash_inputs_fs(path: String) -> (Array[(String, String)], Array[(String, String)], Array[(String, Array[String])], Array[Stmt]) with Env + Exception + Fs {
   validate_index_layout_fs(path)
   let raw = cache_read_source_fs(path)
   let (_, blanked) = extract_require_pins(raw)
@@ -2678,16 +2672,16 @@ fn collect_package_hash_inputs_fs(path: String) -> (Array[(String, String)], Arr
   (sources, decls, opaques, type_defs)
 }
 
-export fn contract_package_hashes_fs(path: String) -> (String, String) with Exception + Fs {
+export fn contract_package_hashes_fs(path: String) -> (String, String) with Env + Exception + Fs {
   contract_package_hashes_fs_algo(path, "b3")
 }
 
-export fn contract_package_hashes_fs_algo(path: String, algo: String) -> (String, String) with Exception + Fs {
+export fn contract_package_hashes_fs_algo(path: String, algo: String) -> (String, String) with Env + Exception + Fs {
   let (sources, decls, opaques, type_defs) = collect_package_hash_inputs_fs(path)
   (package_hash_from_sources_with(algo, sources), contract_hash_with(algo, decls, opaques, type_defs))
 }
 
-fn verify_recorded_package_id_fs(importer: String, name: String, pin_hash: String, index_path: String, copy_kind: String) -> Unit with Exception + Fs {
+fn verify_recorded_package_id_fs(importer: String, name: String, pin_hash: String, index_path: String, copy_kind: String) -> Unit with Env + Exception + Fs {
   let (sources, _, _, _) = collect_package_hash_inputs_fs(index_path)
   if package_id_matches(pin_hash, sources) {
     ()
@@ -2706,7 +2700,7 @@ fn verify_recorded_package_id_fs(importer: String, name: String, pin_hash: Strin
 /// result back wherever it wants (same convention as VIBE_FILL_PINS).
 /// Idempotent: re-running against the written-back file recomputes and
 /// returns the identical hash.
-export fn write_generated_hash_fs(path: String) -> String with Exception + Fs {
+export fn write_generated_hash_fs(path: String) -> String with Env + Exception + Fs {
   let (pkg_hash, _ct_hash) = contract_package_hashes_fs(path)
   replace_generated_hash_directive(Fs::read_file(path), "#\{pkg_hash}")
 }
@@ -2716,7 +2710,7 @@ export fn write_generated_hash_fs(path: String) -> String with Exception + Fs {
 /// .vibe/store/@x/y/ is installed; a package absent from the store is an
 /// error (network fetch belongs to `vibe add`/`update`, never to fmt).
 /// Pinned lines pass through untouched, so the rewrite is idempotent.
-export fn fill_require_pins_fs(source: String) -> String with Exception + Fs {
+export fn fill_require_pins_fs(source: String) -> String with Env + Exception + Fs {
   fill_require_pins_fs_mode(source, false)
 }
 
@@ -2725,7 +2719,7 @@ export fn fill_require_pins_fs(source: String) -> String with Exception + Fs {
 /// pass re-points all pins in a file at the installed copies. With the
 /// by-name store there is one installed version per package, so repinning
 /// IS conflict resolution.
-export fn fill_require_pins_fs_mode(source: String, repin: Bool) -> String with Exception + Fs {
+export fn fill_require_pins_fs_mode(source: String, repin: Bool) -> String with Env + Exception + Fs {
   fill_require_pins_impl(source, repin, false)
 }
 
@@ -2739,7 +2733,7 @@ export fn fill_require_pins_fs_mode(source: String, repin: Bool) -> String with 
 /// unpinned require -- whereas aborting the format over it would be; the
 /// strict lane (VIBE_FILL_PINS, above) keeps the loud answer for callers
 /// who asked for pins specifically.
-export fn fill_require_pins_lenient(source: String) -> String with Fs {
+export fn fill_require_pins_lenient(source: String) -> String with Env + Fs {
   handle {
     fill_require_pins_impl(source, false, true)
   } with { Exception::Throw(_) => source }
@@ -2814,7 +2808,7 @@ fn require_constraint_satisfied(constraint: String, version: String) -> Bool {
 // `index.vpkg` header, which a "stop at the first non-require line" scan
 // (this function's previous shape) never reached. A `require`-looking line
 // the scanner did NOT blank (i.e. body text) is left alone.
-fn fill_require_pins_impl(source: String, repin: Bool, lenient: Bool) -> String with Exception + Fs {
+fn fill_require_pins_impl(source: String, repin: Bool, lenient: Bool) -> String with Env + Exception + Fs {
   let (_, blanked) = extract_require_pins(source)
   let sb = StringBuilder::new()
   let len = String::length(source)
@@ -2960,7 +2954,7 @@ fn with_owner_pins_fs(path: String, own: Array[(String, String, String)]) -> Arr
 /// #730 (D-2): verify a store-resolved package against the importer's require
 /// pin. The store is laid out BY NAME (.vibe/store/@scope/name/) and trusted
 /// only through this hash check, so any mirror/copy mechanism is fine.
-fn verify_store_package_fs(importer: String, pins: Array[(String, String, String)], store_index_path: String) -> Unit with Exception + Fs {
+fn verify_store_package_fs(importer: String, pins: Array[(String, String, String)], store_index_path: String) -> Unit with Env + Exception + Fs {
   let prefix = ".vibe/store/"
   // #897: `store_index_path` is already the RESOLVED dep (the caller reads
   // it off the collected import graph), so its own suffix tells us which
@@ -3006,7 +3000,7 @@ fn verify_store_package_fs(importer: String, pins: Array[(String, String, String
 /// VIBE_REQUIRE_PINS=1 (the release/publish freeze switch; `vibe run
 /// --freeze` maps to it) the pin stops being optional: dev-mode name
 /// resolution without a pin is an error.
-fn verify_lib_package_fs(importer: String, pins: Array[(String, String, String)], lib_index_path: String) -> Unit with Exception + Fs {
+fn verify_lib_package_fs(importer: String, pins: Array[(String, String, String)], lib_index_path: String) -> Unit with Env + Exception + Fs {
   // The package name starts at the "@" — works for both the workspace
   // spelling ("lib/@scope/name/index.vibei") and an absolute VIBE_LIB root
   // ("/home/u/.vibe/lib/@scope/name/index.vibei"), and (#897) either's
@@ -3104,7 +3098,7 @@ fn package_relative_hash_key(package_dir: String, source_path: String) -> String
 /// discovery, but enter this closure when a production source imports them.
 /// Cross-package contracts remain represented by the importing source's text
 /// and require pin; their implementation bytes belong to their own hash.
-fn collect_package_hash_source_closure_fs(package_contract: String, package_dir: String, source_path: String, sources: Array[(String, String)], visited: Array[Array[String]]) -> Unit with Exception + Fs {
+fn collect_package_hash_source_closure_fs(package_contract: String, package_dir: String, source_path: String, sources: Array[(String, String)], visited: Array[Array[String]]) -> Unit with Env + Exception + Fs {
   if path_set_contains(visited, source_path) {
     ()
   } else {
@@ -3128,7 +3122,7 @@ fn collect_package_hash_source_closure_fs(package_contract: String, package_dir:
   }
 }
 
-fn collect_sources_rec(path: String, sources: Array[(String, String)], visited: Array[Array[String]]) -> Unit with Exception + Fs {
+fn collect_sources_rec(path: String, sources: Array[(String, String)], visited: Array[Array[String]]) -> Unit with Env + Exception + Fs {
   if path_set_contains(visited, path) {
     ()
   }
@@ -3204,7 +3198,7 @@ fn collect_sources_rec(path: String, sources: Array[(String, String)], visited: 
 
 /// Recursively collect all source files from filesystem, following imports and re-exports.
 /// Returns Array[(path, source)] in dependency order (dependencies first).
-export fn collect_all_sources_fs(entry_path: String) -> Array[(String, String)] with Exception + Fs {
+export fn collect_all_sources_fs(entry_path: String) -> Array[(String, String)] with Env + Exception + Fs {
   match special_manifest_sources(entry_path) {
     Some((manifest_path, sources)) => {
       let _ = manifest_path
@@ -3321,7 +3315,7 @@ fn move_entry_last_grouped(groups: Array[(String, Array[(String, String)])], ent
   }
 }
 
-export fn collect_source_groups_fs(entry_path: String) -> Array[(String, Array[(String, String)])] with Exception + Fs {
+export fn collect_source_groups_fs(entry_path: String) -> Array[(String, Array[(String, String)])] with Env + Exception + Fs {
   if String::ends_with(entry_path, ".vibex") {
     ensure_regular_source_fs(entry_path)
     validate_vibex_entry_source(entry_path, Fs::read_file(entry_path))
@@ -3560,7 +3554,7 @@ export fn check_missing_vpkg_dirs(root: String) -> Int with Exception + Fs {
 /// directive) has nothing to check yet -- `deps` declarations are opt-in
 /// until the bootstrap-bump migrates the remaining closure (#1145
 /// follow-up 1).
-fn package_deps_missing(dir: String) -> Array[String] with Exception + Fs {
+fn package_deps_missing(dir: String) -> Array[String] with Env + Exception + Fs {
   let vpkg_path = String::concat(dir, "/index.vpkg")
   if !Fs::exists(vpkg_path) {
     array_empty()
@@ -3593,7 +3587,7 @@ fn package_deps_missing(dir: String) -> Array[String] with Exception + Fs {
     }
   }
 }
-fn deps_missing_scan_rec(dir: String, out: Array[String]) -> Unit with Exception + Fs {
+fn deps_missing_scan_rec(dir: String, out: Array[String]) -> Unit with Env + Exception + Fs {
   let here = package_deps_missing(dir)
   let mut hi = 0
   while hi < Array::length(here) {
@@ -3620,14 +3614,14 @@ fn deps_missing_scan_rec(dir: String, out: Array[String]) -> Unit with Exception
 /// find_deps_missing: (String) -> Array[String] with Exception + Fs
 /// #1145 follow-up 2: recursively scans every `index.vpkg` under `root` for
 /// deps declarations missing an entry that its own imports require.
-export fn find_deps_missing(root: String) -> Array[String] with Exception + Fs {
+export fn find_deps_missing(root: String) -> Array[String] with Env + Exception + Fs {
   let out = array_empty()
   deps_missing_scan_rec(root, out)
   out
 }
 /// check_deps_missing: (String) -> Int with Exception + Fs
 /// #1145 follow-up 2: `vibe check --deps-missing <root>` diagnostic.
-export fn check_deps_missing(root: String) -> Int with Exception + Fs {
+export fn check_deps_missing(root: String) -> Int with Env + Exception + Fs {
   let missing = find_deps_missing(root)
   if Array::length(missing) == 0 {
     0

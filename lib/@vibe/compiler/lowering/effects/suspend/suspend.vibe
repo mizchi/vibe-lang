@@ -16,6 +16,8 @@ import @vibe/compiler/lowering/effects/evidence {
 
 import @vibe/compiler/lowering/effects/queries {
   EdpReadQuery,
+  edp_argcond_note_binders,
+  edp_is_program_binder,
   edp_row_is_exactly,
   edp_rq_arms,
   edp_rq_exprs,
@@ -184,6 +186,8 @@ export fn suspend_cps_pass(stmts: Array[Stmt]) -> Array[String] {
     let es_members_list = array_empty()
     edp_es_collect_into(stmts, es_names, es_members_list)
     let ctor_names = scps_collect_ctor_names(stmts)
+    // Locally bound names, for `scps_inert_taint`'s callee test.
+    edp_argcond_note_binders(stmts)
     let ctx = (stmts, effect_defs, fn_defs, es_names, es_members_list, ctor_names)
     let st = (scps_ctr_box(), array_empty_str(), array_empty_str(), array_empty_str(), array_empty_str(), scps_empty_stmts(), errs)
     // closure-CPS (追記31 Vertical B) phase 1: the CPS-mode effect set.
@@ -273,6 +277,112 @@ export fn suspend_cps_pass(stmts: Array[Stmt]) -> Array[String] {
     }
     errs
   }
+}
+
+/// Drop the ORIGINAL of a function the suspend lowering cloned
+/// (`__scps_cps_<E>_<f>`) once nothing references it any more.
+///
+/// The clone is what every suspend-lowered call site calls; the original is
+/// left for tail-resumptive callers, whose handles evidence_dict_pass
+/// migrates. When no such caller exists, the original keeps its raw
+/// `perform` and nothing lowers it. The linear lane never compiles it (the
+/// late reachability prune drops it), but the gc lane compiles every
+/// top-level function and refused the program with "unsupported perform"
+/// (#3064: every handle of an effect whose arm leaves with `return` through a
+/// callee takes this lowering). Exported functions stay; the drop repeats
+/// until no further original becomes unreferenced, so a chain of callees
+/// (`ask2` calling `ask`) goes together.
+export fn scps_drop_orphaned_originals(stmts: Array[Stmt]) -> Unit {
+  let mut changed = true
+  while changed {
+    changed = false
+    let mut i = 0
+    while i < Array::length(stmts) && !changed {
+      match Array::get(stmts, i) {
+        SLet(exported, _, name, _, EFn(_, _, _, _, _, _)) => if !exported && !String::starts_with(name, "__scps_") && scps_has_clone_of(stmts, name) && !scps_referenced_elsewhere(stmts, i, name) {
+          let kept = scps_empty_stmts()
+          let mut j = 0
+          while j < Array::length(stmts) {
+            if j != i {
+              Array::push(kept, Array::get(stmts, j))
+            } else {
+              ()
+            }
+            j = j + 1
+          }
+          Array::truncate(stmts, 0)
+          let mut k = 0
+          while k < Array::length(kept) {
+            Array::push(stmts, Array::get(kept, k))
+            k = k + 1
+          }
+          changed = true
+        } else {
+          ()
+        },
+        _ => ()
+      }
+      i = i + 1
+    }
+  }
+}
+
+fn scps_has_clone_of(stmts: Array[Stmt], fname: String) -> Bool {
+  let suffix = String::concat("_", scps_sanitize(fname))
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(stmts) && !found {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, _) => if String::starts_with(name, "__scps_cps_") && String::ends_with(name, suffix) {
+        found = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn scps_referenced_elsewhere(stmts: Array[Stmt], at: Int, name: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(stmts) && !found {
+    if i != at {
+      match scps_stmt_expr_of(Array::get(stmts, i)) {
+        Some(expr) => if scps_refs_name(expr, name) {
+          found = true
+        } else {
+          ()
+        },
+        // A statement that can name the function without an expression
+        // keeps the original alive.
+        None => match Array::get(stmts, i) {
+          SExport(names) => if edp_str_array_contains(names, name) {
+            found = true
+          } else {
+            ()
+          },
+          SAliasDecl(a, b) => if a == name || b == name {
+            found = true
+          } else {
+            ()
+          },
+          SExample(_, ex) => if scps_refs_name(ex, name) {
+            found = true
+          } else {
+            ()
+          },
+          _ => ()
+        }
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
 }
 
 // --- pass state accessors. st = (site counter box, injected effect list,
@@ -749,6 +859,70 @@ fn scps_literal_is_step_for(v: Expr, eff: String) -> Bool {
   }
 }
 
+/// #2065 wall 2: `scps_literal_is_step_for` at the literal's OWN level --
+/// step names inside a NESTED closure literal do not make this one a step
+/// literal. The prepass step-splits a closure handed to a suspend-class
+/// callee in place (`TaskGroup::spawn_suspend(g, () -> T with Async { .. })`
+/// inside a `TaskGroup::run` body), so the full fold found the inner
+/// literal's step names and disqualified the OUTER literal, whose own body
+/// returns an ordinary value. A step call the outer body makes itself is
+/// rewritten at the outer level, where this still sees it.
+fn scps_literal_is_own_step_for(v: Expr, eff: String) -> Bool {
+  match v {
+    EFn(_, _, _, _, _, b) => {
+      let dn = scps_done_name(eff)
+      let bn = scps_bubble_name(eff)
+      scps_mentions_step_shallow(b, dn, scps_y_name(eff, ""), bn) || scps_mentions_step_shallow(b, dn, scps_clone_name(eff, ""), bn)
+    },
+    _ => false
+  }
+}
+
+fn scps_mentions_step_shallow(e: Expr, dn: String, yprefix: String, bn: String) -> Bool {
+  match e {
+    EFn(_, _, _, _, _, _) => false,
+    EIdent(name, _) => name == dn || name == bn || String::starts_with(name, yprefix),
+    // A step clone handed on as an ARGUMENT is a value the callee receives in
+    // a step-source parameter (`TaskGroup::spawn_suspend(g, __scps_cps_..)`),
+    // not this literal's own control flow; only the callee position, and a
+    // done / bubble constructor anywhere, make the literal a step.
+    ECall(callee, args, _) => {
+      let mut found = scps_mentions_step_shallow(callee, dn, yprefix, bn)
+      let mut i = 0
+      while !found && i < Array::length(args) {
+        found = match Array::get(args, i) {
+          EIdent(name, _) => name == dn || name == bn,
+          a => scps_mentions_step_shallow(a, dn, yprefix, bn)
+        }
+        i = i + 1
+      }
+      found
+    },
+    EHandle(body, arms) => scps_mentions_step_shallow(body, dn, yprefix, bn) || scps_arms_mention_step_shallow(arms, dn, yprefix, bn),
+    EMatch(scrut, arms) => scps_mentions_step_shallow(scrut, dn, yprefix, bn) || scps_arms_mention_step_shallow(arms, dn, yprefix, bn),
+    _ => {
+      let kids = expr_children(e)
+      let mut found = false
+      let mut i = 0
+      while !found && i < Array::length(kids) {
+        found = scps_mentions_step_shallow(Array::get(kids, i), dn, yprefix, bn)
+        i = i + 1
+      }
+      found
+    }
+  }
+}
+
+fn scps_arms_mention_step_shallow(arms: Array[(Pat, Expr)], dn: String, yprefix: String, bn: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(arms) {
+    found = scps_mentions_step_shallow(Array::get(arms, i).1, dn, yprefix, bn)
+    i = i + 1
+  }
+  found
+}
+
 fn scps_mentions_step(e: Expr, dn: String, yprefix: String, bn: String) -> Bool {
   edp_rq_fold(RQMentionsStep(dn, yprefix, bn), e) > 0
 }
@@ -780,7 +954,7 @@ fn scps_is_inert_literal(v: Expr, eff: String, needing: Array[String], ctx: (Arr
         Some(row) => !scps_row_contains(ctx, row, eff) && !scps_row_has_var(row),
         None => true
       }
-      row_ok && !scps_literal_is_step_for(v, eff) && !scps_inert_taint(vb, eff, needing, scps_locals_with_params(array_empty_str(), vparams), ctx)
+      row_ok && !scps_literal_is_own_step_for(v, eff) && !scps_inert_taint(vb, eff, needing, scps_locals_with_params(array_empty_str(), vparams), ctx)
     },
     _ => false
   }
@@ -4328,11 +4502,28 @@ fn scps_inert_taint(e: Expr, eff: String, needing: Array[String], locals: Array[
         true
       } else if edp_str_array_contains(needing, nm) || String::starts_with(nm, "__scps_") || String::starts_with(nm, "__Scps") {
         true
+      } else if edp_is_program_binder(nm) {
+        // Some local binding in the program has this spelling -- an enclosing
+        // parameter the literal captures, say -- so the call may not reach
+        // the top-level function of that name at all, nor the builtin the
+        // spelling would otherwise name (Codex on #3059).
+        true
       } else if idp_is_pure_builtin_call(nm) || scps_is_safe_mut_builtin(nm) || scps_is_ctor_name(ctx, nm) {
         scps_inert_taint_exprs(args, eff, needing, locals, ctx)
       } else {
         let (is_fn, row) = scps_fn_row_of(ctx, nm)
-        if is_fn && !scps_row_contains(ctx, row, eff) && (!scps_row_has_var(row) || scps_callee_first_order(ctx, nm)) {
+        if is_fn && !scps_row_contains(ctx, row, eff) && !scps_row_has_var(row) {
+          // #2065 wall 2: a callee whose declared row is CONCRETE and lacks
+          // `eff`, taking a parameter whose declared function type DOES carry
+          // `eff`, discharges what an argument in that position performs:
+          // `TaskGroup::spawn_suspend(g, () -> T with Async + Exception { .. })`
+          // is `Async`-free at this call site. Only that position is exempt.
+          // A parameter whose function type has no `eff` in its row is a
+          // laundering route, not a discharge
+          // (err_effect_closure_param_capture_launder.vibe), and every other
+          // argument is still scanned as an ordinary expression.
+          scps_inert_taint_exprs(scps_undischarged_args(ctx, nm, args, eff), eff, needing, locals, ctx)
+        } else if is_fn && !scps_row_contains(ctx, row, eff) && scps_callee_first_order(ctx, nm) {
           scps_inert_taint_exprs(args, eff, needing, locals, ctx)
         } else {
           true
@@ -4444,6 +4635,57 @@ fn scps_pats_collect_binds(ps: Array[Pat], acc: Array[String]) -> Unit {
     scps_pat_collect_binds(Array::get(ps, i), acc)
     i = i + 1
   }
+}
+
+/// The arguments a discharging callee does NOT answer for (see the
+/// concrete-row arm of `scps_inert_taint`). A closure literal or a bare name --
+/// a value, not a computation -- is exempt only in a position whose declared
+/// parameter type is a function carrying `eff`: the callee's concrete row
+/// without `eff` then means it handles what that value performs. A name is
+/// what a literal becomes once lifted (`__hoisted_lam_..`, or its step clone
+/// `__scps_cps_Async_..` for a step-source parameter). Everything else is
+/// returned for the ordinary scan, and so is every argument when the callee
+/// cannot be found.
+fn scps_undischarged_args(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), name: String, args: Array[Expr], eff: String) -> Array[Expr] {
+  let (stmts, _, _, _, _, _) = ctx
+  let mut params: Array[(String, Option[TypeExpr])] = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, snm, _, EFn(_, _, ps, _, _, _)) => if snm == name {
+        params = ps
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  let out: Array[Expr] = []
+  let mut k = 0
+  while k < Array::length(args) {
+    let a = Array::get(args, k)
+    let is_value = match a {
+      EFn(_, _, _, _, _, _) => true,
+      EIdent(_, _) => true,
+      _ => false
+    }
+    let discharged = if is_value && k < Array::length(params) {
+      match Array::get(params, k).1 {
+        Some(TyFn(_, _, Some(row))) => scps_row_contains(ctx, row, eff) && !scps_row_has_var(row),
+        _ => false
+      }
+    } else {
+      false
+    }
+    if discharged {
+      ()
+    } else {
+      Array::push(out, a)
+    }
+    k = k + 1
+  }
+  out
 }
 
 fn scps_inert_taint_exprs(es: Array[Expr], eff: String, needing: Array[String], locals: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> Bool {
@@ -5021,6 +5263,164 @@ fn scps_wrap_tail_resume(expr: Expr, ik: String, sh: Bool) -> Expr {
   }
 }
 
+/// #3064 (P0): does a handle whose arm leaves the function with `return`
+/// have to go through the driver below instead of evidence passing?
+///
+/// Evidence passing (evidence_dict_pass) splices an arm INLINE only at a
+/// `perform` it can see directly in the handle body. Everywhere else -- a
+/// callee whose row carries the effect, a closure that performs it -- the arm
+/// runs as a closure in the evidence dictionary, and a `return` in a closure
+/// returns from THAT closure: its value came back as the value of `perform`,
+/// an implicit resume. Measured on main: `handle { ask(3) + 1 } with {
+/// Cfg::Get(x) => return x + 40 }` followed by `r * 10` answered 1440 where
+/// the function must return 43, on linear and gc, with no diagnostic. The
+/// driver lowering already records an arm's `return` in a cell and performs
+/// it after the handle (#2985), so such a handle is sent there.
+///
+/// The handle stays on evidence passing only when every place the effect can
+/// be performed from its body is a direct `perform` outside any closure:
+/// every other call must be provably unable to perform it (a pure builtin, a
+/// constructor, `perform` of another effect, or a top-level function whose
+/// concrete row lacks it and that no binder shadows). Anything this walk
+/// cannot see through answers true -- the driver lowering then either handles
+/// the shape or refuses it with a diagnostic, never a wrong answer.
+fn scps_arm_return_needs_driver(body: Expr, arms: Array[(Pat, Expr)], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), scope: Array[(String, String)]) -> Bool {
+  if !scps_body_arms_have_return(arms) || idp_arms_discharge_error(arms) {
+    false
+  } else {
+    let mut eff = ""
+    let mut uniform = true
+    let mut i = 0
+    while i < Array::length(arms) {
+      let (p, _) = Array::get(arms, i)
+      match p {
+        PCtor(q, _) => {
+          let ci = String::index_of(q, "::")
+          let qe = if ci > 0 {
+            String::substring(q, 0, ci)
+          } else {
+            ""
+          }
+          if qe == "" || (eff != "" && qe != eff) {
+            uniform = false
+          } else {
+            eff = qe
+          }
+        },
+        _ => {
+          uniform = false
+        }
+      }
+      i = i + 1
+    }
+    let (declared, decl_ops) = scps_effect_decl_ops(ctx, eff)
+    if !uniform || !declared {
+      false
+    } else {
+      let ops = array_empty_str()
+      let mut oi = 0
+      while oi < Array::length(decl_ops) {
+        let (opname, _) = Array::get(decl_ops, oi)
+        Array::push(ops, String::concat(String::concat(eff, "::"), opname))
+        oi = oi + 1
+      }
+      let needing = scps_needing_for(ctx, eff)
+      scps_reaches_arm_indirectly(body, body, eff, ops, needing, ctx, scope, false)
+    }
+  }
+}
+
+fn scps_scope_row_has(scope: Array[(String, String)], nm: String, eff: String, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(scope) {
+    let (snm, srow) = Array::get(scope, i)
+    if snm == nm && (scps_row_contains(ctx, srow, eff) || scps_row_has_var(srow)) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn scps_name_is_local(root: Expr, scope: Array[(String, String)], nm: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(scope) {
+    let (snm, _) = Array::get(scope, i)
+    if snm == nm {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found || scps_binds_name(root, nm)
+}
+
+fn scps_reaches_arm_indirectly(e: Expr, root: Expr, eff: String, ops: Array[String], needing: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), scope: Array[(String, String)], in_fn: Bool) -> Bool {
+  match e {
+    // A function passed as a value: a needing top-level function, or an
+    // enclosing binding whose declared type carries the effect.
+    EIdent(nm, _) => edp_str_array_contains(needing, nm) || scps_scope_row_has(scope, nm, eff, ctx),
+    ECall(callee, args, _) => match callee {
+      EIdent(nm, _) => if nm == "perform" {
+        if scps_as_target_perform(e, ops) >= 0 && in_fn {
+          true
+        } else {
+          scps_reaches_arm_indirectly_exprs(scps_perform_args(e), root, eff, ops, needing, ctx, scope, in_fn)
+        }
+      } else if scps_name_is_local(root, scope, nm) || edp_str_array_contains(needing, nm) {
+        true
+      } else {
+        // A builtin cannot perform a declared effect, and a function whose
+        // row lacks it can reach it only through a closure argument (a row
+        // variable instantiated to it) -- the arguments are walked for that.
+        let (is_fn, row) = scps_fn_row_of(ctx, nm)
+        let effect_free = if is_fn {
+          !scps_row_contains(ctx, row, eff)
+        } else {
+          idp_is_pure_builtin_call(nm) || scps_is_safe_mut_builtin(nm) || scps_is_ctor_name(ctx, nm) || match lookup_registry_builtin(nm) {
+            Some(_) => true,
+            None => false
+          }
+        }
+        if effect_free {
+          scps_reaches_arm_indirectly_exprs(args, root, eff, ops, needing, ctx, scope, in_fn)
+        } else {
+          true
+        }
+      },
+      _ => true
+    },
+    EFn(_, _, _, _, _, b) => scps_reaches_arm_indirectly(b, root, eff, ops, needing, ctx, scope, true),
+    EHandle(b, harms) => {
+      // A nested handle's arms may themselves run as evidence closures.
+      let mut hit = scps_reaches_arm_indirectly(b, root, eff, ops, needing, ctx, scope, in_fn)
+      let mut i = 0
+      while i < Array::length(harms) && !hit {
+        let (_, ex) = Array::get(harms, i)
+        hit = scps_reaches_arm_indirectly(ex, root, eff, ops, needing, ctx, scope, true)
+        i = i + 1
+      }
+      hit
+    },
+    _ => scps_reaches_arm_indirectly_exprs(expr_children(e), root, eff, ops, needing, ctx, scope, in_fn)
+  }
+}
+
+fn scps_reaches_arm_indirectly_exprs(es: Array[Expr], root: Expr, eff: String, ops: Array[String], needing: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), scope: Array[(String, String)], in_fn: Bool) -> Bool {
+  let mut hit = false
+  let mut i = 0
+  while i < Array::length(es) && !hit {
+    hit = scps_reaches_arm_indirectly(Array::get(es, i), root, eff, ops, needing, ctx, scope, in_fn)
+    i = i + 1
+  }
+  hit
+}
+
 fn scps_rewrite(e: Expr, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), st: (Array[Int], Array[String], Array[String], Array[String], Array[String], Array[Stmt], Array[String]), cps_effs: Array[String], scope: Array[(String, String)]) -> Expr {
   match e {
     EHandle(body, arms) => {
@@ -5043,6 +5443,13 @@ fn scps_rewrite(e: Expr, ctx: (Array[Stmt], Array[(String, Array[(String, Array[
           ()
         }
         ai = ai + 1
+      }
+      // #3064: an arm's `return` must leave the function even when the arm
+      // would otherwise run as an evidence closure.
+      if !triggered && scps_arm_return_needs_driver(rbody, rarms, ctx, scope) {
+        triggered = true
+      } else {
+        ()
       }
       if triggered {
         // #2962 (Codex P0 on #2985): a sibling arm that captures `resume`

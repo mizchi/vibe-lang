@@ -993,14 +993,19 @@ forbid_capability_authority \
 # a name the scanner can read. Measured: `fn f() -> Unit with Console {
 # println("leaked") }` passed every call pattern and is caught here.
 #
-# The three effects are what the file declares today: Exception, Fs (both
+# The effects are what the file declares today: Exception, Fs (both
 # measured from its own rows), and Async for consistency with the shared list.
-# Widening this is a deliberate act, exactly like adding to
-# PORTABLE_ALLOWED_EFFECTS.
+# Env was added deliberately with #1962: only the FILE lane
+# (`ensure_compiled_file` / `compile_file_request`, already `with Fs`) carries
+# it, because resolving imports from disk honours VIBE_LIB / VIBE_HOME / HOME.
+# That read used to hide behind a handler that answered "" for the checker.
+# The in-memory closure lane stays Env-free, which the `require_line` for
+# `compile_with_closure_sources_wasi_mode_uncached` above pins. Widening this
+# is a deliberate act, exactly like adding to PORTABLE_ALLOWED_EFFECTS.
 forbid_foreign_effect_rows \
   "lib/@vibe/compiler/cli_direct_component_entry.vibe" \
   "direct component entry" \
-  "$PORTABLE_ALLOWED_EFFECTS|Fs"
+  "$PORTABLE_ALLOWED_EFFECTS|Fs|Env"
 
 forbid_foreign_effect_rows \
   "lib/@vibe/compiler/entry/source_compile/source_compile.vibe" \

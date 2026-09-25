@@ -1,0 +1,26 @@
+// #1537: a sleeping task and a task awaiting host futures share one wait.
+// Task `a` sleeps 300ms; task `b` awaits a 100ms future and only then requests
+// a second one. The group waits on the earliest sleeper's timer and every host
+// waitable together, so `b` finishes both futures while `a` sleeps and the run
+// takes about 300ms. Settling the sleep first (the blocking sleep) would start
+// b's second request only after it, about 400ms. 40 + 1 + 1 = 42. Executed by
+// scripts/test_named_hostfutures_component_gate.sh.
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  TaskGroup::run((g) -> {
+    let a = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      sleep(300)
+      40
+    })
+    let b = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      let first = await(host_future_named("fast"))
+      let second = await(host_future_named("fast"))
+      first + second
+    })
+    TaskGroup::pump_all(g)
+    TaskHandle::join(a) + TaskHandle::join(b)
+  })
+}

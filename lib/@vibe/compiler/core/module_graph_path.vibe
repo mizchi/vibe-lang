@@ -337,25 +337,16 @@ export fn resolve_import_path(base_dir: String, raw_path: String) -> String {
   }
 }
 
-/// #751 (ADR-0065): the private Env effect + checker-only discharge below
-/// let this module read VIBE_LIB / VIBE_HOME / HOME without carrying an
-/// `Env` row on every resolver in the loader chain: builtin `Env::get`
-/// compiles to the env-get host import DIRECTLY, so the handler arm is never
-/// invoked at runtime (same mechanism as the Fs handles in
-/// fixtures/fs_readdir_test.vibe). The effect declaration is private —
-/// nothing outside this module sees it.
-effect Env {
-  Get(String) -> String
-}
-
-fn env_get_raw(name: String) -> String with Env {
+/// #751 (ADR-0065): VIBE_LIB / VIBE_HOME / HOME / VIBE_REQUIRE_PINS are read
+/// here. #1962: the read carries `Env` on its row, and so does every resolver
+/// in the loader chain up to the CLI entry. It used to sit under a private
+/// `Env` effect whose handler answered `""` -- a checker-only discharge that
+/// worked only because a direct `Env::get` call compiled to the host import
+/// and never reached the arm. Once a handler intercepts the operations it
+/// names, that arm would answer, and every library root would silently read
+/// as unset.
+fn read_env(name: String) -> String with Env {
   Env::get(name)
-}
-
-fn read_env_discharged(name: String) -> String {
-  handle {
-    env_get_raw(name)
-  } with { Env::Get(_n) => resume("") }
 }
 
 fn strip_trailing_slash(p: String) -> String {
@@ -396,15 +387,14 @@ export fn parse_vibe_lib_roots(vibe_lib: String, vibe_home: String, home: String
   roots
 }
 
-export fn external_lib_roots() -> Array[String] {
-  parse_vibe_lib_roots(read_env_discharged("VIBE_LIB"), read_env_discharged("VIBE_HOME"), read_env_discharged("HOME"))
+export fn external_lib_roots() -> Array[String] with Env {
+  parse_vibe_lib_roots(read_env("VIBE_LIB"), read_env("VIBE_HOME"), read_env("HOME"))
 }
 
 /// #751: "is the environment flag set to 1" — the loader's freeze switch
-/// (VIBE_REQUIRE_PINS) reads through the same checker-only discharge so its
-/// signature stays effect-free.
-export fn vibe_env_flag(name: String) -> Bool {
-  read_env_discharged(name) == "1"
+/// (VIBE_REQUIRE_PINS).
+export fn vibe_env_flag(name: String) -> Bool with Env {
+  read_env(name) == "1"
 }
 
 /// #758 review (P1): the RESOLUTION ENVIRONMENT as a cache-key seed. The
@@ -415,7 +405,7 @@ export fn vibe_env_flag(name: String) -> Bool {
 /// the pin verification only run on the cold walk). Folding this seed into
 /// the cache paths makes each environment its own cache universe instead of
 /// re-verifying cached graphs on load.
-export fn resolution_env_seed() -> String {
+export fn resolution_env_seed() -> String with Env {
   let roots = external_lib_roots()
   let pins = if vibe_env_flag("VIBE_REQUIRE_PINS") {
     "1"
@@ -425,7 +415,20 @@ export fn resolution_env_seed() -> String {
   String::concat("|roots=", String::concat(String::join(roots, ":"), String::concat("|pins=", pins)))
 }
 
-export fn resolve_import_path_candidates(base_dir: String, raw_path: String) -> Array[String] {
+export fn resolve_import_path_candidates(base_dir: String, raw_path: String) -> Array[String] with Env {
+  resolve_import_path_candidates_with_roots(base_dir, raw_path, if String::starts_with(raw_path, "@") {
+    external_lib_roots()
+  } else {
+    []
+  })
+}
+
+/// `resolve_import_path_candidates` with the external library roots passed in
+/// rather than read from the environment. A resolver that only matches
+/// against a closure it was handed (`resolve_known_import_path`) has no reason
+/// to read `VIBE_LIB`, and the in-memory component compile has to stay free of
+/// host capabilities (#1962).
+export fn resolve_import_path_candidates_with_roots(base_dir: String, raw_path: String, roots: Array[String]) -> Array[String] {
   // #730 (ADR-0063 §5/§6): `@scope/name` package refs resolve to the
   // workspace store, laid out BY NAME and verified BY HASH against the
   // importer's require pin (verification happens in the loader; this
@@ -449,7 +452,6 @@ export fn resolve_import_path_candidates(base_dir: String, raw_path: String) -> 
     Array::push(candidates, String::concat(".vibe/store/", String::concat(raw_path, "/index.vibei")))
     Array::push(candidates, String::concat("lib/", String::concat(raw_path, "/index.vpkg")))
     Array::push(candidates, String::concat("lib/", String::concat(raw_path, "/index.vibei")))
-    let roots = external_lib_roots()
     let mut ri = 0
     while ri < Array::length(roots) {
       Array::push(candidates, String::concat(Array::get(roots, ri), String::concat("/", String::concat(raw_path, "/index.vpkg"))))
@@ -512,7 +514,7 @@ export effect Source {
 /// `self_path` is skipped. Falls back to the first non-self candidate so a
 /// genuinely missing import still reports its plain-file path (and to
 /// candidates[0] when every candidate was self).
-export fn resolve_import_path_probe(base_dir: String, raw_path: String, self_path: String) -> String with Source {
+export fn resolve_import_path_probe(base_dir: String, raw_path: String, self_path: String) -> String with Env + Source {
   let candidates = resolve_import_path_candidates(base_dir, raw_path)
   let mut i = 0
   let mut found = ""

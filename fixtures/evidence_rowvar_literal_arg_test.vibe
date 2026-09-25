@@ -1,0 +1,48 @@
+// #2065 wall 1: a higher-order row-variable callee called with a closure
+// LITERAL that cannot perform the handled effect. The evidence pass used to
+// refuse every such call ("type-directed evidence"); the call-site
+// argument-inertness rule (queries.vibe, `edp_argcond_admits`) admits it,
+// because such an argument cannot instantiate the row variable to the effect.
+// These two programs were the bodies of err_closure_value_evidence_ineligible
+// and err_effect_handle_replay_removed, which now pass a named function to
+// stay refused.
+
+effect Ask {
+  Get -> Int
+}
+
+fn via(n: Int, g: (Int) -> Int) -> Int with e {
+  g(n)
+}
+
+let apply2 = (f: () -> Int with Ask) -> Int with Ask {
+  let x = f()
+  via(x, (y) -> y)
+}
+
+fn asker() -> Int with Ask {
+  let x = perform Ask::Get
+  via(x, (y) -> y + 1)
+}
+
+test "a row-carrying closure value reached through an inert literal argument" {
+  let base = 7
+  let lit = () -> Int with Ask {
+    perform Ask::Get + base
+  }
+  let r = handle {
+    apply2(lit)
+  } with {
+    Ask::Get => resume(1)
+  }
+  inspect(r, "8")
+}
+
+test "a needing function calling a higher-order row-variable callee with a literal" {
+  let r = handle {
+    asker()
+  } with {
+    Ask::Get => resume(3)
+  }
+  inspect(r, "4")
+}

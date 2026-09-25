@@ -2327,14 +2327,23 @@ echo "[compiler-gate] unrenderable array refusal ok (message names the edit; 3 r
 echo "[compiler-gate] an unrenderable render argument is refused, not printed as an address (#2987)"
 urdir="_build/_gate_unrenderable_render"
 rm -rf "$urdir"; mkdir -p "$urdir"
+# An optional fourth argument `gc` compiles through the wasm-gc backend
+# (#3068: that lane printed the address where linear refused). The selector is
+# written inline in each command, never routed through a variable (#2248).
 ur_refused() {
-  local ur_src="$1" ur_msg="$2" ur_edit="$3"
-  local ur_wasm="$urdir/$(basename "${ur_src%.vibe}").wasm"
-  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-    "$ur_src" "$ur_wasm" _start >/dev/null 2>&1 || true
+  local ur_src="$1" ur_msg="$2" ur_edit="$3" ur_lane="${4:-linear}"
+  local ur_wasm="$urdir/$(basename "${ur_src%.vibe}")_$ur_lane.wasm"
+  if [ "$ur_lane" = gc ]; then
+    VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+      bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+      "$ur_src" "$ur_wasm" _start >/dev/null 2>&1 || true
+  else
+    VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+      bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+      "$ur_src" "$ur_wasm" _start >/dev/null 2>&1 || true
+  fi
   if [ -s "$ur_wasm" ]; then
-    echo "[compiler-gate] FAIL: $ur_src compiled; expected a compile-time refusal (#2987)" >&2
+    echo "[compiler-gate] FAIL: $ur_src compiled on $ur_lane; expected a compile-time refusal (#2987)" >&2
     exit 1
   fi
   if ! grep -qF "$ur_msg" "$ur_wasm.diag" 2>/dev/null; then
@@ -2349,6 +2358,21 @@ ur_refused() {
 ur_refused fixtures/err_interp_unrenderable_bytes_refused.vibe 'cannot interpolate a `Bytes` value' 'Bytes::to_array(b)'
 ur_refused fixtures/err_interp_unrenderable_field_refused.vibe 'cannot interpolate field `tags`' 'bind it with a type annotation'
 ur_refused fixtures/err_interp_unrenderable_shadow_refused.vibe 'cannot interpolate `shadowed`' 'bind it with a type annotation'
+# #3068: an `Option[Int]` from `Int::parse`, inline and through a name.
+ur_refused fixtures/err_interp_unrenderable_parse_call_refused.vibe 'cannot interpolate the result of `Int::parse`' 'bind it with a type annotation'
+ur_refused fixtures/err_interp_unrenderable_parse_bound_refused.vibe 'cannot interpolate `p`' 'bind it with a type annotation'
+# #3068: the gc lane refuses every one of these with the same message. It had
+# none of the codegen refusals and printed the address (`809`, `177`, `224`).
+ur_refused fixtures/err_interp_unrenderable_bytes_refused.vibe 'cannot interpolate a `Bytes` value' 'Bytes::to_array(b)' gc
+ur_refused fixtures/err_interp_unrenderable_field_refused.vibe 'cannot interpolate field `tags`' 'bind it with a type annotation' gc
+ur_refused fixtures/err_interp_unrenderable_shadow_refused.vibe 'cannot interpolate `shadowed`' 'bind it with a type annotation' gc
+ur_refused fixtures/err_interp_unrenderable_parse_call_refused.vibe 'cannot interpolate the result of `Int::parse`' 'bind it with a type annotation' gc
+ur_refused fixtures/err_interp_unrenderable_parse_bound_refused.vibe 'cannot interpolate `p`' 'bind it with a type annotation' gc
+# #3080: an index-form slice whose subject's shape is unresolved. The slice call
+# had no source offset, so no row reached codegen and both lanes printed an
+# address. The message names the syntax, not the internal `__slice`.
+ur_refused fixtures/err_interp_unrenderable_slice_field_refused.vibe 'cannot interpolate this slice (`xs[a:b]`)' 'bind it with a type annotation'
+ur_refused fixtures/err_interp_unrenderable_slice_field_refused.vibe 'cannot interpolate this slice (`xs[a:b]`)' 'bind it with a type annotation' gc
 # #3019 rides the same helper: a lowering-time refusal asserted on its message
 # and its edit, not on the bare fact that the build failed.
 ur_refused fixtures/err_handle_resume_capture_loop_break_refused.vibe 'leaves a loop outside it' 'set a flag inside the handle'
@@ -2383,22 +2407,33 @@ for ur_ok in \
   ur_decl="${ur_ok%%|*}"; ur_rest="${ur_ok#*|}"
   ur_body="${ur_rest%%|*}"; ur_want="${ur_rest#*|}"
   printf '%s\nfn main allows Console {\n  %s\n}\n' "$ur_decl" "$ur_body" > "$urdir/ok$ur_i.vibe"
-  rm -f "$urdir/ok$ur_i.wasm"
-  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-    "$urdir/ok$ur_i.vibe" "$urdir/ok$ur_i.wasm" main >/dev/null 2>&1 || true
-  if [ ! -s "$urdir/ok$ur_i.wasm" ]; then
-    echo "[compiler-gate] FAIL: a RESOLVABLE render was refused (#2987 over-refuses): $ur_body" >&2
-    cat "$urdir/ok$ur_i.wasm.diag" >&2 2>/dev/null; exit 1
-  fi
-  ur_got="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$urdir/ok$ur_i.wasm" 2>/dev/null | head -1)"
-  if [ "$ur_got" != "$ur_want" ]; then
-    echo "[compiler-gate] FAIL: control $ur_i rendered '$ur_got', expected '$ur_want' (#2987)" >&2
-    exit 1
-  fi
+  # #3068: the controls run on the gc lane too, so its refusal cannot
+  # over-refuse a spelling the message recommends.
+  for ur_lane in linear gc; do
+    ur_okw="$urdir/ok${ur_i}_$ur_lane.wasm"
+    rm -f "$ur_okw"
+    if [ "$ur_lane" = gc ]; then
+      VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+        bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+        "$urdir/ok$ur_i.vibe" "$ur_okw" main >/dev/null 2>&1 || true
+    else
+      VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+        bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+        "$urdir/ok$ur_i.vibe" "$ur_okw" main >/dev/null 2>&1 || true
+    fi
+    if [ ! -s "$ur_okw" ]; then
+      echo "[compiler-gate] FAIL: a RESOLVABLE render was refused on $ur_lane (#2987 over-refuses): $ur_body" >&2
+      cat "$ur_okw.diag" >&2 2>/dev/null; exit 1
+    fi
+    ur_got="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$ur_okw" 2>/dev/null | head -1)"
+    if [ "$ur_got" != "$ur_want" ]; then
+      echo "[compiler-gate] FAIL: control $ur_i rendered '$ur_got' on $ur_lane, expected '$ur_want' (#2987)" >&2
+      exit 1
+    fi
+  done
 done
 rm -rf "$urdir"
-echo "[compiler-gate] unrenderable render refusal ok (message names the edit; 5 resolvable spellings still render)"
+echo "[compiler-gate] unrenderable render refusal ok (message names the edit; 5 resolvable spellings still render on linear and gc)"
 
 # #2990: `Map::get` on a missing key TRAPS on both lanes. It used to answer the
 # zero bit pattern typed as the value type (`0`, `""`, an Array at address 0).
@@ -2804,6 +2839,32 @@ run_test_block_fixtures "string length views (linear, bump)" fixtures/string_len
 run_test_block_fixtures_gc "string length views (gc)" fixtures/string_length_intrinsics_test.vibe
 run_test_block_fixtures_rc "string length views (linear, RC)" fixtures/string_length_intrinsics_test.vibe
 echo '[compiler-gate] string length views ok'
+
+# 15b-3c'. #3067: `String::substring` clamps its indices on every lane. The gc
+#          lane used its own body with no bounds checks and read the bytes
+#          around the string (`("beta", 0, 5)` answered `beta]`).
+echo '[compiler-gate] 15b-3c'"'"' String::substring clamps on every lane (#3067)'
+run_test_block_fixtures "substring clamp (linear, bump)" fixtures/string_substring_clamp_test.vibe
+run_test_block_fixtures_gc "substring clamp (gc)" fixtures/string_substring_clamp_test.vibe
+run_test_block_fixtures_rc "substring clamp (linear, RC)" fixtures/string_substring_clamp_test.vibe
+echo '[compiler-gate] substring clamp ok'
+
+# 15b-3c''. #3078: `Array::slice` clamps its bounds on every lane. The gc body
+#           copied from `start` with no bounds checks, so
+#           `Array::slice([3, 1, 2], -1, 2)` read index -1 (`[, 3, 1]`). The
+#           linear lanes already run this file through the unit runner.
+echo '[compiler-gate] 15b-3c'"''"' Array::slice clamps on the gc lane (#3078)'
+run_test_block_fixtures_gc "slice clamp (gc)" fixtures/slice_clamp_test.vibe
+echo '[compiler-gate] slice clamp (gc) ok'
+
+# 15b-3c'''. #3080: the index-form slice `xs[a:b]` renders by content on every
+#            lane, like `Array::slice(xs, a, b)`. It printed a heap address on
+#            both lanes; its refusal side is the slice_field ur_refused row.
+echo '[compiler-gate] 15b-3c'"'''"' index-form slice renders by content (#3080)'
+run_test_block_fixtures "slice render (linear, bump)" fixtures/interp_slice_render_test.vibe
+run_test_block_fixtures_gc "slice render (gc)" fixtures/interp_slice_render_test.vibe
+run_test_block_fixtures_rc "slice render (linear, RC)" fixtures/interp_slice_render_test.vibe
+echo '[compiler-gate] slice render ok'
 
 # 15b-3d. #2652: `Double::to_string` is shortest-round-trip and `Double::parse`
 #         is correctly rounded. Both are ONE runtime prelude in vibe source

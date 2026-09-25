@@ -1,0 +1,41 @@
+// #3067: `String::substring` clamps its indices into the string on every
+// lane. `start` is clamped into [0, len] and `end` into [start, len], so an
+// out-of-range index never reads outside the string and `end < start` is "".
+// The linear lanes had clamped since #982; the gc lane used its own body with
+// no bounds checks, so `("beta", 0, 5)` answered `beta]` (the byte after the
+// string), `("beta", -1, 1)` answered `]b` (the byte before it), and
+// `("nest", 4, 3)` produced a u32-wrapped length. The gate runs this file on
+// the linear and gc lanes.
+
+// The indices come through a function so no lane can fold the call away.
+fn sub(s: String, start: Int, end: Int) -> String {
+  String::substring(s, start, end)
+}
+
+test "substring within range" {
+  inspect(sub("beta", 1, 3), "et")
+  inspect(sub("beta", 0, 4), "beta")
+}
+
+test "substring end past the string is clamped" {
+  inspect(sub("beta", 0, 5), "beta")
+  inspect(String::length(sub("beta", 0, 5)), "4")
+  inspect(sub("beta", 2, 100), "ta")
+}
+
+test "substring negative start is clamped" {
+  inspect(sub("beta", -1, 1), "b")
+  inspect(String::length(sub("beta", -1, 1)), "1")
+  inspect(sub("beta", -100, 2), "be")
+}
+
+test "substring end before start is empty" {
+  inspect(sub("nest", 4, 3), "")
+  inspect(String::length(sub("nest", 4, 3)), "0")
+  inspect(sub("nest", 3, -5), "")
+}
+
+test "substring start past the string is empty" {
+  inspect(sub("nest", 9, 12), "")
+  inspect(String::length(sub("nest", 9, 12)), "0")
+}

@@ -45,6 +45,10 @@ import @vibe/compiler/codegen/common_extractors {
   array_contains_str, emit_assignop_op, emit_memory_copy, find_catchall_idx, str_table_lookup
 }
 
+import @vibe/compiler/codegen/builtin_bodies {
+  gen_str_substring_body
+}
+
 import @vibe/compiler/codegen/wasm_emit {
   emit_block_i64,
   emit_block_void,
@@ -134,29 +138,16 @@ import @vibe/compiler/codegen/wasm_emit {
 
 //# Functions
 
+/// #3067: the gc lane's `String::substring` IS the linear lane's clamping
+/// body (#982), generated untagged (`enable_rc = false`: this lane has no RC
+/// tag bit). The gc lane had its own copy with no bounds checks, so an
+/// out-of-range index read the bytes around the string (`("beta", 0, 5)`
+/// answered `beta]`) and `end < start` produced a u32-wrapped length. One
+/// generator means the two lanes cannot drift apart again. Locals: 3/4 are
+/// i32 scratch and 5 is the i64 length, so the push site declares 2 i32 and
+/// 1 i64 locals (backend_body.vibe), exactly as linked_compile does.
 export fn gc_gen_str_substring_body() -> Bytes {
-  let b = bytebuf_new()
-  emit_local_get(b, 0)
-  emit_i64_const(b, 32)
-  emit_i64_shr_s(b)
-  emit_i32_wrap_i64(b)
-  emit_local_set(b, 3)
-  emit_local_get(b, 2)
-  emit_local_get(b, 1)
-  emit_i64_sub(b)
-  emit_i32_wrap_i64(b)
-  emit_local_set(b, 4)
-  emit_local_get(b, 3)
-  emit_local_get(b, 1)
-  emit_i32_wrap_i64(b)
-  emit_i32_add(b)
-  emit_i64_extend_i32_u(b)
-  emit_i64_const(b, 32)
-  emit_i64_shl(b)
-  emit_local_get(b, 4)
-  emit_i64_extend_i32_u(b)
-  emit_i64_or(b)
-  b
+  gen_str_substring_body(false)
 }
 
 export fn gc_gen_str_char_code_at_body() -> Bytes {

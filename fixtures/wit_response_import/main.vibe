@@ -1,0 +1,26 @@
+// #2066: two WIT responses in flight at once. Each binding comes from
+// `client.wit` through `from_wit_future_imports`; the composer imports both
+// functions from ONE `example:http-lite/client@1.0.0` instance, with the
+// `response` record from the sibling `types` interface. Both futures are
+// requested before either is awaited, so the wall clock is the longer delay,
+// not the sum. Compiled, validated and executed by
+// scripts/test_wit_async_import_component_gate.sh.
+import ./client_bindings.vibe {
+  fetch_a, fetch_b
+}
+
+fn body_sum(body: HostStream) -> Int with Async {
+  let mut total = 0
+  for b in body {
+    total = total + b
+  }
+  total
+}
+
+let run: () -> Int with Async = () -> {
+  let a = fetch_a()
+  let b = fetch_b()
+  let ra = await(a)
+  let rb = await(b)
+  HostResponse::status(ra) + HostResponse::status(rb) + body_sum(HostResponse::body(ra)) + body_sum(HostResponse::body(rb))
+}

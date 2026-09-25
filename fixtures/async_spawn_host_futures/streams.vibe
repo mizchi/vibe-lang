@@ -1,0 +1,30 @@
+// #1537: two spawned tasks draining two host streams interleave. Each byte
+// read parks its task on the stream's waitable, and the group waits on every
+// pending read at once, so two three-byte streams at 100ms a byte drain in
+// about 300ms, not the 600ms one-after-the-other would take.
+// (1 + 2 + 3) + (10 + 20 + 30) = 66. Executed by
+// scripts/test_named_hoststreams_component_gate.sh.
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+fn drain(s: HostStream) -> Int with Async {
+  let mut total = 0
+  for b in s {
+    total = total + b
+  }
+  total
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  TaskGroup::run((g) -> {
+    let a = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      drain(host_stream_named("left"))
+    })
+    let b = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      drain(host_stream_named("right"))
+    })
+    TaskGroup::pump_all(g)
+    TaskHandle::join(a) + TaskHandle::join(b)
+  })
+}

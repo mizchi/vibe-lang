@@ -265,6 +265,28 @@ if grep -q "host_future_get\$price" "$SHADOW_OUT"; then
   exit 1
 fi
 echo "[named-hostfutures-component-gate] shadowed builtin: no 'price' import reserved"
+# The response builtin is shadow-aware on its own name too (Codex on #3059):
+# a program's own top-level `host_response_named`, called with a WIT address,
+# reserves no response import, while its `host_future_named` call still does.
+RSHADOW_SRC="$OUT_DIR/shadowed_response.vibe"
+cat >"$RSHADOW_SRC" <<'EOF'
+fn host_response_named(s: String) -> Int {
+  String::length(s)
+}
+
+let run: () -> Int with Async = () -> {
+  host_response_named("example:p/api#fetch") + await(host_future_named("price"))
+}
+EOF
+RSHADOW_OUT="$OUT_DIR/shadowed_response.wasm"
+compile_fixture "$RSHADOW_SRC" "$RSHADOW_OUT"
+if grep -q "wit_response_get" "$RSHADOW_OUT"; then
+  echo "named hostfutures component gate FAILED: a program's own host_response_named reserved a response import" >&2
+  exit 1
+fi
+grep -q "host_future_get\$price" "$RSHADOW_OUT" \
+  || { echo "named hostfutures component gate FAILED: shadowing host_response_named dropped the host_future_named import" >&2; exit 1; }
+echo "[named-hostfutures-component-gate] shadowed response builtin: no response import, 'price' still reserved"
 
 # --- #2832: awaiting the SAME host future twice ------------------------------
 # The future-side analogue of the stream lifecycle the hoststreams gate pins
@@ -393,5 +415,146 @@ if ! VIBE_ASYNC_FUTURES="price=41:1" timeout 60 "$RUNNER" "$CTRL_OUT" >"$CTRL_LO
 fi
 [ "$(cat "$CTRL_LOG")" = "41" ] \
   || { echo "named hostfutures component gate FAILED: control expected 41, got: $(cat "$CTRL_LOG")" >&2; exit 1; }
+
+# --- spawned tasks awaiting host futures interleave (#1537) ------------------
+# fixtures/async_spawn_host_futures/main.vibe: task a awaits `slow` (300ms);
+# task b awaits `fast` (150ms) and only then requests a second `fast`. The
+# group waits on every pending handle at once and resumes whichever lands, so
+# b completes both reads inside a's 300ms. Waiting in park order would start
+# b's second read only after a's future landed (~450ms), so the 400ms upper
+# bound is what separates the two.
+SPAWN_OUT="$OUT_DIR/spawn_host_futures.component.wasm"
+rm -f "$SPAWN_OUT" "$SPAWN_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/main.vibe "$SPAWN_OUT" run >/dev/null 2>&1 || true
+[ -s "$SPAWN_OUT" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/main.vibe did not compile: $(cat "$SPAWN_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+SPAWN_LOG="$OUT_DIR/spawn_host_futures.log"
+SPAWN_START_NS=$(date +%s%N)
+if ! VIBE_ASYNC_FUTURES="slow=40:300,fast=1:150" timeout 60 "$RUNNER" "$SPAWN_OUT" >"$SPAWN_LOG" 2>&1; then
+  echo "named hostfutures component gate FAILED: spawned-task run did not exit 0" >&2
+  cat "$SPAWN_LOG" >&2
+  exit 1
+fi
+SPAWN_ELAPSED_MS=$(( ( $(date +%s%N) - SPAWN_START_NS ) / 1000000 ))
+[ "$(cat "$SPAWN_LOG")" = "42" ] \
+  || { echo "named hostfutures component gate FAILED: spawned tasks expected 42 (40 + 1 + 1), got: $(cat "$SPAWN_LOG")" >&2; exit 1; }
+if [ "$SPAWN_ELAPSED_MS" -ge 400 ]; then
+  echo "named hostfutures component gate FAILED: spawned tasks took ${SPAWN_ELAPSED_MS}ms -- b's second read waited for a's future instead of interleaving" >&2
+  exit 1
+fi
+if [ "$SPAWN_ELAPSED_MS" -lt 240 ]; then
+  echo "named hostfutures component gate FAILED: spawned tasks took ${SPAWN_ELAPSED_MS}ms, under the 300ms future -- the tasks did not park" >&2
+  exit 1
+fi
+echo "[named-hostfutures-component-gate] spawned tasks: 42 in ${SPAWN_ELAPSED_MS}ms (< 400: interleaved, not park order)"
+# Two tasks awaiting ONE future: both resume with its value (41 = 20 + 21).
+SHARED_OUT="$OUT_DIR/spawn_shared_future.component.wasm"
+rm -f "$SHARED_OUT" "$SHARED_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/shared.vibe "$SHARED_OUT" run >/dev/null 2>&1 || true
+[ -s "$SHARED_OUT" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/shared.vibe did not compile: $(cat "$SHARED_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+SHARED_LOG="$OUT_DIR/spawn_shared_future.log"
+if ! VIBE_ASYNC_FUTURES="slow=20:200" timeout 60 "$RUNNER" "$SHARED_OUT" >"$SHARED_LOG" 2>&1; then
+  echo "named hostfutures component gate FAILED: shared-future run did not exit 0" >&2
+  cat "$SHARED_LOG" >&2
+  exit 1
+fi
+[ "$(cat "$SHARED_LOG")" = "41" ] \
+  || { echo "named hostfutures component gate FAILED: two tasks awaiting one future expected 41, got: $(cat "$SHARED_LOG")" >&2; exit 1; }
+echo "[named-hostfutures-component-gate] shared future: 41 (every task parked on the handle resumed with its value)"
+# A task cancelled while parked on a future nobody else awaits releases it.
+CANCEL_OUT="$OUT_DIR/spawn_cancelled_waiter.component.wasm"
+rm -f "$CANCEL_OUT" "$CANCEL_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/cancelled.vibe "$CANCEL_OUT" run >/dev/null 2>&1 || true
+[ -s "$CANCEL_OUT" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/cancelled.vibe did not compile: $(cat "$CANCEL_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+CANCEL_LOG="$OUT_DIR/spawn_cancelled_waiter.log"
+if ! VIBE_ASYNC_FUTURES="slow=40:300,fast=1:100" timeout 60 "$RUNNER" "$CANCEL_OUT" >"$CANCEL_LOG" 2>&1; then
+  echo "named hostfutures component gate FAILED: cancelled-waiter run did not exit 0" >&2
+  cat "$CANCEL_LOG" >&2
+  exit 1
+fi
+[ "$(cat "$CANCEL_LOG")" = "40" ] \
+  || { echo "named hostfutures component gate FAILED: cancelled waiter expected 40, got: $(cat "$CANCEL_LOG")" >&2; exit 1; }
+echo "[named-hostfutures-component-gate] cancelled waiter: 40 (its future's read was cancelled and released)"
+# 1100 park-and-cancel rounds, past the adapter's 1023-handle ceiling: each
+# cancelled future's handle must be released for the live read to succeed.
+MANY_OUT="$OUT_DIR/spawn_cancel_many.component.wasm"
+rm -f "$MANY_OUT" "$MANY_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/cancel_many.vibe "$MANY_OUT" run >/dev/null 2>&1 || true
+[ -s "$MANY_OUT" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/cancel_many.vibe did not compile: $(cat "$MANY_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+wasm-tools print "$MANY_OUT" >"$MANY_OUT.wat" 2>/dev/null || true
+grep -q 'canon future.cancel-read' "$MANY_OUT.wat" \
+  || { echo "named hostfutures component gate FAILED: cancel_many composed without future.cancel-read" >&2; exit 1; }
+MANY_LOG="$OUT_DIR/spawn_cancel_many.log"
+if ! VIBE_ASYNC_FUTURES="slow=40:300,fast=1:100" timeout 60 "$RUNNER" "$MANY_OUT" >"$MANY_LOG" 2>&1; then
+  echo "named hostfutures component gate FAILED: cancel_many run did not exit 0 (a cancelled future kept its handle?)" >&2
+  cat "$MANY_LOG" >&2
+  exit 1
+fi
+[ "$(cat "$MANY_LOG")" = "42" ] \
+  || { echo "named hostfutures component gate FAILED: cancel_many expected 42, got: $(cat "$MANY_LOG")" >&2; exit 1; }
+echo "[named-hostfutures-component-gate] cancel_many: 42 (1100 cancelled futures released, past the 1023-handle ceiling)"
+# A sleeping task and host waiters share one wait (the earliest sleeper's
+# timer is in the same waitable set). Both orders are pinned: a long sleep
+# beside a short host chain (sleep-first would take ~400ms), and a short
+# sleep before more host work beside a long future (host-first would take
+# ~400ms). Each runs in ~300ms.
+for timer_case in "sleep_and_host:42" "sleep_short:41"; do
+  tc_name="${timer_case%%:*}"
+  tc_want="${timer_case##*:}"
+  TC_OUT="$OUT_DIR/spawn_${tc_name}.component.wasm"
+  rm -f "$TC_OUT" "$TC_OUT.diag"
+  VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+    bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+    "$COMPILER" "fixtures/async_spawn_host_futures/${tc_name}.vibe" "$TC_OUT" run >/dev/null 2>&1 || true
+  [ -s "$TC_OUT" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/${tc_name}.vibe did not compile: $(cat "$TC_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+  TC_LOG="$OUT_DIR/spawn_${tc_name}.log"
+  TC_START_NS=$(date +%s%N)
+  if ! VIBE_ASYNC_FUTURES="slow=40:300,fast=1:100" timeout 60 "$RUNNER" "$TC_OUT" >"$TC_LOG" 2>&1; then
+    echo "named hostfutures component gate FAILED: ${tc_name} did not exit 0" >&2
+    cat "$TC_LOG" >&2
+    exit 1
+  fi
+  TC_ELAPSED_MS=$(( ( $(date +%s%N) - TC_START_NS ) / 1000000 ))
+  [ "$(cat "$TC_LOG")" = "$tc_want" ] \
+    || { echo "named hostfutures component gate FAILED: ${tc_name} expected ${tc_want}, got: $(cat "$TC_LOG")" >&2; exit 1; }
+  if [ "$TC_ELAPSED_MS" -ge 370 ] || [ "$TC_ELAPSED_MS" -lt 240 ]; then
+    echo "named hostfutures component gate FAILED: ${tc_name} took ${TC_ELAPSED_MS}ms (want ~300ms: the sleeper's timer and the host waits in one set)" >&2
+    exit 1
+  fi
+  echo "[named-hostfutures-component-gate] ${tc_name}: ${tc_want} in ${TC_ELAPSED_MS}ms (timer and host waits together)"
+done
+
+# A sleep that begins after the shared timer was armed keeps its whole debt:
+# the 1000ms timer fires after `b`'s 900ms future and its 500ms sleep began,
+# and only `a` is debited, so the run takes >= 1400ms (debiting every sleeper
+# ended `b`'s sleep at ~1000ms).
+SAH_OUT="$OUT_DIR/spawn_sleep_after_host.component.wasm"
+rm -f "$SAH_OUT" "$SAH_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/sleep_after_host.vibe "$SAH_OUT" run >/dev/null 2>&1 || true
+[ -s "$SAH_OUT" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/sleep_after_host.vibe did not compile: $(cat "$SAH_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+SAH_LOG="$OUT_DIR/spawn_sleep_after_host.log"
+SAH_START_NS=$(date +%s%N)
+if ! VIBE_ASYNC_FUTURES="slow=40:900" timeout 60 "$RUNNER" "$SAH_OUT" >"$SAH_LOG" 2>&1; then
+  echo "named hostfutures component gate FAILED: sleep_after_host did not exit 0" >&2
+  cat "$SAH_LOG" >&2
+  exit 1
+fi
+SAH_ELAPSED_MS=$(( ( $(date +%s%N) - SAH_START_NS ) / 1000000 ))
+[ "$(cat "$SAH_LOG")" = "41" ] \
+  || { echo "named hostfutures component gate FAILED: sleep_after_host expected 41, got: $(cat "$SAH_LOG")" >&2; exit 1; }
+if [ "$SAH_ELAPSED_MS" -lt 1400 ] || [ "$SAH_ELAPSED_MS" -ge 1900 ]; then
+  echo "named hostfutures component gate FAILED: sleep_after_host took ${SAH_ELAPSED_MS}ms (want >= 1400: a sleep begun after the timer was armed is not debited by it)" >&2
+  exit 1
+fi
+echo "[named-hostfutures-component-gate] sleep_after_host: 41 in ${SAH_ELAPSED_MS}ms (a later sleep keeps its debt)"
 
 echo "named hostfutures component gate OK"

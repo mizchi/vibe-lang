@@ -108,21 +108,19 @@ So the two lanes fail at different MOMENTS, and that is stated rather than
 averaged. `scripts/host_async_import_unsupported_test.sh` asks both, so neither
 half of this paragraph can go stale without a gate noticing.
 
-### A third dynamic prefix the manifest does not know
+### Dynamic import prefixes
 
-`vibe.wit_future_get$<versioned-interface>#<func>` is parsed and routed by the
-composer (`component_codegen.vibe:5616-5689`, `:5783-5793`, `:7065`) but
-`grep -c wit_future` is **0** in `linked_compile.vibe`,
-`core/builtin_registry.vibe` and `checker/builtins_async.vibe`. Nothing
-produces it from source today; it reaches the composer only from the synthetic
-fixture at `component_codegen.vibe:7411-7419`.
-
-This matters for sequencing #2064: `check_host_runtime_contract.py:115`
-compares the emitter's dynamic prefixes against the manifest's
-`componentAdapterPatterns` by **exact dict equality**, so the first commit that
-makes `linked_compile.vibe` emit `wit_future_get$` turns a green required gate
-red unless the manifest row lands in the same change. That is a consequence of
-the gate working, not a defect in it.
+Four import families are minted per program rather than listed:
+`vibe.host_future_get$<name>`, `vibe.wit_future_get$<address>` (#2064),
+`vibe.wit_response_get$<address>` (#2066) and `vibe.host_stream_get$<name>`.
+Each has its own emission loop in `linked_compile.vibe` and its own
+`componentAdapterPatterns` row in `docs/generated/host-runtime-contract.json`.
+`check_host_runtime_contract.py`'s `validate_emitter_contract` compares the two
+by **exact dict equality**, so a loop added without its row (or a row without
+its loop) turns the required gate red in the same change. The composer reads
+the prefixes back in `component_codegen.vibe` (`comp_is_wit_future_get_import`,
+`comp_is_wit_response_get_import`, `comp_wit_future_interface` /
+`comp_wit_future_func`).
 
 ## What the values mean
 
@@ -181,6 +179,62 @@ override silently contradicting a module that says `raw` is the hazard #2903's
 - **Wait** (`host_future_wait`) only **settles**. It does not re-read: a second
   `future.read` on a future that already has one pending is a canonical-ABI
   error, which is why the read is in the getter and not here.
+- **Wait on any** (#1537). `host_future_arm (i64) -> i64` answers `1` when the
+  handle's read already completed, else joins the handle to ONE shared
+  waitable set (created on first use, its handle kept in the adapter's scratch
+  word 40) and answers `0`. `host_future_wait_any () -> i64` blocks on that
+  set; for a FUTURE_READ event `payload[0]` names the future, which leaves the
+  set and is marked completed, so `host_future_wait` then takes its value
+  without blocking. It returns the suspend payload (`handle + 2`). Both are
+  imported only when a program's entry
+  boundary settles host futures AND it links `@vibe/concurrent`: the library's
+  `__conc_host_arm` / `__conc_host_wait_any` / `__conc_host_take` default to
+  "no host waitables", and linked_compile gives them these bodies
+  (`lc_host_hooks_install`). A spawned task awaiting a host future parks on
+  its handle; `TaskGroup::pump` resumes whichever lands first, with its value,
+  once nothing else can run. An `Exception` entry beside them exits through
+  its boundary; the adapter serves `stderr_write_stream` / `process_exit` as
+  trapping stubs, #2976's rule for the p1 wrap.
+- **Streams in the same set** (#1537). A task's byte read parks too:
+  `host_stream_arm (i64) -> i64` starts a one-byte `stream.read` into the
+  handle's byte slot and joins the shared set (or answers `1` when the read
+  completed inline, or the CLOSED latch is set), recording the read as
+  pending (band 20480) with its status (band 24576). `host_future_wait_any`
+  answers a STREAM_READ event by recording `payload[1]` as that status and
+  returning `handle + 2048`; a FUTURE_READ returns `handle + 2`. These are the
+  suspend payloads the tasks parked with, so the scheduler matches them
+  directly. `host_stream_read` then settles the armed read instead of issuing
+  a second one, and interprets its status exactly as before (a byte, the
+  inline CLOSED latch, or `-1` at the end).
+- **The sleeper's timer in the same set** (#1537). While tasks wait on host
+  waitables and another task sleeps, `host_sleep_arm (i64) -> i64` starts ONE
+  `sleep-for` call for the earliest sleeper's remaining milliseconds and
+  joins its subtask to the shared set (scratch word 44 holds it, word 48 its
+  results). It answers `1` when the call returned inline, `0` when it is
+  pending or a timer is already armed. `host_future_wait_any` answers the
+  subtask's RETURNED event (status `2`) by dropping the subtask and returning
+  `1`, the poll payload, which no task parks on; the scheduler then elapses
+  every sleeper by the armed milliseconds. So a sleep and a host wait settle
+  in whichever order they land rather than sleep first
+  (`fixtures/async_spawn_host_futures/sleep_and_host.vibe` and
+  `sleep_short.vibe`, each ~300ms where either fixed order takes ~400-500ms).
+  Imported only beside the other hooks, when the program also sleeps.
+- **Cancelling the last waiter** (#1537). `TaskHandle::cancel` on a task
+  parked on a host future that no other task awaits calls
+  `host_future_cancel (i64) -> i64`: a read still BLOCKED leaves the shared
+  set and is cancelled with a synchronous `future.cancel-read` (a cancel that
+  finds the value landed counts as landed, and a landed response's body
+  stream is dropped with it), then the readable end is dropped and the state
+  cleared, as `host_future_wait`'s teardown does. Without it every such
+  cancellation held one of the adapter's 1023 handles for the rest of the run
+  (`fixtures/async_spawn_host_futures/cancel_many.vibe`). A parked STREAM
+  read is released the same way, by `host_stream_cancel (i64) -> i64`: an
+  armed read leaves the set and is cancelled with a synchronous
+  `stream.cancel-read` (whatever it transferred is discarded), the per-handle
+  bands are cleared and the readable end is dropped. Dropping is sound
+  because a host stream cannot be captured by another task (it is neither
+  Send nor a same-nursery endpoint), so the cancelled task was its only
+  reader (`stream_cancel_many.vibe`).
 - **Drop** is conditional -- this is *the conditional-drop rule* the
   runtime-neutral list below names. A call that completed eagerly (status
   RETURNED, code `2`) created no subtask, so it is neither joined nor dropped
@@ -205,6 +259,54 @@ override silently contradicting a module that says `raw` is the hazard #2903's
   `scripts/test_hostfuture_source_component_gate.sh` asserts the anonymous
   row, since the anonymous routing is a different path through the wrap even
   though `__aw_settle` is shared.
+
+- **A future addressed by WIT imports from its interface** (#2064). A
+  `host_future_named` argument of the form
+  `<ns>:<pkg>/<iface>@<version>#<func>` (`cc_is_wit_future_address`) is
+  emitted by linked_compile as `vibe.wit_future_get$<address>` instead of
+  `vibe.host_future_get$<name>`, with the same `() -> i64` type and the same
+  wait half. The composer imports every such function from ONE instance of its
+  versioned interface, and each is a `future<s64>`. The addresses come from WIT text:
+  `from_wit_future_imports` (`@vibex/wasm_wit_parser`) derives a binding per
+  `async func() -> s64` and refuses any other function rather than skipping
+  it. `scripts/test_wit_async_import_component_gate.sh` compiles
+  `fixtures/wit_future_import/main.vibe` against those derived bindings and
+  checks for the single `example:prices/api@1.0.0` instance import. The file
+  lane composes the adapter for a `run` entry whose core imports a host future
+  or stream (`maybe_wrap_stdin_provider_core`), as the single-file lane
+  already did, so a program that imports its bindings builds to a component
+  directly. viberun links a `VIBE_ASYNC_FUTURES` entry whose name is such an
+  address (`example:prices/api@1.0.0#get-price=40:300`) inside that versioned
+  instance as `future<s64>`, so the gate also executes the program. It
+  measures 42 in about one producer delay for two concurrent futures, and
+  bounds that from above (they were in flight together) and below (the task
+  parked).
+
+- **A WIT response carries a status and a streaming body** (#2066).
+  `host_response_named(<address>)` is `Future[HostResponse]`, for a WIT
+  function `async func() -> response` whose `response` is the package `types`
+  interface's `record response { status: s32, body: stream<u8> }`.
+  linked_compile emits `vibe.wit_response_get$<address>` (same `() -> i64`
+  type, same wait half). The composer imports the `types` instance for the
+  record and the API instance for the functions, and declares
+  `future<response>` over the imported record. The adapter lands the record
+  in the future's 8-byte slot, `{status: s32 @0, body: stream<u8> @4}`, and
+  the wait returns it as one scalar, `(status << 32) | body`: the record's
+  flat lowering side by side. A status outside `[-2^30, 2^30)` does not fit
+  the tagged value and traps in the adapter. `HostResponse::status` and
+  `HostResponse::body` take the scalar apart; `body` wraps the stream handle
+  in a host-stream cell, which the shared stream read half reads (present
+  whenever a response is, even with no named stream). Each `body` call wraps
+  the same end, so read it through one cell: once one reaches end of stream
+  the end is dropped, and reading through another traps. The first slice
+  composes responses on their own: every future in the component is a
+  response and they share one interface, and anything else is refused by
+  name. `from_wit_future_imports` derives the bindings (it admits the
+  function only with `use types.{response};` and exactly that record).
+  viberun's `VIBE_ASYNC_RESPONSES="<address>=<status>:<delay_ms>:<b1>|<b2>"`
+  links each function inside its interface. The gate runs
+  `fixtures/wit_response_import/main.vibe` with two 300ms responses, gets 440
+  (both statuses plus every body byte) and bounds the wall clock the same way.
 
 ### Host streams
 

@@ -327,7 +327,7 @@ export fn db_check_env(db: TypeDb, path: String) -> Option[TypeEnv] {
 /// The in-memory TypeDb accepts caller-provided modules. Delegate its import
 /// assembly to the trait-aware FS implementation rather than silently dropping
 /// trait declarations and impls from those module environments.
-fn build_import_envs(stmts: Array[Stmt], base_dir: String, cache: Array[(String, TypeEnv)]) -> (TypeEnv, TypeEnv) with Exception {
+fn build_import_envs(stmts: Array[Stmt], base_dir: String, cache: Array[(String, TypeEnv)]) -> (TypeEnv, TypeEnv) with Env + Exception {
   build_trait_aware_import_envs(stmts, base_dir, cache)
 }
 
@@ -434,7 +434,7 @@ fn collect_import_deps_from_stmts(stmts: Array[Stmt], base_dir: String) -> Array
   go(0, empty_strings())
 }
 
-fn resolve_deps_for_source(rdb: RippleDb, dep_source_cache: Array[(String, String)], path: String, source: String, parse_count: Int) -> (Array[String], Array[(String, String)], Int) with Exception {
+fn resolve_deps_for_source(rdb: RippleDb, dep_source_cache: Array[(String, String)], path: String, source: String, parse_count: Int) -> (Array[String], Array[(String, String)], Int) with Env + Exception {
   match lookup_string_pair(dep_source_cache, path) {
     Some(cached_source) =>
     if cached_source == source {
@@ -459,7 +459,7 @@ fn resolve_deps_for_source(rdb: RippleDb, dep_source_cache: Array[(String, Strin
   }
 }
 
-fn load_or_parse_deps_for_source_fs(dep_source_cache: Array[(String, String)], path: String, source: String, parse_count: Int) -> (Array[String], Array[(String, String)], Int) with Exception + Fs {
+fn load_or_parse_deps_for_source_fs(dep_source_cache: Array[(String, String)], path: String, source: String, parse_count: Int) -> (Array[String], Array[(String, String)], Int) with Env + Exception + Fs {
   match load_persistent_dep_list(path, source) {
     Some(deps) => (deps, upsert_string_pair(dep_source_cache, path, source), parse_count),
     None => {
@@ -469,7 +469,7 @@ fn load_or_parse_deps_for_source_fs(dep_source_cache: Array[(String, String)], p
   }
 }
 
-fn resolve_deps_for_source_fs(rdb: RippleDb, dep_source_cache: Array[(String, String)], path: String, source: String, parse_count: Int) -> (Array[String], Array[(String, String)], Int) with Exception + Fs {
+fn resolve_deps_for_source_fs(rdb: RippleDb, dep_source_cache: Array[(String, String)], path: String, source: String, parse_count: Int) -> (Array[String], Array[(String, String)], Int) with Env + Exception + Fs {
   match lookup_string_pair(dep_source_cache, path) {
     Some(cached_source) =>
     if cached_source == source {
@@ -517,7 +517,7 @@ fn check_module_publishing_typed_lowering_offsets(path: String, fingerprint: Str
   checked.final_env
 }
 
-fn ensure_fingerprint(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, stack: Array[String]) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Exception {
+fn ensure_fingerprint(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, stack: Array[String]) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception {
   if contains_str(stack, path) {
     throw(String::concat("type_db: import cycle detected at ", path))
   } else {
@@ -536,7 +536,7 @@ fn ensure_fingerprint(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_so
         // O(N²) over the deps list. Mutating in place is safe because
         // `dep_acc` flows linearly down the recursion (one path, no
         // sibling branches that need the old prefix).
-        let rec resolve_nested: (Int, Array[(String, String)], RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) -> (Array[(String, String)], RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Exception = (i, dep_acc, dep_db, dep_env_cache, dep_source_cache2, dep_parse_count) -> {
+        let rec resolve_nested: (Int, Array[(String, String)], RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) -> (Array[(String, String)], RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception = (i, dep_acc, dep_db, dep_env_cache, dep_source_cache2, dep_parse_count) -> {
           if i >= dlen {
             (dep_acc, dep_db, dep_env_cache, dep_source_cache2, dep_parse_count)
           } else {
@@ -592,7 +592,7 @@ fn ensure_fingerprint(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_so
   }
 }
 
-export fn db_typecheck(db: TypeDb, path: String) -> TypeDb with Exception {
+export fn db_typecheck(db: TypeDb, path: String) -> TypeDb with Env + Exception {
   match unwrap_db(db) {
     TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count) => {
       let (_, next_rdb, next_env_cache, next_dep_source_cache, next_parse_count) = ensure_fingerprint(rdb, env_cache, dep_source_cache, parse_count, path, empty_strings())
@@ -601,7 +601,7 @@ export fn db_typecheck(db: TypeDb, path: String) -> TypeDb with Exception {
   }
 }
 
-export fn db_typecheck_fs(db: TypeDb, path: String) -> TypeDb with Exception + Fs {
+export fn db_typecheck_fs(db: TypeDb, path: String) -> TypeDb with Env + Exception + Fs {
   match unwrap_db(db) {
     TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count) => {
       let (_, next_rdb, next_env_cache, next_dep_source_cache, next_parse_count) = ensure_fingerprint_fs_impl(rdb, env_cache, dep_source_cache, parse_count, path)
@@ -610,7 +610,7 @@ export fn db_typecheck_fs(db: TypeDb, path: String) -> TypeDb with Exception + F
   }
 }
 
-export fn db_program_source(db: TypeDb, path: String) -> (String, String, TypeDb) with Exception {
+export fn db_program_source(db: TypeDb, path: String) -> (String, String, TypeDb) with Env + Exception {
   let checked = db_typecheck(db, path)
   match unwrap_db(checked) {
     TypeDbState(rdb, _, _, _, _, _, _, _, _, _) =>
@@ -647,7 +647,7 @@ fn lookup_source_by_path(sources: Array[(String, String)], target_path: String) 
 /// #716: collision-def fallback (see merge_sources.vibe). `excluded_locals`
 /// are the locals the export-rename plan already rewrites; the inline copy gets
 /// the target file's export renames applied first.
-fn append_import_alias_collision_defs_from_sources(merged: Array[Stmt], current_path: String, stmts: Array[Stmt], sources: Array[(String, String)], plan: ExportRenamePlan, excluded_locals: Array[String]) -> Unit with Exception {
+fn append_import_alias_collision_defs_from_sources(merged: Array[Stmt], current_path: String, stmts: Array[Stmt], sources: Array[(String, String)], plan: ExportRenamePlan, excluded_locals: Array[String]) -> Unit with Env + Exception {
   let refs = collect_import_alias_collision_refs(stmts)
   let emitted = array_empty()
   let base_dir = dir_of_path(current_path)
@@ -682,7 +682,7 @@ fn append_import_alias_collision_defs_from_sources(merged: Array[Stmt], current_
 
 /// #716: parse every source once and expose (paths, stmts) for the export-
 /// rename plan; the merge itself reuses the parsed statements.
-fn parse_merge_sources(sources: Array[(String, String)]) -> (Array[String], Array[Array[Stmt]]) with Exception {
+fn parse_merge_sources(sources: Array[(String, String)]) -> (Array[String], Array[Array[Stmt]]) with Env + Exception {
   let file_paths = array_empty()
   let file_stmts = array_empty()
   let mut si = 0
@@ -700,7 +700,7 @@ fn parse_merge_sources(sources: Array[(String, String)]) -> (Array[String], Arra
 /// One (sub)list of sources merged under a whole-program rename plan.
 /// `collision_sources` spans the whole program so a collision-def import that
 /// crosses a group boundary still resolves.
-fn build_merged_source_with_plan(entry_path: String, sources: Array[(String, String)], file_paths: Array[String], file_stmts: Array[Array[Stmt]], plan: ExportRenamePlan, collision_sources: Array[(String, String)]) -> String with Exception {
+fn build_merged_source_with_plan(entry_path: String, sources: Array[(String, String)], file_paths: Array[String], file_stmts: Array[Array[Stmt]], plan: ExportRenamePlan, collision_sources: Array[(String, String)]) -> String with Env + Exception {
   // #2205: no reset here -- db_grouped_merged_source calls this once per
   // cache-missing GROUP, and a per-call reset would discard the mappings of
   // every earlier group (Codex round 4 on #2213). The whole-merge entry
@@ -747,7 +747,7 @@ fn build_merged_source_with_plan(entry_path: String, sources: Array[(String, Str
   print_program(merged)
 }
 
-fn build_merged_source(entry_path: String, sources: Array[(String, String)]) -> String with Exception {
+fn build_merged_source(entry_path: String, sources: Array[(String, String)]) -> String with Env + Exception {
   // #2205: the rename table describes ONE merged program.
   namespace_rename_originals_reset()
   let (file_paths, file_stmts) = parse_merge_sources(sources)
@@ -781,7 +781,7 @@ fn join_group_sources(group_sources: Array[String]) -> String {
   StringBuilder::freeze(buf)
 }
 
-export fn db_merged_source(db: TypeDb, _entry_path: String, sources: Array[(String, String)]) -> (String, String, TypeDb) with Exception {
+export fn db_merged_source(db: TypeDb, _entry_path: String, sources: Array[(String, String)]) -> (String, String, TypeDb) with Env + Exception {
   match unwrap_db(db) {
     TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count) => {
       let merge_fingerprint = build_merge_fingerprint(_entry_path, sources)
@@ -798,7 +798,7 @@ export fn db_merged_source(db: TypeDb, _entry_path: String, sources: Array[(Stri
   }
 }
 
-export fn db_grouped_merged_source(db: TypeDb, groups: Array[(String, Array[(String, String)])]) -> (String, String, TypeDb) with Exception {
+export fn db_grouped_merged_source(db: TypeDb, groups: Array[(String, Array[(String, String)])]) -> (String, String, TypeDb) with Env + Exception {
   match unwrap_db(db) {
     TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count) => {
       // Keep per-group results in side buffers, then append cache misses
