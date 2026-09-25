@@ -2817,11 +2817,12 @@ echo '[compiler-gate] gc-lane scalar parity ok'
 # erased formal (`GA(1)`), a `Char` as its code point, a `Unit` as `0`. The
 # interpolation rewrite and the derived renderers are shared by every backend,
 # so each fixture runs on all three lanes.
-echo '[compiler-gate] 15b-3a/15 render by content: generic enum/struct, Char, Unit, tuple parameter (#3065/#3066/#3074/#3075/#3082/#3083)'
+echo '[compiler-gate] 15b-3a/15 render by content: generic enum/struct, Char, Unit, tuple parameter, generic call, scalar payload (#3065/#3066/#3074/#3075/#3082-#3085/#3087)'
 for render_fx in fixtures/generic_enum_derive_show_render_test.vibe fixtures/char_unit_leaf_render_test.vibe \
     fixtures/exception_kinded_binder_render_test.vibe fixtures/interp_nested_literal_render_test.vibe \
     fixtures/generic_struct_derive_show_nested_test.vibe fixtures/tuple_param_render_test.vibe \
-    fixtures/imported_generic_show_test.vibe fixtures/generic_call_result_render_test.vibe; do
+    fixtures/imported_generic_show_test.vibe fixtures/generic_call_result_render_test.vibe \
+    fixtures/derive_show_scalar_payload_test.vibe; do
   run_test_block_fixtures "render by content (linear, bump)" "$render_fx"
   run_test_block_fixtures_gc "render by content (gc)" "$render_fx"
   run_test_block_fixtures_rc "render by content (linear, RC)" "$render_fx"
