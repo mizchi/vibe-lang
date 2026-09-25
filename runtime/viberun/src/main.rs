@@ -794,8 +794,29 @@ struct HttpResponseProducer {
     join: tokio::task::JoinHandle<Result<(i32, Vec<u8>)>>,
 }
 
+/// The whole request, connect through the last body byte, is bounded
+/// (`VIBE_HTTP_TIMEOUT_MS`, default 30s): a blocking thread cannot be aborted
+/// once it runs, and the runtime waits for it at shutdown, so a stalled server
+/// would otherwise hold the runner open after the component finished.
+const HTTP_PROVIDER_TIMEOUT_MS: u64 = 30_000;
+/// The body is buffered before the future lands, so it is capped
+/// (`VIBE_HTTP_BODY_LIMIT`, default 16 MiB) rather than letting an endpoint
+/// grow host memory past what `StoreLimits` governs. A larger body fails the
+/// future with a message naming the limit; it is never silently truncated.
+const HTTP_PROVIDER_BODY_LIMIT: u64 = 16 * 1024 * 1024;
+
+fn http_env_u64(name: &str, default: u64) -> u64 {
+    std::env::var(name).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
+}
+
 fn http_get_blocking(url: &str) -> Result<(i32, Vec<u8>)> {
-    let resp = match ureq::get(url).call() {
+    let timeout = std::time::Duration::from_millis(http_env_u64(
+        "VIBE_HTTP_TIMEOUT_MS",
+        HTTP_PROVIDER_TIMEOUT_MS,
+    ));
+    let limit = http_env_u64("VIBE_HTTP_BODY_LIMIT", HTTP_PROVIDER_BODY_LIMIT);
+    let agent = ureq::AgentBuilder::new().timeout(timeout).build();
+    let resp = match agent.get(url).call() {
         Ok(r) => r,
         Err(ureq::Error::Status(_, r)) => r,
         Err(e) => return Err(format_err!("http provider: GET {url}: {e}")),
@@ -803,8 +824,14 @@ fn http_get_blocking(url: &str) -> Result<(i32, Vec<u8>)> {
     let status = i32::from(resp.status());
     let mut bytes = Vec::new();
     resp.into_reader()
+        .take(limit.saturating_add(1))
         .read_to_end(&mut bytes)
         .map_err(|e| format_err!("http provider: GET {url}: reading the body: {e}"))?;
+    if bytes.len() as u64 > limit {
+        return Err(format_err!(
+            "http provider: GET {url}: the body is larger than {limit} bytes; raise VIBE_HTTP_BODY_LIMIT to accept it"
+        ));
+    }
     Ok((status, bytes))
 }
 

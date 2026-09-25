@@ -365,7 +365,11 @@ override silently contradicting a module that says `raw` is the hazard #2903's
   blocking thread so requests overlap, landing with the server's own status
   (a non-2xx status is a response, not an error) and body; a transport
   failure fails the future (`http_main.vibe` against a local file server:
-  898). The provider is the runner's, over the same `fetch(url)` WIT
+  898). The body is buffered before the future lands, so it is capped
+  (`VIBE_HTTP_BODY_LIMIT`, default 16 MiB) and the whole request is bounded
+  (`VIBE_HTTP_TIMEOUT_MS`, default 30s): a larger body or a stalled server
+  fails the future with a message naming the limit, rather than growing host
+  memory or holding the runner open on a thread it cannot abort. The provider is the runner's, over the same `fetch(url)` WIT
   function -- the guest does not import `wasi:http` itself. The gate runs
   `fixtures/wit_response_import/main.vibe` with two 300ms responses, gets 440
   (both statuses plus every body byte) and bounds the wall clock the same way.

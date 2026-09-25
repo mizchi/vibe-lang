@@ -516,10 +516,65 @@ GOT="$(NO_PROXY='*' no_proxy='*' VIBE_ASYNC_RESPONSES="$IFACE#fetch=0:0:http" ru
   echo "WIT async import gate FAILED: viberun did not exit 0 on the real-provider program: $GOT" >&2
   exit 1
 }
-kill "$HTTP_PID" 2>/dev/null || true
 [ "$GOT" = "898" ] || {
+  kill "$HTTP_PID" 2>/dev/null || true
   echo "WIT async import gate FAILED: real provider expected 898 (200 + \"abc\" 294 + 404), got: $GOT" >&2
   exit 1
 }
 echo "[wit-async-import] response from a real HTTP GET (200 + body, and a 404): 898"
+# The provider buffers the body before the future lands, so the body is capped
+# (VIBE_HTTP_BODY_LIMIT) and a larger one fails the future naming the limit --
+# never a silent truncation.
+GOT="$(NO_PROXY='*' no_proxy='*' VIBE_HTTP_BODY_LIMIT=2 VIBE_ASYNC_RESPONSES="$IFACE#fetch=0:0:http" run_bounded 60 "$RUNNER" "$HTTP_DIR/main.wasm" 2>&1)" && {
+  kill "$HTTP_PID" 2>/dev/null || true
+  echo "WIT async import gate FAILED: a body over VIBE_HTTP_BODY_LIMIT was accepted: $GOT" >&2
+  exit 1
+}
+kill "$HTTP_PID" 2>/dev/null || true
+case "$GOT" in
+  *"the body is larger than 2 bytes"*) ;;
+  *) echo "WIT async import gate FAILED: an over-limit body did not name the limit: $GOT" >&2; exit 1 ;;
+esac
+echo "[wit-async-import] a body over VIBE_HTTP_BODY_LIMIT fails the future naming the limit"
+# A server that sends its headers and then stalls: the request is bounded
+# (VIBE_HTTP_TIMEOUT_MS), so the runner exits instead of waiting on a blocking
+# thread it cannot abort.
+wait "$HTTP_PID" 2>/dev/null || true
+python3 - <<'PYEOF' &
+import socket, threading, time
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", 18766))
+s.listen(8)
+def stall(c):
+    c.recv(4096)
+    c.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nab")
+    time.sleep(60)
+    c.close()
+while True:
+    c, _ = s.accept()
+    threading.Thread(target=stall, args=(c,), daemon=True).start()
+PYEOF
+HTTP_PID=$!
+python3 - <<'PYEOF' || { echo "WIT async import gate FAILED: the stalling server on 127.0.0.1:18766 did not come up" >&2; exit 1; }
+import socket, time
+deadline = time.time() + 20
+while time.time() < deadline:
+    try:
+        socket.create_connection(("127.0.0.1", 18766), timeout=1).close()
+        raise SystemExit(0)
+    except OSError:
+        time.sleep(0.1)
+raise SystemExit(1)
+PYEOF
+STATUS=0
+GOT="$(NO_PROXY='*' no_proxy='*' VIBE_HTTP_TIMEOUT_MS=800 VIBE_ASYNC_RESPONSES="$IFACE#fetch=0:0:http" run_bounded 20 "$RUNNER" "$HTTP_DIR/main.wasm" 2>&1)" || STATUS=$?
+kill "$HTTP_PID" 2>/dev/null || true
+case "$STATUS:$GOT" in
+  124:*) echo "WIT async import gate FAILED: a stalled response held the runner past its bound" >&2; exit 1 ;;
+  0:*) echo "WIT async import gate FAILED: a stalled response answered: $GOT" >&2; exit 1 ;;
+  *"timed out"*) ;;
+  *) echo "WIT async import gate FAILED: a stalled response failed without naming the timeout: $GOT" >&2; exit 1 ;;
+esac
+echo "[wit-async-import] a stalled server fails the future within VIBE_HTTP_TIMEOUT_MS"
 echo "WIT async import component gate OK"
