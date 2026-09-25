@@ -1,0 +1,52 @@
+// #3108 review: a branch that ends in a `let rec` block whose own tail is a
+// borrow-returning call (`let rec go = ..; Array::get(xs, i)`) holds a view of
+// an element its container still owns, exactly like a bare
+// `Array::get(xs, i)` tail (#3103). The retain rewrite stopped at the
+// `ELetRec` node, so the binding's planned drop freed the element in place and
+// the next read of the container reached a freed block -- a use-after-free
+// that `VIBE_RC=shadow` aborts on and the default RC lane answers wrongly once
+// the block is reused.
+
+enum D {
+  A(String, Array[String]);
+  B(String)
+}
+
+fn mk() -> Array[D] {
+  [A(String::concat("a", "x"), ["p"]), B("b"), A(String::concat("c", "y"), ["q"])]
+}
+
+fn scan(xs: Array[D], out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(xs) {
+    let d = if i % 2 == 0 {
+      let rec skip = (n: Int) -> Int {
+        if n <= 0 {
+          0
+        } else {
+          skip(n - 1)
+        }
+      }
+      Array::get(xs, i + skip(3))
+    } else {
+      Array::get(xs, i)
+    }
+    match d {
+      A(n, _) => Array::push(out, n),
+      B(n) => Array::push(out, n)
+    }
+    // A fresh allocation per iteration, so a freed element's block is reused
+    // before the next scan reads it.
+    let _ = [String::concat("z", "z")]
+    i = i + 1
+  }
+}
+
+test "a let rec block ending in a borrow-returning call keeps its element alive" {
+  let xs = mk()
+  let out: Array[String] = []
+  scan(xs, out)
+  scan(xs, out)
+  scan(xs, out)
+  inspect(String::join(out, ","), content = "ax,b,cy,ax,b,cy,ax,b,cy")
+}
