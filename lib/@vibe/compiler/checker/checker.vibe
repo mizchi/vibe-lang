@@ -4518,6 +4518,25 @@ fn is_bytestream_named_type(t: Type) -> Bool {
 
 /// True when every declared field type of a struct is ground (the struct is not
 /// generic). `S::{ ... }` for such a struct can safely be typed `CtStruct(S)`.
+/// #3112: a monomorphic struct whose only non-ground field types are the
+/// builtin nominal host types. Such a name is never a type parameter (the
+/// struct declares none) nor an unresolved spelling, so the literal keeps its
+/// struct type; before, `Reply::{ resp: r }` with `resp: HostResponse` typed
+/// as `?`, and every check downstream of it -- the spawn-capture one-owner
+/// rule among them -- saw nothing.
+fn struct_fields_ground_builtin_named(dfields: Array[(String, Type)]) -> Bool {
+  let mut ok = true
+  let mut i = 0
+  while i < Array::length(dfields) {
+    let (_, ft) = Array::get(dfields, i)
+    if !type_is_ground_except(ft, ["HostResponse", "HostStream", "ByteStream"]) {
+      ok = false
+    }
+    i = i + 1
+  }
+  ok
+}
+
 fn struct_fields_ground(dfields: Array[(String, Type)]) -> Bool {
   let mut ok = true
   let mut i = 0
@@ -14548,7 +14567,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               // every downstream use of the value unchecked). A non-ground
               // struct WITHOUT declared params (unresolved field type names)
               // keeps the old CtUnknown tolerance.
-              if struct_fields_ground(dfields) {
+              if struct_fields_ground(dfields) || (tplen == 0 && struct_fields_ground_builtin_named(dfields)) {
                 (CtStruct(rn), s1, c2)
               } else if tplen > 0 {
                 let inst_targs = for ta in fresh_targs {
