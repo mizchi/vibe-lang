@@ -2385,15 +2385,68 @@ fn qualified_method_of_exported_type(name: String, exported_types: Array[String]
   }
 }
 
+/// The private types `collect_private_type_renames` will rename: the same
+/// four declaration kinds under the same `exported` test, names only.
+fn collect_private_renamed_type_names(stmts: Array[Stmt], exported: Array[String]) -> Array[String] {
+  let names = empty_strings()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SEnum(false, name, _, _, _) => if !string_array_contains(exported, name) {
+        Array::push(names, name)
+      },
+      SStruct(false, name, _, _, _, _) => if !string_array_contains(exported, name) {
+        Array::push(names, name)
+      },
+      STypeAlias(false, name, _, _) => if !string_array_contains(exported, name) {
+        Array::push(names, name)
+      },
+      SSuberror(false, name, _) => if !string_array_contains(exported, name) {
+        Array::push(names, name)
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  names
+}
+
+/// #3105: the private spelling of a module-private value.
+///
+/// A qualified method whose head is a private type that the type stage
+/// renames (`Pt::measure`, with `Pt` becoming `Pt_dep_<path>`) takes the
+/// type's mangled name as its OWNER: `Pt_dep_<path>::measure`. Every consumer
+/// that finds a method from its receiver type -- the trait-dictionary builder
+/// (`<Type>::<method>`), UFCS `p.measure()`, derive -- asks for exactly that
+/// spelling once the type is renamed. Suffixing the whole name instead
+/// (`Pt::measure_dep_<path>`) matched none of them, and the impl-owner stage
+/// then rewrote the definition to `Pt_dep_<path>::measure_dep_<path>` while
+/// the call sites kept `Pt::measure_dep_<path>`. Measured: a private struct
+/// with a method-bearing trait impl failed `vibe build` ("add a body for
+/// `measure`"), and a direct `Pt::measure(p)` reached codegen unresolved.
+///
+/// Anything else (a plain value, or a qualified name whose head is not a
+/// renamed type, such as a private trait's) keeps the whole-name suffix.
+fn private_value_rename(path: String, name: String, renamed_types: Array[String], namespace_suffix_box: Array[String]) -> String {
+  let idx = String::index_of(name, "::")
+  if idx > 0 && string_array_contains(renamed_types, String::substring(name, 0, idx)) {
+    let head = String::substring(name, 0, idx)
+    String::concat(namespace_private_name_lazy(path, head, namespace_suffix_box), String::substring(name, idx, String::length(name)))
+  } else {
+    namespace_private_name_lazy(path, name, namespace_suffix_box)
+  }
+}
+
 fn collect_private_value_renames(path: String, stmts: Array[Stmt], namespace_suffix_box: Array[String], exported: Array[String]) -> Array[(String, String)] {
   let renames = empty_aliases()
   let exported_types = collect_exported_type_names(stmts)
   let declared_types = collect_declared_type_names(stmts)
+  let renamed_types = collect_private_renamed_type_names(stmts, exported)
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       SLet(false, _, name, _, _) => if !string_array_contains(exported, name) && !qualified_method_of_exported_type(name, exported_types, declared_types) {
-        Array::push(renames, (name, namespace_private_name_lazy(path, name, namespace_suffix_box)))
+        Array::push(renames, (name, private_value_rename(path, name, renamed_types, namespace_suffix_box)))
       },
       SLetMut(name, _, _) => if !string_array_contains(exported, name) {
         Array::push(renames, (name, namespace_private_name_lazy(path, name, namespace_suffix_box)))

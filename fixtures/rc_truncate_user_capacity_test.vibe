@@ -1,0 +1,24 @@
+// #3115 review: the truncate release plan treated `Array::with_capacity` as a
+// fresh allocation. A program's own top-level `Array::with_capacity` may
+// return a SHARED array instead -- here a top-level array -- so a view saved
+// from it before the truncate must survive the truncate. With the builtin
+// assumed, the plan approved the release and freed the element under `saved`;
+// the same-sized literal after it then reused the freed block.
+
+let shared: Array[Array[Int]] = [[1, 7], [2, 8], [3, 9]]
+
+fn Array::with_capacity(n: Int) -> Array[Array[Int]] {
+  shared
+}
+
+fn probe() -> Int {
+  let saved = Array::get(shared, 2)
+  let xs: Array[Array[Int]] = Array::with_capacity(8)
+  Array::truncate(xs, 1)
+  let reuse = [5, 5]
+  Array::get(saved, 1) * 10 + Array::get(reuse, 0)
+}
+
+test "a user-defined Array::with_capacity is not treated as fresh" {
+  inspect(probe(), content = "95")
+}

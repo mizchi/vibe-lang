@@ -34,7 +34,8 @@ import @vibe/compiler/perceus {
   pa_is_dup,
   pa_is_path_drop,
   pa_is_reuse_token,
-  param_is_heap_in_body
+  param_is_heap_in_body,
+  perceus_truncate_rows
 }
 
 import @vibe/compiler/codegen/reloc {
@@ -614,6 +615,9 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
   let lam_path_drops = array_empty()
   let lam_mark_names = array_empty()
   let lam_mark_offs = array_empty()
+  let lam_trunc_release = array_empty()
+  let lam_trunc_pin_arrays = array_empty()
+  let lam_trunc_pin_names = array_empty()
   if ctx.enable_rc {
     let lam_plan = build_perceus_plan_pinned(ctx.perceus_pin, norm_params, result_body, ctx.borrow_ret_names, ctx.borrow_param_user, ctx.borrow_param_mask, ctx.borrow_view_ret)
     let mut ldi = 0
@@ -640,6 +644,9 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
       }
       ldi = ldi + 1
     }
+    // #2837: a lambda's result convention is not an immediate this lowering
+    // can vouch for, so a row that needs one is dropped.
+    perceus_truncate_rows(lam_plan, false, lam_trunc_release, lam_trunc_pin_arrays, lam_trunc_pin_names)
     let mut hpi = 0
     while hpi < Array::length(norm_params) {
       let (hpn, hpt) = Array::get(norm_params, hpi)
@@ -755,6 +762,11 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
     rc_consume_mark_offs: lam_mark_offs,
     rc_path_flag_names: array_empty(),
     rc_path_flag_locals: array_empty(),
+    rc_trunc_release: lam_trunc_release,
+    rc_trunc_pin_arrays: lam_trunc_pin_arrays,
+    rc_trunc_pin_names: lam_trunc_pin_names,
+    rc_pins_live: array_empty(),
+    rc_trunc_builtin: ctx.rc_trunc_builtin,
     reuse_scrutinee_names: array_empty(),
     reuse_flag_locals: array_empty(),
     rc_reuse_token_names: lam_reuse_names,

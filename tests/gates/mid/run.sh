@@ -680,6 +680,64 @@ done
 rm -rf "$svdir"
 echo "[compiler-gate] truncate saved-view guard ok (2122312 on bump/rc/shadow/gc)"
 
+# 40f0b. #2837: what a truncate removes is RELEASED on the RC lane, so a
+#        fill / truncate / refill loop of owned elements keeps the heap
+#        frontier bounded -- and a view read out of the array before the
+#        truncate and read after it survives, because the plan pins it.
+#        Before the release, the same fixture grew __heap_ptr by 17,777,044 B
+#        over its 2000 rounds (8,888 B per round of 100 owned pushes, linear:
+#        4,445,044 B at 500 rounds, 35,553,044 B at 4000); with it, 9,844 B at
+#        500, 2000 and 4000 rounds alike. The answer (2000 rounds whose saved view still
+#        read its own element) is checked on bump, rc, shadow and gc, and the
+#        shadow lane traps on the first drop of a freed block.
+echo "[compiler-gate] 40f0b/40 truncate releases removed owned elements (#2837)"
+trdir="_build/_gate_truncate_reclaim"
+rm -rf "$trdir"; mkdir -p "$trdir"
+for tr_lane in bump rc shadow gc; do
+  rm -f "$trdir/tr.wasm" "$trdir/tr.wasm.diag"
+  case "$tr_lane" in
+    bump) env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_truncate_reclaim_bounded_test.vibe" "$trdir/tr.wasm" main >/dev/null 2>&1 || true ;;
+    rc) env VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_truncate_reclaim_bounded_test.vibe" "$trdir/tr.wasm" main >/dev/null 2>&1 || true ;;
+    shadow) env VIBE_RC=shadow VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_truncate_reclaim_bounded_test.vibe" "$trdir/tr.wasm" main >/dev/null 2>&1 || true ;;
+    gc) env VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_truncate_reclaim_bounded_test.vibe" "$trdir/tr.wasm" main >/dev/null 2>&1 || true ;;
+  esac
+  if [ ! -s "$trdir/tr.wasm" ]; then
+    echo "[compiler-gate] FAIL: rc_truncate_reclaim_bounded fixture did not compile on the $tr_lane lane (#2837)" >&2
+    cat "$trdir/tr.wasm.diag" >&2 2>/dev/null || true
+    exit 1
+  fi
+  tr_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$trdir/tr.wasm" 2>&1 | tail -1)"
+  if [ "$tr_out" != "2000" ]; then
+    echo "[compiler-gate] FAIL: rc_truncate_reclaim_bounded got '$tr_out' on the $tr_lane lane (want 2000). A smaller count means a saved view read a freed, reused block; a trap means a truncate released an element something still held (#2837)." >&2
+    exit 1
+  fi
+  if [ "$tr_lane" = rc ]; then
+    tr_json="$(node scripts/measure_heap.mjs "$trdir/tr.wasm" main 2>/dev/null)"
+    tr_used="$(printf '%s' "$tr_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+    if [ -z "$tr_used" ]; then
+      echo "[compiler-gate] FAIL: could not measure rc_truncate_reclaim_bounded heap ($tr_json)" >&2; exit 1
+    fi
+    if [ "$tr_used" -ge 200000 ]; then
+      echo "[compiler-gate] FAIL: rc_truncate_reclaim_bounded heap_used=$tr_used >= 200000 (#2837 regressed: a truncate no longer releases the owned elements it removes; unreleased, this fixture measured 17,777,044 B)" >&2; exit 1
+    fi
+  fi
+done
+rm -rf "$trdir"
+echo "[compiler-gate] truncate reclamation guard ok (2000 on bump/rc/shadow/gc, rc heap_used=$tr_used B)"
+# A program's own top-level `Array::truncate` replaces the builtin, so the
+# release must not run before it (#3115 review). Under shadow a release
+# would trap on the drop of the freed suffix.
+if ! VIBE_RC=shadow VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh fixtures/rc_truncate_user_shadow_test.vibe >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: rc_truncate_user_shadow_test failed under VIBE_RC=shadow -- a truncate released elements before calling a user-defined Array::truncate (#3115)" >&2
+  exit 1
+fi
+echo "[compiler-gate] user-defined Array::truncate guard ok on shadow"
+if ! VIBE_RC=shadow VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh fixtures/rc_truncate_user_capacity_test.vibe >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: rc_truncate_user_capacity_test failed under VIBE_RC=shadow -- a truncate released elements of an array a user-defined Array::with_capacity returned (#3115)" >&2
+  exit 1
+fi
+echo "[compiler-gate] user-defined Array::with_capacity guard ok on shadow"
+
 # 40f1a. #2427: the shadow table must not overlap the heap it describes.
 #        40f above proves the marks catch a real dup/drop-of-freed; this
 #        proves they are marks at all. The table sat at a FIXED 256 MiB while

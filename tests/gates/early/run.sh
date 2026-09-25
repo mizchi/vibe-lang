@@ -2978,6 +2978,33 @@ if bash scripts/wasmtime_run.sh --version >/dev/null 2>&1; then
 else
   echo '[compiler-gate] linked debug trait library compiled; SKIP run: wasmtime not available'
 fi
+# #3105: the SAME program as an ordinary (non-debug) build, where lib.vibe is
+# merged and its private `Pt` renamed to `Pt_dep_<path>`. Its impl method was
+# renamed `Pt::measure_dep_<path>`, which no `<Type>::<method>` lookup asks
+# for, so the build failed: "add a body for `measure` to `impl Measured for
+# Pt_dep_...`". The shapes beyond this one (enum, several methods, UFCS) are
+# pinned by fixtures/private_type_impl_import_test.vibe.
+# VIBE_RC=1 selects the production lane `vibe build` takes by default; this
+# lane pins VIBE_RC=0 (lib.sh). The bump lane's `mvp` mode prunes with
+# `dce_stmts` BEFORE the dictionary desugar, which drops an impl method that
+# only a dictionary reaches -- a separate defect that fails this program even
+# with `export struct Pt`, so it is not what this row measures.
+ll_rel_out="$(VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  build fixtures/linked_library_trait_dict/main.vibe -o "$lldir/release.wasm" --entry _start 2>&1 || true)"
+if [ ! -s "$lldir/release.wasm" ]; then
+  echo "[compiler-gate] FAIL: non-debug build of a library with a private type's trait impl produced no wasm (#3105)" >&2
+  printf '%s\n' "$ll_rel_out" >&2; exit 1
+fi
+if bash scripts/wasmtime_run.sh --version >/dev/null 2>&1; then
+  ll_rel_res="$(run_bounded 60 bash scripts/wasmtime_run.sh run --invoke _start "$lldir/release.wasm" 2>&1 | tr -dc '0-9-' || true)"
+  if [ "$ll_rel_res" != "172" ]; then
+    echo "[compiler-gate] FAIL: non-debug trait library build answered '$ll_rel_res' (expected 172) (#3105)" >&2; exit 1
+  fi
+  echo '[compiler-gate] non-debug trait library build ok (172)'
+else
+  echo '[compiler-gate] non-debug trait library compiled; SKIP run: wasmtime not available'
+fi
 rm -rf "$lldir"
 
 # 15b-3c'. #3067: `String::substring` clamps its indices on every lane. The gc
