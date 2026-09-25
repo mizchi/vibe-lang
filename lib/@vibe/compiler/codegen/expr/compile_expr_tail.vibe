@@ -2246,6 +2246,14 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     Array::push(ctx.agg_local_slots, local_idx * 256 + agg_entry)
     Array::push(ctx.agg_local_exprs, agg_shape_expr)
     let (rc_kind, is_borrow_ret_ext) = classify_let_value_heap(buf, value, name, local_idx, local_names, ctx)
+    // #3114: `let w = v` over a borrow-bound `v` that left `w` owning nothing
+    // (rc_kind 0: the Perceus plan inherits `v`'s no-reference class, so `w`
+    // has no scope-end drop) is the same borrowed view under another name.
+    // Mark it borrow-bound for its body like `v`, so a consuming call, a
+    // push, or a return retains it exactly as it would retain `v`. Read here,
+    // before the #712 mask below removes `name` -- `let v = v` must still see
+    // the outer `v`.
+    let alias_borrow_like = ctx.enable_rc && rc_kind == 0 && is_eident(value) && array_contains_str(ctx.loop_borrowed_names, get_eident_name(value)) && !array_contains_str(ctx.ref_cell_names, get_eident_name(value))
     if ctx.enable_rc && rc_kind > 0 {
       let mut dbi = 0
       while dbi < Array::length(ctx.rc_dup_names) {
@@ -2315,7 +2323,7 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     // (conditional) borrowed view too -- mark it borrow-bound for the body
     // scope so consuming calls dup it (see value_has_borrowed_branch_tail).
     let value_borrow_like = ctx.enable_rc && is_branching_value(value) && value_has_borrowed_branch_tail(value, local_names, array_empty(), ctx)
-    if ctx.enable_rc && (is_borrow_ret_ext || value_borrow_like) {
+    if ctx.enable_rc && (is_borrow_ret_ext || value_borrow_like || alias_borrow_like) {
       Array::push(ctx.loop_borrowed_names, name)
     } else {
       ()
@@ -2452,7 +2460,7 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     } else {
       ()
     }
-    if ctx.enable_rc && (is_borrow_ret_ext || value_borrow_like) {
+    if ctx.enable_rc && (is_borrow_ret_ext || value_borrow_like || alias_borrow_like) {
       Array::truncate(ctx.loop_borrowed_names, lb_mark)
     } else {
       ()

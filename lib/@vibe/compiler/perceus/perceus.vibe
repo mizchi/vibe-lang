@@ -139,6 +139,10 @@ struct PCtx {
   // ..)` value MOVES (see the EAssign arm of pc_emit); -1 outside one.
   mut move_use_id: Int;
   mut move_hit: Bool;
+  // #3114: ids below this are the plan's own parameters (declared first,
+  // see build_perceus_plan_in_ctx). A parameter's `scalar` flag means "not
+  // proven heap", not "holds no reference", so an alias does not inherit it.
+  mut param_count: Int;
   // #2389 per-path release. Per binding id, the bits below (PF_*); and the
   // occurrences that spend a binding's initial reference, as three aligned
   // arrays (id, source offset, name) filtered into PaConsumeMark rows once
@@ -354,6 +358,7 @@ fn pctx_new(borrow_ret_names: Array[String], borrow_param_fns: Array[String], bo
     view_src: [],
     move_use_id: 0 - 1,
     move_hit: false,
+    param_count: 0,
     decl_flags: [],
     mark_ids: [],
     mark_offs: [],
@@ -437,6 +442,7 @@ fn pctx_reset(ctx: PCtx) -> Int {
   ctx.view_src = vsrc0
   ctx.move_use_id = 0 - 1
   ctx.move_hit = false
+  ctx.param_count = 0
   let flags0: Array[Int] = []
   ctx.decl_flags = flags0
   let mids0: Array[Int] = []
@@ -2963,7 +2969,22 @@ export fn pc_count(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
     ,
     ELet(name, value, body, _) => {
       pc_count(ctx, scope, value)
-      let id = pc_declare(ctx, name, is_scalar_expr(ctx, value))
+      // #3114: `let w = v` where `v` holds no reference of its own -- a
+      // borrowed view (`Array::get` and the other borrow-returning callees
+      // are classified scalar by is_scalar_expr) or a genuine scalar --
+      // hands `w` nothing to own either. Parameters are excluded (see
+      // PCtx.param_count). Planning `w` as an owned binding
+      // gave it a scope-end drop (or a last-use transfer into a consuming
+      // call / a return) for a reference it never took, releasing the
+      // element the container still owns. The alias inherits the source's
+      // classification; codegen marks it borrow-bound alongside (see the
+      // `let` lowering in compile_expr_tail), so an owning use still
+      // retains it the way it retains `v`.
+      let alias_of_scalar = match value {
+        EIdent(src, _) => Map::has_key(scope, src) && Map::get(scope, src) >= ctx.param_count && Array::get(ctx.scalar, Map::get(scope, src)),
+        _ => false
+      }
+      let id = pc_declare(ctx, name, alias_of_scalar || is_scalar_expr(ctx, value))
       let _ = pctx_mark_view_call(ctx, scope, id, value)
       pc_count(ctx, Map::set(scope, name, id), body)
     },
@@ -4728,6 +4749,7 @@ fn build_perceus_plan_in_ctx(ctx: PCtx, params: Array[(String, Option[TypeExpr])
     scope = Map::set(scope, pname, id)
     pi = pi + 1
   }
+  ctx.param_count = ctx.next_id
   pc_count(ctx, scope, body)
   pctx_apply_borrow_retention(ctx)
   ctx.next_id = 0

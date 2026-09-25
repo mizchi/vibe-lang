@@ -737,6 +737,37 @@ if ! VIBE_RC=shadow VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh 
   exit 1
 fi
 echo "[compiler-gate] user-defined Array::with_capacity guard ok on shadow"
+# 40f0c. #3114: `let w = v`, where `v` is a borrowed `Array::get` view, got a
+#        planned scope-end drop (or a last-use transfer into a consuming call,
+#        a push, a return) for a reference it never took, so the element the
+#        array still owned was released twice. The shadow lane traps at the
+#        second release; the plain RC lane corrupted the free list and died in
+#        a later allocation. Nine alias shapes at distinct decimal places, on
+#        all four lanes -- gc and bump are the value oracle, shadow is the pin.
+echo "[compiler-gate] 40f0c/40 alias of a borrowed view is not released twice (#3114)"
+vadir="_build/_gate_rc_view_alias"
+rm -rf "$vadir"; mkdir -p "$vadir"
+for va_lane in bump rc shadow gc; do
+  rm -f "$vadir/va.wasm" "$vadir/va.wasm.diag"
+  case "$va_lane" in
+    bump) env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_view_alias_drop_test.vibe" "$vadir/va.wasm" main >/dev/null 2>&1 || true ;;
+    rc) env VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_view_alias_drop_test.vibe" "$vadir/va.wasm" main >/dev/null 2>&1 || true ;;
+    shadow) env VIBE_RC=shadow VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_view_alias_drop_test.vibe" "$vadir/va.wasm" main >/dev/null 2>&1 || true ;;
+    gc) env VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_view_alias_drop_test.vibe" "$vadir/va.wasm" main >/dev/null 2>&1 || true ;;
+  esac
+  if [ ! -s "$vadir/va.wasm" ]; then
+    echo "[compiler-gate] FAIL: rc_view_alias_drop fixture did not compile on the $va_lane lane (#3114)" >&2
+    cat "$vadir/va.wasm.diag" >&2 2>/dev/null || true
+    exit 1
+  fi
+  va_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$vadir/va.wasm" 2>&1 | tail -1)"
+  if [ "$va_out" != "566498532" ]; then
+    echo "[compiler-gate] FAIL: rc_view_alias_drop got '$va_out' on the $va_lane lane (want 566498532). Each alias shape sits at its own decimal place -- see the fixture header for which digit is which. A trap means an alias of a borrowed view released a reference it never took (#3114)." >&2
+    exit 1
+  fi
+done
+rm -rf "$vadir"
+echo "[compiler-gate] borrowed-view alias guard ok (566498532 on bump/rc/shadow/gc)"
 
 # 40f1a. #2427: the shadow table must not overlap the heap it describes.
 #        40f above proves the marks catch a real dup/drop-of-freed; this

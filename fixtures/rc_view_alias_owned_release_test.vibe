@@ -1,0 +1,32 @@
+// #3114 companion to rc_view_alias_drop_test.vibe: the fix there stops a
+// `let w = v` alias of a BORROWED view from releasing a reference it never
+// took. This pins the other side -- an alias of an OWNED value still owns
+// it, and still releases it at scope end. If the alias were classified as
+// holding nothing, every round below would leak its three-element array
+// (~20000 rounds, hundreds of KB); released, the free list recycles the
+// block and the heap does not grow.
+
+/// One round of an alias of an OWNED value: `b` must still release the
+/// array, or every round leaks it.
+fn owned_alias_round(i: Int) -> Int {
+  let a = [i, i + 1, i + 2]
+  let b = a
+  Array::get(b, 2) - i
+}
+
+test "an alias of an owned value is still released" {
+  let mut s = 0
+  let mut i = 0
+  while i < 100 {
+    s = s + owned_alias_round(i)
+    i = i + 1
+  }
+  let before = Profiler::heap_bytes()
+  while i < 20100 {
+    s = s + owned_alias_round(i)
+    i = i + 1
+  }
+  let grew = Profiler::heap_bytes() - before
+  inspect(s, content = "40200")
+  inspect(grew < 4000, content = "true")
+}
