@@ -2924,6 +2924,12 @@ fn lc_program_defines_top_level(stmts: Array[Stmt], name: String) -> Bool {
       } else {
         ()
       },
+      // A top-level destructuring binds the name too (Codex on #3059).
+      SLetPat(p, _) => if lc_pat_binds_name(p, name) {
+        found = true
+      } else {
+        ()
+      },
       _ => ()
     }
     i = i + 1
@@ -4004,6 +4010,14 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
         }
         lc_mark_calls(mv, boundary_targets, boundary_hits, false)
       },
+      SLetPat(_, pv) => {
+        if lc_expr_has_async_handle(pv) {
+          has_async_handle = true
+        } else {
+          ()
+        }
+        lc_mark_calls(pv, boundary_targets, boundary_hits, false)
+      },
       SExpr(se) => {
         if lc_expr_has_async_handle(se) {
           has_async_handle = true
@@ -4038,6 +4052,23 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
       _ => ()
     }
     i = i + 1
+  }
+  // A builtin name bound by a top-level `let mut` or destructuring shadows
+  // the builtin as surely as a plain `let` does (Codex on #3059).
+  if lc_program_defines_top_level(stmts, "sleep") {
+    user_defines_sleep = true
+  } else {
+    ()
+  }
+  if lc_program_defines_top_level(stmts, "host_future_get") || lc_program_defines_top_level(stmts, "host_future_named") || lc_program_defines_top_level(stmts, "host_response_named") {
+    user_defines_host_future = true
+  } else {
+    ()
+  }
+  if lc_program_defines_top_level(stmts, "host_stream_named") || lc_program_defines_top_level(stmts, "host_stream_next") || lc_program_defines_top_level(stmts, "host_stream_close") {
+    user_defines_host_stream = true
+  } else {
+    ()
   }
   let calls_sleep = Array::get(boundary_hits, 0)
   let calls_host_future = Array::get(boundary_hits, 1) || Array::get(boundary_hits, 2) || Array::get(boundary_hits, 8)

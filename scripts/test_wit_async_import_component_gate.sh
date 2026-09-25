@@ -326,4 +326,16 @@ if [ "$ELAPSED_MS" -lt $(( LONG_MS * 4 / 5 )) ]; then
   exit 1
 fi
 echo "[wit-async-import] responses executed: 440 in ${ELAPSED_MS}ms (two ${LONG_MS}ms responses, bodies streamed)"
+# The runner registers an interface's scalar futures and its responses on ONE
+# linker instance: a scalar future supplied on the same interface must not
+# make the linker define the instance twice (Codex on #3059).
+GOT="$(VIBE_ASYNC_FUTURES="$IFACE#extra=5:0" VIBE_ASYNC_RESPONSES="$IFACE#fetch-a=200:0:1|2|3,$IFACE#fetch-b=204:0:10|20" timeout 60 "$RUNNER" "$RESP_DIR/main.wasm" 2>&1)" || {
+  echo "WIT async import gate FAILED: viberun refused a scalar future and responses on one interface: $GOT" >&2
+  exit 1
+}
+[ "$GOT" = "440" ] || {
+  echo "WIT async import gate FAILED: shared-interface run expected 440, got: $GOT" >&2
+  exit 1
+}
+echo "[wit-async-import] one interface carrying a scalar future and responses links once: 440"
 echo "WIT async import component gate OK"

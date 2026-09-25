@@ -1025,44 +1025,15 @@ fn run_async_component(path: &str) -> Result<i32> {
                 .map_err(|e| format_err!("link {name}: {e}"))?;
         }
     }
-    for (iface, funcs) in wit_futures {
-        let mut inst = linker
-            .instance(&iface)
-            .map_err(|e| format_err!("link instance {iface}: {e}"))?;
-        for (func_name, value, entry_delay) in funcs {
-            inst.func_wrap_concurrent(
-                func_name,
-                move |acc: &Accessor<StoreLimits>, _params: ()| {
-                    let ms = scale(entry_delay);
-                    Box::pin(async move {
-                        let reader = acc.with(|mut access| {
-                            wasmtime::component::FutureReader::<i64>::new(
-                                &mut access,
-                                async move {
-                                    if ms > 0 {
-                                        tokio::time::sleep(std::time::Duration::from_millis(ms))
-                                            .await;
-                                    }
-                                    Ok::<i64, wasmtime::Error>(value)
-                                },
-                            )
-                        })?;
-                        Ok((reader,))
-                    })
-                },
-            )
-            .map_err(|e| format_err!("link {iface}#{func_name}: {e}"))?;
-        }
-    }
     // #2066: WIT responses. VIBE_ASYNC_RESPONSES="iface#func=status:delay_ms:
     // b1|b2|b3" links `func: async func() -> response` inside `iface`,
     // returning a future that resolves after `delay_ms` to `{ status, body }`
     // with the body streaming those bytes then EOS. The body stream is
     // created when the call is made and handed over inside the record, so
     // it is the guest's readable end from the moment the response lands.
+    let mut responses: std::collections::BTreeMap<String, Vec<(String, i32, u64, Vec<u8>)>> =
+        std::collections::BTreeMap::new();
     if let Ok(spec) = std::env::var("VIBE_ASYNC_RESPONSES") {
-        let mut responses: std::collections::BTreeMap<String, Vec<(String, i32, u64, Vec<u8>)>> =
-            std::collections::BTreeMap::new();
         for ent in spec.split(',').filter(|s| !s.trim().is_empty()) {
             let (addr, rest) = ent.split_once('=').ok_or_else(|| {
                 format_err!("VIBE_ASYNC_RESPONSES entry '{ent}': expected iface#func=status:delay_ms:b1|b2")
@@ -1096,36 +1067,67 @@ fn run_async_component(path: &str) -> Result<i32> {
                 .or_default()
                 .push((func.to_string(), status, delay, body));
         }
-        for (iface, funcs) in responses {
-            let mut inst = linker
-                .instance(&iface)
-                .map_err(|e| format_err!("link instance {iface}: {e}"))?;
-            for (func_name, status, entry_delay, body) in funcs {
-                inst.func_wrap_concurrent(
-                    &func_name,
-                    move |acc: &Accessor<StoreLimits>, _params: ()| {
-                        let ms = scale(entry_delay);
-                        let items = body.clone();
-                        Box::pin(async move {
-                            let reader = acc.with(|mut access| {
-                                let body = wasmtime::component::StreamReader::<u8>::new(&mut access, items)?;
-                                wasmtime::component::FutureReader::<HostResponse>::new(
-                                    &mut access,
-                                    async move {
-                                        if ms > 0 {
-                                            tokio::time::sleep(std::time::Duration::from_millis(ms))
-                                                .await;
-                                        }
-                                        Ok::<HostResponse, wasmtime::Error>(HostResponse { status, body })
-                                    },
-                                )
-                            })?;
-                            Ok((reader,))
-                        })
-                    },
-                )
-                .map_err(|e| format_err!("link {iface}#{func_name}: {e}"))?;
-            }
+    }
+    // One linker instance per WIT interface, carrying its scalar futures AND
+    // its responses: an interface may declare both, and the linker refuses to
+    // define the same instance twice (Codex on #3059).
+    let mut wit_ifaces: std::collections::BTreeSet<String> = wit_futures.keys().cloned().collect();
+    wit_ifaces.extend(responses.keys().cloned());
+    for iface in wit_ifaces {
+        let mut inst = linker
+            .instance(&iface)
+            .map_err(|e| format_err!("link instance {iface}: {e}"))?;
+        let funcs = wit_futures.remove(&iface).unwrap_or_default();
+        for (func_name, value, entry_delay) in funcs {
+            inst.func_wrap_concurrent(
+                func_name,
+                move |acc: &Accessor<StoreLimits>, _params: ()| {
+                    let ms = scale(entry_delay);
+                    Box::pin(async move {
+                        let reader = acc.with(|mut access| {
+                            wasmtime::component::FutureReader::<i64>::new(
+                                &mut access,
+                                async move {
+                                    if ms > 0 {
+                                        tokio::time::sleep(std::time::Duration::from_millis(ms))
+                                            .await;
+                                    }
+                                    Ok::<i64, wasmtime::Error>(value)
+                                },
+                            )
+                        })?;
+                        Ok((reader,))
+                    })
+                },
+            )
+            .map_err(|e| format_err!("link {iface}#{func_name}: {e}"))?;
+        }
+        let funcs = responses.remove(&iface).unwrap_or_default();
+        for (func_name, status, entry_delay, body) in funcs {
+            inst.func_wrap_concurrent(
+                &func_name,
+                move |acc: &Accessor<StoreLimits>, _params: ()| {
+                    let ms = scale(entry_delay);
+                    let items = body.clone();
+                    Box::pin(async move {
+                        let reader = acc.with(|mut access| {
+                            let body = wasmtime::component::StreamReader::<u8>::new(&mut access, items)?;
+                            wasmtime::component::FutureReader::<HostResponse>::new(
+                                &mut access,
+                                async move {
+                                    if ms > 0 {
+                                        tokio::time::sleep(std::time::Duration::from_millis(ms))
+                                            .await;
+                                    }
+                                    Ok::<HostResponse, wasmtime::Error>(HostResponse { status, body })
+                                },
+                            )
+                        })?;
+                        Ok((reader,))
+                    })
+                },
+            )
+            .map_err(|e| format_err!("link {iface}#{func_name}: {e}"))?;
         }
     }
     // ADR-0089 Decision 3 (#1218): host-supplied `stream<u8>`. Every entry

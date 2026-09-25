@@ -531,4 +531,30 @@ for timer_case in "sleep_and_host:42" "sleep_short:41"; do
   echo "[named-hostfutures-component-gate] ${tc_name}: ${tc_want} in ${TC_ELAPSED_MS}ms (timer and host waits together)"
 done
 
+# A sleep that begins after the shared timer was armed keeps its whole debt:
+# the 1000ms timer fires after `b`'s 900ms future and its 500ms sleep began,
+# and only `a` is debited, so the run takes >= 1400ms (debiting every sleeper
+# ended `b`'s sleep at ~1000ms).
+SAH_OUT="$OUT_DIR/spawn_sleep_after_host.component.wasm"
+rm -f "$SAH_OUT" "$SAH_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/sleep_after_host.vibe "$SAH_OUT" run >/dev/null 2>&1 || true
+[ -s "$SAH_OUT" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/sleep_after_host.vibe did not compile: $(cat "$SAH_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+SAH_LOG="$OUT_DIR/spawn_sleep_after_host.log"
+SAH_START_NS=$(date +%s%N)
+if ! VIBE_ASYNC_FUTURES="slow=40:900" timeout 60 "$RUNNER" "$SAH_OUT" >"$SAH_LOG" 2>&1; then
+  echo "named hostfutures component gate FAILED: sleep_after_host did not exit 0" >&2
+  cat "$SAH_LOG" >&2
+  exit 1
+fi
+SAH_ELAPSED_MS=$(( ( $(date +%s%N) - SAH_START_NS ) / 1000000 ))
+[ "$(cat "$SAH_LOG")" = "41" ] \
+  || { echo "named hostfutures component gate FAILED: sleep_after_host expected 41, got: $(cat "$SAH_LOG")" >&2; exit 1; }
+if [ "$SAH_ELAPSED_MS" -lt 1400 ] || [ "$SAH_ELAPSED_MS" -ge 1900 ]; then
+  echo "named hostfutures component gate FAILED: sleep_after_host took ${SAH_ELAPSED_MS}ms (want >= 1400: a sleep begun after the timer was armed is not debited by it)" >&2
+  exit 1
+fi
+echo "[named-hostfutures-component-gate] sleep_after_host: 41 in ${SAH_ELAPSED_MS}ms (a later sleep keeps its debt)"
+
 echo "named hostfutures component gate OK"

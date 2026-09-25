@@ -119,6 +119,10 @@ export struct TaskCell {
   // blocks on every pending handle at once (`conc_settle_host_waits`) and
   // resumes whichever landed, with its value.
   mut host_wait: Int;
+  // #1537: this sleeper's debt was pending when the group's shared timer was
+  // armed, so that timer's duration is what it may be debited when it fires.
+  // A sleep that began after the arm is not covered and keeps its debt.
+  mut timer_covered: Bool;
   // Tasks parked waiting for THIS cell to reach a terminal status
   // (TaskHandle::result_wait). Every terminal transition clears their
   // direct_wait via conc_notify_waiters.
@@ -667,6 +671,7 @@ export fn TaskGroup::spawn[rg, e, T: Send](n: TaskGroup[rg, e], f: () -> T with 
     sleep_left: 0,
     direct_wait: false,
     host_wait: 0 - 1,
+    timer_covered: false,
     waiters: empty_cells()
   }
   let runner: () -> Unit with e = () -> {
@@ -1111,6 +1116,7 @@ export fn TaskGroup::adopt[rg, e, T: Send](n: TaskGroup[rg, e]) -> TaskHandle[rg
     sleep_left: 0,
     direct_wait: false,
     host_wait: 0 - 1,
+    timer_covered: false,
     waiters: empty_cells()
   }
   Array::push(n.adopted, cell)
@@ -1451,6 +1457,7 @@ fn conc_settle_host_waits[rg, e](n: TaskGroup[rg, e]) -> Bool {
     }
     if arm == 0 {
       Array::set(conc_host_timer_ms, 0, min_left)
+      conc_host_cover_sleepers(n)
     } else {
       ()
     }
@@ -1469,14 +1476,47 @@ fn conc_host_settle_one[rg, e](n: TaskGroup[rg, e], ready: Int, arm: Int, min_le
       __conc_host_wait_any()
     }
     if fired == 1 {
-      // The timer: the sleepers' virtual clock advances by what it waited.
+      // The timer: the sleepers it covered advance by what it waited. One
+      // that began sleeping after the arm keeps its whole debt -- debiting
+      // it the armed duration would end its sleep early (Codex on #3059);
+      // the next round arms a timer for it.
       let elapsed = Array::get(conc_host_timer_ms, 0)
       Array::set(conc_host_timer_ms, 0, 0)
-      conc_host_sleep_elapsed(n, elapsed)
+      conc_host_covered_elapsed(n, elapsed)
       true
     } else {
       conc_host_resume(n, fired)
     }
+  }
+}
+
+/// #1537: mark every current sleeper as covered by the timer just armed.
+fn conc_host_cover_sleepers[rg, e](n: TaskGroup[rg, e]) -> Unit {
+  let mut j = 0
+  while j < Array::length(n.adopted) {
+    let c = Array::get(n.adopted, j)
+    c.timer_covered = c.status == 5 && c.sleep_left > 0
+    j = j + 1
+  }
+}
+
+/// #1537: the armed timer fired after `ms`: debit only the sleepers it
+/// covered, and clear the marks.
+fn conc_host_covered_elapsed[rg, e](n: TaskGroup[rg, e], ms: Int) -> Unit {
+  let mut j = 0
+  while j < Array::length(n.adopted) {
+    let c = Array::get(n.adopted, j)
+    if c.timer_covered && c.status == 5 && c.sleep_left > 0 {
+      c.sleep_left = if c.sleep_left > ms {
+        c.sleep_left - ms
+      } else {
+        0
+      }
+    } else {
+      ()
+    }
+    c.timer_covered = false
+    j = j + 1
   }
 }
 
