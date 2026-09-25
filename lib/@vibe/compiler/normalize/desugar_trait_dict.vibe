@@ -22142,6 +22142,79 @@ fn dtd_typed_render_shape_for(arg: Expr) -> String {
 /// heuristic got wrong.
 fn dtd_typed_item_shape_for(e: Expr) -> String {
   let off = typed_lowering_arg_offset(e)
+  if off < 0 {
+    dtd_typed_item_shape_through_wrapper(e)
+  } else {
+    dtd_typed_item_shape_at(off)
+  }
+}
+
+/// #3081 review: an element with no offset of its own -- an `if`, a `match`,
+/// a block, a binder whose body is its own name -- answers from its arms, the
+/// same descent the checker's key walk (`irc_push_arg_key`) makes. Every arm
+/// that answers must agree; an arm with no row, or two arms that disagree,
+/// answer "" and the syntactic shape stays in charge.
+fn dtd_typed_item_shape_through_wrapper(e: Expr) -> String {
+  match e {
+    EIf(_, t, f) => dtd_typed_item_shape_join(dtd_typed_item_shape_for(t), dtd_typed_item_shape_for(f)),
+    ESeq(_, second) => dtd_typed_item_shape_for(second),
+    EMatch(_, arms) => {
+      let mut acc = ""
+      let mut ok = true
+      let mut i = 0
+      while i < Array::length(arms) && ok {
+        let (_, body) = Array::get(arms, i)
+        let sh = dtd_typed_item_shape_for(body)
+        if String::length(sh) == 0 {
+          ()
+        } else if String::length(acc) == 0 {
+          acc = sh
+        } else if acc != sh {
+          ok = false
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      if ok {
+        acc
+      } else {
+        ""
+      }
+    },
+    ELet(nm, val, body, _) => dtd_typed_item_shape_through_binder(nm, val, body),
+    ELetRec(nm, val, body) => dtd_typed_item_shape_through_binder(nm, val, body),
+    ELetMut(nm, val, body, _) => dtd_typed_item_shape_through_binder(nm, val, body),
+    _ => ""
+  }
+}
+
+/// Two arms' answers: the one that answered when only one did, the shared one
+/// when both agree, "" when they disagree.
+fn dtd_typed_item_shape_join(a: String, b: String) -> String {
+  if String::length(a) == 0 {
+    b
+  } else if String::length(b) == 0 || a == b {
+    a
+  } else {
+    ""
+  }
+}
+
+/// The one binder shape the checker's walk follows: the body is exactly the
+/// bound name, so the VALUE answers for it.
+fn dtd_typed_item_shape_through_binder(name: String, value: Expr, body: Expr) -> String {
+  match body {
+    EIdent(bn, _) => if bn == name {
+      dtd_typed_item_shape_for(value)
+    } else {
+      ""
+    },
+    _ => ""
+  }
+}
+
+fn dtd_typed_item_shape_at(off: Int) -> String {
   let mut key = ""
   if off >= 0 {
     let mut i = 0

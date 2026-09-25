@@ -8914,6 +8914,13 @@ fn irc_show_shim_names(stmts: Array[Stmt]) -> Array[String] {
 /// scalar leaf it could not type went through the pointer heuristic.
 let irc_literal_item_keys: Array[Int] = []
 
+/// #3081 review: how many composite-literal elements the key walk is inside.
+/// An element that has no key of its own (`if` / `match` / a binder block)
+/// hands the walk to its arms, and the keys found there are literal elements
+/// as much as a directly keyed element is -- they are what the interpolation
+/// pass renders from the literal's shape.
+let irc_literal_depth: Array[Int] = [0]
+
 fn irc_push_arg_key(arg: Expr, out: Array[Int], want: Int) -> Unit {
   let aoff = if want == 4 {
     typed_lowering_float_key(arg)
@@ -8922,6 +8929,11 @@ fn irc_push_arg_key(arg: Expr, out: Array[Int], want: Int) -> Unit {
   }
   if aoff >= 0 {
     Array::push(out, aoff)
+    if want != 4 && Array::get(irc_literal_depth, 0) > 0 {
+      Array::push(irc_literal_item_keys, aoff)
+    } else {
+      ()
+    }
   } else {
     match arg {
       EIf(_, t, f) => {
@@ -8965,18 +8977,13 @@ fn irc_push_arg_key(arg: Expr, out: Array[Int], want: Int) -> Unit {
 
 /// #3081: every element of a composite literal in render-argument position.
 fn irc_push_literal_item_keys(items: Array[Expr], out: Array[Int], want: Int) -> Unit {
+  Array::set(irc_literal_depth, 0, Array::get(irc_literal_depth, 0) + 1)
   let mut i = 0
   while i < Array::length(items) {
-    let item = Array::get(items, i)
-    let ioff = typed_lowering_arg_offset(item)
-    if want != 4 && ioff >= 0 {
-      Array::push(irc_literal_item_keys, ioff)
-    } else {
-      ()
-    }
-    irc_push_arg_key(item, out, want)
+    irc_push_arg_key(Array::get(items, i), out, want)
     i = i + 1
   }
+  Array::set(irc_literal_depth, 0, Array::get(irc_literal_depth, 0) - 1)
 }
 
 /// #2585: every arm body of a `match` in render-argument position.
@@ -9192,6 +9199,7 @@ fn irc_render_arg_offsets_quad(checked: CheckedProgram, want_a: Int, want_b: Int
   let raw: Array[Int] = []
   let shims = irc_shim_set(irc_show_shim_names(checked.checked_stmts))
   Array::truncate(irc_literal_item_keys, 0)
+  Array::set(irc_literal_depth, 0, 0)
   irc_collect_stmts(checked.checked_stmts, raw, want_a, shims)
   let cands = irc_sorted_unique(raw)
   let literal_items = irc_sorted_unique(irc_literal_item_keys)
