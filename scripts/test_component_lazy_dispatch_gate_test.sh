@@ -16,26 +16,16 @@ set -euo pipefail
 # the wrong tree or the wrong compiler, which is how five self-tests in #2252
 # came to be "broken": unset first, set explicitly per case.
 unset VIBE_COMPONENT_LAZY_WORK VIBE_COMPONENT_LAZY_COMPILER VIBE_COMPONENT_LAZY_LAUNCHER \
-      VIBE_COMPONENT_LAZY_RUNNER
+      VIBE_COMPONENT_LAZY_RUNNER VIBE_COMPONENT_LAZY_SOURCES_ROOT
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 GATE="$ROOT/scripts/test_component_lazy_dispatch_gate.sh"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/vibe_component_lazy_selftest.XXXXXX")"
 
-# Case 11 edits a TRACKED compiler source in the real checkout, so its
-# restoration belongs in the trap, not on the happy path: an interrupt, a kill,
-# or an early exit anywhere in the expensive nested gate would otherwise leave
-# the developer's tree modified (Codex review of #2861). The trap runs on the
-# normal exit too, so the restore is unconditional rather than duplicated.
-MUTATED_SOURCE=""
-MUTATED_BACKUP=""
-cleanup() {
-  if [ -n "$MUTATED_SOURCE" ] && [ -f "$MUTATED_BACKUP" ]; then
-    cp "$MUTATED_BACKUP" "$MUTATED_SOURCE"
-  fi
-  rm -rf "$TMP_ROOT"
-}
-trap cleanup EXIT INT TERM
+# No case edits the checkout: every mutation lands in a copy under $TMP_ROOT,
+# including the compiler-source case at the end (#2899), so there is nothing
+# to restore and nothing a kill can leave behind.
+trap 'rm -rf "$TMP_ROOT"' EXIT INT TERM
 
 MASTER="$TMP_ROOT/master"
 VIBE_COMPONENT_LAZY_WORK="$MASTER" bash "$GATE" --build-only >/dev/null \
@@ -249,19 +239,36 @@ echo "component-lazy self-test [precompiled trust boundary]: red as expected"
 # 13. The compiler-source half of the cache key (Codex P2): a change under
 #     lib/@vibe/compiler must force a rebuild, or a changed emitter is reused
 #     from yesterday's artifacts and the gate is green about code it never ran.
+#
+#     Asked of a SCRATCH COPY of lib/ (#2899). This case used to append a
+#     probe comment to the tracked component_codegen.vibe in the live checkout
+#     and restore it from a backup; a run that escaped the restore left probe
+#     code in lib/@vibe/compiler, where nothing reported it and a `git commit
+#     -a` would have shipped it.
 case_no=$((case_no + 1))
+key_of() { # <sources-root>
+  VIBE_COMPONENT_LAZY_WORK="$TMP_ROOT/case$case_no" VIBE_COMPONENT_LAZY_SOURCES_ROOT="$1" \
+    bash "$GATE" --print-sources-hash 2>/dev/null
+}
+srcs="$TMP_ROOT/sources"
+mkdir -p "$srcs"
+cp -R "$ROOT/lib" "$srcs/lib"
 stamp_before="$(cat "$MASTER/.sources_sha")"
-touch_work="$TMP_ROOT/case$case_no"
-rm -rf "$touch_work"
-cp -R "$MASTER" "$touch_work"
-MUTATED_SOURCE="$ROOT/lib/@vibe/compiler/entry/source_compile/wasi_only/component_codegen.vibe"
-MUTATED_BACKUP="$TMP_ROOT/component_codegen.orig"
-cp "$MUTATED_SOURCE" "$MUTATED_BACKUP"
-printf '\n// self-test: proves the cache key covers the compiler sources.\n' >> "$MUTATED_SOURCE"
-stamp_after="$(VIBE_COMPONENT_LAZY_WORK="$touch_work" bash "$GATE" --build-only >/dev/null 2>&1; cat "$touch_work/.sources_sha")"
-cp "$MUTATED_BACKUP" "$MUTATED_SOURCE"
-MUTATED_SOURCE=""
-if [ "$stamp_before" = "$stamp_after" ]; then
+# The copy must hash exactly like the checkout the fixtures were built from,
+# or the comparison below compares two different trees.
+copy_key="$(key_of "$srcs")"
+[ -n "$copy_key" ] && [ "$copy_key" = "$stamp_before" ] || {
+  echo "component-lazy self-test [compiler source in the cache key]: the scratch copy of lib/ does not hash like the checkout ($copy_key vs $stamp_before) -- the case would prove nothing" >&2
+  exit 1
+}
+probe="$srcs/lib/@vibe/compiler/entry/source_compile/wasi_only/component_codegen.vibe"
+printf '\n// self-test: proves the cache key covers the compiler sources.\n' >> "$probe"
+grep -qF 'proves the cache key covers the compiler sources' "$probe" || {
+  echo "component-lazy self-test [compiler source in the cache key]: the mutation did not land" >&2
+  exit 1
+}
+stamp_after="$(key_of "$srcs")"
+if [ -z "$stamp_after" ] || [ "$stamp_before" = "$stamp_after" ]; then
   echo "component-lazy self-test [compiler source in the cache key]: a change under lib/@vibe/compiler left the key unchanged, so the fixtures would be reused" >&2
   exit 1
 fi

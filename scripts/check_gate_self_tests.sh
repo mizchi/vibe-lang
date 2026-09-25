@@ -172,9 +172,11 @@ EOF
 # SERIAL, AND IT HAS TO BE. The companions look embarrassingly parallel -- one
 # `bash` per file -- and running them over `xargs -P 4` did cut this from 159s
 # to about 80s of the late lane. It was also wrong: they SHARE THE WORKING
-# TREE. check_portable_boundary_test.sh mutates tracked files under
-# lib/@vibe/compiler/entry/source_compile/ and restores them with `git
-# checkout` between cases, and it refuses to run at all against a dirty tree.
+# TREE. check_portable_boundary_test.sh then mutated tracked files under
+# lib/@vibe/compiler/entry/source_compile/ and restored them with `git
+# checkout` between cases (it works on a scratch copy since #2899, but the
+# per-companion tree check below still needs one companion at a time to say
+# WHICH one changed the tree).
 # Concurrently with check_compile_only_lanes_test.sh -- which reaches
 # ensure_generated.sh, and so reads the whole live lib/ tree -- that produced
 #   generate_bundle: seed could not flatten the live tree
@@ -194,9 +196,53 @@ run_companion() {
   esac
 }
 
+# EVERY COMPANION MUST LEAVE THE WORKING TREE AS IT FOUND IT (#2899). Some
+# mutate real inputs by design, and each one restored them carefully -- and a
+# run of this suite still left probe code (`probe_after_quote`) in three
+# tracked compiler sources, reported nothing, and would have shipped it in the
+# next `git commit -a`. Trusting that the restore was WRITTEN is trusting a
+# proxy; the property is that the tree is unchanged, and git can answer that
+# directly. So the tree is snapshotted around each companion and a companion
+# that changes it fails here, by name, with the paths it touched -- whether
+# it mutates tracked files, leaves an untracked one, or edits a file that was
+# already dirty before the suite started (the diff digest sees that one).
+#
+# Mutate a COPY instead: check_portable_boundary_test.sh and
+# test_component_lazy_dispatch_gate_test.sh both work on scratch trees now.
+tree_state() {
+  git -C "$ROOT_DIR" status --porcelain=v1 --untracked-files=all 2>/dev/null || return 1
+  printf 'tracked-diff %s\n' "$(git -C "$ROOT_DIR" diff HEAD --no-ext-diff --binary 2>/dev/null | cksum)"
+}
+dirtied=""
+dirty_report=""
+# run_checked <companion>: run it, and record it in $dirtied when the tree
+# after it differs from the tree before it. Returns the companion's status.
+run_checked() {
+  local before after rc=0
+  before="$(tree_state)"
+  run_companion "$1" >"$WORK_LOG" 2>&1 || rc=$?
+  after="$(tree_state)"
+  if [ "$before" != "$after" ]; then
+    dirtied="$dirtied $1"
+    dirty_report="$dirty_report
+  --- $1 changed the working tree:
+$(diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") | grep -E '^[<>]' | sed 's/^/    /' || true)"
+  fi
+  return "$rc"
+}
+
 failed_tests=""
 repaired=""
 if [ "${VIBE_GATE_SELF_TESTS_RUN:-1}" = "1" ]; then
+  # The snapshot needs a git work tree. Without one it cannot tell a clean run
+  # from a dirty one, and saying nothing would be reporting "unchecked" as
+  # "clean".
+  if ! git -C "$ROOT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "[gate-self-tests] FAIL: $ROOT_DIR is not a git work tree, so the check that" >&2
+    echo "  companions leave the tree unchanged (#2899) cannot run. Run from a checkout." >&2
+    exit 1
+  fi
+  suite_before="$(tree_state)"
   # `.test.mjs` companions are in this list too, and they have to be: accepting
   # that spelling above while globbing only `*_test.sh` here would mark an
   # oracle covered and never run its companion -- the gate crediting a FILE,
@@ -222,21 +268,37 @@ if [ "${VIBE_GATE_SELF_TESTS_RUN:-1}" = "1" ]; then
       # any later regression in it is invisible until someone edits the list by
       # hand (#2248 review). The ratchet has to notice its own entries going
       # stale, exactly as the no-test allowlist does.
-      if run_companion "$t" >"$WORK_LOG" 2>&1 \
+      if run_checked "$t" \
          && printf '%s\n' "$failing_broken" | grep -qxF "$base"; then
         repaired="$repaired $base"
       fi
       continue
     fi
-    if ! run_companion "$t" >"$WORK_LOG" 2>&1; then
+    if ! run_checked "$t"; then
       failed_tests="$failed_tests $t"
       echo "[gate-self-tests] --- $t ---" >&2
       tail -20 "$WORK_LOG" >&2
     fi
   done
+  # The whole suite as well: a change that lands outside any one companion's
+  # window, or that a later companion happens to undo, still differs here.
+  if [ -z "$dirtied" ] && [ "$(tree_state)" != "$suite_before" ]; then
+    dirtied="(between-companions)"
+    dirty_report="
+  --- the tree after the suite differs from the tree before it"
+  fi
 fi
 
 rc=0
+if [ -n "$dirtied" ]; then
+  echo "[gate-self-tests] FAIL: gate self-tests that left the working tree changed (#2899):" >&2
+  for t in $dirtied; do echo "  $t" >&2; done
+  printf '%s\n' "$dirty_report" >&2
+  echo "  A self-test must mutate a COPY (a scratch tree under \$TMPDIR), never the" >&2
+  echo "  checkout: a restore that escapes leaves probe code a commit can ship." >&2
+  echo "  Inspect with 'git status' / 'git diff', and restore before committing." >&2
+  rc=1
+fi
 if [ -n "$repaired" ]; then
   echo "[gate-self-tests] FAIL: known-failing exemptions that now PASS:" >&2
   for n in $repaired; do echo "  $n" >&2; done
@@ -267,4 +329,8 @@ fi
 [ "$rc" -eq 0 ] || exit 1
 
 n_all="$(printf '%s\n' "$allowed" | grep -c . || true)"
-echo "[gate-self-tests] ok (every gate has a self-test; $n_all pre-existing exemptions)"
+if [ "${VIBE_GATE_SELF_TESTS_RUN:-1}" = "1" ]; then
+  echo "[gate-self-tests] ok (every gate has a self-test; every companion passed and left the working tree unchanged; $n_all pre-existing exemptions)"
+else
+  echo "[gate-self-tests] ok (every gate has a self-test; companions not run; $n_all pre-existing exemptions)"
+fi

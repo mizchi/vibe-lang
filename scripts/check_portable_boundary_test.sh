@@ -14,10 +14,18 @@
 # neutered". These four cases separate those, and the two mutation cases are
 # the ones the repair could plausibly have broken.
 #
-# The gate scans the repository from its own location rather than a tree it is
-# handed, so each case mutates a real file and restores it with `git checkout`.
-# The restore runs on EXIT, so an interrupted run does not leave the tree
-# modified.
+# The gate scans the tree it lives in (ROOT_DIR comes from its own location),
+# so every case runs against a SCRATCH TREE: a copy of the gate plus the
+# repository files it reads, laid out at their real relative paths. Each case
+# mutates a file there and restores it from a pristine copy.
+#
+# It used to mutate the live checkout and restore with `git checkout`. The
+# restore was written carefully and still escaped once: after a
+# check_gate_self_tests.sh run, preprocess_compile.vibe and
+# cli_direct_component_entry.vibe were left holding probe code
+# (`probe_after_quote`), nothing reported it, and a `git commit -a` would have
+# put it into the compiler (#2899). A mutation that never touches the checkout
+# cannot escape into it, whatever kills the run.
 #
 # #2252: no environment is inherited -- this gate reads none, and the test sets
 # none.
@@ -27,6 +35,21 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
+scratch="$(mktemp -d "${TMPDIR:-/tmp}/vibe_portable_boundary_test.XXXXXX")"
+trap 'rm -rf "$scratch"' EXIT
+mkdir -p "$scratch/tree/scripts" "$scratch/pristine"
+cp scripts/check_portable_boundary.sh "$scratch/tree/scripts/"
+# Every repository file the gate names. Taken from the gate's own text so a
+# file it starts reading later is copied without anyone editing this list; one
+# it reads but this pattern misses makes the CONTROL case below fail, loudly.
+while IFS= read -r rel; do
+  [ -f "$rel" ] || continue
+  mkdir -p "$scratch/tree/$(dirname "$rel")" "$scratch/pristine/$(dirname "$rel")"
+  cp "$rel" "$scratch/tree/$rel"
+  cp "$rel" "$scratch/pristine/$rel"
+done < <(grep -oE 'lib/@vibe/[A-Za-z0-9_@./-]+\.(vibe|vpkg)' scripts/check_portable_boundary.sh | LC_ALL=C sort -u)
+cd "$scratch/tree"
+
 gate="scripts/check_portable_boundary.sh"
 impl="lib/@vibe/compiler/entry/source_compile/wasi_only/preprocess_compile.vibe"
 contract="lib/@vibe/compiler/entry/source_compile/index.vpkg"
@@ -35,22 +58,18 @@ contract="lib/@vibe/compiler/entry/source_compile/index.vpkg"
 # native-call cases at the end exercise.
 entry="lib/@vibe/compiler/cli_direct_component_entry.vibe"
 
-# Refuse to run against a dirty tree: the restore below would discard the
-# author's uncommitted work in these files.
-if ! git diff --quiet -- "$impl" "$contract" "$entry"; then
-  echo "portable-boundary-test: $impl, $contract or $entry has uncommitted changes." >&2
-  echo "  This test mutates and restores them with 'git checkout'. Commit or" >&2
-  echo "  stash first, so a restore cannot discard your work." >&2
-  exit 2
-fi
+for f in "$impl" "$contract" "$entry"; do
+  [ -f "$f" ] || { echo "portable-boundary-test: $f was not copied into the scratch tree" >&2; exit 2; }
+done
 
-restore() { git checkout -q -- "$impl" "$contract" "$entry" 2>/dev/null || true; }
-# The EXIT trap also sweeps the gate copies a case may leave behind. `set -e`
-# can end the run between writing one and removing it, and a stray
-# `scripts/.portable_boundary_*.sh` is then an untracked file that other gates
-# scan -- a failure with nothing to do with what broke.
-cleanup() { restore; rm -f scripts/.portable_boundary_*probe*.sh; }
-trap cleanup EXIT
+# Restores from the pristine copy, never from git: the scratch tree is not a
+# repository, and the checkout is never written. The gate copies some cases
+# make (`scripts/.portable_boundary_*probe*.sh`) live in the scratch tree too,
+# so the EXIT trap above removes them with it.
+restore() {
+  local f
+  for f in "$impl" "$contract" "$entry"; do cp "$scratch/pristine/$f" "$f"; done
+}
 
 fails=0
 pass() { printf 'portable-boundary-test: ok: %s\n' "$1"; }
@@ -103,7 +122,7 @@ restore
 sed 's/^fn compile_source(source: String) -> Bytes with Exception$/fn compile_source(source: String) -> Bytes with Fs/' \
   "$contract" > "$contract.probe"
 mv "$contract.probe" "$contract"
-if git diff --quiet -- "$contract"; then
+if cmp -s "$contract" "$scratch/pristine/$contract"; then
   fail "case 3: the mutation did not land -- the assertion below would prove nothing"
 else
   if bash "$gate" >/dev/null 2>&1; then

@@ -23,10 +23,11 @@
 # the change (AGENTS.md, "Which compiler answered?"). Sharing the lanes' matrix
 # means this lane's environment is the late lane's by construction.
 #
-# STILL SERIAL INSIDE, and it has to be: the companions share the working tree.
-# check_portable_boundary_test.sh mutates tracked files under lib/ and restores
-# them with `git checkout`, and running the set over `xargs -P 4` produced
-# failures that differed run to run -- the long comment in
+# STILL SERIAL INSIDE: the companions share the working tree, and
+# check_gate_self_tests.sh snapshots it around each one so a companion that
+# changes it is named (#2899). check_portable_boundary_test.sh used to mutate
+# tracked files under lib/ in place, and running the set over `xargs -P 4`
+# produced failures that differed run to run -- the long comment in
 # check_gate_self_tests.sh records both interleavings. A lane is a whole tree
 # of its own, so the parallelism is between lanes, not inside one.
 set -euo pipefail
