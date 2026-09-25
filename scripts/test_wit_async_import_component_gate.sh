@@ -232,6 +232,40 @@ if [ "$ELAPSED_MS" -lt $(( LONG_MS * 4 / 5 )) ]; then
 fi
 echo "[wit-async-import] executed: 42 in ${ELAPSED_MS}ms (two ${LONG_MS}ms futures)"
 
+# --- WIT futures awaited from SPAWNED tasks (#1537) -------------------------
+# fixtures/wit_future_import/spawn_main.vibe parks two TaskGroup tasks on the
+# two WIT futures; the group waits on both at once. @vibe/concurrent imports
+# `sleep`, so the root `sleep-for` import rides beside the interface instance
+# (component func 0, the aliased functions after it).
+SPAWN_DIR="$OUT/spawn"
+rm -rf "$SPAWN_DIR"
+mkdir -p "$SPAWN_DIR"
+cp fixtures/wit_future_import/spawn_main.vibe fixtures/wit_future_import/prices_bindings.vibe "$SPAWN_DIR/"
+VIBE_PREOPEN_DIR="$ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \
+  "$COMPILER" "$SPAWN_DIR/spawn_main.vibe" "$SPAWN_DIR/main.wasm" run >/dev/null 2>&1 || true
+if [ ! -s "$SPAWN_DIR/main.wasm" ]; then
+  echo "WIT async import gate FAILED: fixtures/wit_future_import/spawn_main.vibe did not compile" >&2
+  cat "$SPAWN_DIR/main.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+wasm-tools validate --features all "$SPAWN_DIR/main.wasm"
+START_NS=$(date +%s%N)
+GOT="$(VIBE_ASYNC_FUTURES="$IFACE#get-price=40:$LONG_MS,$IFACE#get-tax=2:$LONG_MS" timeout 60 "$RUNNER" "$SPAWN_DIR/main.wasm" 2>&1)" || {
+  echo "WIT async import gate FAILED: viberun did not exit 0 on the spawned-task program: $GOT" >&2
+  exit 1
+}
+ELAPSED_MS=$(( ( $(date +%s%N) - START_NS ) / 1000000 ))
+[ "$GOT" = "42" ] || {
+  echo "WIT async import gate FAILED: spawned tasks expected 42, got: $GOT" >&2
+  exit 1
+}
+if [ "$ELAPSED_MS" -ge $(( LONG_MS * 3 / 2 )) ] || [ "$ELAPSED_MS" -lt $(( LONG_MS * 4 / 5 )) ]; then
+  echo "WIT async import gate FAILED: spawned tasks took ${ELAPSED_MS}ms for two ${LONG_MS}ms futures (want one delay: in flight together, and parked)" >&2
+  exit 1
+fi
+echo "[wit-async-import] spawned tasks: 42 in ${ELAPSED_MS}ms (two ${LONG_MS}ms WIT futures, tasks parked on both)"
+
 # --- WIT RESPONSES: future<record{status, body: stream<u8>}> (#2066) ---------
 # fixtures/wit_response_import/client_bindings.vibe is the derivation of
 # client.wit (from_wit_test.vibe pins it). Each function returns the `types`

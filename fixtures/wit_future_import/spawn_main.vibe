@@ -1,0 +1,26 @@
+// #1537 + #2064: WIT-addressed futures awaited from spawned tasks. Each task
+// parks on its future's handle and the group waits on both at once, so two
+// 300ms futures finish in about 300ms. @vibe/concurrent imports `sleep`, so
+// this composition also carries the root `sleep-for` import beside the
+// `example:prices/api@1.0.0` instance. 40 + 2 = 42. Compiled and executed by
+// scripts/test_wit_async_import_component_gate.sh.
+import ./prices_bindings.vibe {
+  get_price, get_tax
+}
+
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  TaskGroup::run((g) -> {
+    let a = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      await(get_price())
+    })
+    let b = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      await(get_tax())
+    })
+    TaskGroup::pump_all(g)
+    TaskHandle::join(a) + TaskHandle::join(b)
+  })
+}

@@ -7455,8 +7455,8 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   // instance to satisfy it -- and emitted an unvalidatable component with a
   // zero exit status rather than saying so.
   let want_sleep = comp_core_imports_sleep(main_core_wasm)
-  if future_s64 && (nhs > 0 || want_sleep) {
-    throw("component(wit-async-import): WIT future imports cannot yet share a component with runner-private host streams or sleep; their component-function ordering needs the generalized import planner")
+  if future_s64 && nhs > 0 {
+    throw("component(wit-async-import): WIT future imports cannot yet share a component with runner-private host streams; their component-function ordering needs the generalized import planner")
   } else {
     ()
   }
@@ -7638,9 +7638,18 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   // Core func indices 0..K+L-1: the lowered imports, emitted in the same
   // order (futures then streams; the root instance exports map them by
   // name for the adapter).
+  // #1537: WIT futures are INSTANCE export aliases, which follow the core
+  // module sections, so a root `sleep-for` import (declared with the imports,
+  // before them) is component func 0 and the futures are 1..K. Root futures
+  // and streams keep the historical order (imports i, then sleep-for at nt).
+  let wit_sleep_shift = if future_s64 && want_sleep {
+    1
+  } else {
+    0
+  }
   let mut hlow_i = 0
   while hlow_i < nt {
-    emit_canon_lower_async_section(buf, hlow_i, mem_alias_idx)
+    emit_canon_lower_async_section(buf, hlow_i + wit_sleep_shift, mem_alias_idx)
     hlow_i = hlow_i + 1
   }
   let fut_extra = if nhf > 0 {
@@ -7682,7 +7691,11 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
     task_return_core_idx + 5
   }
   if want_sleep {
-    emit_canon_lower_async_section(buf, nt, mem_alias_idx)
+    emit_canon_lower_async_section(buf, if wit_sleep_shift > 0 {
+      0
+    } else {
+      nt
+    }, mem_alias_idx)
     emit_canon_subtask_drop(buf)
   } else {
     ()
