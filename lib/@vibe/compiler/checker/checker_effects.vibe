@@ -2582,10 +2582,36 @@ fn row_scope_has_formal(name: String) -> Bool {
   row_scope_has(name) || row_scope_has(String::concat("@", name))
 }
 
-/// Does a binder nested inside the top-level declaration bind `name`?
+/// #3102 review: the first scope entry that can stand between a callback
+/// parameter's annotation and its call -- one past the binder that declared
+/// the parameter. A top-level declaration's parameters leave it at 1.
+let row_callback_scope_start_cell: Array[Int] = [1]
+
+/// The scope entry a lambda pushes names each callback parameter it declares
+/// as `%name`, so a call can find the binder its annotation was written in.
+fn row_scope_callback_marker(name: String) -> String {
+  String::concat("%", name)
+}
+
+fn row_scope_callback_start(name: String) -> Int {
+  let marker = row_scope_callback_marker(name)
+  let mut start = 1
+  let mut i = Array::length(row_formal_scope) - 1
+  while i >= 1 {
+    if str_labels_contain(Array::get(row_formal_scope, i), marker) {
+      start = i + 1
+      i = 0
+    }
+    i = i - 1
+  }
+  start
+}
+
+/// Does a binder nested inside the callback annotation's own binder bind
+/// `name`? (The top-level declaration's own binder never does.)
 fn row_scope_nested_binds(name: String) -> Bool {
   let mut found = false
-  let mut i = 1
+  let mut i = Array::get(row_callback_scope_start_cell, 0)
   while i < Array::length(row_formal_scope) {
     let entry = Array::get(row_formal_scope, i)
     if str_labels_contain(entry, name) || str_labels_contain(entry, String::concat("@", name)) {
@@ -2605,7 +2631,8 @@ fn row_scope_decl_is_root() -> Bool {
     let entry = Array::get(row_formal_scope, i)
     let mut j = 0
     while j < Array::length(entry) {
-      if !String::starts_with(Array::get(entry, j), "@") {
+      let w = Array::get(entry, j)
+      if !String::starts_with(w, "@") && !String::starts_with(w, "%") {
         ok = false
       }
       j = j + 1
@@ -5958,6 +5985,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                     String::concat("=", peff)
                   }
                   Array::set(requirement_marked_cell, 0, (peff, peff_marked))
+                  Array::set(row_callback_scope_start_cell, 0, row_scope_callback_start(name))
                   // #1343: same operation-awareness as the named-callee case
                   // above -- a callback parameter whose row names an operation
                   // is covered by a caller holding the whole effect.
@@ -5967,6 +5995,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                     ()
                   }
                   Array::set(requirement_marked_cell, 0, ("", ""))
+                  Array::set(row_callback_scope_start_cell, 0, 1)
                   pi = pi + 1
                 }
                 if Array::length(missing) > 0 {
@@ -6097,6 +6126,11 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
         }
         if !own_row && Array::length(current_ret_fn_rows()) > 0 && !row_scope_decl_is_root() {
           Array::push(entry, row_scope_unknown())
+        }
+        let mut li = 0
+        while li < Array::length(local_names) {
+          Array::push(entry, row_scope_callback_marker(Array::get(local_names, li)))
+          li = li + 1
         }
         if Array::length(entry) > 0 {
           Array::push(row_formal_scope, entry)
