@@ -207,18 +207,29 @@ override silently contradicting a module that says `raw` is the hazard #2903's
   a second one, and interprets its status exactly as before (a byte, the
   inline CLOSED latch, or `-1` at the end).
 - **The sleeper's timer in the same set** (#1537). While tasks wait on host
-  waitables and another task sleeps, `host_sleep_arm (i64) -> i64` starts ONE
+  waitables and another task sleeps, `host_sleep_arm (i64) -> i64` starts a
   `sleep-for` call for the earliest sleeper's remaining milliseconds and
-  joins its subtask to the shared set (scratch word 44 holds it, word 48 its
-  results). It answers `1` when the call returned inline, `0` when it is
-  pending or a timer is already armed. `host_future_wait_any` answers the
-  subtask's RETURNED event (status `2`) by dropping the subtask and returning
-  `1`, the poll payload, which no task parks on; the scheduler then elapses
-  every sleeper by the armed milliseconds. So a sleep and a host wait settle
-  in whichever order they land rather than sleep first
+  joins its subtask to the shared set (the results land in scratch word 48,
+  which nothing reads). It answers `1` when the call returned inline, else
+  the timer's id in the TIMER band, `subtask + 4096` (the future band is
+  [2, 1025], the stream band [2048, 3071]). `host_future_wait_any` answers
+  the subtask's RETURNED event (status `2`) by dropping the subtask and
+  returning that id. Each task group keeps its own timer (`host_timer` /
+  `host_timer_ms` on `TaskGroup`) and, when it fires, debits only the
+  sleepers that were pending when it was armed. So a sleep and a host wait
+  settle in whichever order they land rather than sleep first
   (`fixtures/async_spawn_host_futures/sleep_and_host.vibe` and
-  `sleep_short.vibe`, each ~300ms where either fixed order takes ~400-500ms).
-  Imported only beside the other hooks, when the program also sleeps.
+  `sleep_short.vibe`, each ~300ms where either fixed order takes ~400-500ms;
+  `sleep_after_host.vibe` pins that a later sleep keeps its debt). Imported
+  only beside the other hooks, when the program also sleeps.
+- **Nested task groups share the set** (#1537). A group running inside a
+  task of another group waits on the same shared set, so it can receive an
+  event that belongs to the enclosing group. A timer id it did not arm goes
+  to a mailbox (`conc_host_fired_timers`) that the owning group checks on
+  its next settle. A future or stream event with no task of its own parked
+  on it is left untaken: the adapter already recorded it as completed, so
+  the owning group's next arm answers "ready" and takes the value
+  (`fixtures/async_spawn_host_futures/nested_groups.vibe`).
 - **Cancelling the last waiter** (#1537). `TaskHandle::cancel` on a task
   parked on a host future that no other task awaits calls
   `host_future_cancel (i64) -> i64`: a read still BLOCKED leaves the shared

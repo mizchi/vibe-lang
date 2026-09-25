@@ -557,4 +557,29 @@ if [ "$SAH_ELAPSED_MS" -lt 1400 ] || [ "$SAH_ELAPSED_MS" -ge 1900 ]; then
 fi
 echo "[named-hostfutures-component-gate] sleep_after_host: 41 in ${SAH_ELAPSED_MS}ms (a later sleep keeps its debt)"
 
+# A task group nested in another group's task shares the waitable set: it
+# must leave the enclosing group's landed future and fired timer for their
+# owner. The old scheduler took `c`'s future and trapped.
+NG_OUT="$OUT_DIR/spawn_nested_groups.component.wasm"
+rm -f "$NG_OUT" "$NG_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/nested_groups.vibe "$NG_OUT" run >/dev/null 2>&1 || true
+[ -s "$NG_OUT" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/nested_groups.vibe did not compile: $(cat "$NG_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+NG_LOG="$OUT_DIR/spawn_nested_groups.log"
+NG_START_NS=$(date +%s%N)
+if ! VIBE_ASYNC_FUTURES="fast=1:100,mid=2:200,slow=40:300" timeout 60 "$RUNNER" "$NG_OUT" >"$NG_LOG" 2>&1; then
+  echo "named hostfutures component gate FAILED: nested_groups did not exit 0" >&2
+  cat "$NG_LOG" >&2
+  exit 1
+fi
+NG_ELAPSED_MS=$(( ( $(date +%s%N) - NG_START_NS ) / 1000000 ))
+[ "$(cat "$NG_LOG")" = "43" ] \
+  || { echo "named hostfutures component gate FAILED: nested_groups expected 43, got: $(cat "$NG_LOG")" >&2; exit 1; }
+if [ "$NG_ELAPSED_MS" -lt 350 ] || [ "$NG_ELAPSED_MS" -ge 600 ]; then
+  echo "named hostfutures component gate FAILED: nested_groups took ${NG_ELAPSED_MS}ms (want ~400ms: the outer timer paid once, not again after the nested group consumed it)" >&2
+  exit 1
+fi
+echo "[named-hostfutures-component-gate] nested_groups: 43 in ${NG_ELAPSED_MS}ms (the nested group left the outer group's events for it)"
+
 echo "named hostfutures component gate OK"

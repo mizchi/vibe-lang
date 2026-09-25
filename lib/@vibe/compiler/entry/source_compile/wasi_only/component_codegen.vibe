@@ -5889,14 +5889,19 @@ fn comp_hf_arm_ws_slot() -> Int {
   40
 }
 
-/// #1537: the subtask of the timer `host_sleep_arm` started (0 = none), and
-/// its async-lowered results word -- disjoint from the blocking sleep's 24/32.
-fn comp_sleep_arm_subtask_slot() -> Int {
-  44
-}
-
+/// #1537: the async-lowered results word the `host_sleep_arm` timers share --
+/// disjoint from the blocking sleep's 24/32. Nothing reads it (a timer's
+/// completion is its event), so concurrent timers may all land here.
 fn comp_sleep_arm_results_slot() -> Int {
   48
+}
+
+/// #1537: the TIMER band of the suspend payloads -- `host_sleep_arm` names a
+/// pending timer `subtask + 4096`, and `host_future_wait_any` answers its
+/// completion with the same id. Disjoint from the future band [2, 1025] and
+/// the stream band [2048, 3071].
+fn comp_timer_band_base() -> Int {
+  4096
 }
 
 fn comp_hs_value_base() -> Int {
@@ -7075,9 +7080,10 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     emit_i32_const(any_body, 0)
     emit_call(any_body, join_idx)
     if want_sleep_arm {
-      // SUBTASK (1): the timer host_sleep_arm started returned (payload[1]
-      // is its state, RETURNED = 2). It is dropped and named as payload 1,
-      // the poll band, which no host wait ever parks with.
+      // SUBTASK (1): a timer host_sleep_arm started returned (payload[1] is
+      // its state, RETURNED = 2). It is dropped and named in the TIMER band
+      // (subtask + 4096), the id host_sleep_arm answered for it, so each
+      // task group recognises its own timer.
       emit_local_get(any_body, 1)
       emit_i32_const(any_body, 1)
       emit_i32_eq(any_body)
@@ -7091,10 +7097,10 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
       emit_end(any_body)
       emit_local_get(any_body, 2)
       emit_call(any_body, subtask_drop_idx)
-      emit_i32_const(any_body, comp_sleep_arm_subtask_slot())
-      emit_i32_const(any_body, 0)
-      emit_i32_store(any_body, 2, 0)
-      emit_i64_const(any_body, 1)
+      emit_local_get(any_body, 2)
+      bytebuf_push(any_body, 173)
+      emit_i64_const(any_body, comp_timer_band_base())
+      bytebuf_push(any_body, 124)
       comp_emit_encode_i64_value(any_body, tag_mode)
       emit_return(any_body)
       emit_end(any_body)
@@ -7268,20 +7274,14 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
   }
   if want_sleep_arm {
     // host_sleep_arm(ms): param 0 = tagged ms; locals (i32) 1=packed, 2=sub,
-    // 3=ws. 0 = a timer is pending in the shared set (this one, or one an
-    // earlier round started, which stays until it fires); 1 = the delay was
-    // already over (no subtask).
+    // 3=ws. Starts a timer of its own in the shared set and answers its id
+    // (subtask + 4096, the timer band), or 1 when the delay was already over
+    // (no subtask). Every call is its own timer, so task groups nested in one
+    // another each wait on theirs.
     let tarm_body = bytebuf_new()
     leb128_encode_u32(tarm_body, 1)
     leb128_encode_u32(tarm_body, 3)
     bytebuf_push(tarm_body, 127)
-    emit_i32_const(tarm_body, comp_sleep_arm_subtask_slot())
-    emit_i32_load(tarm_body, 2, 0)
-    emit_if_void(tarm_body)
-    emit_i64_const(tarm_body, 0)
-    comp_emit_encode_i64_value(tarm_body, tag_mode)
-    emit_return(tarm_body)
-    emit_end(tarm_body)
     emit_local_get(tarm_body, 0)
     comp_emit_decode_i64_value(tarm_body, tag_mode)
     emit_i32_wrap_i64(tarm_body)
@@ -7302,9 +7302,6 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     emit_i32_const(tarm_body, 4)
     emit_i32_shr_u(tarm_body)
     emit_local_set(tarm_body, 2)
-    emit_i32_const(tarm_body, comp_sleep_arm_subtask_slot())
-    emit_local_get(tarm_body, 2)
-    emit_i32_store(tarm_body, 2, 0)
     emit_i32_const(tarm_body, comp_hf_arm_ws_slot())
     emit_i32_load(tarm_body, 2, 0)
     emit_local_set(tarm_body, 3)
@@ -7320,7 +7317,10 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     emit_local_get(tarm_body, 2)
     emit_local_get(tarm_body, 3)
     emit_call(tarm_body, join_idx)
-    emit_i64_const(tarm_body, 0)
+    emit_local_get(tarm_body, 2)
+    bytebuf_push(tarm_body, 173)
+    emit_i64_const(tarm_body, comp_timer_band_base())
+    bytebuf_push(tarm_body, 124)
     comp_emit_encode_i64_value(tarm_body, tag_mode)
     bytebuf_push(tarm_body, 11)
     leb128_encode_u32(code_sec, Bytes::length(tarm_body))

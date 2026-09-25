@@ -174,6 +174,11 @@ export struct TaskGroup[rg, e] {
   // a missed notify then degrades to ordinary polling instead of a
   // spurious trap. Reset by conc_progress.
   mut direct_valve_used: Bool;
+  // #1537: the timer this group armed in the shared waitable set (its id in
+  // the timer band, 0 = none) and its milliseconds. Per group: a group
+  // nested in another one's task arms and recognises only its own.
+  mut host_timer: Int;
+  mut host_timer_ms: Int;
   _region_witness: (rg) -> rg
 }
 
@@ -268,10 +273,15 @@ let conc_fut_waiter_cells: Array[TaskCell] = []
 
 let conc_fut_id_ctr: Array[Int] = [0]
 
-// #1537: milliseconds of the timer `__conc_host_sleep_arm` has pending in the
-// shared waitable set (0 = none). While one is pending the sleep debt settles
-// only through it, never also through a blocking sleep.
-let conc_host_timer_ms: Array[Int] = [0]
+// #1537: timers that fired while ANOTHER group was waiting on the shared set
+// (their ids). The owning group finds its own here on its next settle.
+let conc_host_fired_timers: Array[Int] = []
+
+// #1537: the timer band of the suspend payloads (see component_codegen's
+// comp_timer_band_base): a timer id is `subtask + 4096`.
+fn conc_timer_band_base() -> Int {
+  4096
+}
 
 //# Internal helpers
 
@@ -617,6 +627,8 @@ export fn TaskGroup::run[T, rg, e](body: (TaskGroup[rg, e]) -> T with e) -> T wi
     pump_next: 0,
     progress: 0,
     direct_valve_used: false,
+    host_timer: 0,
+    host_timer_ms: 0,
     _region_witness: (x) -> x
   }
   let v = body(n)
@@ -1286,7 +1298,7 @@ fn conc_settle_sleep_debt[rg, e](n: TaskGroup[rg, e]) -> Unit {
     }
     i = i + 1
   }
-  if sleepers > 0 && other_parked == 0 && host_waiters == 0 && Array::get(conc_host_timer_ms, 0) == 0 {
+  if sleepers > 0 && other_parked == 0 && host_waiters == 0 && n.host_timer == 0 {
     sleep_blocking(min_left)
     let mut j = 0
     while j < total {
@@ -1442,21 +1454,27 @@ fn conc_settle_host_waits[rg, e](n: TaskGroup[rg, e]) -> Bool {
     }
     i = i + 1
   }
-  let timer_ms = Array::get(conc_host_timer_ms, 0)
-  if !pending && timer_ms == 0 {
+  if n.host_timer > 0 && conc_host_take_fired_timer(n.host_timer) {
+    // This group's timer fired while another group was waiting on the
+    // shared set; it was left here for us.
+    conc_host_own_timer_fired(n)
+    true
+  } else if !pending && n.host_timer == 0 {
     false
   } else {
     // With host waiters pending and no timer yet, the earliest sleeper gets a
-    // timer in the same set: 1 = its delay was already over, 0 = started, so
-    // the group wakes at whichever comes first; -1 = no timer support, and
-    // the sleep debt settles as before once the host waits are done.
-    let arm = if pending && ready < 0 && timer_ms == 0 && sleepers > 0 {
+    // timer in the same set: 1 = its delay was already over, a timer id =
+    // started, so the group wakes at whichever comes first; -1 = no timer
+    // support, and the sleep debt settles as before once the host waits are
+    // done.
+    let arm = if pending && ready < 0 && n.host_timer == 0 && sleepers > 0 {
       __conc_host_sleep_arm(min_left)
     } else {
       0 - 1
     }
-    if arm == 0 {
-      Array::set(conc_host_timer_ms, 0, min_left)
+    if arm >= conc_timer_band_base() {
+      n.host_timer = arm
+      n.host_timer_ms = min_left
       conc_host_cover_sleepers(n)
     } else {
       ()
@@ -1475,19 +1493,48 @@ fn conc_host_settle_one[rg, e](n: TaskGroup[rg, e], ready: Int, arm: Int, min_le
     } else {
       __conc_host_wait_any()
     }
-    if fired == 1 {
-      // The timer: the sleepers it covered advance by what it waited. One
-      // that began sleeping after the arm keeps its whole debt -- debiting
-      // it the armed duration would end its sleep early (Codex on #3059);
-      // the next round arms a timer for it.
-      let elapsed = Array::get(conc_host_timer_ms, 0)
-      Array::set(conc_host_timer_ms, 0, 0)
-      conc_host_covered_elapsed(n, elapsed)
+    if fired >= conc_timer_band_base() {
+      if fired == n.host_timer {
+        conc_host_own_timer_fired(n)
+      } else {
+        // Another group's timer (this group runs inside one of its tasks):
+        // leave it for its owner rather than debiting sleepers it never
+        // covered (Codex on #3059).
+        Array::push(conc_host_fired_timers, fired)
+      }
       true
     } else {
       conc_host_resume(n, fired)
     }
   }
+}
+
+/// #1537: this group's timer fired: the sleepers it covered advance by what
+/// it waited. One that began sleeping after the arm keeps its whole debt --
+/// debiting it the armed duration would end its sleep early (Codex on #3059);
+/// the next round arms a timer for it.
+fn conc_host_own_timer_fired[rg, e](n: TaskGroup[rg, e]) -> Unit {
+  let elapsed = n.host_timer_ms
+  n.host_timer = 0
+  n.host_timer_ms = 0
+  conc_host_covered_elapsed(n, elapsed)
+}
+
+/// #1537: remove `timer` from the fired mailbox; false when it is not there.
+fn conc_host_take_fired_timer(timer: Int) -> Bool {
+  let mut found = false
+  let mut k = 0
+  while k < Array::length(conc_host_fired_timers) {
+    if !found && Array::get(conc_host_fired_timers, k) == timer {
+      found = true
+      let last = Array::length(conc_host_fired_timers) - 1
+      Array::set(conc_host_fired_timers, k, Array::get(conc_host_fired_timers, last))
+      Array::truncate(conc_host_fired_timers, last)
+    } else {
+      k = k + 1
+    }
+  }
+  found
 }
 
 /// #1537: mark every current sleeper as covered by the timer just armed.
@@ -1571,7 +1618,6 @@ fn conc_host_release_orphan[rg, e](n: TaskGroup[rg, e], waited: Int) -> Unit {
 /// #1537: resume every task parked on the host waitable `fired`.
 fn conc_host_resume[rg, e](n: TaskGroup[rg, e], fired: Int) -> Bool {
   let total = Array::length(n.adopted)
-  let v = __conc_host_take(fired)
   // Several tasks may await the SAME future: the value is taken once (the
   // readable end is released) and every task parked on that handle
   // resumes with it. The matching cells are collected before any resumes,
@@ -1588,23 +1634,29 @@ fn conc_host_resume[rg, e](n: TaskGroup[rg, e], fired: Int) -> Bool {
     }
     j = j + 1
   }
-  // No waiter left for it is not an error: a program without the adapter's
-  // cancel half leaves a cancelled task's waitable armed, and when that one
-  // lands first its value is simply discarded -- taking it above already
-  // released the readable end (Codex on #3059).
-  let mut w = 0
-  while w < Array::length(woken) {
-    let c = Array::get(woken, w)
-    match c.cont {
-      Some(k) => {
-        c.cont = None
-        k(v)
-      },
-      None => ()
+  if Array::length(woken) == 0 {
+    // Not this group's: a task of an ENCLOSING group is parked on it (this
+    // group runs inside one of that group's tasks). It is left untaken --
+    // taking it would release the value that task is waiting for. The
+    // adapter already recorded it as completed, so the owning group's next
+    // arm answers "ready" and takes it (Codex on #3059).
+    true
+  } else {
+    let v = __conc_host_take(fired)
+    let mut w = 0
+    while w < Array::length(woken) {
+      let c = Array::get(woken, w)
+      match c.cont {
+        Some(k) => {
+          c.cont = None
+          k(v)
+        },
+        None => ()
+      }
+      w = w + 1
     }
-    w = w + 1
+    true
   }
-  true
 }
 
 //# Host-waitable hooks (#1537)
@@ -1626,8 +1678,9 @@ export fn __conc_host_arm(waitable: Int) -> Int {
   0 - 1
 }
 
-/// Start a timer of `ms` in the same set (0 = pending, 1 = already over, -1 =
-/// no host waitables in this program). Its completion is payload 1.
+/// Start a timer of `ms` in the same set: its id (>= 4096, the timer band)
+/// when pending, 1 when already over, -1 when this program has no host
+/// waitables. `__conc_host_wait_any` answers its completion with that id.
 export fn __conc_host_sleep_arm(ms: Int) -> Int {
   let _ = ms
   0 - 1

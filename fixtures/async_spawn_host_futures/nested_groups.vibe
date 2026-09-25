@@ -1,0 +1,34 @@
+// #1537: a task group nested inside a task of another group waits on the same
+// shared waitable set, so it receives the enclosing group's events. Here the
+// nested group waits from ~100ms to ~400ms; meanwhile the outer task `c`'s
+// 200ms future lands and the outer group's 300ms timer (for `a`) fires. The
+// nested group must leave both for their owner: `c` still resumes with 2, and
+// `a`'s sleep is paid once, so the run takes ~400ms. 1 + 40 + 2 = 43.
+// Executed by scripts/test_named_hostfutures_component_gate.sh.
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  TaskGroup::run((g) -> {
+    let a = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      sleep(300)
+      1
+    })
+    let b = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      let _ = await(host_future_named("fast"))
+      TaskGroup::run((h) -> {
+        let t = TaskGroup::spawn_suspend(h, () -> Int with Async + Exception {
+          await(host_future_named("slow"))
+        })
+        TaskGroup::pump_all(h)
+        TaskHandle::join(t)
+      })
+    })
+    let c = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      await(host_future_named("mid"))
+    })
+    TaskGroup::pump_all(g)
+    TaskHandle::join(a) + TaskHandle::join(b) + TaskHandle::join(c)
+  })
+}
