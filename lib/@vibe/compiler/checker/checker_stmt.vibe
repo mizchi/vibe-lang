@@ -7219,6 +7219,17 @@ fn builtin_named_type_params(stmts: Array[Stmt]) -> Array[(String, Array[String]
 /// might name the type rather than the formal is never judged by it. Keyed by
 /// `effect_shadow_key`, like `builtin_named_type_params`.
 fn decl_type_formal_names(stmts: Array[Stmt]) -> Array[(String, Array[String])] {
+  let builtin = [
+    "Int",
+    "String",
+    "Bool",
+    "Double",
+    "Char",
+    "Bytes",
+    "Unit",
+    "Array",
+    "Option"
+  ]
   let excluded = [
     "Int",
     "String",
@@ -7253,8 +7264,8 @@ fn decl_type_formal_names(stmts: Array[Stmt]) -> Array[(String, Array[String])] 
     if String::length(key) > 0 {
       let names = array_empty()
       match stmt {
-        SLet(_, _, _, _, e) => decl_type_formals_expr(e, excluded, names),
-        SLetMut(_, _, e) => decl_type_formals_expr(e, excluded, names),
+        SLet(_, _, _, _, e) => decl_type_formals_top(e, builtin, excluded, names),
+        SLetMut(_, _, e) => decl_type_formals_top(e, builtin, excluded, names),
         STest(_, e) => decl_type_formals_expr(e, excluded, names),
         SBench(_, e) => decl_type_formals_expr(e, excluded, names),
         _ => ()
@@ -7266,6 +7277,37 @@ fn decl_type_formal_names(stmts: Array[Stmt]) -> Array[(String, Array[String])] 
     si = si + 1
   }
   out
+}
+
+/// #3096 review: the declaration's OWN binder (`fn caller[N](x: N) with
+/// State[N]`) scopes over its header and whole body, so its formal shadows a
+/// module-level or imported `N` wherever the declaration's rows are read and
+/// stays rigid; only a builtin spelling is left out (#3054 owns that case).
+/// Nested binders go through `decl_type_formals_expr`, where a name the module
+/// declares or imports is left unjudged, because the outer header cannot see
+/// them.
+fn decl_type_formals_top(e: Expr, builtin: Array[String], excluded: Array[String], out: Array[String]) -> Unit {
+  match e {
+    EFn(tparams, _, _, _, _, _) => {
+      let mut i = 0
+      while i < Array::length(tparams) {
+        let tp = type_param_name(Array::get(tparams, i))
+        if !tps_names_contains(builtin, tp) && !tps_names_contains(out, tp) {
+          Array::push(out, tp)
+        }
+        i = i + 1
+      }
+      let mark = expr_children_push(e)
+      let end = expr_children_top()
+      let mut c = mark
+      while c < end {
+        decl_type_formals_expr(expr_child_at(c), excluded, out)
+        c = c + 1
+      }
+      expr_children_pop(mark)
+    },
+    _ => decl_type_formals_expr(e, excluded, out)
+  }
 }
 
 fn decl_type_formals_expr(e: Expr, excluded: Array[String], out: Array[String]) -> Unit {
