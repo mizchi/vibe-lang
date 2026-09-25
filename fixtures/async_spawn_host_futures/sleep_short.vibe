@@ -1,0 +1,23 @@
+// #1537: the other order. Task `a` sleeps 100ms and only then requests a
+// 100ms future; task `b` awaits a 300ms future. With the earliest sleeper's
+// timer in the same set as the host waitables, `a` wakes at 100ms and finishes
+// at 200ms, inside b's 300ms. Waiting on the host first (no timer) would wake
+// `a` only after b's future, about 400ms. 1 + 40 = 41. Executed by
+// scripts/test_named_hostfutures_component_gate.sh.
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  TaskGroup::run((g) -> {
+    let a = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      sleep(100)
+      await(host_future_named("fast"))
+    })
+    let b = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      await(host_future_named("slow"))
+    })
+    TaskGroup::pump_all(g)
+    TaskHandle::join(a) + TaskHandle::join(b)
+  })
+}

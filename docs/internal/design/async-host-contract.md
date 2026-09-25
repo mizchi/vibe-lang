@@ -206,6 +206,19 @@ override silently contradicting a module that says `raw` is the hazard #2903's
   directly. `host_stream_read` then settles the armed read instead of issuing
   a second one, and interprets its status exactly as before (a byte, the
   inline CLOSED latch, or `-1` at the end).
+- **The sleeper's timer in the same set** (#1537). While tasks wait on host
+  waitables and another task sleeps, `host_sleep_arm (i64) -> i64` starts ONE
+  `sleep-for` call for the earliest sleeper's remaining milliseconds and
+  joins its subtask to the shared set (scratch word 44 holds it, word 48 its
+  results). It answers `1` when the call returned inline, `0` when it is
+  pending or a timer is already armed. `host_future_wait_any` answers the
+  subtask's RETURNED event (status `2`) by dropping the subtask and returning
+  `1`, the poll payload, which no task parks on; the scheduler then elapses
+  every sleeper by the armed milliseconds. So a sleep and a host wait settle
+  in whichever order they land rather than sleep first
+  (`fixtures/async_spawn_host_futures/sleep_and_host.vibe` and
+  `sleep_short.vibe`, each ~300ms where either fixed order takes ~400-500ms).
+  Imported only beside the other hooks, when the program also sleeps.
 - **Drop** is conditional -- this is *the conditional-drop rule* the
   runtime-neutral list below names. A call that completed eagerly (status
   RETURNED, code `2`) created no subtask, so it is neither joined nor dropped

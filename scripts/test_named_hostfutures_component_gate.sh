@@ -458,5 +458,35 @@ fi
 [ "$(cat "$CANCEL_LOG")" = "40" ] \
   || { echo "named hostfutures component gate FAILED: cancelled waiter expected 40, got: $(cat "$CANCEL_LOG")" >&2; exit 1; }
 echo "[named-hostfutures-component-gate] cancelled waiter: 40 (its landed future was discarded)"
+# A sleeping task and host waiters share one wait (the earliest sleeper's
+# timer is in the same waitable set). Both orders are pinned: a long sleep
+# beside a short host chain (sleep-first would take ~400ms), and a short
+# sleep before more host work beside a long future (host-first would take
+# ~400ms). Each runs in ~300ms.
+for timer_case in "sleep_and_host:42" "sleep_short:41"; do
+  tc_name="${timer_case%%:*}"
+  tc_want="${timer_case##*:}"
+  TC_OUT="$OUT_DIR/spawn_${tc_name}.component.wasm"
+  rm -f "$TC_OUT" "$TC_OUT.diag"
+  VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+    bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+    "$COMPILER" "fixtures/async_spawn_host_futures/${tc_name}.vibe" "$TC_OUT" run >/dev/null 2>&1 || true
+  [ -s "$TC_OUT" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/${tc_name}.vibe did not compile: $(cat "$TC_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+  TC_LOG="$OUT_DIR/spawn_${tc_name}.log"
+  TC_START_NS=$(date +%s%N)
+  if ! VIBE_ASYNC_FUTURES="slow=40:300,fast=1:100" timeout 60 "$RUNNER" "$TC_OUT" >"$TC_LOG" 2>&1; then
+    echo "named hostfutures component gate FAILED: ${tc_name} did not exit 0" >&2
+    cat "$TC_LOG" >&2
+    exit 1
+  fi
+  TC_ELAPSED_MS=$(( ( $(date +%s%N) - TC_START_NS ) / 1000000 ))
+  [ "$(cat "$TC_LOG")" = "$tc_want" ] \
+    || { echo "named hostfutures component gate FAILED: ${tc_name} expected ${tc_want}, got: $(cat "$TC_LOG")" >&2; exit 1; }
+  if [ "$TC_ELAPSED_MS" -ge 370 ] || [ "$TC_ELAPSED_MS" -lt 240 ]; then
+    echo "named hostfutures component gate FAILED: ${tc_name} took ${TC_ELAPSED_MS}ms (want ~300ms: the sleeper's timer and the host waits in one set)" >&2
+    exit 1
+  fi
+  echo "[named-hostfutures-component-gate] ${tc_name}: ${tc_want} in ${TC_ELAPSED_MS}ms (timer and host waits together)"
+done
 
 echo "named hostfutures component gate OK"
