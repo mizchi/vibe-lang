@@ -2546,11 +2546,12 @@ export fn set_row_nominal_types(names: Array[String]) -> Unit {
 
 /// #3095: the type formals in LEXICAL scope where the walk stands, one entry
 /// per binder that introduced some: the top-level declaration's own `[S]`, and
-/// every nested lambda that declares its own row. A lambda with no row of its
-/// own inherits the enclosing row, whose words were written OUTSIDE its
-/// binder, so its formals are not entered (`[N](v: N) -> Int { .. }` under
-/// `with State[N]`, `N` an imported alias, reads the alias). An entry holding
-/// `row_scope_unknown()` switches the judge off below it.
+/// every nested lambda's. A lambda with no row of its own inherits the
+/// enclosing row, whose words were written OUTSIDE its binder, so its formals
+/// are entered as `@N`: they place a requirement's `'N` (the lambda's body
+/// runs at its own `N`) but never a DECLARED word (`[N](v: N) -> Int { .. }`
+/// under `with State[N]`, `N` an imported alias, reads the alias). An entry
+/// holding `row_scope_unknown()` switches the judge off below it.
 let row_formal_scope: Array[Array[String]] = []
 
 fn row_scope_unknown() -> String {
@@ -2574,6 +2575,30 @@ fn row_scope_has(name: String) -> Bool {
     i = i + 1
   }
   found
+}
+
+/// A requirement's formal `'name`: bound by any enclosing binder.
+fn row_scope_has_formal(name: String) -> Bool {
+  row_scope_has(name) || row_scope_has(String::concat("@", name))
+}
+
+/// Does the declared-word scope hold only the top-level declaration's own
+/// binder? Then every enclosing parameter annotation was written in it.
+fn row_scope_decl_is_root() -> Bool {
+  let mut ok = true
+  let mut i = 1
+  while i < Array::length(row_formal_scope) {
+    let entry = Array::get(row_formal_scope, i)
+    let mut j = 0
+    while j < Array::length(entry) {
+      if !String::starts_with(Array::get(entry, j), "@") {
+        ok = false
+      }
+      j = j + 1
+    }
+    i = i + 1
+  }
+  ok
 }
 
 fn row_scope_pop() -> Unit {
@@ -2695,7 +2720,7 @@ fn row_word_class(w: String, marked: Bool, nargs: Int) -> RowTy {
     }
   } else if String::starts_with(w, "'") {
     let f = String::substring(w, 1, String::length(w))
-    if nargs == 0 && row_scope_has(f) {
+    if nargs == 0 && row_scope_has_formal(f) {
       RtFormal(f)
     } else {
       RtIndet
@@ -2857,9 +2882,23 @@ fn row_ty_lists_differ(xs: Array[RowTy], ys: Array[RowTy]) -> Bool {
 /// not cover `State[Box[S]]`, nor `with State[N]` for a lambda's own `[N]`
 /// cover `State[String]` -- while an alias, a part the call left open, or a
 /// word whose meaning the pass cannot place never makes a row refuse.
+///
+/// A requirement spelled `=Label` is a callback parameter's row as written:
+/// its words were written where the parameter was declared, so it is read
+/// like a declared row -- but only while no nested binder stands between,
+/// because that binder may rebind a word the annotation meant otherwise.
 fn row_label_args_differ(declared: String, marked: String) -> Bool {
   if row_scope_has(row_scope_unknown()) || String::length(marked) == 0 {
     false
+  } else if String::starts_with(marked, "=") {
+    if row_scope_decl_is_root() {
+      match (row_label_arg_tys(declared, false), row_label_arg_tys(String::substring(marked, 1, String::length(marked)), false)) {
+        (Some(ds), Some(ms)) => Array::length(ds) == Array::length(ms) && row_ty_lists_differ(ds, ms),
+        _ => false
+      }
+    } else {
+      false
+    }
   } else {
     match (row_label_arg_tys(declared, false), row_label_arg_tys(marked, true)) {
       (Some(ds), Some(ms)) => Array::length(ds) == Array::length(ms) && row_ty_lists_differ(ds, ms),
@@ -3861,6 +3900,14 @@ fn instantiate_callee_label_marked(label: String, callee_off: Int, callee: Strin
       None => []
     })
   }
+}
+
+fn callee_has_marked_bindings(callee_off: Int, callee: String) -> Bool {
+  let key = String::concat(__to_string(callee_off), String::concat(":", callee))
+  callee_off >= 0 && (match MutMap::get(Array::get(call_formal_marked_bindings_cell, 0), key) {
+    Some(_) => true,
+    None => false
+  })
 }
 
 fn instantiate_callee_label_in(label: String, binds: Array[(String, String)]) -> String {
@@ -5886,7 +5933,14 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                   // A callback parameter records no instantiation, so its row
                   // is returned as written.
                   let peff = instantiate_callee_label(Array::get(param_effs, pi), callee_ident_off, name)
-                  Array::set(requirement_marked_cell, 0, (peff, instantiate_callee_label_marked(Array::get(param_effs, pi), callee_ident_off, name)))
+                  // A callback parameter records no instantiation: its row
+                  // is the annotation as written (`row_label_args_differ`).
+                  let peff_marked = if callee_has_marked_bindings(callee_ident_off, name) {
+                    instantiate_callee_label_marked(Array::get(param_effs, pi), callee_ident_off, name)
+                  } else {
+                    String::concat("=", peff)
+                  }
+                  Array::set(requirement_marked_cell, 0, (peff, peff_marked))
                   // #1343: same operation-awareness as the named-callee case
                   // above -- a callback parameter whose row names an operation
                   // is covered by a caller holding the whole effect.
@@ -6013,11 +6067,22 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
           Some(_) => true,
           None => false
         }
-        if own_row && Array::length(tparams) > 0 {
-          Array::push(row_formal_scope, tparam_names(tparams))
-          Array::push(stack, (EIdent(row_scope_pop_marker(), 0 - 1), declared, in_handle, ov_names, ov_effs, kinds))
-        } else if !own_row && Array::length(current_ret_fn_rows()) > 0 && Array::length(row_formal_scope) > 1 {
-          Array::push(row_formal_scope, [row_scope_unknown()])
+        let entry = array_empty()
+        let names = tparam_names(tparams)
+        let mut ni = 0
+        while ni < Array::length(names) {
+          if own_row {
+            Array::push(entry, Array::get(names, ni))
+          } else {
+            Array::push(entry, String::concat("@", Array::get(names, ni)))
+          }
+          ni = ni + 1
+        }
+        if !own_row && Array::length(current_ret_fn_rows()) > 0 && !row_scope_decl_is_root() {
+          Array::push(entry, row_scope_unknown())
+        }
+        if Array::length(entry) > 0 {
+          Array::push(row_formal_scope, entry)
           Array::push(stack, (EIdent(row_scope_pop_marker(), 0 - 1), declared, in_handle, ov_names, ov_effs, kinds))
         } else {
           ()
