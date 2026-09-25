@@ -266,5 +266,22 @@ binder 6 11 "(Int, String) -> Int" "declaration of a let mut closure only ever c
 binder 7 3 "(Int, String) -> Int" "call of a let mut closure"
 binder 1 4 "(String) -> String" "shadowed top-level fn"
 
+# #3104 review: a polymorphic local answers with its generalized type (not the
+# monotype before quantification, whose variables no use ever solves), and a
+# comment between `let` and the name does not hide the binding's row.
+b="$WORK/called_only_review.vibe"
+cat > "$b" <<'VIBE'
+fn main() -> Int {
+  let id = (x) -> x
+  let // note
+    f = (x: Int) -> x + 1
+  id(1) + f(2)
+}
+VIBE
+binder 2 7 "forall ?t2. (?t2) -> ?t2" "declaration of a polymorphic local closure"
+binder 5 3 "forall ?t2. (?t2) -> ?t2" "call of a polymorphic local closure"
+binder 4 5 "(Int) -> Int" "declaration after a comment between let and the name"
+binder 5 11 "(Int) -> Int" "call of a closure declared after a comment"
+
 echo "[vibe-type-at] $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1

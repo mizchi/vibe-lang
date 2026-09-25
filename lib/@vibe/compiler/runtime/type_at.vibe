@@ -554,61 +554,37 @@ fn type_at_off_in_occ(occ: Array[(Int, Int)], off: Int) -> Bool {
   found
 }
 
-/// The offset where the run of ASCII blanks (space, tab, CR, LF) that ends at
-/// `i` starts; `i` itself when none does.
-fn type_at_skip_blanks_back(source: String, i: Int) -> Int {
-  let mut j = i
-  let mut going = true
-  while going && j > 0 {
-    let c = String::byte_at(source, j - 1)
-    if c == 32 || c == 9 || c == 10 || c == 13 {
-      j = j - 1
-    } else {
-      going = false
-    }
-  }
-  j
-}
-
-/// True when the whole word `word` ends exactly at `end` in `source`.
-fn type_at_word_ends_at(source: String, end: Int, word: String) -> Bool {
-  let n = String::length(word)
-  if end < n {
-    false
-  } else {
-    let mut same = true
-    let mut k = 0
-    while same && k < n {
-      if String::byte_at(source, end - n + k) != String::byte_at(word, k) {
-        same = false
-      } else {
-        ()
-      }
-      k = k + 1
-    }
-    same && is_boundary_at(source, end - n - 1)
-  }
-}
-
 /// #3050: the offset of the `let` keyword that introduces the binder written
 /// at `boff` (`let f` or `let mut f`), or -1 when that binder is not a `let`'s.
 /// The checker keys a local `let`'s value type by this offset, which is the one
-/// the parser gives `ELet` / `ELetMut`.
-fn type_at_let_keyword_before(source: String, boff: Int) -> Int {
-  // Each keyword is separated from the next word by at least one blank.
-  let before_name = type_at_skip_blanks_back(source, boff)
-  let before_mut = if before_name < boff && type_at_word_ends_at(source, before_name, "mut") {
-    type_at_skip_blanks_back(source, before_name - 3)
-  } else {
-    before_name
+/// the parser gives `ELet` / `ELetMut`. Read from the token stream, so a
+/// comment between the keyword and the name is skipped the way the parser
+/// skips it (#3104 review).
+fn type_at_let_keyword_before(source: String, boff: Int) -> Int with Exception {
+  let (tokens, starts, _) = lex_with_offsets(source)
+  let mut k = -1
+  let mut i = 0
+  while i < Array::length(starts) && k < 0 {
+    if Array::get(starts, i) == boff {
+      k = i
+    } else {
+      ()
+    }
+    i = i + 1
   }
-  let separated = if before_mut == before_name {
-    before_name < boff
+  let prev = if k > 0 {
+    match Array::get(tokens, k - 1) {
+      TMut => k - 2,
+      _ => k - 1
+    }
   } else {
-    before_mut < before_name - 3
+    -1
   }
-  if separated && type_at_word_ends_at(source, before_mut, "let") {
-    before_mut - 3
+  if prev >= 0 {
+    match Array::get(tokens, prev) {
+      TLet => Array::get(starts, prev),
+      _ => -1
+    }
   } else {
     -1
   }
@@ -637,7 +613,7 @@ fn type_at_local_binder_off(hits: Array[IdentHit], name: String, occ: Array[(Int
 /// `boff`, from the rows `check_program_type_table` recorded per `let`; "" when
 /// the binder is not a `let`'s (a parameter, a pattern binder) or has no row.
 /// Read it right after `check_program_type_table`, which is what fills it.
-fn type_at_local_let(source: String, boff: Int, final_s: Subst) -> String {
+fn type_at_local_let(source: String, boff: Int, final_s: Subst) -> String with Exception {
   let let_off = type_at_let_keyword_before(source, boff)
   if let_off < 0 {
     ""
