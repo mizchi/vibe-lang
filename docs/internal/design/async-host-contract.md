@@ -219,6 +219,17 @@ override silently contradicting a module that says `raw` is the hazard #2903's
   (`fixtures/async_spawn_host_futures/sleep_and_host.vibe` and
   `sleep_short.vibe`, each ~300ms where either fixed order takes ~400-500ms).
   Imported only beside the other hooks, when the program also sleeps.
+- **Cancelling the last waiter** (#1537). `TaskHandle::cancel` on a task
+  parked on a host future that no other task awaits calls
+  `host_future_cancel (i64) -> i64`: a read still BLOCKED leaves the shared
+  set and is cancelled with a synchronous `future.cancel-read` (a cancel that
+  finds the value landed counts as landed, and a landed response's body
+  stream is dropped with it), then the readable end is dropped and the state
+  cleared, as `host_future_wait`'s teardown does. Without it every such
+  cancellation held one of the adapter's 1023 handles for the rest of the run
+  (`fixtures/async_spawn_host_futures/cancel_many.vibe`). A parked STREAM read
+  has no cancel half yet: it stays armed and the stream's next reader settles
+  it.
 - **Drop** is conditional -- this is *the conditional-drop rule* the
   runtime-neutral list below names. A call that completed eagerly (status
   RETURNED, code `2`) created no subtask, so it is neither joined nor dropped

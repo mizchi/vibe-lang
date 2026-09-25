@@ -265,6 +265,28 @@ if grep -q "host_future_get\$price" "$SHADOW_OUT"; then
   exit 1
 fi
 echo "[named-hostfutures-component-gate] shadowed builtin: no 'price' import reserved"
+# The response builtin is shadow-aware on its own name too (Codex on #3059):
+# a program's own top-level `host_response_named`, called with a WIT address,
+# reserves no response import, while its `host_future_named` call still does.
+RSHADOW_SRC="$OUT_DIR/shadowed_response.vibe"
+cat >"$RSHADOW_SRC" <<'EOF'
+fn host_response_named(s: String) -> Int {
+  String::length(s)
+}
+
+let run: () -> Int with Async = () -> {
+  host_response_named("example:p/api#fetch") + await(host_future_named("price"))
+}
+EOF
+RSHADOW_OUT="$OUT_DIR/shadowed_response.wasm"
+compile_fixture "$RSHADOW_SRC" "$RSHADOW_OUT"
+if grep -q "wit_response_get" "$RSHADOW_OUT"; then
+  echo "named hostfutures component gate FAILED: a program's own host_response_named reserved a response import" >&2
+  exit 1
+fi
+grep -q "host_future_get\$price" "$RSHADOW_OUT" \
+  || { echo "named hostfutures component gate FAILED: shadowing host_response_named dropped the host_future_named import" >&2; exit 1; }
+echo "[named-hostfutures-component-gate] shadowed response builtin: no response import, 'price' still reserved"
 
 # --- #2832: awaiting the SAME host future twice ------------------------------
 # The future-side analogue of the stream lifecycle the hoststreams gate pins
@@ -442,7 +464,7 @@ fi
 [ "$(cat "$SHARED_LOG")" = "41" ] \
   || { echo "named hostfutures component gate FAILED: two tasks awaiting one future expected 41, got: $(cat "$SHARED_LOG")" >&2; exit 1; }
 echo "[named-hostfutures-component-gate] shared future: 41 (every task parked on the handle resumed with its value)"
-# A cancelled task's future landing first is discarded, not a missing waiter.
+# A task cancelled while parked on a future nobody else awaits releases it.
 CANCEL_OUT="$OUT_DIR/spawn_cancelled_waiter.component.wasm"
 rm -f "$CANCEL_OUT" "$CANCEL_OUT.diag"
 VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
@@ -457,7 +479,27 @@ if ! VIBE_ASYNC_FUTURES="slow=40:300,fast=1:100" timeout 60 "$RUNNER" "$CANCEL_O
 fi
 [ "$(cat "$CANCEL_LOG")" = "40" ] \
   || { echo "named hostfutures component gate FAILED: cancelled waiter expected 40, got: $(cat "$CANCEL_LOG")" >&2; exit 1; }
-echo "[named-hostfutures-component-gate] cancelled waiter: 40 (its landed future was discarded)"
+echo "[named-hostfutures-component-gate] cancelled waiter: 40 (its future's read was cancelled and released)"
+# 1100 park-and-cancel rounds, past the adapter's 1023-handle ceiling: each
+# cancelled future's handle must be released for the live read to succeed.
+MANY_OUT="$OUT_DIR/spawn_cancel_many.component.wasm"
+rm -f "$MANY_OUT" "$MANY_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/cancel_many.vibe "$MANY_OUT" run >/dev/null 2>&1 || true
+[ -s "$MANY_OUT" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/cancel_many.vibe did not compile: $(cat "$MANY_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+wasm-tools print "$MANY_OUT" >"$MANY_OUT.wat" 2>/dev/null || true
+grep -q 'canon future.cancel-read' "$MANY_OUT.wat" \
+  || { echo "named hostfutures component gate FAILED: cancel_many composed without future.cancel-read" >&2; exit 1; }
+MANY_LOG="$OUT_DIR/spawn_cancel_many.log"
+if ! VIBE_ASYNC_FUTURES="slow=40:300,fast=1:100" timeout 60 "$RUNNER" "$MANY_OUT" >"$MANY_LOG" 2>&1; then
+  echo "named hostfutures component gate FAILED: cancel_many run did not exit 0 (a cancelled future kept its handle?)" >&2
+  cat "$MANY_LOG" >&2
+  exit 1
+fi
+[ "$(cat "$MANY_LOG")" = "42" ] \
+  || { echo "named hostfutures component gate FAILED: cancel_many expected 42, got: $(cat "$MANY_LOG")" >&2; exit 1; }
+echo "[named-hostfutures-component-gate] cancel_many: 42 (1100 cancelled futures released, past the 1023-handle ceiling)"
 # A sleeping task and host waiters share one wait (the earliest sleeper's
 # timer is in the same waitable set). Both orders are pinned: a long sleep
 # beside a short host chain (sleep-first would take ~400ms), and a short

@@ -10307,6 +10307,38 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                         }
                       },
                       None => {
+                        // A HOST operation with no source declaration
+                        // (`perform Fs::Exists(p)` without `@vibe/fs`) is
+                        // answered by the entry's provider with a direct call
+                        // to its builtin, synthesized after checking -- so its
+                        // arguments are checked here against the builtin's
+                        // registry signature, or an ill-typed perform would
+                        // first fail in codegen or at run time (Codex on
+                        // #3059). The result stays a fresh variable, as before.
+                        let host_canon = canonical_builtin_name(op_qname)
+                        if host_canon != op_qname {
+                          match registry_builtin_scheme(host_canon) {
+                            Some(scheme) => {
+                              let (hty, c1h, _) = instantiate(scheme, c1)
+                              c1 = c1h
+                              match hty {
+                                CtFn(hparams, _, _) => if Array::length(hparams) != oalen {
+                                  Array::push(errors, String::concat("perform ", String::concat(op_qname, String::concat(" expects ", String::concat(__to_string(Array::length(hparams)), String::concat(" argument(s), got ", String::concat(__to_string(oalen), off_marker(op_off))))))))
+                                } else {
+                                  let mut hi = 0
+                                  while hi < oalen {
+                                    s1 = check_assignable_for(subst_apply(s1, Array::get(hparams, hi)), subst_apply(s1, Array::get(oparg_tys, hi)), s1, errors, "perform argument type mismatch for ", op_qname, op_off)
+                                    hi = hi + 1
+                                  }
+                                },
+                                _ => ()
+                              }
+                            },
+                            None => ()
+                          }
+                        } else {
+                          ()
+                        }
                         // Unknown op of a DECLARED effect: the typo'd op would
                         // never be matched by any handler arm — report it.
                         let ci2 = String::index_of(op_qname, "::")

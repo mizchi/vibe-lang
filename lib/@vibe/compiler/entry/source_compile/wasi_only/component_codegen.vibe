@@ -1835,6 +1835,19 @@ fn emit_canon_future_write(buf: Bytes, type_idx: Int, memory_core_idx: Int) -> U
   emit_raw_content(buf, content)
 }
 
+/// #1537: canon future.cancel-read <ty> (synchronous) -- opcode 0x18 (24),
+/// type index, then the async flag (0). Core signature `[handle] ->
+/// [status]` (measured with wasm-tools 1.253: `18 00 00`).
+fn emit_canon_future_cancel_read(buf: Bytes, type_idx: Int) -> Unit {
+  bytebuf_push(buf, section_canon)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 24)
+  leb128_encode_u32(content, type_idx)
+  bytebuf_push(content, 0)
+  emit_raw_content(buf, content)
+}
+
 /// ADR-0089 step 2: canon future.drop-readable <ty> -- opcode 0x1a (26) +
 /// type index. Core signature `[handle] -> []`.
 fn emit_canon_future_drop_readable(buf: Bytes, type_idx: Int) -> Unit {
@@ -6007,7 +6020,7 @@ fn comp_sleep_wait_payload_slot() -> Int {
   32
 }
 
-fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], stream_core_names: Array[String], want_stream_close: Bool, want_sleep: Bool, tag_mode: Int, future_s64: Bool, response_payload: Bool, want_wait_any: Bool, want_stream_arm: Bool, want_sleep_arm: Bool, exit_stubs: Array[String]) -> Bytes with Exception {
+fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], stream_core_names: Array[String], want_stream_close: Bool, want_sleep: Bool, tag_mode: Int, future_s64: Bool, response_payload: Bool, want_wait_any: Bool, want_stream_arm: Bool, want_sleep_arm: Bool, want_cancel: Bool, exit_stubs: Array[String]) -> Bytes with Exception {
   // #1342: a THIRD half -- `vibe.sleep`. It is not a getter/wait pair like the
   // other two: the host side is an `async func(ms) -> ms`, so its
   // async-lowered call yields a SUBTASK rather than a future/stream handle,
@@ -6061,10 +6074,18 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
   // shift any index above.
   let sleep_lower_idx = base_func_imports
   let subtask_drop_idx = base_func_imports + 1
-  let nfunc_imports = if want_sleep {
+  let sleep_func_imports = if want_sleep {
     base_func_imports + 2
   } else {
     base_func_imports
+  }
+  // #1537: `future.cancel-read` (sync), after the sleep half for the same
+  // reason -- a composition without it keeps every index.
+  let cancel_read_idx = sleep_func_imports
+  let nfunc_imports = if want_cancel {
+    sleep_func_imports + 1
+  } else {
+    sleep_func_imports
   }
   let out = bytebuf_new()
   emit_header(out)
@@ -6200,6 +6221,19 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
   } else {
     ()
   }
+  if want_cancel {
+    if nnames == 0 {
+      throw("component(async-hostfuture): host_future_cancel without a host future")
+    } else {
+      ()
+    }
+    emit_name(ic, "$root")
+    emit_name(ic, String::concat("[future-cancel-read-0]", comp_hostfuture_import_label(Array::get(core_names, 0))))
+    bytebuf_push(ic, 0)
+    bytebuf_push(ic, 0)
+  } else {
+    ()
+  }
   emit_name(ic, "env")
   emit_name(ic, "memory")
   bytebuf_push(ic, 2)
@@ -6289,6 +6323,13 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     Array::push(export_indices, nfunc_imports + Array::length(fn_types))
     Array::push(fn_types, 6)
     Array::push(export_names, "host_sleep_arm")
+  } else {
+    ()
+  }
+  if want_cancel {
+    Array::push(export_indices, nfunc_imports + Array::length(fn_types))
+    Array::push(fn_types, 6)
+    Array::push(export_names, "host_future_cancel")
   } else {
     ()
   }
@@ -7243,6 +7284,87 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
   } else {
     ()
   }
+  if want_cancel {
+    let shift = if future_s64 {
+      3
+    } else {
+      2
+    }
+    // host_future_cancel(h): param 0 = tagged handle; locals (i32) 1=fut,
+    // 2=state addr, 3=st. Nobody will take this future's value: a read still
+    // BLOCKED (1) leaves the shared set and is cancelled -- a cancel that
+    // finds the value already landed (COMPLETED, 0) counts as landed -- and
+    // the readable end is dropped, as host_future_wait's teardown does. A
+    // landed response also owns its body stream, which is dropped with it.
+    // State 0 (never started, or already taken) is a no-op.
+    let cancel_body = bytebuf_new()
+    leb128_encode_u32(cancel_body, 1)
+    leb128_encode_u32(cancel_body, 3)
+    bytebuf_push(cancel_body, 127)
+    emit_local_get(cancel_body, 0)
+    comp_emit_decode_i64_value(cancel_body, tag_mode)
+    emit_i32_wrap_i64(cancel_body)
+    emit_local_set(cancel_body, 1)
+    emit_local_get(cancel_body, 1)
+    emit_i32_const(cancel_body, shift)
+    emit_i32_shl(cancel_body)
+    emit_i32_const(cancel_body, comp_hf_state_base())
+    emit_i32_add(cancel_body)
+    emit_local_set(cancel_body, 2)
+    emit_local_get(cancel_body, 2)
+    emit_i32_load(cancel_body, 2, 0)
+    emit_local_set(cancel_body, 3)
+    emit_local_get(cancel_body, 3)
+    emit_i32_eqz(cancel_body)
+    emit_if_void(cancel_body)
+    emit_i64_const(cancel_body, 0)
+    comp_emit_encode_i64_value(cancel_body, tag_mode)
+    emit_return(cancel_body)
+    emit_end(cancel_body)
+    emit_local_get(cancel_body, 3)
+    emit_i32_const(cancel_body, 1)
+    emit_i32_eq(cancel_body)
+    emit_if_void(cancel_body)
+    emit_local_get(cancel_body, 1)
+    emit_i32_const(cancel_body, 0)
+    emit_call(cancel_body, join_idx)
+    emit_local_get(cancel_body, 1)
+    emit_call(cancel_body, cancel_read_idx)
+    emit_i32_const(cancel_body, 15)
+    emit_i32_and(cancel_body)
+    emit_i32_eqz(cancel_body)
+    emit_if_void(cancel_body)
+    emit_i32_const(cancel_body, 2)
+    emit_local_set(cancel_body, 3)
+    emit_end(cancel_body)
+    emit_end(cancel_body)
+    if response_payload {
+      emit_local_get(cancel_body, 3)
+      emit_i32_const(cancel_body, 2)
+      emit_i32_eq(cancel_body)
+      emit_if_void(cancel_body)
+      emit_local_get(cancel_body, 2)
+      emit_i32_const(cancel_body, comp_hf_value_base() - comp_hf_state_base() + 4)
+      emit_i32_add(cancel_body)
+      emit_i32_load(cancel_body, 2, 0)
+      emit_call(cancel_body, sdrop_idx)
+      emit_end(cancel_body)
+    } else {
+      ()
+    }
+    emit_local_get(cancel_body, 1)
+    emit_call(cancel_body, drop_idx)
+    emit_local_get(cancel_body, 2)
+    emit_i32_const(cancel_body, 0)
+    emit_i32_store(cancel_body, 2, 0)
+    emit_i64_const(cancel_body, 0)
+    comp_emit_encode_i64_value(cancel_body, tag_mode)
+    bytebuf_push(cancel_body, 11)
+    leb128_encode_u32(code_sec, Bytes::length(cancel_body))
+    bytebuf_push_buf(code_sec, cancel_body)
+  } else {
+    ()
+  }
   let mut xb_i = 0
   while xb_i < Array::length(exit_stubs) {
     // no locals; unreachable; end
@@ -7703,7 +7825,7 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
     let ifn = Array::get(imp_names, ii)
     if im == "wasi_snapshot_preview1" && ifn == "fd_write" {
       ()
-    } else if im == "vibe" && (comp_is_host_future_get_import(ifn) || ifn == "host_future_wait" || ifn == "host_future_arm" || ifn == "host_future_wait_any" || ifn == "host_stream_arm" || ifn == "host_sleep_arm" || comp_is_host_stream_get_import(ifn) || ifn == "host_stream_read" || ifn == "host_stream_close" || ifn == "sleep" || ifn == "stderr_write_stream" || (ifn == "process_exit" && comp_core_imports_func(main_core_wasm, "vibe", "stderr_write_stream"))) {
+    } else if im == "vibe" && (comp_is_host_future_get_import(ifn) || ifn == "host_future_wait" || ifn == "host_future_arm" || ifn == "host_future_wait_any" || ifn == "host_stream_arm" || ifn == "host_sleep_arm" || ifn == "host_future_cancel" || comp_is_host_stream_get_import(ifn) || ifn == "host_stream_read" || ifn == "host_stream_close" || ifn == "sleep" || ifn == "stderr_write_stream" || (ifn == "process_exit" && comp_core_imports_func(main_core_wasm, "vibe", "stderr_write_stream"))) {
       ()
     } else {
       throw("component(async-hostfuture): core module uses host import '\{im}.\{ifn}' (only fd_write, sleep and the host-future/host-stream imports are satisfiable in this composition)")
@@ -7914,6 +8036,12 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   let want_wait_any = comp_core_imports_vibe_name(main_core_wasm, "host_future_arm") || comp_core_imports_vibe_name(main_core_wasm, "host_future_wait_any")
   let want_stream_arm = comp_core_imports_vibe_name(main_core_wasm, "host_stream_arm")
   let want_sleep_arm = comp_core_imports_vibe_name(main_core_wasm, "host_sleep_arm")
+  let want_cancel = comp_core_imports_vibe_name(main_core_wasm, "host_future_cancel")
+  if want_cancel && nhf == 0 {
+    throw("component(async-hostfuture): core module imports vibe.host_future_cancel without a host future")
+  } else {
+    ()
+  }
   if want_sleep_arm && !want_sleep {
     throw("component(async-hostfuture): core module imports vibe.host_sleep_arm without vibe.sleep; the timer arm lowers through the sleep half")
   } else {
@@ -7934,7 +8062,7 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   } else {
     ()
   }
-  emit_core_module_section(buf, comp_generate_hostfuture_adapter_core_module(hf_names, hs_names, hs_wants_close, want_sleep, tag_mode, future_s64, response_mode, want_wait_any, want_stream_arm, want_sleep_arm, exit_stubs))
+  emit_core_module_section(buf, comp_generate_hostfuture_adapter_core_module(hf_names, hs_names, hs_wants_close, want_sleep, tag_mode, future_s64, response_mode, want_wait_any, want_stream_arm, want_sleep_arm, want_cancel, exit_stubs))
   emit_core_module_section(buf, comp_generate_async_trampoline_hostfuture())
   emit_core_module_section(buf, comp_generate_wasi_fd_write_stub())
   // A component-instance export alias must follow embedded core-module
@@ -8024,6 +8152,17 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   } else {
     ()
   }
+  // #1537: the cancel half's canon def, after the sleep pair.
+  let cancel_read_core_idx = if want_sleep {
+    sleep_lower_core_idx + 2
+  } else {
+    sleep_lower_core_idx
+  }
+  if want_cancel {
+    emit_canon_future_cancel_read(buf, future_type_idx)
+  } else {
+    ()
+  }
   let root_inst = 1
   // $root's exports: the K lowered imports under the adapter's
   // `[async-lower]<label>` spellings, then the shared read/drop (named after
@@ -8082,6 +8221,12 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   } else {
     ()
   }
+  if want_cancel {
+    Array::push(root_export_names, String::concat("[future-cancel-read-0]", comp_hostfuture_import_label(Array::get(hf_names, 0))))
+    Array::push(root_export_indices, cancel_read_core_idx)
+  } else {
+    ()
+  }
   emit_core_instance_from_exports(buf, 1, [Array::length(root_export_names)], root_export_names, root_export_indices)
   let env_inst = 2
   emit_core_instance_from_exports_sorted(buf, ["memory"], [core_sort_mem], [
@@ -8099,10 +8244,10 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
     stub_inst,
     adapter_inst
   ])
-  let main_run_func_idx = if want_sleep {
-    sleep_lower_core_idx + 2
+  let main_run_func_idx = if want_cancel {
+    cancel_read_core_idx + 1
   } else {
-    sleep_lower_core_idx
+    cancel_read_core_idx
   }
   emit_alias_section(buf, main_inst, ["run"], [core_sort_func])
   let main_arg_inst = 6

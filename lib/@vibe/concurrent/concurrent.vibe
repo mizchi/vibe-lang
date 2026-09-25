@@ -785,10 +785,12 @@ export fn TaskHandle::cancel[rg, e, T](h: TaskHandle[rg, e, T]) -> Unit {
   let c = h.cell
   c.cancel_requested = true
   if c.status == 5 {
+    let waited = c.host_wait
     c.status = 4
     c.cont = None
     c.host_wait = 0 - 1
     c.direct_wait = false
+    conc_host_release_orphan(h.group, waited)
     conc_notify_waiters(c)
   } else {
     ()
@@ -1496,6 +1498,35 @@ fn conc_host_sleep_elapsed[rg, e](n: TaskGroup[rg, e], ms: Int) -> Unit {
   }
 }
 
+/// #1537: a cancelled task was the last one parked on the host waitable
+/// `waited` (a payload, -1 = none). Nobody will take its result, so the read
+/// is cancelled and the handle released now; left pending, every such
+/// cancellation would hold an adapter handle for the rest of the run (Codex
+/// on #3059). Another task still parked on it keeps it.
+fn conc_host_release_orphan[rg, e](n: TaskGroup[rg, e], waited: Int) -> Unit {
+  if waited >= 0 {
+    let mut shared = false
+    let mut j = 0
+    while j < Array::length(n.adopted) {
+      let c = Array::get(n.adopted, j)
+      if c.status == 5 && c.host_wait == waited {
+        shared = true
+      } else {
+        ()
+      }
+      j = j + 1
+    }
+    if shared {
+      ()
+    } else {
+      let _ = __conc_host_cancel(waited)
+      ()
+    }
+  } else {
+    ()
+  }
+}
+
 /// #1537: resume every task parked on the host waitable `fired`.
 fn conc_host_resume[rg, e](n: TaskGroup[rg, e], fired: Int) -> Bool {
   let total = Array::length(n.adopted)
@@ -1516,10 +1547,10 @@ fn conc_host_resume[rg, e](n: TaskGroup[rg, e], fired: Int) -> Bool {
     }
     j = j + 1
   }
-  // No waiter left for it is not an error: a task cancelled while parked
-  // (TaskHandle::cancel clears its cell) leaves its future armed, and when
-  // that one lands first its value is simply discarded -- taking it above
-  // already released the readable end (Codex on #3059).
+  // No waiter left for it is not an error: a program without the adapter's
+  // cancel half leaves a cancelled task's waitable armed, and when that one
+  // lands first its value is simply discarded -- taking it above already
+  // released the readable end (Codex on #3059).
   let mut w = 0
   while w < Array::length(woken) {
     let c = Array::get(woken, w)
@@ -1558,6 +1589,13 @@ export fn __conc_host_arm(waitable: Int) -> Int {
 /// no host waitables in this program). Its completion is payload 1.
 export fn __conc_host_sleep_arm(ms: Int) -> Int {
   let _ = ms
+  0 - 1
+}
+
+/// Nobody waits on `waitable` (a payload) any more: cancel its pending read
+/// and release it. -1 = this program has no host waitables.
+export fn __conc_host_cancel(waitable: Int) -> Int {
+  let _ = waitable
   0 - 1
 }
 
