@@ -184,6 +184,15 @@ if run_exec; then cat "$WORK/out" >&2; fail "a companion that edited a pre-exist
 rm -f -- "$WORK/-probe"
 echo "  ok  a companion that edits a pre-existing untracked -dash file is rejected"
 
+# (f) A pre-existing untracked DANGLING symlink retargeted by a companion:
+# following it hashes nothing either way (#3099 review).
+restore_scratch
+ln -s missing-a "$WORK/lib/probe_link"
+printf '#!/usr/bin/env bash\nln -sfn missing-b "$(dirname "$0")/../lib/probe_link"\nexit 0\n' > "$WORK/scripts/check_thing_test.sh"
+if run_exec; then cat "$WORK/out" >&2; fail "a companion that retargeted a pre-existing untracked symlink was accepted"; fi
+rm -f -- "$WORK/lib/probe_link"
+echo "  ok  a companion that retargets a pre-existing untracked symlink is rejected"
+
 # ...and a pre-existing dirty tree by itself is NOT a finding: the check is
 # "unchanged by the suite", not "clean", or it could never run mid-work.
 restore_scratch

@@ -83,9 +83,18 @@ run_bounded() { # <seconds> <cmd...>
       # `-k 2`: timeout(1) only sends TERM by default, so a command that
       # ignores TERM would run on past the bound; escalate to KILL two seconds
       # later, as the watchdog does (#3099 review).
-      local bin="$impl"
-      "$bin" -k 2 "$secs" "$@"
-      return $?
+      #
+      # After that escalation timeout(1) exits 137, not 124, which reads as a
+      # crash to callers that classify 124 as a hang (tests/fuzz). A 137 at or
+      # past the bound is the escalation; one before it is a real SIGKILL
+      # (the OOM killer), and stays 137.
+      local bin="$impl" start rc=0
+      start="$(date +%s)"
+      "$bin" -k 2 "$secs" "$@" || rc=$?
+      if [ "$rc" -eq 137 ] && [ $(($(date +%s) - start)) -ge "$secs" ]; then
+        rc=124
+      fi
+      return "$rc"
       ;;
     "watchdog")
       run_bounded_watchdog "$secs" "$@"

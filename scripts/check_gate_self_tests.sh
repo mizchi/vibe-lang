@@ -214,7 +214,23 @@ tree_state() {
   printf 'tracked-diff %s\n' "$(git -C "$ROOT_DIR" diff HEAD --no-ext-diff --binary 2>/dev/null | cksum)"
   # An untracked file that existed before the suite keeps the same `??` line
   # when a companion edits it; its CONTENT is what shows the edit (#3099 review).
-  printf 'untracked-content %s\n' "$(cd "$ROOT_DIR" && git ls-files --others --exclude-standard -z 2>/dev/null | xargs -0 cksum -- 2>/dev/null | cksum)"
+  printf 'untracked-content %s\n' "$(untracked_digest | cksum)"
+}
+# One line per untracked path: a symlink by its TARGET TEXT (following it
+# would hash nothing for a dangling link, #3099 review), a readable file by
+# its checksum, anything else as `unreadable` -- never silently dropped.
+untracked_digest() {
+  local p
+  (cd "$ROOT_DIR" && git ls-files --others --exclude-standard -z 2>/dev/null) |
+    while IFS= read -r -d '' p; do
+      if [ -L "$ROOT_DIR/$p" ]; then
+        printf 'link %s -> %s\n' "$p" "$(readlink "$ROOT_DIR/$p")"
+      elif [ -f "$ROOT_DIR/$p" ] && [ -r "$ROOT_DIR/$p" ]; then
+        printf 'file %s %s\n' "$p" "$(cksum < "$ROOT_DIR/$p")"
+      else
+        printf 'unreadable %s\n' "$p"
+      fi
+    done
 }
 dirtied=""
 dirty_report=""
