@@ -248,7 +248,7 @@ import ./compile_expr_tail2.vibe {
 }
 
 import ./compile_lambda.vibe {
-  cl_return_operand, compile_lambda
+  cl_return_operand, compile_lambda, forin_is_discarded_seq_head
 }
 
 import ./compile_match.vibe {
@@ -3110,9 +3110,12 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     // classification the checker uses, #1679) -- its comprehension result is
     // discarded right here by the emit_drop below, so compile it in the
     // no-collect form instead of materializing an array nobody reads.
-    let nl = match first {
-      EForIn(_, _, _, _) => compile_forin_loop(buf, first, local_names, next_local, ctx, ld, compile_expr, false),
-      _ => compile_expr(buf, first, local_names, next_local, ctx, ld)
+    // `forin_is_discarded_seq_head` is shared with the captured-cell marker
+    // (cl_own_cells), which must not retain a body value this form drops.
+    let nl = if forin_is_discarded_seq_head(first) {
+      compile_forin_loop(buf, first, local_names, next_local, ctx, ld, compile_expr, false)
+    } else {
+      compile_expr(buf, first, local_names, next_local, ctx, ld)
     }
     emit_drop(buf)
     compile_expr(buf, second, local_names, nl, ctx, ld)

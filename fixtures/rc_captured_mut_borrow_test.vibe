@@ -746,3 +746,61 @@ test "a captured cell reaching an array item through a for-in body keeps the ele
   let xs = mk()
   inspect(String::join([tail_forin_agg(xs, true), tail_forin_agg(xs, true), tail_forin_agg(xs, false), names(xs)], ";"), content = "ax;ax;fresh;ax,by,cz")
 }
+
+// #3130 review, third round. A `for` at the head of a sequence is lowered
+// WITHOUT collecting (compile_forin_loop, collect = false): each body value is
+// dropped off the stack unreleased. The for-in body marker retained a cell read
+// there on every iteration, and nothing released it, so the cell's payload
+// never reached a count of zero. The payload here is allocated per call, so a
+// reference it never loses keeps all of it alive. Measured on a stage2 built
+// from ffc4ebfa6, 200 / 400 calls after 20 warmup calls: 25600 / 51200 B, and
+// 1600 / 3200 B for the control below -- its body produces nothing, and its
+// growth is the per-call String the two share, which is never reclaimed.
+fn discard_forin_cell(ns: Array[Int]) -> Int {
+  let mut d = A(String::concat("q", "q"), ["z"])
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  for x in ns {
+    d
+  }
+  1
+}
+
+fn discard_forin_control(ns: Array[Int]) -> Int {
+  let mut d = A(String::concat("q", "q"), ["z"])
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  for x in ns {
+    0
+  }
+  1
+}
+
+fn discard_forin_run(cell: Bool, ns: Array[Int], n: Int) -> Int {
+  let mut r = 0
+  let mut acc = 0
+  while r < n {
+    let x = if cell {
+      discard_forin_cell(ns)
+    } else {
+      discard_forin_control(ns)
+    }
+    acc = acc + x
+    r = r + 1
+  }
+  acc
+}
+
+fn discard_forin_growth(cell: Bool, n: Int) -> Int with Profiler {
+  let ns = [1, 2, 3, 4]
+  let _ = discard_forin_run(cell, ns, 20)
+  let before = Profiler::heap_bytes()
+  let _ = discard_forin_run(cell, ns, n)
+  Profiler::heap_bytes() - before
+}
+
+test "a discarded for-in over a captured cell retains nothing" {
+  let cell = discard_forin_growth(true, 400)
+  let control = discard_forin_growth(false, 400)
+  inspect(cell - control, content = "0")
+}

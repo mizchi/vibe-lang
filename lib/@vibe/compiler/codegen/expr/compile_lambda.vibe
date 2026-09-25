@@ -886,6 +886,44 @@ fn cl_store_leaf(x: Expr, needed: Array[String]) -> Expr {
   }
 }
 
+/// #3130 review: is `e` a `for` in the one position whose lowering does NOT
+/// collect its body values -- the head of a sequence, compiled with
+/// `compile_forin_loop(.., collect = false)`, which drops each body value off
+/// the stack without releasing it? That lowering (compile_expr_tail.vibe's
+/// ESeq arm) and the cell marker (`cl_own_cells`) both ask THIS, so the two
+/// cannot disagree about which for-ins collect. Every other `for` collects
+/// into a fresh array that owns (and eventually releases) its items.
+export fn forin_is_discarded_seq_head(e: Expr) -> Bool {
+  match e {
+    EForIn(_, _, _, _) => true,
+    _ => false
+  }
+}
+
+/// A `for`: its iterand and body are walked as usual; when it COLLECTS, the
+/// body's value is an owning place (an item of the result array), so a cell
+/// read on its result path is marked. A discarded one's body value is dropped
+/// unreleased, so marking it would retain a reference nothing releases -- one
+/// per iteration.
+fn cl_forin_cells(e: Expr, cells: Array[String], collects: Bool) -> Expr {
+  match e {
+    EForIn(n, label, iter, body) => {
+      let inner = match label {
+        Some(l) => cl_cells_without(cl_cells_without(cells, n), l),
+        None => cl_cells_without(cells, n)
+      }
+      let body2 = cl_own_cells(body, inner)
+      let body3 = if collects {
+        cl_cell_tails(body2, inner, true)
+      } else {
+        body2
+      }
+      EForIn(n, label, cl_own_cells(iter, cells), body3)
+    },
+    _ => cl_own_cells(e, cells)
+  }
+}
+
 fn cl_own_cells(e: Expr, cells: Array[String]) -> Expr {
   match e {
     ELetMut(n, v, b, off) => {
@@ -922,7 +960,15 @@ fn cl_own_cells(e: Expr, cells: Array[String]) -> Expr {
       EAssign(n, v3, cl_own_cells(b, cells))
     },
     EAssignOp(n, op, v, b) => EAssignOp(n, op, cl_own_cells(v, cells), cl_own_cells(b, cells)),
-    ESeq(a, b) => ESeq(cl_own_cells(a, cells), cl_own_cells(b, cells)),
+    ESeq(a, b) => {
+      // A discarded `for` collects nothing, so its body is no owning place.
+      let a2 = if forin_is_discarded_seq_head(a) {
+        cl_forin_cells(a, cells, false)
+      } else {
+        cl_own_cells(a, cells)
+      }
+      ESeq(a2, cl_own_cells(b, cells))
+    },
     EIf(c, t, f) => EIf(cl_own_cells(c, cells), cl_own_cells(t, cells), cl_own_cells(f, cells)),
     EMatch(s, arms) => EMatch(cl_own_cells(s, cells), cl_arms_cells(arms, cells)),
     EHandle(body, arms) => EHandle(cl_own_cells(body, cells), cl_arms_cells(arms, cells)),
@@ -946,15 +992,7 @@ fn cl_own_cells(e: Expr, cells: Array[String]) -> Expr {
       }
       ELoop(cl_fields_cells(inits, cells), cl_own_cells(body, cl_cells_without_all(cells, names)))
     },
-    EForIn(n, label, iter, body) => {
-      let inner = match label {
-        Some(l) => cl_cells_without(cl_cells_without(cells, n), l),
-        None => cl_cells_without(cells, n)
-      }
-      // The body's value is collected into the fresh result array, so a
-      // cell read on its result path is an aggregate item.
-      EForIn(n, label, cl_own_cells(iter, cells), cl_cell_tails(cl_own_cells(body, inner), inner, true))
-    },
+    EForIn(_, _, _, _) => cl_forin_cells(e, cells, true),
     EBinOp(op, a, b, off) => EBinOp(op, cl_own_cells(a, cells), cl_own_cells(b, cells), off),
     EUnaryOp(op, value) => EUnaryOp(op, cl_own_cells(value, cells)),
     EDot(obj, field, off, field_off) => EDot(cl_own_cells(obj, cells), field, off, field_off),
