@@ -569,7 +569,7 @@ VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_A
 [ -s "$NG_OUT" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/nested_groups.vibe did not compile: $(cat "$NG_OUT.diag" 2>/dev/null)" >&2; exit 1; }
 NG_LOG="$OUT_DIR/spawn_nested_groups.log"
 NG_START_NS=$(date +%s%N)
-if ! VIBE_ASYNC_FUTURES="fast=1:100,mid=2:200,slow=40:300" timeout 60 "$RUNNER" "$NG_OUT" >"$NG_LOG" 2>&1; then
+if ! VIBE_ASYNC_FUTURES="fast=1:100,mid=2:200,slow=40:300" run_bounded 60 "$RUNNER" "$NG_OUT" >"$NG_LOG" 2>&1; then
   echo "named hostfutures component gate FAILED: nested_groups did not exit 0" >&2
   cat "$NG_LOG" >&2
   exit 1
@@ -594,7 +594,7 @@ VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_A
 [ -s "$NTR_OUT" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/nested_timer_reuse.vibe did not compile: $(cat "$NTR_OUT.diag" 2>/dev/null)" >&2; exit 1; }
 NTR_LOG="$OUT_DIR/spawn_nested_timer_reuse.log"
 NTR_START_NS=$(date +%s%N)
-if ! VIBE_ASYNC_FUTURES="fast=1:100,mid=2:250,slow=40:300" timeout 60 "$RUNNER" "$NTR_OUT" >"$NTR_LOG" 2>&1; then
+if ! VIBE_ASYNC_FUTURES="fast=1:100,mid=2:250,slow=40:300" run_bounded 60 "$RUNNER" "$NTR_OUT" >"$NTR_LOG" 2>&1; then
   echo "named hostfutures component gate FAILED: nested_timer_reuse did not exit 0" >&2
   cat "$NTR_LOG" >&2
   exit 1
@@ -618,7 +618,7 @@ VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_A
   "$COMPILER" fixtures/async_spawn_host_futures/nested_shared.vibe "$NS_OUT" run >/dev/null 2>&1 || true
 [ -s "$NS_OUT" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/nested_shared.vibe did not compile: $(cat "$NS_OUT.diag" 2>/dev/null)" >&2; exit 1; }
 NS_LOG="$OUT_DIR/spawn_nested_shared.log"
-if ! VIBE_ASYNC_FUTURES="fast=1:100,slow=20:300" timeout 60 "$RUNNER" "$NS_OUT" >"$NS_LOG" 2>&1; then
+if ! VIBE_ASYNC_FUTURES="fast=1:100,slow=20:300" run_bounded 60 "$RUNNER" "$NS_OUT" >"$NS_LOG" 2>&1; then
   echo "named hostfutures component gate FAILED: nested_shared did not exit 0" >&2
   cat "$NS_LOG" >&2
   exit 1
@@ -639,7 +639,7 @@ VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_A
   "$COMPILER" fixtures/async_spawn_host_futures/nested_shared_reuse.vibe "$NR_OUT" run >/dev/null 2>&1 || true
 [ -s "$NR_OUT" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/nested_shared_reuse.vibe did not compile: $(cat "$NR_OUT.diag" 2>/dev/null)" >&2; exit 1; }
 NR_LOG="$OUT_DIR/spawn_nested_shared_reuse.log"
-if ! VIBE_ASYNC_FUTURES="fast=1:100,slow=20:300,other=5:100" timeout 60 "$RUNNER" "$NR_OUT" >"$NR_LOG" 2>&1; then
+if ! VIBE_ASYNC_FUTURES="fast=1:100,slow=20:300,other=5:100" run_bounded 60 "$RUNNER" "$NR_OUT" >"$NR_LOG" 2>&1; then
   echo "named hostfutures component gate FAILED: nested_shared_reuse did not exit 0" >&2
   cat "$NR_LOG" >&2
   exit 1
@@ -660,7 +660,7 @@ VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_A
 [ -s "$JP_OUT" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/join_parked.vibe did not compile: $(cat "$JP_OUT.diag" 2>/dev/null)" >&2; exit 1; }
 JP_LOG="$OUT_DIR/spawn_join_parked.log"
 JP_START=$(date +%s%N)
-if ! VIBE_ASYNC_FUTURES="fast=7:100" timeout 60 "$RUNNER" "$JP_OUT" >"$JP_LOG" 2>&1; then
+if ! VIBE_ASYNC_FUTURES="fast=7:100" run_bounded 60 "$RUNNER" "$JP_OUT" >"$JP_LOG" 2>&1; then
   echo "named hostfutures component gate FAILED: join_parked did not exit 0" >&2
   cat "$JP_LOG" >&2
   exit 1
@@ -683,7 +683,7 @@ VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_A
   "$COMPILER" fixtures/async_spawn_host_futures/catch_in_entry.vibe "$CI_OUT" run >/dev/null 2>&1 || true
 [ -s "$CI_OUT" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/catch_in_entry.vibe did not compile: $(cat "$CI_OUT.diag" 2>/dev/null)" >&2; exit 1; }
 CI_LOG="$OUT_DIR/spawn_catch_in_entry.log"
-if ! VIBE_ASYNC_FUTURES="fast=1:100" timeout 60 "$RUNNER" "$CI_OUT" >"$CI_LOG" 2>&1; then
+if ! VIBE_ASYNC_FUTURES="fast=1:100" run_bounded 60 "$RUNNER" "$CI_OUT" >"$CI_LOG" 2>&1; then
   echo "named hostfutures component gate FAILED: catch_in_entry did not exit 0" >&2
   cat "$CI_LOG" >&2
   exit 1
@@ -717,7 +717,7 @@ VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_A
   "$COMPILER" fixtures/async_spawn_host_futures/timer_release_many.vibe "$TR_OUT" run >/dev/null 2>&1 || true
 [ -s "$TR_OUT" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/timer_release_many.vibe did not compile: $(cat "$TR_OUT.diag" 2>/dev/null)" >&2; exit 1; }
 TR_LOG="$OUT_DIR/spawn_timer_release_many.log"
-if ! VIBE_ASYNC_FUTURES="fast=1:1" timeout 120 "$RUNNER" "$TR_OUT" >"$TR_LOG" 2>&1; then
+if ! VIBE_ASYNC_FUTURES="fast=1:1" run_bounded 120 "$RUNNER" "$TR_OUT" >"$TR_LOG" 2>&1; then
   echo "named hostfutures component gate FAILED: timer_release_many did not exit 0" >&2
   cat "$TR_LOG" >&2
   exit 1

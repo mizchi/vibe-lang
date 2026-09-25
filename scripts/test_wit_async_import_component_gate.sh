@@ -357,7 +357,7 @@ if [ ! -s "$MIX_DIR/main.wasm" ]; then
 fi
 wasm-tools validate --features all "$MIX_DIR/main.wasm"
 START_NS=$(date +%s%N)
-GOT="$(VIBE_ASYNC_RESPONSES="$IFACE#fetch-a=200:$LONG_MS:1|2|3" VIBE_ASYNC_FUTURES="$IFACE#pending-count=5:$LONG_MS" timeout 60 "$RUNNER" "$MIX_DIR/main.wasm" 2>&1)" || {
+GOT="$(VIBE_ASYNC_RESPONSES="$IFACE#fetch-a=200:$LONG_MS:1|2|3" VIBE_ASYNC_FUTURES="$IFACE#pending-count=5:$LONG_MS" run_bounded 60 "$RUNNER" "$MIX_DIR/main.wasm" 2>&1)" || {
   echo "WIT async import gate FAILED: viberun did not exit 0 on the mixed program: $GOT" >&2
   exit 1
 }
@@ -392,7 +392,7 @@ if [ ! -s "$REQ_DIR/main.wasm" ]; then
   exit 1
 fi
 wasm-tools validate --features all "$REQ_DIR/main.wasm"
-GOT="$(VIBE_ASYNC_RESPONSES="$IFACE#fetch=200:0:echo" timeout 60 "$RUNNER" "$REQ_DIR/main.wasm" 2>&1)" || {
+GOT="$(VIBE_ASYNC_RESPONSES="$IFACE#fetch=200:0:echo" run_bounded 60 "$RUNNER" "$REQ_DIR/main.wasm" 2>&1)" || {
   echo "WIT async import gate FAILED: viberun did not exit 0 on the request-parameter program: $GOT" >&2
   exit 1
 }
@@ -422,7 +422,7 @@ mix_stream_row() { # <fixture dir> <main> <bindings> <expected> <max_ms> <future
   wasm-tools validate --features all "$dir/main.wasm"
   local start got elapsed
   start=$(date +%s%N)
-  got="$(VIBE_ASYNC_FUTURES="$6" VIBE_ASYNC_RESPONSES="$7" VIBE_ASYNC_STREAMS="body=10|15|17@100" timeout 60 "$RUNNER" "$dir/main.wasm" 2>&1)" || {
+  got="$(VIBE_ASYNC_FUTURES="$6" VIBE_ASYNC_RESPONSES="$7" VIBE_ASYNC_STREAMS="body=10|15|17@100" run_bounded 60 "$RUNNER" "$dir/main.wasm" 2>&1)" || {
     echo "WIT async import gate FAILED: viberun did not exit 0 on fixtures/$1/$2.vibe: $got" >&2
     exit 1
   }
@@ -446,4 +446,22 @@ mix_stream_row wit_future_import stream_spawn_main prices_bindings.vibe 84 $(( L
   "$PRICES#get-price=40:$LONG_MS,$PRICES#get-tax=2:$LONG_MS" "" "spawned WIT futures + named stream + sleep-for"
 mix_stream_row wit_response_import stream_main client_bindings.vibe 248 450 \
   "" "$IFACE#fetch-a=200:$LONG_MS:1|2|3,$IFACE#fetch-b=0:0:" "WIT response + named stream"
+# #2066: a response future captured by a spawned task is refused -- its body
+# stream has one owner -- with the message naming the edit.
+SHARE_DIR="$OUT/response_share_refused"
+rm -rf "$SHARE_DIR"
+mkdir -p "$SHARE_DIR"
+cp fixtures/wit_response_import/share_refused.vibe fixtures/wit_response_import/client_bindings.vibe "$SHARE_DIR/"
+VIBE_PREOPEN_DIR="$ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \
+  "$COMPILER" "$SHARE_DIR/share_refused.vibe" "$SHARE_DIR/main.wasm" run >/dev/null 2>&1 || true
+if [ -s "$SHARE_DIR/main.wasm" ]; then
+  echo "WIT async import gate FAILED: a response future shared with a spawned task compiled -- its body stream would have two readers" >&2
+  exit 1
+fi
+grep -qF "start the request inside the spawned task" "$SHARE_DIR/main.wasm.diag" 2>/dev/null || {
+  echo "WIT async import gate FAILED: share_refused gave an unexpected diagnostic: $(cat "$SHARE_DIR/main.wasm.diag" 2>/dev/null)" >&2
+  exit 1
+}
+echo "[wit-async-import] a response future shared with a spawned task: refused"
 echo "WIT async import component gate OK"
