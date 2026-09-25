@@ -2379,6 +2379,11 @@ ur_refused fixtures/err_interp_function_value_refused.vibe 'cannot interpolate a
 # #3074: a generic enum whose instantiation cannot be recovered would render
 # its payload through the erased formal (`GA(1)` for `GA(true)`).
 ur_refused fixtures/err_interp_generic_enum_unknown_refused.vibe 'its type arguments are not known here' 'bind it with a type annotation'
+# #3082: the same for a generic struct, and a recursive one at an argument its
+# erased renderer cannot print (that one used to overflow the compiler's stack).
+ur_refused fixtures/err_interp_generic_struct_unknown_refused.vibe 'its type arguments are not known here' 'bind it with a type annotation'
+ur_refused fixtures/err_interp_generic_struct_recursive_refused.vibe 'cannot interpolate a recursive `L`' 'render the value with a function you write'
+ur_refused fixtures/err_derive_show_recursive_generic_field_refused.vibe 'a derived renderer contains a recursive `L`' 'write the containing type'
 # #3019 rides the same helper: a lowering-time refusal asserted on its message
 # and its edit, not on the bare fact that the build failed.
 ur_refused fixtures/err_handle_resume_capture_loop_break_refused.vibe 'leaves a loop outside it' 'set a flag inside the handle'
@@ -2809,9 +2814,10 @@ echo '[compiler-gate] gc-lane scalar parity ok'
 # erased formal (`GA(1)`), a `Char` as its code point, a `Unit` as `0`. The
 # interpolation rewrite and the derived renderers are shared by every backend,
 # so each fixture runs on all three lanes.
-echo '[compiler-gate] 15b-3a/15 render by content: generic enum, Char, Unit (#3065/#3066/#3074/#3075)'
+echo '[compiler-gate] 15b-3a/15 render by content: generic enum/struct, Char, Unit (#3065/#3066/#3074/#3075/#3082)'
 for render_fx in fixtures/generic_enum_derive_show_render_test.vibe fixtures/char_unit_leaf_render_test.vibe \
-    fixtures/exception_kinded_binder_render_test.vibe fixtures/interp_nested_literal_render_test.vibe; do
+    fixtures/exception_kinded_binder_render_test.vibe fixtures/interp_nested_literal_render_test.vibe \
+    fixtures/generic_struct_derive_show_nested_test.vibe; do
   run_test_block_fixtures "render by content (linear, bump)" "$render_fx"
   run_test_block_fixtures_gc "render by content (gc)" "$render_fx"
   run_test_block_fixtures_rc "render by content (linear, RC)" "$render_fx"

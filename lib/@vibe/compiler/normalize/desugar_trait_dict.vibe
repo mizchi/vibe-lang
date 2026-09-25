@@ -9955,43 +9955,17 @@ fn interp_expand_shape(subject: Expr, sh: String, derived_only: Bool, gens: Arra
     // #3007: a `derive (Show)` generic struct at a known instantiation. The
     // field types get the arguments substituted, so each field renders at its
     // real type; the text matches `gen_show_fn`'s (`Box { v: 1.5 }`).
+    // #3082: a field naming the struct again (`rest: Option[L[T]]`) recursed
+    // here until the stack overflowed; the recursion guard is the enum arm's.
     let gparts = shape_split(String::substring(sh, 3, String::length(sh) - 1))
     match show_generic_struct_decl(Array::get(gparts, 0)) {
-      Some((sname, formals, fields)) => {
-        let targs = empty_type_exprs()
-        let mut ai = 1
-        while ai < Array::length(gparts) {
-          Array::push(targs, shape_to_eq_ty(Array::get(gparts, ai)))
-          ai = ai + 1
-        }
-        let nm = match subject {
-          EIdent(n, _) => n,
-          _ => show_tmp_name()
-        }
-        let mut acc = EString(String::concat(namespace_rename_original(sname), " { "), -1)
-        let mut fi = 0
-        while fi < Array::length(fields) {
-          let (fname, fty) = Array::get(fields, fi)
-          let fsh = if Array::length(targs) == Array::length(formals) {
-            ty_to_eq_shape(eq_subst_ty(fty, formals, targs))
-          } else {
-            ""
-          }
-          let fv = show_tmp_name()
-          let piece = ELet(fv, EDot(EIdent(nm, -1), fname, -1, -1), interp_render_shaped(EIdent(fv, -1), fsh, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns), -1)
-          let label = if fi == 0 {
-            String::concat(fname, ": ")
-          } else {
-            String::concat(", ", String::concat(fname, ": "))
-          }
-          acc = concat2(acc, concat2(EString(label, -1), piece))
-          fi = fi + 1
-        }
-        let rendered = concat2(acc, EString(" }", -1))
-        match subject {
-          EIdent(_, _) => rendered,
-          _ => ELet(nm, subject, rendered, -1)
-        }
+      Some(_) => if show_generic_recurs(sh, Array::get(gparts, 0)) {
+        show_generic_recursive_render(subject, sh, Array::get(gparts, 0))
+      } else {
+        Array::push(dtd_show_generic_enum_stack, sh)
+        let out = interp_expand_generic_struct(subject, sh, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+        Array::truncate(dtd_show_generic_enum_stack, Array::length(dtd_show_generic_enum_stack) - 1)
+        out
       },
       None => interp_render_sub(subject, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
     }
@@ -10040,10 +10014,102 @@ fn interp_expand_shape(subject: Expr, sh: String, derived_only: Bool, gens: Arra
   }
 }
 
-/// #3074: the heads of the generic enums whose `{g:` expansion is being
-/// generated, innermost last. A payload naming one of them again (`Cons(T,
-/// L[T])`) would otherwise expand forever.
+/// #3007: the field-by-field expansion of a `derive (Show)` generic struct at
+/// a known instantiation (see `interp_expand_shape`'s `{g:` arm).
+fn interp_expand_generic_struct(subject: Expr, sh: String, derived_only: Bool, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
+  let gparts = shape_split(String::substring(sh, 3, String::length(sh) - 1))
+  match show_generic_struct_decl(Array::get(gparts, 0)) {
+    Some((sname, formals, fields)) => {
+      let targs = empty_type_exprs()
+      let mut ai = 1
+      while ai < Array::length(gparts) {
+        Array::push(targs, shape_to_eq_ty(Array::get(gparts, ai)))
+        ai = ai + 1
+      }
+      let nm = match subject {
+        EIdent(n, _) => n,
+        _ => show_tmp_name()
+      }
+      let mut acc = EString(String::concat(namespace_rename_original(sname), " { "), -1)
+      let mut fi = 0
+      while fi < Array::length(fields) {
+        let (fname, fty) = Array::get(fields, fi)
+        let fsh = if Array::length(targs) == Array::length(formals) {
+          ty_to_eq_shape(eq_subst_ty(fty, formals, targs))
+        } else {
+          ""
+        }
+        let fv = show_tmp_name()
+        let piece = ELet(fv, EDot(EIdent(nm, -1), fname, -1, -1), interp_render_shaped(EIdent(fv, -1), fsh, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns), -1)
+        let label = if fi == 0 {
+          String::concat(fname, ": ")
+        } else {
+          String::concat(", ", String::concat(fname, ": "))
+        }
+        acc = concat2(acc, concat2(EString(label, -1), piece))
+        fi = fi + 1
+      }
+      let rendered = concat2(acc, EString(" }", -1))
+      match subject {
+        EIdent(_, _) => rendered,
+        _ => ELet(nm, subject, rendered, -1)
+      }
+    },
+    None => interp_render_sub(subject, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+  }
+}
+
+/// #3074 / #3082: the `{g:` shapes (generic enums and structs) whose expansion
+/// is being generated, innermost last. A payload or field naming one of them
+/// again (`Cons(T, L[T])`, `rest: Option[L[T]]`) would otherwise expand
+/// forever.
 let dtd_show_generic_enum_stack: Array[String] = empty_str_array()
+
+/// Does expanding `sh` recur? The same shape is already open (regular
+/// recursion), or its head is open eight times over (a non-regular one, whose
+/// shapes grow: `Nest[T]` holding `Nest[Array[T]]`). A different
+/// instantiation of the same head (`Box[Box[Int]]`) is not recursion.
+fn show_generic_recurs(sh: String, head: String) -> Bool {
+  if str_array_contains(dtd_show_generic_enum_stack, sh) {
+    true
+  } else {
+    let mut n = 0
+    let mut i = 0
+    while i < Array::length(dtd_show_generic_enum_stack) {
+      if generic_shape_head(Array::get(dtd_show_generic_enum_stack, i)) == head {
+        n = n + 1
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    n >= 8
+  }
+}
+
+/// A recursive `{g:` position. Its erased derived renderer is exact only when
+/// every type argument renders the same erased as typed (`Int`, `String`); any
+/// other argument is refused rather than printed through the erased formal.
+fn show_generic_recursive_render(subject: Expr, sh: String, head: String) -> Expr with Exception {
+  let gparts = shape_split(String::substring(sh, 3, String::length(sh) - 1))
+  let mut safe = true
+  let mut ai = 1
+  while ai < Array::length(gparts) {
+    let a = Array::get(gparts, ai)
+    if a != "Int" && a != "String" {
+      safe = false
+    } else {
+      ()
+    }
+    ai = ai + 1
+  }
+  if safe {
+    ECall(EIdent(String::concat(head, "::to_string"), -1), [subject], -1)
+  } else {
+    let shown = namespace_rename_original(head)
+    throw(String::concat("cannot interpolate a recursive `", String::concat(shown, String::concat("` whose type arguments are not `Int` or `String`: its derived renderer erases the type parameter, so a nested value would print through it -- render the value with a function you write (e.g. `fn show(v: ", String::concat(shown, "[..]) -> String`) (#3074, #3082)")))))
+  }
+}
 
 /// #3074: a `derive (Show)` generic enum at a known instantiation, rendered
 /// variant by variant with the arguments substituted into the payload types.
@@ -10056,24 +10122,8 @@ let dtd_show_generic_enum_stack: Array[String] = empty_str_array()
 fn interp_expand_generic_enum(subject: Expr, sh: String, derived_only: Bool, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
   let gparts = shape_split(String::substring(sh, 3, String::length(sh) - 1))
   let head = Array::get(gparts, 0)
-  if str_array_contains(dtd_show_generic_enum_stack, head) {
-    let mut safe = true
-    let mut ai = 1
-    while ai < Array::length(gparts) {
-      let a = Array::get(gparts, ai)
-      if a != "Int" && a != "String" {
-        safe = false
-      } else {
-        ()
-      }
-      ai = ai + 1
-    }
-    if safe {
-      ECall(EIdent(String::concat(head, "::to_string"), -1), [subject], -1)
-    } else {
-      let shown = namespace_rename_original(head)
-      throw(String::concat("cannot interpolate a recursive `", String::concat(shown, String::concat("` whose type arguments are not `Int` or `String`: its derived renderer erases the type parameter, so a nested payload would print through it -- render the value with a function you write (e.g. `fn show(v: ", String::concat(shown, "[..]) -> String`) (#3074)")))))
-    }
+  if show_generic_recurs(sh, head) {
+    show_generic_recursive_render(subject, sh, head)
   } else {
     match show_generic_enum_decl(head) {
       Some((_, formals, variants)) => {
@@ -10083,7 +10133,7 @@ fn interp_expand_generic_enum(subject: Expr, sh: String, derived_only: Bool, gen
           Array::push(targs, shape_to_eq_ty(Array::get(gparts, ai)))
           ai = ai + 1
         }
-        Array::push(dtd_show_generic_enum_stack, head)
+        Array::push(dtd_show_generic_enum_stack, sh)
         let arms = array_empty()
         let mut vi = 0
         while vi < Array::length(variants) {
@@ -10968,8 +11018,10 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
         // #3074: the only renderer left is the derived one, which erases the
         // enum's formals -- `G[Bool]` printed `GA(1)`. A payload-free
         // constructor renders its name at any instantiation; anything else is
-        // refused rather than printed through the erased formal.
-        if show_target != "" && show_generic_enum_known(generic_head) && !show_generic_enum_nullary(Array::get(args, 0)) {
+        // refused rather than printed through the erased formal. #3082: a
+        // generic struct the same way (`o.b` holding a `Box[Bool]` printed
+        // `Box { v: 1 }`).
+        if show_target != "" && show_generic_known(generic_head) && !show_generic_enum_nullary(Array::get(args, 0)) {
           throw(interp_generic_enum_unknown_msg(namespace_rename_original(generic_head), off))
         } else {
           ()
@@ -12567,6 +12619,11 @@ fn show_for_typed(fty: TypeExpr, val: Expr, known_types: Array[String]) -> Expr 
     // representation, so `__to_string` printed `97` / `0`.
     TyName("Char") => char_render_expr(val),
     TyUnit => unit_render_expr(val),
+    // #3082: a substituted formal reaches here as its argument (`v: Bool` in a
+    // `Box[Bool]`), where codegen sees only the erased field; name the
+    // renderer rather than leave it to the representation.
+    TyName("Bool") => EIf(val, EString("true", -1), EString("false", -1)),
+    TyName("Double") => ECall(EIdent("Double::to_string", -1), [val], -1),
     TyName(n) => if !is_scalar_type_name(n) && str_array_contains(known_types, n) {
       ECall(EIdent(qualified_name(n, "to_string"), -1), Array::slice([val], 0, 1), -1)
     } else {
@@ -12633,12 +12690,215 @@ fn show_for_typed(fty: TypeExpr, val: Expr, known_types: Array[String]) -> Expr 
     } else {
       ECall(EIdent("__to_string", -1), Array::slice([val], 0, 1), -1)
     },
-    TyApp(n, _) => if str_array_contains(known_types, n) {
+    TyApp(n, targs) => if show_generic_known(n) && show_ty_args_concrete(targs, known_types) {
+      // #3082: a derived renderer's field or payload of a `derive (Show)`
+      // generic type at a concrete instantiation (`b: Box[Bool]`). Its own
+      // `to_string` erases the formal (`Outer { b: Box { v: 1 } }`), so the
+      // value is rendered here with the arguments substituted.
+      show_generic_inline(n, targs, val, known_types)
+    } else if str_array_contains(known_types, n) {
       ECall(EIdent(qualified_name(n, "to_string"), -1), Array::slice([val], 0, 1), -1)
     } else {
       ECall(EIdent("__to_string", -1), Array::slice([val], 0, 1), -1)
     },
     _ => ECall(EIdent("__to_string", -1), Array::slice([val], 0, 1), -1)
+  }
+}
+
+/// #3082: every type argument names no type parameter, so substituting it
+/// yields a fully concrete type.
+fn show_ty_args_concrete(targs: Array[TypeExpr], known_types: Array[String]) -> Bool {
+  let mut ok = Array::length(targs) > 0
+  let mut i = 0
+  while i < Array::length(targs) && ok {
+    ok = show_ty_concrete(Array::get(targs, i), known_types)
+    i = i + 1
+  }
+  ok
+}
+
+fn show_ty_concrete(t: TypeExpr, known_types: Array[String]) -> Bool {
+  match t {
+    TyName(n) => is_scalar_type_name(n) || (str_array_contains(known_types, n) && !str_array_contains(dtd_type_param_names, n)),
+    TyUnit => true,
+    TyTuple(ts) => show_ty_args_concrete(ts, known_types),
+    TyApp(n, args) => (n == "Array" || n == "Option" || n == "Result" || n == "Map" || (str_array_contains(known_types, n) && !str_array_contains(dtd_type_param_names, n))) && show_ty_args_concrete(args, known_types),
+    _ => false
+  }
+}
+
+/// #3082: the `derive (Show)` generic types whose inline rendering is being
+/// generated by `show_for_typed`, as `ts_type_key`s. Kept apart from the
+/// interpolation stack: the two passes never nest.
+let dtd_show_inline_stack: Array[String] = empty_str_array()
+
+/// #3082: `Array[e]` element types a substituted field needs a
+/// `__arr_to_string__<key>` helper for; `desugar_derives` emits them with the
+/// declared ones.
+let dtd_show_inline_arr_elems: Array[TypeExpr] = empty_type_exprs()
+
+/// #3082: refusals found while generating a derived renderer, reported by
+/// `show_refusals_report` where the pass can throw.
+let dtd_show_refusals: Array[String] = empty_str_array()
+
+/// #3082: render `val`, a `derive (Show)` generic struct or enum at the
+/// concrete instantiation `n[targs]`, in its derived renderer's text with the
+/// arguments substituted into each field / payload type.
+fn show_generic_inline(n: String, targs: Array[TypeExpr], val: Expr, known_types: Array[String]) -> Expr {
+  let key = ts_type_key(TyApp(n, targs))
+  let mut same_head = 0
+  let mut si = 0
+  while si < Array::length(dtd_show_inline_stack) {
+    if String::starts_with(Array::get(dtd_show_inline_stack, si), String::concat(n, "_")) {
+      same_head = same_head + 1
+    } else {
+      ()
+    }
+    si = si + 1
+  }
+  if str_array_contains(dtd_show_inline_stack, key) || same_head >= 8 {
+    // Recursive. The erased renderer is exact only at `Int` / `String`.
+    let mut safe = true
+    let mut ai = 0
+    while ai < Array::length(targs) {
+      match Array::get(targs, ai) {
+        TyName(a) => if a != "Int" && a != "String" {
+          safe = false
+        } else {
+          ()
+        },
+        _ => {
+          safe = false
+        }
+      }
+      ai = ai + 1
+    }
+    if !safe {
+      let msg = String::concat("a derived renderer contains a recursive `", String::concat(namespace_rename_original(n), "` whose type arguments are not `Int` or `String`: its own renderer erases the type parameter, so a nested value would print through it -- write the containing type's `to_string` yourself (#3082)"))
+      if !str_array_contains(dtd_show_refusals, msg) {
+        Array::push(dtd_show_refusals, msg)
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    ECall(EIdent(qualified_name(n, "to_string"), -1), [val], -1)
+  } else {
+    Array::push(dtd_show_inline_stack, key)
+    let tmp = show_tmp_name()
+    let tv = EIdent(tmp, -1)
+    let body = match show_generic_struct_decl(n) {
+      Some((_, formals, fields)) => {
+        let mut acc = EString(String::concat(namespace_rename_original(n), " { "), -1)
+        let mut fi = 0
+        while fi < Array::length(fields) {
+          let (fname, fty) = Array::get(fields, fi)
+          let sty = eq_subst_ty(fty, formals, targs)
+          show_inline_note_arrays(sty)
+          let label = if fi == 0 {
+            String::concat(fname, ": ")
+          } else {
+            String::concat(", ", String::concat(fname, ": "))
+          }
+          acc = concat2(acc, concat2(EString(label, -1), show_for_typed(sty, EDot(tv, fname, -1, -1), known_types)))
+          fi = fi + 1
+        }
+        concat2(acc, EString(" }", -1))
+      },
+      None => match show_generic_enum_decl(n) {
+        Some((_, formals, variants)) => {
+          let arms = array_empty()
+          let mut vi = 0
+          while vi < Array::length(variants) {
+            let (vname, ptys) = Array::get(variants, vi)
+            let pats = array_empty()
+            let mut vbody = EString(namespace_rename_original(vname), -1)
+            if Array::length(ptys) > 0 {
+              vbody = EString(String::concat(namespace_rename_original(vname), "("), -1)
+              let mut pi = 0
+              while pi < Array::length(ptys) {
+                let pv = show_tmp_name()
+                Array::push(pats, PBind(pv))
+                let sty = eq_subst_ty(Array::get(ptys, pi), formals, targs)
+                show_inline_note_arrays(sty)
+                let piece = show_for_typed(sty, EIdent(pv, -1), known_types)
+                vbody = if pi == 0 {
+                  concat2(vbody, piece)
+                } else {
+                  concat2(concat2(vbody, EString(", ", -1)), piece)
+                }
+                pi = pi + 1
+              }
+              vbody = concat2(vbody, EString(")", -1))
+            } else {
+              ()
+            }
+            Array::push(arms, (PCtor(vname, pats), vbody))
+            vi = vi + 1
+          }
+          EMatch(tv, arms)
+        },
+        None => ECall(EIdent(qualified_name(n, "to_string"), -1), [tv], -1)
+      }
+    }
+    Array::truncate(dtd_show_inline_stack, Array::length(dtd_show_inline_stack) - 1)
+    ELet(tmp, val, body, -1)
+  }
+}
+
+/// Move the recorded element types into `desugar_derives`' helper list, with
+/// its dedup and nesting closure.
+fn show_inline_merge_arr_elems(arr_elems: Array[TypeExpr], arr_keys: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(dtd_show_inline_arr_elems) {
+    collect_show_array_elems(TyApp("Array", [
+      Array::get(dtd_show_inline_arr_elems, i)
+    ]), arr_elems, arr_keys)
+    i = i + 1
+  }
+  Array::truncate(dtd_show_inline_arr_elems, 0)
+}
+
+/// Record the `Array[e]` element types a substituted type mentions.
+/// Walks the whole type: `show_for_typed` reaches an `Array` inside an
+/// `Option` / `Result` / tuple too, and each needs its helper.
+fn show_inline_note_arrays(t: TypeExpr) -> Unit {
+  match t {
+    TyApp(n, args) => {
+      if n == "Array" && Array::length(args) == 1 {
+        Array::push(dtd_show_inline_arr_elems, Array::get(args, 0))
+      } else {
+        ()
+      }
+      if n == "Array" || n == "Option" || n == "Result" {
+        let mut i = 0
+        while i < Array::length(args) {
+          show_inline_note_arrays(Array::get(args, i))
+          i = i + 1
+        }
+      } else {
+        ()
+      }
+    },
+    TyTuple(ts) => {
+      let mut i = 0
+      while i < Array::length(ts) {
+        show_inline_note_arrays(Array::get(ts, i))
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+/// #3082: a recursive generic value inside a derived renderer cannot be
+/// rendered by content; the refusal is a build error naming the edit.
+fn show_refusals_report() -> Unit with Exception {
+  if Array::length(dtd_show_refusals) == 0 {
+    ()
+  } else {
+    throw(Array::get(dtd_show_refusals, 0))
   }
 }
 
@@ -13809,7 +14069,7 @@ fn show_generic_enum_nullary(arg: Expr) -> Bool {
 /// #3074: the refusal for a `derive (Show)` generic enum whose type arguments
 /// this site cannot recover, naming the edit.
 fn interp_generic_enum_unknown_msg(ename: String, off: Int) -> String {
-  let base = String::concat("cannot interpolate this `", String::concat(ename, String::concat("` value: its type arguments are not known here, and the derived renderer would print a payload through an erased type parameter (`GA(1)` for `GA(true)`) -- bind it with a type annotation first (e.g. `let v: ", String::concat(ename, "[Bool] = ...`, then interpolate `v`) (#3074)"))))
+  let base = String::concat("cannot interpolate this `", String::concat(ename, String::concat("` value: its type arguments are not known here, and the derived renderer would print a field or payload through an erased type parameter (`1` for `true`) -- bind it with a type annotation first (e.g. `let v: ", String::concat(ename, "[Bool] = ...`, then interpolate `v`) (#3074, #3082)"))))
   if off >= 0 {
     String::concat(base, String::concat(" [@off=", String::concat(__to_string(off), "]")))
   } else {
@@ -14264,6 +14524,9 @@ fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {
   Array::truncate(dtd_show_generic_structs, 0)
   Array::truncate(dtd_show_generic_enums, 0)
   Array::truncate(dtd_show_generic_enum_stack, 0)
+  Array::truncate(dtd_show_inline_stack, 0)
+  Array::truncate(dtd_show_inline_arr_elems, 0)
+  Array::truncate(dtd_show_refusals, 0)
   Array::truncate(dtd_eq_derived_generic, 0)
   Array::truncate(dtd_eq_enum_decls, 0)
   Array::truncate(dtd_eq_enum_payload_check_stack, 0)
@@ -17662,6 +17925,10 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
   // #694: emit `__arr_to_string__<key>` helpers for Array element types
   // referenced by Show/Hash-deriving fields/payloads (`arr_elems` populated in
   // the struct/enum arms above). Independent of the #695 `__arr_equals__` set.
+  // #3082: plus the element types a generic field rendered at its
+  // substituted type needs (`show_generic_inline`); generating a helper can
+  // surface more, so they are merged again after each one.
+  show_inline_merge_arr_elems(arr_elems, arr_keys)
   let mut wi2 = 0
   while wi2 < Array::length(arr_elems) {
     collect_show_array_elems(Array::get(arr_elems, wi2), arr_elems, arr_keys)
@@ -17676,6 +17943,7 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
     } else {
       ()
     }
+    show_inline_merge_arr_elems(arr_elems, arr_keys)
     ei2 = ei2 + 1
   }
   let mut g = 0
@@ -23479,6 +23747,7 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
     }
   }
   eq_refusals_report()
+  show_refusals_report()
 }
 
 /// #2475: a structural-equality refusal is a COMPILE error, not a runtime trap.
