@@ -98,6 +98,9 @@ import @vibe/compiler/core {
   type_constructor_name,
   type_implements_trait,
   type_to_string,
+  typed_index_map_verdict,
+  typed_index_open_verdict,
+  typed_index_row_head,
   typed_lowering_arg_offset,
   typed_lowering_float_key,
   typed_render_refuse_key,
@@ -8988,6 +8991,200 @@ fn eq_binop_type_keys_from_capture(checked: CheckedProgram, capture: TypedOccurr
   (out_offs, out_keys)
 }
 
+//# #3133: index receiver rows
+
+/// #3133: the checker's verdict on one index receiver, against the final
+/// substitution: `typed_index_map_verdict()` for a Map (directly or through a
+/// type alias), `typed_index_open_verdict()` for a type that is still a
+/// variable -- an unresolved inference variable or an erased type parameter,
+/// either of which may be a Map at run time -- and "" for anything else, which
+/// is array indexing whatever it turns out to be. Follows the variable chain
+/// only (the `subst_resolves_to_double` cost contract): the head decides.
+fn index_receiver_verdict(checked: CheckedProgram, ty: Type) -> String {
+  let mut cur = ty
+  let seen: Array[Int] = []
+  let mut verdict = typed_index_open_verdict()
+  let mut done = false
+  let mut alias_depth = 0
+  while !done {
+    match cur {
+      CtVar(vid) => if index_receiver_seen(seen, vid) {
+        done = true
+      } else {
+        Array::push(seen, vid)
+        match subst_lookup(checked.final_subst, vid) {
+          Some(next) => {
+            cur = next
+          },
+          None => {
+            done = true
+          }
+        }
+      },
+      CtUnknown => {
+        done = true
+      },
+      CtForAll(_, _, _) => {
+        done = true
+      },
+      CtApplied(head, _) => match head {
+        CtNamed(hn, _) => if hn == "Map" || hn == "StringMap" {
+          verdict = typed_index_map_verdict()
+          done = true
+        } else {
+          verdict = ""
+          done = true
+        },
+        _ => {
+          done = true
+        }
+      },
+      CtNamed(n, _) => if n == "Map" || n == "StringMap" {
+        verdict = typed_index_map_verdict()
+        done = true
+      } else if String::starts_with(n, "#hktformal.") {
+        done = true
+      } else {
+        // A type alias names its body; anything else is a declared nominal,
+        // which is not a Map.
+        match index_receiver_alias_body(checked.type_defs, n) {
+          Some(body) => if alias_depth < 16 {
+            alias_depth = alias_depth + 1
+            cur = body
+          } else {
+            done = true
+          },
+          None => {
+            verdict = ""
+            done = true
+          }
+        }
+      },
+      _ => {
+        verdict = ""
+        done = true
+      }
+    }
+  }
+  verdict
+}
+
+fn index_receiver_seen(seen: Array[Int], vid: Int) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(seen) && !hit {
+    hit = Array::get(seen, i) == vid
+    i = i + 1
+  }
+  hit
+}
+
+fn index_receiver_names_have(names: Array[String], name: String) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(names) && !hit {
+    hit = Array::get(names, i) == name
+    i = i + 1
+  }
+  hit
+}
+
+fn index_receiver_alias_body(defs: Array[TypeDef], name: String) -> Option[Type] {
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(defs) {
+    match Array::get(defs, i) {
+      TDAlias(an, params, body) => if an == name {
+        // An alias whose body is one of its own parameters says nothing
+        // about the head: stay open.
+        found = match body {
+          CtNamed(bn, bargs) => if Array::length(bargs) == 0 && index_receiver_names_have(params, bn) {
+            Some(CtUnknown)
+          } else {
+            Some(body)
+          },
+          _ => Some(body)
+        }
+        i = Array::length(defs)
+      } else {
+        i = i + 1
+      },
+      _ => {
+        i = i + 1
+      }
+    }
+  }
+  found
+}
+
+/// #3133: the index rows for the typed-`==` channel -- `(bracket offset,
+/// impl_target_key(#index[<verdict>]))` for every recorded index receiver
+/// whose verdict is Map or open. A receiver the checker typed as anything
+/// else files nothing: the index is array indexing and the pass leaves it.
+/// An offset claimed by checks that disagree (one shared generic body seen at
+/// two types) is OPEN, because the body is lowered once and cannot be both.
+/// Rows are kept sorted by offset; the capture visits sites in source order,
+/// so the insertion is an append in the common case.
+fn index_receiver_rows_from_capture(checked: CheckedProgram, capture: TypedOccurrenceRoleLaneCapture) -> (Array[Int], Array[String]) {
+  let offs: Array[Int] = []
+  let verdicts: Array[String] = []
+  let n = Array::length(capture.binop_offsets)
+  let mut i = 0
+  while i + 1 < n {
+    if Array::get(capture.binop_kinds, i) == 4 {
+      let off = Array::get(capture.binop_offsets, i)
+      let v = index_receiver_verdict(checked, Array::get(capture.binop_types, i))
+      let mut lo = 0
+      let mut hi = Array::length(offs)
+      while lo < hi {
+        let mid = (lo + hi) / 2
+        if Array::get(offs, mid) < off {
+          lo = mid + 1
+        } else {
+          hi = mid
+        }
+      }
+      if lo < Array::length(offs) && Array::get(offs, lo) == off {
+        if Array::get(verdicts, lo) != v {
+          Array::set(verdicts, lo, typed_index_open_verdict())
+        } else {
+          ()
+        }
+      } else {
+        Array::push(offs, off)
+        Array::push(verdicts, v)
+        let mut j = Array::length(offs) - 1
+        while j > lo {
+          Array::set(offs, j, Array::get(offs, j - 1))
+          Array::set(verdicts, j, Array::get(verdicts, j - 1))
+          j = j - 1
+        }
+        Array::set(offs, lo, off)
+        Array::set(verdicts, lo, v)
+      }
+    } else {
+      ()
+    }
+    i = i + 2
+  }
+  let out_offs: Array[Int] = []
+  let out_keys: Array[String] = []
+  let mut k = 0
+  while k < Array::length(offs) {
+    let v = Array::get(verdicts, k)
+    if String::length(v) > 0 {
+      Array::push(out_offs, Array::get(offs, k))
+      Array::push(out_keys, impl_target_key(TyApp(typed_index_row_head(), [
+        TyName(v)
+      ])))
+    } else {
+      ()
+    }
+    k = k + 1
+  }
+  (out_offs, out_keys)
+}
+
 //# #2424: Int render/equality argument offsets
 
 /// #2424: does `ty` resolve to `Int` under `s`, WITHOUT building the
@@ -10061,7 +10258,10 @@ fn check_program_double_call_result_observation_impl(stmts: Array[Stmt]) -> Opti
       let (eq_only_offs, eq_only_keys) = eq_binop_type_keys_from_capture(checked, capture)
       // #3066: the render rows ride the same channel.
       let (row_offs, row_keys) = checked_render_rows(checked)
-      let (eq_offs, eq_keys) = append_render_rows(eq_only_offs, eq_only_keys, row_offs, row_keys)
+      let (eq_render_offs, eq_render_keys) = append_render_rows(eq_only_offs, eq_only_keys, row_offs, row_keys)
+      // #3133: the index-receiver rows ride the same channel.
+      let (index_offs, index_keys) = index_receiver_rows_from_capture(checked, capture)
+      let (eq_offs, eq_keys) = append_render_rows(eq_render_offs, eq_render_keys, index_offs, index_keys)
       // #2424: the Double table is the union of the call results above and
       // the render/`eq` ARGUMENTS the checker typed Double (tag 4 on the
       // modular channel) -- see union_double_render_arg_offsets.
@@ -10228,7 +10428,10 @@ fn typed_lowering_located_observation_impl(stmts: Array[Stmt], initial_env: Type
       // the same located-channel refusal as the tables above.
       let (eq_only_offs, eq_only_keys) = eq_binop_type_keys_from_capture(checked, capture)
       // #3066: the render rows from the walk above, on the same channel.
-      let (eq_offs, eq_keys) = append_render_rows(eq_only_offs, eq_only_keys, row_offs, row_keys)
+      let (eq_render_offs, eq_render_keys) = append_render_rows(eq_only_offs, eq_only_keys, row_offs, row_keys)
+      // #3133: the index-receiver rows ride the same channel.
+      let (index_offs, index_keys) = index_receiver_rows_from_capture(checked, capture)
+      let (eq_offs, eq_keys) = append_render_rows(eq_render_offs, eq_render_keys, index_offs, index_keys)
       (checked, Some(enc), eq_offs, eq_keys)
     }
   }

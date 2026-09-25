@@ -1334,6 +1334,12 @@ let w_check = {
 >   `map { ... }` literal was removed in #960 (it now reports a located parse
 >   error naming the replacement API). (`lib/@vibe/core`'s `get`/`get_or`/
 >   `has_key`/`keys`/`values` remain available for a richer Map API, #766.)
+>   `m[k]` is `Map::get(m, k)` whenever the checker types `m` as a Map, however
+>   it is spelled -- a `StringMap[V]` annotation, a function's result, a struct
+>   field, a `match` binder (#3133). An index whose receiver's type is never
+>   resolved (an erased type parameter, an unannotated parameter of a
+>   let-bound lambda) is refused at build time: annotate the receiver, or call
+>   `Map::get` / `Array::get`. `m[k] = v` is Array-only.
 
 ## Effects (core concept)
 

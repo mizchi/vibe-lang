@@ -89,6 +89,45 @@ export fn impl_encode_name(name: String) -> String {
   out
 }
 
+/// #3133: the `__index` callee of `xs[k]` is synthetic -- no identifier is
+/// written there -- so its offset slot carries the `[` token's offset as a
+/// KEY, encoded below `builtin_ref_offset()`. Every location consumer (hover,
+/// references, `vibe grep` spans, typed-lowering keys) reads only offsets >= 0,
+/// so none of them mistakes the key for a 7-byte `__index` name at the
+/// bracket; the checker and the trait-dictionary pass decode it with
+/// `index_site_offset`. The callee is also a compiler-synthesized reference to
+/// the builtin (#3132): every key is <= `builtin_ref_offset()`, and
+/// `is_builtin_ref_offset` answers true for all of them, so a program's own
+/// `__index` never captures the sugar. An unlocated bracket keeps the plain
+/// `builtin_ref_offset()`.
+export fn index_site_key(bracket_off: Int) -> Int {
+  if bracket_off < 0 {
+    builtin_ref_offset()
+  } else {
+    0 - bracket_off - 3
+  }
+}
+
+/// #3133: the `[` offset an `__index` callee's slot carries, or -1.
+export fn index_site_offset(key: Int) -> Int {
+  if key <= 0 - 3 {
+    0 - key - 3
+  } else {
+    0 - 1
+  }
+}
+
+/// #3132/#3133: whether an identifier's offset marks a compiler-synthesized
+/// reference to the builtin -- `builtin_ref` itself, or an index site key.
+export fn is_builtin_ref_offset(off: Int) -> Bool {
+  off <= builtin_ref_offset()
+}
+
+/// `xs[k]`'s callee: the builtin `__index`, keyed by the `[` offset (#3133).
+export fn index_ref(bracket_off: Int) -> Expr {
+  EIdent("__index", index_site_key(bracket_off))
+}
+
 export fn impl_target_key(target: TypeExpr) -> String {
   match target {
     TyName(name) => String::concat("N", String::concat(impl_encode_name(name), "Z")),

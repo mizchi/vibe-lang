@@ -120,6 +120,7 @@ import @vibe/compiler/core {
 import @vibe/ast {
   impl_encode_name,
   impl_method_owner_head,
+  index_site_offset,
   trait_ref_args,
   trait_ref_from_key,
   trait_ref_key,
@@ -8651,6 +8652,40 @@ fn record_string_binop_operands(capture: Option[TypedOccurrenceRoleLaneCapture],
   }
 }
 
+/// #3133: record the receiver type of one `xs[k]` (`__index`) under its `[`
+/// offset, as kind 4 on the binop capture arrays (two identical rows, because
+/// every reader of those arrays walks them in pairs). Entries-only captures
+/// only, like the binop rows above. A receiver whose head is already an
+/// Array, String or Bytes is skipped: a resolved head never changes under a
+/// later substitution, and such an index is array indexing whatever else the
+/// checker learns -- so the per-module capture carries a row only where the
+/// answer is still open.
+fn record_index_receiver(capture: Option[TypedOccurrenceRoleLaneCapture], bracket_off: Int, recv_ty: Type, resolved: Type) -> Unit {
+  match capture {
+    Some(c) => if !c.provenance_enabled && bracket_off >= 0 {
+      let settled = match resolved {
+        CtArray(_) => true,
+        CtString => true,
+        CtBytes => true,
+        _ => false
+      }
+      if !settled {
+        Array::push(c.binop_offsets, bracket_off)
+        Array::push(c.binop_kinds, 4)
+        Array::push(c.binop_types, recv_ty)
+        Array::push(c.binop_offsets, bracket_off)
+        Array::push(c.binop_kinds, 4)
+        Array::push(c.binop_types, recv_ty)
+      } else {
+        ()
+      }
+    } else {
+      ()
+    },
+    None => ()
+  }
+}
+
 fn tab_identifier_ty(tytab: Array[(Int, Type)], ident_off: Int, ty: Type, capture: Option[TypedOccurrenceRoleLaneCapture], lane: String) -> Unit {
   append_legacy_typed_occurrence(tytab, ident_off, ty, capture, "Identifier", lane)
 }
@@ -11044,6 +11079,24 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           let (obj_ty, s1, c1) = check_expr_capture(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
           let (idx_ty, s2, c2) = check_expr_capture(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
           let resolved_obj = subst_apply(s2, obj_ty)
+          // #3133: the trait-dictionary pass lowers `m[k]` on a Map to
+          // `Map::get`, and it asks THIS type, not the receiver's spelling.
+          let bracket_off = index_site_offset(callee_off)
+          record_index_receiver(capture, bracket_off, obj_ty, resolved_obj)
+          // A Map receiver indexes by its String key and yields the value slot,
+          // exactly as `Map::get` does below (#983).
+          let map_value = match resolved_obj {
+            CtNamed(mn, margs) => if mn == "Map" && Array::length(margs) == 2 {
+              Some(Array::get(margs, 1))
+            } else {
+              None
+            },
+            _ => None
+          }
+          let s3 = match map_value {
+            Some(_) => check_assignable(CtString, subst_apply(s2, idx_ty), s2, errors, "a Map index must be a String key", bracket_off),
+            None => s2
+          }
           let not_indexable = match resolved_obj {
             CtInt => true,
             CtDouble => true,
@@ -11061,7 +11114,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               CtBytes => true,
               _ => false
             }
-            let resolved_idx = subst_apply(s2, idx_ty)
+            let resolved_idx = subst_apply(s3, idx_ty)
             if indexable && match resolved_idx {
               CtInt => false,
               _ => type_is_ground(resolved_idx)
@@ -11071,13 +11124,16 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               ()
             }
           }
-          let result = match resolved_obj {
-            CtArray(elem) => elem,
-            CtString => CtInt,
-            CtBytes => CtInt,
-            _ => CtUnknown
+          let result = match map_value {
+            Some(v) => subst_apply(s3, v),
+            None => match resolved_obj {
+              CtArray(elem) => elem,
+              CtString => CtInt,
+              CtBytes => CtInt,
+              _ => CtUnknown
+            }
           }
-          (tab_call_ty(tytab, call_off, result, capture, lane), s2, c2)
+          (tab_call_ty(tytab, call_off, result, capture, lane), s3, c2)
         } else if name == "__rec_field" && Array::length(args) == 2 {
           // #2452: `r.field` on an anonymous-record BINDING never reaches the
           // `EDot` arm below -- the desugar rewrites it to
@@ -11694,7 +11750,17 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           // direct fast path).
           let as_recv_head = head_kind(subst_apply(s3, obj_ty))
           if as_recv_head != 0 && as_recv_head != 9 {
-            Array::push(errors, String::concat("argument type mismatch for Array::set: receiver type ", String::concat(type_to_string(subst_apply(s3, obj_ty)), off_marker_len(callee_off, String::length(name)))))
+            // #3133: `m[k] = v` parses to `Array::set(m, k, v)`; on a Map the
+            // edit is the functional update, so say so.
+            let map_hint = match subst_apply(s3, obj_ty) {
+              CtNamed(mn, _) => if mn == "Map" {
+                " -- a Map is not updated in place (`m[k] = v` is Array-only): bind the result of `Map::set(m, k, v)` instead"
+              } else {
+                ""
+              },
+              _ => ""
+            }
+            Array::push(errors, String::concat("argument type mismatch for Array::set: receiver type ", String::concat(type_to_string(subst_apply(s3, obj_ty)), String::concat(map_hint, off_marker_len(callee_off, String::length(name))))))
           } else if is_bytestream_named_type(subst_apply(s3, obj_ty)) {
             Array::push(errors, String::concat("argument type mismatch for Array::set: receiver type ", String::concat(type_to_string(subst_apply(s3, obj_ty)), String::concat(" is a ByteStream, not an Array", off_marker_len(callee_off, String::length(name))))))
           } else {

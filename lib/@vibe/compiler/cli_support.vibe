@@ -300,6 +300,11 @@ export fn verify_culprit_off_marker(source: String, msg: String) -> String {
   }
 }
 
+/// #3133: the lead of the trait-dictionary pass's index refusal
+/// (`dtd_index_refuse`), which carries a merged `[@off=N]` like an
+/// interpolation refusal does.
+let index_refusal_prefix: String = "cannot tell whether this index reads a Map or an Array"
+
 /// FS/build compilation does not yet return the grouped-source snapshot that
 /// produced a Throw. Without same-snapshot ownership evidence, keep the culprit
 /// name but strip its unproven transport offset (#1596).
@@ -314,7 +319,10 @@ export fn verify_culprit_off_marker_fs_fail_closed(msg: String) -> String {
   if String::contains(msg, " [@off=") && String::contains(msg, " (here: the call to '") {
     verify_culprit_off_marker("", msg)
   } else if String::starts_with(msg, "cannot interpolate ") && String::contains(msg, " [@off=") {
-    locate_merged_interp_refusal(msg)
+    locate_merged_interp_refusal(msg, false)
+  } else if String::starts_with(msg, index_refusal_prefix) && String::contains(msg, " [@off=") {
+    // #3133: an index refusal is keyed by the index's `[`.
+    locate_merged_interp_refusal(msg, true)
   } else {
     msg
   }
@@ -329,7 +337,10 @@ export fn verify_culprit_off_marker_fs_fail_closed(msg: String) -> String {
 /// field name or its callee, and `__to_string(v)` is a render with no
 /// interpolation around it): an offset anywhere else says the basis is not
 /// this record, and no position beats a wrong one.
-fn locate_merged_interp_refusal(msg: String) -> String {
+///
+/// #3133: `index_site` says the refusal is an index refusal, keyed by the
+/// `[` of `xs[k]`; its offset must name that bracket instead.
+fn locate_merged_interp_refusal(msg: String, index_site: Bool) -> String {
   let marker = " [@off="
   let mi = String::index_of(msg, marker)
   let inner_start = mi + String::length(marker)
@@ -356,7 +367,12 @@ fn locate_merged_interp_refusal(msg: String) -> String {
       match merged_offset_owner(start) {
         Some((path, source, local)) => {
           let transformed = String::starts_with(source, vpkg_shared_import_marker) || String::starts_with(source, contract_facade_marker)
-          if transformed || !(offset_inside_interpolation(source, local) || offset_starts_name(source, local)) {
+          let site_ok = if index_site {
+            local >= 0 && local < String::length(source) && String::char_code_at(source, local) == '['
+          } else {
+            offset_inside_interpolation(source, local) || offset_starts_name(source, local)
+          }
+          if transformed || !site_ok {
             msg
           } else {
             let local_inner = if colon < 0 {

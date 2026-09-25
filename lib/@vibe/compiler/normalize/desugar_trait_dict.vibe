@@ -61,6 +61,9 @@ import @vibe/compiler/core {
   test_bench_default_effects,
   trait_definition,
   trait_method_sig_binders_deep,
+  typed_index_map_verdict,
+  typed_index_open_verdict,
+  typed_index_row_head,
   typed_lowering_arg_offset,
   typed_render_row_head
 }
@@ -73,6 +76,7 @@ import @vibe/ast {
   impl_target_from_key,
   impl_target_head,
   impl_target_key,
+  index_site_offset,
   trait_ref_args,
   trait_ref_from_key,
   trait_ref_key,
@@ -1490,24 +1494,149 @@ fn is_erased_generic_operand(l: Expr, r: Expr, struct_sets: Array[(String, Array
   lg || rg
 }
 
-/// #760(3): `m[k]` parses to `__index(m, k)`, whose codegen array-indexes the
-/// receiver — on a Map that reads its backing store as a positional array and
-/// traps. Rewrite to `Map::get(m, k)` ONLY when the receiver is determinably
-/// Map-typed (a `map { }` literal, or a binding/param annotated `Map[..]`,
-/// which `infer_arg_type_name` reports as "Map"). A non-Map receiver — an
-/// Array/Bytes/String, or an unknown — is left as `__index`, so array indexing
-/// (and the type checker's rejection of e.g. `a["x"]` on an Array) is unchanged.
-/// `rwargs` are the already-rewritten arguments to carry into the new call.
-fn map_index_rewrite(callee: Expr, args: Array[Expr], rwargs: Array[Expr], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[Expr] {
-  match callee {
-    EIdent(nm, _) => if nm == "__index" && Array::length(args) == 2 {
-      let recv_map = match infer_arg_type_name(Array::get(args, 0), struct_sets, var_types, fn_returns) {
-        Some(t) => t == "Map",
-        None => false
+/// #3133: the checker's index-receiver rows for THIS program -- the `[` offset
+/// of an `xs[k]` whose receiver the checker typed as a Map
+/// (`typed_index_map_verdict()`) or could not resolve
+/// (`typed_index_open_verdict()`), sorted by offset. Split out of the typed-`==`
+/// rows and repopulated at every `dtd_run`, like the render rows. A site with
+/// no row is one the checker typed as something other than a Map, or one this
+/// lane has no located check for.
+let dtd_typed_index_offs: Array[Int] = []
+
+let dtd_typed_index_verdicts: Array[String] = []
+
+/// #3133: the index sites this run refused, reported after the rewrite
+/// alongside the structural-`==` refusals.
+let dtd_index_refusals: Array[String] = empty_str_array()
+
+/// Sorted insert. Rows arrive in the checker's (source) order, so this is an
+/// append in the common case; a second row for one offset that disagrees
+/// leaves the site open, because one lowering cannot serve both.
+fn dtd_typed_index_insert(off: Int, verdict: String) -> Unit {
+  let mut lo = 0
+  let mut hi = Array::length(dtd_typed_index_offs)
+  while lo < hi {
+    let mid = (lo + hi) / 2
+    if Array::get(dtd_typed_index_offs, mid) < off {
+      lo = mid + 1
+    } else {
+      hi = mid
+    }
+  }
+  if lo < Array::length(dtd_typed_index_offs) && Array::get(dtd_typed_index_offs, lo) == off {
+    if Array::get(dtd_typed_index_verdicts, lo) != verdict {
+      Array::set(dtd_typed_index_verdicts, lo, typed_index_open_verdict())
+    } else {
+      ()
+    }
+  } else {
+    Array::push(dtd_typed_index_offs, off)
+    Array::push(dtd_typed_index_verdicts, verdict)
+    let mut j = Array::length(dtd_typed_index_offs) - 1
+    while j > lo {
+      Array::set(dtd_typed_index_offs, j, Array::get(dtd_typed_index_offs, j - 1))
+      Array::set(dtd_typed_index_verdicts, j, Array::get(dtd_typed_index_verdicts, j - 1))
+      j = j - 1
+    }
+    Array::set(dtd_typed_index_offs, lo, off)
+    Array::set(dtd_typed_index_verdicts, lo, verdict)
+  }
+}
+
+/// The checker's verdict for the index whose `[` sits at `off`, or "".
+fn dtd_typed_index_verdict_for(off: Int) -> String {
+  if off < 0 {
+    ""
+  } else {
+    let mut lo = 0
+    let mut hi = Array::length(dtd_typed_index_offs)
+    while lo < hi {
+      let mid = (lo + hi) / 2
+      if Array::get(dtd_typed_index_offs, mid) < off {
+        lo = mid + 1
+      } else {
+        hi = mid
       }
+    }
+    if lo < Array::length(dtd_typed_index_offs) && Array::get(dtd_typed_index_offs, lo) == off {
+      Array::get(dtd_typed_index_verdicts, lo)
+    } else {
+      ""
+    }
+  }
+}
+
+/// #3133: record that the index at `off` cannot be lowered. The receiver may
+/// be a Map at run time, and array indexing on a Map reads its backing store
+/// positionally -- a wrong answer, not a trap -- so it is a build error.
+fn dtd_index_refuse(recv: Expr, off: Int) -> Unit {
+  let what = match recv {
+    EIdent(n, _) => String::concat("`", String::concat(n, "`")),
+    EDot(_, f, _, _) => String::concat("field `", String::concat(f, "`")),
+    _ => "the indexed value"
+  }
+  let msg = String::concat("cannot tell whether this index reads a Map or an Array: the type of ", String::concat(what, String::concat(" is not known where it is indexed -- annotate it (`m: StringMap[V]` or `xs: Array[T]`), or call `Map::get(m, k)` / `Array::get(xs, i)` directly (#3133)", if off >= 0 {
+    String::concat(" [@off=", String::concat(__to_string(off), "]"))
+  } else {
+    ""
+  })))
+  if !str_array_contains(dtd_index_refusals, msg) {
+    Array::push(dtd_index_refusals, msg)
+  } else {
+    ()
+  }
+}
+
+fn index_refusals_report() -> Unit with Exception {
+  if Array::length(dtd_index_refusals) == 0 {
+    ()
+  } else {
+    throw(Array::get(dtd_index_refusals, 0))
+  }
+}
+
+/// #760(3) / #3133: `m[k]` parses to `__index(m, k)`, whose codegen
+/// array-indexes the receiver -- on a Map that reads its backing store as a
+/// positional array. Rewrite to `Map::get(m, k)` when the receiver is a Map.
+///
+/// `typed` says whether the checker's index rows describe this program (the
+/// rewrite loop in `dtd_run`); the railway pass runs INSIDE the checker, before
+/// any row exists, and must not read a previous program's table. With rows,
+/// the checker's type of the receiver decides -- a Map by any spelling (a
+/// `StringMap[V]` annotation, a function's result, a struct field, an
+/// unannotated parameter, a `match` binder) is a `Map::get`, and a receiver it
+/// could not resolve is REFUSED (`dtd_index_refuse`) rather than lowered as an
+/// array read that may land on a Map. Without rows (an unlocated lane), only
+/// the receiver's spelling is available: a `Map::new()` literal or a
+/// `Map[..]`-annotated binding (`infer_arg_type_name` reports "Map").
+/// `rwargs` are the already-rewritten arguments to carry into the new call.
+fn map_index_rewrite(callee: Expr, args: Array[Expr], rwargs: Array[Expr], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)], typed: Bool) -> Option[Expr] {
+  match callee {
+    EIdent(nm, site_key) => if nm == "__index" && Array::length(args) == 2 {
+      let bracket_off = index_site_offset(site_key)
+      let verdict = if typed {
+        dtd_typed_index_verdict_for(bracket_off)
+      } else {
+        ""
+      }
+      let spelled = match infer_arg_type_name(Array::get(args, 0), struct_sets, var_types, fn_returns) {
+        Some(t) => t,
+        None => ""
+      }
+      let recv_map = verdict == typed_index_map_verdict() || spelled == "Map" || spelled == "StringMap"
       if recv_map {
         Some(ECall(builtin_ref("Map::get"), rwargs, -1))
       } else {
+        // An open verdict is refused unless the receiver's own spelling says
+        // it is a sequence -- the checker leaves some receivers it could type
+        // from syntax unresolved (a field of a struct literal whose type it
+        // does not infer), and those must keep indexing as they always have.
+        let spelled_sequence = spelled == "Array" || spelled == "String" || spelled == "Bytes"
+        if verdict == typed_index_open_verdict() && !spelled_sequence {
+          dtd_index_refuse(Array::get(args, 0), bracket_off)
+        } else {
+          ()
+        }
         None
       }
     } else {
@@ -8997,7 +9126,7 @@ fn railway_rw(expr: Expr, struct_sets: Array[(String, Array[String])], var_types
         let rwargs = for a in args {
           railway_rw(a, struct_sets, var_types, fn_returns, changed)
         }
-        match map_index_rewrite(callee, args, rwargs, struct_sets, var_types, fn_returns) {
+        match map_index_rewrite(callee, args, rwargs, struct_sets, var_types, fn_returns, false) {
           Some(map_get) => {
             match changed {
               Some(cell) => {
@@ -11353,7 +11482,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
         let rwargs = for a in args {
           rewrite_expr(a, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
         }
-        match map_index_rewrite(callee, args, rwargs, struct_sets, var_types, fn_returns) {
+        match map_index_rewrite(callee, args, rwargs, struct_sets, var_types, fn_returns, true) {
           Some(map_get) => map_get,
           None =>
           match callee {
@@ -23787,10 +23916,24 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
   ]))
   let render_head_len = String::index_of(render_prefix, impl_target_key(TyName("Int")))
   let render_head = String::substring(render_prefix, 0, render_head_len)
+  // #3133: the index-receiver rows, split off the same way.
+  Array::truncate(dtd_typed_index_offs, 0)
+  Array::truncate(dtd_typed_index_verdicts, 0)
+  Array::truncate(dtd_index_refusals, 0)
+  let index_map_key = impl_target_key(TyApp(typed_index_row_head(), [
+    TyName(typed_index_map_verdict())
+  ]))
+  let index_open_key = impl_target_key(TyApp(typed_index_row_head(), [
+    TyName(typed_index_open_verdict())
+  ]))
   let mut teq_i = 0
   while teq_i < Array::length(typed_eq_offsets) {
     let tkey = Array::get(typed_eq_keys, teq_i)
-    if render_head_len > 0 && String::starts_with(tkey, render_head) {
+    if tkey == index_map_key {
+      dtd_typed_index_insert(Array::get(typed_eq_offsets, teq_i), typed_index_map_verdict())
+    } else if tkey == index_open_key {
+      dtd_typed_index_insert(Array::get(typed_eq_offsets, teq_i), typed_index_open_verdict())
+    } else if render_head_len > 0 && String::starts_with(tkey, render_head) {
       Array::push(dtd_typed_render_offs, Array::get(typed_eq_offsets, teq_i))
       Array::push(dtd_typed_render_keys, tkey)
     } else {
@@ -24037,6 +24180,7 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
   }
   eq_refusals_report()
   show_refusals_report()
+  index_refusals_report()
 }
 
 /// #2475: a structural-equality refusal is a COMPILE error, not a runtime trap.

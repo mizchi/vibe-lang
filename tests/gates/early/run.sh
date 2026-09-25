@@ -2431,6 +2431,14 @@ ur_refused fixtures/err_interp_unrenderable_slice_field_refused.vibe 'cannot int
 # #3075: a function value, bare or inside a container, has no text form.
 ur_refused fixtures/err_interp_function_payload_refused.vibe 'cannot interpolate a function value' 'interpolate what it returns' linear 'fixtures/err_interp_function_payload_refused.vibe: line 6:14'
 ur_refused fixtures/err_interp_function_value_refused.vibe 'cannot interpolate a function value' 'interpolate what it returns' linear 'fixtures/err_interp_function_value_refused.vibe: line 5:14'
+# #3133: an index whose receiver the checker never typed may be a Map at run
+# time; array indexing on a Map reads its backing store positionally, so the
+# build refuses it and names the site (its `[`). The green side -- every Map
+# spelling lowering to `Map::get`, and arrays still indexing -- is
+# fixtures/map_index_test.vibe in the unit lane. (The ur_ helper's FAIL text
+# names #2987; the assertion is the message, the edit and the site.)
+ur_refused fixtures/err_map_index_open_receiver_refused.vibe 'cannot tell whether this index reads a Map or an Array' 'annotate it' linear 'fixtures/err_map_index_open_receiver_refused.vibe: line 9:4'
+ur_refused fixtures/err_map_index_open_receiver_refused.vibe 'cannot tell whether this index reads a Map or an Array' 'annotate it' gc 'fixtures/err_map_index_open_receiver_refused.vibe: line 9:4'
 # #3074: a generic enum whose instantiation cannot be recovered would render
 # its payload through the erased formal (`GA(1)` for `GA(true)`).
 ur_refused fixtures/err_interp_generic_enum_unknown_refused.vibe 'its type arguments are not known here' 'bind it with a type annotation' linear 'fixtures/err_interp_generic_enum_unknown_refused.vibe: line 12:4'
