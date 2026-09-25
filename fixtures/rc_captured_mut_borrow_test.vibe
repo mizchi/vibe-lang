@@ -1,0 +1,65 @@
+// #3108 review: a `let mut` that a closure captures is stored in an RC cell,
+// and dropping the cell releases its payload. A borrowed initializer --
+// `Array::get(xs, i)`, or an if/match whose branch tail is one -- used to be
+// stored without a reference of its own, so the cell's drop freed an element
+// `xs` still owned: `drop of freed value` under VIBE_RC=shadow, and a trap on
+// the default RC lane when `xs` was read again. Measured on the committed seed
+// for both shapes below.
+
+enum D {
+  A(String, Array[String]);
+  B(String)
+}
+
+fn name_of(d: D) -> String {
+  match d {
+    A(n, _) => n,
+    B(n) => n
+  }
+}
+
+fn scan_if(xs: Array[D], out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(xs) {
+    let mut d = if i % 2 == 0 {
+      Array::get(xs, i)
+    } else {
+      Array::get(xs, i)
+    }
+    let f = () -> String { name_of(d) }
+    Array::push(out, f())
+    i = i + 1
+  }
+}
+
+fn scan_direct(xs: Array[D], out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(xs) {
+    let mut d = Array::get(xs, i)
+    let f = () -> String { name_of(d) }
+    Array::push(out, f())
+    i = i + 1
+  }
+}
+
+fn mk() -> Array[D] {
+  [A(String::concat("a", "x"), ["p"]), B(String::concat("b", "y")), A(String::concat("c", "z"), [])]
+}
+
+test "a captured let mut holding an if/match borrow keeps the element alive" {
+  let xs = mk()
+  let out: Array[String] = []
+  scan_if(xs, out)
+  scan_if(xs, out)
+  scan_if(xs, out)
+  inspect(String::join(out, ","), content = "ax,by,cz,ax,by,cz,ax,by,cz")
+}
+
+test "a captured let mut holding a direct borrow keeps the element alive" {
+  let xs = mk()
+  let out: Array[String] = []
+  scan_direct(xs, out)
+  scan_direct(xs, out)
+  scan_direct(xs, out)
+  inspect(String::join(out, ","), content = "ax,by,cz,ax,by,cz,ax,by,cz")
+}

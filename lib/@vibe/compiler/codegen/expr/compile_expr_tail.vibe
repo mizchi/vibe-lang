@@ -2015,6 +2015,26 @@ fn with_pattern_binders(inner: Array[String], pat: Pat) -> Array[String] {
   out
 }
 
+/// #3108 review: a captured `let mut` lives in an RC cell whose drop releases
+/// its payload, so the cell must OWN the value it stores. A borrowed
+/// initializer -- a borrow-returning call (`Array::get(xs, i)`) or an if/match
+/// whose branch tail is one -- is a view of an element its container still
+/// owns; storing it unretained lets the cell's drop free that element while
+/// the container holds it (a shadow abort, or a trap / wrong read on the
+/// default RC lane). Retain such a value before the store; a fresh owned value
+/// is stored as is.
+fn ref_cell_retain_value(value: Expr, local_names: Array[String], ctx: CompileCtx) -> Expr with Exception {
+  if !ctx.enable_rc {
+    value
+  } else if expr_tag(value) == 7 || expr_tag(value) == 16 {
+    retain_wrap_branch_tails(value, local_names, array_empty(), ctx)
+  } else if call_returns_borrow(value, local_names, ctx) {
+    ECall(EIdent("__loop_tail_retain", -1), [value], -1)
+  } else {
+    value
+  }
+}
+
 /// #768: apply the branch-tail retain rewrite (see retain_wrap_branch_tails)
 /// when this binding's scope-end drop is planned AND we are inside a loop
 /// (loop_borrowed_names non-empty -- empty outside loops and under bump, so
@@ -2584,7 +2604,7 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         emit_local_set(buf, local_idx)
         emit_local_get(buf, local_idx)
         emit_i32_wrap_i64(buf)
-        let nl = compile_expr(buf, value, local_names, next_local + 1, ctx, ld)
+        let nl = compile_expr(buf, ref_cell_retain_value(value, local_names, ctx), local_names, next_local + 1, ctx, ld)
         Array::set(local_names, local_idx, name)
         emit_i64_store(buf, 3, 0)
         let nl2 = compile_expr(buf, body, local_names, nl, ctx, ld)
