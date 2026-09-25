@@ -1,0 +1,53 @@
+// A handler's arms may be written in any order. A perform that reaches the
+// handler through a CALLEE is dispatched through the evidence dictionary,
+// which the callee reads by the effect's DECLARED operation order; the
+// dictionary used to be built in ARM order, so a handler listing `B` before
+// `A` answered an `A` perform with the `B` arm -- silently when the two
+// operations share a signature (`1001` below, measured on main at 0f0ba36),
+// and with a `null function or function signature mismatch` trap otherwise.
+
+effect Same {
+  A(Int) -> Int;
+  B(Int) -> Int
+}
+
+effect Mixed {
+  One(Int) -> Int;
+  Two(Int, Int) -> Int
+}
+
+fn same_a() -> Int with Same {
+  perform Same::A(1)
+}
+
+fn same_b() -> Int with Same {
+  perform Same::B(1)
+}
+
+fn mixed_one() -> Int with Mixed {
+  perform Mixed::One(5)
+}
+
+fn mixed_two() -> Int with Mixed {
+  perform Mixed::Two(1, 2)
+}
+
+test "arms out of declaration order answer the operation that was performed" {
+  let r = handle {
+    same_a() * 10 + same_b()
+  } with {
+    Same::B(x) => resume(x + 1000);
+    Same::A(x) => resume(x + 1)
+  }
+  inspect(r, "1021")
+}
+
+test "operations with different signatures dispatch by name, not position" {
+  let r = handle {
+    mixed_one() + mixed_two()
+  } with {
+    Mixed::Two(x, y) => resume(x + y);
+    Mixed::One(z) => resume(z * 10)
+  }
+  inspect(r, "53")
+}
