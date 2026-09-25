@@ -442,5 +442,21 @@ fi
 [ "$(cat "$SHARED_LOG")" = "41" ] \
   || { echo "named hostfutures component gate FAILED: two tasks awaiting one future expected 41, got: $(cat "$SHARED_LOG")" >&2; exit 1; }
 echo "[named-hostfutures-component-gate] shared future: 41 (every task parked on the handle resumed with its value)"
+# A cancelled task's future landing first is discarded, not a missing waiter.
+CANCEL_OUT="$OUT_DIR/spawn_cancelled_waiter.component.wasm"
+rm -f "$CANCEL_OUT" "$CANCEL_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/cancelled.vibe "$CANCEL_OUT" run >/dev/null 2>&1 || true
+[ -s "$CANCEL_OUT" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/cancelled.vibe did not compile: $(cat "$CANCEL_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+CANCEL_LOG="$OUT_DIR/spawn_cancelled_waiter.log"
+if ! VIBE_ASYNC_FUTURES="slow=40:300,fast=1:100" timeout 60 "$RUNNER" "$CANCEL_OUT" >"$CANCEL_LOG" 2>&1; then
+  echo "named hostfutures component gate FAILED: cancelled-waiter run did not exit 0" >&2
+  cat "$CANCEL_LOG" >&2
+  exit 1
+fi
+[ "$(cat "$CANCEL_LOG")" = "40" ] \
+  || { echo "named hostfutures component gate FAILED: cancelled waiter expected 40, got: $(cat "$CANCEL_LOG")" >&2; exit 1; }
+echo "[named-hostfutures-component-gate] cancelled waiter: 40 (its landed future was discarded)"
 
 echo "named hostfutures component gate OK"

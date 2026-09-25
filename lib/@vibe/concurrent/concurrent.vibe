@@ -782,6 +782,7 @@ export fn TaskHandle::cancel[rg, e, T](h: TaskHandle[rg, e, T]) -> Unit {
   if c.status == 5 {
     c.status = 4
     c.cont = None
+    c.host_wait = 0 - 1
     c.direct_wait = false
     conc_notify_waiters(c)
   } else {
@@ -1439,7 +1440,10 @@ fn conc_settle_host_waits[rg, e](n: TaskGroup[rg, e]) -> Bool {
       }
       j = j + 1
     }
-    conc_require(Array::length(woken) > 0)
+    // No waiter left for it is not an error: a task cancelled while parked
+    // (TaskHandle::cancel clears its cell) leaves its future armed, and when
+    // that one lands first its value is simply discarded -- taking it above
+    // already released the readable end (Codex on #3059).
     let mut w = 0
     while w < Array::length(woken) {
       let c = Array::get(woken, w)
