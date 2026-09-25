@@ -434,6 +434,11 @@ override silently contradicting a module that says `raw` is the hazard #2903's
   `scripts/build_http_client_provider.sh` builds the other side: a component
   exporting the binding's interface, whose `fetch` sends a GET through
   `wasi:http/client` and hands over the upstream body stream uncollected.
+  With `handler` as its second argument the provider hands the request to an
+  imported `wasi:http/handler` instead. That is the `middleware` world: the
+  composed component imports and exports `handler`, and a backend plugged
+  into the import completes the chain (`fixtures/serve_middleware_world`,
+  the same gate).
 
 ### Host streams
 

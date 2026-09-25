@@ -569,6 +569,67 @@ if [ "$SVC_MS" -ge 1900 ]; then
 fi
 echo "[serve-body] service world: two upstream fetches in flight answer 200:left|200:right|xyz in ${SVC_MS}ms"
 
+# #2066 the `wasi:http/middleware` world: the same composition with the
+# provider's `handler` mode, whose `fetch` hands the request to an IMPORTED
+# `wasi:http/handler`. The middleware then imports and exports `handler`, and
+# plugging a backend -- an ordinary `vibe serve` String handler composed with
+# the sync adapter -- into that import gives a chain `wasmtime serve` runs.
+for mw_part in middleware backend; do
+  mw_src="$PROJECT_ROOT/fixtures/serve_middleware_world/$mw_part.vibe"
+  mw_out="$OUT_DIR/mw_$mw_part.component.wasm"
+  rm -f "$mw_out" "$mw_out.diag"
+  env VIBE_SERVE_COMPONENT=1 VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_IMPORT_ABI=raw \
+    bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main "$CLI_WASM" \
+    "${mw_src#"$PROJECT_ROOT"/}" "${mw_out#"$PROJECT_ROOT"/}" main >/dev/null 2>&1 || true
+  if [ ! -s "$mw_out" ]; then
+    echo "[serve-body] FAILED: fixtures/serve_middleware_world/$mw_part.vibe did not componentize" >&2
+    cat "$mw_out.diag" >&2 2>/dev/null || true
+    exit 1
+  fi
+done
+SYNC_ADAPTER="$OUT_DIR/adapter_sync.component.wasm"
+bash "$SCRIPT_DIR/build_wasi_http_p3_full_adapter.sh" "$SYNC_ADAPTER" >/dev/null
+MW_PROVIDER="$OUT_DIR/handler_provider.component.wasm"
+bash "$SCRIPT_DIR/build_http_client_provider.sh" "$MW_PROVIDER" handler >/dev/null
+wac plug --plug "$MW_PROVIDER" "$OUT_DIR/mw_middleware.component.wasm" -o "$OUT_DIR/mw_client.wasm"
+wac plug --plug "$OUT_DIR/mw_client.wasm" "$ADAPTER" -o "$OUT_DIR/mw.serve.wasm"
+wasm-tools validate --features all "$OUT_DIR/mw.serve.wasm" >/dev/null
+MW_WIT="$(wasm-tools component wit "$OUT_DIR/mw.serve.wasm")"
+case "$MW_WIT" in
+  *'import wasi:http/handler@0.3.0;'*'export wasi:http/handler@0.3.0;'*) ;;
+  *)
+    echo "[serve-body] FAILED: the middleware does not import and export wasi:http/handler" >&2
+    printf '%s\n' "$MW_WIT" | head -20 >&2
+    exit 1 ;;
+esac
+echo "[serve-body] middleware world: the composed middleware imports and exports wasi:http/handler"
+wac plug --plug "$OUT_DIR/mw_backend.component.wasm" "$SYNC_ADAPTER" -o "$OUT_DIR/backend.serve.wasm"
+wac plug --plug "$OUT_DIR/backend.serve.wasm" "$OUT_DIR/mw.serve.wasm" -o "$OUT_DIR/chain.serve.wasm"
+wasm-tools validate --features all "$OUT_DIR/chain.serve.wasm" >/dev/null
+ADDR="${ADDR%:*}:$((${ADDR##*:} + 1))"
+SERVE_LOG="$OUT_DIR/chain.serve.log"
+"$WASMTIME_BIN" serve "${WASM_FLAGS[@]}" --addr "$ADDR" "$OUT_DIR/chain.serve.wasm" >"$SERVE_LOG" 2>&1 &
+SERVE_PID=$!
+wait_port "${ADDR%:*}" "${ADDR##*:}" || { echo "[serve-body] FAILED: wasmtime did not listen at $ADDR (middleware chain)" >&2; cat "$SERVE_LOG" >&2 || true; exit 1; }
+# The sync adapter's body begins after the status line's own newline, so the
+# backend's answer arrives as "\nbackend saw ..." inside the middleware's body.
+printf '\nmiddleware(200): \nbackend saw GET /items?id=7' >"$OUT_DIR/want-chain.bin"
+chain_code="$(curl -sS --noproxy '*' --max-time 20 -o "$OUT_DIR/got-chain.bin" -w '%{http_code}' -X POST \
+  --data-binary 'xyz' "http://$ADDR/items?id=7" || true)"
+stop_server
+if [ "$chain_code" != "200" ]; then
+  echo "[serve-body] FAILED: the middleware chain returned '$chain_code' (want 200)" >&2
+  cat "$SERVE_LOG" >&2 || true
+  exit 1
+fi
+if ! cmp -s "$OUT_DIR/want-chain.bin" "$OUT_DIR/got-chain.bin"; then
+  echo "[serve-body] FAILED: the middleware chain did not wrap the backend's answer" >&2
+  cmp "$OUT_DIR/want-chain.bin" "$OUT_DIR/got-chain.bin" >&2 || true
+  cat "$SERVE_LOG" >&2 || true
+  exit 1
+fi
+echo "[serve-body] middleware chain: the request reached the backend through the imported handler"
+
 # The service composer needs a provider behind every host future it imports,
 # and only a WIT response has one under `wasmtime serve`. A runner-private
 # root future is refused by name rather than composed into a component no

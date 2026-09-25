@@ -21,11 +21,28 @@ set -euo pipefail
 # A transport failure (no connection, a URL this parser does not accept) traps
 # the provider, which fails the request rather than inventing a status.
 #
-# usage: build_http_client_provider.sh <out.component.wasm>
+# MODE `handler` builds the MIDDLEWARE variant: `fetch` hands the request to an
+# imported `wasi:http/handler` -- the next component in the chain -- instead of
+# sending it over the network, so the plugged result imports and exports
+# `handler`, the `wasi:http/middleware` world's two directions.
+#
+# usage: build_http_client_provider.sh <out.component.wasm> [client|handler]
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-OUT_PATH="${1:?usage: build_http_client_provider.sh <out.component.wasm>}"
+OUT_PATH="${1:?usage: build_http_client_provider.sh <out.component.wasm> [client|handler]}"
+MODE="${2:-client}"
+case "$MODE" in
+  client)
+    SEND_IMPORT="import wasi:http/client@0.3.0;"
+    SEND_CALL="wasi::http::client::send(request)" ;;
+  handler)
+    SEND_IMPORT="import wasi:http/handler@0.3.0;"
+    SEND_CALL="wasi::http::handler::handle(request)" ;;
+  *)
+    echo "build_http_client_provider.sh: MODE must be client or handler, got: $MODE" >&2
+    exit 1 ;;
+esac
 case "$OUT_PATH" in
   /*) ;;
   *) OUT_PATH="$PWD/$OUT_PATH" ;;
@@ -53,12 +70,12 @@ cp -R "$WIT_PATH/deps/." "$TMP_DIR/wit/deps/"
 # The binding's own WIT, not a restatement of it: what the handler was derived
 # from is exactly what this provider implements.
 cp "$PROJECT_ROOT/fixtures/wit_response_request/client.wit" "$TMP_DIR/wit/deps/example-http-lite/client.wit"
-cat >"$TMP_DIR/wit/world.wit" <<'EOF'
+cat >"$TMP_DIR/wit/world.wit" <<EOF
 package vibe:http-client-provider;
 
 world provider {
   import wasi:http/types@0.3.0;
-  import wasi:http/client@0.3.0;
+  $SEND_IMPORT
   export example:http-lite/types@1.0.0;
   export example:http-lite/client@1.0.0;
 }
@@ -125,7 +142,7 @@ async fn get(url: String) -> LiteResponse {
     request.set_scheme(Some(&scheme)).expect("http client provider: set-scheme");
     request.set_authority(Some(&authority)).expect("http client provider: set-authority");
     request.set_path_with_query(Some(&path)).expect("http client provider: set-path-with-query");
-    let response: Response = match wasi::http::client::send(request).await {
+    let response: Response = match __SEND_CALL__.await {
         Ok(r) => r,
         Err(e) => panic!("http client provider: GET {url}: {e:?}"),
     };
@@ -144,6 +161,10 @@ impl Guest for Component {
 
 export!(Component);
 EOF
+
+# The one line that differs between the two modes.
+sed "s|__SEND_CALL__|$SEND_CALL|" "$TMP_DIR/src/lib.rs" >"$TMP_DIR/src/lib.rs.tmp"
+mv "$TMP_DIR/src/lib.rs.tmp" "$TMP_DIR/src/lib.rs"
 
 pushd "$TMP_DIR" >/dev/null
 cargo build --quiet --target wasm32-unknown-unknown --release
