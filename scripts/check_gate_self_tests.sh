@@ -218,7 +218,7 @@ tree_state() {
 }
 # One line per untracked path: a symlink by its TARGET TEXT (following it
 # would hash nothing for a dangling link, #3099 review), a readable file by
-# its checksum, anything else as `unreadable` -- never silently dropped.
+# its executable bit and checksum, anything else as `unreadable` -- never silently dropped.
 untracked_digest() {
   local p
   (cd "$ROOT_DIR" && git ls-files --others --exclude-standard -z 2>/dev/null) |
@@ -226,7 +226,11 @@ untracked_digest() {
       if [ -L "$ROOT_DIR/$p" ]; then
         printf 'link %s -> %s\n' "$p" "$(readlink "$ROOT_DIR/$p")"
       elif [ -f "$ROOT_DIR/$p" ] && [ -r "$ROOT_DIR/$p" ]; then
-        printf 'file %s %s\n' "$p" "$(cksum < "$ROOT_DIR/$p")"
+        # The executable bit is the one mode git records, so a companion that
+        # only `chmod +x`es a file is a change too (#3099 review).
+        local x="-"
+        [ -x "$ROOT_DIR/$p" ] && x="x"
+        printf 'file %s %s %s\n' "$x" "$p" "$(cksum < "$ROOT_DIR/$p")"
       else
         printf 'unreadable %s\n' "$p"
       fi

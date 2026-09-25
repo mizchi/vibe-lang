@@ -193,6 +193,14 @@ if run_exec; then cat "$WORK/out" >&2; fail "a companion that retargeted a pre-e
 rm -f -- "$WORK/lib/probe_link"
 echo "  ok  a companion that retargets a pre-existing untracked symlink is rejected"
 
+# (g) A pre-existing untracked file whose only change is its executable bit.
+restore_scratch
+printf 'x\n' > "$WORK/lib/probe.sh"
+printf '#!/usr/bin/env bash\nchmod +x "$(dirname "$0")/../lib/probe.sh"\nexit 0\n' > "$WORK/scripts/check_thing_test.sh"
+if run_exec; then cat "$WORK/out" >&2; fail "a companion that only chmod +x-ed a pre-existing untracked file was accepted"; fi
+rm -f -- "$WORK/lib/probe.sh"
+echo "  ok  a companion that only changes a pre-existing untracked file's mode is rejected"
+
 # ...and a pre-existing dirty tree by itself is NOT a finding: the check is
 # "unchanged by the suite", not "clean", or it could never run mid-work.
 restore_scratch
