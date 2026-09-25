@@ -2582,6 +2582,99 @@ fn row_scope_has_formal(name: String) -> Bool {
   row_scope_has(name) || row_scope_has(String::concat("@", name))
 }
 
+/// #3101: does scope entry `entry` belong to a generic binder -- one that
+/// introduced type formals (`S`, or `@S` for a lambda inheriting its row)?
+/// An entry holding only callback markers (`%f`) or `row_scope_unknown()` is
+/// not one, and neither is a top-level declaration with no formals. The
+/// checker opens a generic declaration exactly for these (`eq_group_begin`).
+fn row_scope_entry_is_generic(entry: Array[String]) -> Bool {
+  let mut found = false
+  let mut j = 0
+  while j < Array::length(entry) && !found {
+    let w = Array::get(entry, j)
+    if !String::starts_with(w, "%") && w != row_scope_unknown() {
+      found = true
+    }
+    j = j + 1
+  }
+  found
+}
+
+/// #3101: the generic depth of scope entry `idx`: how many generic binders
+/// enclose it. The checker qualifies a requirement's formal with the same
+/// count (`eq_formal_depth`), so `S$0` and `S$1` are two binders' `S`.
+fn row_scope_generic_depth_of(idx: Int) -> Int {
+  let mut d = 0
+  let mut i = 0
+  while i < idx && i < Array::length(row_formal_scope) {
+    if row_scope_entry_is_generic(Array::get(row_formal_scope, i)) {
+      d = d + 1
+    }
+    i = i + 1
+  }
+  d
+}
+
+fn row_formal_at_depth(name: String, depth: Int) -> String {
+  String::concat(name, String::concat("$", __to_string(depth)))
+}
+
+/// #3101: a declared word `name` that the lexical scope binds, qualified by
+/// the INNERMOST binder of that spelling -- the one the word names where it
+/// was written. Only a binder's own formals count; an `@name` entry (a lambda
+/// inheriting the enclosing row) does not rebind the row's words.
+fn row_declared_formal(name: String) -> String {
+  let mut out = ""
+  let mut i = Array::length(row_formal_scope) - 1
+  while i >= 0 {
+    if str_labels_contain(Array::get(row_formal_scope, i), name) {
+      out = row_formal_at_depth(name, row_scope_generic_depth_of(i))
+      i = 0 - 1
+    } else {
+      i = i - 1
+    }
+  }
+  out
+}
+
+/// #3101: a requirement's formal word as the checker marked it: `'S$1` names
+/// binder depth 1's `S`, and is returned as is. A formal the checker could not
+/// qualify (`'Int`, a formal spelled like a builtin, has no variable) is
+/// placed only when exactly ONE binder in scope has that spelling; with two,
+/// which one it is cannot be told, and the answer is a spelling no declared
+/// word resolves to, so it never matches a row by accident. "" when no binder
+/// in scope has the spelling.
+fn row_required_formal(word: String) -> String {
+  let di = String::last_index_of(word, "$")
+  let name = if di > 0 {
+    String::substring(word, 0, di)
+  } else {
+    word
+  }
+  if !row_scope_has_formal(name) {
+    ""
+  } else if di > 0 {
+    word
+  } else {
+    let mut count = 0
+    let mut at = 0 - 1
+    let mut i = 0
+    while i < Array::length(row_formal_scope) {
+      let entry = Array::get(row_formal_scope, i)
+      if str_labels_contain(entry, name) || str_labels_contain(entry, String::concat("@", name)) {
+        count = count + 1
+        at = i
+      }
+      i = i + 1
+    }
+    if count == 1 {
+      row_formal_at_depth(name, row_scope_generic_depth_of(at))
+    } else {
+      String::concat(name, "$ambiguous")
+    }
+  }
+}
+
 /// #3102 review: the first scope entry that can stand between a callback
 /// parameter's annotation and its call -- one past the binder that declared
 /// the parameter. A top-level declaration's parameters leave it at 1.
@@ -2758,7 +2851,7 @@ fn row_word_class(w: String, mode: Int, nargs: Int) -> RowTy {
   } else if mode == 0 {
     if row_scope_has(w) {
       if nargs == 0 {
-        RtFormal(w)
+        RtFormal(row_declared_formal(w))
       } else {
         RtIndet
       }
@@ -2768,8 +2861,8 @@ fn row_word_class(w: String, mode: Int, nargs: Int) -> RowTy {
       RtIndet
     }
   } else if String::starts_with(w, "'") {
-    let f = String::substring(w, 1, String::length(w))
-    if nargs == 0 && row_scope_has_formal(f) {
+    let f = row_required_formal(String::substring(w, 1, String::length(w)))
+    if nargs == 0 && String::length(f) > 0 {
       RtFormal(f)
     } else {
       RtIndet
