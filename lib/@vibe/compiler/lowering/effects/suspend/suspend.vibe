@@ -1102,6 +1102,19 @@ fn scps_named_call_ok(name: String, sctx: (String, Array[String], Array[String],
 /// --- body call policy: a call in a suspend-lowered body must be provably
 /// unable to perform E outside this pass's sight. Every recursive edge carries
 /// the same immutable lexical classification stack.
+/// #1537: a handle nested in a suspend-class body is admitted when neither
+/// its body nor its arms can reach the handled effect -- `scps_inert_taint`'s
+/// conservative reading: no perform, no needing or step-compiled callee, no
+/// captured name of unknown provenance, no nested handle, and no `resume`
+/// (an arm's own continuation is a name the arm did not bind). Such a handle
+/// is an ordinary value on the spine: nothing inside it suspends, so the
+/// split never has to cut through it. An `Async` entry that spawns
+/// suspendable tasks used to refuse EVERY nested handle, so a program could
+/// not catch an exception anywhere in the entry body.
+fn scps_nested_handle_inert(hb: Expr, harms: Array[(Pat, Expr)], eff: String, needing: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> Bool {
+  !scps_inert_taint(hb, eff, needing, array_empty_str(), ctx) && !scps_inert_taint_arms(harms, eff, needing, array_empty_str(), ctx)
+}
+
 fn scps_calls_ok(e: Expr, sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), scope: Array[(String, Int)]) -> Bool {
   let (eff, _, needing, _, _) = sctx
   match e {
@@ -1154,7 +1167,7 @@ fn scps_calls_ok(e: Expr, sctx: (String, Array[String], Array[String], Int, Arra
       }
       ok
     },
-    EHandle(_, _) => false,
+    EHandle(hb, harms) => scps_nested_handle_inert(hb, harms, eff, needing, ctx),
     EFn(_, _, params, _, _, b) => scps_calls_ok(b, sctx, ctx, scps_scope_bind_params(scope, params, eff, ctx)),
     EWhile(c, b) => scps_calls_ok(c, sctx, ctx, scope) && scps_calls_ok(b, sctx, ctx, scope),
     EForIn(nm, idx, it, b) => {
@@ -1310,7 +1323,11 @@ fn scps_first_bad_call_info(e: Expr, sctx: (String, Array[String], Array[String]
         (found, nm, off)
       }
     },
-    EHandle(_, _) => (true, "", -1),
+    EHandle(hb, harms) => if scps_nested_handle_inert(hb, harms, eff, needing, ctx) {
+      (false, "", -1)
+    } else {
+      (true, "", -1)
+    },
     EFn(_, _, params, _, _, b) => scps_first_bad_call_info(b, sctx, ctx, scps_scope_bind_params(scope, params, eff, ctx)),
     EWhile(c, b) => scps_first_bad_call_info_pair(c, b, sctx, ctx, scope),
     EForIn(nm, idx, it, b) => {
@@ -4522,9 +4539,9 @@ fn scps_inert_taint(e: Expr, eff: String, needing: Array[String], locals: Array[
           // laundering route, not a discharge
           // (err_effect_closure_param_capture_launder.vibe), and every other
           // argument is still scanned as an ordinary expression.
-          scps_inert_taint_exprs(scps_undischarged_args(ctx, nm, args, eff), eff, needing, locals, ctx)
+          scps_inert_taint_exprs(scps_undischarged_args(ctx, nm, scps_plain_data_args_cleared(ctx, nm, args), eff), eff, needing, locals, ctx)
         } else if is_fn && !scps_row_contains(ctx, row, eff) && scps_callee_first_order(ctx, nm) {
-          scps_inert_taint_exprs(args, eff, needing, locals, ctx)
+          scps_inert_taint_exprs(scps_plain_data_args_cleared(ctx, nm, args), eff, needing, locals, ctx)
         } else {
           true
         }
@@ -4646,6 +4663,77 @@ fn scps_pats_collect_binds(ps: Array[Pat], acc: Array[String]) -> Unit {
 /// `__scps_cps_Async_..` for a step-source parameter). Everything else is
 /// returned for the ordinary scan, and so is every argument when the callee
 /// cannot be found.
+/// #1537: a declared parameter type that can only hold data -- the scalar
+/// builtins, and `Array` / `Option` / tuples of them. A value of such a type
+/// is not a closure, so it cannot smuggle a step-compiled one into the call.
+/// An allowlist rather than "no function type": a type parameter, an alias or
+/// a struct may still carry a closure.
+fn scps_ty_is_plain_data(t: TypeExpr) -> Bool {
+  match t {
+    TyName(n) => n == "Int" || n == "String" || n == "Bool" || n == "Double" || n == "Char" || n == "Bytes",
+    TyApp(h, targs) => (h == "Array" || h == "Option") && scps_tys_are_plain_data(targs),
+    TyTuple(ts) => scps_tys_are_plain_data(ts),
+    TyUnit => true,
+    _ => false
+  }
+}
+
+fn scps_tys_are_plain_data(ts: Array[TypeExpr]) -> Bool {
+  let mut ok = true
+  let mut i = 0
+  while i < Array::length(ts) {
+    if !scps_ty_is_plain_data(Array::get(ts, i)) {
+      ok = false
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ok
+}
+
+/// #1537: `args` with every bare identifier in a plain-data slot of the
+/// top-level function `name` replaced by `()`, slot for slot. A captured name
+/// of unknown provenance taints because it may alias a step-compiled closure;
+/// in a slot whose declared type is plain data it cannot be one (the checker
+/// has already matched the argument to that type), so it carries nothing the
+/// suspend lowering must see.
+fn scps_plain_data_args_cleared(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), name: String, args: Array[Expr]) -> Array[Expr] {
+  let (stmts, _, _, _, _, _) = ctx
+  let mut params: Array[(String, Option[TypeExpr])] = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, snm, _, EFn(_, _, ps, _, _, _)) => if snm == name {
+        params = ps
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  let out: Array[Expr] = []
+  let mut k = 0
+  while k < Array::length(args) {
+    let a = Array::get(args, k)
+    let plain_ident = match a {
+      EIdent(_, _) => k < Array::length(params) && match Array::get(params, k).1 {
+        Some(t) => scps_ty_is_plain_data(t),
+        None => false
+      },
+      _ => false
+    }
+    Array::push(out, if plain_ident {
+      EUnit
+    } else {
+      a
+    })
+    k = k + 1
+  }
+  out
+}
+
 fn scps_undischarged_args(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), name: String, args: Array[Expr], eff: String) -> Array[Expr] {
   let (stmts, _, _, _, _, _) = ctx
   let mut params: Array[(String, Option[TypeExpr])] = []

@@ -1,0 +1,38 @@
+// #1537: an `Async` entry that spawns suspendable tasks may still catch an
+// exception. Such an entry's boundary is suspend-class, and it used to refuse
+// EVERY nested handle ("... calls something this suspend lowering cannot see
+// through"), so no `handle` could appear anywhere in the entry body. A handle
+// whose body and arms cannot reach `Async` is now admitted: it is an ordinary
+// value on the spine -- including one that passes a local into a plain-data
+// parameter, which cannot carry a suspending closure. One catch fires (40),
+// one does not (1), and the spawned task awaits a host future (1): 42.
+// Executed by
+// scripts/test_named_hostfutures_component_gate.sh.
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+fn digit(s: String) -> Int with Exception {
+  if s == "x" {
+    throw("not a digit")
+  } else {
+    1
+  }
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  let input = String::concat("x", "")
+  let caught = handle { digit(input) } with {
+    Exception::Throw(_m) => 40
+  }
+  let clean = handle { digit("7") } with {
+    Exception::Throw(_m) => 1000
+  }
+  let task = TaskGroup::run((g) -> {
+    let a = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      await(host_future_named("fast"))
+    })
+    TaskHandle::join(a)
+  })
+  caught + clean + task
+}

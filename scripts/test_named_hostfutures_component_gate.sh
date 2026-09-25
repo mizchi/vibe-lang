@@ -671,4 +671,39 @@ JP_MS=$(( ( $(date +%s%N) - JP_START ) / 1000000 ))
   || { echo "named hostfutures component gate FAILED: join_parked took ${JP_MS}ms -- the cancelled 5s sleeper held the run" >&2; exit 1; }
 echo "[named-hostfutures-component-gate] join_parked: 7 in ${JP_MS}ms (join pumped the parked task)"
 
+# catch_in_entry: an Async entry that spawns suspendable tasks catches
+# exceptions around code that cannot suspend (one passes a local into a
+# String parameter). Such an entry's boundary is suspend-class, and it used to
+# refuse every nested handle. 40 + 1 + 1 = 42.
+CI_OUT="$OUT_DIR/spawn_catch_in_entry.component.wasm"
+rm -f "$CI_OUT" "$CI_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/catch_in_entry.vibe "$CI_OUT" run >/dev/null 2>&1 || true
+[ -s "$CI_OUT" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/catch_in_entry.vibe did not compile: $(cat "$CI_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+CI_LOG="$OUT_DIR/spawn_catch_in_entry.log"
+if ! VIBE_ASYNC_FUTURES="fast=1:100" timeout 60 "$RUNNER" "$CI_OUT" >"$CI_LOG" 2>&1; then
+  echo "named hostfutures component gate FAILED: catch_in_entry did not exit 0" >&2
+  cat "$CI_LOG" >&2
+  exit 1
+fi
+[ "$(cat "$CI_LOG")" = "42" ] \
+  || { echo "named hostfutures component gate FAILED: catch_in_entry expected 42, got: $(cat "$CI_LOG")" >&2; exit 1; }
+echo "[named-hostfutures-component-gate] catch_in_entry: 42 (a handle beside spawned tasks in an Async entry)"
+
+# catch_async_body_refused: the same handle around a callee whose row carries
+# Async stays refused -- the suspend split does not cut through a handle.
+CR_OUT="$OUT_DIR/spawn_catch_async_body_refused.component.wasm"
+rm -f "$CR_OUT" "$CR_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/catch_async_body_refused.vibe "$CR_OUT" run >/dev/null 2>&1 || true
+if [ -s "$CR_OUT" ]; then
+  echo "named hostfutures component gate FAILED: catch_async_body_refused compiled -- a handle around an Async callee must be refused" >&2
+  exit 1
+fi
+grep -qF "cannot see through" "$CR_OUT.diag" 2>/dev/null \
+  || { echo "named hostfutures component gate FAILED: catch_async_body_refused gave an unexpected diagnostic: $(cat "$CR_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+echo "[named-hostfutures-component-gate] catch_async_body_refused: refused (the handled body reaches Async)"
+
 echo "named hostfutures component gate OK"

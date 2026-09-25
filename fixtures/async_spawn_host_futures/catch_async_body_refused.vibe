@@ -1,0 +1,26 @@
+// #1537: the other side of catch_in_entry.vibe. A handle nested in a
+// suspend-class `Async` entry is admitted only when its body cannot reach
+// `Async`. Here the handled body calls `group()`, whose declared row carries
+// `Async`, so the handle would have to be cut by the suspend split, which the
+// lowering does not do: the build is refused rather than run with the handle
+// silently dropped from the continuation. Declaring `group` without `Async`
+// (spawn_suspend discharges it) is the edit that admits it. Compiled and
+// refused by scripts/test_named_hostfutures_component_gate.sh.
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+fn group() -> Int with Async + Exception {
+  TaskGroup::run((g) -> {
+    let a = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      await(host_future_named("fast"))
+    })
+    TaskHandle::join(a)
+  })
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  handle { group() } with {
+    Exception::Throw(_m) => 0
+  }
+}
