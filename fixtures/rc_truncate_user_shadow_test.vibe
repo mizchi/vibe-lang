@@ -1,0 +1,35 @@
+// #3115 review: a program may declare its own top-level `Array::truncate`
+// (qualified builtin names can be shadowed; `array_capacity_lowering_test`
+// does the same for `Array::with_capacity`). The call then resolves to that
+// function, so the #2837 release loop must not run before it: here the
+// replacement keeps every element, and a release would have dropped the
+// suffix the array still holds -- the reads below would reach freed blocks,
+// and VIBE_RC=shadow traps on the drop of a freed block at scope end.
+
+fn Array::truncate(xs: Array[Array[Int]], n: Int) -> Unit {
+  let _ = xs
+  let _ = n
+  ()
+}
+
+fn round(r: Int) -> Int {
+  let xs: Array[Array[Int]] = Array::with_capacity(8)
+  let mut i = 0
+  while i < 8 {
+    Array::push(xs, [r, i])
+    i = i + 1
+  }
+  Array::truncate(xs, 2)
+  let _ = [String::concat("z", "z")]
+  Array::length(xs) * 100 + Array::get(Array::get(xs, 7), 1)
+}
+
+test "a user-defined Array::truncate is called without a release" {
+  let mut total = 0
+  let mut r = 0
+  while r < 50 {
+    total = total + round(r)
+    r = r + 1
+  }
+  inspect(total, content = "40350")
+}
