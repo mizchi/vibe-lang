@@ -2384,6 +2384,9 @@ ur_refused fixtures/err_interp_generic_enum_unknown_refused.vibe 'its type argum
 ur_refused fixtures/err_interp_generic_struct_unknown_refused.vibe 'its type arguments are not known here' 'bind it with a type annotation'
 ur_refused fixtures/err_interp_generic_struct_recursive_refused.vibe 'cannot interpolate a recursive `L`' 'render the value with a function you write'
 ur_refused fixtures/err_derive_show_recursive_generic_field_refused.vibe 'a derived renderer contains a recursive `L`' 'write the containing type'
+# #3084: a generic function's result typed, at the call site, as a struct with
+# no renderer printed its address; the checker's row names the struct.
+ur_refused fixtures/err_interp_generic_call_missing_show_refused.vibe 'cannot interpolate a value of type `Hidden`' 'add `derive(Show)` to `Hidden`'
 # #3019 rides the same helper: a lowering-time refusal asserted on its message
 # and its edit, not on the bare fact that the build failed.
 ur_refused fixtures/err_handle_resume_capture_loop_break_refused.vibe 'leaves a loop outside it' 'set a flag inside the handle'
@@ -2818,7 +2821,7 @@ echo '[compiler-gate] 15b-3a/15 render by content: generic enum/struct, Char, Un
 for render_fx in fixtures/generic_enum_derive_show_render_test.vibe fixtures/char_unit_leaf_render_test.vibe \
     fixtures/exception_kinded_binder_render_test.vibe fixtures/interp_nested_literal_render_test.vibe \
     fixtures/generic_struct_derive_show_nested_test.vibe fixtures/tuple_param_render_test.vibe \
-    fixtures/imported_generic_show_test.vibe; do
+    fixtures/imported_generic_show_test.vibe fixtures/generic_call_result_render_test.vibe; do
   run_test_block_fixtures "render by content (linear, bump)" "$render_fx"
   run_test_block_fixtures_gc "render by content (gc)" "$render_fx"
   run_test_block_fixtures_rc "render by content (linear, RC)" "$render_fx"

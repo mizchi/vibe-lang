@@ -10264,7 +10264,7 @@ fn interp_arg_is_double(arg: Expr, struct_sets: Array[(String, Array[String])], 
 /// an Int and is not a `Char` until something declares it one.
 fn interp_arg_is_char(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Bool {
   match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
-    Some(t) => t == "Char",
+    Some(t) => t == "Char" || (dtd_head_is_leaked_formal(t) && dtd_typed_render_leaf_for(arg) == "Char"),
     None => dtd_typed_render_leaf_for(arg) == "Char"
   }
 }
@@ -10275,7 +10275,7 @@ fn interp_arg_is_unit(arg: Expr, struct_sets: Array[(String, Array[String])], va
   match arg {
     EUnit => true,
     _ => match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
-      Some(t) => t == "Unit",
+      Some(t) => t == "Unit" || (dtd_head_is_leaked_formal(t) && dtd_typed_render_leaf_for(arg) == "{u}"),
       None => dtd_typed_render_leaf_for(arg) == "{u}"
     }
   }
@@ -10371,16 +10371,14 @@ fn interp_expand_checked(arg: Expr, derived_only: Bool, gens: Array[DictGen], tr
     interp_shape(dtd_offsetless_shape(arg, struct_sets, var_types, fn_returns))
   } else if dtd_interp_expands_itself(syn_sh, head) {
     dtd_typed_render_shape_for(arg)
-  } else if String::length(head) == 0 {
+  } else if String::length(head) == 0 || dtd_head_is_leaked_formal(head) {
     // #3074: a value this pass cannot name at all (`pair.0` holding a
-    // `G[Bool]`) takes a generic-renderer row only: the erased renderer, or
-    // an address, is all that is left for it otherwise.
-    let row_sh = dtd_typed_render_shape_for(arg)
-    if String::starts_with(row_sh, "{g:") {
-      row_sh
-    } else {
-      ""
-    }
+    // `G[Bool]`) takes the checker's row: the erased renderer, or an
+    // address, is all that is left for it otherwise. #3084: so does a head
+    // that names nothing here -- a generic function's result, typed by the
+    // callee's own formal (`pass(Some(true))` answers `T`); the gc lane
+    // printed its address.
+    dtd_unnamed_head_row(arg, head)
   } else {
     ""
   }
@@ -11003,18 +11001,54 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
           Some(h) => h,
           None => ""
         }
-        let generic_show_sh = if String::starts_with(generic_syn_sh, "{g:") || (!show_generic_known(generic_head) && String::length(generic_head) > 0) {
-          generic_syn_sh
+        // #3084: a head that names nothing here -- a generic function's
+        // result is typed by its declared return, the callee's own formal
+        // (`pass(Pt::{ x: 1 })` answers `T`) -- takes the checker's row, which
+        // has the call site's instantiation.
+        let head_leaked = dtd_head_is_leaked_formal(generic_head)
+        let leaked_row = if head_leaked && !String::starts_with(generic_syn_sh, "{g:") {
+          dtd_typed_render_raw_shape_for(Array::get(args, 0))
         } else {
+          ""
+        }
+        let generic_show_sh = if String::starts_with(generic_syn_sh, "{g:") {
+          generic_syn_sh
+        } else if head_leaked {
+          let admitted = interp_shape(leaked_row)
+          if String::length(admitted) > 0 {
+            admitted
+          } else {
+            generic_syn_sh
+          }
+        } else if show_generic_known(generic_head) {
           let row_sh = dtd_typed_render_shape_for(Array::get(args, 0))
           if String::starts_with(row_sh, "{g:") {
             row_sh
           } else {
             generic_syn_sh
           }
+        } else {
+          generic_syn_sh
+        }
+        // #3084: the row names a plain nominal (`Pt`, a non-generic enum):
+        // its renderer, as if the value had been annotated. A `derive (Show)`
+        // generic named without its arguments is refused below.
+        let leaked_nominal = if head_leaked && String::length(interp_shape(leaked_row)) == 0 && dtd_row_is_bare_nominal(leaked_row) {
+          leaked_row
+        } else {
+          ""
+        }
+        if String::length(leaked_nominal) > 0 && show_generic_known(leaked_nominal) {
+          throw(interp_generic_enum_unknown_msg(namespace_rename_original(leaked_nominal), off))
+        } else if String::length(leaked_nominal) > 0 && !is_scalar_type_name(leaked_nominal) && struct_set_has(struct_sets, leaked_nominal) && !fn_exists(fn_returns, String::concat(leaked_nominal, "::to_string")) {
+          throw(interp_missing_show_msg(namespace_rename_original(leaked_nominal), off))
+        } else {
+          ()
         }
         let show_target = if String::starts_with(generic_show_sh, "{g:") {
           ""
+        } else if String::length(leaked_nominal) > 0 && !is_scalar_type_name(leaked_nominal) && fn_exists(fn_returns, String::concat(leaked_nominal, "::to_string")) && String::concat(leaked_nominal, "::to_string") != Array::get(dtd_show_self_fn, 0) {
+          String::concat(leaked_nominal, "::to_string")
         } else {
           interp_show_target(Array::get(args, 0), false, struct_sets, var_types, fn_returns)
         }
@@ -22869,6 +22903,37 @@ fn dtd_typed_item_shape_join(a: String, b: String) -> String {
   }
 }
 
+/// #3084: a render argument's head that names no type at this site: none at
+/// all, or a type parameter that no enclosing binder binds -- a generic
+/// callee's declared return (`fn pass[T](x: T) -> T`) leaking into the call
+/// site's answer. A formal the site does bind is a real, erased type and is
+/// the checker's to refuse (#2745).
+fn dtd_head_is_leaked_formal(head: String) -> Bool {
+  // A formal reaches here in its source spelling or in the `__Vfp_` spelling
+  // #2141's re-spelling gives a declaration's formals.
+  String::length(head) > 0 && !formal_in_scope(head) && (str_array_contains(dtd_type_param_names, head) || is_marked_formal_name(head))
+}
+
+/// #3074 / #3084: the row a render argument takes when its head names
+/// nothing here. A leaked formal takes any row; an argument with NO head at
+/// all takes only a generic-renderer row, keeping #2912's refusal of an
+/// `Array::map` result whose callback declares no return type (its gate row
+/// asserts the refusal and its edit).
+fn dtd_unnamed_head_row(arg: Expr, head: String) -> String {
+  if dtd_head_is_leaked_formal(head) {
+    dtd_typed_render_shape_for(arg)
+  } else if String::length(head) == 0 {
+    let row_sh = dtd_typed_render_shape_for(arg)
+    if String::starts_with(row_sh, "{g:") {
+      row_sh
+    } else {
+      ""
+    }
+  } else {
+    ""
+  }
+}
+
 /// The one binder shape the checker's walk follows: the body is exactly the
 /// bound name, so the VALUE answers for it.
 fn dtd_typed_item_shape_through_binder(name: String, value: Expr, body: Expr) -> String {
@@ -22980,6 +23045,18 @@ fn infer_item_shape(e: Expr, struct_sets: Array[(String, Array[String])], var_ty
     typed
   } else {
     infer_shape(e, struct_sets, var_types, fn_returns)
+  }
+}
+
+/// #3084: a row shape that is a bare declared name (`Pt`), not a composite
+/// encoding.
+fn dtd_row_is_bare_nominal(sh: String) -> Bool {
+  if String::length(sh) == 0 {
+    false
+  } else {
+    let c = String::char_code_at(sh, 0)
+    // Not `(`, `[`, `{`.
+    c != 40 && c != 91 && c != 123
   }
 }
 
