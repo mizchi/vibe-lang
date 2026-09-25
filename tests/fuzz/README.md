@@ -226,12 +226,25 @@ findings, consistent with #725/#737/#745 being fixed.
 
 | mode | seeds | findings | by class |
 | ---- | ----- | -------- | -------- |
-| default (liveness) | 1..40 | see below | |
-| `--extended` | 1..60 | see below | |
-| `--mutate` | 1..200 | see below | |
+| default (liveness) | 1..40 | 0 | |
+| `--extended` | 1..60 | 53 | 37 ORACLE_CONT, 10 ORACLE_RENDER, 6 ORACLE_THROW; no COMPILE_DIAG / trap / hang / MISMATCH |
+| `--mutate` | 1..200 | 0 | every one of the 200 rejections carried a `line N:M` |
+| `--mutate --extended` | 1..200 | 0 | same |
 
-The `--extended` findings are real compiler bugs, not generator noise; each was
-reproduced by a minimal hand-written program:
+The `--extended` programs printed 1246 oracle lines. Lane skips: 15 seeds
+skipped bump/RC (traits), 18 skipped FS (`suberror`), 9 skipped all three.
+Counting every failing ID rather than the one each seed is filed under, the 53
+findings are four bugs and nothing else:
+
+| failing IDs | seeds | bug |
+| ----------- | ----- | --- |
+| 51 | 43 | 1 |
+| 20 | 19 | 4 |
+| 11 | 11 | 2 |
+| 6 | 6 | 3 |
+
+All four are real compiler bugs, not generator noise; each was reproduced by a
+minimal hand-written program:
 
 1. **`return` in a handler arm resumes when the `perform` is in a callee**
    (ORACLE_CONT, every lane). `handle { ask(3) + 1 } with { Cfg::Get(x) =>
