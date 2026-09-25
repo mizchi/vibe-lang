@@ -367,13 +367,19 @@ pub fn precompile_component(engine: &Engine, input: &str, output: Option<&str>) 
 
 /// Serve the read-only filesystem face the compiler's vfs componentization
 /// emits (`comp_emit_component_wasm_string_handler_vfs`): four root-level
-/// imports, all keyed by path.
+/// imports, all keyed by path, plus the legacy `read-dir` below.
 ///
 /// Semantics are the CORE lane's, verbatim, so a module behaves the same
 /// whether it was built as a core module or as a component:
-/// `read-file`/`read-dir` fail on a missing path, `read-dir` returns the
-/// sorted entry names joined by "\n", and `stat-token` is
-/// `vibe_stat_token`'s digest (0 = missing, -1 = symlink).
+/// `read-file`/`read-dir-nul` fail on a missing path, `read-dir-nul` returns
+/// the sorted entry names joined by NUL (the one byte a POSIX name cannot
+/// contain, #2957), and `stat-token` is `vibe_stat_token`'s digest
+/// (0 = missing, -1 = symlink).
+///
+/// `read-dir` is the "\n"-joined predecessor, which split a name containing a
+/// newline into fake entries. It stays only for components built by a
+/// compiler from before #2957 (whose core splits on '\n'); delete it once the
+/// seed emits `read-dir-nul`.
 fn register_vfs_imports(
     linker: &mut ComponentLinker<CommandHost>,
     stat_token: fn(&str) -> i64,
@@ -390,16 +396,25 @@ fn register_vfs_imports(
     root.func_wrap("exists", |_store, (path,): (String,)| -> Result<(bool,)> {
         Ok((Path::new(&path).exists(),))
     })?;
+    fn sorted_entry_names(path: &str) -> Result<Vec<String>> {
+        let mut names: Vec<String> = fs::read_dir(path)
+            .map_err(|e| format_err!("command vfs read-dir '{path}': {e}"))?
+            .filter_map(|ent| ent.ok())
+            .map(|ent| ent.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        Ok(names)
+    }
+    root.func_wrap(
+        "read-dir-nul",
+        |_store, (path,): (String,)| -> Result<(String,)> {
+            Ok((sorted_entry_names(&path)?.join("\0"),))
+        },
+    )?;
     root.func_wrap(
         "read-dir",
         |_store, (path,): (String,)| -> Result<(String,)> {
-            let mut names: Vec<String> = fs::read_dir(&path)
-                .map_err(|e| format_err!("command vfs read-dir '{path}': {e}"))?
-                .filter_map(|ent| ent.ok())
-                .map(|ent| ent.file_name().to_string_lossy().into_owned())
-                .collect();
-            names.sort();
-            Ok((names.join("\n"),))
+            Ok((sorted_entry_names(&path)?.join("\n"),))
         },
     )?;
     root.func_wrap(

@@ -113,7 +113,7 @@ world vibec-hosted {
   /// filesystem under wasmtime, an in-memory map in a browser IDE.
   import read-file:  func(path: string) -> string;        // traps if missing
   import exists:     func(path: string) -> bool;
-  import read-dir:   func(path: string) -> string;        // "\n"-joined names
+  import read-dir-nul: func(path: string) -> string;      // NUL-joined names (#2957)
   import stat-token: func(path: string) -> s64;           // stable content token; -1 = non-regular
 
   /// Same request protocol as world vibec's `compile`, but the first

@@ -59,7 +59,7 @@ FS 依存のホストが大きなプロジェクトを inline hex にせず渡�
 world vibec-hosted {
   import read-file:  func(path: string) -> string;   // 無いパスは trap
   import exists:     func(path: string) -> bool;
-  import read-dir:   func(path: string) -> string;   // "\n" 結合の名前列
+  import read-dir-nul: func(path: string) -> string; // NUL 結合の名前列 (#2957)
   import stat-token: func(path: string) -> s64;      // 安定トークン; -1 = 非通常
   export compile-file: func(input-path: string, request: string) -> string;
 }

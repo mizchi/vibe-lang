@@ -2752,6 +2752,27 @@ fn vibe_host_error(caller: &mut Caller<'_, HostState>, msg: String) -> wasmtime:
     }
 }
 
+/// `Fs::readdir`'s entry names for the packed-string path argument, byte-sorted.
+/// A missing directory is a guest-visible host error, matching `fs_read_file`.
+fn vibe_read_dir_names(caller: &mut Caller<'_, HostState>, path: i64) -> Result<Vec<String>> {
+    let path = vibe_read_packed_str(caller, path)?;
+    let entries = match fs::read_dir(&path) {
+        Ok(it) => it,
+        Err(e) => {
+            return Err(vibe_host_error(
+                caller,
+                format!("fs_read_dir failed for '{path}': {e}"),
+            ))
+        }
+    };
+    let mut names: Vec<String> = entries
+        .filter_map(|ent| ent.ok())
+        .map(|ent| ent.file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    Ok(names)
+}
+
 fn vibe_alloc_packed_str(caller: &mut Caller<'_, HostState>, s: &str) -> Result<i64> {
     let bytes = s.as_bytes();
     let mem = vibe_memory(caller)?;
@@ -3491,30 +3512,32 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
             vibe_alloc_packed_bytes(&mut caller, &data)
         },
     )?;
-    // #729/#730: Fs::readdir — entry NAMES of a directory, byte-sorted and
-    // "\n"-joined into ONE packed string (same (i64)->i64 ABI as fs_read_file,
+    // #729/#730 + #2957: Fs::readdir — entry NAMES of a directory, byte-sorted
+    // and joined into ONE packed string (same (i64)->i64 ABI as fs_read_file,
     // so no host-side array building and it works under RC and bump alike;
     // codegen splits guest-side). Empty dir -> "". Missing dir -> error,
     // matching fs_read_file.
+    //
+    // The separator is NUL, the one byte a POSIX name cannot contain. A name
+    // MAY contain '\n', so the "\n"-joined `fs_read_dir` split such a name into
+    // fake entries (#2957). `fs_read_dir` stays only for modules built by a
+    // compiler from before #2957 (the committed seed and whatever it
+    // compiles), which import it under that name and split on '\n'; delete it
+    // once the seed emits `fs_read_dir_nul`. The node runner carries the same
+    // pair.
+    linker.func_wrap(
+        "vibe",
+        "fs_read_dir_nul",
+        |mut caller: Caller<'_, HostState>, path: i64| -> Result<i64> {
+            let names = vibe_read_dir_names(&mut caller, path)?;
+            vibe_alloc_packed_str(&mut caller, &names.join("\0"))
+        },
+    )?;
     linker.func_wrap(
         "vibe",
         "fs_read_dir",
         |mut caller: Caller<'_, HostState>, path: i64| -> Result<i64> {
-            let path = vibe_read_packed_str(&mut caller, path)?;
-            let entries = match fs::read_dir(&path) {
-                Ok(it) => it,
-                Err(e) => {
-                    return Err(vibe_host_error(
-                        &mut caller,
-                        format!("fs_read_dir failed for '{path}': {e}"),
-                    ))
-                }
-            };
-            let mut names: Vec<String> = entries
-                .filter_map(|ent| ent.ok())
-                .map(|ent| ent.file_name().to_string_lossy().into_owned())
-                .collect();
-            names.sort();
+            let names = vibe_read_dir_names(&mut caller, path)?;
             vibe_alloc_packed_str(&mut caller, &names.join("\n"))
         },
     )?;

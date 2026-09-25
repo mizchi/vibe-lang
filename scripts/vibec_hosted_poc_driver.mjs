@@ -45,14 +45,15 @@ const vfs = {
       return files.has(norm(path));
     },
   },
-  "read-dir": {
+  "read-dir-nul": {
     default(path) {
       calls.readDir++;
       const prefix = norm(path) === "." ? "" : norm(path) + "/";
       const names = [...files.keys()]
         .filter((k) => k.startsWith(prefix))
         .map((k) => k.slice(prefix.length).split("/")[0]);
-      return [...new Set(names)].sort().join("\n");
+      // NUL-joined: a name may contain "\n" but never NUL (#2957).
+      return [...new Set(names)].sort().join("\0");
     },
   },
   "stat-token": {
