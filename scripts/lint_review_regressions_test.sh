@@ -585,4 +585,40 @@ if ! grep -q '__staged_only' "$TMP_ROOT/snap.out"; then
 fi
 git -C "$TMP_ROOT" reset -q --hard HEAD
 
+# #1963: a standard effect's policy is decided by its owner, not by comparing
+# a label to the effect's name (`lbl == "Async"` disagrees with the owner on
+# `Async::Suspend`).
+git -C "$TMP_ROOT" reset -q HEAD -- .
+git -C "$TMP_ROOT" restore .
+mkdir -p "$TMP_ROOT/lib/@vibe/compiler/checker"
+cat > "$TMP_ROOT/lib/@vibe/compiler/checker/rows.vibe" <<'EOF'
+fn scheduled(label: String) -> Bool { label == "Async" }
+EOF
+git -C "$TMP_ROOT" add .
+
+cat > "$TMP_ROOT/fake-vibe-effect-name" <<EOF
+#!/usr/bin/env bash
+root="\${@: -1}"
+if [[ "\$*" == *'== "Async"'* ]]; then
+  jq -n --arg path "\$root/lib/@vibe/compiler/checker/rows.vibe" \
+    '[{path:\$path,line:1,col:39,start:1,end:2,text:"label == \\"Async\\"",captures:{x:{text:"label",start:1}}}]'
+else
+  echo '[]'
+fi
+EOF
+chmod +x "$TMP_ROOT/fake-vibe-effect-name"
+
+if VIBE_REVIEW_LINT_PROJECT_ROOT="$TMP_ROOT" \
+  VIBE_REVIEW_LINT_GREP_BIN="$TMP_ROOT/fake-vibe-effect-name" \
+  "$CHECK_SCRIPT" >"$TMP_ROOT/effect-name-fail.out" 2>&1; then
+  echo "review-regressions lint self-test: expected an effect-name compare violation" >&2
+  exit 1
+fi
+if ! grep -qE 'decided by its owner.*"Async"' "$TMP_ROOT/effect-name-fail.out"; then
+  echo "review-regressions lint self-test: missing effect-name compare diagnostic" >&2
+  cat "$TMP_ROOT/effect-name-fail.out" >&2
+  exit 1
+fi
+git -C "$TMP_ROOT" reset -q --hard HEAD
+
 echo "review-regressions lint self-test: ok"
