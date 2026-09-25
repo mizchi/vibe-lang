@@ -105,19 +105,19 @@ else
 fi
 
 # 3. An allow-list that covers the entry's row still runs.
-out="$(run_case --allow-fs --allow-stdout)"
+out="$(run_case --allow-fs --allow-console)"
 if printf '%s\n' "$out" | grep -q '^ok$'; then
   ok "an allow-list covering the row runs"
 else
-  bad "--allow-fs --allow-stdout must run; got: $out"
+  bad "--allow-fs --allow-console must run; got: $out"
 fi
 
-# 4. An allow-list is a LIST: naming one capability does not grant the others.
-out="$(run_case --allow-stdout)"
+# 4. An allow-list is a LIST: naming the tty does not grant Fs.
+out="$(run_case --allow-console)"
 if printf '%s\n' "$out" | grep -q 'not granted'; then
   ok "an allow-list that omits a required capability aborts"
 else
-  bad "--allow-stdout alone must abort on Fs::read_file; got: $out"
+  bad "--allow-console alone must abort on Fs::read_file; got: $out"
 fi
 
 # 5. Deny beats allow. Fail-closed is the only safe direction for this table,
@@ -170,7 +170,7 @@ opt_case() {
     bash "$ROOT_DIR/runtime/vibe" run "$@" "$OPT" 2>&1 || true
 }
 
-out="$(opt_case --allow-fs --allow-stdout)"
+out="$(opt_case --allow-fs --allow-console)"
 if printf '%s\n' "$out" | grep -q '^GRANTED:hello-from-file$'; then
   ok "a granted provider resolves perform? to Granted and the call runs"
 else
@@ -203,7 +203,7 @@ else
     # be guessed from an env block.
     echo "  VIBE_RC:  ${VIBE_RC:-<unset, default rc lane>}"
     echo "  VIBE_BACKEND: ${VIBE_BACKEND:-<unset>}"
-    echo "  no-flag perform? answer: $(opt_case --allow-stdout --allow-fs 2>&1 | tr '\n' ' ')"
+    echo "  no-flag perform? answer: $(opt_case --allow-console --allow-fs 2>&1 | tr '\n' ' ')"
     echo "  ambient (no flags at all): $(opt_case 2>&1 | tr '\n' ' ')"
     echo "  -> ambient GRANTED: the compiler carries rung 2 and the --allow-* path is the bug."
     echo "  -> ambient NOTGRANTED with VIBE_RC unset: the compiler does not carry rung 2."
@@ -213,23 +213,23 @@ else
   } >&2
 fi
 
-out="$(opt_case --deny-fs --allow-stdout)"
+out="$(opt_case --deny-fs --allow-console)"
 if printf '%s\n' "$out" | grep -q '^NOTGRANTED$'; then
   ok "a denied provider resolves perform? to NotGranted"
 else
   bad "--deny-fs must make perform? NotGranted; got: $out"
 fi
 
-# An allow-list is a list here too: Stdout alone does not grant Fs.
-out="$(opt_case --allow-stdout)"
+# An allow-list is a list here too: Console alone does not grant Fs.
+out="$(opt_case --allow-console)"
 if printf '%s\n' "$out" | grep -q '^NOTGRANTED$'; then
   ok "an allow-list omitting the provider leaves perform? NotGranted"
 else
-  bad "--allow-stdout alone must leave perform? NotGranted; got: $out"
+  bad "--allow-console alone must leave perform? NotGranted; got: $out"
 fi
 
 # Deny beats allow for the optional surface too, not just the required one.
-out="$(opt_case --allow-fs --deny-fs --allow-stdout)"
+out="$(opt_case --allow-fs --deny-fs --allow-console)"
 if printf '%s\n' "$out" | grep -q '^NOTGRANTED$'; then
   ok "--deny-* beats --allow-* for perform? as well"
 else
@@ -250,7 +250,7 @@ fi
 #     (#2252). So the lanes are named HERE rather than inherited.
 lane_fail=0
 for rc in 0 shadow 1; do
-  lane_out="$(VIBE_RC="$rc" opt_case --allow-fs --allow-stdout)"
+  lane_out="$(VIBE_RC="$rc" opt_case --allow-fs --allow-console)"
   if ! printf '%s\n' "$lane_out" | grep -q '^GRANTED:hello-from-file$'; then
     bad "VIBE_RC=$rc must answer Granted like every other lane; got: $lane_out"
     lane_fail=1
