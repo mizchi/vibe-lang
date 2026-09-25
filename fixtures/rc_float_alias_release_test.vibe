@@ -1,0 +1,63 @@
+// #3114 review: a `let` alias inherits "holds nothing to release" only from a
+// BORROWED VIEW (`Array::get` and the other borrow-returning callees), not
+// from every binding the Perceus plan calls scalar.
+//
+// The plan classifies a `Double` literal as scalar, but codegen boxes it on
+// the heap. With the first cut of #3114 an alias of one inherited that flag,
+// so `let y = x` over `let x = 1.5` lost the scope-end drop that released the
+// box, and every round below leaked it. Measured at 10000 rounds:
+//
+//   shape                   before #3114   first cut   now
+//   float_alias_unused                 0      160000     0
+//   float_alias_chain                  0      160000     0
+//   owned_array_alias (control)        0           0     0
+//
+// The control is an alias of an owned array: its release never depended on
+// the scalar flag, so it must stay flat on every compiler. It also shows the
+// probe measures a release at all -- on `VIBE_RC=0` both it and the float
+// shapes grow and this file fails.
+
+fn float_alias_unused(i: Int) -> Int {
+  let x = 1.5
+  let y = x
+  i - i
+}
+
+fn float_alias_chain(i: Int) -> Int {
+  let x = 2.5
+  let y = x
+  let z = y
+  i - i
+}
+
+fn owned_array_alias(i: Int) -> Int {
+  let a = [i, i + 1, i + 2]
+  let b = a
+  Array::get(b, 2) - i
+}
+
+fn growth(f: (Int) -> Int) -> Int with Profiler::heap_bytes {
+  let mut i = 0
+  while i < 100 {
+    let _ = f(i)
+    i = i + 1
+  }
+  let before = Profiler::heap_bytes()
+  while i < 10100 {
+    let _ = f(i)
+    i = i + 1
+  }
+  Profiler::heap_bytes() - before
+}
+
+test "control: an alias of an owned array is released" {
+  inspect(growth(owned_array_alias) < 4000, content = "true")
+}
+
+test "an unused alias of a Double literal releases the box" {
+  inspect(growth(float_alias_unused) < 4000, content = "true")
+}
+
+test "a chain of aliases of a Double literal releases the box" {
+  inspect(growth(float_alias_chain) < 4000, content = "true")
+}
