@@ -8494,11 +8494,6 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   // instance to satisfy it -- and emitted an unvalidatable component with a
   // zero exit status rather than saying so.
   let want_sleep = comp_core_imports_sleep(main_core_wasm)
-  if future_s64 && nhs > 0 {
-    throw("component(wit-async-import): WIT future imports cannot yet share a component with runner-private host streams; their component-function ordering needs the generalized import planner")
-  } else {
-    ()
-  }
   if nt == 0 && !want_sleep {
     throw("component(async-hostfuture): core module imports no vibe.host_future_get[$name] / vibe.host_stream_get$name / vibe.sleep (this wrap is keyed on those imports)")
   } else {
@@ -8583,9 +8578,26 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   } else {
     future_type_count
   }
-  let stream_functype_idx = stream_type_idx + 1
+  // #2066: response mode already declared `stream<u8>` (type 4) for the
+  // body, so a named stream there adds only its getter's functype.
+  let stream_functype_idx = if response_mode {
+    future_type_count
+  } else {
+    stream_type_idx + 1
+  }
+  let stream_type_slots = if nhs == 0 {
+    0
+  } else if response_mode {
+    1
+  } else {
+    2
+  }
   if nhs > 0 {
-    emit_comp_stream_type_section(buf, comp_valtype_u8)
+    if response_mode {
+      ()
+    } else {
+      emit_comp_stream_type_section(buf, comp_valtype_u8)
+    }
     emit_comp_async_functype_section_result_type(buf, stream_type_idx)
   } else {
     ()
@@ -8594,11 +8606,7 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   // imports this one takes a PARAM (the delay) and has no future value type of
   // its own, so it is one functype and no defined type. Both halves may be
   // absent, so count the emitted types rather than assuming a fixed offset.
-  let sleep_functype_idx = future_type_count + (if nhs > 0 {
-    2
-  } else {
-    0
-  })
+  let sleep_functype_idx = future_type_count + stream_type_slots
   if want_sleep {
     emit_comp_async_functype_params(buf, ["ms"], [comp_valtype_u32], comp_valtype_u32)
   } else {
@@ -8710,14 +8718,28 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   // module sections, so a root `sleep-for` import (declared with the imports,
   // before them) is component func 0 and the futures are 1..K. Root futures
   // and streams keep the historical order (imports i, then sleep-for at nt).
-  let wit_sleep_shift = if future_s64 && want_sleep {
-    1
+  // Named streams are ROOT imports too, so with WIT futures the component
+  // funcs run: streams 0..L-1, `sleep-for` at L, then the futures' aliases.
+  // The lowers keep the core order (futures, then streams).
+  let wit_root_funcs = if future_s64 {
+    nhs + (if want_sleep {
+      1
+    } else {
+      0
+    })
   } else {
     0
   }
   let mut hlow_i = 0
   while hlow_i < nt {
-    emit_canon_lower_async_section(buf, hlow_i + wit_sleep_shift, mem_alias_idx)
+    let comp_func = if !future_s64 {
+      hlow_i
+    } else if hlow_i < nhf {
+      wit_root_funcs + hlow_i
+    } else {
+      hlow_i - nhf
+    }
+    emit_canon_lower_async_section(buf, comp_func, mem_alias_idx)
     hlow_i = hlow_i + 1
   }
   let fut_extra = if mixed {
@@ -8767,8 +8789,8 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
     task_return_core_idx + 5
   }
   if want_sleep {
-    emit_canon_lower_async_section(buf, if wit_sleep_shift > 0 {
-      0
+    emit_canon_lower_async_section(buf, if future_s64 {
+      nhs
     } else {
       nt
     }, mem_alias_idx)

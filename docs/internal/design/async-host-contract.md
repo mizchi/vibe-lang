@@ -322,8 +322,15 @@ override silently contradicting a module that says `raw` is the hazard #2903's
   s64 type, and the adapter records each handle's kind (band 36864, 1 = a
   response) at its getter, then picks the pair and the value encoding by it
   (`fixtures/wit_response_mixed`: 211 in ~320ms for a response beside a
-  scalar future). Runner-private root futures and named streams still cannot
-  share a response component. `from_wit_future_imports` derives the bindings (it admits the
+  scalar future). Named host streams may share it too: they are ROOT
+  imports, so they (then `sleep-for`) take the component funcs before the
+  interface's aliased functions, the lowers keep the core order (futures,
+  then streams), and the `stream<u8>` type the body declared serves their
+  getters as well (`fixtures/wit_response_import/stream_main.vibe`: 248). The
+  same mapping lets scalar WIT futures share a component with named streams
+  (`fixtures/wit_future_import/stream_main.vibe`, and `stream_spawn_main.vibe`
+  with `sleep-for` as well: 84 each). Runner-private root futures still cannot
+  share a WIT component: they carry `future<u32>`, the WIT ones `s64`. `from_wit_future_imports` derives the bindings (it admits the
   function only with `use types.{response};` and exactly that record).
   A response function may take ONE `string` parameter (a request URL,
   `async func(url: string) -> response`); the derivation spells it

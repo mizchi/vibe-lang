@@ -398,4 +398,49 @@ GOT="$(VIBE_ASYNC_RESPONSES="$IFACE#fetch=200:0:echo" timeout 60 "$RUNNER" "$REQ
   exit 1
 }
 echo "[wit-async-import] response taking a string parameter: 594"
+# #2066 NAMED STREAMS beside WIT imports. A named host stream is a ROOT
+# import, so it takes the component funcs before the WIT interface's aliased
+# functions (after it, in spawn_main, comes `sleep-for`); the lowers keep the
+# core order. Each program also drains the stream while its futures are in
+# flight. Before the lowers were mapped per kind the composer refused them.
+mix_stream_row() { # <fixture dir> <main> <bindings> <expected> <max_ms> <futures spec> <responses spec> <label>
+  local dir="$OUT/stream_mix_$2"
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  cp "fixtures/$1/$2.vibe" "fixtures/$1/$3" "$dir/"
+  VIBE_PREOPEN_DIR="$ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \
+    "$COMPILER" "$dir/$2.vibe" "$dir/main.wasm" run >/dev/null 2>&1 || true
+  if [ ! -s "$dir/main.wasm" ]; then
+    echo "WIT async import gate FAILED: fixtures/$1/$2.vibe did not compile" >&2
+    cat "$dir/main.wasm.diag" >&2 2>/dev/null || true
+    exit 1
+  fi
+  wasm-tools validate --features all "$dir/main.wasm"
+  local start got elapsed
+  start=$(date +%s%N)
+  got="$(VIBE_ASYNC_FUTURES="$6" VIBE_ASYNC_RESPONSES="$7" VIBE_ASYNC_STREAMS="body=10|15|17@100" timeout 60 "$RUNNER" "$dir/main.wasm" 2>&1)" || {
+    echo "WIT async import gate FAILED: viberun did not exit 0 on fixtures/$1/$2.vibe: $got" >&2
+    exit 1
+  }
+  elapsed=$(( ( $(date +%s%N) - start ) / 1000000 ))
+  [ "$got" = "$4" ] || {
+    echo "WIT async import gate FAILED: fixtures/$1/$2.vibe expected $4, got: $got" >&2
+    exit 1
+  }
+  if [ "$elapsed" -ge "$5" ]; then
+    echo "WIT async import gate FAILED: fixtures/$1/$2.vibe took ${elapsed}ms (>= $5) -- the stream was not drained while the futures were in flight" >&2
+    exit 1
+  fi
+  echo "[wit-async-import] $8: $got in ${elapsed}ms"
+}
+PRICES='example:prices/api@1.0.0'
+mix_stream_row wit_future_import stream_main prices_bindings.vibe 84 450 \
+  "$PRICES#get-price=40:$LONG_MS,$PRICES#get-tax=2:$LONG_MS" "" "WIT futures + named stream"
+# spawn: one task awaits the two futures in turn (~2 x LONG_MS), the other
+# drains the stream meanwhile, so the bound is the task's own two waits.
+mix_stream_row wit_future_import stream_spawn_main prices_bindings.vibe 84 $(( LONG_MS * 2 + LONG_MS / 2 )) \
+  "$PRICES#get-price=40:$LONG_MS,$PRICES#get-tax=2:$LONG_MS" "" "spawned WIT futures + named stream + sleep-for"
+mix_stream_row wit_response_import stream_main client_bindings.vibe 248 450 \
+  "" "$IFACE#fetch-a=200:$LONG_MS:1|2|3,$IFACE#fetch-b=0:0:" "WIT response + named stream"
 echo "WIT async import component gate OK"
