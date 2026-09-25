@@ -706,4 +706,23 @@ grep -qF "cannot see through" "$CR_OUT.diag" 2>/dev/null \
   || { echo "named hostfutures component gate FAILED: catch_async_body_refused gave an unexpected diagnostic: $(cat "$CR_OUT.diag" 2>/dev/null)" >&2; exit 1; }
 echo "[named-hostfutures-component-gate] catch_async_body_refused: refused (the handled body reaches Async)"
 
+# timer_release_many: 1100 groups each close with their timer still armed
+# (the 10s sleeper it covered was cancelled); each cancels the timer's
+# subtask. Past the 1024-handle band, so keeping them trapped a later arm.
+TR_OUT="$OUT_DIR/spawn_timer_release_many.component.wasm"
+rm -f "$TR_OUT" "$TR_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/timer_release_many.vibe "$TR_OUT" run >/dev/null 2>&1 || true
+[ -s "$TR_OUT" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/timer_release_many.vibe did not compile: $(cat "$TR_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+TR_LOG="$OUT_DIR/spawn_timer_release_many.log"
+if ! VIBE_ASYNC_FUTURES="fast=1:1" timeout 120 "$RUNNER" "$TR_OUT" >"$TR_LOG" 2>&1; then
+  echo "named hostfutures component gate FAILED: timer_release_many did not exit 0" >&2
+  cat "$TR_LOG" >&2
+  exit 1
+fi
+[ "$(cat "$TR_LOG")" = "1100" ] \
+  || { echo "named hostfutures component gate FAILED: timer_release_many expected 1100, got: $(cat "$TR_LOG")" >&2; exit 1; }
+echo "[named-hostfutures-component-gate] timer_release_many: 1100 (each closing group cancelled its pending timer)"
+
 echo "named hostfutures component gate OK"

@@ -594,6 +594,21 @@ fn ring_take[T](r: Ring[T]) -> T {
 /// Dispatch the next Ready task in spawn (FIFO) order. Returns false when
 /// no Ready task exists. This is THE scheduler: deterministic, and safe to
 /// call reentrantly (a dispatched task's blocking op may call it again).
+/// A queued run-to-completion task drive_one would dispatch next.
+fn conc_has_ready[rg, e](n: TaskGroup[rg, e]) -> Bool {
+  let mut found = false
+  let mut i = n.next
+  while !found && i < n.count {
+    if Array::get(n.tasks, i).status == 0 {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 fn drive_one[rg, e](n: TaskGroup[rg, e]) -> Bool with e {
   let idx = loop (i = n.next) {
     if i >= n.count {
@@ -688,10 +703,33 @@ export fn TaskGroup::run[T, rg, e](body: (TaskGroup[rg, e]) -> T with e) -> T wi
     ai = ai + 1
   }
   n.phase = 3
+  conc_host_release_timer(n)
   if n.failing {
     throw(Failed(n.fail_msg))
   } else {
     v
+  }
+}
+
+/// #1537: a group closing with its timer still armed -- every sleeper it
+/// covered was cancelled, or the group failed -- releases it. A timer that
+/// already fired while another group waited is only a mailbox entry now (the
+/// adapter dropped its subtask); otherwise it is still pending, and its
+/// subtask is cancelled. Left alone, each such group would hold a subtask
+/// handle for the rest of the run (Codex on #3091).
+fn conc_host_release_timer[rg, e](n: TaskGroup[rg, e]) -> Unit {
+  if n.host_timer > 0 {
+    let timer = n.host_timer
+    n.host_timer = 0
+    n.host_timer_ms = 0
+    if conc_host_take_fired_timer(timer) {
+      ()
+    } else {
+      let _ = __conc_host_sleep_cancel(timer)
+      ()
+    }
+  } else {
+    ()
   }
 }
 
@@ -837,10 +875,16 @@ export fn TaskHandle::join[rg, e, T](h: TaskHandle[rg, e, T]) -> T with Exceptio
     // it still traps as a deadlock.
     if s == 0 {
       conc_require(drive_one(h.group))
+    } else if drive_one(h.group) {
+      // A queued run-to-completion task ran first: the target may be
+      // waiting on it (a producer resolving its future), and the pump
+      // rounds below never dispatch that lane (Codex on #3091).
+      ()
     } else {
       conc_pump_until_settled(h.group, h.cell)
-      // Nothing resumable and the target still parked: a deadlock.
-      conc_require(h.cell.status != 5)
+      // Nothing resumable, nothing queued, and the target still parked: a
+      // deadlock. A task a resumed one spawned is dispatched next round.
+      conc_require(h.cell.status != 5 || conc_has_ready(h.group))
     }
     continue (d)
   }
@@ -1910,6 +1954,14 @@ export fn __conc_host_sleep_arm(ms: Int) -> Int {
   0 - 1
 }
 
+/// A task group's timer (an id `__conc_host_sleep_arm` answered) is still
+/// pending, and nothing will wait for it: cancel it and release its subtask.
+/// -1 = this program has no host waitables.
+export fn __conc_host_sleep_cancel(timer: Int) -> Int {
+  let _ = timer
+  0 - 1
+}
+
 /// Nobody waits on `waitable` (a payload) any more: cancel its pending read
 /// and release the future or stream. -1 = this program has no host
 /// waitables.
@@ -1965,7 +2017,9 @@ export fn TaskGroup::pump_all[rg, e](n: TaskGroup[rg, e]) -> Unit {
 }
 
 /// #1537: pump until `target` settles (it is no longer parked), not until
-/// every task does -- TaskHandle::join's wait on a parked task.
+/// every task does -- TaskHandle::join's wait on a parked task. It also
+/// stops when a run-to-completion task is queued, which only join can
+/// dispatch (drive_one carries the group's row).
 fn conc_pump_until_settled[rg, e](n: TaskGroup[rg, e], target: TaskCell) -> Unit {
   conc_pump_rounds(n, [target])
 }
@@ -1975,7 +2029,7 @@ fn conc_pump_until_settled[rg, e](n: TaskGroup[rg, e], target: TaskCell) -> Unit
 fn conc_pump_rounds[rg, e](n: TaskGroup[rg, e], until: Array[TaskCell]) -> Unit {
   let mut go = true
   let mut stall = 0
-  while go && (Array::length(until) == 0 || Array::get(until, 0).status == 5) {
+  while go && (Array::length(until) == 0 || (Array::get(until, 0).status == 5 && !conc_has_ready(n))) {
     let before = n.progress
     go = TaskGroup::pump(n)
     if go {

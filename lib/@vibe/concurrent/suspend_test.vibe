@@ -667,6 +667,26 @@ test "join on a parked task pumps the group instead of trapping" {
   assert_eq(out, 43)
 }
 
+/// #1537: the join above also has to DISPATCH ready run-to-completion
+/// tasks, not only resume adopted ones: here the producer is a plain
+/// `TaskGroup::spawn`, still queued when A parks (Codex on #3091).
+test "join on a parked task dispatches a queued producer" {
+  let out = TaskGroup::run((g) -> {
+    let f = Future::pending()
+    let ha = TaskGroup::spawn_suspend(g, () -> Int with Async {
+      await(f) + 2
+    })
+    let hb = TaskGroup::spawn(g, () -> Int {
+      Future::resolve(f, 40)
+      1
+    })
+    let ra = TaskHandle::join(ha)
+    let rb = TaskHandle::join(hb)
+    ra + rb
+  })
+  assert_eq(out, 43)
+}
+
 /// Same scheduler hole, channel spelling: a consumer polling recv_wait on
 /// a producer that sleeps between sends must not trap as deadlock -- the
 /// forced settle wakes the producer.

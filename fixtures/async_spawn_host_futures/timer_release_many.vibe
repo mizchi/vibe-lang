@@ -1,0 +1,32 @@
+// #1537: a task group that closes with its timer still armed releases it.
+// Each of 1100 groups arms a timer for a 10s sleeper beside a fast host
+// future, joins the future, then cancels the sleeper; the group closes with
+// the timer pending and cancels its subtask. 1100 is past the adapter's
+// 1024-handle band, so a run that kept each pending timer's subtask would
+// trap arming a later one (Codex on #3091). Every group answers 1: 1100.
+// Executed by scripts/test_named_hostfutures_component_gate.sh.
+import @vibe/concurrent {
+  TaskGroup, TaskHandle, sleep_wait
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  let mut total = 0
+  let mut i = 0
+  while i < 1100 {
+    let got = TaskGroup::run((g) -> {
+      let s = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+        sleep_wait(10000)
+        0
+      })
+      let a = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+        await(host_future_named("fast"))
+      })
+      let v = TaskHandle::join(a)
+      TaskHandle::cancel(s)
+      v
+    })
+    total = total + got
+    i = i + 1
+  }
+  total
+}

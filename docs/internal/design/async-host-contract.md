@@ -250,7 +250,22 @@ override silently contradicting a module that says `raw` is the hazard #2903's
   bands are cleared and the readable end is dropped. Dropping is sound
   because a host stream cannot be captured by another task (it is neither
   Send nor a same-nursery endpoint), so the cancelled task was its only
-  reader (`stream_cancel_many.vibe`).
+  reader (`stream_cancel_many.vibe`). A task group's fail-fast sibling
+  cancel releases each parked sibling's read the same way, and an event that
+  fires with no task anywhere waiting on it is released by whichever group
+  receives it.
+- **Releasing a group's timer** (#1537). A group that closes with its timer
+  still armed -- every sleeper it covered was cancelled, or the group failed
+  -- calls `host_sleep_cancel (i64) -> i64` with the timer's id. The adapter
+  finds the subtask whose recorded id it is, takes it out of the shared set,
+  cancels it with a synchronous `subtask.cancel` (a timer that returned but
+  was not yet delivered answers RETURNED, which is just as done), drops it
+  and clears its slot; `host_future_wait_any` clears the slot when it drops a
+  delivered timer, so an id never matches a dropped handle. A timer that
+  already fired while another group waited is only a mailbox entry by then,
+  and the group removes that instead. Without it each such group held a
+  subtask handle for the rest of the run
+  (`fixtures/async_spawn_host_futures/timer_release_many.vibe`: 1100 groups).
 - **Drop** is conditional -- this is *the conditional-drop rule* the
   runtime-neutral list below names. A call that completed eagerly (status
   RETURNED, code `2`) created no subtask, so it is neither joined nor dropped
@@ -446,19 +461,18 @@ cap without moving the bases silently overruns into the next band, which is why
 `scripts/check_async_band_contract.sh` asserts the arithmetic rather than the
 constants.
 
-## Cancellation does not exist
-
-No cancellation operation is emitted or implemented anywhere. `subtask.cancel`,
-`future.cancel-read`, `future.cancel-write` and `task.cancel` have zero
-occurrences across both emitters and `runtime/viberun`; the only hit for
-"cancel" in the async surface is a prose comment at
-`checker/builtins_async.vibe:160` recording that `future.cancel-*` remains
-M-conc-2.
+## Cancellation
 
 ADR-0068 (`concurrency.md`) specifies cooperative cancellation as the public
-model. That specification currently has no ABI under it. #1537 scope item 3
-names these operations; this file records their absence as a fact rather than
-leaving it to be inferred from a design document that describes the intent.
+model; what the component adapter emits under it is the three READ-side
+cancels, all synchronous: `future.cancel-read` (`host_future_cancel`),
+`stream.cancel-read` (`host_stream_cancel`) and `subtask.cancel`
+(`host_sleep_cancel`, a group's pending timer). Each runs when the last task
+that could take a value is gone -- cancelled, failed fast, or its group
+closed -- and is followed by the drop of the handle it cancelled; the bullets
+under `### Host futures` say when. `future.cancel-write` and `task.cancel` are
+not emitted: the guest never writes a host future, and a guest task is not a
+Component Model task (#1537 scope item 3).
 
 ## Runtime-neutral vs Wasmtime-specific
 
@@ -494,5 +508,6 @@ and `:1000` and link named root imports from an env spec. The runner reserves
   quietly answering differently.
 - The `stdin_read_char` "async by the host" description, which no host
   implements that way.
-- Cancellation, restated: there is no ABI for it, so nothing here says what a
-  dropped or abandoned future or stream does to the host side.
+- What an abandoned future or stream does to the HOST side beyond the canon
+  cancel: wasmtime drops the producer's future, and a second runtime could do
+  otherwise without any conformance row here noticing.

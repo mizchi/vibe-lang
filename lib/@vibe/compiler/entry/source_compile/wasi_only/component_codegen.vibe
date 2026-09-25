@@ -1766,6 +1766,18 @@ fn emit_canon_subtask_drop(buf: Bytes) -> Unit {
   emit_raw_content(buf, content)
 }
 
+/// #1537: canon subtask.cancel (synchronous) -- opcode 0x06 then the
+/// async? flag 0x00, byte shape recovered with `wasm-tools parse` of
+/// `(canon subtask.cancel)`. `(i32 subtask) -> (i32 status)`.
+fn emit_canon_subtask_cancel(buf: Bytes) -> Unit {
+  bytebuf_push(buf, section_canon)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 6)
+  bytebuf_push(content, 0)
+  emit_raw_content(buf, content)
+}
+
 /// ADR-0089 step 2 (#1218): component type section defining `(future <T>)`.
 /// Byte shape recovered via `wasm-tools dump` against
 /// tools/wasip3_component_probe/future_value/component.wat's compiled
@@ -6336,7 +6348,7 @@ fn comp_sleep_wait_payload_slot() -> Int {
   32
 }
 
-fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], stream_core_names: Array[String], want_stream_close: Bool, want_sleep: Bool, tag_mode: Int, future_s64: Bool, response_payload: Bool, want_wait_any: Bool, want_stream_arm: Bool, want_sleep_arm: Bool, want_cancel: Bool, want_stream_cancel: Bool, response_kinds: Array[Bool], want_arg_push: Bool, exit_stubs: Array[String]) -> Bytes with Exception {
+fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], stream_core_names: Array[String], want_stream_close: Bool, want_sleep: Bool, tag_mode: Int, future_s64: Bool, response_payload: Bool, want_wait_any: Bool, want_stream_arm: Bool, want_sleep_arm: Bool, want_cancel: Bool, want_stream_cancel: Bool, response_kinds: Array[Bool], want_arg_push: Bool, want_timer_cancel: Bool, exit_stubs: Array[String]) -> Bytes with Exception {
   // #1342: a THIRD half -- `vibe.sleep`. It is not a getter/wait pair like the
   // other two: the host side is an `async func(ms) -> ms`, so its
   // async-lowered call yields a SUBTASK rather than a future/stream handle,
@@ -6420,12 +6432,19 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
   } else {
     sleep_func_imports
   }
-  // #1537: `stream.cancel-read` (sync), last of all.
+  // #1537: `stream.cancel-read` (sync), after the future cancel half.
   let scancel_read_idx = cancel_func_imports
-  let nfunc_imports = if want_stream_cancel {
+  let scancel_func_imports = if want_stream_cancel {
     cancel_func_imports + 1
   } else {
     cancel_func_imports
+  }
+  // #1537: `subtask.cancel` (sync) for host_sleep_cancel, last of all.
+  let subtask_cancel_idx = scancel_func_imports
+  let nfunc_imports = if want_timer_cancel {
+    scancel_func_imports + 1
+  } else {
+    scancel_func_imports
   }
   let out = bytebuf_new()
   emit_header(out)
@@ -6619,6 +6638,20 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
   } else {
     ()
   }
+  if want_timer_cancel {
+    if !want_sleep_arm {
+      throw("component(async-hostfuture): host_sleep_cancel without host_sleep_arm")
+    } else {
+      ()
+    }
+    // type 0: (i32) -> (i32)
+    emit_name(ic, "$root")
+    emit_name(ic, "[subtask-cancel]")
+    bytebuf_push(ic, 0)
+    bytebuf_push(ic, 0)
+  } else {
+    ()
+  }
   emit_name(ic, "env")
   emit_name(ic, "memory")
   bytebuf_push(ic, 2)
@@ -6729,6 +6762,13 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     Array::push(export_indices, nfunc_imports + Array::length(fn_types))
     Array::push(fn_types, 6)
     Array::push(export_names, "host_arg_push")
+  } else {
+    ()
+  }
+  if want_timer_cancel {
+    Array::push(export_indices, nfunc_imports + Array::length(fn_types))
+    Array::push(fn_types, 6)
+    Array::push(export_names, "host_sleep_cancel")
   } else {
     ()
   }
@@ -7488,6 +7528,22 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
       leb128_encode_u32(any_body, 0)
       emit_i64_const(any_body, comp_timer_band_base())
       bytebuf_push(any_body, 124)
+      if want_timer_cancel {
+        // the slot no longer names a live subtask: clear it, so a cancel
+        // for this id finds nothing rather than a reused handle
+        emit_local_get(any_body, 2)
+        emit_i32_const(any_body, 3)
+        emit_i32_shl(any_body)
+        emit_i32_const(any_body, comp_timer_id_base())
+        emit_i32_add(any_body)
+        emit_i64_const(any_body, 0)
+        // i64.store align=3
+        bytebuf_push(any_body, 55)
+        leb128_encode_u32(any_body, 3)
+        leb128_encode_u32(any_body, 0)
+      } else {
+        ()
+      }
       comp_emit_encode_i64_value(any_body, tag_mode)
       emit_return(any_body)
       emit_end(any_body)
@@ -7969,6 +8025,80 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
   } else {
     ()
   }
+  if want_timer_cancel {
+    // host_sleep_cancel(t): param 0 = tagged timer (id + 4096); locals (i32)
+    // 1=h, 2=slot; (i64) 3=id. A task group closed with this timer still
+    // pending: find the subtask whose recorded id it is, take it out of the
+    // shared set, cancel it (synchronously -- a timer that already returned
+    // but was not yet delivered answers RETURNED, which is just as done), drop
+    // it and clear its slot. No subtask carries the id (it was delivered and
+    // dropped already) is a no-op.
+    let tcan_body = bytebuf_new()
+    leb128_encode_u32(tcan_body, 2)
+    leb128_encode_u32(tcan_body, 2)
+    bytebuf_push(tcan_body, 127)
+    leb128_encode_u32(tcan_body, 1)
+    bytebuf_push(tcan_body, 126)
+    emit_local_get(tcan_body, 0)
+    comp_emit_decode_i64_value(tcan_body, tag_mode)
+    emit_i64_const(tcan_body, comp_timer_band_base())
+    // i64.sub
+    bytebuf_push(tcan_body, 125)
+    emit_local_set(tcan_body, 3)
+    emit_block_void(tcan_body)
+    emit_loop_void(tcan_body)
+    // h += 1; past the band: not found
+    emit_local_get(tcan_body, 1)
+    emit_i32_const(tcan_body, 1)
+    emit_i32_add(tcan_body)
+    // local.tee 1
+    bytebuf_push(tcan_body, 34)
+    leb128_encode_u32(tcan_body, 1)
+    emit_i32_const(tcan_body, comp_hf_max_handles())
+    emit_i32_gt_u(tcan_body)
+    emit_br_if(tcan_body, 1)
+    emit_local_get(tcan_body, 1)
+    emit_i32_const(tcan_body, 3)
+    emit_i32_shl(tcan_body)
+    emit_i32_const(tcan_body, comp_timer_id_base())
+    emit_i32_add(tcan_body)
+    // local.tee 2
+    bytebuf_push(tcan_body, 34)
+    leb128_encode_u32(tcan_body, 2)
+    // i64.load align=3
+    bytebuf_push(tcan_body, 41)
+    leb128_encode_u32(tcan_body, 3)
+    leb128_encode_u32(tcan_body, 0)
+    emit_local_get(tcan_body, 3)
+    // i64.ne
+    bytebuf_push(tcan_body, 82)
+    emit_br_if(tcan_body, 0)
+    emit_local_get(tcan_body, 1)
+    emit_i32_const(tcan_body, 0)
+    emit_call(tcan_body, join_idx)
+    emit_local_get(tcan_body, 1)
+    emit_call(tcan_body, subtask_cancel_idx)
+    // drop
+    bytebuf_push(tcan_body, 26)
+    emit_local_get(tcan_body, 1)
+    emit_call(tcan_body, subtask_drop_idx)
+    emit_local_get(tcan_body, 2)
+    emit_i64_const(tcan_body, 0)
+    // i64.store align=3
+    bytebuf_push(tcan_body, 55)
+    leb128_encode_u32(tcan_body, 3)
+    leb128_encode_u32(tcan_body, 0)
+    emit_br(tcan_body, 1)
+    emit_end(tcan_body)
+    emit_end(tcan_body)
+    emit_i64_const(tcan_body, 0)
+    comp_emit_encode_i64_value(tcan_body, tag_mode)
+    bytebuf_push(tcan_body, 11)
+    leb128_encode_u32(code_sec, Bytes::length(tcan_body))
+    bytebuf_push_buf(code_sec, tcan_body)
+  } else {
+    ()
+  }
   let mut xb_i = 0
   while xb_i < Array::length(exit_stubs) {
     // no locals; unreachable; end
@@ -8429,7 +8559,7 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
     let ifn = Array::get(imp_names, ii)
     if im == "wasi_snapshot_preview1" && ifn == "fd_write" {
       ()
-    } else if im == "vibe" && (comp_is_host_future_get_import(ifn) || ifn == "host_future_wait" || ifn == "host_future_arm" || ifn == "host_future_wait_any" || ifn == "host_stream_arm" || ifn == "host_sleep_arm" || ifn == "host_future_cancel" || ifn == "host_stream_cancel" || ifn == "host_arg_push" || comp_is_host_stream_get_import(ifn) || ifn == "host_stream_read" || ifn == "host_stream_close" || ifn == "sleep" || ifn == "stderr_write_stream" || (ifn == "process_exit" && comp_core_imports_func(main_core_wasm, "vibe", "stderr_write_stream"))) {
+    } else if im == "vibe" && (comp_is_host_future_get_import(ifn) || ifn == "host_future_wait" || ifn == "host_future_arm" || ifn == "host_future_wait_any" || ifn == "host_stream_arm" || ifn == "host_sleep_arm" || ifn == "host_future_cancel" || ifn == "host_stream_cancel" || ifn == "host_arg_push" || ifn == "host_sleep_cancel" || comp_is_host_stream_get_import(ifn) || ifn == "host_stream_read" || ifn == "host_stream_close" || ifn == "sleep" || ifn == "stderr_write_stream" || (ifn == "process_exit" && comp_core_imports_func(main_core_wasm, "vibe", "stderr_write_stream"))) {
       ()
     } else {
       throw("component(async-hostfuture): core module uses host import '\{im}.\{ifn}' (only fd_write, sleep and the host-future/host-stream imports are satisfiable in this composition)")
@@ -8682,6 +8812,7 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   }
   let want_stream_cancel = comp_core_imports_vibe_name(main_core_wasm, "host_stream_cancel")
   let want_arg_push = comp_core_imports_vibe_name(main_core_wasm, "host_arg_push")
+  let want_timer_cancel = comp_core_imports_vibe_name(main_core_wasm, "host_sleep_cancel")
   if want_sleep_arm && !want_sleep {
     throw("component(async-hostfuture): core module imports vibe.host_sleep_arm without vibe.sleep; the timer arm lowers through the sleep half")
   } else {
@@ -8702,7 +8833,7 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   } else {
     ()
   }
-  emit_core_module_section(buf, comp_generate_hostfuture_adapter_core_module(hf_names, hs_names, hs_wants_close, want_sleep, tag_mode, future_s64, response_mode, want_wait_any, want_stream_arm, want_sleep_arm, want_cancel, want_stream_cancel, response_kinds, want_arg_push, exit_stubs))
+  emit_core_module_section(buf, comp_generate_hostfuture_adapter_core_module(hf_names, hs_names, hs_wants_close, want_sleep, tag_mode, future_s64, response_mode, want_wait_any, want_stream_arm, want_sleep_arm, want_cancel, want_stream_cancel, response_kinds, want_arg_push, want_timer_cancel, exit_stubs))
   emit_core_module_section(buf, comp_generate_async_trampoline_hostfuture())
   emit_core_module_section(buf, comp_generate_wasi_fd_write_stub())
   // A component-instance export alias must follow embedded core-module
@@ -8849,6 +8980,17 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   } else {
     ()
   }
+  // #1537: the timer cancel half's canon def, last of all.
+  let subtask_cancel_core_idx = if want_stream_cancel {
+    scancel_read_core_idx + 1
+  } else {
+    scancel_read_core_idx
+  }
+  if want_timer_cancel {
+    emit_canon_subtask_cancel(buf)
+  } else {
+    ()
+  }
   let root_inst = 1
   // $root's exports: the K lowered imports under the adapter's
   // `[async-lower]<label>` spellings, then the shared read/drop (named after
@@ -8938,6 +9080,12 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   } else {
     ()
   }
+  if want_timer_cancel {
+    Array::push(root_export_names, "[subtask-cancel]")
+    Array::push(root_export_indices, subtask_cancel_core_idx)
+  } else {
+    ()
+  }
   emit_core_instance_from_exports(buf, 1, [Array::length(root_export_names)], root_export_names, root_export_indices)
   let env_inst = 2
   emit_core_instance_from_exports_sorted(buf, ["memory"], [core_sort_mem], [
@@ -8955,10 +9103,10 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
     stub_inst,
     adapter_inst
   ])
-  let main_run_func_idx = if want_stream_cancel {
-    scancel_read_core_idx + 1
+  let main_run_func_idx = if want_timer_cancel {
+    subtask_cancel_core_idx + 1
   } else {
-    scancel_read_core_idx
+    subtask_cancel_core_idx
   }
   emit_alias_section(buf, main_inst, ["run"], [core_sort_func])
   let main_arg_inst = 6

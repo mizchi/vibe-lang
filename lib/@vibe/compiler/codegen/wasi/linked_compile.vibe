@@ -3423,6 +3423,8 @@ fn lc_host_hooks_install(stmts: Array[Stmt], hf_machinery: Bool, hs_machinery: B
             Some(ECall(EIdent("vibe_hf_wait_any_raw", -1), lc_fresh_expr_array(), -1))
           } else if lc_is_hook_name(name, "__conc_host_sleep_arm") {
             Some(ECall(EIdent("vibe_hf_sleep_arm_raw", -1), [param], -1))
+          } else if lc_is_hook_name(name, "__conc_host_sleep_cancel") {
+            Some(ECall(EIdent("vibe_hf_sleep_cancel_raw", -1), [param], -1))
           } else if lc_is_hook_name(name, "__conc_host_cancel") {
             Some(lc_host_cancel_body(param, hf_machinery, hs_machinery))
           } else if lc_is_hook_name(name, "__conc_host_take") {
@@ -9944,6 +9946,7 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
   let need_host_future_wait_any_builtin = Map::has_key(used_builtin_names, "vibe_hf_wait_any_raw")
   let need_host_stream_arm_builtin = Map::has_key(used_builtin_names, "vibe_hs_arm_raw")
   let need_host_sleep_arm_builtin = Map::has_key(used_builtin_names, "vibe_hf_sleep_arm_raw")
+  let need_host_sleep_cancel_builtin = Map::has_key(used_builtin_names, "vibe_hf_sleep_cancel_raw")
   let need_host_future_cancel_builtin = Map::has_key(used_builtin_names, "vibe_hf_cancel_raw")
   let need_host_stream_cancel_builtin = Map::has_key(used_builtin_names, "vibe_hs_cancel_raw")
   // #2066: the push is SYNTHESIZED by the `host_response_named_with`
@@ -10263,6 +10266,15 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
     -1
   }
   let hf_arg_push_import_idx = if need_host_arg_push_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // #1537: `host_sleep_cancel` -- a task group ending with its timer still
+  // pending cancels the timer's subtask rather than hold its handle.
+  let hsl_cancel_import_idx = if need_host_sleep_cancel_builtin {
     let idx = next_import_idx
     next_import_idx = next_import_idx + 1
     idx
@@ -10947,6 +10959,11 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
   } else {
     fs_read_file_stub_idx
   }
+  let hsl_cancel_idx = if hsl_cancel_import_idx >= 0 {
+    hsl_cancel_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
   // ADR-0089 Decision 3: the shared host-stream READ half, same stub
   // discipline as hf_wait (`(i64) -> i64`; the call site only exists when
   // the import is reserved).
@@ -11434,6 +11451,7 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
         "vibe_hf_cancel_raw" => hf_cancel_idx,
         "vibe_hs_cancel_raw" => hs_cancel_idx,
         "vibe_hf_arg_push_raw" => hf_arg_push_idx,
+        "vibe_hf_sleep_cancel_raw" => hsl_cancel_idx,
         // ADR-0089 Decision 3: shared read half of the named host streams.
         "vibe_hs_read_raw" => hs_read_idx,
         // ADR-0089 Decision 3 follow-up: shared drop half of the named host
@@ -14021,6 +14039,14 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
   if hf_arg_push_import_idx >= 0 {
     emit_name(import_content, "vibe")
     emit_name(import_content, "host_arg_push")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  if hsl_cancel_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "host_sleep_cancel")
     bytebuf_push(import_content, 0)
     leb128_encode_u32(import_content, 3)
   } else {
