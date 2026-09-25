@@ -136,7 +136,7 @@ cat > "$TMP_ROOT/fake-vibe-adjacency" <<'FAKEEOF'
 #!/usr/bin/env bash
 root="${@: -1}"
 f="$root/lib/@vibe/compiler/normalize/pass.vibe"
-if [[ "$*" == *'SLet('* || "$*" == *'EAssignOp('* || "$*" == *'String::contains('* ]]; then
+if [[ "$*" == *'SLet('* || "$*" == *'EAssignOp('* || "$*" == *'String::contains('* || "$*" == *' == '* || "$*" == *' != '* ]]; then
   echo '[]'; exit 0
 fi
 m=$(grep -n '__ast_adj_marked' "$f" | head -1 | cut -d: -f1)
@@ -164,6 +164,14 @@ if grep -q '__ast_adj_marked' "$TMP_ROOT/ast-adj.out"; then
   cat "$TMP_ROOT/ast-adj.out" >&2
   exit 1
 fi
+# The fake answers only the synthetic-name query; an effect-name report here
+# means it answered the effect-name patterns too, and every other assertion in
+# this case would be reading polluted output (Codex on #3091).
+if grep -q 'not by comparing a label' "$TMP_ROOT/ast-adj.out"; then
+  echo "review-regressions lint self-test: the adjacency fake answered an effect-name query" >&2
+  cat "$TMP_ROOT/ast-adj.out" >&2
+  exit 1
+fi
 
 git -C "$TMP_ROOT" reset -q HEAD -- .
 git -C "$TMP_ROOT" restore .
@@ -182,7 +190,7 @@ git -C "$TMP_ROOT" add .
 cat > "$TMP_ROOT/fake-vibe" <<EOF
 #!/usr/bin/env bash
 root="\${@: -1}"
-if [[ "\$*" == *'SLet('* || "\$*" == *'EAssignOp('* || "\$*" == *'String::contains('* ]]; then
+if [[ "\$*" == *'SLet('* || "\$*" == *'EAssignOp('* || "\$*" == *'String::contains('* || "\$*" == *' == '* || "\$*" == *' != '* ]]; then
   echo '[]'
 else
   jq -n --arg path "\$root/lib/@vibe/compiler/normalize/pass.vibe" \
@@ -290,7 +298,7 @@ git -C "$TMP_ROOT" add .
 cat > "$TMP_ROOT/fake-vibe-historical" <<EOF
 #!/usr/bin/env bash
 root="\${@: -1}"
-if [[ "\$*" == *'SLet('* || "\$*" == *'EAssignOp('* || "\$*" == *'String::contains('* ]]; then
+if [[ "\$*" == *'SLet('* || "\$*" == *'EAssignOp('* || "\$*" == *'String::contains('* || "\$*" == *' == '* || "\$*" == *' != '* ]]; then
   echo '[]'
 else
   jq -n --arg path "\$root/lib/@vibe/compiler/normalize/pass.vibe" \
