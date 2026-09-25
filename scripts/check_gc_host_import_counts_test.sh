@@ -48,8 +48,8 @@ elif which == "vec":
                lambda m: m.group(1) + str(int(m.group(2)) - 1), s, count=1)
 elif which == "import":
     # Drop the LAST host_imports entry, as an edit that removes a builtin
-    # without touching hbo would.
-    s = re.sub(r',\n      \("fs_remove_tree", 1\)\n    \]', "\n    ]", s, count=1)
+    # without touching hbo would. The name is whatever was appended last.
+    s = re.sub(r',\n      \("[^"]+", \d+\)\n    \]', "\n    ]", s, count=1)
 elif which == "dup":
     # Two host_defs entries claiming the same absolute import index.
     s = s.replace('("Fs::remove_tree", 1, 23, 0)', '("Fs::remove_tree", 1, 22, 0)', 1)

@@ -87,8 +87,28 @@ if hbo is not None and vec is not None and vec != hbo + 1:
         f"makes the module fail to instantiate with \"section was shorter than "
         f"expected size\".")
 
+# Console::write_* is a second name for the Stdout import, not a new wasm
+# function. It repeats that index. Count the imports, not the names.
+STDOUT_ALIAS = {
+    "Console::write_stream": "Stdout::write_stream",
+    "Console::write_char": "Stdout::write_char",
+}
 if defs is not None and hbo is not None:
-    idxs = sorted(int(d[2]) for d in defs)
+    by_name = {}
+    real = []
+    for name, params, index, ret in defs:
+        index, params, ret = int(index), int(params), int(ret)
+        canonical = STDOUT_ALIAS.get(name)
+        if canonical is not None:
+            owner = by_name.get(canonical)
+            if owner is None or owner != (index, params, ret):
+                die(f"host_defs {name!r} must alias {canonical} "
+                    f"(same index, params, and ret); got index {index}, "
+                    f"params={params}, ret={ret}")
+            continue
+        by_name[name] = (index, params, ret)
+        real.append(index)
+    idxs = sorted(real)
     if idxs != list(range(1, len(idxs) + 1)):
         dupes = sorted({i for i in idxs if idxs.count(i) > 1})
         die(f"host_defs import indices are not 1..N with no gaps: got {idxs}"
@@ -103,5 +123,5 @@ if fails:
     sys.exit(1)
 
 print(f"gc-host-import-counts: ok (hbo={hbo}, host_imports={len(imports)}, "
-      f"vector header={vec}, host_defs indices 1..{max(int(d[2]) for d in defs)})")
+      f"vector header={vec}, host_defs indices 1..{hbo})")
 PY
