@@ -23,11 +23,35 @@ fn step(xs: Array[Array[Int]], fresh: Bool) -> Int {
   Array::length(d)
 }
 
+// The same shadow through `let rec`, with the branch result handed to a
+// function that takes it: a result misread as a borrow gets a guarded dup at
+// that call which no drop spends.
+fn keep(a: Array[Int]) -> Int {
+  let b = a
+  Array::length(b)
+}
+
+fn step_rec(xs: Array[Array[Int]], fresh: Bool) -> Int {
+  let d = if fresh {
+    let rec peek = (n: Int) -> Array[Int] {
+      if n > 9 {
+        [n]
+      } else {
+        peek(n + 5)
+      }
+    }
+    peek(7)
+  } else {
+    peek(xs)
+  }
+  keep(d)
+}
+
 fn run(xs: Array[Array[Int]], rounds: Int) -> Int {
   let mut total = 0
   let mut i = 0
   while i < rounds {
-    total = total + step(xs, true) + step(xs, false)
+    total = total + step(xs, true) + step(xs, false) + step_rec(xs, true)
     i = i + 1
   }
   total
@@ -39,8 +63,8 @@ test "a branch-local shadow of a borrow-returning fn is not retained" {
   let before = Profiler::heap_bytes()
   let total = run(xs, 2000)
   let grown = Profiler::heap_bytes() - before
-  inspect(warm, content = "1000")
-  inspect(total, content = "10000")
+  inspect(warm, content = "1200")
+  inspect(total, content = "12000")
   // One leaked 3-element array per execution would be well over 2000 * 32 B.
   inspect(grown < 2000 * 16, content = "true")
 }

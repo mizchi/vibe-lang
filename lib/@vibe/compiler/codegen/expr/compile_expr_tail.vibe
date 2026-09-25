@@ -1598,7 +1598,7 @@ fn retain_wrap_branch_tails(e: Expr, local_names: Array[String], inner: Array[St
     } else {
       e
     },
-    EIdent(x, p) => if array_contains_str(ctx.loop_borrowed_names, x) && !array_contains_str(ctx.ref_cell_names, x) {
+    EIdent(x, p) => if array_contains_str(ctx.loop_borrowed_names, x) && !array_contains_str(ctx.ref_cell_names, x) && !array_contains_str(inner, x) {
       ECall(EIdent("__loop_tail_retain", -1), [EIdent(x, p)], -1)
     } else {
       e
@@ -1651,21 +1651,20 @@ fn retain_wrap_branch_tails(e: Expr, local_names: Array[String], inner: Array[St
 /// recursive drop then double-freed it, shadow-trapped at that exact site).
 /// The owned branch (fresh call result) sees at most an extra guarded dup at
 /// consuming sites -- the codebase-wide "leak, never corrupt" trade.
-fn value_has_borrowed_branch_tail(e: Expr, ctx: CompileCtx) -> Bool {
+fn value_has_borrowed_branch_tail(e: Expr, local_names: Array[String], inner: Array[String], ctx: CompileCtx) -> Bool {
   match e {
-    EIdent(x, _) => array_contains_str(ctx.loop_borrowed_names, x) && !array_contains_str(ctx.ref_cell_names, x),
+    EIdent(x, _) => array_contains_str(ctx.loop_borrowed_names, x) && !array_contains_str(ctx.ref_cell_names, x) && !array_contains_str(inner, x),
     EDot(_, _, _, _) => true,
-    ECall(callee, _, _) => match callee {
-      EIdent(cn, _) => is_borrow_ret_builtin(cn) || bsearch_leftmost(ctx.borrow_ret_names, cn) >= 0,
-      _ => false
-    },
-    EIf(_, t, el) => value_has_borrowed_branch_tail(t, ctx) || value_has_borrowed_branch_tail(el, ctx),
+    // #3108 review: a callee a local or a branch-local binding shadows is
+    // that binding, not the borrow-returning function of the same spelling.
+    ECall(_, _, _) => call_returns_borrow(e, local_names, ctx) && !callee_bound_in(e, inner),
+    EIf(_, t, el) => value_has_borrowed_branch_tail(t, local_names, inner, ctx) || value_has_borrowed_branch_tail(el, local_names, inner, ctx),
     EMatch(_, arms) => {
       let mut found = false
       let mut ai = 0
       while ai < Array::length(arms) {
-        let (_, abody) = Array::get(arms, ai)
-        if value_has_borrowed_branch_tail(abody, ctx) {
+        let (apat, abody) = Array::get(arms, ai)
+        if value_has_borrowed_branch_tail(abody, local_names, with_pattern_binders(inner, apat), ctx) {
           found = true
           ai = Array::length(arms)
         } else {
@@ -1674,12 +1673,12 @@ fn value_has_borrowed_branch_tail(e: Expr, ctx: CompileCtx) -> Bool {
       }
       found
     },
-    ELet(_, _, b, _) => value_has_borrowed_branch_tail(b, ctx),
-    ELetMut(_, _, b, _) => value_has_borrowed_branch_tail(b, ctx),
-    ELetRec(_, _, b) => value_has_borrowed_branch_tail(b, ctx),
-    ESeq(_, b) => value_has_borrowed_branch_tail(b, ctx),
-    EAssign(_, _, b) => value_has_borrowed_branch_tail(b, ctx),
-    EAssignOp(_, _, _, b) => value_has_borrowed_branch_tail(b, ctx),
+    ELet(n, _, b, _) => value_has_borrowed_branch_tail(b, local_names, with_name(inner, n), ctx),
+    ELetMut(n, _, b, _) => value_has_borrowed_branch_tail(b, local_names, with_name(inner, n), ctx),
+    ELetRec(n, _, b) => value_has_borrowed_branch_tail(b, local_names, with_name(inner, n), ctx),
+    ESeq(_, b) => value_has_borrowed_branch_tail(b, local_names, inner, ctx),
+    EAssign(_, _, b) => value_has_borrowed_branch_tail(b, local_names, inner, ctx),
+    EAssignOp(_, _, _, b) => value_has_borrowed_branch_tail(b, local_names, inner, ctx),
     _ => false
   }
 }
@@ -2253,7 +2252,7 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     // #768: an if/match value with a borrowed branch tail makes this binding a
     // (conditional) borrowed view too -- mark it borrow-bound for the body
     // scope so consuming calls dup it (see value_has_borrowed_branch_tail).
-    let value_borrow_like = ctx.enable_rc && (expr_tag(value) == 7 || expr_tag(value) == 16) && value_has_borrowed_branch_tail(value, ctx)
+    let value_borrow_like = ctx.enable_rc && (expr_tag(value) == 7 || expr_tag(value) == 16) && value_has_borrowed_branch_tail(value, local_names, array_empty(), ctx)
     if ctx.enable_rc && (is_borrow_ret_ext || value_borrow_like) {
       Array::push(ctx.loop_borrowed_names, name)
     } else {
