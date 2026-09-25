@@ -989,30 +989,33 @@ fn truncate_emit_ptr(b: Bytes, enable_rc: Bool) -> Unit {
   emit_i32_wrap_i64(b)
 }
 
-fn truncate_emit_new_len(b: Bytes, enable_rc: Bool) -> Unit {
+// The full i64 length, untagged but not narrowed.
+fn truncate_emit_new_len64(b: Bytes, enable_rc: Bool) -> Unit {
   emit_local_get(b, 1)
   // ADR-0055: the new length arrives tagged; untag before storing.
   if enable_rc {
     emit_i64_const(b, 1)
     emit_i64_shr_s(b)
   }
-  emit_i32_wrap_i64(b)
 }
 
 // Only ever SHRINKS (#2837 review): a length at or above the current one, or a
 // negative one (huge as unsigned), leaves the array untouched. Storing it
 // would expose slots past the live prefix -- stale, beyond the capacity, or
-// already released by a planned truncate release.
+// already released by a planned truncate release. The comparison is on the
+// full i64: narrowing first would wrap `1 << 32` to 0 and empty the array.
 export fn gen_arr_truncate_body(enable_rc: Bool) -> Bytes {
   let b = bytebuf_new()
-  truncate_emit_new_len(b, enable_rc)
+  truncate_emit_new_len64(b, enable_rc)
   truncate_emit_ptr(b, enable_rc)
   emit_i32_load(b, 2, 4)
-  emit_i32_ge_u(b)
-  emit_i32_eqz(b)
+  emit_i64_extend_i32_u(b)
+  // i64.lt_u
+  bytebuf_push(b, 84)
   emit_if_void(b)
   truncate_emit_ptr(b, enable_rc)
-  truncate_emit_new_len(b, enable_rc)
+  truncate_emit_new_len64(b, enable_rc)
+  emit_i32_wrap_i64(b)
   emit_i32_store(b, 2, 4)
   emit_end(b)
   b
