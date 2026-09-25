@@ -98,7 +98,7 @@ interface fs {
   is-dir: func(path: string) -> bool;
   is-file: func(path: string) -> bool;
   stat-token: func(path: string) -> s64;
-  read-dir: func(path: string) -> string;
+  read-dir-nul: func(path: string) -> string;
   mkdir: func(path: string);
   mkdir-p: func(path: string);
   remove: func(path: string);
@@ -183,20 +183,22 @@ implements in reverse, applied to the **registry type of the host field**
 (`Int` ↔ `s64`, `Bool` ↔ `bool`, `String` ↔ `string`, `Bytes` ↔ `list<u8>`,
 `Unit` ↔ no result). `Array[String]` ↔ `list<string>` is the mapping for a
 user-effect WIT whose registry type is `Array[String]`. It is **not** the
-mapping for `fs_read_dir` / `sh_lines`: those are `CtString` in
+mapping for `fs_read_dir_nul` / `sh_lines`: those are `CtString` in
 `builtin_registry.vibe` and core type `3` (`(i64) -> i64`) in
 `host-runtime-contract.json`, the same packed-string shape as `fs_read_file`.
 `wit_type_text` therefore yields `string`. The `Array[String]` surfaces
 (`Fs::readdir`, `sh_lines`) are a language-level split in `compile_call`
-(`packed_lines_to_array_expr` / `String::split` on `\n`), not a host type.
-Today's component face is the same joined string: `register_vfs_imports`
-returns `names.join("\n")` as `String`, and `vibec-hosted.wit` is
-`read-dir: func(path: string) -> string`. A directory entry that itself
-contains a newline is already two names after that split on **both** lanes;
-calling the join a lossless `list<string>` lowering would invent a
-disagreement the current ABI does not have. Residual WIT stays `string`
-until a lossless list encoding exists, is in the mapping table, and the
-fourth-side check can reject a type-`3` field.
+(`packed_dir_entries_to_array_expr` splitting on NUL, `sh_lines` on `\n`), not
+a host type. Today's component face is the same joined string:
+`register_vfs_imports` returns `names.join("\0")` as `String`, and
+`vibec-hosted.wit` is `read-dir-nul: func(path: string) -> string`. NUL is the
+one byte a POSIX file name cannot contain, so the split is lossless for every
+name the filesystem can hold (#2957; the `\n`-joined `fs_read_dir` /
+`read-dir` it replaced split a name containing a newline into fake entries,
+and both runners keep that predecessor only for modules built by a compiler
+from before the change). Residual WIT stays `string` until a `list<string>`
+encoding is in the mapping table and the fourth-side check can reject a
+type-`3` field.
 
 Two consequences:
 
@@ -206,7 +208,7 @@ Two consequences:
   the gate, so the two lowerings cannot drift. Resource methods use the
   mapping in the grouping table below, not a 1:1 field-to-function equality.
 - A component host and a core host implement one semantics: both serve
-  `fs.read-dir: func(path: string) -> string` (sorted names joined by `\n`).
+  `fs.read-dir-nul: func(path: string) -> string` (sorted names joined by NUL).
   The join is the contract, not an artifact of one lowering.
 
 **`String` carries valid UTF-8, and an invalid byte string is refused on BOTH
@@ -353,7 +355,7 @@ world check {
     read-file: func(path: string) -> string;
     exists: func(path: string) -> bool;
     stat-token: func(path: string) -> s64;
-    read-dir: func(path: string) -> string;
+    read-dir-nul: func(path: string) -> string;
     write-bytes: func(path: string, content: list<u8>);
     publish-immutable-text: func(path: string, content: string) -> bool;
   }
@@ -393,7 +395,7 @@ sections and the manifest.
   now the generator's job), and ADR-0086 is amended to cite the generated file.
 - The `vibec-hosted.wit` four-read face becomes an inline `fs` interface of
   those four operations (the same shape as today's file, including
-  `read-dir: func(path: string) -> string`), not `import vibe:host/fs`. Its
+  `read-dir-nul: func(path: string) -> string`), not `import vibe:host/fs`. Its
   `stat-token = -1 for a non-regular file` semantics moves into the catalog
   `fs` interface's doc comment, where the core lane's `fs_stat_token`
   already has to agree with it.
@@ -637,9 +639,9 @@ requirement so it can be read **before the artifact is opened**:
 
 ```text
 vibe-commands-v2
-check	commands/check.cwasm	Fs:fs.read-file,Fs:fs.exists,Fs:fs.stat-token,Fs:fs.read-dir,Fs:fs.write-bytes,Env:env.get,Console:stdout.write-stream
+check	commands/check.cwasm	Fs:fs.read-file,Fs:fs.exists,Fs:fs.stat-token,Fs:fs.read-dir-nul,Fs:fs.write-bytes,Env:env.get,Console:stdout.write-stream
 fmt	commands/fmt.cwasm	Fs:fs.read-file,Fs:fs.write-file,Console:stdout.write-stream
-symbols	commands/symbols.cwasm	Fs:fs.read-file,Fs:fs.read-dir,Stdout:stdout.write-stream
+symbols	commands/symbols.cwasm	Fs:fs.read-file,Fs:fs.read-dir-nul,Stdout:stdout.write-stream
 ```
 
 The column is a comma-separated list of `<label>:<interface>.<function>`
@@ -727,7 +729,7 @@ What the column buys, in the order the launcher uses it:
 |---|---|---|
 | `check` (2.6 MB) | `Env::get` and the cache write trap in the vfs wrap | `env.get`, `fs.write-bytes`, `fs.publish-immutable-text` are rows; served |
 | `fmt` in place | the write traps | `fs.write-file` is a row; served |
-| every verb | output returned as one string at exit | `stdout.write-stream` is a row; a command prints as it goes through the same `Stdout::write_stream` the monolithic CLI already calls |
+| every verb | output returned as one string at exit | `stdout.write-stream` is a row; a command prints as it goes through `print`, which lowers onto that import |
 
 The result frame stays mandatory (`vibe-command-result-v1\t<exit>\n`), because
 its job — a trapped command can never read as success — does not change. Its
@@ -785,8 +787,8 @@ each with the mutation that must turn it red:
 
 | check | what it asserts | red test |
 |---|---|---|
-| **generator diff** | the committed `vibe:host` catalog equals the generator's output from the registry, the manifest, the `resources` table and the `field_labels` table; the emitted interface set equals kebab(`standard_host_provider_resource_defaults`) minus labels that only alias another field; ungrouped raw signatures equal the mapping of their WIT functions (`fs.read-dir` / `sh_lines` are `string`, matching `CtString` and type `3`); grouped fields follow the constructor / method / drop mapping; each raw field has exactly one catalog function | change one WIT parameter type; change one core type index in the JSON; rename `socket` to `tcp`; drop the `http` resource row; emit `list<string>` for `fs.read-dir`; emit a second `console.write-stream` for the same `stdout_write_stream` field; drop `Console` from that field's labels; each must fail naming the field |
-| **semantic conformance** | a fixture set of small programs (one per operation family: read/write/exists/read-dir ordering, `stat-token` on a non-regular path, `env.get` on an unset name, handle close-twice, **an invalid-UTF-8 byte string through a `string` parameter**, a withheld optional operation on the **core** lane) runs on both runners with byte-identical stdout and identical exit, on the linear lane. **The close-twice case also runs on the component lane** (§1.2), where the shim's handle table is the only new thing that can trap, so a two-runner-only row would pass while the component lane traps | edit one runner's `read-dir` to skip the sort, restore one runner's `from_utf8_lossy` in place of the refusal, and drop the second-close entry lookup from the component shim's handle table; each must fail on that lane only |
+| **generator diff** | the committed `vibe:host` catalog equals the generator's output from the registry, the manifest, the `resources` table and the `field_labels` table; the emitted interface set equals kebab(`standard_host_provider_resource_defaults`) minus labels that only alias another field; ungrouped raw signatures equal the mapping of their WIT functions (`fs.read-dir-nul` / `sh_lines` are `string`, matching `CtString` and type `3`); grouped fields follow the constructor / method / drop mapping; each raw field has exactly one catalog function | change one WIT parameter type; change one core type index in the JSON; rename `socket` to `tcp`; drop the `http` resource row; emit `list<string>` for `fs.read-dir-nul`; emit a second `console.write-stream` for the same `stdout_write_stream` field; drop `Console` from that field's labels; each must fail naming the field |
+| **semantic conformance** | a fixture set of small programs (one per operation family: read/write/exists/read-dir ordering, `stat-token` on a non-regular path, `env.get` on an unset name, handle close-twice, **an invalid-UTF-8 byte string through a `string` parameter**, a withheld optional operation on the **core** lane) runs on both runners with byte-identical stdout and identical exit, on the linear lane. **The close-twice case also runs on the component lane** (§1.2), where the shim's handle table is the only new thing that can trap, so a two-runner-only row would pass while the component lane traps | edit one runner's `read-dir-nul` to skip the sort, restore one runner's `from_utf8_lossy` in place of the refusal, and drop the second-close entry lookup from the component shim's handle table; each must fail on that lane only |
 | **manifest row** | a `vibe-commands-v2` row equals what `vibe build --component` derives; a `.component.wasm` row is checked against core sections, a `.cwasm` row against the component type's import list | rewrite one row's column; dispatch must refuse before reading the artifact (the row lists a denied operation) and on reading it (the row disagrees). A `.cwasm` mutation that only the custom-section path would have caught, and the type-import path would miss, is a red test that the AOT path is the one under `--trust-precompiled` |
 
 The semantic fixtures pin values, not agreement: "agreement alone passes when

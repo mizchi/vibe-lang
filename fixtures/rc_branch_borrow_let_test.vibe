@@ -1,0 +1,186 @@
+// #3103: a `let` whose value is an `if` / `match` with a branch tail that
+// CALLS a borrow-returning function (`Array::get`) holds a view of an element
+// its container still owns. The Perceus plan gives that binding a scope-end
+// drop (its value is not a direct borrow-returning call), and the lowering
+// used to retain only loop-borrowed identifiers and projections in branch
+// tails -- never a borrow-returning call, and nothing at all outside a loop.
+// The drop then freed the element in place, and the next read of the same
+// container trapped under `VIBE_RC=shadow` with `drop of freed value`.
+//
+// Every shape reads the same elements more than once, so an unbalanced drop
+// reaches a freed block. Each contributes at its own decimal place, so a wrong
+// answer names the shape that broke:
+//
+//   x1       `if` in a loop (the issue's repro)
+//   x10      `match` in a loop
+//   x100     nested `if` / `match` in a loop
+//   x1000    one branch borrowed, the other a fresh allocation, in a loop
+//   x10000   `if` in straight-line code
+//   x100000  `match` in straight-line code
+//
+// Expected: 4 + 4*10 + 4*100 + 4*1000 + 3*10000 + 3*100000 = 334444
+
+enum D {
+  A(String, Array[String]);
+  B(String)
+}
+
+fn mk_xs() -> Array[D] {
+  [A(String::concat("a", "x"), ["p"]), B("b")]
+}
+
+fn mk_ys() -> Array[D] {
+  [A(String::concat("c", "y"), ["q"])]
+}
+
+fn scan_if(xs: Array[D], ys: Array[D], out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(xs) + Array::length(ys) {
+    let d = if i < Array::length(xs) {
+      Array::get(xs, i)
+    } else {
+      Array::get(ys, i - Array::length(xs))
+    }
+    match d {
+      A(n, _) => Array::push(out, n),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn scan_match(xs: Array[D], ys: Array[D], out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < 3 {
+    let d = match i {
+      0 => Array::get(xs, 0),
+      1 => Array::get(xs, 1),
+      _ => Array::get(ys, 0)
+    }
+    match d {
+      A(n, _) => Array::push(out, n),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn scan_nested(xs: Array[D], ys: Array[D], out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < 3 {
+    let d = if i < 2 {
+      if i == 0 {
+        Array::get(xs, 0)
+      } else {
+        Array::get(xs, i)
+      }
+    } else {
+      match i {
+        _ => Array::get(ys, i - 2)
+      }
+    }
+    match d {
+      A(n, _) => Array::push(out, n),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn scan_mixed(xs: Array[D], out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < 3 {
+    let d = if i < Array::length(xs) {
+      Array::get(xs, i)
+    } else {
+      A(String::concat("f", "z"), [])
+    }
+    match d {
+      A(n, _) => Array::push(out, n),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn pick_if(xs: Array[D], ys: Array[D], out: Array[String]) -> Unit {
+  let d = if Array::length(out) % 2 == 0 {
+    Array::get(xs, 0)
+  } else {
+    Array::get(ys, 0)
+  }
+  match d {
+    A(n, _) => Array::push(out, n),
+    _ => ()
+  }
+}
+
+fn pick_match(xs: Array[D], ys: Array[D], out: Array[String]) -> Unit {
+  let d = match Array::length(out) % 2 {
+    0 => Array::get(xs, 0),
+    _ => Array::get(ys, 0)
+  }
+  match d {
+    A(n, _) => Array::push(out, n),
+    _ => ()
+  }
+}
+
+fn shape_if() -> Int {
+  let xs = mk_xs()
+  let ys = mk_ys()
+  let out: Array[String] = []
+  scan_if(xs, ys, out)
+  scan_if(xs, ys, out)
+  Array::length(out)
+}
+
+fn shape_match() -> Int {
+  let xs = mk_xs()
+  let ys = mk_ys()
+  let out: Array[String] = []
+  scan_match(xs, ys, out)
+  scan_match(xs, ys, out)
+  Array::length(out)
+}
+
+fn shape_nested() -> Int {
+  let xs = mk_xs()
+  let ys = mk_ys()
+  let out: Array[String] = []
+  scan_nested(xs, ys, out)
+  scan_nested(xs, ys, out)
+  Array::length(out)
+}
+
+fn shape_mixed() -> Int {
+  let xs = mk_xs()
+  let out: Array[String] = []
+  scan_mixed(xs, out)
+  scan_mixed(xs, out)
+  Array::length(out)
+}
+
+fn shape_straight_if() -> Int {
+  let xs = mk_xs()
+  let ys = mk_ys()
+  let out: Array[String] = []
+  pick_if(xs, ys, out)
+  pick_if(xs, ys, out)
+  pick_if(xs, ys, out)
+  Array::length(out)
+}
+
+fn shape_straight_match() -> Int {
+  let xs = mk_xs()
+  let ys = mk_ys()
+  let out: Array[String] = []
+  pick_match(xs, ys, out)
+  pick_match(xs, ys, out)
+  pick_match(xs, ys, out)
+  Array::length(out)
+}
+
+export fn main() -> Int {
+  shape_if() + shape_match() * 10 + shape_nested() * 100 + shape_mixed() * 1000 + shape_straight_if() * 10000 + shape_straight_match() * 100000
+}

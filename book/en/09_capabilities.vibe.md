@@ -37,23 +37,9 @@ capability: `allows Console`. The capability does not appear at `main` by
 magic — it is inferred from the calls and then checked against what you
 wrote. A function whose signature omits it will not compile.
 
-`Console` is the terminal capability. `Stdin` / `Stdout` / `Stderr` are
-older labels for parts of it that are still accepted; `allows Console`
-covers them, and they do not cover `Console`. Ask for the narrow one and
-you get the narrow one:
-
-```vibe skip
-// skip: `allows Stdout` does not reach a `Console::` operation
-fn main allows Stdout {
-  Console::write_stream("x")
-}
-```
-
-```
-effect row mismatch for 'main': missing { Console::write_stream }
-(declared { Stdout }, requires { Console::write_stream, Stdout })
-hint: add 'allows Console::write_stream + Stdout' to 'main'
-```
+`Console` is the terminal capability. Write that name. `Stdin`, `Stdout`
+and `Stderr` are older labels the compiler still accepts; each covers
+only its own operations, and none of them covers `Console`.
 
 ## `with` requires, `allows` grants
 

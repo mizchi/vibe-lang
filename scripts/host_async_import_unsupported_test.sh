@@ -71,7 +71,7 @@ rm -rf "$work"
 mkdir -p "$work"
 
 cat > "$work/stream.vibe" <<'PROG'
-fn main() -> Unit allows Stdout + Async {
+fn main() -> Unit allows Console + Async {
   let s = host_stream_named("body")
   let mut sum = 0
   let mut n = 0
@@ -84,7 +84,7 @@ fn main() -> Unit allows Stdout + Async {
 PROG
 
 cat > "$work/sleep.vibe" <<'PROG'
-fn main() -> Unit allows Stdout + Async {
+fn main() -> Unit allows Console + Async {
   sleep_blocking(1)
   println("slept")
 }

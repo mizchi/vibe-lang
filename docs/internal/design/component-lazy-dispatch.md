@@ -173,12 +173,12 @@ flag:
 | the core imports | wrap | what the command may do |
 |---|---|---|
 | nothing from `vibe` | `comp_emit_component_wasm_string_handler` | pure function of its argv |
-| anything from `vibe` | `comp_emit_component_wasm_string_handler_vfs` | + `read-file` / `exists` / `read-dir` / `stat-token` |
+| anything from `vibe` | `comp_emit_component_wasm_string_handler_vfs` | + `read-file` / `exists` / `read-dir-nul` / `stat-token` |
 
 The vfs wrap lifts those four read operations to root-level component imports,
 which `viberun` serves with the same semantics the core lane has
-(`read-file`/`read-dir` fail on a missing path, `read-dir` returns the sorted
-names joined by `\n`, `stat-token` is `vibe_stat_token`'s digest). Every OTHER
+(`read-file`/`read-dir-nul` fail on a missing path, `read-dir-nul` returns the sorted
+names joined by NUL (#2957), `stat-token` is `vibe_stat_token`'s digest). Every OTHER
 `vibe.*` import becomes a trap in the wrap, and the pure wrap REFUSES a
 `vibe.*` import outright — so a command that grows a capability it cannot have
 is caught at build time rather than at dispatch.

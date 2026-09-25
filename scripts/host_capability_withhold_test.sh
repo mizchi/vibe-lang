@@ -95,7 +95,7 @@ mkdir -p "$work"
 
 printf 'apple\n' > "$work/secret.txt"
 cat > "$work/withhold.vibex" <<'PROG'
-fn main allows Fs + Stdout {
+fn main allows Fs + Console {
   let text = Fs::read_file("_build/host_capability_withhold/secret.txt")
   println("read: \{text}")
 }

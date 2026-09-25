@@ -192,7 +192,7 @@ a `service` that exports a pure `add` and an `Fs`-reaching `load` has an `fs`
 import that a consumer of `add` alone must still see satisfied. The derived
 contract therefore carries a `requires = <operations>` header line, and a
 consumer that imports **anything** from the package takes that union into
-its own row: `import @acme/greeter { add }` inside `fn main allows Stdout`
+its own row: `import @acme/greeter { add }` inside `fn main allows Console`
 is refused naming the missing operation (or the
 split — one package per authority — as the other edit).
 
@@ -342,7 +342,7 @@ the store exactly as for a source package. The one new fact it reads is the
 ```vibe skip
 import @acme/greeter { greet, parse_port, Greeting }
 
-fn main allows Stdout + Exception[String] {
+fn main allows Console + Exception[String] {
   let g: Greeting = greet("vibe")
   println(g.text)
   let p = parse_port("")     // re-raises the producer's Err as Exception[String]

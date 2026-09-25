@@ -157,6 +157,18 @@ export enum EffectError {
 // `throw` to `perform Exception::Throw`); EEEffectfulCallOutsideEffect stays --
 // check_async_effects_expr still reports it for async primitives.
 
+/// A hint rewrites a bare `Stdin` / `Stdout` / `Stderr` label to `Console`.
+/// `println` and `print` already require `Console`. The legacy operations
+/// still carry their own labels; pasting those labels would tell the reader
+/// to write the name the book retired.
+fn spell_legacy_tty(item: String) -> String {
+  if String::index_of(item, "::") < 0 && is_legacy_console_provider(item) {
+    "Console"
+  } else {
+    item
+  }
+}
+
 /// #1429: render a stored row as the SOURCE spelling the reader must type.
 /// Rows are stored comma-joined; the syntax is `+`-separated. Every `hint:`
 /// below hands the reader something to paste into their code, so it has to go
@@ -164,26 +176,72 @@ export enum EffectError {
 /// to write syntax the compiler is migrating away from (and, once the braced
 /// form is removed, syntax it rejects outright).
 ///
-/// The set-valued parts of the message (`missing { .. }`, `requires { .. }`)
-/// deliberately keep braces: those render a SET difference, not source.
+/// Legacy tty labels are spelled `Console`, and a second `Console` is
+/// dropped. The set-valued parts of the message (`missing { .. }`,
+/// `requires { .. }`) use `row_set_for_reader` for the same spelling.
 fn row_as_source(row: String) -> String {
   let parts = row_items_top_level(row)
   let n = Array::length(parts)
   let mut acc = ""
   let mut k = 0
   let mut i = 0
+  let mut any = false
+  let mut seen_console = false
   while i < n {
     let item = Array::get(parts, i)
     let shown = if row_item_kind_is_unspellable(item) {
       k = k + 1
       String::concat("Exception[", String::concat(unspellable_kind_alias(k), "]"))
     } else {
-      item
+      spell_legacy_tty(item)
     }
-    acc = if i == 0 {
-      shown
+    let skip = shown == "Console" && seen_console
+    if shown == "Console" {
+      seen_console = true
     } else {
-      String::concat(acc, String::concat(" + ", shown))
+      ()
+    }
+    if !skip {
+      acc = if !any {
+        shown
+      } else {
+        String::concat(acc, String::concat(" + ", shown))
+      }
+      any = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  acc
+}
+
+/// Same spelling as `row_as_source`, joined the way a set difference is
+/// printed (`A, B`). What the reader declared is not passed through here.
+fn row_set_for_reader(row: String) -> String {
+  let parts = row_items_top_level(row)
+  let n = Array::length(parts)
+  let mut acc = ""
+  let mut i = 0
+  let mut any = false
+  let mut seen_console = false
+  while i < n {
+    let shown = spell_legacy_tty(Array::get(parts, i))
+    let skip = shown == "Console" && seen_console
+    if shown == "Console" {
+      seen_console = true
+    } else {
+      ()
+    }
+    if !skip {
+      acc = if !any {
+        shown
+      } else {
+        String::concat(acc, String::concat(", ", shown))
+      }
+      any = true
+    } else {
+      ()
     }
     i = i + 1
   }
@@ -354,9 +412,9 @@ export fn effect_error_to_string(err: EffectError) -> String {
         "effect row mismatch"
       }
       let detail = if String::length(declared) > 0 {
-        String::concat(" (declared { ", String::concat(declared, String::concat(" }, requires { ", String::concat(required, " })"))))
+        String::concat(" (declared { ", String::concat(declared, String::concat(" }, requires { ", String::concat(row_set_for_reader(required), " })"))))
       } else {
-        String::concat(" (no 'with' clause, requires { ", String::concat(required, " })"))
+        String::concat(" (no 'with' clause, requires { ", String::concat(row_set_for_reader(required), " })"))
       }
       // ADR-0088: an entry point (`main` / `_start`, a `test` / `bench` /
       // `example` block) GRANTS its row, so the edit it is told is `allows`;
@@ -393,7 +451,7 @@ export fn effect_error_to_string(err: EffectError) -> String {
       } else {
         hint
       }
-      let body = String::concat(head, String::concat(": missing { ", String::concat(missing, String::concat(" }", String::concat(detail, hint)))))
+      let body = String::concat(head, String::concat(": missing { ", String::concat(row_set_for_reader(missing), String::concat(" }", String::concat(detail, hint)))))
       // #1514: marker LAST so the hint line stays the visible tail; the decoder
       // strips it before the user ever sees the string.
       if off >= 0 {
@@ -2582,6 +2640,99 @@ fn row_scope_has_formal(name: String) -> Bool {
   row_scope_has(name) || row_scope_has(String::concat("@", name))
 }
 
+/// #3101: does scope entry `entry` belong to a generic binder -- one that
+/// introduced type formals (`S`, or `@S` for a lambda inheriting its row)?
+/// An entry holding only callback markers (`%f`) or `row_scope_unknown()` is
+/// not one, and neither is a top-level declaration with no formals. The
+/// checker opens a generic declaration exactly for these (`eq_group_begin`).
+fn row_scope_entry_is_generic(entry: Array[String]) -> Bool {
+  let mut found = false
+  let mut j = 0
+  while j < Array::length(entry) && !found {
+    let w = Array::get(entry, j)
+    if !String::starts_with(w, "%") && w != row_scope_unknown() {
+      found = true
+    }
+    j = j + 1
+  }
+  found
+}
+
+/// #3101: the generic depth of scope entry `idx`: how many generic binders
+/// enclose it. The checker qualifies a requirement's formal with the same
+/// count (`eq_formal_depth`), so `S$0` and `S$1` are two binders' `S`.
+fn row_scope_generic_depth_of(idx: Int) -> Int {
+  let mut d = 0
+  let mut i = 0
+  while i < idx && i < Array::length(row_formal_scope) {
+    if row_scope_entry_is_generic(Array::get(row_formal_scope, i)) {
+      d = d + 1
+    }
+    i = i + 1
+  }
+  d
+}
+
+fn row_formal_at_depth(name: String, depth: Int) -> String {
+  String::concat(name, String::concat("$", __to_string(depth)))
+}
+
+/// #3101: a declared word `name` that the lexical scope binds, qualified by
+/// the INNERMOST binder of that spelling -- the one the word names where it
+/// was written. Only a binder's own formals count; an `@name` entry (a lambda
+/// inheriting the enclosing row) does not rebind the row's words.
+fn row_declared_formal(name: String) -> String {
+  let mut out = ""
+  let mut i = Array::length(row_formal_scope) - 1
+  while i >= 0 {
+    if str_labels_contain(Array::get(row_formal_scope, i), name) {
+      out = row_formal_at_depth(name, row_scope_generic_depth_of(i))
+      i = 0 - 1
+    } else {
+      i = i - 1
+    }
+  }
+  out
+}
+
+/// #3101: a requirement's formal word as the checker marked it: `'S$1` names
+/// binder depth 1's `S`, and is returned as is. A formal the checker could not
+/// qualify (`'Int`, a formal spelled like a builtin, has no variable) is
+/// placed only when exactly ONE binder in scope has that spelling; with two,
+/// which one it is cannot be told, and the answer is a spelling no declared
+/// word resolves to, so it never matches a row by accident. "" when no binder
+/// in scope has the spelling.
+fn row_required_formal(word: String) -> String {
+  let di = String::last_index_of(word, "$")
+  let name = if di > 0 {
+    String::substring(word, 0, di)
+  } else {
+    word
+  }
+  if !row_scope_has_formal(name) {
+    ""
+  } else if di > 0 {
+    word
+  } else {
+    let mut count = 0
+    let mut at = 0 - 1
+    let mut i = 0
+    while i < Array::length(row_formal_scope) {
+      let entry = Array::get(row_formal_scope, i)
+      if str_labels_contain(entry, name) || str_labels_contain(entry, String::concat("@", name)) {
+        count = count + 1
+        at = i
+      }
+      i = i + 1
+    }
+    if count == 1 {
+      row_formal_at_depth(name, row_scope_generic_depth_of(at))
+    } else {
+      String::concat(name, "$ambiguous")
+    }
+  }
+}
+
 /// #3102 review: the first scope entry that can stand between a callback
 /// parameter's annotation and its call -- one past the binder that declared
 /// the parameter. A top-level declaration's parameters leave it at 1.
@@ -2758,7 +2909,7 @@ fn row_word_class(w: String, mode: Int, nargs: Int) -> RowTy {
   } else if mode == 0 {
     if row_scope_has(w) {
       if nargs == 0 {
-        RtFormal(w)
+        RtFormal(row_declared_formal(w))
       } else {
         RtIndet
       }
@@ -2768,8 +2919,8 @@ fn row_word_class(w: String, mode: Int, nargs: Int) -> RowTy {
       RtIndet
     }
   } else if String::starts_with(w, "'") {
-    let f = String::substring(w, 1, String::length(w))
-    if nargs == 0 && row_scope_has_formal(f) {
+    let f = row_required_formal(String::substring(w, 1, String::length(w)))
+    if nargs == 0 && String::length(f) > 0 {
       RtFormal(f)
     } else {
       RtIndet
@@ -4198,7 +4349,7 @@ fn unqualified_builtin_effect(name: String) -> Option[String] {
   || name == "vibe_process_exit_raw" {
     Some("Process")
   } else if name == "println" || name == "print" {
-    Some("Stdout")
+    Some("Console")
   } else if name == "vibe_fs_stat_token_raw" {
     Some("Fs")
   } else if name == "vibe_tcp_connect_raw" || name == "vibe_tcp_read_raw"
@@ -5843,7 +5994,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
               // fname)` in expr/compile_call.vibe, #929) and the gate pins it:
               // `fn println(s: String) -> Unit { print("S\n") }` must compile
               // and win over the builtin lowering. Without this the checker
-              // would demand `with Stdout` from callers of a user function that
+              // would demand `with Console` from callers of a user function that
               // merely reuses the name.
               ()
             } else {
@@ -7822,31 +7973,299 @@ export fn file_entry_cacheable(stmts: Array[Stmt], entry_name: String) -> Bool {
       // real top-level `main` is never itself row-polymorphic, so this is a
       // cheap, purely-additive net that catches the common/direct case
       // (`fn main allows Stdout + Env { ... }`) even in scenarios the
-      // deeper walk alone would miss.
+      // deeper walk alone would miss. Bare `Console` is not in that safe
+      // set -- it can read -- but `println` requires it. When the body is
+      // provably only stdout writes, cache it; a nested function stays out.
       let declared_ok = match entry_declared {
         None => true,
         Some(row) => labels_are_entry_cache_safe(row)
       }
+      // `body` (from SLet/SLetMut) is the closure VALUE bound to
+      // entry_name, e.g. `EFn(type_params, bounds, params, ret_ty,
+      // effect, fn_body)` for `fn main allows <row> { ... }` -- checking
+      // the EFn NODE itself would trivially find zero reachable effects
+      // (defining a closure performs nothing; only CALLING it would),
+      // silently marking every entry cacheable regardless of what it
+      // does. The walk needs `fn_body`, the 6th field, not the literal.
+      // Parameters are in scope for fn_body and are not in the module fn
+      // table. A parameter named println / print / Console / Stdout is that
+      // binding, including the labeled `println~` / optional `println?`
+      // spellings whose call site uses the base name.
+      let (exec_body, params_hide) = match body {
+        EFn(_, _, params, _, _, fn_body) => (fn_body, params_hide_stdout_write(params)),
+        _ => (body, false)
+      }
       if !declared_ok {
-        false
-      } else {
-        // `body` (from SLet/SLetMut) is the closure VALUE bound to
-        // entry_name, e.g. `EFn(type_params, bounds, params, ret_ty,
-        // effect, fn_body)` for `fn main allows <row> { ... }` -- checking
-        // the EFn NODE itself would trivially find zero reachable effects
-        // (defining a closure performs nothing; only CALLING it would),
-        // silently marking every entry cacheable regardless of what it
-        // does. The walk needs `fn_body`, the 6th field, not the literal.
-        let exec_body = match body {
-          EFn(_, _, _, _, _, fn_body) => fn_body,
-          _ => body
+        match entry_declared {
+          Some(row) => !params_hide && console_entry_is_output_only(row, exec_body, fn_names),
+          None => false
         }
+      } else {
         set_callee_sigs(stmts, EnvEmpty)
         let errs = check_perform_effects_expr_tx_indexed(exec_body, cache_safe_row, false, fn_names, fn_effs, program_fn_index(fn_names), no_str_labels(), no_ov_effs())
         Array::length(errs) == 0
       }
     }
   }
+}
+
+/// A declared `Console` row includes input, so it is not cache-safe by
+/// itself (`is_entry_cache_safe_operation`). `println` / `print` require
+/// that broad label anyway. An entry is still cacheable when every other
+/// declared label is cache-safe and the body is provably output-only:
+/// the builtin `println` / `print` and the stdout `write_stream` /
+/// `write_char` spellings, and only when nothing in the module shadows
+/// those names. A nested function, a `for` (its desugar inserts the
+/// iterator call), and an interpolation are not inspected.
+fn str_list_has(xs: Array[String], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(xs) {
+    if Array::get(xs, i) == name {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn binding_hides_stdout_write(name: String) -> Bool {
+  name == "println" || name == "print" || name == "Console" || name == "Stdout"
+  // review-lint: allow-effect-name-compare -- a source spelling that can shadow a write, not an effect policy
+}
+
+fn params_hide_stdout_write(params: Array[(String, Option[TypeExpr])]) -> Bool {
+  let mut i = 0
+  let mut hide = false
+  while i < Array::length(params) {
+    let (name, _) = Array::get(params, i)
+    if binding_hides_stdout_write(dh_param_base_name(name)) {
+      hide = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hide
+}
+
+fn pats_hide_stdout_write(pats: Array[Pat]) -> Bool {
+  let mut i = 0
+  let mut hide = false
+  while i < Array::length(pats) {
+    if pat_hides_stdout_write(Array::get(pats, i)) {
+      hide = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hide
+}
+
+fn pat_hides_stdout_write(pat: Pat) -> Bool {
+  match pat {
+    PWild => false,
+    PBind(name) => binding_hides_stdout_write(name),
+    PInt(_) => false,
+    PFloat(_) => false,
+    PString(_) => false,
+    PBool(_) => false,
+    PCtor(_, args) => pats_hide_stdout_write(args),
+    PTuple(args) => pats_hide_stdout_write(args),
+    POr(left, right) => pat_hides_stdout_write(left) || pat_hides_stdout_write(right),
+    PStruct(_, fields) => {
+      let mut i = 0
+      let mut hide = false
+      while i < Array::length(fields) {
+        let (_, inner) = Array::get(fields, i)
+        if pat_hides_stdout_write(inner) {
+          hide = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hide
+    }
+  }
+}
+
+fn call_is_captured_output(callee: Expr, fn_names: Array[String]) -> Bool {
+  match callee {
+    EIdent(name, _) => {
+      if str_list_has(fn_names, name) {
+        false
+      } else {
+        name == "println" || name == "print" || name == "Console::write_stream" || name == "Console::write_char" || name == "Stdout::write_stream" || name == "Stdout::write_char"
+      }
+    },
+    EDot(recv, field, _, _) => {
+      match recv {
+        EIdent(head, _) => {
+          if str_list_has(fn_names, head) {
+            false
+          } else {
+            (head == "Console" || head == "Stdout") && (field == "write_stream" || field == "write_char")
+            // review-lint: allow-effect-name-compare -- matches the written qualifier of a write call, not an effect policy
+          }
+        },
+        _ => false
+      }
+    },
+    _ => false
+  }
+}
+
+fn exprs_are_captured_output(xs: Array[Expr], fn_names: Array[String]) -> Bool {
+  let mut i = 0
+  let mut ok = true
+  while i < Array::length(xs) {
+    if !expr_is_captured_output(Array::get(xs, i), fn_names) {
+      ok = false
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ok
+}
+
+fn expr_pairs_are_captured_output(xs: Array[(String, Expr)], fn_names: Array[String]) -> Bool {
+  let mut i = 0
+  let mut ok = true
+  while i < Array::length(xs) {
+    let (_, value) = Array::get(xs, i)
+    if !expr_is_captured_output(value, fn_names) {
+      ok = false
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ok
+}
+
+fn loop_inits_hide_stdout_write(inits: Array[(String, Expr)]) -> Bool {
+  let mut i = 0
+  let mut hide = false
+  while i < Array::length(inits) {
+    let (name, _) = Array::get(inits, i)
+    if binding_hides_stdout_write(name) {
+      hide = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hide
+}
+
+fn arms_are_captured_output(arms: Array[(Pat, Expr)], fn_names: Array[String]) -> Bool {
+  let mut i = 0
+  let mut ok = true
+  while i < Array::length(arms) {
+    let (pat, body) = Array::get(arms, i)
+    if pat_hides_stdout_write(pat) || !expr_is_captured_output(body, fn_names) {
+      ok = false
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ok
+}
+
+fn expr_keeps_stdout_write(name: String, value: Expr, body: Expr, fn_names: Array[String]) -> Bool {
+  if binding_hides_stdout_write(name) {
+    false
+  } else {
+    expr_is_captured_output(value, fn_names) && expr_is_captured_output(body, fn_names)
+  }
+}
+
+/// `|>` is still an `EBinOp` here. Desugar turns it into a call of the
+/// right-hand side, so that side is the callee, not a pure operand.
+fn pipe_rhs_is_captured_output(right: Expr, fn_names: Array[String]) -> Bool {
+  match right {
+    ECall(callee, args, _) => call_is_captured_output(callee, fn_names) && exprs_are_captured_output(args, fn_names),
+    EIdent(_, _) => call_is_captured_output(right, fn_names),
+    EDot(_, _, _, _) => call_is_captured_output(right, fn_names),
+    _ => false
+  }
+}
+
+fn expr_is_captured_output(expr: Expr, fn_names: Array[String]) -> Bool {
+  match expr {
+    EInt(_) => true,
+    EFloat(_) => true,
+    EBool(_) => true,
+    EUnit => true,
+    EIdent(_, _) => true,
+    // The holes are source text until expand_interp, which this walk does
+    // not run. A hole can be a read. Refuse the entry instead of caching it.
+    EStringInterp(_) => false,
+    EString(_, _) => true,
+    ETuple(xs) => exprs_are_captured_output(xs, fn_names),
+    EArray(xs) => exprs_are_captured_output(xs, fn_names),
+    EContinue(xs) => exprs_are_captured_output(xs, fn_names),
+    ERecord(_, fields, _) => expr_pairs_are_captured_output(fields, fn_names),
+    EMap(fields) => expr_pairs_are_captured_output(fields, fn_names),
+    EIf(cond, then_branch, else_branch) => expr_is_captured_output(cond, fn_names) && expr_is_captured_output(then_branch, fn_names) && expr_is_captured_output(else_branch, fn_names),
+    ELet(name, value, body, _) => expr_keeps_stdout_write(name, value, body, fn_names),
+    ELetRec(name, value, body) => expr_keeps_stdout_write(name, value, body, fn_names),
+    ELetMut(name, value, body, _) => expr_keeps_stdout_write(name, value, body, fn_names),
+    EAssign(name, value, body) => expr_keeps_stdout_write(name, value, body, fn_names),
+    EAssignOp(name, _, value, body) => expr_keeps_stdout_write(name, value, body, fn_names),
+    ESeq(left, right) => expr_is_captured_output(left, fn_names) && expr_is_captured_output(right, fn_names),
+    EWhile(cond, body) => expr_is_captured_output(cond, fn_names) && expr_is_captured_output(body, fn_names),
+    // Desugar rewrites `for` into iter_get / host_stream_next, which can
+    // read. Those calls are not in this AST, so the surface node is refused.
+    EForIn(_, _, _, _) => false,
+    EBinOp(op, left, right, _) => if op == "|>" {
+      expr_is_captured_output(left, fn_names) && pipe_rhs_is_captured_output(right, fn_names)
+    } else {
+      expr_is_captured_output(left, fn_names) && expr_is_captured_output(right, fn_names)
+    },
+    EUnaryOp(_, arg) => expr_is_captured_output(arg, fn_names),
+    EReturn(arg) => expr_is_captured_output(arg, fn_names),
+    ESpread(arg) => expr_is_captured_output(arg, fn_names),
+    ELabeledArg(_, _, arg) => expr_is_captured_output(arg, fn_names),
+    EDot(recv, _, _, _) => expr_is_captured_output(recv, fn_names),
+    EBreak(value) => {
+      match value {
+        Some(inner) => expr_is_captured_output(inner, fn_names),
+        None => true
+      }
+    },
+    EMatch(scrut, arms) => expr_is_captured_output(scrut, fn_names) && arms_are_captured_output(arms, fn_names),
+    ELoop(inits, body) => !loop_inits_hide_stdout_write(inits) && expr_pairs_are_captured_output(inits, fn_names) && expr_is_captured_output(body, fn_names),
+    ECall(callee, args, _) => call_is_captured_output(callee, fn_names) && exprs_are_captured_output(args, fn_names),
+    // A nested function is invisible to the effect walk. Caching it would
+    // hide a read. A handler can discharge a read the same way.
+    EFn(_, _, _, _, _, _) => false,
+    EHandle(_, _) => false
+  }
+}
+
+fn console_entry_is_output_only(row: Array[String], body: Expr, fn_names: Array[String]) -> Bool {
+  let mut i = 0
+  let mut saw_console = false
+  let mut ok = true
+  while i < Array::length(row) {
+    let label = Array::get(row, i)
+    if label == "Console" {
+      saw_console = true
+    } else if !is_entry_cache_safe_operation(label) {
+      ok = false
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ok && saw_console && expr_is_captured_output(body, fn_names)
 }
 
 /// Every label in `row` must appear in `safe` -- unlike decl_authorizes_

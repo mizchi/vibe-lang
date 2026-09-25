@@ -2074,8 +2074,8 @@ rm -f "$gate_tmp"
 # Round 51, and the class I told the reviewer one round earlier was impossible
 # here. That was true of the CALL and I stopped there: `println` has no
 # namespace token, so no regex over the call reaches it. But the checker
-# REQUIRES `with Stdout` on the declaration -- measured, `fn f() -> Unit {
-# println("x") }` is rejected with "missing { Stdout }" -- and a row is a name
+# REQUIRES `with Console` on the declaration -- measured, `fn f() -> Unit {
+# println("x") }` is rejected with "missing { Console }" -- and a row is a name
 # the scanner can already read. The handle was one layer over from where I was
 # looking.
 #
@@ -2083,7 +2083,7 @@ rm -f "$gate_tmp"
 # entitled to (Exception, Fs, Async). It was exempt because a SHARED allow-list
 # would have failed it on its own legitimate `with Exception + Fs`; that was
 # right about the shared list and wrong about the check.
-printf '\nfn probe_println_row() -> Unit with Stdout {\n  println("leaked")\n}\n' >> "$entry"
+printf '\nfn probe_println_row() -> Unit with Console {\n  println("leaked")\n}\n' >> "$entry"
 if grep -qF -- 'println("leaked")' "$entry"; then
   if bash "$gate" >/dev/null 2>&1; then
     fail "case: an unqualified capability builtin passed the entry gate"

@@ -403,13 +403,13 @@ Optional な権限も含めて BindingLock の時点(apply フェーズ)で1回�
 fn maybe_use_cache() -> String with Fs::Read[CacheDir]? {
   match perform? Fs[CacheDir]::read_file("cache.json") {
     Ok(bytes)  => Bytes::to_string(bytes)
-    Failed(_)  => compute_fresh()   // 権限はあったが操作自体が失敗
-    NotGranted => compute_fresh()   // そもそも権限が無い
+    Failed(_)  => compute_fresh()   // granted, but the operation failed
+    NotGranted => compute_fresh()   // no grant
   }
 }
 
-fn main allows Fs::Read[CacheDir]? + Stdout[Process::Root] {
-  Stdout::write_stream(maybe_use_cache())
+fn main allows Fs::Read[CacheDir]? + Console[Process::Root] {
+  Console::write_stream(maybe_use_cache())
 }
 ```
 

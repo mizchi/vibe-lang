@@ -9854,10 +9854,13 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
   // same shape as fs_read_file). Gated on use so non-users reserve no import
   // (fixpoint-safe). Lets the persistent artifact cache store/load wasm raw.
   let need_fs_read_bytes_builtin = Map::has_key(used_builtin_names, "Fs::read_bytes")
-  // #729/#730: `Fs::readdir(path) -> Array[String]` — a `vibe.fs_read_dir
+  // #729/#730: `Fs::readdir(path) -> Array[String]` — a `vibe.fs_read_dir_nul
   // (i64) -> i64` host import (type 3, same packed-string shape as
-  // fs_read_file: the host returns the byte-sorted entry NAMES "\n"-joined as
-  // ONE string, no host-side array building). compile_call lowers the
+  // fs_read_file: the host returns the byte-sorted entry NAMES NUL-joined as
+  // ONE string, no host-side array building). NUL, not "\n", because a POSIX
+  // name may contain a newline but never a NUL byte (#2957); `vibe.fs_read_dir`
+  // is the "\n"-joined predecessor the runners keep for modules built before
+  // it, so this must never emit that name again. compile_call lowers the
   // Array[String] surface to `String::split` over that string. Gated on use
   // (fixpoint-safe). Unblocks contract-package sibling auto-discovery and the
   // global store walk.
@@ -13925,11 +13928,11 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
     bytebuf_push(import_content, 0)
     leb128_encode_u32(import_content, 3)
   }
-  // #729/#730: fs_read_dir — emitted right after fs_read_bytes to match its
-  // reserved index. Type 3 is `(i64) -> i64` (same as fs_read_file).
+  // #729/#730: fs_read_dir_nul — emitted right after fs_read_bytes to match
+  // its reserved index. Type 3 is `(i64) -> i64` (same as fs_read_file).
   if fs_read_dir_import_idx >= 0 {
     emit_name(import_content, "vibe")
-    emit_name(import_content, "fs_read_dir")
+    emit_name(import_content, "fs_read_dir_nul")
     bytebuf_push(import_content, 0)
     leb128_encode_u32(import_content, 3)
   }

@@ -3458,6 +3458,14 @@ let eq_formal_group: Array[Int] = []
 /// and `A` of `F[A]`). A rigid mention in a type carries the spelling only,
 /// so it is attributed to every open rigid binder of that spelling.
 let eq_formal_rigid: Array[Bool] = []
+
+/// #3101: parallel to `eq_formal_vars`: how many generic declarations were
+/// already open around the binder's own -- 0 for a top-level `fn f[S]`, 1 for
+/// a generic lambda directly inside it, and so on. Two binders in scope at
+/// once never share a depth, so the depth tells an outer `S` from an inner
+/// `S` where the spelling cannot; the effects pass counts its own lexical
+/// formal scope the same way (`row_scope_generic_depth_of`).
+let eq_formal_depth: Array[Int] = []
 let eq_group_stack: Array[Int] = []
 let eq_group_next: Array[Int] = [0]
 
@@ -3491,6 +3499,7 @@ export fn reset_eq_formal_vars() -> Unit {
   Array::truncate(eq_formal_arity, 0)
   Array::truncate(eq_formal_group, 0)
   Array::truncate(eq_formal_rigid, 0)
+  Array::truncate(eq_formal_depth, 0)
   Array::truncate(eq_group_stack, 0)
   Array::set(eq_group_next, 0, 0)
   Array::truncate(deferred_field_reads, 0)
@@ -3534,6 +3543,22 @@ fn eq_group_distance(gid: Int) -> Int {
   }
 }
 
+/// #3101: the index of declaration `gid` on the open-declaration stack (its
+/// number of enclosing generic declarations), or -1 when it is not open.
+fn eq_group_depth_of(gid: Int) -> Int {
+  let mut found = 0 - 1
+  let mut i = Array::length(eq_group_stack) - 1
+  while i >= 0 {
+    if Array::get(eq_group_stack, i) == gid {
+      found = i
+      i = 0 - 1
+    } else {
+      i = i - 1
+    }
+  }
+  found
+}
+
 fn eq_group_is_open(gid: Int) -> Bool {
   let mut i = 0
   let mut found = false
@@ -3566,6 +3591,7 @@ fn record_eq_formal_var(vid: Int, name: String, arity: Int, gid: Int, rigid: Boo
     Array::push(eq_formal_arity, arity)
     Array::push(eq_formal_group, gid)
     Array::push(eq_formal_rigid, rigid)
+    Array::push(eq_formal_depth, eq_group_depth_of(gid))
   }
 }
 
@@ -5045,7 +5071,9 @@ fn callee_formal_marked_texts(decl: Option[(Array[String], Array[(String, Option
 }
 
 /// #3095: a type spelled so the effects pass can tell where each word came
-/// from. `'S` is a generic binder's rigid formal (`reps`), `^Name` a builtin or
+/// from. `'S$1` is a generic binder's rigid formal (`reps`), qualified by the
+/// binder's generic depth (#3101: `formal_var_binder_reps`); a formal with no
+/// variable -- one spelled like a builtin, `'Int` -- carries no depth. `^Name` a builtin or
 /// nominal type the checker resolved, `_` a type still open (an inference
 /// variable: any instantiation may fill it) and `~` a part the pass must not
 /// judge (a function or record type, a higher-kinded application). Aliases
@@ -5391,11 +5419,34 @@ fn formal_var_display_subst(s: Subst) -> Subst {
 /// The still-unsolved variables generic binders' formals stand for, each with
 /// the formal's name; a variable claimed under two names is left out.
 fn formal_var_reps(s: Subst) -> Array[(Int, String)] {
+  formal_var_reps_in(s, false)
+}
+
+/// #3101: `formal_var_reps` with each formal's name qualified by its binder
+/// (`S$0` for a top-level `[S]`, `S$1` for a lambda's `[S]` inside it), for
+/// the effects pass to JUDGE with: an outer and an inner formal of one
+/// spelling are two types, and only the binder tells them apart. A variable
+/// two binders claim is then a clash even when they share a spelling, so it is
+/// left open (`_`) rather than read as either. A binder whose declaration is
+/// not open when recorded has no depth and is left out.
+fn formal_var_binder_reps(s: Subst) -> Array[(Int, String)] {
+  formal_var_reps_in(s, true)
+}
+
+fn formal_var_reps_in(s: Subst, qualified: Bool) -> Array[(Int, String)] {
   let reps: Array[(Int, String)] = []
   let clashes: Array[Int] = []
   let mut i = 0
   while i < Array::length(eq_formal_vars) {
-    let (vid, name) = Array::get(eq_formal_vars, i)
+    let (vid, bare) = Array::get(eq_formal_vars, i)
+    let depth = Array::get(eq_formal_depth, i)
+    let name = if !qualified {
+      bare
+    } else if depth < 0 {
+      ""
+    } else {
+      String::concat(bare, String::concat("$", __to_string(depth)))
+    }
     match subst_apply(s, CtVar(vid)) {
       CtVar(rid) => {
         let mut seen = false
@@ -5507,7 +5558,7 @@ fn row_marked_type_display(m: String) -> String {
 /// cover it; the printed spelling stays the one above.
 export fn callee_formal_marked_bindings(defs: Array[TypeDef], s: Subst) -> Array[(String, Array[(String, String)])] {
   let out: Array[(String, Array[(String, String)])] = []
-  let reps = formal_var_reps(s)
+  let reps = formal_var_binder_reps(s)
   let mut i = 0
   while i < Array::length(callee_inst_types_cell) {
     let (off, scheme, inst, cname) = Array::get(callee_inst_types_cell, i)

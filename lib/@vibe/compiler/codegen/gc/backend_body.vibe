@@ -1873,9 +1873,9 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, generated
   // wrong: the first build that appended imports but left hbo behind produced
   // modules that validated nowhere ("not enough arguments on the stack for
   // call"), because every generated-body index still pointed low.
-  let use_host = Map::has_key(used_builtins, "Env::get") || Map::has_key(used_builtins, "Env::args_len") || Map::has_key(used_builtins, "Env::args_get") || Map::has_key(used_builtins, "Fs::read_file") || Map::has_key(used_builtins, "Fs::exists") || Map::has_key(used_builtins, "Fs::stat_token") || Map::has_key(used_builtins, "Fs::write_file") || Map::has_key(used_builtins, "Fs::publish_immutable_text") || Map::has_key(used_builtins, "Fs::write_bytes") || Map::has_key(used_builtins, "Fs::read_bytes") || Map::has_key(used_builtins, "Profiler::now_us") || Map::has_key(used_builtins, "Fs::remove") || Map::has_key(used_builtins, "Fs::remove_file") || Map::has_key(used_builtins, "Fs::remove_tree") || Map::has_key(used_builtins, "Fs::rename") || Map::has_key(used_builtins, "Fs::is_dir") || Map::has_key(used_builtins, "Fs::is_file") || Map::has_key(used_builtins, "Stdout::write_stream") || Map::has_key(used_builtins, "Fs::readdir") || Map::has_key(used_builtins, "Stdin::read_char") || Map::has_key(used_builtins, "Stdin::read_stream") || Map::has_key(used_builtins, "vibe_process_exit_raw") || Map::has_key(used_builtins, "Stderr::write_stream")
+  let use_host = Map::has_key(used_builtins, "Env::get") || Map::has_key(used_builtins, "Env::args_len") || Map::has_key(used_builtins, "Env::args_get") || Map::has_key(used_builtins, "Fs::read_file") || Map::has_key(used_builtins, "Fs::exists") || Map::has_key(used_builtins, "Fs::stat_token") || Map::has_key(used_builtins, "Fs::write_file") || Map::has_key(used_builtins, "Fs::publish_immutable_text") || Map::has_key(used_builtins, "Fs::write_bytes") || Map::has_key(used_builtins, "Fs::read_bytes") || Map::has_key(used_builtins, "Profiler::now_us") || Map::has_key(used_builtins, "Fs::remove") || Map::has_key(used_builtins, "Fs::remove_file") || Map::has_key(used_builtins, "Fs::remove_tree") || Map::has_key(used_builtins, "Fs::rename") || Map::has_key(used_builtins, "Fs::is_dir") || Map::has_key(used_builtins, "Fs::is_file") || Map::has_key(used_builtins, "Stdout::write_stream") || Map::has_key(used_builtins, "Stdout::write_char") || Map::has_key(used_builtins, "Console::write_stream") || Map::has_key(used_builtins, "Console::write_char") || Map::has_key(used_builtins, "Fs::readdir") || Map::has_key(used_builtins, "Stdin::read_char") || Map::has_key(used_builtins, "Stdin::read_stream") || Map::has_key(used_builtins, "vibe_process_exit_raw") || Map::has_key(used_builtins, "Stderr::write_stream")
   let hbo = if use_host {
-    23
+    24
   } else {
     0
   }
@@ -2111,9 +2111,10 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, generated
       ("Fs::is_file", 1, 15, 1),
       ("Stdout::write_stream", 1, 16, 0),
       // #1262: registered under the RAW name, not `Fs::readdir`. The surface
-      // returns Array[String] while the import returns the entries "\n"-joined
-      // as one packed string; compile_call_gc rewrites the surface onto this
-      // name (shared with the linear lane via packed_lines_to_array_expr).
+      // returns Array[String] while the import (`fs_read_dir_nul`) returns the
+      // entries NUL-joined (#2957) as one packed string; compile_call_gc
+      // rewrites the surface onto this
+      // name (shared with the linear lane via packed_dir_entries_to_array_expr).
       ("vibe_fs_read_dir_raw", 1, 17, 1),
       // #1262: held back in #1823 because the harness fed neither lane any
       // stdin, so both returned EOF and agreement proved nothing. The feed is
@@ -2136,7 +2137,13 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, generated
       ("Fs::remove_file", 1, 22, 0),
       // #2758: the RECURSIVE remove, split out of `Fs::remove` so that one
       // builtin means one thing on both hosts. Appended for the same reason.
-      ("Fs::remove_tree", 1, 23, 0)
+      ("Fs::remove_tree", 1, 23, 0),
+      // write_char is its own import. Appended so indices 1..23 stay put.
+      ("Stdout::write_char", 1, 24, 0),
+      // Same imports as the Stdout rows. Not new host functions, so hbo
+      // does not move for these two names.
+      ("Console::write_stream", 1, 16, 0),
+      ("Console::write_char", 1, 24, 0)
     ]
     let mut __hd = 0
     while __hd < Array::length(host_defs) {
@@ -3012,7 +3019,7 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, generated
     // under-counts and the module dies at instantiation with "section was
     // shorter than expected size" -- measured, exactly that, when #2758 added
     // fs_remove_tree and left this at 23.
-    bytebuf_push_vec_header(imp_content, 24)
+    bytebuf_push_vec_header(imp_content, 25)
     emit_name(imp_content, "wasi_snapshot_preview1")
     emit_name(imp_content, "fd_write")
     bytebuf_push(imp_content, 0)
@@ -3036,13 +3043,14 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, generated
       ("fs_is_dir", 3),
       ("fs_is_file", 3),
       ("stdout_write_stream", 1),
-      ("fs_read_dir", 3),
+      ("fs_read_dir_nul", 3),
       ("stdin_read_char", 5),
       ("stdin_read_stream", 3),
       ("process_exit", 1),
       ("stderr_write_stream", 1),
       ("fs_remove_file", 1),
-      ("fs_remove_tree", 1)
+      ("fs_remove_tree", 1),
+      ("stdout_write_char", 1)
     ]
     let mut __hi = 0
     while __hi < Array::length(host_imports) {
