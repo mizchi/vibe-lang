@@ -110,9 +110,15 @@ test "an open or declared spelling keeps the base-name answer" {
 }
 
 test "a formal that shadows a builtin name is not judged as that builtin" {
-  // Codex on #3054: `[Int]` makes `Int` a formal here, so `State[Int]` is open.
+  // Codex on #3054: `[Int]` makes `Int` a formal here, so `State[Int]` does
+  // not name the builtin. #3095: it names the RIGID formal, which is not
+  // `String` either, so the call is refused rather than left open.
   let d = diags_of("fn g(x: String) -> Int with State[String] {\n  1\n}\n\nfn caller[Int](x: Int) -> Int with State[Int] {\n  g(\"abc\")\n}\n")
-  assert(eq(Array::length(d), 0))
+  assert(eq(Array::length(d), 1))
+  assert(String::contains(Array::get(d, 0), "missing { State[String] }"))
+  // The formal passed through is covered by the formal.
+  let ok = diags_of("fn get[S](x: S) -> Int with State[S] {\n  1\n}\n\nfn caller[Int](x: Int) -> Int with State[Int] {\n  get(x)\n}\n")
+  assert(eq(Array::length(ok), 0))
 }
 
 test "a shadowing formal elsewhere does not switch the check off here" {
