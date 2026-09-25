@@ -2582,6 +2582,20 @@ fn row_scope_has_formal(name: String) -> Bool {
   row_scope_has(name) || row_scope_has(String::concat("@", name))
 }
 
+/// Does a binder nested inside the top-level declaration bind `name`?
+fn row_scope_nested_binds(name: String) -> Bool {
+  let mut found = false
+  let mut i = 1
+  while i < Array::length(row_formal_scope) {
+    let entry = Array::get(row_formal_scope, i)
+    if str_labels_contain(entry, name) || str_labels_contain(entry, String::concat("@", name)) {
+      found = true
+    }
+    i = i + 1
+  }
+  found
+}
+
 /// Does the declared-word scope hold only the top-level declaration's own
 /// binder? Then every enclosing parameter annotation was written in it.
 fn row_scope_decl_is_root() -> Bool {
@@ -2698,15 +2712,23 @@ fn row_ty_tokens(t: String) -> Option[Array[String]] {
   }
 }
 
-/// What one word names. `marked` is true for a requirement's spelling, where
-/// a mark says where the word came from (`'S` a formal, `^Name` a type the
-/// checker resolved, a bare word the callee's own row text); false for a
-/// declared row, whose words the lexical scope resolves.
-fn row_word_class(w: String, marked: Bool, nargs: Int) -> RowTy {
+/// What one word names. `mode` 0 reads a declared row, whose words the
+/// lexical scope resolves; 1 a requirement's marked spelling, where a mark says
+/// where the word came from (`'S` a formal, `^Name` a type the checker
+/// resolved, a bare word the callee's own row text); 2 a callback parameter's
+/// row as written, which may have been written OUTSIDE a nested binder that
+/// now stands between -- so a word any nested binder rebinds is not read.
+fn row_word_class(w: String, mode: Int, nargs: Int) -> RowTy {
   let nominals = Array::get(row_nominal_types_cell, 0)
   if w == "_" {
     RtWild
-  } else if !marked {
+  } else if mode == 2 {
+    if row_scope_nested_binds(w) {
+      RtIndet
+    } else {
+      row_word_class(w, 0, nargs)
+    }
+  } else if mode == 0 {
     if row_scope_has(w) {
       if nargs == 0 {
         RtFormal(w)
@@ -2742,13 +2764,13 @@ fn row_word_class(w: String, marked: Bool, nargs: Int) -> RowTy {
 
 /// Parse one type starting at token `i`; returns it and the next index, or
 /// index -1 on a malformed spelling.
-fn row_ty_parse(toks: Array[String], i: Int, marked: Bool) -> (RowTy, Int) {
+fn row_ty_parse(toks: Array[String], i: Int, mode: Int) -> (RowTy, Int) {
   if i >= Array::length(toks) {
     (RtIndet, 0 - 1)
   } else {
     let tok = Array::get(toks, i)
     if tok == "(" {
-      let (items, next) = row_ty_parse_list(toks, i + 1, ")", marked)
+      let (items, next) = row_ty_parse_list(toks, i + 1, ")", mode)
       if next < 0 {
         (RtIndet, 0 - 1)
       } else if Array::length(items) == 0 {
@@ -2763,14 +2785,14 @@ fn row_ty_parse(toks: Array[String], i: Int, marked: Bool) -> (RowTy, Int) {
     } else {
       let has_args = i + 1 < Array::length(toks) && Array::get(toks, i + 1) == "["
       let (args, next) = if has_args {
-        row_ty_parse_list(toks, i + 2, "]", marked)
+        row_ty_parse_list(toks, i + 2, "]", mode)
       } else {
         (array_empty(), i + 1)
       }
       if next < 0 {
         (RtIndet, 0 - 1)
       } else {
-        match row_word_class(tok, marked, Array::length(args)) {
+        match row_word_class(tok, mode, Array::length(args)) {
           RtHead(h, _) => (RtHead(h, args), next),
           other => (other, next)
         }
@@ -2781,7 +2803,7 @@ fn row_ty_parse(toks: Array[String], i: Int, marked: Bool) -> (RowTy, Int) {
 
 /// Comma-separated types up to the closing token `close`; returns the items
 /// and the index after `close`, or -1.
-fn row_ty_parse_list(toks: Array[String], start: Int, close: String, marked: Bool) -> (Array[RowTy], Int) {
+fn row_ty_parse_list(toks: Array[String], start: Int, close: String, mode: Int) -> (Array[RowTy], Int) {
   let items = array_empty()
   if start < Array::length(toks) && Array::get(toks, start) == close {
     (items, start + 1)
@@ -2789,7 +2811,7 @@ fn row_ty_parse_list(toks: Array[String], start: Int, close: String, marked: Boo
     let mut i = start
     let mut done = false
     while !done {
-      let (t, next) = row_ty_parse(toks, i, marked)
+      let (t, next) = row_ty_parse(toks, i, mode)
       if next < 0 || next >= Array::length(toks) {
         i = 0 - 1
         done = true
@@ -2813,7 +2835,7 @@ fn row_ty_parse_list(toks: Array[String], start: Int, close: String, marked: Boo
 
 /// A label's argument list (`State[A, B]` -> [A, B]); None when it has no
 /// brackets or does not parse.
-fn row_label_arg_tys(label: String, marked: Bool) -> Option[Array[RowTy]] {
+fn row_label_arg_tys(label: String, mode: Int) -> Option[Array[RowTy]] {
   let args = row_label_args(label)
   if String::length(args) == 0 {
     None
@@ -2822,7 +2844,7 @@ fn row_label_arg_tys(label: String, marked: Bool) -> Option[Array[RowTy]] {
       Some(toks) => {
         // Read the list as if closed by a `]`, which must be the last token.
         Array::push(toks, "]")
-        let (items, next) = row_ty_parse_list(toks, 0, "]", marked)
+        let (items, next) = row_ty_parse_list(toks, 0, "]", mode)
         if next == Array::length(toks) {
           Some(items)
         } else {
@@ -2885,22 +2907,17 @@ fn row_ty_lists_differ(xs: Array[RowTy], ys: Array[RowTy]) -> Bool {
 ///
 /// A requirement spelled `=Label` is a callback parameter's row as written:
 /// its words were written where the parameter was declared, so it is read
-/// like a declared row -- but only while no nested binder stands between,
-/// because that binder may rebind a word the annotation meant otherwise.
+/// like a declared row, except for a word a nested binder rebinds (mode 2).
 fn row_label_args_differ(declared: String, marked: String) -> Bool {
   if row_scope_has(row_scope_unknown()) || String::length(marked) == 0 {
     false
   } else if String::starts_with(marked, "=") {
-    if row_scope_decl_is_root() {
-      match (row_label_arg_tys(declared, false), row_label_arg_tys(String::substring(marked, 1, String::length(marked)), false)) {
-        (Some(ds), Some(ms)) => Array::length(ds) == Array::length(ms) && row_ty_lists_differ(ds, ms),
-        _ => false
-      }
-    } else {
-      false
+    match (row_label_arg_tys(declared, 0), row_label_arg_tys(String::substring(marked, 1, String::length(marked)), 2)) {
+      (Some(ds), Some(ms)) => Array::length(ds) == Array::length(ms) && row_ty_lists_differ(ds, ms),
+      _ => false
     }
   } else {
-    match (row_label_arg_tys(declared, false), row_label_arg_tys(marked, true)) {
+    match (row_label_arg_tys(declared, 0), row_label_arg_tys(marked, 1)) {
       (Some(ds), Some(ms)) => Array::length(ds) == Array::length(ms) && row_ty_lists_differ(ds, ms),
       _ => false
     }
