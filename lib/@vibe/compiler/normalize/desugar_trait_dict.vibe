@@ -10114,7 +10114,13 @@ fn interp_expand_checked(arg: Expr, derived_only: Bool, gens: Array[DictGen], tr
   // literal, but a payload it cannot type -- `Some(k())` through a local
   // lambda -- was rendered by the pointer heuristic (`Some(0)` for
   // `Some(false)`); the checker knows it.
-  let typed_sh = if dtd_interp_expands_itself(syn_sh, head) {
+  // #3081 review: an argument with no offset (an `if`, a `match`, a block)
+  // has no syntactic head either, so the gate below would never ask; it is
+  // shaped from its arms (`dtd_offsetless_shape`), and `interp_shape` keeps
+  // only a composite answer.
+  let typed_sh = if typed_lowering_arg_offset(arg) < 0 {
+    interp_shape(dtd_offsetless_shape(arg, struct_sets, var_types, fn_returns))
+  } else if dtd_interp_expands_itself(syn_sh, head) {
     dtd_typed_render_shape_for(arg)
   } else {
     ""
@@ -22245,6 +22251,67 @@ fn dtd_typed_item_shape_at(off: Int) -> String {
 
 /// #3081: an element's shape -- the checker's when it filed one, else the
 /// syntactic answer.
+/// #3081 review: the shape of an argument with no offset of its own -- an
+/// `if`, a `match`, a block, a binder -- from its arms. Each arm answers with
+/// its own wrapper descent, else the checker's row at its offset, else its
+/// syntactic shape (which reads a literal's elements through their rows,
+/// `infer_item_shape`). Arms that answer must agree; a disagreement answers
+/// "" and the argument keeps its old path.
+fn dtd_offsetless_shape(e: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
+  match e {
+    EIf(_, t, f) => dtd_typed_item_shape_join(dtd_offsetless_arm_shape(t, struct_sets, var_types, fn_returns), dtd_offsetless_arm_shape(f, struct_sets, var_types, fn_returns)),
+    ESeq(_, second) => dtd_offsetless_arm_shape(second, struct_sets, var_types, fn_returns),
+    EMatch(_, arms) => {
+      let mut acc = ""
+      let mut ok = true
+      let mut i = 0
+      while i < Array::length(arms) && ok {
+        let (_, body) = Array::get(arms, i)
+        let sh = dtd_offsetless_arm_shape(body, struct_sets, var_types, fn_returns)
+        if String::length(sh) == 0 {
+          ()
+        } else if String::length(acc) == 0 {
+          acc = sh
+        } else if acc != sh {
+          ok = false
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      if ok {
+        acc
+      } else {
+        ""
+      }
+    },
+    ELet(nm, val, body, _) => dtd_offsetless_binder_shape(nm, val, body, struct_sets, var_types, fn_returns),
+    ELetRec(nm, val, body) => dtd_offsetless_binder_shape(nm, val, body, struct_sets, var_types, fn_returns),
+    ELetMut(nm, val, body, _) => dtd_offsetless_binder_shape(nm, val, body, struct_sets, var_types, fn_returns),
+    _ => ""
+  }
+}
+
+fn dtd_offsetless_arm_shape(e: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
+  let through = dtd_offsetless_shape(e, struct_sets, var_types, fn_returns)
+  if String::length(through) > 0 {
+    through
+  } else {
+    infer_item_shape(e, struct_sets, var_types, fn_returns)
+  }
+}
+
+fn dtd_offsetless_binder_shape(name: String, value: Expr, body: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
+  match body {
+    EIdent(bn, _) => if bn == name {
+      dtd_offsetless_arm_shape(value, struct_sets, var_types, fn_returns)
+    } else {
+      ""
+    },
+    _ => ""
+  }
+}
+
 fn infer_item_shape(e: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
   let typed = dtd_typed_item_shape_for(e)
   if String::length(typed) > 0 {
