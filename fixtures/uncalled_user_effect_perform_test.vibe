@@ -1,0 +1,41 @@
+// #3071: a function that performs a user effect but is never called under a
+// handler keeps its raw `perform`. The linear lane lowers that perform to a
+// trapping unhandled-effect leg; the gc lane refused the whole program with
+// `GC codegen: unsupported perform (no builtin mapping): Ef0::Ask`. An uncalled
+// function must not break the build, on either lane.
+effect Ef0 {
+  Ask(Int) -> Int
+}
+
+fn unused(n: Int) -> Int with Ef0 {
+  perform Ef0::Ask(n)
+}
+
+effect Cfg {
+  Get(Int) -> Int
+}
+
+// The exported-callee shape from the issue thread: every call site is handled
+// by an arm that leaves with `return`, so each one takes the suspend-lowered
+// clone, and this exported original keeps its raw `perform`.
+export fn ask(n: Int) -> Int with Cfg {
+  let a = perform Cfg::Get(n)
+  a + 100
+}
+
+fn handled_by_return() -> Int {
+  let r = handle {
+    ask(3) + 1
+  } with {
+    Cfg::Get(x) => return x + 40
+  }
+  r * 10
+}
+
+test "an uncalled user-effect function does not break the build" {
+  inspect(7, "7")
+}
+
+test "a callee whose handler leaves with return answers through it" {
+  inspect(handled_by_return(), "43")
+}

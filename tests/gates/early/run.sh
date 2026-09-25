@@ -383,12 +383,12 @@ if [ ! -s "$hmdir/fill.wasm" ]; then
   exit 1
 fi
 set +e
-hm_out="$(timeout 60 env VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$hmdir/fill.wasm" 2>&1)"
+hm_out="$(run_bounded 60 env VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$hmdir/fill.wasm" 2>&1)"
 hm_rc=$?
 set -e
 rm -rf "$hmdir"
 if [ "$hm_rc" -eq 124 ]; then
-  echo "[compiler-gate] FAIL: a full table made insert_raw spin -- the probe had to be killed at the timeout (#2362)" >&2
+  echo "[compiler-gate] FAIL: a full table made insert_raw spin -- the probe had to be killed at the time limit (#2362)" >&2
   printf '%s\n' "$hm_out" >&2
   exit 1
 fi
@@ -2163,6 +2163,51 @@ run_test_block_fixtures_rc() {
   done
 }
 
+# #3069: the FLAT single-source linear lane -- `cli_main` with no
+# VIBE_FS_COMPILE, the lane the compiler's own stage build and the fuzz
+# harness's bump / rc columns use. Every other runner above selects the FS
+# lane, so a construct this lane alone refuses went unseen here: it ran the
+# trait-dictionary desugar before the checker and rejected every trait impl.
+# Both allocators, each selected inline (#2248).
+run_test_block_fixtures_flat() {
+  local label="$1"; shift
+  local fx fxout
+  [ "$#" -gt 0 ] || { echo "[compiler-gate] FAIL: $label matched no fixtures" >&2; exit 1; }
+  for fx in "$@"; do
+    [ -f "$fx" ] || { echo "[compiler-gate] FAIL: $label: no such fixture '$fx'" >&2; exit 1; }
+    fxout="_build/_gate_tbfflat_bump_$(basename "${fx%.vibe}").wasm"
+    rm -f "$fxout" "$fxout.diag"
+    env -u VIBE_FS_COMPILE VIBE_RC=0 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+      bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+      "$fx" "$fxout" __no_entry__ >/dev/null 2>&1 || true
+    if [ ! -s "$fxout" ]; then
+      echo "[compiler-gate] FAIL: $fx did not compile on the flat single-source lane, bump ($label)" >&2
+      cat "$fxout.diag" >&2 2>/dev/null; exit 1
+    fi
+    if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+        --invoke _start "$fxout" >/dev/null 2>&1; then
+      echo "[compiler-gate] FAIL: $fx has a failing test on the flat single-source lane, bump ($label)" >&2
+      exit 1
+    fi
+    rm -f "$fxout" "$fxout.diag" "$fxout.funcmap"
+    fxout="_build/_gate_tbfflat_rc_$(basename "${fx%.vibe}").wasm"
+    rm -f "$fxout" "$fxout.diag"
+    env -u VIBE_FS_COMPILE VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+      bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+      "$fx" "$fxout" __no_entry__ >/dev/null 2>&1 || true
+    if [ ! -s "$fxout" ]; then
+      echo "[compiler-gate] FAIL: $fx did not compile on the flat single-source lane, RC ($label)" >&2
+      cat "$fxout.diag" >&2 2>/dev/null; exit 1
+    fi
+    if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+        --invoke _start "$fxout" >/dev/null 2>&1; then
+      echo "[compiler-gate] FAIL: $fx has a failing test on the flat single-source lane, RC ($label)" >&2
+      exit 1
+    fi
+    rm -f "$fxout" "$fxout.diag" "$fxout.funcmap"
+  done
+}
+
 # 15b. extended derive(...) regression (#638 / #694): enum `derive(Ord/Show)`,
 #      struct + enum `derive(Default)`, `derive(Eq)`, and `derive(Hash)`
 #      including transparent Map keys — `map_key_to_string = [K: Hash](key) ->
@@ -2330,8 +2375,12 @@ rm -rf "$urdir"; mkdir -p "$urdir"
 # An optional fourth argument `gc` compiles through the wasm-gc backend
 # (#3068: that lane printed the address where linear refused). The selector is
 # written inline in each command, never routed through a variable (#2248).
+# An optional fifth argument is the site the refusal must name, as the
+# `<path>: line L:C` prefix of the diagnostic (#3090: the refusals raised after
+# the merge -- in normalize or in codegen -- used to carry no position on either
+# lane, so the build said what to edit but not where).
 ur_refused() {
-  local ur_src="$1" ur_msg="$2" ur_edit="$3" ur_lane="${4:-linear}"
+  local ur_src="$1" ur_msg="$2" ur_edit="$3" ur_lane="${4:-linear}" ur_at="${5:-}"
   local ur_wasm="$urdir/$(basename "${ur_src%.vibe}")_$ur_lane.wasm"
   if [ "$ur_lane" = gc ]; then
     VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
@@ -2354,47 +2403,62 @@ ur_refused() {
     echo "[compiler-gate] FAIL: $ur_src refusal does not name the edit ($ur_edit)" >&2
     cat "$ur_wasm.diag" >&2 2>/dev/null; exit 1
   fi
+  # The site must START the diagnostic: a position quoted inside the message
+  # text is not the diagnostic's location.
+  if [ -n "$ur_at" ] && [ "$(head -1 "$ur_wasm.diag" | cut -c1-${#ur_at})" != "$ur_at" ]; then
+    echo "[compiler-gate] FAIL: $ur_src refusal on $ur_lane does not lead with its site ($ur_at) (#3090)" >&2
+    cat "$ur_wasm.diag" >&2 2>/dev/null; exit 1
+  fi
 }
-ur_refused fixtures/err_interp_unrenderable_bytes_refused.vibe 'cannot interpolate a `Bytes` value' 'Bytes::to_array(b)'
-ur_refused fixtures/err_interp_unrenderable_field_refused.vibe 'cannot interpolate field `tags`' 'bind it with a type annotation'
-ur_refused fixtures/err_interp_unrenderable_shadow_refused.vibe 'cannot interpolate `shadowed`' 'bind it with a type annotation'
+ur_refused fixtures/err_interp_unrenderable_bytes_refused.vibe 'cannot interpolate a `Bytes` value' 'Bytes::to_array(b)' linear 'fixtures/err_interp_unrenderable_bytes_refused.vibe: line 7:17'
+ur_refused fixtures/err_interp_unrenderable_field_refused.vibe 'cannot interpolate field `tags`' 'bind it with a type annotation' linear 'fixtures/err_interp_unrenderable_field_refused.vibe: line 10:17'
+ur_refused fixtures/err_interp_unrenderable_shadow_refused.vibe 'cannot interpolate `shadowed`' 'bind it with a type annotation' linear 'fixtures/err_interp_unrenderable_shadow_refused.vibe: line 14:23'
 # #3068: an `Option[Int]` from `Int::parse`, inline and through a name.
-ur_refused fixtures/err_interp_unrenderable_parse_call_refused.vibe 'cannot interpolate the result of `Int::parse`' 'bind it with a type annotation'
-ur_refused fixtures/err_interp_unrenderable_parse_bound_refused.vibe 'cannot interpolate `p`' 'bind it with a type annotation'
+ur_refused fixtures/err_interp_unrenderable_parse_call_refused.vibe 'cannot interpolate the result of `Int::parse`' 'bind it with a type annotation' linear 'fixtures/err_interp_unrenderable_parse_call_refused.vibe: line 7:14'
+ur_refused fixtures/err_interp_unrenderable_parse_bound_refused.vibe 'cannot interpolate `p`' 'bind it with a type annotation' linear 'fixtures/err_interp_unrenderable_parse_bound_refused.vibe: line 6:14'
 # #3068: the gc lane refuses every one of these with the same message. It had
 # none of the codegen refusals and printed the address (`809`, `177`, `224`).
-ur_refused fixtures/err_interp_unrenderable_bytes_refused.vibe 'cannot interpolate a `Bytes` value' 'Bytes::to_array(b)' gc
-ur_refused fixtures/err_interp_unrenderable_field_refused.vibe 'cannot interpolate field `tags`' 'bind it with a type annotation' gc
-ur_refused fixtures/err_interp_unrenderable_shadow_refused.vibe 'cannot interpolate `shadowed`' 'bind it with a type annotation' gc
-ur_refused fixtures/err_interp_unrenderable_parse_call_refused.vibe 'cannot interpolate the result of `Int::parse`' 'bind it with a type annotation' gc
-ur_refused fixtures/err_interp_unrenderable_parse_bound_refused.vibe 'cannot interpolate `p`' 'bind it with a type annotation' gc
+ur_refused fixtures/err_interp_unrenderable_bytes_refused.vibe 'cannot interpolate a `Bytes` value' 'Bytes::to_array(b)' gc 'fixtures/err_interp_unrenderable_bytes_refused.vibe: line 7:17'
+ur_refused fixtures/err_interp_unrenderable_field_refused.vibe 'cannot interpolate field `tags`' 'bind it with a type annotation' gc 'fixtures/err_interp_unrenderable_field_refused.vibe: line 10:17'
+ur_refused fixtures/err_interp_unrenderable_shadow_refused.vibe 'cannot interpolate `shadowed`' 'bind it with a type annotation' gc 'fixtures/err_interp_unrenderable_shadow_refused.vibe: line 14:23'
+ur_refused fixtures/err_interp_unrenderable_parse_call_refused.vibe 'cannot interpolate the result of `Int::parse`' 'bind it with a type annotation' gc 'fixtures/err_interp_unrenderable_parse_call_refused.vibe: line 7:14'
+ur_refused fixtures/err_interp_unrenderable_parse_bound_refused.vibe 'cannot interpolate `p`' 'bind it with a type annotation' gc 'fixtures/err_interp_unrenderable_parse_bound_refused.vibe: line 6:14'
 # #3080: an index-form slice whose subject's shape is unresolved. The slice call
 # had no source offset, so no row reached codegen and both lanes printed an
 # address. The message names the syntax, not the internal `__slice`.
-ur_refused fixtures/err_interp_unrenderable_slice_field_refused.vibe 'cannot interpolate this slice (`xs[a:b]`)' 'bind it with a type annotation'
-ur_refused fixtures/err_interp_unrenderable_slice_field_refused.vibe 'cannot interpolate this slice (`xs[a:b]`)' 'bind it with a type annotation' gc
+ur_refused fixtures/err_interp_unrenderable_slice_field_refused.vibe 'cannot interpolate this slice (`xs[a:b]`)' 'bind it with a type annotation' linear 'fixtures/err_interp_unrenderable_slice_field_refused.vibe: line 13:21'
+ur_refused fixtures/err_interp_unrenderable_slice_field_refused.vibe 'cannot interpolate this slice (`xs[a:b]`)' 'bind it with a type annotation' gc 'fixtures/err_interp_unrenderable_slice_field_refused.vibe: line 13:21'
 # #3075: a function value, bare or inside a container, has no text form.
-ur_refused fixtures/err_interp_function_payload_refused.vibe 'cannot interpolate a function value' 'interpolate what it returns'
-ur_refused fixtures/err_interp_function_value_refused.vibe 'cannot interpolate a function value' 'interpolate what it returns'
+ur_refused fixtures/err_interp_function_payload_refused.vibe 'cannot interpolate a function value' 'interpolate what it returns' linear 'fixtures/err_interp_function_payload_refused.vibe: line 6:14'
+ur_refused fixtures/err_interp_function_value_refused.vibe 'cannot interpolate a function value' 'interpolate what it returns' linear 'fixtures/err_interp_function_value_refused.vibe: line 5:14'
 # #3074: a generic enum whose instantiation cannot be recovered would render
 # its payload through the erased formal (`GA(1)` for `GA(true)`).
-ur_refused fixtures/err_interp_generic_enum_unknown_refused.vibe 'its type arguments are not known here' 'bind it with a type annotation'
+ur_refused fixtures/err_interp_generic_enum_unknown_refused.vibe 'its type arguments are not known here' 'bind it with a type annotation' linear 'fixtures/err_interp_generic_enum_unknown_refused.vibe: line 12:4'
 # #3082: a recursive generic struct at an argument its erased renderer cannot
 # print (that one used to overflow the compiler's stack). The unknown-
 # instantiation struct program this row used to refuse renders by content
 # since #3088 (generic_field_projection_render_test.vibe).
-ur_refused fixtures/err_interp_generic_struct_recursive_refused.vibe 'cannot interpolate a recursive `L`' 'render the value with a function you write'
+ur_refused fixtures/err_interp_generic_struct_recursive_refused.vibe 'cannot interpolate a recursive `L`' 'render the value with a function you write' linear 'fixtures/err_interp_generic_struct_recursive_refused.vibe: line 12:14'
 ur_refused fixtures/err_derive_show_recursive_generic_field_refused.vibe 'a derived renderer contains a recursive `L`' 'write the containing type'
 # #3092: a function or `Bytes` inside a derived renderer, declared or reached
 # through a type argument, printed a table index or an address.
 ur_refused fixtures/err_derive_show_fn_field_refused.vibe 'a derived renderer contains a function value' 'write the type'
 ur_refused fixtures/err_derive_show_bytes_field_refused.vibe 'a derived renderer contains a `Bytes` value' 'write the type'
-ur_refused fixtures/err_derive_show_generic_fn_arg_refused.vibe 'cannot interpolate a function value' 'interpolate what it returns'
+ur_refused fixtures/err_derive_show_generic_fn_arg_refused.vibe 'cannot interpolate a function value' 'interpolate what it returns' linear 'fixtures/err_derive_show_generic_fn_arg_refused.vibe: line 14:14'
 ur_refused fixtures/err_derive_show_fn_field_refused.vibe 'a derived renderer contains a function value' 'write the type' gc
-ur_refused fixtures/err_derive_show_generic_fn_arg_refused.vibe 'cannot interpolate a function value' 'interpolate what it returns' gc
+ur_refused fixtures/err_derive_show_generic_fn_arg_refused.vibe 'cannot interpolate a function value' 'interpolate what it returns' gc 'fixtures/err_derive_show_generic_fn_arg_refused.vibe: line 14:14'
 # #3084: a generic function's result typed, at the call site, as a struct with
 # no renderer printed its address; the checker's row names the struct.
-ur_refused fixtures/err_interp_generic_call_missing_show_refused.vibe 'cannot interpolate a value of type `Hidden`' 'add `derive(Show)` to `Hidden`'
+ur_refused fixtures/err_interp_generic_call_missing_show_refused.vibe 'cannot interpolate a value of type `Hidden`' 'add `derive(Show)` to `Hidden`' linear 'fixtures/err_interp_generic_call_missing_show_refused.vibe: line 14:14'
+# #3090: the gc lane names the same site as linear for the refusals above that
+# had a linear row only. Those raised after the merge (normalize and codegen)
+# carried no position on EITHER lane; the merge's offset space now locates
+# them (core/merged_offset_space.vibe).
+ur_refused fixtures/err_interp_function_payload_refused.vibe 'cannot interpolate a function value' 'interpolate what it returns' gc 'fixtures/err_interp_function_payload_refused.vibe: line 6:14'
+ur_refused fixtures/err_interp_function_value_refused.vibe 'cannot interpolate a function value' 'interpolate what it returns' gc 'fixtures/err_interp_function_value_refused.vibe: line 5:14'
+ur_refused fixtures/err_interp_generic_enum_unknown_refused.vibe 'its type arguments are not known here' 'bind it with a type annotation' gc 'fixtures/err_interp_generic_enum_unknown_refused.vibe: line 12:4'
+ur_refused fixtures/err_interp_generic_struct_recursive_refused.vibe 'cannot interpolate a recursive `L`' 'render the value with a function you write' gc 'fixtures/err_interp_generic_struct_recursive_refused.vibe: line 12:14'
+ur_refused fixtures/err_interp_generic_call_missing_show_refused.vibe 'cannot interpolate a value of type `Hidden`' 'add `derive(Show)` to `Hidden`' gc 'fixtures/err_interp_generic_call_missing_show_refused.vibe: line 14:14'
 # #3019 rides the same helper: a lowering-time refusal asserted on its message
 # and its edit, not on the bare fact that the build failed.
 ur_refused fixtures/err_handle_resume_capture_loop_break_refused.vibe 'leaves a loop outside it' 'set a flag inside the handle'
@@ -2879,6 +2943,43 @@ run_test_block_fixtures_gc "string length views (gc)" fixtures/string_length_int
 run_test_block_fixtures_rc "string length views (linear, RC)" fixtures/string_length_intrinsics_test.vibe
 echo '[compiler-gate] string length views ok'
 
+# 15b-3c2. #3069: trait impls and bounded generics on the flat single-source
+#          linear lane, with the FS lanes answering the same fixture.
+echo '[compiler-gate] 15b-3c2/15 trait dictionaries on the flat single-source lane (#3069)'
+run_test_block_fixtures "trait dict (linear, bump)" fixtures/trait_dict_flat_lane_test.vibe
+run_test_block_fixtures_gc "trait dict (gc)" fixtures/trait_dict_flat_lane_test.vibe
+run_test_block_fixtures_flat "trait dict (flat single-source)" fixtures/trait_dict_flat_lane_test.vibe
+echo '[compiler-gate] trait dictionaries on the flat lane ok'
+
+# 15b-3c2'. #3098: the same order on the linked-library lane. `vibe build
+#           --debug` compiles each linked dependency alone through
+#           `compile_file_wasi_library`, which desugared trait dictionaries
+#           BEFORE the check: a library with an impl and a `[T: Tr]` generic
+#           was refused (``no impl `Measured` for `Self` ``, `__dict_` prefix,
+#           `EqDict::equals` at arity 3). Build it, then run the entry with the
+#           library preloaded: 70 + 100 + 1 + 0 + 1.
+echo '[compiler-gate] 15b-3c2'"'"' trait dictionaries in a linked debug library (#3098)'
+lldir="_build/_gate_linked_library_trait_dict"
+rm -rf "$lldir"; mkdir -p "$lldir"
+ll_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  build --debug fixtures/linked_library_trait_dict/main.vibe -o "$lldir/main.wasm" --entry _start 2>&1 || true)"
+if [ ! -s "$lldir/main.wasm" ] || [ ! -s "$lldir/main.debug/lib.wasm" ]; then
+  echo "[compiler-gate] FAIL: build --debug of a trait library produced no main/lib wasm (#3098)" >&2
+  printf '%s\n' "$ll_out" >&2; exit 1
+fi
+if bash scripts/wasmtime_run.sh --version >/dev/null 2>&1; then
+  ll_res="$(run_bounded 60 bash scripts/wasmtime_run.sh run --preload lib="$lldir/main.debug/lib.wasm" \
+    --invoke _start "$lldir/main.wasm" 2>&1 | tr -dc '0-9-' || true)"
+  if [ "$ll_res" != "172" ]; then
+    echo "[compiler-gate] FAIL: linked debug trait library answered '$ll_res' (expected 172) (#3098)" >&2; exit 1
+  fi
+  echo '[compiler-gate] linked debug trait library ok (172)'
+else
+  echo '[compiler-gate] linked debug trait library compiled; SKIP run: wasmtime not available'
+fi
+rm -rf "$lldir"
+
 # 15b-3c'. #3067: `String::substring` clamps its indices on every lane. The gc
 #          lane used its own body with no bounds checks and read the bytes
 #          around the string (`("beta", 0, 5)` answered `beta]`).
@@ -2932,6 +3033,17 @@ run_test_block_fixtures "aggregate Double equality (linear, bump)" fixtures/tupl
 run_test_block_fixtures_gc "aggregate Double equality (gc)" fixtures/tuple_double_eq_test.vibe
 run_test_block_fixtures_rc "aggregate Double equality (linear, RC)" fixtures/tuple_double_eq_test.vibe
 echo '[compiler-gate] aggregate Double equality ok'
+
+# 15b-5. #3071: a function that performs a user effect with no handler reaching
+#        it keeps its raw `perform` -- a function nobody calls, or an exported
+#        callee whose every call site took the suspend-lowered clone. The linear
+#        lane lowers it to an unhandled-effect trap; the gc lane refused the
+#        whole program (`unsupported perform (no builtin mapping)`).
+echo '[compiler-gate] 15b-5/15 an uncalled user-effect perform compiles on every lane (#3071)'
+run_test_block_fixtures "uncalled user-effect perform (linear, bump)" fixtures/uncalled_user_effect_perform_test.vibe
+run_test_block_fixtures_gc "uncalled user-effect perform (gc)" fixtures/uncalled_user_effect_perform_test.vibe
+run_test_block_fixtures_rc "uncalled user-effect perform (linear, RC)" fixtures/uncalled_user_effect_perform_test.vibe
+echo '[compiler-gate] uncalled user-effect perform ok'
 
 # 15c. railway `let*` / `?` generalized to Option (#635): the parser emits a
 #      type-directed sentinel that the pre-check desugar lowers by the operand's

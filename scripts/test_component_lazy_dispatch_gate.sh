@@ -38,13 +38,24 @@ cd "$ROOT_DIR"
 COMPILER="${VIBE_COMPONENT_LAZY_COMPILER:-$ROOT_DIR/bootstrap/seed/compiler.wasm}"
 WORK="${VIBE_COMPONENT_LAZY_WORK:-$ROOT_DIR/_build/component_lazy}"
 BUILD_ONLY=0
+PRINT_SOURCES_HASH=0
 for arg in "$@"; do
   case "$arg" in
     --fixtures) ;;
     --build-only) BUILD_ONLY=1 ;;
-    *) echo "usage: $0 [--build-only]   (VIBE_COMPONENT_LAZY_WORK picks the fixture dir)" >&2; exit 2 ;;
+    # Print the fixture cache key and stop, before anything is built. The
+    # self-test asks this of a COPY of lib/ (below), so proving that the key
+    # covers the compiler sources no longer means editing a tracked file in
+    # the live checkout (#2899).
+    --print-sources-hash) PRINT_SOURCES_HASH=1 ;;
+    *) echo "usage: $0 [--build-only | --print-sources-hash]   (VIBE_COMPONENT_LAZY_WORK picks the fixture dir)" >&2; exit 2 ;;
   esac
 done
+# The tree whose lib/ the cache key hashes. VIBE_COMPONENT_LAZY_SOURCES_ROOT
+# exists for the self-test alone, which points it at a scratch copy so it can
+# mutate a compiler source without touching the checkout; every real run
+# hashes the tree the build reads.
+SOURCES_ROOT="${VIBE_COMPONENT_LAZY_SOURCES_ROOT:-$ROOT_DIR}"
 
 fail() { echo "[component-lazy] FAIL: $*" >&2; exit 1; }
 
@@ -98,8 +109,8 @@ sources_hash() {
     # reusing yesterday's artifacts and the gate green about code it never ran
     # (Codex review of #2861). Over-approximating costs a rebuild the gate
     # would mostly have paid anyway; under-approximating costs the guarantee.
-    find lib -type f \( -name '*.vibe' -o -name '*.vibex' -o -name '*.vpkg' \) 2>/dev/null \
-      | LC_ALL=C sort | while IFS= read -r f; do printf '%s ' "$f"; hash_stdin < "$f"; done
+    ( cd "$SOURCES_ROOT" && find lib -type f \( -name '*.vibe' -o -name '*.vibex' -o -name '*.vpkg' \) 2>/dev/null \
+      | LC_ALL=C sort | while IFS= read -r f; do printf '%s ' "$f"; hash_stdin < "$f"; done )
     printf '%s ' "launcher"; hash_stdin < "$LAUNCHER"
     printf '%s ' "runner"; hash_stdin < "$RUNNER"
     printf '%s ' "gate"; hash_stdin < "$ROOT_DIR/scripts/test_component_lazy_dispatch_gate.sh"
@@ -259,6 +270,10 @@ VIBE
 }
 
 want="$(sources_hash)"
+if [ "$PRINT_SOURCES_HASH" = 1 ]; then
+  printf '%s\n' "$want"
+  exit 0
+fi
 if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP" 2>/dev/null)" != "$want" ]; then
   echo "[component-lazy] building fixtures ($want)"
   rm -rf "$WORK"

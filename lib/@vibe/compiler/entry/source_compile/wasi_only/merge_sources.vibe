@@ -13,7 +13,7 @@ import @vibe/compiler/codegen/wasi {
 }
 
 import @vibe/compiler/normalize {
-  desugar_inspect_calls, validate_serializable_reexport_references
+  desugar_inspect_calls, desugar_trait_dicts_with_typed_eq, validate_serializable_reexport_references
 }
 
 import @vibe/compiler/syntax {
@@ -60,7 +60,7 @@ import ./path_utils.vibe {
 }
 
 import ./preprocess.vibe {
-  expand_interp_stmts, strip_generic_type_params
+  expand_interp_only, expand_interp_stmts, strip_generic_type_params
 }
 
 import @vibe/compiler/loader {
@@ -797,13 +797,17 @@ export fn compile_file_wasi_only(entry_path: String, entry_name: String) -> Byte
   let stmts = empty_stmt_array()
   let visited = path_set_new()
   collect_merged_stmts_recursive(entry_path, stmts, visited)
-  expand_interp_stmts(stmts)
+  // #3098: interpolation only; the trait-dictionary desugar runs after the
+  // check (the #3069 order), or the checker sees its own lowering.
+  expand_interp_only(stmts)
   // Type-check BEFORE stripping generic type params: a generic function like
   // `[T: Ord](a: T, b: T) -> T { a < b }` only checks if `T` is a bound type
   // variable. Stripping first leaves `T` a concrete `CtNamed("T")`, so the
   // Ord-constrained `<` fails to resolve. Stripping happens after the check,
   // for monomorphic codegen.
   let _ = check_program(stmts)
+  // Unlocated parse: no typed-`==` rows to pass.
+  desugar_trait_dicts_with_typed_eq(stmts, array_empty(), array_empty())
   strip_generic_type_params(stmts)
   compile_wasi_module_impl(stmts, entry_name)
 }

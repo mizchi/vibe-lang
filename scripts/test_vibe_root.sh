@@ -298,16 +298,13 @@ case "$got" in *"vibe-grep-file-list-v1"*) fail "the banner reached the sweep as
 # path stays one line -- the same answer #2723 gave for `vibe symbols` NAME
 # fields, after the same defect.
 #
-# Driven from a HAND-WRITTEN list, not from `--list-files`, and that is the
-# honest scope. `Fs::readdir` frames entry names as one "\n"-joined string at
-# the host boundary and splits them guest-side (#729/#730, see
-# `fs_read_dir` in scripts/wasm_vibe_host_runner.js; filed as #2957), so a newline in a
-# filename is already destroyed before any walk-based listing can escape it --
-# measured: the walk yields `sub/nl/ird.vibe`, with the `we` fragment dropped
-# for not ending in `.vibe`. That is a hole one layer below this list format
-# and outside this change; escaping cannot reach it. What escaping DOES
-# guarantee is that a path which reaches the list survives it, and reading the
-# file by its exact name works regardless of readdir.
+# Driven first from a HAND-WRITTEN list, which proves the decoder on its own,
+# and then from the walk itself (`--list-files`), which proves the name
+# reaches the list intact. The walk half used to be impossible: `Fs::readdir`
+# framed entry names as one "\n"-joined string at the host boundary, so the
+# walk yielded `sub/nl/ird.vibe` with the `we` fragment dropped for not ending
+# in `.vibe`. #2957 moved that framing to NUL (`fs_read_dir_nul`), the one byte
+# a POSIX name cannot hold, so the walk now lists the real name.
 nl_dir="$app/sub/nl"
 nl_name="$nl_dir/we"$'\n'"ird.vibe"
 mkdir -p "$nl_dir"
@@ -320,6 +317,12 @@ if [ -e "$nl_name" ] && [ "$(printf '%s' "$nl_name" | wc -l | tr -d ' ')" = "1" 
   got="$(cd "$app/sub" && vibe grep --file-list=./esc_list.txt --pattern 'Array::length($(x:exp))' . 2>&1)" \
     || fail "an escaped newline path was not decoded back to a real file: $got"
   case "$got" in *"ird.vibe:2:3"*) ;; *) fail "no match from the newline-named file: $got" ;; esac
+  # The walk lists the newline-named file as ONE escaped path (#2957), and the
+  # fragments the "\n" readdir framing produced are gone.
+  got="$(cd "$app/sub" && vibe grep --list-files --pattern 'Array::length($(x:exp))' ./nl 2>&1)" \
+    || fail "vibe grep --list-files over a newline-named file failed: $got"
+  case "$got" in *'sub/nl/we\nird.vibe'*) ;; *) fail "the walk did not list the newline-named file as one escaped path: $got" ;; esac
+  case "$got" in *'sub/nl/ird.vibe'*) fail "readdir split a newline-named file into fake entries: $got" ;; *) ;; esac
   # The control: the SAME list without the banner must NOT be decoded, because
   # a hand-written list is not in the encoded format and a literal backslash
   # belongs to the path.
@@ -329,7 +332,7 @@ if [ -e "$nl_name" ] && [ "$(printf '%s' "$nl_name" | wc -l | tr -d ' ')" = "1" 
 hand-written path is being rewritten: $got"
   case "$got" in *"file-list entry not found"*) ;; *) fail "expected a named
 missing entry for the undecoded literal path, got: $got" ;; esac
-  pass "an escaped newline decodes back to the real name; a bannerless list is left alone"
+  pass "an escaped newline decodes back to the real name; the walk lists it as one path; a bannerless list is left alone"
 else
   note "  skip: this filesystem rejected a newline in a filename"
 fi

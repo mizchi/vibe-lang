@@ -9950,8 +9950,21 @@ fn comp_emit_string_handler_impl(core_wasm: Bytes, target_func_name: String, exp
 //
 //   import read-file:  func(path: string) -> string
 //   import exists:     func(path: string) -> bool
-//   import read-dir:   func(path: string) -> string   (newline-joined names)
+//   import read-dir-nul: func(path: string) -> string (NUL-joined names)
 //   import stat-token: func(path: string) -> s64      (-1 = non-regular)
+//
+// `read-dir-nul` joins entry names with NUL, the one byte a POSIX name cannot
+// contain (#2957); its "\n"-joined predecessor `read-dir` split a name holding
+// a newline into fake entries. The name changed with the framing so that a
+// component and a host that disagree about it fail to link instead of
+// answering wrongly. Inside the component the adapter module still calls the
+// lowered function `vfs.read-dir`; that name is private to this layout.
+//
+// A core built by a compiler from before #2957 (the committed seed, which
+// `build_vibec.sh` uses by default) still imports `vibe.fs_read_dir` and
+// splits on "\n". Such a core is wrapped with the legacy `read-dir` import
+// instead, so each side keeps the framing it was built for; routing it to the
+// stub would trap on the first directory walk (#3107 review).
 //
 // Instantiation is circular on paper (main imports vfs; lowering vfs needs
 // main's memory), so we break it with wit-component's shim/fixup dance:
@@ -9964,9 +9977,9 @@ fn comp_emit_string_handler_impl(core_wasm: Bytes, target_func_name: String, exp
 
 /// Raw-sig forwarder module: table 4 funcref (exported "t") + one (i64)->i64
 /// forwarder per vfs function, each `call_indirect` through its fixed slot
-/// (0 read_file, 1 exists, 2 read_dir, 3 stat_token). Slots are planted later
+/// (0 read_file, 1 exists, 2 read_dir_nul, 3 stat_token). Slots are planted later
 /// by the adapter module's active element segment.
-fn comp_generate_vfs_shim() -> Bytes {
+fn comp_generate_vfs_shim(read_dir_fn: String) -> Bytes {
   let out = bytebuf_new()
   emit_header(out)
   let tc = bytebuf_new()
@@ -9988,7 +10001,7 @@ fn comp_generate_vfs_shim() -> Bytes {
   emit_name(export_sec, "fs_exists")
   bytebuf_push(export_sec, 0)
   leb128_encode_u32(export_sec, 1)
-  emit_name(export_sec, "fs_read_dir")
+  emit_name(export_sec, read_dir_fn)
   bytebuf_push(export_sec, 0)
   leb128_encode_u32(export_sec, 2)
   emit_name(export_sec, "fs_stat_token")
@@ -10259,6 +10272,33 @@ fn comp_generate_vfs_adapter() -> Bytes {
   bytebuf_to_bytes(out)
 }
 
+/// #2957: the vfs component import that carries this core's directory
+/// listing -- `read-dir-nul` (NUL-joined names) for a core that imports
+/// `vibe.fs_read_dir_nul`, or the legacy "\n"-joined `read-dir` for one built
+/// by a pre-#2957 compiler (the committed seed) that still imports
+/// `vibe.fs_read_dir`. `build_vibec.sh` declares the same name in the WIT it
+/// ships beside the component.
+export fn comp_vfs_read_dir_import(core_wasm: Bytes) -> String {
+  let imp_modules = array_empty()
+  let imp_names = array_empty()
+  let imp_type_indices = new_int_array()
+  let imp_type_sigs = array_empty()
+  let import_count = parse_core_imports(core_wasm, imp_modules, imp_names, imp_type_indices, imp_type_sigs)
+  let mut legacy = false
+  let mut i = 0
+  while i < import_count {
+    if Array::get(imp_modules, i) == "vibe" && Array::get(imp_names, i) == "fs_read_dir" {
+      legacy = true
+    }
+    i = i + 1
+  }
+  if legacy {
+    "read-dir"
+  } else {
+    "read-dir-nul"
+  }
+}
+
 export fn comp_emit_component_wasm_string_handler_vfs(core_wasm: Bytes, target_func_name: String, export_name: String, param_names: Array[String]) -> Bytes with Exception {
   comp_emit_string_handler_vfs_impl(core_wasm, target_func_name, export_name, param_names, true)
 }
@@ -10327,6 +10367,14 @@ fn comp_emit_string_handler_vfs_impl(core_wasm: Bytes, target_func_name: String,
   let imp_type_indices = new_int_array()
   let imp_type_sigs = array_empty()
   let import_count = parse_core_imports(core_wasm, imp_modules, imp_names, imp_type_indices, imp_type_sigs)
+  // The directory import this core was built with (see
+  // `comp_vfs_read_dir_import`).
+  let read_dir_wit = comp_vfs_read_dir_import(core_wasm)
+  let read_dir_fn = if read_dir_wit == "read-dir" {
+    "fs_read_dir"
+  } else {
+    "fs_read_dir_nul"
+  }
   let vibe_import_names = array_empty()
   let stub_names = array_empty()
   let stub_sigs = array_empty()
@@ -10338,7 +10386,7 @@ fn comp_emit_string_handler_vfs_impl(core_wasm: Bytes, target_func_name: String,
       ()
     } else if im == "vibe" {
       Array::push(vibe_import_names, ifn)
-      if ifn == "fs_read_file" || ifn == "fs_exists" || ifn == "fs_read_dir" || ifn == "fs_stat_token" {
+      if ifn == "fs_read_file" || ifn == "fs_exists" || ifn == read_dir_fn || ifn == "fs_stat_token" {
         ()
       } else {
         Array::push(stub_names, ifn)
@@ -10387,14 +10435,14 @@ fn comp_emit_string_handler_vfs_impl(core_wasm: Bytes, target_func_name: String,
   let vfs_import_names = array_empty()
   Array::push(vfs_import_names, "read-file")
   Array::push(vfs_import_names, "exists")
-  Array::push(vfs_import_names, "read-dir")
+  Array::push(vfs_import_names, read_dir_wit)
   Array::push(vfs_import_names, "stat-token")
   emit_comp_import_section(buf, vfs_import_names, 4)
   // S3-S8: core modules 0..5.
   emit_core_module_section(buf, core_wasm)
   emit_core_module_section(buf, comp_generate_string_trampoline_packed(string_param_count))
   emit_core_module_section(buf, comp_generate_host_stub_module_with_policy(stub_names, stub_sigs, zero_stub_benign))
-  emit_core_module_section(buf, comp_generate_vfs_shim())
+  emit_core_module_section(buf, comp_generate_vfs_shim(read_dir_fn))
   emit_core_module_section(buf, comp_generate_vfs_realloc())
   emit_core_module_section(buf, comp_generate_vfs_adapter())
   // S9: instance 0 = stub, S10: instance 1 = shim.
@@ -10404,7 +10452,7 @@ fn comp_emit_string_handler_vfs_impl(core_wasm: Bytes, target_func_name: String,
   let shim_fn_names = array_empty()
   Array::push(shim_fn_names, "fs_read_file")
   Array::push(shim_fn_names, "fs_exists")
-  Array::push(shim_fn_names, "fs_read_dir")
+  Array::push(shim_fn_names, read_dir_fn)
   Array::push(shim_fn_names, "fs_stat_token")
   emit_alias_section(buf, 1, shim_fn_names, [
     core_sort_func,
@@ -10433,7 +10481,7 @@ fn comp_emit_string_handler_vfs_impl(core_wasm: Bytes, target_func_name: String,
       Array::push(vibe_inst_indices, 0)
     } else if vn == "fs_exists" {
       Array::push(vibe_inst_indices, 1)
-    } else if vn == "fs_read_dir" {
+    } else if vn == read_dir_fn {
       Array::push(vibe_inst_indices, 2)
     } else if vn == "fs_stat_token" {
       Array::push(vibe_inst_indices, 3)

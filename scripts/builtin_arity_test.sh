@@ -35,6 +35,7 @@
 #   VIBE_CLI_WASM  the compiler to ask. Unset, scripts/resolve_stage2.sh picks
 #                  HEAD's generation and says which.
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/run_bounded.sh" # portable timeout(1), #2958
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -53,7 +54,7 @@ fail=0
 note() { printf '%s\n' "$*"; }
 check_of() { # check_of <expr> -> first diagnostic line, empty when clean
   printf 'fn main allows Console {\n  let _x = %s\n  println("ok")\n}\n' "$1" > "$WORK/p.vibex"
-  VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" timeout 400 \
+  VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" run_bounded 400 \
     bash runtime/vibe check "$WORK/p.vibex" 2>&1 | head -1
 }
 
@@ -90,7 +91,7 @@ fn main allows Console {
   println("roundtrip=\{back} len=\{__len([1, 2, 3])}")
 }
 V
-got="$(VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" timeout 500 \
+got="$(VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" run_bounded 500 \
   bash runtime/vibe run "$WORK/run.vibex" 2>&1 | tail -1)"
 want="roundtrip=1.5 len=3"
 if [ "$got" = "$want" ]; then note "  ok   $got"

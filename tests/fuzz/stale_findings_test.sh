@@ -519,7 +519,7 @@ fi
 rm -f "$wsw_drop"
 rm -rf "$FIND"
 
-say "=== red: no GNU timeout falls back to a watchdog that still BOUNDS ==="
+say "=== red: no GNU timeout(1) falls back to a watchdog that still BOUNDS ==="
 # `timeout` is absent from a stock macOS (BSD userland; coreutils installs it
 # as `gtimeout`), and this gate runs the real harness from `release-check`.
 # With neither binary present every lane of every seed was a command-not-found
@@ -636,7 +636,7 @@ wd_expect() { # <case> <want-rc> <max-seconds> <why>
 }
 
 if grep -q "$(basename "$tlib")" "$tprobe" && grep -q 'vibe_absent_gtimeout' "$tlib"; then
-  say "  ok   probe staged: neither timeout binary resolves"
+  say "  ok   probe staged: neither timeout(1) binary resolves"
   wd_expect hang 124 8 "the bound is reached, and reported the way timeout(1) reports it"
   wd_expect status 7 8 "a command's own status passes through untouched"
   wd_expect self_term 143 8 "a program the OOM killer TERMs is not relabelled a hang"
@@ -840,7 +840,7 @@ if grep -q "$(basename "$tlib")" "$tprobe" && grep -q 'vibe_absent_gtimeout' "$t
   fi
   rm -rf "$FIND"
 else
-  bad "the timeout probe was not staged -- this case would prove nothing"
+  bad "the timeout(1) probe was not staged -- this case would prove nothing"
 fi
 
 # The pairing: the unconditional call this replaced, with the binary absent.
@@ -850,7 +850,7 @@ sed -i.bak '/^if command -v vibe_absent_timeout /,/^fi$/d' "$tlib" && rm -f "$tl
 sed -i.bak 's@^  run_bounded "\$CTIMEOUT"@  vibe_absent_timeout "$CTIMEOUT"@' "$tlib" && rm -f "$tlib.bak"
 sed -i.bak 's@out=\$(run_bounded "\$RTIMEOUT"@out=$(vibe_absent_timeout "$RTIMEOUT"@' "$tlib" && rm -f "$tlib.bak"
 if ! grep -q 'TIMEOUT_BIN=' "$tlib" && grep -q 'vibe_absent_timeout "\$CTIMEOUT"' "$tlib"; then
-  say "  ok   pre-fix mutant staged: the timeout command is called unconditionally"
+  say "  ok   pre-fix mutant staged: the timeout(1) command is called unconditionally"
   rm -rf "$FIND"
   out="$(bash "$tprobe" --seeds 1..2 --jobs 1 --cli "$STAGE2" 2>&1)"
   case "$out" in
@@ -863,7 +863,7 @@ if ! grep -q 'TIMEOUT_BIN=' "$tlib" && grep -q 'vibe_absent_timeout "\$CTIMEOUT"
     *) bad "pre-fix: the campaign did not complete: $(printf '%s' "$out" | tail -1)" ;;
   esac
 else
-  bad "the pre-fix timeout mutation did not apply -- the case above is unattributed"
+  bad "the pre-fix timeout(1) mutation did not apply -- the case above is unattributed"
 fi
 rm -f "$tprobe" "$tlib" "$wdcase" "$gklib"
 rm -rf "$FIND"

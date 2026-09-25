@@ -44,7 +44,7 @@ GC_IMPORT_NAME_EXCEPTIONS = {
     "Env::args_len": "args-len",
     "Env::args_get": "args-get",
     "Profiler::now_us": "profile-now-us",
-    "vibe_fs_read_dir_raw": "fs_read_dir",
+    "vibe_fs_read_dir_raw": "fs_read_dir_nul",
     "vibe_process_exit_raw": "process_exit",
 }
 

@@ -518,6 +518,9 @@ install -m 0644 "$ROOT_DIR/scripts/vibe_pkg.sh" "$TC_DIR/lib/vibe_pkg.sh"
 # driver lives in the dev-repo scripts/ tree only, so `vibe` there printed a
 # note and compiled serially. Needs nothing but bash and the installed runner.
 install -m 0644 "$ROOT_DIR/scripts/parallel_warm_pool.sh" "$TC_DIR/lib/parallel_warm_pool.sh"
+# The pool bounds each compile through run_bounded.sh, sourced from beside
+# it: GNU timeout(1) is absent on a stock macOS (#2958).
+install -m 0644 "$ROOT_DIR/scripts/run_bounded.sh" "$TC_DIR/lib/run_bounded.sh"
 say "pkg tool -> $TC_DIR/lib/vibe_pkg.sh"
 if [ -f "$ROOT_DIR/clients/js/lsp_server.js" ]; then
   install -m 0644 "$ROOT_DIR/clients/js/lsp_server.js" "$TC_DIR/lib/lsp_server.js"

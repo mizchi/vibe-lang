@@ -12,6 +12,7 @@
 # host-import tag boundary (untagged ints vs RC's n<<1 — args-get fetched the
 # wrong argv slot, stat_token/args_len results were misread as tagged).
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/run_bounded.sh" # portable timeout(1), #2958
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
@@ -28,7 +29,7 @@ rm -f "$OUT"/ref.wasm* "$OUT"/rcstage.wasm* "$OUT"/rcout.wasm*
 env "${ENVV[@]}" VIBE_INTERNAL_TRUSTED_SOURCE=1 VIBE_RC=0 $RUN --invoke cli_main "$CLI" "$BUNDLE" "$OUT/ref.wasm" cli_main >/dev/null 2>&1
 env "${ENVV[@]}" VIBE_INTERNAL_TRUSTED_SOURCE=1 VIBE_RC=1 $RUN --invoke cli_main "$CLI" "$BUNDLE" "$OUT/rcstage.wasm" cli_main >/dev/null 2>&1
 [ -s "$OUT/ref.wasm" ] && [ -s "$OUT/rcstage.wasm" ] || { echo "[rc-selfhost] FAIL: stage build produced no output" >&2; exit 1; }
-timeout 600 env "${ENVV[@]}" VIBE_INTERNAL_TRUSTED_SOURCE=1 VIBE_RC=0 $RUN --invoke cli_main "$OUT/rcstage.wasm" "$BUNDLE" "$OUT/rcout.wasm" cli_main >/dev/null 2>&1
+run_bounded 600 env "${ENVV[@]}" VIBE_INTERNAL_TRUSTED_SOURCE=1 VIBE_RC=0 $RUN --invoke cli_main "$OUT/rcstage.wasm" "$BUNDLE" "$OUT/rcout.wasm" cli_main >/dev/null 2>&1
 if [ -s "$OUT/rcout.wasm" ] && cmp -s "$OUT/rcout.wasm" "$OUT/ref.wasm"; then
   echo "[rc-selfhost] OK: RC-built compiler output is byte-identical ($(wc -c <"$OUT/rcout.wasm") bytes)"
   exit 0

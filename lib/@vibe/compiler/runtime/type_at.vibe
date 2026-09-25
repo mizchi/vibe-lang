@@ -25,7 +25,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/checker {
-  check_program, check_program_type_table
+  check_program, check_program_type_table, local_let_types
 }
 
 import ./binding_at.vibe {
@@ -554,12 +554,87 @@ fn type_at_off_in_occ(occ: Array[(Int, Int)], off: Int) -> Bool {
   found
 }
 
+/// #3050: the offset of the `let` keyword that introduces the binder written
+/// at `boff` (`let f` or `let mut f`), or -1 when that binder is not a `let`'s.
+/// The checker keys a local `let`'s value type by this offset, which is the one
+/// the parser gives `ELet` / `ELetMut`. Read from the token stream, so a
+/// comment between the keyword and the name is skipped the way the parser
+/// skips it (#3104 review).
+fn type_at_let_keyword_before(source: String, boff: Int) -> Int with Exception {
+  let (tokens, starts, _) = lex_with_offsets(source)
+  let mut k = -1
+  let mut i = 0
+  while i < Array::length(starts) && k < 0 {
+    if Array::get(starts, i) == boff {
+      k = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  let prev = if k > 0 {
+    match Array::get(tokens, k - 1) {
+      TMut => k - 2,
+      _ => k - 1
+    }
+  } else {
+    -1
+  }
+  if prev >= 0 {
+    match Array::get(tokens, prev) {
+      TLet => Array::get(starts, prev),
+      _ => -1
+    }
+  } else {
+    -1
+  }
+}
+
+/// The declaration offset of the LOCAL binder that `occ` (the scope walk's
+/// occurrences of one binding) resolves to, or -1 when the binding is not a
+/// local one (a top-level or imported name).
+fn type_at_local_binder_off(hits: Array[IdentHit], name: String, occ: Array[(Int, Int)]) -> Int {
+  let mut found = -1
+  let mut i = 0
+  while i < Array::length(hits) {
+    let hit = Array::get(hits, i)
+    let (hname, hoff) = hit_name_off(hit)
+    if hname == name && hit_is_local_binder(hit) && type_at_off_in_occ(occ, hoff) {
+      found = hoff
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// #3050: the value type of the local `let` whose binder is declared at
+/// `boff`, from the rows `check_program_type_table` recorded per `let`; "" when
+/// the binder is not a `let`'s (a parameter, a pattern binder) or has no row.
+/// Read it right after `check_program_type_table`, which is what fills it.
+fn type_at_local_let(source: String, boff: Int, final_s: Subst) -> String with Exception {
+  let let_off = type_at_let_keyword_before(source, boff)
+  if let_off < 0 {
+    ""
+  } else {
+    match tytab_lookup(local_let_types(), let_off) {
+      Some(t) => type_to_string(subst_apply(final_s, t)),
+      None => ""
+    }
+  }
+}
+
 /// A name with no row of its own in the type table answers with the type of a
 /// USE that resolves to the same binding (`occ`, from the scope walk). Only a
 /// name that is not a local binder may then fall back to the top-level env: a
 /// local binder with no use has no recorded type, and looking its spelling up
 /// in the module env would answer for an unrelated top-level name.
-fn type_at_use_or_env(table: Array[(Int, Type)], hits: Array[IdentHit], name: String, chosen_off: Int, final_s: Subst, stmts: Array[Stmt], occ: Array[(Int, Int)], local_binder: Bool) -> String with Exception {
+///
+/// A local `let` binder with no such use -- a closure that is only ever
+/// called, whose callee rows are call results -- answers with the value type
+/// the checker recorded for that `let` (#3050).
+fn type_at_use_or_env(source: String, table: Array[(Int, Type)], hits: Array[IdentHit], name: String, chosen_off: Int, final_s: Subst, stmts: Array[Stmt], occ: Array[(Int, Int)], local_binder: Bool) -> String with Exception {
   let mut use_ty = ""
   let mut u = 0
   while u < Array::length(hits) {
@@ -579,7 +654,7 @@ fn type_at_use_or_env(table: Array[(Int, Type)], hits: Array[IdentHit], name: St
   if use_ty != "" {
     use_ty
   } else if local_binder {
-    ""
+    type_at_local_let(source, chosen_off, final_s)
   } else {
     let env = check_program(stmts)
     match env_lookup(env, name) {
@@ -661,14 +736,23 @@ export fn type_at_source(source: String, line: Int, col: Int) -> String {
         let chosen_off = pick_ident_off(hits, tgt)
         let on_callee = pick_ident_is_callee(hits, tgt)
         if on_callee {
-          let env = check_program(stmts)
-          match env_lookup(env, name) {
-            Some(t) => type_to_string(t),
-            None => {
-              // Local / parameter callee: not in the final env. The table's
-              // last-wins entry here is CallResult, which is the wrong type
-              // for the name — prefer empty over a confident wrong answer.
-              ""
+          // A LOCAL callee is answered by its own binding, never by the
+          // module env: the env holds only top-level names, so a local that
+          // shadows one would be answered with the other's type. The table's
+          // last-wins entry at a callee is the CallResult, the wrong type for
+          // the name, so a local `let` answers with the value type the
+          // checker recorded for it (#3050), and any other local binder
+          // (a parameter, a pattern binder) prefers empty over a confident
+          // wrong answer.
+          let callee_binder = type_at_local_binder_off(hits, name, binding_occurrences(source, line, col))
+          if callee_binder >= 0 {
+            let (_, callee_s) = check_program_type_table(stmts)
+            type_at_local_let(source, callee_binder, callee_s)
+          } else {
+            let env = check_program(stmts)
+            match env_lookup(env, name) {
+              Some(t) => type_to_string(t),
+              None => ""
             }
           }
         } else {
@@ -681,7 +765,7 @@ export fn type_at_source(source: String, line: Int, col: Int) -> String {
           }
           match table_hit {
             Some(rec_ty) => type_to_string(subst_apply(final_s, rec_ty)),
-            None => type_at_use_or_env(table, hits, name, chosen_off, final_s, stmts, binding_occurrences(source, line, col), pick_ident_is_local_binder(hits, tgt))
+            None => type_at_use_or_env(source, table, hits, name, chosen_off, final_s, stmts, binding_occurrences(source, line, col), pick_ident_is_local_binder(hits, tgt))
           }
         }
       }

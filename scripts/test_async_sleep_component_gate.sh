@@ -46,6 +46,7 @@
 #   VIBE_ASYNC_SLEEP_GATE_DELAY_MS  the sleep/future delay D, default 300
 #   VIBE_P3_GATE_REQUIRE_TOOLS=1    missing tools = FAIL instead of skip
 set -euo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/run_bounded.sh" # portable timeout(1), #2958
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -148,7 +149,7 @@ echo "[async-sleep-component-gate] imports: sleep-for"
 # Warm the JIT with a near-zero delay first, so the timed run below measures the
 # sleep rather than compilation.
 WARM_LOG="$OUT_DIR/sleep_only.warmup.log"
-if ! VIBE_ASYNC_DELAY_SCALE_PCT=1 timeout 60 "$RUNNER" "$COMPONENT" >"$WARM_LOG" 2>&1; then
+if ! VIBE_ASYNC_DELAY_SCALE_PCT=1 run_bounded 60 "$RUNNER" "$COMPONENT" >"$WARM_LOG" 2>&1; then
   echo "async sleep component gate FAILED: warmup run did not exit 0" >&2
   cat "$WARM_LOG" >&2
   exit 1
@@ -158,7 +159,7 @@ fi
 
 RESULT_LOG="$OUT_DIR/sleep_only.log"
 START_NS=$(date +%s%N)
-if ! timeout 60 "$RUNNER" "$COMPONENT" >"$RESULT_LOG" 2>&1; then
+if ! run_bounded 60 "$RUNNER" "$COMPONENT" >"$RESULT_LOG" 2>&1; then
   echo "async sleep component gate FAILED: run did not exit 0" >&2
   cat "$RESULT_LOG" >&2
   exit 1
@@ -180,7 +181,7 @@ compile_fixture "$SRC" "$RC0_COMPONENT" 0
 assert_component "the RC=0 sleep-only component" "$RC0_COMPONENT"
 RC0_LOG="$OUT_DIR/sleep_only.rc0.log"
 RC0_START_NS=$(date +%s%N)
-if ! timeout 60 "$RUNNER" "$RC0_COMPONENT" >"$RC0_LOG" 2>&1; then
+if ! run_bounded 60 "$RUNNER" "$RC0_COMPONENT" >"$RC0_LOG" 2>&1; then
   echo "async sleep component gate FAILED: RC=0 run did not exit 0" >&2
   cat "$RC0_LOG" >&2
   exit 1
@@ -224,7 +225,7 @@ done
 
 MIXED_WARM="$OUT_DIR/sleep_mixed.warmup.log"
 if ! VIBE_ASYNC_FUTURES="price=40:$DELAY_MS" VIBE_ASYNC_DELAY_SCALE_PCT=1 \
-     timeout 60 "$RUNNER" "$MIXED_COMPONENT" >"$MIXED_WARM" 2>&1; then
+     run_bounded 60 "$RUNNER" "$MIXED_COMPONENT" >"$MIXED_WARM" 2>&1; then
   echo "async sleep component gate FAILED: mixed warmup did not exit 0" >&2
   cat "$MIXED_WARM" >&2
   exit 1
@@ -234,7 +235,7 @@ fi
 
 MIXED_LOG="$OUT_DIR/sleep_mixed.log"
 MIXED_START_NS=$(date +%s%N)
-if ! VIBE_ASYNC_FUTURES="price=40:$DELAY_MS" timeout 60 "$RUNNER" "$MIXED_COMPONENT" >"$MIXED_LOG" 2>&1; then
+if ! VIBE_ASYNC_FUTURES="price=40:$DELAY_MS" run_bounded 60 "$RUNNER" "$MIXED_COMPONENT" >"$MIXED_LOG" 2>&1; then
   echo "async sleep component gate FAILED: mixed run did not exit 0" >&2
   cat "$MIXED_LOG" >&2
   exit 1

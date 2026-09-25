@@ -55,19 +55,12 @@ bash install/install.sh --cli-wasm "$cli" >/dev/null 2>&1
 VIBE="$VIBE_BIN_DIR/vibe"
 [ -x "$VIBE" ] || { echo "FAIL: launcher not installed" >&2; exit 1; }
 
-# Per-test wall-clock guard. macOS has no GNU `timeout` (and ships bash 3.2,
-# where an empty-array expansion under `set -u` is itself an error), so dispatch
-# through a function: use `timeout`/`gtimeout` when present, else run directly
-# (the job-level timeout still bounds a true hang).
-run_guarded() {
-  if command -v timeout >/dev/null 2>&1; then
-    timeout 150 "$@"
-  elif command -v gtimeout >/dev/null 2>&1; then
-    gtimeout 150 "$@"
-  else
-    "$@"
-  fi
-}
+# Per-test wall-clock guard. macOS has no GNU `timeout`, so this goes through
+# the shared portable helper (#2958): timeout, else gtimeout, else a shell
+# watchdog -- the test stays bounded on every platform rather than only where
+# the binary happens to exist.
+. "$ROOT_DIR/scripts/run_bounded.sh"
+run_guarded() { run_bounded 150 "$@"; }
 
 pass=0; fail=0
 for t in "${ALLOW[@]}"; do

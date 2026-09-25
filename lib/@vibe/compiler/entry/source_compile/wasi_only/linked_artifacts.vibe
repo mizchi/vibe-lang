@@ -32,7 +32,11 @@ import ./path_utils.vibe {
 }
 
 import ./preprocess.vibe {
-  expand_interp_stmts, strip_generic_type_params
+  expand_interp_only, strip_generic_type_params
+}
+
+import @vibe/compiler/normalize {
+  desugar_trait_dicts_with_typed_eq
 }
 
 //# Functions
@@ -249,10 +253,14 @@ export fn compile_file_wasi_linked_artifacts(entry_path: String, entry_name: Str
   let stmts = empty_stmt_array()
   append_stmt_array(stmts, resolved_type_stmts)
   append_stmt_array(stmts, entry_stmts)
-  expand_interp_stmts(stmts)
+  // #3098: interpolation only; the trait-dictionary desugar runs after the
+  // check (the #3069 order), or the checker sees its own lowering.
+  expand_interp_only(stmts)
   // Check before stripping generic type params so Ord/Add/... constrained
   // bodies (`[T: Ord](a, b) { a < b }`) resolve `T` as a bound type variable.
   let _ = check_program(stmts)
+  // Unlocated parse: no typed-`==` rows to pass.
+  desugar_trait_dicts_with_typed_eq(stmts, array_empty(), array_empty())
   strip_generic_type_params(stmts)
   let wasm = compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), linked_imports, false, false, false, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_discard(), 0, 0 - 1)
   (wasm, linked_imports, linked_dep_specs)

@@ -22,7 +22,11 @@ import @vibe/compiler/syntax {
   lex_with_offsets, parse_program_located
 }
 import ./preprocess_interp.vibe {
-  expand_interp_stmts
+  expand_interp_only
+}
+
+import @vibe/compiler/normalize {
+  desugar_trait_dicts_with_typed_eq
 }
 
 import ./preprocess_strip.vibe {
@@ -338,6 +342,15 @@ fn maybe_wrap_async_component(bytes: Bytes, wrap_async: Bool, user_exits: Bool) 
   }
 }
 
+/// #3069: method-bearing-trait dictionary passing, on the CHECKED program and
+/// while its generic binders are still present (so it must run before
+/// `strip_generic_type_params`). The typed-`==` rows come from the same check,
+/// exactly as the gc lane passes them. The linked prelude's own call later is
+/// idempotent on the already-desugared program.
+fn desugar_after_check(stmts: Array[Stmt], eq_offsets: Array[Int], eq_keys: Array[String]) -> Unit with Exception {
+  desugar_trait_dicts_with_typed_eq(stmts, eq_offsets, eq_keys)
+}
+
 /// #2158: the checker's Double call-result offsets for a SINGLE-SOURCE program.
 ///
 /// Codegen is untyped, so the only thing that made a `Double` look like one was
@@ -427,10 +440,11 @@ fn compile_source_wasi_only_impl(source: String, entry_name: String, trusted_gen
   // exit is generated later and must not count as the program's (#3030).
   let user_exits = stmts_reach_process_exit(stmts)
   validate_source_if_user(stmts, trusted_generated)
-  expand_interp_stmts(stmts)
+  expand_interp_only(stmts)
   // Check before stripping generic type params (see merge_sources.vibe).
   let (float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys, checked_env) = source_offsets(stmts)
   validate_source_exports_if_user(stmts, checked_env, trusted_generated)
+  desugar_after_check(stmts, eq_offsets, eq_keys)
   let wrap_async = (entry_name == "run") && entry_declares_async_int(stmts, entry_name)
   strip_generic_type_params(stmts)
   maybe_wrap_async_component(compile_wasi_module_impl_with_typed_offsets(stmts, entry_name, float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys), wrap_async, user_exits)
@@ -465,9 +479,10 @@ fn compile_source_wasi_only_coverage_impl(source: String, entry_name: String, tr
   let (tokens, starts, _ends) = lex_with_offsets(source)
   let stmts = parse_program_located(tokens, starts, source)
   validate_source_if_user(stmts, trusted_generated)
-  expand_interp_stmts(stmts)
+  expand_interp_only(stmts)
   let (float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys, checked_env) = source_offsets(stmts)
   validate_source_exports_if_user(stmts, checked_env, trusted_generated)
+  desugar_after_check(stmts, eq_offsets, eq_keys)
   strip_generic_type_params(stmts)
   // Coverage consumers require a standalone instrumented core. StdinStream's
   // raw provider ABI is satisfiable only inside the dedicated component, so
@@ -498,9 +513,10 @@ fn compile_source_wasi_only_rc_impl(source: String, entry_name: String, trusted_
   // exit is generated later and must not count as the program's (#3030).
   let user_exits = stmts_reach_process_exit(stmts)
   validate_source_if_user(stmts, trusted_generated)
-  expand_interp_stmts(stmts)
+  expand_interp_only(stmts)
   let (float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys, checked_env) = source_offsets(stmts)
   validate_source_exports_if_user(stmts, checked_env, trusted_generated)
+  desugar_after_check(stmts, eq_offsets, eq_keys)
   let wrap_async = (entry_name == "run") && entry_declares_async_int(stmts, entry_name)
   strip_generic_type_params(stmts)
   maybe_wrap_async_component(compile_wasi_module_rc_impl_with_typed_offsets(stmts, entry_name, float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys), wrap_async, user_exits)
@@ -532,9 +548,10 @@ fn compile_source_wasi_only_rc_shadow_impl(source: String, entry_name: String, t
   // exit is generated later and must not count as the program's (#3030).
   let user_exits = stmts_reach_process_exit(stmts)
   validate_source_if_user(stmts, trusted_generated)
-  expand_interp_stmts(stmts)
+  expand_interp_only(stmts)
   let (float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys, checked_env) = source_offsets(stmts)
   validate_source_exports_if_user(stmts, checked_env, trusted_generated)
+  desugar_after_check(stmts, eq_offsets, eq_keys)
   let wrap_async = (entry_name == "run") && entry_declares_async_int(stmts, entry_name)
   strip_generic_type_params(stmts)
   maybe_wrap_async_component(compile_wasi_module_rc_shadow_impl_with_typed_offsets(stmts, entry_name, float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys), wrap_async, user_exits)

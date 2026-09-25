@@ -42,6 +42,8 @@ import @vibe/compiler/core {
   dir_of_path,
   export_plan_renames_for,
   import_value_rename_locals,
+  merged_offset_space_add,
+  merged_offset_space_reset,
   merged_source_boundary_names,
   namespace_private_value_stmts,
   namespace_private_value_stmts_after_renames,
@@ -461,6 +463,10 @@ fn build_grouped_merged_stmts_impl(source_groups: Array[(String, Array[(String, 
   let flat_sources = flatten_source_groups_local(source_groups)
   let (file_paths, file_stmts) = parse_sources_for_merge(flat_sources)
   let fallback_clone_offset_delta = [0]
+  // #3090: record the offset space this merge builds, and only a DISJOINT one:
+  // without the rebase every file's offsets start at 0, so a merged offset
+  // names no one file.
+  merged_offset_space_reset()
   // Keep one authoritative parsed copy per file for both the ordinary merge
   // contribution and alias-collision fallback definitions. The GC variant
   // rebases the whole table up front, so no later helper can accidentally
@@ -476,7 +482,8 @@ fn build_grouped_merged_stmts_impl(source_groups: Array[(String, Array[(String, 
       // in each file's OWN offset space) into this merge's space.
       Array::push(flat_paths_out, Array::get(file_paths, source_idx))
       Array::push(flat_bases_out, offset_base)
-      let (_, source) = Array::get(flat_sources, source_idx)
+      let (source_path, source) = Array::get(flat_sources, source_idx)
+      merged_offset_space_add(source_path, source, offset_base)
       // A source of N bytes occupies [base, base + N). The extra byte keeps
       // even an offset exactly at EOF disjoint from the following file.
       offset_base = offset_base + String::length(source) + 1
@@ -1334,6 +1341,7 @@ export fn prepare_file_fs_cached(db: TypeDb, entry_path: String) -> TypeDb with 
 /// typecheck pass -- and stop before build_grouped_merged_stmts/codegen.
 export fn check_file_fs_mode_from_source_groups(entry_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Int with Env + Exception + Fs {
   let _ = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
+  let _ = Env::get("VIBE_PROFILE_MEMORY_MARK:check_walk")
   // #1536(c) / #1511(b): after the typecheck passes, run the ADR-0076
   // effect-lowering eligibility passes (suspend CPS split + evidence-passing
   // migration) on the SAME merged program a release compile lowers
@@ -1346,7 +1354,9 @@ export fn check_file_fs_mode_from_source_groups(entry_path: String, source_group
   // with; a program with no `main` simply has no entry-keyed boundary
   // machinery installed, same as its real compile would.
   let merged_stmts = build_grouped_merged_stmts(source_groups)
+  let _ = Env::get("VIBE_PROFILE_MEMORY_MARK:check_merge")
   let lowering_errs = effect_lowering_prelude(merged_stmts, "main", array_empty(), array_empty(), array_empty(), array_empty(), array_empty())
+  let _ = Env::get("VIBE_PROFILE_MEMORY_MARK:check_effect_prelude")
   if Array::length(lowering_errs) > 0 {
     throw(Array::get(lowering_errs, 0))
   } else {
@@ -1557,9 +1567,12 @@ fn build_grouped_merged_stmts_counted(source_groups: Array[(String, Array[(Strin
   let out_bases: Array[Int] = []
   let mut offset_base = 0
   let mut source_idx = 0
+  // #3090: the same record build_grouped_merged_stmts_impl keeps.
+  merged_offset_space_reset()
   while source_idx < Array::length(flat_sources) {
     Array::push(located_file_stmts, shift_stmts_offsets(Array::get(file_stmts, source_idx), offset_base))
     let (flat_path, flat_source) = Array::get(flat_sources, source_idx)
+    merged_offset_space_add(flat_path, flat_source, offset_base)
     Array::push(out_paths, flat_path)
     Array::push(out_fps, compact_source_fingerprint_memo(flat_path, flat_source))
     Array::push(out_bases, offset_base)

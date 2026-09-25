@@ -422,7 +422,7 @@ mkdir -p "$root2/install" "$root2/bootstrap" "$root2/runtime" "$root2/scripts" "
 cp "$ROOT_DIR/install/install.sh" "$root2/install/"
 cp "$ROOT_DIR/bootstrap/seed.json" "$root2/bootstrap/"
 cp "$ROOT_DIR/runtime/vibe" "$root2/runtime/"
-cp "$ROOT_DIR/scripts/vibe_pkg.sh" "$ROOT_DIR/scripts/parallel_warm_pool.sh" "$root2/scripts/"
+cp "$ROOT_DIR/scripts/vibe_pkg.sh" "$ROOT_DIR/scripts/parallel_warm_pool.sh" "$ROOT_DIR/scripts/run_bounded.sh" "$root2/scripts/"
 for pkg in core ast parser builtin console wit_runtime; do
   cp -R "$ROOT_DIR/lib/@vibe/$pkg" "$root2/lib/@vibe/$pkg"
 done

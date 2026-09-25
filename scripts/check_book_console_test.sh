@@ -32,16 +32,12 @@ sed_inplace() { # <sed-expr> <file>
   sed "$expr" "$file" > "$file.sedtmp" && mv "$file.sedtmp" "$file"
 }
 
-# `timeout` is GNU coreutils, absent on a stock BSD/macOS box. It is a watchdog
-# here, not part of any assertion, so it is used when present and dropped when
-# not -- the rule this branch just documented is that a gate must not fail for
-# a reason unrelated to the property it tests, and a self-test for that rule
-# breaking on the rule is not a good look (#2248 review).
-if command -v timeout >/dev/null 2>&1; then
-  watchdog() { timeout "$@"; }
-else
-  watchdog() { shift; "$@"; }
-fi
+# GNU timeout(1) is absent on a stock BSD/macOS box. The watchdog is not part
+# of any assertion here, but a self-test for the portability rule must not
+# break on that rule (#2248 review), so it goes through the shared portable
+# helper, which stays bounded without the binary (#2958).
+. "$SCRIPT_DIR/run_bounded.sh"
+watchdog() { run_bounded "$@"; }
 ok() { echo "  ok  $1"; }
 
 W="$TMP_ROOT/tree"

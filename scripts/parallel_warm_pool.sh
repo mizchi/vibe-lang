@@ -56,6 +56,7 @@
 # warmed non-leaf entry would sit under a key the serial walk never looks up,
 # silently making the warm a no-op (Codex review, PR #1144).
 set -euo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/run_bounded.sh" # portable timeout(1), #2958
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -97,7 +98,7 @@ run_cli() {  # run_cli <input> <output> [env assignments...]
   local input="$1" output="$2"; shift 2
   # VIBE_CRASH_DIAG_OUT: the runner writes a checker stack overflow's
   # diagnostic only to a sidecar the invoker names.
-  env "$@" VIBE_CRASH_DIAG_OUT="$output.diag" timeout 600 "$RUNNER" "$COMPILER" "$input" "$output" __no_entry__ \
+  run_bounded 600 env "$@" VIBE_CRASH_DIAG_OUT="$output.diag" "$RUNNER" "$COMPILER" "$input" "$output" __no_entry__ \
     >/dev/null 2>&1
 }
 export -f run_cli
@@ -216,9 +217,9 @@ build_and_run_job_body() {  # build_and_run_job_body <path>
     cp "$JOBS_DIR/$dkey/env.out" "$jobdir/dep$i.env"
     i=$((i + 1))
   done < "$DISC_DIR/$key.out"
-  env VIBE_PREOPEN_DIR="$jobdir" VIBE_MODULE_JOB_DIR=1 VIBE_IMPORT_ABI=raw \
+  run_bounded 600 env VIBE_PREOPEN_DIR="$jobdir" VIBE_MODULE_JOB_DIR=1 VIBE_IMPORT_ABI=raw \
     VIBE_CRASH_DIAG_OUT="$jobdir/worker.out.diag" \
-    timeout 600 "$RUNNER" "$COMPILER" "$jobdir" "$jobdir/worker.out" __no_entry__ \
+    "$RUNNER" "$COMPILER" "$jobdir" "$jobdir/worker.out" __no_entry__ \
     >/dev/null 2>&1 || true
   [ "$(cat "$jobdir/outcome.txt" 2>/dev/null || true)" = "ok" ] || rm -f "$jobdir/env.out"
 }

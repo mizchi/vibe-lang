@@ -49,6 +49,10 @@ import @vibe/core {
   array_empty, struct MutMap
 }
 
+import @vibe/ast {
+  type_param_name
+}
+
 // #897 (ADR-0070 Phase 3): this file was moved from
 // lib/@vibe/compiler/checker_effects.vibe into checker/ itself specifically
 // so this import stays a plain SAME-PACKAGE sibling reference. Before the
@@ -2589,6 +2593,422 @@ fn select_shadowed_builtin_type_names(stmt: Stmt) -> Unit {
   Array::set(shadowed_builtin_type_names_cell, 0, chosen)
 }
 
+/// #3095: the nominal type names (structs, enums) this module declares or
+/// imports under their own name, never an alias (`row_nominal_type_names`).
+/// A row word in this set names exactly one type.
+let row_nominal_types_cell: Array[Array[String]] = [[]]
+
+export fn set_row_nominal_types(names: Array[String]) -> Unit {
+  Array::set(row_nominal_types_cell, 0, names)
+}
+
+/// #3095: the type formals in LEXICAL scope where the walk stands, one entry
+/// per binder that introduced some: the top-level declaration's own `[S]`, and
+/// every nested lambda's. A lambda with no row of its own inherits the
+/// enclosing row, whose words were written OUTSIDE its binder, so its formals
+/// are entered as `@N`: they place a requirement's `'N` (the lambda's body
+/// runs at its own `N`) but never a DECLARED word (`[N](v: N) -> Int { .. }`
+/// under `with State[N]`, `N` an imported alias, reads the alias). An entry
+/// holding `row_scope_unknown()` switches the judge off below it.
+let row_formal_scope: Array[Array[String]] = []
+
+fn row_scope_unknown() -> String {
+  "#unknown"
+}
+
+/// The expression the walk pushes BELOW a lambda body: it is popped once the
+/// whole body has been walked, and closes that body's formal scope. The
+/// spelling is not an identifier, so no source expression can be it.
+fn row_scope_pop_marker() -> String {
+  "#row-scope-pop"
+}
+
+fn row_scope_has(name: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(row_formal_scope) && !found {
+    if str_labels_contain(Array::get(row_formal_scope, i), name) {
+      found = true
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// A requirement's formal `'name`: bound by any enclosing binder.
+fn row_scope_has_formal(name: String) -> Bool {
+  row_scope_has(name) || row_scope_has(String::concat("@", name))
+}
+
+/// #3102 review: the first scope entry that can stand between a callback
+/// parameter's annotation and its call -- one past the binder that declared
+/// the parameter. A top-level declaration's parameters leave it at 1.
+let row_callback_scope_start_cell: Array[Int] = [1]
+
+/// The scope entry a lambda pushes names each callback parameter it declares
+/// as `%name`, so a call can find the binder its annotation was written in.
+fn row_scope_callback_marker(name: String) -> String {
+  String::concat("%", name)
+}
+
+fn row_scope_callback_start(name: String) -> Int {
+  let marker = row_scope_callback_marker(name)
+  let mut start = 1
+  let mut i = Array::length(row_formal_scope) - 1
+  while i >= 1 {
+    if str_labels_contain(Array::get(row_formal_scope, i), marker) {
+      start = i + 1
+      i = 0
+    }
+    i = i - 1
+  }
+  start
+}
+
+/// Does a binder nested inside the callback annotation's own binder bind
+/// `name`? (The top-level declaration's own binder never does.)
+fn row_scope_nested_binds(name: String) -> Bool {
+  let mut found = false
+  let mut i = Array::get(row_callback_scope_start_cell, 0)
+  while i < Array::length(row_formal_scope) {
+    let entry = Array::get(row_formal_scope, i)
+    if str_labels_contain(entry, name) || str_labels_contain(entry, String::concat("@", name)) {
+      found = true
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Does the declared-word scope hold only the top-level declaration's own
+/// binder? Then every enclosing parameter annotation was written in it.
+fn row_scope_decl_is_root() -> Bool {
+  let mut ok = true
+  let mut i = 1
+  while i < Array::length(row_formal_scope) {
+    let entry = Array::get(row_formal_scope, i)
+    let mut j = 0
+    while j < Array::length(entry) {
+      let w = Array::get(entry, j)
+      if !String::starts_with(w, "@") && !String::starts_with(w, "%") {
+        ok = false
+      }
+      j = j + 1
+    }
+    i = i + 1
+  }
+  ok
+}
+
+fn row_scope_pop() -> Unit {
+  if Array::length(row_formal_scope) > 0 {
+    Array::truncate(row_formal_scope, Array::length(row_formal_scope) - 1)
+  }
+}
+
+fn tparam_names(tparams: Array[String]) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(tparams) {
+    Array::push(out, type_param_name(Array::get(tparams, i)))
+    i = i + 1
+  }
+  out
+}
+
+/// #3095: the requirement being authorized, as its call instantiates it in
+/// the marked spelling (`row_marked_type_text`), keyed by its printed
+/// spelling. Set around the authorization of one callee label only; every
+/// other requirement has none and is never judged by `row_label_args_differ`.
+let requirement_marked_cell: Array[(String, String)] = [("", "")]
+
+fn requirement_marked_for(eff_name: String) -> String {
+  let (printed, marked) = Array::get(requirement_marked_cell, 0)
+  if String::length(printed) > 0 && printed == eff_name {
+    marked
+  } else {
+    ""
+  }
+}
+
+fn builtin_row_type_name(w: String) -> Bool {
+  w == "Int" || w == "String" || w == "Bool" || w == "Double" || w == "Char" || w == "Bytes" || w == "Unit" || w == "Array" || w == "Option"
+}
+
+/// A type in a row argument, as far as the judge can tell. `RtWild` may be any
+/// type (a part the call left open), `RtIndet` is a part the judge must not
+/// read (an alias, a name of unknown provenance), `RtFormal` a rigid formal in
+/// scope, `RtHead` a builtin or nominal type constructor with its arguments.
+enum RowTy {
+  RtWild;
+  RtIndet;
+  RtFormal(String);
+  RtHead(String, Array[RowTy]);
+  RtTuple(Array[RowTy])
+}
+
+/// Split a row argument text (spaces removed) into words and `[ ] , ( )`;
+/// a word keeps a leading `'` / `^` mark. None for any other character.
+fn row_ty_tokens(t: String) -> Option[Array[String]] {
+  let out = array_empty()
+  let n = String::length(t)
+  let mut ok = true
+  let mut start = 0 - 1
+  let mut i = 0
+  while i <= n && ok {
+    let c = if i < n {
+      String::char_code_at(t, i)
+    } else {
+      0
+    }
+    let word = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 95 || c == 36 || c == 126
+    let mark = c == 39 || c == 94
+    if word || mark {
+      if mark && start >= 0 {
+        ok = false
+      } else if start < 0 {
+        start = i
+      } else {
+        ()
+      }
+    } else {
+      if start >= 0 {
+        Array::push(out, String::substring(t, start, i))
+        start = 0 - 1
+      } else {
+        ()
+      }
+      if i < n {
+        if c == 91 || c == 93 || c == 44 || c == 40 || c == 41 {
+          Array::push(out, String::substring(t, i, i + 1))
+        } else {
+          ok = false
+        }
+      } else {
+        ()
+      }
+    }
+    i = i + 1
+  }
+  if ok {
+    Some(out)
+  } else {
+    None
+  }
+}
+
+/// What one word names. `mode` 0 reads a declared row, whose words the
+/// lexical scope resolves; 1 a requirement's marked spelling, where a mark says
+/// where the word came from (`'S` a formal, `^Name` a type the checker
+/// resolved, a bare word the callee's own row text); 2 a callback parameter's
+/// row as written, which may have been written OUTSIDE a nested binder that
+/// now stands between -- so a word any nested binder rebinds is not read.
+fn row_word_class(w: String, mode: Int, nargs: Int) -> RowTy {
+  let nominals = Array::get(row_nominal_types_cell, 0)
+  if w == "_" {
+    RtWild
+  } else if mode == 2 {
+    if row_scope_nested_binds(w) {
+      RtIndet
+    } else {
+      row_word_class(w, 0, nargs)
+    }
+  } else if mode == 0 {
+    if row_scope_has(w) {
+      if nargs == 0 {
+        RtFormal(w)
+      } else {
+        RtIndet
+      }
+    } else if builtin_row_type_name(w) || str_labels_contain(nominals, w) {
+      RtHead(w, [])
+    } else {
+      RtIndet
+    }
+  } else if String::starts_with(w, "'") {
+    let f = String::substring(w, 1, String::length(w))
+    if nargs == 0 && row_scope_has_formal(f) {
+      RtFormal(f)
+    } else {
+      RtIndet
+    }
+  } else if String::starts_with(w, "^") {
+    let h = String::substring(w, 1, String::length(w))
+    if builtin_row_type_name(h) || (str_labels_contain(nominals, h) && !row_scope_has_formal(h)) {
+      RtHead(h, [])
+    } else {
+      RtIndet
+    }
+  } else if builtin_row_type_name(w) && !row_scope_has(w) && !str_labels_contain(Array::get(shadowed_builtin_type_names_cell, 0), w) {
+    // A word the callee's own row spells: only a builtin name is certain.
+    RtHead(w, [])
+  } else {
+    RtIndet
+  }
+}
+
+/// Parse one type starting at token `i`; returns it and the next index, or
+/// index -1 on a malformed spelling.
+fn row_ty_parse(toks: Array[String], i: Int, mode: Int) -> (RowTy, Int) {
+  if i >= Array::length(toks) {
+    (RtIndet, 0 - 1)
+  } else {
+    let tok = Array::get(toks, i)
+    if tok == "(" {
+      let (items, next) = row_ty_parse_list(toks, i + 1, ")", mode)
+      if next < 0 {
+        (RtIndet, 0 - 1)
+      } else if Array::length(items) == 0 {
+        (RtHead("Unit", []), next)
+      } else if Array::length(items) == 1 {
+        (Array::get(items, 0), next)
+      } else {
+        (RtTuple(items), next)
+      }
+    } else if tok == "[" || tok == "]" || tok == "," || tok == ")" {
+      (RtIndet, 0 - 1)
+    } else {
+      let has_args = i + 1 < Array::length(toks) && Array::get(toks, i + 1) == "["
+      let (args, next) = if has_args {
+        row_ty_parse_list(toks, i + 2, "]", mode)
+      } else {
+        (array_empty(), i + 1)
+      }
+      if next < 0 {
+        (RtIndet, 0 - 1)
+      } else {
+        match row_word_class(tok, mode, Array::length(args)) {
+          RtHead(h, _) => (RtHead(h, args), next),
+          other => (other, next)
+        }
+      }
+    }
+  }
+}
+
+/// Comma-separated types up to the closing token `close`; returns the items
+/// and the index after `close`, or -1.
+fn row_ty_parse_list(toks: Array[String], start: Int, close: String, mode: Int) -> (Array[RowTy], Int) {
+  let items = array_empty()
+  if start < Array::length(toks) && Array::get(toks, start) == close {
+    (items, start + 1)
+  } else {
+    let mut i = start
+    let mut done = false
+    while !done {
+      let (t, next) = row_ty_parse(toks, i, mode)
+      if next < 0 || next >= Array::length(toks) {
+        i = 0 - 1
+        done = true
+      } else {
+        Array::push(items, t)
+        let sep = Array::get(toks, next)
+        if sep == close {
+          i = next + 1
+          done = true
+        } else if sep == "," {
+          i = next + 1
+        } else {
+          i = 0 - 1
+          done = true
+        }
+      }
+    }
+    (items, i)
+  }
+}
+
+/// A label's argument list (`State[A, B]` -> [A, B]); None when it has no
+/// brackets or does not parse.
+fn row_label_arg_tys(label: String, mode: Int) -> Option[Array[RowTy]] {
+  let args = row_label_args(label)
+  if String::length(args) == 0 {
+    None
+  } else {
+    match row_ty_tokens(args) {
+      Some(toks) => {
+        // Read the list as if closed by a `]`, which must be the last token.
+        Array::push(toks, "]")
+        let (items, next) = row_ty_parse_list(toks, 0, "]", mode)
+        if next == Array::length(toks) {
+          Some(items)
+        } else {
+          None
+        }
+      },
+      None => None
+    }
+  }
+}
+
+/// Do two judged types CERTAINLY name different types? Only parts both sides
+/// determine are compared; an open or unreadable part never differs.
+fn row_tys_differ(a: RowTy, b: RowTy) -> Bool {
+  match (a, b) {
+    (RtWild, _) => false,
+    (_, RtWild) => false,
+    (RtIndet, _) => false,
+    (_, RtIndet) => false,
+    (RtFormal(x), RtFormal(y)) => x != y,
+    (RtFormal(_), _) => true,
+    (_, RtFormal(_)) => true,
+    (RtHead(x, xs), RtHead(y, ys)) => if x != y {
+      true
+    } else if Array::length(xs) != Array::length(ys) {
+      false
+    } else {
+      row_ty_lists_differ(xs, ys)
+    },
+    (RtTuple(xs), RtTuple(ys)) => if Array::length(xs) != Array::length(ys) {
+      true
+    } else {
+      row_ty_lists_differ(xs, ys)
+    },
+    (RtHead(_, _), RtTuple(_)) => true,
+    (RtTuple(_), RtHead(_, _)) => true
+  }
+}
+
+fn row_ty_lists_differ(xs: Array[RowTy], ys: Array[RowTy]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(xs) && i < Array::length(ys) && !found {
+    if row_tys_differ(Array::get(xs, i), Array::get(ys, i)) {
+      found = true
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// #3095: does the declared label `declared` certainly NOT cover the
+/// requirement whose marked spelling is `marked`? Both name the same effect;
+/// the question is whether their arguments name different types. A rigid
+/// formal differs from every other formal and every concrete type, a
+/// nominal or builtin head from every other head -- so `with State[S]` does
+/// not cover `State[Box[S]]`, nor `with State[N]` for a lambda's own `[N]`
+/// cover `State[String]` -- while an alias, a part the call left open, or a
+/// word whose meaning the pass cannot place never makes a row refuse.
+///
+/// A requirement spelled `=Label` is a callback parameter's row as written:
+/// its words were written where the parameter was declared, so it is read
+/// like a declared row, except for a word a nested binder rebinds (mode 2).
+fn row_label_args_differ(declared: String, marked: String) -> Bool {
+  if row_scope_has(row_scope_unknown()) || String::length(marked) == 0 {
+    false
+  } else if String::starts_with(marked, "=") {
+    match (row_label_arg_tys(declared, 0), row_label_arg_tys(String::substring(marked, 1, String::length(marked)), 2)) {
+      (Some(ds), Some(ms)) => Array::length(ds) == Array::length(ms) && row_ty_lists_differ(ds, ms),
+      _ => false
+    }
+  } else {
+    match (row_label_arg_tys(declared, 0), row_label_arg_tys(marked, 1)) {
+      (Some(ds), Some(ms)) => Array::length(ds) == Array::length(ms) && row_ty_lists_differ(ds, ms),
+      _ => false
+    }
+  }
+}
+
 fn str_labels_contain(xs: Array[String], x: String) -> Bool {
   let mut found = false
   let mut i = 0
@@ -2669,7 +3089,7 @@ fn row_base_membership(labels: Array[String], eff_name: String) -> Bool {
       let l = Array::get(labels, i)
       let lb = row_label_base(l)
       let lhas = String::length(lb) < String::length(l)
-      if (ehas || lhas) && lb == eb && !is_exception_label(l) && !row_label_args_closed_and_differ(l, eff_name) && !row_label_args_ambiguous(eff_name) {
+      if (ehas || lhas) && lb == eb && !is_exception_label(l) && !row_label_args_closed_and_differ(l, eff_name) && !row_label_args_differ(l, requirement_marked_for(eff_name)) && !row_label_args_ambiguous(eff_name) {
         found = true
       } else {
         ()
@@ -2912,7 +3332,10 @@ fn decl_authorizes_effect(labels: Array[String], eff_name: String) -> Bool {
     // names the edit.
     let core = strip_authority_grade(eff_name)
     decl_authorizes_optional_op(labels, core) || decl_authorizes_op(labels, core)
-  } else if effect_row_has_label(Some(labels), eff_name) {
+  } else if effect_row_has_label(Some(labels), eff_name) && !row_label_args_differ(eff_name, requirement_marked_for(eff_name)) {
+    // #3095: the same spelling can still name two types -- `with State[Int]`
+    // inside a lambda binding `[Int]` names its formal, while `get(5)`
+    // requires the builtin.
     true
   } else if console_authorizes_legacy(labels, eff_name) {
     true
@@ -2996,7 +3419,9 @@ fn decl_authorizes_op(labels: Array[String], op_name: String) -> Bool {
       } else {
         exception_effect_labels_equal(lab, op_name)
       }
-      if equal {
+      // #3095: equal spellings, as in `decl_authorizes_effect`, can name two
+      // types.
+      if equal && !row_label_args_differ(lab, requirement_marked_for(op_name)) {
         found = true
       }
       i = i + 1
@@ -3448,6 +3873,45 @@ export fn set_call_formal_bindings(rows: Array[(String, Array[(String, String)])
   Array::set(call_formal_bindings_cell, 0, m)
 }
 
+/// #3095: the same bindings in the marked spelling (`callee_formal_marked_bindings`).
+/// A key seen with two different bindings maps every formal either names to
+/// `~`, which the judge never reads, so a collision can only keep the answer
+/// the printed spelling gives.
+let call_formal_marked_bindings_cell: Array[MutMap[String, Array[(String, String)]]] = [
+  MutMap::new_string()
+]
+
+export fn set_call_formal_marked_bindings(rows: Array[(String, Array[(String, String)])]) -> Unit {
+  let m = MutMap::new_string()
+  let mut i = 0
+  while i < Array::length(rows) {
+    let (k, binds) = Array::get(rows, i)
+    match MutMap::get(m, k) {
+      Some(prev) => if !formal_bindings_same(prev, binds) {
+        let names = array_empty()
+        let out = array_empty()
+        let mut j = 0
+        while j < Array::length(prev) + Array::length(binds) {
+          let (n, _) = if j < Array::length(prev) {
+            Array::get(prev, j)
+          } else {
+            Array::get(binds, j - Array::length(prev))
+          }
+          if !str_labels_contain(names, n) {
+            Array::push(names, n)
+            Array::push(out, (n, "~"))
+          }
+          j = j + 1
+        }
+        MutMap::set(m, k, out)
+      },
+      None => MutMap::set(m, k, binds)
+    }
+    i = i + 1
+  }
+  Array::set(call_formal_marked_bindings_cell, 0, m)
+}
+
 /// Two calls under one key that instantiate differently (sources merged
 /// without rebased offsets): every formal either names is bound to `?Name`,
 /// which no row authorizes (`row_label_args_ambiguous`), so the collision
@@ -3478,6 +3942,8 @@ fn ambiguous_formal_bindings(a: Array[(String, String)], b: Array[(String, Strin
 fn clear_checker_published_tables() -> Unit {
   Array::set(call_formal_bindings_cell, 0, MutMap::new_string())
   set_shadowed_builtin_type_names([])
+  set_row_nominal_types([])
+  Array::set(call_formal_marked_bindings_cell, 0, MutMap::new_string())
 }
 
 /// Test hook: a label as the call at `key` instantiates it.
@@ -3517,14 +3983,40 @@ fn instantiate_callee_label(label: String, callee_off: Int, callee: String) -> S
 }
 
 fn instantiate_callee_label_key(label: String, key: String) -> String {
+  instantiate_callee_label_in(label, match MutMap::get(Array::get(call_formal_bindings_cell, 0), key) {
+    Some(b) => b,
+    None => []
+  })
+}
+
+/// #3095: the label as the call instantiates it, in the marked spelling the
+/// judge reads (`row_label_args_differ`). A word no binding replaces is the
+/// callee's own text and stays bare.
+fn instantiate_callee_label_marked(label: String, callee_off: Int, callee: String) -> String {
+  if callee_off < 0 {
+    label
+  } else {
+    let key = String::concat(__to_string(callee_off), String::concat(":", callee))
+    instantiate_callee_label_in(label, match MutMap::get(Array::get(call_formal_marked_bindings_cell, 0), key) {
+      Some(b) => b,
+      None => []
+    })
+  }
+}
+
+fn callee_has_marked_bindings(callee_off: Int, callee: String) -> Bool {
+  let key = String::concat(__to_string(callee_off), String::concat(":", callee))
+  callee_off >= 0 && (match MutMap::get(Array::get(call_formal_marked_bindings_cell, 0), key) {
+    Some(_) => true,
+    None => false
+  })
+}
+
+fn instantiate_callee_label_in(label: String, binds: Array[(String, String)]) -> String {
   let bi = String::index_of(label, "[")
   if bi < 0 {
     label
   } else {
-    let binds = match MutMap::get(Array::get(call_formal_bindings_cell, 0), key) {
-      Some(b) => b,
-      None => []
-    }
     if Array::length(binds) == 0 {
       label
     } else {
@@ -5277,6 +5769,7 @@ fn check_perform_effects_expr_tx_indexed(root: Expr, root_declared: Array[String
 /// a plain parameter, not on the work stack.
 fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: Array[String], root_in_handle: Bool, fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], fn_param_effs: Array[Array[Array[String]]], root_ov_names: Array[String], root_ov_effs: Array[Array[String]], root_kinds: Array[(String, String)]) -> Array[EffectError] {
   let errors = array_empty()
+  let scope_depth = Array::length(row_formal_scope)
   Array::push(row_mismatch_roots, root_declared)
   let stack = Array::slice([
     (root, root_declared, root_in_handle, root_ov_names, root_ov_effs, root_kinds)
@@ -5463,6 +5956,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                 while ti < Array::length(callee_effs) {
                   // #3053: the callee's row as THIS call instantiates it.
                   let teff = instantiate_callee_label(Array::get(callee_effs, ti), callee_ident_off, name)
+                  Array::set(requirement_marked_cell, 0, (teff, instantiate_callee_label_marked(Array::get(callee_effs, ti), callee_ident_off, name)))
                   // #1343 (Codex P1 on PR #1359): `decl_authorizes_op`, not
                   // `decl_authorizes_effect` -- once a callee can declare an
                   // OPERATION row (`with Fs::read_file`), a caller holding
@@ -5489,6 +5983,11 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                         let mut ii = 0
                         while ii < Array::length(inst) {
                           let ieff = Array::get(inst, ii)
+                          // #3102 review: the label the variable resolved to
+                          // is judged on its own spelling, which was written
+                          // in the argument's scope -- so only a builtin word
+                          // in it names a certain type (marked mode 1).
+                          Array::set(requirement_marked_cell, 0, (ieff, ieff))
                           // Same discipline the concrete branch below applies:
                           // the exception row is row-transparent, and a
                           // variable resolving to another variable is still
@@ -5509,6 +6008,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                   } else {
                     ()
                   }
+                  Array::set(requirement_marked_cell, 0, ("", ""))
                   ti = ti + 1
                 }
                 if Array::length(missing) > 0 {
@@ -5540,6 +6040,15 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                   // A callback parameter records no instantiation, so its row
                   // is returned as written.
                   let peff = instantiate_callee_label(Array::get(param_effs, pi), callee_ident_off, name)
+                  // A callback parameter records no instantiation: its row
+                  // is the annotation as written (`row_label_args_differ`).
+                  let peff_marked = if callee_has_marked_bindings(callee_ident_off, name) {
+                    instantiate_callee_label_marked(Array::get(param_effs, pi), callee_ident_off, name)
+                  } else {
+                    String::concat("=", peff)
+                  }
+                  Array::set(requirement_marked_cell, 0, (peff, peff_marked))
+                  Array::set(row_callback_scope_start_cell, 0, row_scope_callback_start(name))
                   // #1343: same operation-awareness as the named-callee case
                   // above -- a callback parameter whose row names an operation
                   // is covered by a caller holding the whole effect.
@@ -5548,6 +6057,8 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                   } else {
                     ()
                   }
+                  Array::set(requirement_marked_cell, 0, ("", ""))
+                  Array::set(row_callback_scope_start_cell, 0, 1)
                   pi = pi + 1
                 }
                 if Array::length(missing) > 0 {
@@ -5586,7 +6097,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
           }
         }
       },
-      EFn(_, _, params, fret, effect, body) => {
+      EFn(tparams, _, params, fret, effect, body) => {
         // ADR-0088: the grade check reaches a closure literal's annotations
         // too -- its own row, its parameters' rows, its return type's rows --
         // named after the enclosing binding (Codex review, PR #2653).
@@ -5656,7 +6167,46 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
         }
         // #1344 follow-up: a lambda's parameters enter the payload-kind scope
         // from their annotations, exactly like a top-level function's.
+        // #3095: the body's formal scope. A lambda that declares its own row
+        // reads that row with its own formals in scope; one that inherits the
+        // enclosing row does not rebind the row's words, so it adds nothing --
+        // unless it also inherits the enclosing binding's RETURN-type rows,
+        // written outside every nested binder, which no scope can place.
+        let own_row = match effect_row_parse(effect) {
+          Some(_) => true,
+          None => false
+        }
+        let entry = array_empty()
+        let names = tparam_names(tparams)
+        let mut ni = 0
+        while ni < Array::length(names) {
+          if own_row {
+            Array::push(entry, Array::get(names, ni))
+          } else {
+            Array::push(entry, String::concat("@", Array::get(names, ni)))
+          }
+          ni = ni + 1
+        }
+        if !own_row && Array::length(current_ret_fn_rows()) > 0 && !row_scope_decl_is_root() {
+          Array::push(entry, row_scope_unknown())
+        }
+        let mut li = 0
+        while li < Array::length(local_names) {
+          Array::push(entry, row_scope_callback_marker(Array::get(local_names, li)))
+          li = li + 1
+        }
+        if Array::length(entry) > 0 {
+          Array::push(row_formal_scope, entry)
+          Array::push(stack, (EIdent(row_scope_pop_marker(), 0 - 1), declared, in_handle, ov_names, ov_effs, kinds))
+        } else {
+          ()
+        }
         Array::push(stack, (body, body_declared, in_handle, body_ov_names, body_ov_effs, throw_kind_bind_params(kinds, params)))
+      },
+      EIdent(ident, _) => if ident == row_scope_pop_marker() {
+        row_scope_pop()
+      } else {
+        ()
       },
       EHandle(body, arms) => {
         if Array::length(arms) == 0 {
@@ -5882,6 +6432,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
     }
   }
   Array::truncate(row_mismatch_roots, Array::length(row_mismatch_roots) - 1)
+  Array::truncate(row_formal_scope, scope_depth)
   errors
 }
 
@@ -6245,7 +6796,7 @@ fn check_perform_effects_binding_tx(fn_name: String, ty: Option[TypeExpr], body:
     // parameters, so a direct call to one of them inside the body is checked
     // from the very first stack frame — not just once the walk happens to
     // redescend through a nested `EFn` node.
-    EFn(_, _, params, fret, eff, fbody) => {
+    EFn(tparams, _, params, fret, eff, fbody) => {
       // #1451: this binding's declared RETURN type may declare rows for the
       // function VALUES it produces. Publish them for nested closure literals
       // (see ret_fn_row_labels' doc comment); the body's own declared set below
@@ -6257,7 +6808,12 @@ fn check_perform_effects_binding_tx(fn_name: String, ty: Option[TypeExpr], body:
       // parameters up on its own.
       let merged_params = merge_param_types_with_sig(ty, params)
       let (ov_names, ov_effs) = build_param_overlay(merged_params, fn_names, fn_index)
-      check_perform_effects_expr_tx_in(fn_name, fbody, labels_union(lowered_test_ambient_effects(fn_name), labels_union(sig_labels, effect_row_labels(effect_row_parse(eff)))), false, fn_names, fn_effs, fn_index, fn_param_effs, ov_names, ov_effs, throw_kind_bind_params(no_kind_binds(), merged_params))
+      // #3095: the declaration's own `[S]` scopes over its header and body.
+      Array::truncate(row_formal_scope, 0)
+      Array::push(row_formal_scope, tparam_names(tparams))
+      let errs = check_perform_effects_expr_tx_in(fn_name, fbody, labels_union(lowered_test_ambient_effects(fn_name), labels_union(sig_labels, effect_row_labels(effect_row_parse(eff)))), false, fn_names, fn_effs, fn_index, fn_param_effs, ov_names, ov_effs, throw_kind_bind_params(no_kind_binds(), merged_params))
+      Array::truncate(row_formal_scope, 0)
+      errs
     },
     _ => {
       // #1451: a non-EFn binding declares no arrow of its own; clear the cell so

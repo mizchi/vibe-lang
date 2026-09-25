@@ -51,6 +51,7 @@
 #   VIBE_CLI_WASM  the compiler to ask. Unset, scripts/resolve_stage2.sh picks
 #                  HEAD's generation and SAYS which.
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/run_bounded.sh" # portable timeout(1), #2958
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -96,7 +97,7 @@ printf 'export fn helper(x: Int) -> Int {\n  x + 1\n}\n'                   > "$W
 ask() { # ask <verb> <file> [extra args] -> OUT
   local verb="$1" f="$2"; shift 2
   OUT="$(VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" VIBE_BUILD_CACHE_DIR="$WORK/cache" \
-    timeout 600 bash runtime/vibe "$verb" "$WORK/$f" "$@" 2>&1)"
+    run_bounded 600 bash runtime/vibe "$verb" "$WORK/$f" "$@" 2>&1)"
 }
 positions() { printf '%s' "$1" | grep -o 'line [0-9][0-9]*:[0-9][0-9]*:' | wc -l | tr -d ' '; }
 

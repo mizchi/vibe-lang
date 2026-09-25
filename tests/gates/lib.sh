@@ -16,6 +16,9 @@ if [ -z "${ROOT_DIR:-}" ]; then
 fi
 cd "$ROOT_DIR"
 SCRIPT_DIR="${SCRIPT_DIR:-$ROOT_DIR/scripts}"
+# run_bounded <secs> <cmd...>: the portable spelling of GNU timeout(1), which a
+# stock macOS does not have (#2958). Lanes call it wherever they bound a probe.
+. "$ROOT_DIR/scripts/run_bounded.sh"
 
 # gate_status <var> <cmd...> -- run cmd, assign its exit status to <var>.
 # Never aborts, so the caller's own assertion is always reached.

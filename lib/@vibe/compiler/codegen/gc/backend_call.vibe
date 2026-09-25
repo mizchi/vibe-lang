@@ -33,7 +33,7 @@ import @vibe/compiler/codegen/common_analysis {
   emit_closure_resolve,
   emit_i64_extend_i32_u,
   is_mut_captured_in,
-  packed_lines_to_array_expr,
+  packed_dir_entries_to_array_expr,
   region_mutbytes_exit_copy,
   region_mutlist_exit_copy
 }
@@ -1024,12 +1024,12 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         ()
       }
       // #729/#730 + #1262: `Fs::readdir` surface. The host import returns the
-      // entries "\n"-joined as ONE packed string, so turning it into
+      // entries NUL-joined (#2957) as ONE packed string, so turning it into
       // Array[String] is a source-level rewrite -- the SAME rewrite the linear
       // lane does, taken from the shared builder rather than spelled out again
       // here (that duplication is what drifted in #1809).
       if !source_is_bound && fname == "Fs::readdir" && Array::length(args) == 1 {
-        return ce(buf, packed_lines_to_array_expr(ECall(EIdent("vibe_fs_read_dir_raw", -1), [
+        return ce(buf, packed_dir_entries_to_array_expr(ECall(EIdent("vibe_fs_read_dir_raw", -1), [
           Array::get(args, 0)
         ], -1), "__rd_names"), local_names, next_local, ld)
       } else {
@@ -2383,7 +2383,32 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
           }
         }
         if pf_i < 0 {
-          throw(String::concat("GC codegen: unsupported perform (no builtin mapping): ", op_head))
+          // #3071: an algebraic (user-effect) perform that reaches codegen was
+          // NOT migrated by evidence_dict_pass, so no live handle reaches it:
+          // it can only ever run as an unhandled effect. In practice the site
+          // is dead code -- a function nobody calls, or an exported callee
+          // whose every call site took the suspend-lowered clone -- and
+          // refusing it here rejected the whole program. Lower it the way the
+          // linear lane does (compile_call.vibe's perform arm): evaluate the
+          // payload, then abort. The linear lane throws an effect tag no
+          // handler catches; this lane traps with `unreachable`, which no
+          // `with Exception` handler (tag 0) can intercept either.
+          let raw_args = if expr_tag(op_expr) == 8 {
+            get_ecall_args(op_expr)
+          } else {
+            array_empty()
+          }
+          let mut unl = next_local
+          let mut uai = 0
+          while uai < Array::length(raw_args) {
+            unl = ce(buf, Array::get(raw_args, uai), local_names, unl, ld)
+            emit_drop(buf)
+            uai = uai + 1
+          }
+          // `unreachable` leaves the stack polymorphic, so the site types as
+          // whatever the operation returns, with nothing pushed after it.
+          bytebuf_push(buf, 0)
+          return unl
         }
         let pf_idx = Array::get(ctx.func_table.indices, pf_i)
         let pf_ret = Array::get(ctx.func_table.returns, pf_i)

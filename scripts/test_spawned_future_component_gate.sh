@@ -46,6 +46,7 @@
 #   VIBE_P3_GATE_REQUIRE_TOOLS=1       missing cargo/wasm-tools/viberun =
 #                                      FAIL instead of skip
 set -euo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/run_bounded.sh" # portable timeout(1), #2958
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -155,7 +156,7 @@ wasm-tools validate --features all "$COMPONENT" \
 RESULT_LOG="$OUT_DIR/run.blocked.log"
 BLOCKED_DELAY_MS=300
 START_NS=$(date +%s%N)
-if ! VIBE_ASYNC_GET_DELAY_MS="$BLOCKED_DELAY_MS" timeout 60 "$RUNNER" "$COMPONENT" >"$RESULT_LOG" 2>&1; then
+if ! VIBE_ASYNC_GET_DELAY_MS="$BLOCKED_DELAY_MS" run_bounded 60 "$RUNNER" "$COMPONENT" >"$RESULT_LOG" 2>&1; then
   echo "selfhost spawned-future component gate FAILED: viberun did not exit 0 (blocked path)" >&2
   cat "$RESULT_LOG" >&2
   exit 1
@@ -183,7 +184,7 @@ echo "[spawned-future-component-gate] blocked path: 42 in ${ELAPSED_MS}ms (genui
 # "unknown handle index 0": the epilogue dropped a subtask that a
 # status-RETURNED-on-call result never creates.
 EAGER_LOG="$OUT_DIR/run.eager.log"
-if ! VIBE_ASYNC_GET_DELAY_MS=0 timeout 60 "$RUNNER" "$COMPONENT" >"$EAGER_LOG" 2>&1; then
+if ! VIBE_ASYNC_GET_DELAY_MS=0 run_bounded 60 "$RUNNER" "$COMPONENT" >"$EAGER_LOG" 2>&1; then
   echo "selfhost spawned-future component gate FAILED: viberun did not exit 0 with a non-suspending host import (eager path -- the emitted epilogue must not drop a subtask that was never created)" >&2
   cat "$EAGER_LOG" >&2
   exit 1

@@ -3389,6 +3389,41 @@ export fn throw_payload_site_types() -> Array[(String, Type)] {
   throw_payload_sites
 }
 
+/// #3050: the value type of every local `let` / `let mut`, keyed by the
+/// offset of its `let` keyword (the offset the parser gives `ELet` /
+/// `ELetMut`). `vibe type-at` answers a local binder's declaration with it
+/// when no use of the binder carries a row of its own -- a closure whose every
+/// use is a call has none, because a callee's row is the CALL RESULT. Kept
+/// apart from the per-node table so no consumer keyed by an expression offset
+/// can read one of these rows; the types are raw, resolved by the caller
+/// through the program's final substitution. Recorded only between
+/// `local_let_types_begin` and `local_let_types_end`, which only
+/// `check_program_type_table` calls, so a production check records nothing.
+let local_let_type_rows: Array[(Int, Type)] = []
+let local_let_type_recording: Array[Bool] = [false]
+
+export fn local_let_types_begin() -> Unit {
+  Array::truncate(local_let_type_rows, 0)
+  Array::set(local_let_type_recording, 0, true)
+}
+
+export fn local_let_types_end() -> Unit {
+  Array::set(local_let_type_recording, 0, false)
+}
+
+/// The rows the last `check_program_type_table` recorded.
+export fn local_let_types() -> Array[(Int, Type)] {
+  local_let_type_rows
+}
+
+fn record_local_let_type(let_off: Int, ty: Type, lane: String) -> Unit {
+  if let_off >= 0 && lane == "Primary" && Array::get(local_let_type_recording, 0) {
+    Array::push(local_let_type_rows, (let_off, ty))
+  } else {
+    ()
+  }
+}
+
 /// #2474 (a): the type-parameter variables bound so far in this check --
 /// `(var id, formal name)` for every `[T]` an `EFn` header introduced. A plain
 /// formal is a unification variable inside its body (#2130), so at a `==`
@@ -4882,11 +4917,41 @@ fn resolve_callee_formal_args(wants: Array[String], env_scheme: Option[Type], co
 /// reader keeps it open rather than judging it.
 fn callee_formal_texts(decl: Option[(Array[String], Array[(String, Option[TypeExpr])], Option[TypeExpr])], scheme: Type, inst: Type, defs: Array[TypeDef], s: Subst) -> Array[(String, String)] {
   let out: Array[(String, String)] = []
+  let (name_ids, id_tys) = callee_formal_ids(decl, scheme, inst, defs)
+  let mut ni = 0
+  while ni < Array::length(name_ids) {
+    let (fname, fid) = Array::get(name_ids, ni)
+    let mut ki = 0
+    while ki < Array::length(id_tys) {
+      let (kid, kty) = Array::get(id_tys, ki)
+      if kid == fid {
+        let text = match subst_apply(s, kty) {
+          // A constructor is written by its name in a row (`Read[Array]`).
+          CtConstructor(cn, _) => cn,
+          other => type_to_string(other)
+        }
+        if !String::contains(text, "?") {
+          Array::push(out, (fname, text))
+        }
+      }
+      ki = ki + 1
+    }
+    ni = ni + 1
+  }
+  out
+}
+
+/// The callee's formals (name -> scheme variable id) and the type this call
+/// gives each scheme variable, shared by `callee_formal_texts` and
+/// `callee_formal_marked_texts`.
+fn callee_formal_ids(decl: Option[(Array[String], Array[(String, Option[TypeExpr])], Option[TypeExpr])], scheme: Type, inst: Type, defs: Array[TypeDef]) -> (Array[(String, Int)], Array[(Int, Type)]) {
+  // formal name -> scheme variable id, from the declaration when this
+  // module has one ...
+  let name_ids: Array[(String, Int)] = []
+  // scheme variable id -> the type this call gives it.
+  let id_tys: Array[(Int, Type)] = []
   match (scheme, inst) {
     (CtForAll(vars, _, CtFn(sparams, sret, srow)), CtFn(iparams, iret, _)) => {
-      // formal name -> scheme variable id, from the declaration when this
-      // module has one ...
-      let name_ids: Array[(String, Int)] = []
       match decl {
         Some((tps, dparams, dret)) => decl_formal_ids(tps, dparams, dret, sparams, sret, defs, name_ids),
         None => ()
@@ -4895,38 +4960,143 @@ fn callee_formal_texts(decl: Option[(Array[String], Array[(String, Option[TypeEx
       // each formal by its quantifier index (#3051, `publish_row_formals`), so
       // an IMPORTED callee needs no declaration.
       published_row_formal_ids(srow, vars, name_ids)
-      // scheme variable id -> the type this call gives it.
-      let id_tys: Array[(Int, Type)] = []
       let mut qi = 0
       while qi < Array::length(sparams) && qi < Array::length(iparams) {
         scheme_var_types_from(Array::get(sparams, qi), Array::get(iparams, qi), id_tys)
         qi = qi + 1
       }
       scheme_var_types_from(sret, iret, id_tys)
-      let mut ni = 0
-      while ni < Array::length(name_ids) {
-        let (fname, fid) = Array::get(name_ids, ni)
-        let mut ki = 0
-        while ki < Array::length(id_tys) {
-          let (kid, kty) = Array::get(id_tys, ki)
-          if kid == fid {
-            let text = match subst_apply(s, kty) {
-              // A constructor is written by its name in a row (`Read[Array]`).
-              CtConstructor(cn, _) => cn,
-              other => type_to_string(other)
-            }
-            if !String::contains(text, "?") {
-              Array::push(out, (fname, text))
-            }
-          }
-          ki = ki + 1
-        }
-        ni = ni + 1
-      }
     },
     _ => ()
   }
+  (name_ids, id_tys)
+}
+
+/// #3095: each formal of a generic callee paired with the type this call
+/// gives it, spelled for the effects pass to JUDGE rather than to print
+/// (`row_marked_type_text`). Unlike `callee_formal_texts`, every formal is
+/// paired: one the call leaves unresolved, or that only the row names, is `_`
+/// -- it may still become any type, so it can never make a row refuse --
+/// instead of keeping the callee's own spelling, which read as a caller formal
+/// of the same name (`fn clear[S]() with State[S]` called under `fn
+/// caller[S](..) with State[Int]` was refused with `missing { State[S] }`).
+fn callee_formal_marked_texts(decl: Option[(Array[String], Array[(String, Option[TypeExpr])], Option[TypeExpr])], scheme: Type, inst: Type, defs: Array[TypeDef], s: Subst, reps: Array[(Int, String)]) -> Array[(String, String)] {
+  let out: Array[(String, String)] = []
+  let (name_ids, id_tys) = callee_formal_ids(decl, scheme, inst, defs)
+  let mut ni = 0
+  while ni < Array::length(name_ids) {
+    let (fname, fid) = Array::get(name_ids, ni)
+    let mut text = "_"
+    let mut ki = 0
+    while ki < Array::length(id_tys) {
+      let (kid, kty) = Array::get(id_tys, ki)
+      if kid == fid {
+        text = row_marked_type_text(subst_apply(s, kty), reps)
+      }
+      ki = ki + 1
+    }
+    Array::push(out, (fname, text))
+    ni = ni + 1
+  }
+  // A declared formal no parameter or result mentions (`fn clear[S]() with
+  // State[S]`) has no scheme position at all.
+  match decl {
+    Some((tps, _, _)) => {
+      let mut ti = 0
+      while ti < Array::length(tps) {
+        let tp = Array::get(tps, ti)
+        let mut seen = false
+        let mut oi = 0
+        while oi < Array::length(out) {
+          let (on, _) = Array::get(out, oi)
+          if on == tp {
+            seen = true
+          }
+          oi = oi + 1
+        }
+        if !seen {
+          Array::push(out, (tp, "_"))
+        }
+        ti = ti + 1
+      }
+    },
+    None => ()
+  }
   out
+}
+
+/// #3095: a type spelled so the effects pass can tell where each word came
+/// from. `'S` is a generic binder's rigid formal (`reps`), `^Name` a builtin or
+/// nominal type the checker resolved, `_` a type still open (an inference
+/// variable: any instantiation may fill it) and `~` a part the pass must not
+/// judge (a function or record type, a higher-kinded application). Aliases
+/// are already expanded here, so no word of this text is an alias.
+fn row_marked_type_text(t: Type, reps: Array[(Int, String)]) -> String {
+  match t {
+    CtInt => "^Int",
+    CtDouble => "^Double",
+    CtBool => "^Bool",
+    CtString => "^String",
+    CtChar => "^Char",
+    CtUnit => "^Unit",
+    CtBytes => "^Bytes",
+    CtUnknown => "_",
+    CtVar(id) => {
+      let mut name = ""
+      let mut i = 0
+      while i < Array::length(reps) {
+        let (r, n) = Array::get(reps, i)
+        if r == id {
+          name = n
+        }
+        i = i + 1
+      }
+      if String::length(name) > 0 {
+        String::concat("'", name)
+      } else {
+        "_"
+      }
+    },
+    CtArray(e) => String::concat("^Array[", String::concat(row_marked_type_text(e, reps), "]")),
+    CtOption(e) => String::concat("^Option[", String::concat(row_marked_type_text(e, reps), "]")),
+    CtTuple(es) => if Array::length(es) == 0 {
+      "^Unit"
+    } else {
+      let parts = array_empty()
+      let mut i = 0
+      while i < Array::length(es) {
+        Array::push(parts, row_marked_type_text(Array::get(es, i), reps))
+        i = i + 1
+      }
+      String::concat("(", String::concat(String::join(parts, ","), ")"))
+    },
+    CtStruct(n) => row_marked_nominal(n, []),
+    CtEnum(n) => row_marked_nominal(n, []),
+    CtNamed(n, args) => {
+      let parts = array_empty()
+      let mut i = 0
+      while i < Array::length(args) {
+        Array::push(parts, row_marked_type_text(Array::get(args, i), reps))
+        i = i + 1
+      }
+      row_marked_nominal(n, parts)
+    },
+    _ => "~"
+  }
+}
+
+fn row_marked_nominal(n: String, parts: Array[String]) -> String {
+  if String::length(n) == 0 || String::contains(n, "#") || String::contains(n, ".") || String::contains(n, "$") || String::contains(n, ":") {
+    "~"
+  } else if Array::length(parts) == 0 && (n == "Int" || n == "String" || n == "Bool" || n == "Double" || n == "Char" || n == "Bytes" || n == "Unit") {
+    // A builtin has its own constructor (`CtInt`, ...); a bare `CtNamed` spelled
+    // like one is a rigid formal that reuses the name (`[Int](v: Int)`).
+    String::concat("'", n)
+  } else if Array::length(parts) == 0 {
+    String::concat("^", n)
+  } else {
+    String::concat("^", String::concat(n, String::concat("[", String::concat(String::join(parts, ","), "]"))))
+  }
 }
 
 /// Pair each formal the declaration annotates with the scheme variable at the
@@ -5177,6 +5347,78 @@ export fn call_formal_key(off: Int, name: String) -> String {
   String::concat(__to_string(off), String::concat(":", name))
 }
 
+/// #3053: `s` extended so that each still-unsolved variable a generic
+/// binder's formal stands for in its body is spelled by the formal's name.
+/// A call inside `fn caller[S](x: S)` that passes `x` instantiates the
+/// callee at the caller's `S`; left a variable, its spelling holds a `?`, the
+/// binding was dropped, and the callee's row kept its OWN formal as written --
+/// which matched a caller formal of the same spelling (`get(y)` with `y: T`
+/// read as `State[S]` under `with State[S]`). A variable two binders' rows
+/// claim under different names (an auxiliary re-check can allocate one id
+/// twice, see `eq_formal_row_of`) is left unsolved, so it can only keep the
+/// old answer.
+fn formal_var_display_subst(s: Subst) -> Subst {
+  let reps = formal_var_reps(s)
+  let mut ds = s
+  let mut k = 0
+  while k < Array::length(reps) {
+    let (rid, name) = Array::get(reps, k)
+    ds = SubstBind(rid, CtNamed(name, array_empty()), ds)
+    k = k + 1
+  }
+  ds
+}
+
+/// The still-unsolved variables generic binders' formals stand for, each with
+/// the formal's name; a variable claimed under two names is left out.
+fn formal_var_reps(s: Subst) -> Array[(Int, String)] {
+  let reps: Array[(Int, String)] = []
+  let clashes: Array[Int] = []
+  let mut i = 0
+  while i < Array::length(eq_formal_vars) {
+    let (vid, name) = Array::get(eq_formal_vars, i)
+    match subst_apply(s, CtVar(vid)) {
+      CtVar(rid) => {
+        let mut seen = false
+        let mut j = 0
+        while j < Array::length(reps) {
+          let (r, n) = Array::get(reps, j)
+          if r == rid {
+            seen = true
+            if n != name {
+              Array::push(clashes, rid)
+            }
+          }
+          j = j + 1
+        }
+        if !seen {
+          Array::push(reps, (rid, name))
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  let out: Array[(Int, String)] = []
+  let mut k = 0
+  while k < Array::length(reps) {
+    let (rid, name) = Array::get(reps, k)
+    let mut clash = false
+    let mut c = 0
+    while c < Array::length(clashes) {
+      if Array::get(clashes, c) == rid {
+        clash = true
+      }
+      c = c + 1
+    }
+    if !clash {
+      Array::push(out, (rid, name))
+    }
+    k = k + 1
+  }
+  out
+}
+
 /// #3053: every recorded generic call's formal bindings under the final
 /// substitution, keyed by `call_formal_key`, for the effects pass
 /// to instantiate the callee's row at that call. Only the call's own scheme is
@@ -5184,6 +5426,7 @@ export fn call_formal_key(off: Int, name: String) -> String {
 /// nothing, so its row stays as written (open) rather than being guessed.
 export fn callee_formal_bindings(defs: Array[TypeDef], s: Subst) -> Array[(String, Array[(String, String)])] {
   let out: Array[(String, Array[(String, String)])] = []
+  let ds = formal_var_display_subst(s)
   let mut i = 0
   while i < Array::length(callee_inst_types_cell) {
     let (off, scheme, inst, cname) = Array::get(callee_inst_types_cell, i)
@@ -5191,7 +5434,65 @@ export fn callee_formal_bindings(defs: Array[TypeDef], s: Subst) -> Array[(Strin
     // key two merged sources share -- one call resolving a formal, the other
     // not -- turns ambiguous rather than lending the first call's binding to
     // the second (Codex on #3055).
-    let texts = callee_formal_texts(generic_decl_of_scheme(scheme), scheme, inst, defs, s)
+    let decl = generic_decl_of_scheme(scheme)
+    let texts = callee_formal_texts(decl, scheme, inst, defs, ds)
+    // #3095: a formal the call resolves only in part (`get([])` gives
+    // `Array[?]`) is printed with `_` for the open part rather than left as
+    // the callee's own spelling, so the requirement reads `State[Array[_]]`.
+    let marked = callee_formal_marked_texts(decl, scheme, inst, defs, s, formal_var_reps(s))
+    let mut mi = 0
+    while mi < Array::length(marked) {
+      let (mname, mtext) = Array::get(marked, mi)
+      let mut seen = false
+      let mut ti = 0
+      while ti < Array::length(texts) {
+        let (tn, _) = Array::get(texts, ti)
+        if tn == mname {
+          seen = true
+        }
+        ti = ti + 1
+      }
+      if !seen && mtext != "_" && !String::contains(mtext, "~") {
+        Array::push(texts, (mname, row_marked_type_display(mtext)))
+      }
+      mi = mi + 1
+    }
+    Array::push(out, (call_formal_key(off, cname), texts))
+    i = i + 1
+  }
+  out
+}
+
+/// A `row_marked_type_text` spelling as a reader writes it: the provenance
+/// marks dropped, `,` followed by a space.
+fn row_marked_type_display(m: String) -> String {
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < String::length(m) {
+    let c = String::char_code_at(m, i)
+    if c == 94 || c == 39 {
+      ()
+    } else if c == 44 {
+      StringBuilder::push(sb, ", ")
+    } else {
+      StringBuilder::push(sb, String::substring(m, i, i + 1))
+    }
+    i = i + 1
+  }
+  StringBuilder::freeze(sb)
+}
+
+/// #3095: `callee_formal_bindings` spelled for judging (`row_marked_type_text`),
+/// under the same keys. The effects pass reads a row's instantiation by its
+/// marked spelling only to decide whether a declared row certainly does NOT
+/// cover it; the printed spelling stays the one above.
+export fn callee_formal_marked_bindings(defs: Array[TypeDef], s: Subst) -> Array[(String, Array[(String, String)])] {
+  let out: Array[(String, Array[(String, String)])] = []
+  let reps = formal_var_reps(s)
+  let mut i = 0
+  while i < Array::length(callee_inst_types_cell) {
+    let (off, scheme, inst, cname) = Array::get(callee_inst_types_cell, i)
+    let texts = callee_formal_marked_texts(generic_decl_of_scheme(scheme), scheme, inst, defs, s, reps)
     Array::push(out, (call_formal_key(off, cname), texts))
     i = i + 1
   }
@@ -8360,7 +8661,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         typed_occurrence_capture_enter_virtual_child(capture, 1, Array::length(expr_children(right)))
         cur = right
       },
-      ELet(name, val, body, _) => {
+      ELet(name, val, body, let_off) => {
         let err_before = Array::length(errors)
         let (vt, ns, nc) = ce(val, cenv, defs, s1, c1, errors, tytab, capture, lane)
         attach_unlocated_decl_name_marker(errors, err_before, name)
@@ -8383,6 +8684,9 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         }
         // #2848: a field read on a parameter this binding just quantified.
         refuse_generalized_field_reads(gen, ns, errors)
+        // #3050: the binding's own type -- the generalized one its uses
+        // instantiate, not the monotype before quantification (#3104 review).
+        record_local_let_type(let_off, gen, lane)
         let aliases_outer = spine_region_active && expression_aliases_outer_binding(val, cenv)
         note_local_generic_binding(val, gen, cenv)
         cenv = env_bind(cenv, name, gen)
@@ -8397,10 +8701,11 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         typed_occurrence_capture_enter_virtual_child(capture, 1, Array::length(expr_children(body)))
         cur = body
       },
-      ELetMut(name, val, body, _) => {
+      ELetMut(name, val, body, let_off) => {
         let err_before = Array::length(errors)
         let (vt, ns, nc) = ce(val, cenv, defs, s1, c1, errors, tytab, capture, lane)
         attach_unlocated_decl_name_marker(errors, err_before, name)
+        record_local_let_type(let_off, vt, lane)
         // `loop` desugars to `let mut __loop_result = 0; while true { ...
         // __loop_result = <break value> ... }` (parser_expr_primary.vibe) —
         // the 0 is only a slot placeholder, but binding its CtInt here pinned

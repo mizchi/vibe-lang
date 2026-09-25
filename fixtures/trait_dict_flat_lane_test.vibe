@@ -1,0 +1,55 @@
+// #3069: a trait impl and a bounded generic compile and answer on the FLAT
+// single-source linear lane (bump / RC through `cli_main` without
+// VIBE_FS_COMPILE) the way they do on the FS and gc lanes.
+//
+// That lane used to run the trait-dictionary desugar BEFORE the checker, so
+// the checker saw its own output: every impl answered ``no impl `Measured` for
+// `Self` ``, a `[T: Measured]` function's synthesized `__dict_Measured_T`
+// parameter tripped the reserved-prefix rule, and `[T: Eq]` applied to a
+// `derive (Eq)` struct met `EqDict::equals` at arity 3. The early gate
+// compiles this file on that lane as well as on the FS lanes.
+
+struct Pt {
+  x: Int;
+  y: Int
+} derive (Eq)
+
+trait Measured {
+  measure(Self) -> Int
+}
+
+impl Measured for Pt {
+  measure(a: Pt) -> Int { a.x + a.y }
+}
+
+impl Measured for Int {
+  measure(a: Int) -> Int { a * 2 }
+}
+
+fn meas[T: Measured](v: T) -> Int {
+  T::measure(v) * 10
+}
+
+fn meas_ufcs[T: Measured](v: T) -> Int {
+  v.measure() + 1
+}
+
+fn eq2[T: Eq](a: T, b: T) -> Bool {
+  a == b
+}
+
+test "impl called directly" {
+  inspect(Pt::measure(Pt::{ x: 3, y: 4 }), "7")
+}
+
+test "bounded generic dispatches per instantiation" {
+  inspect(meas(Pt::{ x: 3, y: 4 }), "70")
+  inspect(meas(5), "100")
+  inspect(meas_ufcs(Pt::{ x: 1, y: 1 }), "3")
+}
+
+test "Eq bound at a derive (Eq) struct compares by content" {
+  inspect(eq2(Pt::{ x: 3, y: 4 }, Pt::{ x: 3, y: 4 }), "true")
+  inspect(eq2(Pt::{ x: 3, y: 4 }, Pt::{ x: 3, y: 5 }), "false")
+  inspect(eq2(1.5, 1.5), "true")
+}
