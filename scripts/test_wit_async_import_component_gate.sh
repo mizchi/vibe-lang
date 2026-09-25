@@ -192,13 +192,28 @@ wasm-tools print "$PROG_DIR/main.wasm" >"$PROG_DIR/main.wat"
 }
 grep -Fq '"get-price" (func' "$PROG_DIR/main.wat"
 grep -Fq '"get-tax" (func' "$PROG_DIR/main.wat"
+# #3131: the import is the WIT as written. `async func() -> s64` is a subtask
+# whose result is the value; `-> future<s64>` would be a different function
+# type, and a provider implementing prices.wit would not plug in.
+PROG_WIT="$(wasm-tools component wit "$PROG_DIR/main.wasm")"
+case "$PROG_WIT" in
+  *'future<'*)
+    echo "WIT async import gate FAILED: a WIT async import was composed with a future result, not as the WIT declares it" >&2
+    printf '%s\n' "$PROG_WIT" >&2
+    exit 1 ;;
+  *'get-price: async func() -> s64;'*'get-tax: async func() -> s64;'*) ;;
+  *)
+    echo "WIT async import gate FAILED: get-price / get-tax are not imported as async func() -> s64" >&2
+    printf '%s\n' "$PROG_WIT" >&2
+    exit 1 ;;
+esac
 if grep -Eq '\(import "(get-price|get-tax)" \(func' "$PROG_DIR/main.wat"; then
   echo "WIT async import gate FAILED: a WIT-addressed future became a root function import" >&2
   exit 1
 fi
 # --- and EXECUTED (#2064) -----------------------------------------------------
 # viberun links a WIT-addressed VIBE_ASYNC_FUTURES entry inside its versioned
-# interface instance as `future<s64>`. Both producers wait LONG_MS; awaited
+# interface instance as `async func() -> s64`. Both producers wait LONG_MS; awaited
 # concurrently the run takes about LONG_MS, sequentially about twice that, so
 # the wall clock is what shows the two imports were in flight together.
 RUNNER="${VIBE_WIT_ASYNC_IMPORT_GATE_RUNNER:-$ROOT/runtime/viberun/target/release/viberun}"
@@ -267,7 +282,7 @@ if [ "$ELAPSED_MS" -ge $(( LONG_MS * 3 / 2 )) ] || [ "$ELAPSED_MS" -lt $(( LONG_
 fi
 echo "[wit-async-import] spawned tasks: 42 in ${ELAPSED_MS}ms (two ${LONG_MS}ms WIT futures, tasks parked on both)"
 
-# --- WIT RESPONSES: future<record{status, body: stream<u8>}> (#2066) ---------
+# --- WIT RESPONSES: async func() -> record{status, body: stream<u8>} (#2066) -
 # fixtures/wit_response_import/client_bindings.vibe is the derivation of
 # client.wit (from_wit_test.vibe pins it). Each function returns the `types`
 # interface's `response` record, so the core carries `wit_response_get$`
@@ -304,6 +319,18 @@ grep -Fq '(record (field "status" s32) (field "body"' "$RESP_DIR/main.wat" || {
   echo "WIT async import gate FAILED: the response record is not {status: s32, body: stream<u8>}" >&2
   exit 1
 }
+RESP_WIT="$(wasm-tools component wit "$RESP_DIR/main.wasm")"
+case "$RESP_WIT" in
+  *'future<'*)
+    echo "WIT async import gate FAILED: a WIT response import was composed with a future result (#3131)" >&2
+    printf '%s\n' "$RESP_WIT" >&2
+    exit 1 ;;
+  *'fetch-a: async func() -> response;'*'fetch-b: async func() -> response;'*) ;;
+  *)
+    echo "WIT async import gate FAILED: fetch-a / fetch-b are not imported as async func() -> response" >&2
+    printf '%s\n' "$RESP_WIT" >&2
+    exit 1 ;;
+esac
 # Both responses resolve after LONG_MS. 200 + 204 + (1+2+3) + (10+20) = 440:
 # each status and every body byte reached the guest, and the wall clock shows
 # the two requests were in flight together.
@@ -340,8 +367,8 @@ GOT="$(VIBE_ASYNC_FUTURES="$IFACE#extra=5:0" VIBE_ASYNC_RESPONSES="$IFACE#fetch-
 }
 echo "[wit-async-import] one interface carrying a scalar future and responses links once: 440"
 # #2066 MIXED: fixtures/wit_response_mixed awaits a response AND a scalar
-# `future<s64>` from ONE interface. The instance type declares both future
-# types; the adapter keys each handle's canon pair and encoding on its kind.
+# `async func() -> s64` from ONE interface. The adapter decodes each call's
+# result slot by its kind.
 # Both land after LONG_MS: 200 + (1+2+3) + 5 = 211 in about LONG_MS.
 MIX_DIR="$OUT/response_mixed"
 rm -rf "$MIX_DIR"
@@ -464,6 +491,22 @@ grep -qF "start the request inside the spawned task" "$SHARE_DIR/main.wasm.diag"
   exit 1
 }
 echo "[wit-async-import] a response future shared with a spawned task: refused"
+# A closure bound to a name hides its captures from the check, so while a
+# value owning a host stream is in scope, spawning a closure that is not
+# written at the spawn is refused, naming the edit (Codex on #3091).
+cp fixtures/wit_response_import/share_named_closure_refused.vibe "$SHARE_DIR/"
+VIBE_PREOPEN_DIR="$ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \
+  "$COMPILER" "$SHARE_DIR/share_named_closure_refused.vibe" "$SHARE_DIR/named.wasm" run >/dev/null 2>&1 || true
+if [ -s "$SHARE_DIR/named.wasm" ]; then
+  echo "WIT async import gate FAILED: a named closure awaiting a shared response future compiled" >&2
+  exit 1
+fi
+grep -qF "pass the closure literal itself to the spawn" "$SHARE_DIR/named.wasm.diag" 2>/dev/null || {
+  echo "WIT async import gate FAILED: share_named_closure_refused gave an unexpected diagnostic: $(cat "$SHARE_DIR/named.wasm.diag" 2>/dev/null)" >&2
+  exit 1
+}
+echo "[wit-async-import] a named closure spawned while a response future is in scope: refused"
 # The same rule through containers: a future of `Option[Reply]` whose struct
 # field is the response.
 cp fixtures/wit_response_import/share_nested_refused.vibe "$SHARE_DIR/"
@@ -577,4 +620,59 @@ case "$STATUS:$GOT" in
   *) echo "WIT async import gate FAILED: a stalled response failed without naming the timeout: $GOT" >&2; exit 1 ;;
 esac
 echo "[wit-async-import] a stalled server fails the future within VIBE_HTTP_TIMEOUT_MS"
+# A WIT `string` argument must be UTF-8; a vibe String is bytes. The call
+# fails closed with the canonical ABI's own message naming the byte offset.
+UTF_DIR="$OUT/response_invalid_utf8"
+rm -rf "$UTF_DIR"; mkdir -p "$UTF_DIR"
+cp fixtures/wit_response_request/invalid_utf8_main.vibe fixtures/wit_response_request/client_bindings.vibe "$UTF_DIR/"
+VIBE_PREOPEN_DIR="$ROOT" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \
+  "$COMPILER" "$UTF_DIR/invalid_utf8_main.vibe" "$UTF_DIR/main.wasm" run >/dev/null 2>&1 || true
+[ -s "$UTF_DIR/main.wasm" ] || {
+  echo "WIT async import gate FAILED: invalid_utf8_main.vibe did not compile: $(cat "$UTF_DIR/main.wasm.diag" 2>/dev/null)" >&2
+  exit 1
+}
+GOT="$(VIBE_ASYNC_RESPONSES="example:http-lite/client@1.0.0#fetch=200:0:echo" run_bounded 60 "$RUNNER" "$UTF_DIR/main.wasm" 2>&1)" && {
+  echo "WIT async import gate FAILED: a non-UTF-8 string argument was accepted: $GOT" >&2
+  exit 1
+}
+case "$GOT" in
+  *"invalid utf-8 sequence of 1 bytes from index 2"*) ;;
+  *) echo "WIT async import gate FAILED: a non-UTF-8 argument did not fail naming the offset: $GOT" >&2; exit 1 ;;
+esac
+echo "[wit-async-import] a non-UTF-8 string argument fails closed at byte 2"
+# #3131: cancelling a task parked on a WIT future cancels its SUBTASK and
+# frees its result slot. 600 groups each cancel a pending call, past the
+# adapter's 512 slots, so a leak traps a later call. Scalar first: each group
+# joins a fast get-tax (2) and cancels a 10s get-price, 1200.
+cancel_row() { # <fixture dir> <main> <bindings> <expected> <futures spec> <responses spec> <label>
+  local dir="$OUT/cancel_$1_$2"
+  rm -rf "$dir"; mkdir -p "$dir"
+  cp "fixtures/$1/$2.vibe" "fixtures/$1/$3" "$dir/"
+  VIBE_PREOPEN_DIR="$ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \
+    "$COMPILER" "$dir/$2.vibe" "$dir/main.wasm" run >/dev/null 2>&1 || true
+  [ -s "$dir/main.wasm" ] || {
+    echo "WIT async import gate FAILED: fixtures/$1/$2.vibe did not compile: $(cat "$dir/main.wasm.diag" 2>/dev/null)" >&2
+    exit 1
+  }
+  local got
+  got="$(VIBE_ASYNC_FUTURES="$5" VIBE_ASYNC_RESPONSES="$6" run_bounded 120 "$RUNNER" "$dir/main.wasm" 2>&1)" || {
+    echo "WIT async import gate FAILED: fixtures/$1/$2.vibe did not exit 0 ($7): $got" >&2
+    exit 1
+  }
+  [ "$got" = "$4" ] || {
+    echo "WIT async import gate FAILED: fixtures/$1/$2.vibe expected $4 ($7), got: $got" >&2
+    exit 1
+  }
+  echo "[wit-async-import] $7: $got"
+}
+PIFACE='example:prices/api@1.0.0'
+cancel_row wit_future_import cancel_many prices_bindings.vibe 1200 \
+  "$PIFACE#get-price=40:10000,$PIFACE#get-tax=2:1" "" "600 cancelled get-price subtasks release their slots"
+CIFACE='example:http-lite/client@1.0.0'
+cancel_row wit_response_import cancel_many client_bindings.vibe 122400 \
+  "" "$CIFACE#fetch-a=200:10000:1|2|3,$CIFACE#fetch-b=204:1:9" "600 cancelled pending responses release their slots"
+cancel_row wit_response_import cancel_many client_bindings.vibe 122400 \
+  "" "$CIFACE#fetch-a=200:0:1|2|3,$CIFACE#fetch-b=204:5:9" "600 groups whose responses land at once"
 echo "WIT async import component gate OK"

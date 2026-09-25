@@ -7243,7 +7243,31 @@ fn is_future_cell_ty_any(ts: Array[Type], defs: Array[TypeDef], depth: Int) -> B
 /// holds the cell as surely as a bare `Future[T]` does. Only the presence of
 /// the head is asked, so the declaration's own type parameters need no
 /// instantiation.
+/// Declarations being walked by `decl_holds_future_cell`. The question is
+/// about the declaration's text (does a `Future` head appear), so a name met
+/// again adds nothing: answering "no" there keeps a recursive declaration
+/// such as `List[T]` from reaching the depth cap, which would keep every
+/// `let` of an open `List` monomorphic (Codex on #3091).
+let future_cell_walk: Array[String] = []
+
 fn decl_holds_future_cell(name: String, defs: Array[TypeDef], depth: Int) -> Bool {
+  let mut seen = false
+  let mut i = 0
+  while i < Array::length(future_cell_walk) && !seen {
+    seen = Array::get(future_cell_walk, i) == name
+    i = i + 1
+  }
+  if seen {
+    false
+  } else {
+    Array::push(future_cell_walk, name)
+    let holds = decl_holds_future_cell_fields(name, defs, depth)
+    Array::truncate(future_cell_walk, Array::length(future_cell_walk) - 1)
+    holds
+  }
+}
+
+fn decl_holds_future_cell_fields(name: String, defs: Array[TypeDef], depth: Int) -> Bool {
   match find_typedef(defs, name) {
     Some(td) => match td {
       TDStruct(_, fields, _, _) => is_future_cell_ty_any(for f in fields {

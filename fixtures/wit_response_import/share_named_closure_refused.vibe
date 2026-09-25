@@ -1,0 +1,26 @@
+// #2066: the capture check reads a closure LITERAL's captures; a closure
+// bound to a name first hides them. Spawning `worker` twice would hand the
+// response body's one end to both tasks (Codex on #3091), so while a value
+// that owns a host stream is in scope, a spawn of a closure that is not
+// written at the spawn is refused, and the message names the edit: pass the
+// literal itself. Compiled and refused by
+// scripts/test_wit_async_import_component_gate.sh.
+import ./client_bindings.vibe {
+  fetch_a
+}
+
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  let pending = fetch_a()
+  TaskGroup::run((g) -> {
+    let worker = () -> Int with Async + Exception {
+      HostResponse::status(await(pending))
+    }
+    let a = TaskGroup::spawn_suspend(g, worker)
+    let b = TaskGroup::spawn_suspend(g, worker)
+    TaskHandle::join(a) + TaskHandle::join(b)
+  })
+}

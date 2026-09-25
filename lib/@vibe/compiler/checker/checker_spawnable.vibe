@@ -8,6 +8,7 @@ import @vibe/compiler/core {
   TypeDef,
   TypeEnv,
   TypeExpr,
+  env_flat_bindings,
   env_lookup,
   env_mut_escape,
   expr_child_at,
@@ -419,7 +420,14 @@ fn sp_owns_host_stream(s: Subst, defs: Array[TypeDef], t: Type, depth: Int, form
       CtNamed(n, targs) => if n == "HostResponse" || n == "HostStream" {
         true
       } else {
-        sp_owns_host_stream_all(s, defs, targs, depth + 1, formals) || sp_decl_owns_host_stream(s, defs, n, targs, depth + 1, formals)
+        // A declared type owns what its instantiated fields own; a type
+        // argument its fields never hold (a region or effect formal of
+        // `TaskGroup[rg, e]`, say) owns nothing. Only an undeclared builtin
+        // (`Future[T]`, `Option`-like carriers) is judged by its arguments.
+        match find_typedef(defs, n) {
+          Some(_) => sp_decl_owns_host_stream(s, defs, n, targs, depth + 1, formals),
+          None => sp_owns_host_stream_all(s, defs, targs, depth + 1, formals)
+        }
       },
       CtVar(id) => sp_formals_has(formals, id),
       CtStruct(n) => sp_decl_owns_host_stream(s, defs, n, [], depth + 1, formals),
@@ -463,7 +471,42 @@ fn sp_owns_host_stream_all(s: Subst, defs: Array[TypeDef], ts: Array[Type], dept
 
 /// The fields of a declared struct, or the payloads of a declared enum's
 /// variants, instantiated at `targs`.
+/// Declarations being walked, keyed by name and instantiation. A recursive
+/// declaration reached again at the SAME instantiation adds nothing its first
+/// visit does not already examine, so it answers "owns nothing" there rather
+/// than descending to the depth cap, which would count `List[Int]` as a
+/// stream owner (Codex on #3091). A non-regular recursion (new arguments at
+/// every level) still reaches the cap and is answered as owning.
+let sp_decl_walk: Array[String] = []
+
+fn sp_decl_walk_has(key: String) -> Bool {
+  let mut hit = false
+  let mut i = 0
+  while i < Array::length(sp_decl_walk) && !hit {
+    hit = Array::get(sp_decl_walk, i) == key
+    i = i + 1
+  }
+  hit
+}
+
 fn sp_decl_owns_host_stream(s: Subst, defs: Array[TypeDef], name: String, targs: Array[Type], depth: Int, formals: Array[Int]) -> Bool {
+  let mut key = name
+  let mut ki = 0
+  while ki < Array::length(targs) {
+    key = String::concat(key, String::concat("|", type_to_string(subst_apply(s, Array::get(targs, ki)))))
+    ki = ki + 1
+  }
+  if sp_decl_walk_has(key) {
+    false
+  } else {
+    Array::push(sp_decl_walk, key)
+    let owns = sp_decl_owns_host_stream_fields(s, defs, name, targs, depth, formals)
+    Array::truncate(sp_decl_walk, Array::length(sp_decl_walk) - 1)
+    owns
+  }
+}
+
+fn sp_decl_owns_host_stream_fields(s: Subst, defs: Array[TypeDef], name: String, targs: Array[Type], depth: Int, formals: Array[Int]) -> Bool {
   match find_typedef(defs, name) {
     Some(td) => match td {
       TDStruct(_, fields, _, tparams) => {
@@ -623,8 +666,43 @@ export fn check_spawnable_captures(env: TypeEnv, s: Subst, defs: Array[TypeDef],
       }
       out
     },
-    _ => sp_empty_strings()
+    // #2066: a closure that is not a literal here -- a name bound to one, a
+    // call returning one -- hides its captures from this check. For most
+    // values that is the documented gap above; for a value that owns a host
+    // stream it would hand one body end to every task spawned with the
+    // closure (Codex on #3091). So when such a value is visible here, the
+    // spawn is refused and the message names the edit.
+    _ => {
+      // Concrete owners only: a formal payload in scope is judged where a
+      // literal captures it, not on every named-closure spawn.
+      let owner = sp_visible_stream_owner(env, s, defs, [])
+      if owner == "" {
+        sp_empty_strings()
+      } else {
+        [
+          String::concat("this spawn takes a closure that is not written here, while `", String::concat(owner, "` owns a host stream (a response body) that only one task may read, and the closure may capture it: pass the closure literal itself to the spawn so its captures can be checked"))
+        ]
+      }
+    }
   }
+}
+
+/// The name of a visible binding whose value owns a host stream, or "".
+fn sp_visible_stream_owner(env: TypeEnv, s: Subst, defs: Array[TypeDef], formals: Array[Int]) -> String {
+  // `formals` is threaded for the walk's signature; the caller passes none.
+  let bindings = env_flat_bindings(env)
+  let mut found = ""
+  let mut i = 0
+  while i < Array::length(bindings) && found == "" {
+    let (name, ty) = Array::get(bindings, i)
+    if sp_owns_host_stream(s, defs, ty, 0, formals) {
+      found = name
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
 }
 
 // #1262 / ADR-0100 (1) -- HISTORY, and why the walk that used to live here is

@@ -687,12 +687,16 @@ export fn TaskGroup::run[T, rg, e](body: (TaskGroup[rg, e]) -> T with e) -> T wi
     _region_witness: (x) -> x
   }
   // #1537: a throw escaping the body skips the close below, so it releases
-  // the group's armed timer on the way out; a caller catching the throw and
-  // running the group again would otherwise keep one timer subtask per
-  // iteration (Codex on #3091). The payload is re-thrown unchanged.
+  // what the group holds on the host on the way out: every parked child is
+  // cancelled, which releases its host wait, and then the armed timer. A
+  // caller catching the throw and running the group again would otherwise
+  // keep one read and one timer subtask per iteration (Codex on #3091). The
+  // payload is re-thrown unchanged.
   let v = handle {
     body(n)
   } with { Exception::Throw(payload) => {
+    n.phase = 3
+    conc_cancel_parked(n)
     conc_host_release_timer(n)
     throw(payload)
   } }

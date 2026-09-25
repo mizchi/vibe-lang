@@ -297,7 +297,8 @@ override silently contradicting a module that says `raw` is the hazard #2903's
   emitted by linked_compile as `vibe.wit_future_get$<address>` instead of
   `vibe.host_future_get$<name>`, with the same `() -> i64` type and the same
   wait half. The composer imports every such function from ONE instance of its
-  versioned interface, and each is a `future<s64>`. The addresses come from WIT text:
+  versioned interface, as the WIT declares it: `async func() -> s64`, whose
+  call is a subtask (the WIT-import bullet below). The addresses come from WIT text:
   `from_wit_future_imports` (`@vibex/wasm_wit_parser`) derives a binding per
   `async func() -> s64` and refuses any other function rather than skipping
   it. `scripts/test_wit_async_import_component_gate.sh` compiles
@@ -308,10 +309,44 @@ override silently contradicting a module that says `raw` is the hazard #2903's
   already did, so a program that imports its bindings builds to a component
   directly. viberun links a `VIBE_ASYNC_FUTURES` entry whose name is such an
   address (`example:prices/api@1.0.0#get-price=40:300`) inside that versioned
-  instance as `future<s64>`, so the gate also executes the program. It
+  instance as that `async func`, returning the value after its delay, so the
+  gate also executes the program. It
   measures 42 in about one producer delay for two concurrent futures, and
   bounds that from above (they were in flight together) and below (the task
   parked).
+
+- **A WIT async import is a subtask** (#3131). A WIT function
+  `async func() -> T` is imported with exactly that type -- never as
+  `-> future<T>`, which is a different function type that a provider written
+  against the WIT would not satisfy -- and `canon lower async` makes each call
+  a subtask whose result lands at the pointer given with the call. That
+  pointer must stay the call's own until the subtask returns, while the
+  subtask handle is only known afterwards, so the getter first takes a free
+  RESULT SLOT (512 of them, 8 bytes each, from 40960) and the core's handle
+  is `1024 + slot`, never the subtask handle. It stays inside the scheduler's
+  future band (`[2, 2047]` as handle + 2). The adapter keeps per slot a state
+  (from 45056: 0 free, 1 subtask pending, 2 landed) and the pending
+  subtask's handle (from 47104), and per subtask handle the slot + 1 (from
+  49152), which is how `waitable-set.wait`'s payload finds the slot.
+
+  A call RETURNED at the call has its value in the slot already. Otherwise
+  the wait parks on the subtask until its SUBTASK event reports RETURNED (an
+  earlier state change only loops), drops it with `subtask.drop`, reads the
+  slot and frees it. Arming joins the subtask to the shared set, and
+  `host_future_wait_any` does the same bookkeeping for a WIT subtask. Cancel
+  is a synchronous `subtask.cancel`; a call that returned first counts as
+  landed, and a landed response's body stream is dropped with it. A call
+  still STARTING has not read its arguments, and the argument buffer is reused
+  by the next call, so the getter of an argument response waits in a set of
+  its own until the subtask leaves STARTING. A host function starts at once;
+  a provider component plugged in with `wac` may not, which the service world
+  measures. More than 512 calls in flight trap.
+  The composer still declares the `future` types and their canon pairs (now
+  unused), so no index moves; the subtask pair is appended last
+  (`[subtask-drop-wit]`, `[subtask-cancel-wit]`).
+  `fixtures/wit_future_import/cancel_many.vibe` and
+  `fixtures/wit_response_import/cancel_many.vibe` cancel 600 pending calls,
+  more than there are slots.
 
 - **A WIT response carries a status and a streaming body** (#2066).
   `host_response_named(<address>)` is `Future[HostResponse]`, for a WIT
@@ -319,9 +354,9 @@ override silently contradicting a module that says `raw` is the hazard #2903's
   interface's `record response { status: s32, body: stream<u8> }`.
   linked_compile emits `vibe.wit_response_get$<address>` (same `() -> i64`
   type, same wait half). The composer imports the `types` instance for the
-  record and the API instance for the functions, and declares
-  `future<response>` over the imported record. The adapter lands the record
-  in the future's 8-byte slot, `{status: s32 @0, body: stream<u8> @4}`, and
+  record and the API instance for the functions, each imported as
+  `async func() -> response` over the imported record. The adapter lands the
+  record in the call's 8-byte result slot, `{status: s32 @0, body: stream<u8> @4}`, and
   the wait returns it as one scalar, `(status << 32) | body`: the record's
   flat lowering side by side. A status outside `[-2^30, 2^30)` does not fit
   the tagged value and traps in the adapter. `HostResponse::status` and
@@ -329,13 +364,18 @@ override silently contradicting a module that says `raw` is the hazard #2903's
   in a host-stream cell, which the shared stream read half reads (present
   whenever a response is, even with no named stream). Each `body` call wraps
   the same end, so read it through one cell: once one reaches end of stream
-  the end is dropped, and reading through another traps. Every future in a
+  the end is dropped, and reading through another traps. For the same reason a
+  response future has ONE owner. `sp_spawnable_ok` refuses a spawn capture
+  of a future whose value owns a host stream. That covers the future
+  directly, through `Option`, tuples, records and declared fields, through a
+  type parameter with no `Send` bound (instantiable at `HostResponse`), and
+  through a closure that is not written at the spawn while such a value is in
+  scope. Each refusal names the edit: start the request inside the task, add
+  the bound, or pass the literal. Every future in a
   response component comes from ONE interface, and anything else is refused
-  by name. Scalar `future<s64>` functions of that interface may sit beside
-  the responses (MIXED): the API instance type declares both future types,
-  the composer adds a second canon read/drop (and cancel-read) pair of the
-  s64 type, and the adapter records each handle's kind (band 36864, 1 = a
-  response) at its getter, then picks the pair and the value encoding by it
+  by name. Scalar `async func() -> s64` functions of that interface may sit
+  beside the responses (MIXED): the adapter records each slot's kind (band
+  36864, 1 = a response) at its getter and decodes the value by it
   (`fixtures/wit_response_mixed`: 211 in ~320ms for a response beside a
   scalar future). Named host streams may share it too: they are ROOT
   imports, so they (then `sleep-for`) take the component funcs before the
@@ -345,7 +385,8 @@ override silently contradicting a module that says `raw` is the hazard #2903's
   same mapping lets scalar WIT futures share a component with named streams
   (`fixtures/wit_future_import/stream_main.vibe`, and `stream_spawn_main.vibe`
   with `sleep-for` as well: 84 each). Runner-private root futures still cannot
-  share a WIT component: they carry `future<u32>`, the WIT ones `s64`. `from_wit_future_imports` derives the bindings (it admits the
+  share a WIT component: they are `func() -> future<u32>` root functions read
+  through `future.read`, while the WIT ones are subtasks. `from_wit_future_imports` derives the bindings (it admits the
   function only with `use types.{response};` and exactly that record).
   A response function may take ONE `string` parameter (a request URL,
   `async func(url: string) -> response`); the derivation spells it
@@ -504,7 +545,9 @@ under `### Host futures` say when. A group's timer is released at the first
 of three points: the group's next settle round once no sleeper it covered is
 left (so a later `pump_all` does not wait out a cancelled sleep), the group's
 normal close, or a throw escaping the group's body, which `TaskGroup::run`
-re-throws unchanged after the release. `future.cancel-write` and `task.cancel` are
+re-throws unchanged after the release. On that throw the group's parked
+children are cancelled first, which releases their host reads the same way
+fail-fast does. `future.cancel-write` and `task.cancel` are
 not emitted: the guest never writes a host future, and a guest task is not a
 Component Model task (#1537 scope item 3).
 

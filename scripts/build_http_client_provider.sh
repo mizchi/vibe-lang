@@ -14,10 +14,9 @@ set -euo pipefail
 # result is one component that exports `handler` and imports `wasi:http/client`
 # -- the service world's two directions.
 #
-# The export spells `fetch` the way the composer imports it: an async function
-# whose result is `future<response>` (the run lane's response ABI, which
-# viberun's `VIBE_ASYNC_RESPONSES` provider implements too). That is not the
-# source WIT's `-> response`; #3131 tracks lowering the import as written.
+# The export is the binding's WIT exactly as written --
+# `fetch: async func(url: string) -> response` -- since the composer lowers a
+# WIT async import as a subtask rather than as `-> future<response>` (#3131).
 #
 # A transport failure (no connection, a URL this parser does not accept) traps
 # the provider, which fails the request rather than inventing a status.
@@ -51,22 +50,9 @@ fi
 
 mkdir -p "$TMP_DIR/src" "$TMP_DIR/wit/deps/example-http-lite" "$(dirname "$OUT_PATH")"
 cp -R "$WIT_PATH/deps/." "$TMP_DIR/wit/deps/"
-cat >"$TMP_DIR/wit/deps/example-http-lite/client.wit" <<'EOF'
-package example:http-lite@1.0.0;
-
-interface types {
-  record response {
-    status: s32,
-    body: stream<u8>,
-  }
-}
-
-interface client {
-  use types.{response};
-
-  fetch: async func(url: string) -> future<response>;
-}
-EOF
+# The binding's own WIT, not a restatement of it: what the handler was derived
+# from is exactly what this provider implements.
+cp "$PROJECT_ROOT/fixtures/wit_response_request/client.wit" "$TMP_DIR/wit/deps/example-http-lite/client.wit"
 cat >"$TMP_DIR/wit/world.wit" <<'EOF'
 package vibe:http-client-provider;
 
@@ -104,7 +90,9 @@ use wasi::http::types::{ErrorCode, Fields, Method, Request, Response, Scheme};
 
 struct Component;
 
-/// `http://host[:port]/path?query` -> (scheme, authority, path-with-query).
+/// `http://host[:port][/path][?query][#fragment]` -> (scheme, authority,
+/// path-with-query). The authority ends at the first `/` or `?`; a query with
+/// no path keeps its query under `/`, and a fragment is never sent.
 fn split_url(url: &str) -> (Scheme, String, String) {
     let (scheme, rest) = if let Some(r) = url.strip_prefix("http://") {
         (Scheme::Http, r)
@@ -113,10 +101,20 @@ fn split_url(url: &str) -> (Scheme, String, String) {
     } else {
         panic!("http client provider: unsupported URL (want http:// or https://): {url}");
     };
-    match rest.find('/') {
-        Some(i) => (scheme, rest[..i].to_string(), rest[i..].to_string()),
-        None => (scheme, rest.to_string(), "/".to_string()),
+    let rest = rest.split('#').next().unwrap_or("");
+    let end = rest.find(|c| c == '/' || c == '?').unwrap_or(rest.len());
+    let (authority, target) = rest.split_at(end);
+    if authority.is_empty() {
+        panic!("http client provider: URL has no host: {url}");
     }
+    let path = if target.is_empty() {
+        "/".to_string()
+    } else if target.starts_with('?') {
+        format!("/{target}")
+    } else {
+        target.to_string()
+    };
+    (scheme, authority.to_string(), path)
 }
 
 async fn get(url: String) -> LiteResponse {
@@ -138,13 +136,8 @@ async fn get(url: String) -> LiteResponse {
 }
 
 impl Guest for Component {
-    async fn fetch(url: String) -> wit_bindgen::FutureReader<LiteResponse> {
-        let (tx, rx) = wit_future::new::<LiteResponse>(|| unreachable!("http client provider: the response future was dropped unwritten"));
-        wit_bindgen::spawn(async move {
-            let resp = get(url).await;
-            let _ = tx.write(resp).await;
-        });
-        rx
+    async fn fetch(url: String) -> LiteResponse {
+        get(url).await
     }
 }
 

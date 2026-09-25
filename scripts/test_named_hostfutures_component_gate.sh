@@ -802,4 +802,24 @@ fi
   || { echo "named hostfutures component gate FAILED: spawn_future_formal_send expected 42, got: $(cat "$FS_LOG")" >&2; exit 1; }
 echo "[named-hostfutures-component-gate] spawn_future_formal_send: 42 (a Send-bounded payload may be shared)"
 
+# host_wait_release_thrown: 1100 groups each throw from their body with a
+# child parked on a 10s host future. The body's handler cancels the parked
+# child, releasing its read, so the run neither exhausts the handle band nor
+# waits on reads nobody will take.
+HT_OUT="$OUT_DIR/spawn_host_wait_release_thrown.component.wasm"
+rm -f "$HT_OUT" "$HT_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/host_wait_release_thrown.vibe "$HT_OUT" run >/dev/null 2>&1 || true
+[ -s "$HT_OUT" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/host_wait_release_thrown.vibe did not compile: $(cat "$HT_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+HT_LOG="$OUT_DIR/spawn_host_wait_release_thrown.log"
+if ! VIBE_ASYNC_FUTURES="slow=1:10000,fast=1:1" run_bounded 120 "$RUNNER" "$HT_OUT" >"$HT_LOG" 2>&1; then
+  echo "named hostfutures component gate FAILED: host_wait_release_thrown did not exit 0" >&2
+  cat "$HT_LOG" >&2
+  exit 1
+fi
+[ "$(cat "$HT_LOG")" = "1100" ] \
+  || { echo "named hostfutures component gate FAILED: host_wait_release_thrown expected 1100, got: $(cat "$HT_LOG")" >&2; exit 1; }
+echo "[named-hostfutures-component-gate] host_wait_release_thrown: 1100 (each thrown group released its parked child's read)"
+
 echo "named hostfutures component gate OK"

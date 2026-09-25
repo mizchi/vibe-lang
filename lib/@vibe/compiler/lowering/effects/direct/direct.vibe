@@ -1,5 +1,5 @@
 import @vibe/compiler/core {
-  Expr, Pat, is_exception_throw_handler_name, registry_pure_builtin_names
+  Expr, Pat, canonical_builtin_name, is_exception_throw_handler_name, registry_pure_builtin_names
 }
 
 /// Builtin call classification for the effect lowerings.
@@ -96,11 +96,17 @@ export fn idp_is_pure_builtin_call(nm: String) -> Bool {
   if idp_is_host_future_named_raw(nm) || idp_is_host_stream_named_raw(nm) {
     true
   } else {
+    // #3136: a legacy alias (`String::from_byte` for `from_char_code`,
+    // `String::byte_at` for `char_code_at`) is the same builtin, so it is
+    // judged by its canonical name. The table lists canonical names only;
+    // matching the spelling alone refused a handle around `from_byte` and
+    // compiled an `Async` serve handler calling it to `unreachable`.
+    let cn = canonical_builtin_name(nm)
     let names = idp_pure_builtin_names_table
     let mut i = 0
     let mut found = false
     while i < Array::length(names) && !found {
-      if Array::get(names, i) == nm {
+      if Array::get(names, i) == nm || Array::get(names, i) == cn {
         found = true
       } else {
         ()

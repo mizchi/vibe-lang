@@ -1018,3 +1018,32 @@ test "a throw past the first suspension in a needing callee fails the task" {
   } }
   assert_eq(out, 1)
 }
+
+/// A future whose payload is a recursive declaration that owns no host stream
+/// is an ordinary shared cell, so a spawned task may capture it. The
+/// ownership walk used to follow `Chain`'s recursive payload to its depth cap
+/// and refuse the capture as if it held a response body (Codex on #3091).
+enum Chain[T] {
+  Link(T, Chain[T]);
+  End
+}
+
+test "a future of a recursive payload with no stream may be shared" {
+  let out = TaskGroup::run((g) -> {
+    let f: Future[Chain[Int]] = Future::pending()
+    let payload: Chain[Int] = Link(40, End)
+    let ha = TaskGroup::spawn_suspend(g, () -> Int with Async {
+      match await(f) {
+        Link(v, _) => v,
+        End => 0
+      }
+    })
+    let hb = TaskGroup::spawn_suspend(g, () -> Int with Async {
+      Future::resolve(f, payload)
+      2
+    })
+    TaskGroup::pump_all(g)
+    TaskHandle::join(ha) + TaskHandle::join(hb)
+  })
+  assert_eq(out, 42)
+}
