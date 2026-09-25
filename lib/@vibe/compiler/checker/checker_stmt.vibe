@@ -8906,6 +8906,14 @@ fn irc_show_shim_names(stmts: Array[Stmt]) -> Array[String] {
 /// here survives `irc_render_arg_offsets_pair` only when EVERY typed occurrence
 /// at it resolves to the wanted type, so recording a candidate can never
 /// promote a non-Int.
+/// #3081: the arg-offset keys of the ELEMENTS of a composite literal in
+/// render-argument position, collected by `irc_push_arg_key` below and read by
+/// `irc_render_arg_offsets_quad`, which truncates it before its own walk.
+/// A render row filed at one of these may carry a SCALAR type as well: the
+/// interpolation pass renders the element from the literal's shape, where a
+/// scalar leaf it could not type went through the pointer heuristic.
+let irc_literal_item_keys: Array[Int] = []
+
 fn irc_push_arg_key(arg: Expr, out: Array[Int], want: Int) -> Unit {
   let aoff = if want == 4 {
     typed_lowering_float_key(arg)
@@ -8939,11 +8947,35 @@ fn irc_push_arg_key(arg: Expr, out: Array[Int], want: Int) -> Unit {
         ()
       },
       EMatch(_, arms) => irc_push_arm_keys(arms, out, want),
+      // #3081: an array / tuple LITERAL has no key of its own, and the
+      // interpolation pass renders it element by element from its SHAPE. An
+      // element it cannot type (`[Some(k())]`, `(k(), 1)`) went through the
+      // pointer heuristic -- `[Some(0)]` for `[Some(false)]` -- although the
+      // checker had typed it. So its elements are candidates too, recursively
+      // through nested literals.
+      EArray(items) => irc_push_literal_item_keys(items, out, want),
+      ETuple(items) => irc_push_literal_item_keys(items, out, want),
       ELet(nm, val, body, _) => irc_push_binder_key(nm, val, body, out, want),
       ELetRec(nm, val, body) => irc_push_binder_key(nm, val, body, out, want),
       ELetMut(nm, val, body, _) => irc_push_binder_key(nm, val, body, out, want),
       _ => ()
     }
+  }
+}
+
+/// #3081: every element of a composite literal in render-argument position.
+fn irc_push_literal_item_keys(items: Array[Expr], out: Array[Int], want: Int) -> Unit {
+  let mut i = 0
+  while i < Array::length(items) {
+    let item = Array::get(items, i)
+    let ioff = typed_lowering_arg_offset(item)
+    if want != 4 && ioff >= 0 {
+      Array::push(irc_literal_item_keys, ioff)
+    } else {
+      ()
+    }
+    irc_push_arg_key(item, out, want)
+    i = i + 1
   }
 }
 
@@ -9159,8 +9191,10 @@ fn irc_render_arg_offsets_triple(checked: CheckedProgram, want_a: Int, want_b: I
 fn irc_render_arg_offsets_quad(checked: CheckedProgram, want_a: Int, want_b: Int, want_c: Int, want_rows: Bool) -> (Array[Int], Array[Int], Array[Int], Array[Int], Array[String]) {
   let raw: Array[Int] = []
   let shims = irc_shim_set(irc_show_shim_names(checked.checked_stmts))
+  Array::truncate(irc_literal_item_keys, 0)
   irc_collect_stmts(checked.checked_stmts, raw, want_a, shims)
   let cands = irc_sorted_unique(raw)
+  let literal_items = irc_sorted_unique(irc_literal_item_keys)
   let shim_args = if want_c >= 0 || want_rows {
     irc_shim_body_arg_offsets(checked.checked_stmts)
   } else {
@@ -9215,7 +9249,7 @@ fn irc_render_arg_offsets_quad(checked: CheckedProgram, want_a: Int, want_b: Int
             Array::set(all_c, idx, 0)
           }
           if want_rows && Array::get(row_state, idx) != 2 {
-            let rk = irc_render_row_key(checked, oty)
+            let rk = irc_render_row_key(checked, oty, irc_index_of(literal_items, ooff) >= 0)
             if String::length(rk) == 0 {
               Array::set(row_state, idx, 2)
             } else if Array::get(row_state, idx) == 0 {
@@ -9281,7 +9315,12 @@ fn irc_render_arg_offsets_quad(checked: CheckedProgram, want_a: Int, want_b: Int
 /// guess from syntax -- `Some(k())` through a local lambda rendered
 /// `Some(0)` for `Some(false)`. The type must be fully spelled by
 /// `eq_channel_type_expr` (no variable, function or record anywhere in it).
-fn irc_render_row_key(checked: CheckedProgram, oty: Type) -> String {
+///
+/// #3081: an ELEMENT of a composite literal (`literal_item`) files any type
+/// the channel can spell, scalars included -- the pass renders an element from
+/// the literal's shape, so a Bool or Double leaf needs the row as much as an
+/// Option does.
+fn irc_render_row_key(checked: CheckedProgram, oty: Type, literal_item: Bool) -> String {
   let t = subst_apply(checked.final_subst, oty)
   let composite = match t {
     CtOption(_) => true,
@@ -9289,7 +9328,7 @@ fn irc_render_row_key(checked: CheckedProgram, oty: Type) -> String {
     CtTuple(_) => true,
     _ => false
   }
-  if composite {
+  if composite || literal_item {
     match eq_channel_type_expr(t) {
       Some(te) => impl_target_key(TyApp(typed_render_row_head(), [te])),
       None => ""
