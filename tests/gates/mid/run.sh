@@ -732,6 +732,11 @@ if ! VIBE_RC=shadow VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh 
   exit 1
 fi
 echo "[compiler-gate] user-defined Array::truncate guard ok on shadow"
+if ! VIBE_RC=shadow VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh fixtures/rc_truncate_user_capacity_test.vibe >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: rc_truncate_user_capacity_test failed under VIBE_RC=shadow -- a truncate released elements of an array a user-defined Array::with_capacity returned (#3115)" >&2
+  exit 1
+fi
+echo "[compiler-gate] user-defined Array::with_capacity guard ok on shadow"
 
 # 40f1a. #2427: the shadow table must not overlap the heap it describes.
 #        40f above proves the marks catch a real dup/drop-of-freed; this
