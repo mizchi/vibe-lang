@@ -169,13 +169,15 @@ findings="$(
 #    process. Same self-exclusion and whole-line-comment skip as above, so the
 #    one comment that documents the historical bug (install_test.sh) is not a
 #    finding.
+# `.claude/worktrees` holds agent checkouts (untracked copies of the tree),
+# not repository content, so every scan below prunes it.
 diag_scan_files=()
 for d in runtime scripts tests install .github .claude; do
   [ -d "$ROOT/$d" ] || continue
   while IFS= read -r f; do
     case "$(basename "$f")" in "$SELF" | "$SELF_TEST") continue ;; esac
     diag_scan_files+=("$f")
-  done < <(find "$ROOT/$d" -type f \( -name '*.sh' -o -name '*.mjs' \))
+  done < <(find "$ROOT/$d" -path "$ROOT/.claude/worktrees" -prune -o -type f \( -name '*.sh' -o -name '*.mjs' \) -print)
 done
 
 if [ "${#diag_scan_files[@]}" -gt 0 ]; then
@@ -235,7 +237,7 @@ for d in scripts tests runtime install .claude; do
   while IFS= read -r f; do
     case "$(basename "$f")" in "$SELF" | "$SELF_TEST") continue ;; esac
     timeout_scan_files+=("$f")
-  done < <(find "$ROOT/$d" -type f \( -name '*.sh' -o -name '*.vibex' \))
+  done < <(find "$ROOT/$d" -path "$ROOT/.claude/worktrees" -prune -o -type f \( -name '*.sh' -o -name '*.vibex' \) -print)
 done
 # The launcher is a shell script with no extension.
 [ -f "$ROOT/runtime/vibe" ] && timeout_scan_files+=("$ROOT/runtime/vibe")
