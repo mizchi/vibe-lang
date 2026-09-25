@@ -783,6 +783,56 @@ impl<D> wasmtime::component::StreamProducer<D> for DelayedByteStreamProducer {
     }
 }
 
+/// #2066: a REAL response provider. `VIBE_ASYNC_RESPONSES="<addr>=0:0:http"`
+/// links `func: async func(url: string) -> response` to an HTTP GET of the
+/// argument: the request runs on a blocking thread (ureq, like the core
+/// runner's Http imports), so several fetches are in flight together, and the
+/// future lands with the server's own status -- a non-2xx status is a
+/// response, not an error -- and its body bytes streamed. A transport failure
+/// (no connection, bad URL) fails the future, which traps the guest's await.
+struct HttpResponseProducer {
+    join: tokio::task::JoinHandle<Result<(i32, Vec<u8>)>>,
+}
+
+fn http_get_blocking(url: &str) -> Result<(i32, Vec<u8>)> {
+    let resp = match ureq::get(url).call() {
+        Ok(r) => r,
+        Err(ureq::Error::Status(_, r)) => r,
+        Err(e) => return Err(format_err!("http provider: GET {url}: {e}")),
+    };
+    let status = i32::from(resp.status());
+    let mut bytes = Vec::new();
+    resp.into_reader()
+        .read_to_end(&mut bytes)
+        .map_err(|e| format_err!("http provider: GET {url}: reading the body: {e}"))?;
+    Ok((status, bytes))
+}
+
+impl<D: 'static> wasmtime::component::FutureProducer<D> for HttpResponseProducer {
+    type Item = HostResponse;
+
+    fn poll_produce(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        mut store: wasmtime::StoreContextMut<D>,
+        finish: bool,
+    ) -> std::task::Poll<Result<Option<HostResponse>>> {
+        use std::future::Future;
+        use std::task::Poll;
+        let this = self.get_mut();
+        match std::pin::Pin::new(&mut this.join).poll(cx) {
+            Poll::Ready(Ok(Ok((status, bytes)))) => {
+                let body = wasmtime::component::StreamReader::<u8>::new(&mut store, bytes)?;
+                Poll::Ready(Ok(Some(HostResponse { status, body })))
+            }
+            Poll::Ready(Ok(Err(e))) => Poll::Ready(Err(e)),
+            Poll::Ready(Err(e)) => Poll::Ready(Err(format_err!("http provider: request thread: {e}"))),
+            Poll::Pending if finish => Poll::Ready(Ok(None)),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
 fn run_async_component(path: &str) -> Result<i32> {
     use wasmtime::component::{Accessor, Component, Linker as ComponentLinker};
 
@@ -1034,7 +1084,8 @@ fn run_async_component(path: &str) -> Result<i32> {
     // (func, status, delay, body, echo): `echo` in place of the body bytes
     // links `func: async func(<label>: string) -> response` whose body is the
     // argument's own bytes (#2066 request parameters).
-    let mut responses: std::collections::BTreeMap<String, Vec<(String, i32, u64, Vec<u8>, bool)>> =
+    // `http` in place of the body links the real provider above.
+    let mut responses: std::collections::BTreeMap<String, Vec<(String, i32, u64, Vec<u8>, bool, bool)>> =
         std::collections::BTreeMap::new();
     if let Ok(spec) = std::env::var("VIBE_ASYNC_RESPONSES") {
         for ent in spec.split(',').filter(|s| !s.trim().is_empty()) {
@@ -1059,8 +1110,9 @@ fn run_async_component(path: &str) -> Result<i32> {
                 .map_err(|e| format_err!("VIBE_ASYNC_RESPONSES '{addr}': bad delay: {e}"))?;
             let body_spec = parts.next().unwrap_or("").trim();
             let echo = body_spec == "echo";
+            let http = body_spec == "http";
             let mut body: Vec<u8> = Vec::new();
-            for b in body_spec.split('|').filter(|s| !s.trim().is_empty() && !echo) {
+            for b in body_spec.split('|').filter(|s| !s.trim().is_empty() && !echo && !http) {
                 body.push(
                     b.trim()
                         .parse()
@@ -1070,7 +1122,7 @@ fn run_async_component(path: &str) -> Result<i32> {
             responses
                 .entry(iface.to_string())
                 .or_default()
-                .push((func.to_string(), status, delay, body, echo));
+                .push((func.to_string(), status, delay, body, echo, http));
         }
     }
     // One linker instance per WIT interface, carrying its scalar futures AND
@@ -1108,7 +1160,26 @@ fn run_async_component(path: &str) -> Result<i32> {
             .map_err(|e| format_err!("link {iface}#{func_name}: {e}"))?;
         }
         let funcs = responses.remove(&iface).unwrap_or_default();
-        for (func_name, status, entry_delay, body, echo) in funcs {
+        for (func_name, status, entry_delay, body, echo, http) in funcs {
+            if http {
+                inst.func_wrap_concurrent(
+                    &func_name,
+                    move |acc: &Accessor<StoreLimits>, (url,): (String,)| {
+                        Box::pin(async move {
+                            let join = tokio::task::spawn_blocking(move || http_get_blocking(&url));
+                            let reader = acc.with(|mut access| {
+                                wasmtime::component::FutureReader::<HostResponse>::new(
+                                    &mut access,
+                                    HttpResponseProducer { join },
+                                )
+                            })?;
+                            Ok((reader,))
+                        })
+                    },
+                )
+                .map_err(|e| format_err!("link {iface}#{func_name}: {e}"))?;
+                continue;
+            }
             if echo {
                 inst.func_wrap_concurrent(
                     &func_name,

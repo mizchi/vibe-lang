@@ -1,0 +1,25 @@
+// #2066: the same `fetch: async func(url: string) -> response` answered by a
+// REAL provider -- viberun's `http` mode, which performs an HTTP GET of the
+// argument. The gate serves `abc` at /hello.txt on 127.0.0.1:18766 and nothing
+// at /missing. Both requests are in flight together; a 404 is a response, not
+// an error. 200 + ("abc" = 294) + 404 = 898. Executed by
+// scripts/test_wit_async_import_component_gate.sh.
+import ./client_bindings.vibe {
+  fetch
+}
+
+fn body_sum(body: HostStream) -> Int with Async {
+  let mut total = 0
+  for b in body {
+    total = total + b
+  }
+  total
+}
+
+let run: () -> Int with Async = () -> {
+  let found = fetch("http://127.0.0.1:18766/hello.txt")
+  let missing = fetch("http://127.0.0.1:18766/missing")
+  let ok = await(found)
+  let not_found = await(missing)
+  HostResponse::status(ok) + body_sum(HostResponse::body(ok)) + HostResponse::status(not_found)
+}

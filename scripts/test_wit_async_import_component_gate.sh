@@ -480,4 +480,46 @@ grep -qF "start the request inside the spawned task" "$SHARE_DIR/nested.wasm.dia
   exit 1
 }
 echo "[wit-async-import] a future of a response inside Option and a struct, shared: refused"
+# #2066 REAL PROVIDER: fixtures/wit_response_request/http_main.vibe, the same
+# `fetch(url)` binding answered by viberun's `http` mode, which performs an
+# HTTP GET of the argument. A local file server stands in for the network:
+# `abc` at /hello.txt, nothing at /missing (a 404 is a response, not an
+# error). 200 + 294 + 404 = 898.
+HTTP_DIR="$OUT/response_http"
+rm -rf "$HTTP_DIR"
+mkdir -p "$HTTP_DIR/srv"
+printf 'abc' > "$HTTP_DIR/srv/hello.txt"
+cp fixtures/wit_response_request/http_main.vibe fixtures/wit_response_request/client_bindings.vibe "$HTTP_DIR/"
+VIBE_PREOPEN_DIR="$ROOT" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \
+  "$COMPILER" "$HTTP_DIR/http_main.vibe" "$HTTP_DIR/main.wasm" run >/dev/null 2>&1 || true
+if [ ! -s "$HTTP_DIR/main.wasm" ]; then
+  echo "WIT async import gate FAILED: fixtures/wit_response_request/http_main.vibe did not compile" >&2
+  cat "$HTTP_DIR/main.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+(cd "$HTTP_DIR/srv" && exec python3 -m http.server 18766 --bind 127.0.0.1 >/dev/null 2>&1) &
+HTTP_PID=$!
+trap 'kill "$HTTP_PID" 2>/dev/null || true' EXIT
+python3 - <<'PYEOF' || { echo "WIT async import gate FAILED: the local file server on 127.0.0.1:18766 did not come up" >&2; exit 1; }
+import socket, time
+deadline = time.time() + 20
+while time.time() < deadline:
+    try:
+        socket.create_connection(("127.0.0.1", 18766), timeout=1).close()
+        raise SystemExit(0)
+    except OSError:
+        time.sleep(0.1)
+raise SystemExit(1)
+PYEOF
+GOT="$(NO_PROXY='*' no_proxy='*' VIBE_ASYNC_RESPONSES="$IFACE#fetch=0:0:http" run_bounded 60 "$RUNNER" "$HTTP_DIR/main.wasm" 2>&1)" || {
+  echo "WIT async import gate FAILED: viberun did not exit 0 on the real-provider program: $GOT" >&2
+  exit 1
+}
+kill "$HTTP_PID" 2>/dev/null || true
+[ "$GOT" = "898" ] || {
+  echo "WIT async import gate FAILED: real provider expected 898 (200 + \"abc\" 294 + 404), got: $GOT" >&2
+  exit 1
+}
+echo "[wit-async-import] response from a real HTTP GET (200 + body, and a 404): 898"
 echo "WIT async import component gate OK"

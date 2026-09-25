@@ -360,7 +360,13 @@ override silently contradicting a module that says `raw` is the hazard #2903's
   viberun's `VIBE_ASYNC_RESPONSES="<address>=<status>:<delay_ms>:<b1>|<b2>"`
   links each function inside its interface; `echo` in place of the body links
   a one-string-parameter function whose body is the argument's own bytes
-  (`fixtures/wit_response_request`: two requests, 594). The gate runs
+  (`fixtures/wit_response_request`: two requests, 594). `http` in place of
+  the body links a REAL provider: an HTTP GET of the argument, run on a
+  blocking thread so requests overlap, landing with the server's own status
+  (a non-2xx status is a response, not an error) and body; a transport
+  failure fails the future (`http_main.vibe` against a local file server:
+  898). The provider is the runner's, over the same `fetch(url)` WIT
+  function -- the guest does not import `wasi:http` itself. The gate runs
   `fixtures/wit_response_import/main.vibe` with two 300ms responses, gets 440
   (both statuses plus every body byte) and bounds the wall clock the same way.
 
