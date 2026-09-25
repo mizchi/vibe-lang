@@ -7338,13 +7338,17 @@ export fn file_entry_cacheable(stmts: Array[Stmt], entry_name: String) -> Bool {
       // (defining a closure performs nothing; only CALLING it would),
       // silently marking every entry cacheable regardless of what it
       // does. The walk needs `fn_body`, the 6th field, not the literal.
-      let exec_body = match body {
-        EFn(_, _, _, _, _, fn_body) => fn_body,
-        _ => body
+      // Parameters are in scope for fn_body and are not in the module fn
+      // table. A parameter named println / print / Console / Stdout is that
+      // binding, including the labeled `println~` / optional `println?`
+      // spellings whose call site uses the base name.
+      let (exec_body, params_hide) = match body {
+        EFn(_, _, params, _, _, fn_body) => (fn_body, params_hide_stdout_write(params)),
+        _ => (body, false)
       }
       if !declared_ok {
         match entry_declared {
-          Some(row) => console_entry_is_output_only(row, exec_body, fn_names),
+          Some(row) => !params_hide && console_entry_is_output_only(row, exec_body, fn_names),
           None => false
         }
       } else {
@@ -7380,6 +7384,21 @@ fn str_list_has(xs: Array[String], name: String) -> Bool {
 
 fn binding_hides_stdout_write(name: String) -> Bool {
   name == "println" || name == "print" || name == "Console" || name == "Stdout"
+}
+
+fn params_hide_stdout_write(params: Array[(String, Option[TypeExpr])]) -> Bool {
+  let mut i = 0
+  let mut hide = false
+  while i < Array::length(params) {
+    let (name, _) = Array::get(params, i)
+    if binding_hides_stdout_write(dh_param_base_name(name)) {
+      hide = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hide
 }
 
 fn pats_hide_stdout_write(pats: Array[Pat]) -> Bool {
