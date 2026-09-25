@@ -278,8 +278,8 @@ fn main() -> Int {
   id(1) + f(2)
 }
 VIBE
-binder 2 7 "forall ?t2. (?t2) -> ?t2" "declaration of a polymorphic local closure"
-binder 5 3 "forall ?t2. (?t2) -> ?t2" "call of a polymorphic local closure"
+binder 2 7 "forall ?t1. (?t1) -> ?t1" "declaration of a polymorphic local closure"
+binder 5 3 "forall ?t1. (?t1) -> ?t1" "call of a polymorphic local closure"
 binder 4 5 "(Int) -> Int" "declaration after a comment between let and the name"
 binder 5 11 "(Int) -> Int" "call of a closure declared after a comment"
 
