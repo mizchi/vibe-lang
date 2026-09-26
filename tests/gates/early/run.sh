@@ -2621,7 +2621,7 @@ echo "[compiler-gate] Map::get missing-key trap ok (linear and gc)"
 echo "[compiler-gate] Int / and % by zero name the operation and path:line:col (#3126)"
 dzdir="_build/_gate_div_zero"
 rm -rf "$dzdir"; mkdir -p "$dzdir"
-for dz_case in "int_div_zero_trap|/|7|5" "int_rem_zero_trap|%|7|5" "int_div_assign_zero_trap|/|7|8"; do
+for dz_case in "int_div_zero_trap|/|7|5" "int_rem_zero_trap|%|7|5" "int_div_assign_zero_trap|/|7|8" "int_div_zero_vibe_comment_trap|/|7|5"; do
   IFS='|' read -r dz_name dz_op dz_line dz_col <<<"$dz_case"
   dz_src="fixtures/$dz_name.vibe"
   dz_want="Int \`$dz_op\` by zero at $dz_src:$dz_line:$dz_col"
