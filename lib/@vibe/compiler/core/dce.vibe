@@ -12,6 +12,14 @@ import @vibe/core {
   array_empty, struct MutMap, struct MutSet
 }
 
+import @vibe/ast {
+  impl_method_owner, trait_ref_name
+}
+
+import ./import_alias_rewrite.vibe {
+  builtin_shadow_rename_of
+}
+
 //# Functions
 
 fn stmt_name(stmt: Stmt) -> Option[String] {
@@ -528,6 +536,122 @@ export fn dce_stmts(stmts: Array[Stmt], entry_names: Array[String]) -> Array[Stm
     }
     result
   }
+}
+
+/// The method bindings of every `impl` in `stmts`, as DCE roots (#3111).
+///
+/// An impl method is bound at the top level as `<owner>::<method>`, where the
+/// owner is `impl_method_owner` of the impl (`Pt`, or a specialization owner
+/// for an applied target). Before the trait-dictionary desugar has run, a
+/// `[T: Measured]` body calls `T::measure`, which names no binding at all:
+/// only the dictionary the desugar builds LATER references `Pt::measure`. A
+/// reachability pass that runs before that desugar therefore sees an impl
+/// method as dead, removes it, and the desugar then refuses the program with
+/// "add a body for `measure`" -- `VIBE_RC=0 vibe build` did exactly that.
+///
+/// So such a pass roots every method of every impl. The methods are the
+/// trait's declared ones when the trait is declared in `stmts`, each under
+/// its written spelling and under the builtin-shadow rename
+/// (`builtin_shadow_rename_of`) the dictionary may pick instead. A trait
+/// declared nowhere in `stmts` has no method list to read, so every binding
+/// under the owner is kept: keeping too much here costs size, which the late
+/// DCE after the desugar reclaims; keeping too little is a refused build.
+fn dce_impl_method_roots(stmts: Array[Stmt]) -> Array[String] {
+  let trait_methods: MutMap[String, Array[String]] = MutMap::new_string()
+  let mut t = 0
+  while t < Array::length(stmts) {
+    match Array::get(stmts, t) {
+      STrait(_, name, _, methods, _, _) => {
+        let names = match MutMap::get(trait_methods, name) {
+          Some(existing) => existing,
+          None => {
+            let fresh = array_empty()
+            MutMap::set(trait_methods, name, fresh)
+            fresh
+          }
+        }
+        let mut m = 0
+        while m < Array::length(methods) {
+          let (mname, _, _) = Array::get(methods, m)
+          Array::push(names, mname)
+          m = m + 1
+        }
+      },
+      _ => ()
+    }
+    t = t + 1
+  }
+  let roots = array_empty()
+  let whole_owners = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SImpl(tparams, _, trait_name, target) => {
+        let prefix = String::concat(impl_method_owner(tparams, trait_name, target), "::")
+        match MutMap::get(trait_methods, trait_ref_name(trait_name)) {
+          Some(names) => {
+            let mut m = 0
+            while m < Array::length(names) {
+              let qual = String::concat(prefix, Array::get(names, m))
+              Array::push(roots, qual)
+              Array::push(roots, builtin_shadow_rename_of(qual))
+              m = m + 1
+            }
+          },
+          None => Array::push(whole_owners, prefix)
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  if Array::length(whole_owners) > 0 {
+    let mut s = 0
+    while s < Array::length(stmts) {
+      match stmt_name(Array::get(stmts, s)) {
+        Some(name) => {
+          let mut w = 0
+          let mut hit = false
+          while !hit && w < Array::length(whole_owners) {
+            hit = String::starts_with(name, Array::get(whole_owners, w))
+            w = w + 1
+          }
+          if hit {
+            Array::push(roots, name)
+          } else {
+            ()
+          }
+        },
+        None => ()
+      }
+      s = s + 1
+    }
+  } else {
+    ()
+  }
+  roots
+}
+
+/// `dce_stmts` for a pass that runs BEFORE the trait-dictionary desugar
+/// (#3111): every impl method is an extra root, because the dictionary that
+/// will reference it does not exist yet (`dce_impl_method_roots`). A pass
+/// that runs after the desugar -- the late DCE in `linked_compile` -- sees the
+/// dictionaries and uses plain `dce_stmts`, which removes an impl nobody
+/// dispatches through.
+export fn dce_stmts_before_trait_desugar(stmts: Array[Stmt], entry_names: Array[String]) -> Array[Stmt] {
+  let roots = array_empty()
+  let mut i = 0
+  while i < Array::length(entry_names) {
+    Array::push(roots, Array::get(entry_names, i))
+    i = i + 1
+  }
+  let impl_roots = dce_impl_method_roots(stmts)
+  let mut j = 0
+  while j < Array::length(impl_roots) {
+    Array::push(roots, Array::get(impl_roots, j))
+    j = j + 1
+  }
+  dce_stmts(stmts, roots)
 }
 
 fn dce_keep_stmt(stmt: Stmt, graph: DceGraph) -> Bool {
