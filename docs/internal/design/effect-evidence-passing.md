@@ -2640,7 +2640,7 @@ let 束縛の綴り (`let v = callee(1); v`) は `__scps_bubble_E` 合成に分�
 同時に塞いでいる。
 
 **regression lock の分担**: landed 分の
-`lib/@vibe/concurrent/suspend_test.vibe` "CPS-split callee results" 4本は
+`lib/@vibe/concurrent/experimental/suspend_test.vibe` "CPS-split callee results" 4本は
 `spawn_suspend` 経由の library-level。`fixtures/scps_tail_needing_literal_test.vibe`
 の7本はそれと独立で、hand-written な suspend-class handle だけの最小形
 (tail / let / 先行 let / capture あり / needing 連鎖 / perform しない needing /
@@ -3354,7 +3354,7 @@ Done-wrap する。それが `if prow != ""` の内側にあり、**step-split �
 | 試行 | 仮説 | 結果 |
 |---|---|---|
 | 1 | `scps_calls_ok` の `EFn` arm が cps_locals を保持している | **効果ゼロ** → literal は既に step-split 済みで、問題は body でなく**渡され方**だと判明 |
-| 2 | arg-position fixup の「鏡」が無い | **P0 は直ったが** `lib/@vibe/concurrent/suspend_test.vibe` (supported な形) を壊した |
+| 2 | arg-position fixup の「鏡」が無い | **P0 は直ったが** `lib/@vibe/concurrent/experimental/suspend_test.vibe` (supported な形) を壊した |
 | 3 | needing callee を免除 | `TaskGroup::run` は cneeding に無く、**変わらず** |
 | 4 | **row 変数のパラメータを免除** | **通った** — P0 は reject、suspend_test は 27 tests pass、601/601、gate green |
 

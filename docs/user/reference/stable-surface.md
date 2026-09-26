@@ -47,7 +47,7 @@ What is enforced today, measured 2026-08-24:
 | wasm-gc backend | opt-in env var (`VIBE_BACKEND=gc` and friends) |
 | `perform?` | compiles against a frozen resolution; unresolved non-interactive optionals become `NotGranted` |
 | SIMD | the package does not resolve |
-| **ADR-0068 concurrency** | **`import @vibe/concurrent` is rejected by `vibe check` AND by `vibe build`; `VIBE_UNSTABLE=1` allows it** |
+| **the suspendable-task lane** | **`import @vibe/concurrent/experimental` is rejected by `vibe check` AND by `vibe build`; `VIBE_UNSTABLE=1` allows it** (the stable `@vibe/concurrent` core needs nothing) |
 
 An **error**, not a warning. `vibe check` exits non-zero and `vibe build`
 emits no wasm; the diagnostic names the environment variable that opts in.
@@ -57,7 +57,8 @@ check/diagnostics, and it is worse here because the accepting verb is the one
 that ships.
 
 The gate reads the entry file's **parsed** imports, so whitespace does not
-cross it (`import\t@vibe/concurrent` is the same as `import @vibe/concurrent`),
+cross it (`import\t@vibe/concurrent/experimental` is the same as
+`import @vibe/concurrent/experimental`),
 and it looks at the entry only: a dependency's own imports are its author's
 choice. Harnesses inside this repository that compile in-tree sources against
 the surface deliberately (the book's concurrency chapter, the unit-test
@@ -424,6 +425,30 @@ This list is checked against the compiler by
 `scripts/check_freeze_surface.sh` (`pkf run check-freeze-surface`), which
 derives the symbols from this section and probes each one.
 
+### 3.1 Structured concurrency (`@vibe/concurrent`)
+
+The `@vibe/concurrent` package contract (`lib/@vibe/concurrent/index.vpkg`)
+is frozen, and importing it needs no opt-in:
+
+- the types `TaskGroup[rg, e]`, `TaskHandle[rg, e, T]`, `Channel[rg, e, T]`,
+  `Sender[rg, e, T]`, `Receiver[rg, e, T]`, `Parallel`, and the error enums
+  `TaskError` / `SendError` / `ChannelConfigError`;
+- `TaskGroup::run` and its `taskgroup { g => .. }` sugar, `TaskGroup::spawn`,
+  `TaskHandle::join`, `TaskHandle::cancel`;
+- `Channel::bounded`, `Sender::send` / `clone` / `release`, `Receiver::recv`;
+- `Parallel::map`, whose results are index-ordered;
+- the checks that come with them: a spawned closure captures only `Send`
+  values or endpoints of its own group, and a group's handles and endpoints
+  cannot escape `TaskGroup::run` through its return value.
+
+What is frozen is the meaning, not the backend: the scheduler is cooperative
+and deterministic today (a task runs until it waits), and moving it onto
+threads or Component Model subtasks is a compatible change. A program must
+not depend on the order in which sibling tasks complete, except where an
+operation promises one (`Parallel::map`'s result order, a channel's FIFO).
+
+The package's suspendable-task lane is not frozen; it is in §6.
+
 ---
 
 ## 4. Frozen CLI / tooling surface
@@ -478,19 +503,21 @@ The following is still under construction or its design is not settled. It is
 **outside** the SemVer guarantee and can break within a Minor. Use it knowing
 that.
 
-- **Structured concurrency / WASI 0.3** (ADR-0068, `proposed`): `Nursery[r]`,
-  `Task[r,T]`, `Sender`/`Receiver`, `TaskGroup::run` / `spawn` /
-  `spawn_suspend`, and the `Send` eligibility rule. Today's codegen is an eager
-  prototype; the public semantics are defined in the
-  [structured concurrency spec](../../internal/design/concurrency.md). JSPI/Worker, the WASI
-  Component Model, and shared-everything threads are interchangeable lowerings
-  — the stable surface is tied to none of them.
+- **The suspendable-task lane** (`@vibe/concurrent/experimental`, opt-in
+  with `VIBE_UNSTABLE=1`): `TaskGroup::spawn_suspend`, `pump` / `pump_all`,
+  `sleep_wait`, `Sender::send_wait` / `Receiver::recv_wait`,
+  `TaskHandle::result_wait`, the task-level `Async::Suspend` effect, and the
+  lower-level `adopt` / `park` / `wake` / `settle`. Their spelling is expected
+  to change once continuations are native (one `spawn` rather than two, no
+  hand-driven `pump_all`), so they stay outside the promise. The stable core
+  they extend is §3.1. JSPI/Worker, the WASI Component Model, and
+  shared-everything threads are interchangeable lowerings of both.
 
   **The `Async` effect ROW ELEMENT is not in this bullet.** ADR-0012 is
   `accepted`, and `Async` already appears in shipped builtin signatures a user
   can reach (`StdinStream::next(StdinStream) -> Int with Async`), where `vibe
   check` enforces it like any other row element. The unsettled part is the
-  concurrency model built on top of it, not the vocabulary.
+  suspendable lane built on top of it, not the vocabulary.
 - **Component Model `#import` integration** (ADR-0021 Phase 2/3): CPS lowering
   of non-tail-resumptive handlers, capability effects.
 - **Capability authorization surface** (ADR-0088, `partial`): the `?` grade

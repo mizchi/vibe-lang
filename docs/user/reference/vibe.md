@@ -97,9 +97,10 @@ Rules:
   - `Stdin::read_char()` requires `{Stdin}`
   - `Stdin::read_stream(...)` requires `{Stdin}`
   - `sleep(...)` requires `{Async}`
-- The concurrency surface is `lib/@vibe/concurrent` (`TaskGroup`, ADR-0068);
-  importing it is authorized per compilation by `VIBE_UNSTABLE=1`. There is no
-  `--unstable-async` flag.
+- The concurrency surface is `lib/@vibe/concurrent` (`TaskGroup`, ADR-0068),
+  stable and imported with no opt-in. Its suspendable-task lane,
+  `@vibe/concurrent/experimental`, is authorized per compilation by
+  `VIBE_UNSTABLE=1`. There is no `--unstable-async` flag.
 
 Examples:
 

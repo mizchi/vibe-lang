@@ -63,7 +63,7 @@ drive() { # drive <file> <entry> -> OUT, DIAG, WASM_NONEMPTY
 
 printf 'fn main allows Console {\n  let x = 1 \\ 2\n  println("hi")\n}\n'      > "$WORK/lex.vibex"
 printf 'fn main allows Console {\n  let x: Int = "nope"\n  println("hi")\n}\n' > "$WORK/type.vibex"
-printf 'import @vibe/concurrent {\n  TaskGroup\n}\n\nfn main allows Console {\n  println("hi")\n}\n' > "$WORK/unstable.vibex"
+printf 'import @vibe/concurrent/experimental {\n  TaskGroup\n}\n\nfn main allows Console {\n  println("hi")\n}\n' > "$WORK/unstable.vibex"
 printf 'fn main allows Console {\n  println("good")\n}\n'                      > "$WORK/good.vibex"
 
 note "=== 1. RED: a lexer error is a diagnostic, not an uncaught throw ==="

@@ -667,3 +667,21 @@ test "#2828: preflight admits a required label the host does grant" {
   assert_eq(name, "Fs::read_file")
   assert_eq(status, "Granted")
 }
+
+test "#3155: a local alias of a row-generic function checks like the direct call" {
+  let decl = "fn app[T, e](f: () -> T with e) -> T with Exception + e { f() }\n"
+  // Pure closure through the alias: the source's own `e` is instantiated at
+  // the call, not charged to the entry as an open variable.
+  let pure_alias = String::concat(decl, "fn main() -> Int allows Exception {\n  let a = app\n  a(() -> { 42 })\n}\n")
+  assert_eq(first_check_error(pure_alias), "")
+  // An alias of an alias resolves the same way.
+  let chained = String::concat(decl, "fn main() -> Int allows Exception {\n  let a = app\n  let b = a\n  b(() -> { 42 })\n}\n")
+  assert_eq(first_check_error(chained), "")
+  // Without the grant, the alias answers exactly what the direct call does.
+  let via_alias = String::concat(decl, "fn main() -> Int {\n  let a = app\n  a(() -> { 42 })\n}\n")
+  let direct = String::concat(decl, "fn main() -> Int {\n  app(() -> { 42 })\n}\n")
+  assert_eq(first_check_error(via_alias), first_check_error(direct))
+  // An effect the closure performs is still charged where it is written.
+  let effectful = String::concat(decl, "effect Log { Emit(Int) -> Unit }\nfn main() -> Int allows Exception {\n  let a = app\n  a(() -> {\n    perform Log::Emit(1)\n    42\n  })\n}\n")
+  assert(String::contains(first_check_error(effectful), "Log"))
+}

@@ -69,7 +69,7 @@ vibe には `fn` の色付けが無く、副作用は effect row で表す。し
 - `Async` を持つ計算を非 `Async` 文脈で使うと effect-escape 検査
   (`EEEffectfulCallOutsideEffect`) が落とす。
 - `effect Async { Suspend(Int) -> Int }` の**宣言は
-  `lib/@vibe/concurrent/concurrent.vibe`** にあり (#752 の「宣言が契約」方式)、
+  `lib/@vibe/concurrent/experimental/concurrent.vibe`** にあり (#752 の「宣言が契約」方式)、
   checker builtin の row ラベル `"Async"` と名前で一致する。だから
   `handle .. with Async` で discharge できる (`TaskGroup::spawn_suspend` が
   実際にそうしている)。**builtin の nominal row を handler が放電できない

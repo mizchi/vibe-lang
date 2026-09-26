@@ -5762,14 +5762,37 @@ fn overlay_bind_empty_pat(names: Array[String], effs: Array[Array[String]], pat:
 /// while the direct `eff("boom")` and the parameter form were both correctly
 /// rejected. Resolution order matches `lookup_fn_effs`'s own: the OVERLAY first
 /// (an inner binding shadows an outer one), then the top-level call-graph map.
+///
+/// #3155: an alias of a TOP-LEVEL function drops the source's row variables.
+/// Such a variable is the source's own quantifier -- a top-level declaration
+/// has no enclosing signature to share it with -- so, exactly as at a named
+/// call (`label_is_effect_var` in the named-callee arm), each call instantiates
+/// it and the closure argument's body is checked where it is written. Kept, it
+/// became a lexical-callee label no row can pay: `let r = TaskGroup::run;
+/// r((g) -> ..)` failed with `unresolved effect row { e }` while the direct call
+/// and a renamed import were clean. An overlay hit keeps its variables: a
+/// callback parameter's `e` IS the enclosing signature's `e` (#885).
 fn alias_fn_overlay_labels(name: String, ov_names: Array[String], ov_effs: Array[Array[String]], fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int]) -> Array[String] {
   match lookup_fn_effs(ov_names, ov_effs, name) {
     Some(labels) => labels,
     None => match lookup_program_fn_effs(fn_index, fn_effs, name) {
-      Some(labels) => labels,
+      Some(labels) => labels_without_effect_vars(labels),
       None => no_str_labels()
     }
   }
+}
+
+fn labels_without_effect_vars(labels: Array[String]) -> Array[String] {
+  let out = no_str_labels()
+  let mut i = 0
+  while i < Array::length(labels) {
+    let l = Array::get(labels, i)
+    if !label_is_effect_var(l) {
+      Array::push(out, l)
+    }
+    i = i + 1
+  }
+  out
 }
 
 fn local_fn_overlay_labels(val: Expr, ov_names: Array[String], ov_effs: Array[Array[String]], fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int]) -> Array[String] {

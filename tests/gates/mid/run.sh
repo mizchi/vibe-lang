@@ -9,7 +9,7 @@ GATES_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
 source "$GATES_LIB"
 gate_resolve_stage2
 
-# ADR-0068 (#2248): `@vibe/concurrent` needs `VIBE_UNSTABLE=1` to compile at
+# ADR-0068 (#2248): `@vibe/concurrent/experimental` needs `VIBE_UNSTABLE=1` to compile at
 # all, and a dozen fixtures in this lane exercise that surface deliberately
 # (region generativity, spawnable capture, the async boundary, the TaskGroup
 # sugar). Granted lane-wide rather than per call site: the boundary exists for
@@ -3659,7 +3659,7 @@ if true; then
   scdir="_build/_gate_split_cli_unstable"
   rm -rf "$scdir"; mkdir -p "$scdir"
   cat > "$scdir/worker.vibe" <<'SCEOF'
-import @vibe/concurrent { TaskGroup }
+import @vibe/concurrent/experimental { TaskGroup }
 
 export fn work() -> Int {
   7

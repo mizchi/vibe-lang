@@ -1079,7 +1079,7 @@ What would have to change, by layer:
   doesn't outlive its nursery scope — it says nothing about two concurrently
   running tasks touching the same value without synchronization, which is a
   different defect class (data races) that needs a different analysis.
-  `TaskCell`/`ResCell`/`Ring` in `lib/@vibe/concurrent/concurrent.vibe` are
+  `TaskCell`/`ResCell`/`Ring` in `lib/@vibe/concurrent/experimental/concurrent.vibe` are
   plain non-atomic cells today, built on the "only one task body executes at
   an instant" invariant; that invariant is exactly what real threads remove.
 - **Formal model.** `formal/`'s current proof target is schedule

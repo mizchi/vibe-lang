@@ -112,7 +112,7 @@ capabilities, and emitted binaries declare which wasm feature level they need.
 - Type inference with row-polymorphic effects (`with Async`, `with Exception`)
 - Pattern matching and destructuring, including struct/record forms
 - Module system with import/export, `.vpkg` package contracts
-- Async/await syntax (runtime gate: `--unstable-async`)
+- Async/await, `Future`, and structured concurrency (`@vibe/concurrent`); the suspendable-task lane is opt-in with `VIBE_UNSTABLE=1`
 - Lambda expressions with placeholder shorthand (`_+1`)
 
 ### Runtime targets
