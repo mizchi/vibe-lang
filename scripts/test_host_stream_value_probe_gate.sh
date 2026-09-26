@@ -47,17 +47,14 @@ if [ "$RUNNER" = "$DEFAULT_RUNNER" ]; then
   needs_build=0
   if [ ! -x "$RUNNER" ]; then
     needs_build=1
-  elif find "$PROJECT_ROOT/runtime/viberun/src" \
-        "$PROJECT_ROOT/runtime/viberun/Cargo.toml" \
-        "$PROJECT_ROOT/runtime/viberun/Cargo.lock" \
-        -newer "$RUNNER" -print -quit 2>/dev/null | grep -q .; then
+  elif ! bash "$PROJECT_ROOT/scripts/ensure_viberun.sh" --check >/dev/null 2>&1; then
     needs_build=1
-    echo "[host-stream-value-probe-gate] viberun is older than its build inputs; rebuilding..."
+    echo "[host-stream-value-probe-gate] viberun does not match its sources; rebuilding..."
   fi
   if [ "$needs_build" = "1" ]; then
     command -v cargo >/dev/null 2>&1 || require_or_skip "viberun needs a (re)build and cargo is not installed"
     echo "[host-stream-value-probe-gate] building viberun..."
-    if ! (cd "$PROJECT_ROOT/runtime/viberun" && cargo build --release >/dev/null 2>&1); then
+    if ! bash "$PROJECT_ROOT/scripts/ensure_viberun.sh" >/dev/null 2>&1; then
       require_or_skip "failed to build runtime/viberun"
     fi
   fi

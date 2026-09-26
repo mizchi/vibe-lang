@@ -70,7 +70,7 @@ DEFAULT_RUNNER="$PROJECT_ROOT/runtime/viberun/target/release/viberun"
 RUNNER="${VIBE_SPAWNED_FUTURE_GATE_RUNNER:-$DEFAULT_RUNNER}"
 # An explicit override is trusted as-is (it may be an installed toolchain
 # binary with no source tree next to it). The default in-tree binary is
-# rebuilt when it is missing OR older than any viberun build input -- #1242
+# rebuilt when it is missing OR stale against any viberun build input -- #1242
 # review: a checkout that predates the component path leaves a stale
 # executable behind, and merely checking `-x` would accept it and then fail
 # the gate with a confusing "component from_binary" error rather than
@@ -83,21 +83,24 @@ RUNNER="${VIBE_SPAWNED_FUTURE_GATE_RUNNER:-$DEFAULT_RUNNER}"
 # than for most gates -- wasmtime and tokio ARE the async behavior this gate
 # exists to validate, so a stale binary produces a false pass, not a
 # crash.
+#
+# "Stale" is decided by CONTENT (scripts/ensure_viberun.sh hashes src/,
+# Cargo.toml, Cargo.lock and the rustc version), not by mtime: actions/checkout
+# stamps every source with the checkout time, so a `find -newer` test called a
+# cache-restored binary stale on every CI run and the wasi-p3 job paid a 220s
+# release build inside this gate (run 36248052145).
 if [ "$RUNNER" = "$DEFAULT_RUNNER" ]; then
   needs_build=0
   if [ ! -x "$RUNNER" ]; then
     needs_build=1
-  elif find "$PROJECT_ROOT/runtime/viberun/src" \
-        "$PROJECT_ROOT/runtime/viberun/Cargo.toml" \
-        "$PROJECT_ROOT/runtime/viberun/Cargo.lock" \
-        -newer "$RUNNER" -print -quit 2>/dev/null | grep -q .; then
+  elif ! bash "$PROJECT_ROOT/scripts/ensure_viberun.sh" --check >/dev/null 2>&1; then
     needs_build=1
-    echo "[spawned-future-component-gate] viberun is older than its build inputs; rebuilding..."
+    echo "[spawned-future-component-gate] viberun does not match its sources; rebuilding..."
   fi
   if [ "$needs_build" = "1" ]; then
     command -v cargo >/dev/null 2>&1 || require_or_skip "viberun needs a (re)build and cargo is not installed"
     echo "[spawned-future-component-gate] building viberun..."
-    if ! (cd "$PROJECT_ROOT/runtime/viberun" && cargo build --release >/dev/null 2>&1); then
+    if ! bash "$PROJECT_ROOT/scripts/ensure_viberun.sh" >/dev/null 2>&1; then
       require_or_skip "failed to build runtime/viberun"
     fi
   fi

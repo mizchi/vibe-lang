@@ -212,4 +212,42 @@ echo "  ok  a tree dirty BEFORE the suite, left as it was, passes"
 restore_scratch
 
 
+# --- Sharding: the shards PARTITION the companions. Each companion appends its
+# name to a log outside the tree; across shards 0/3, 1/3 and 2/3 every one must
+# appear exactly once. A shard rule that skipped one (or ran one twice) would
+# otherwise pass every shard -- a companion gone dark behind green checks.
+restore_scratch
+SHARD_LOG="$(mktemp "${TMPDIR:-/tmp}/vibe_gate_shardlog.XXXXXX")"
+for n in a b c d e f g; do
+  printf '#!/usr/bin/env bash\n' > "$WORK/scripts/check_s$n.sh"
+  printf '#!/usr/bin/env bash\necho s%s >> "%s"\n' "$n" "$SHARD_LOG" > "$WORK/scripts/check_s${n}_test.sh"
+done
+printf '#!/usr/bin/env bash\nexit 0\n' > "$WORK/scripts/check_thing_test.sh"
+for i in 0 1 2; do
+  VIBE_GATE_SELF_TESTS_SHARD="$i/3" run_exec || { cat "$WORK/out" >&2; rm -f "$SHARD_LOG"; fail "shard $i/3 failed on passing companions"; }
+  grep -q "shard $i/3" "$WORK/out" || { cat "$WORK/out" >&2; rm -f "$SHARD_LOG"; fail "shard $i/3 did not report which shard it ran"; }
+done
+got="$(sort "$SHARD_LOG" | tr '\n' ' ')"
+rm -f "$SHARD_LOG"
+[ "$got" = "sa sb sc sd se sf sg " ] || fail "shards 0..2/3 did not run each companion exactly once: $got"
+echo "  ok  shards 0/3, 1/3, 2/3 run every companion exactly once between them"
+
+# ...and a shard can still FAIL: a failing companion is rejected by the shard
+# that owns it, so sharding did not turn execution off.
+printf '#!/usr/bin/env bash\nexit 1\n' > "$WORK/scripts/check_sa_test.sh"
+failed_in=0
+for i in 0 1 2; do
+  VIBE_GATE_SELF_TESTS_SHARD="$i/3" run_exec || failed_in=$((failed_in + 1))
+done
+[ "$failed_in" -eq 1 ] || fail "a failing companion was rejected by $failed_in shards, not exactly one"
+echo "  ok  a failing companion fails exactly the shard that owns it"
+
+# A malformed shard is refused, not read as some other subset.
+for bad in 3/3 x 1/ /3 1/2/3 0/0; do
+  if VIBE_GATE_SELF_TESTS_SHARD="$bad" run_exec; then fail "shard '$bad' was accepted"; fi
+  grep -q "is not I/N" "$WORK/out" || { cat "$WORK/out" >&2; fail "shard '$bad' was refused without saying why"; }
+done
+echo "  ok  a malformed shard is refused"
+rm -f "$WORK"/scripts/check_s?.sh "$WORK"/scripts/check_s?_test.sh
+
 echo "[gate-self-tests-test] ok"

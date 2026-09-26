@@ -789,7 +789,7 @@ jobs:
     # the lanes start at t=0, and the flatten plus seed -> stage1 -> stage2 they
     # run leaves the header cache warm for the fixtures that follow. The short
     # jobs keep using compiler-build, where not building is pure win.
-    name: compiler-gate (${{ matrix.lane }})
+    name: compiler-gate (${{ matrix.lane }}${{ matrix.lane == 'selftests' && format(' {0}/3', matrix.shard) || '' }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -812,6 +812,22 @@ jobs:
         # this matrix makes the environment identical by construction rather
         # than by a list someone has to keep right.
         lane: [early, mid, late, selftests]
+        # ...and the selftests lane is itself SHARDED three ways
+        # (COMPILER_GATE_SELFTESTS_SHARD, tests/gates/selftests/run.sh). As one
+        # job it was 1377s -- 1085s of suite behind ~290s of setup -- while
+        # every other job of run 36248052145 finished by 1039s. Each shard is
+        # its own checkout, which is what keeps the companions serial per tree.
+        # The other lanes are not sharded; `exclude` keeps them one job each.
+        # Changing the count means changing the `/3` in the name and the env
+        # below with it.
+        shard: [0, 1, 2]
+        exclude:
+          - { lane: early, shard: 1 }
+          - { lane: early, shard: 2 }
+          - { lane: mid, shard: 1 }
+          - { lane: mid, shard: 2 }
+          - { lane: late, shard: 1 }
+          - { lane: late, shard: 2 }
     steps:
       - uses: actions/checkout@v5
       - name: Cache seed artifact
@@ -899,6 +915,7 @@ jobs:
       - name: Compiler-gate lane ${{ matrix.lane }}
         env:
           COMPILER_GATE_LANE: ${{ matrix.lane }}
+          COMPILER_GATE_SELFTESTS_SHARD: ${{ matrix.shard }}/3
           VIBE_STAGE2_WASM: ${{ github.workspace }}/_build/_ci_shard_gen/stage2.wasm
         run: bash scripts/compiler_gate.sh
       # #2758: the JS-vs-Rust `Fs::remove` parity gate. One lane only -- it is
@@ -1705,6 +1722,27 @@ jobs:
         with:
           # Three env vars below address the compiler at this path.
           stage2-dest: _build/ci-artifacts
+      # Phase A's viberun-driven verticals need a release viberun. Uncached,
+      # the first of them (spawned-future) built it inside the gate: 220s of
+      # this job's 594s on run 36248052145, and this job was the second-longest
+      # path of the run. Same cache and content-hashed stamp as the
+      # compiler-gate lanes; the gates ask ensure_viberun.sh --check, so a
+      # restored binary whose sources match is used as-is.
+      - name: Toolchain identity for the viberun cache key
+        id: rustc
+        run: echo "id=$(rustc --version | tr -c '[:alnum:].' '-')" >> "$GITHUB_OUTPUT"
+      - name: Cache viberun build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            runtime/viberun/target
+          key: viberun-v3-${{ steps.rustc.outputs.id }}-${{ hashFiles('runtime/viberun/Cargo.lock', 'runtime/viberun/Cargo.toml') }}-${{ hashFiles('runtime/viberun/src/**') }}
+          restore-keys: |
+            viberun-v3-${{ steps.rustc.outputs.id }}-${{ hashFiles('runtime/viberun/Cargo.lock', 'runtime/viberun/Cargo.toml') }}-
+      - name: Ensure viberun matches the current sources
+        run: bash scripts/ensure_viberun.sh
       - name: WASI p3 guarantee gate
         env:
           VIBE_P3_GATE_REQUIRE_TOOLS: "1"

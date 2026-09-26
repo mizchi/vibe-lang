@@ -259,8 +259,36 @@ $(diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") | grep -E '^[<>]' | 
   return "$rc"
 }
 
+# SHARDING, across RUNNERS and never inside one. The loop below is serial for
+# the reason given above, and at ~60 companions it was 814s of the selftests
+# lane -- the whole critical path of a CI run (run 36248052145: that job
+# 1377s, every other job done by 1039s). CI runs this lane as N jobs, each on
+# its own checkout, and each runs the companions whose discovery index k has
+# k % N == I. The discovery glob is the same in every shard, so the shards
+# partition it exactly: every companion runs in exactly one of them, and a new
+# companion lands in one without anyone assigning it.
+#
+# The BOOKKEEPING (missing self-tests, stale and out-of-baseline exemptions) is
+# cheap and runs in every shard, so no shard can report ok on a tree whose
+# ratchet is broken. Default 0/1: one shard, every companion -- what a local
+# run and `pkf run full-gate` get.
+shard="${VIBE_GATE_SELF_TESTS_SHARD:-0/1}"
+shard_i=""; shard_n=""
+case "$shard" in
+  *[!0-9/]* | /* | */ | */*/* ) ;;
+  */*) shard_i="${shard%/*}"; shard_n="${shard#*/}" ;;
+esac
+if [ -z "$shard_n" ] || [ "$shard_n" -lt 1 ] || [ "$shard_i" -ge "$shard_n" ]; then
+  # A malformed shard must not run a DIFFERENT subset than asked (or none) and
+  # say ok: that is a companion going dark with a green check beside it.
+  echo "[gate-self-tests] FAIL: VIBE_GATE_SELF_TESTS_SHARD='$shard' is not I/N with 0 <= I < N" >&2
+  exit 1
+fi
+
 failed_tests=""
 repaired=""
+ran=0
+k=-1
 if [ "${VIBE_GATE_SELF_TESTS_RUN:-1}" = "1" ]; then
   # The snapshot needs a git work tree. Without one it cannot tell a clean run
   # from a dirty one, and saying nothing would be reporting "unchecked" as
@@ -288,6 +316,9 @@ if [ "${VIBE_GATE_SELF_TESTS_RUN:-1}" = "1" ]; then
       *.test.mjs) [ -f "${t%.test.mjs}.mjs" ] || [ -f "${t%.test.mjs}.sh" ] || continue ;;
       *) [ -f "${t%_test.sh}.sh" ] || [ -f "${t%_test.sh}.mjs" ] || continue ;;
     esac
+    k=$((k + 1))
+    [ $((k % shard_n)) -eq "$shard_i" ] || continue
+    ran=$((ran + 1))
     base="${t#scripts/}"
     if printf '%s\n' "$failing_allowed" | grep -qxF "$base"; then
       # A known-failing exemption is still RUN, because the interesting case is
@@ -358,7 +389,11 @@ fi
 
 n_all="$(printf '%s\n' "$allowed" | grep -c . || true)"
 if [ "${VIBE_GATE_SELF_TESTS_RUN:-1}" = "1" ]; then
-  echo "[gate-self-tests] ok (every gate has a self-test; every companion passed and left the working tree unchanged; $n_all pre-existing exemptions)"
+  if [ "$shard_n" -eq 1 ]; then
+    echo "[gate-self-tests] ok (every gate has a self-test; every companion passed and left the working tree unchanged; $n_all pre-existing exemptions)"
+  else
+    echo "[gate-self-tests] ok (shard $shard_i/$shard_n: $ran of $((k + 1)) companions passed and left the working tree unchanged; every gate has a self-test; $n_all pre-existing exemptions)"
+  fi
 else
   echo "[gate-self-tests] ok (every gate has a self-test; companions not run; $n_all pre-existing exemptions)"
 fi
