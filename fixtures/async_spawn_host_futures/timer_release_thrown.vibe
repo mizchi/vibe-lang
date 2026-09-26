@@ -1,0 +1,45 @@
+// #1537: a task group whose BODY throws releases its armed timer on the way
+// out. Each of 1100 iterations runs a group that arms a timer for a 10s
+// sleeper beside a fast host future, joins the future, then throws; the entry
+// catches the throw and runs the group again. The throw skips the group's
+// close, so before the body's own release handler each iteration kept its
+// timer subtask and the run trapped past the adapter's 1024-handle band
+// (Codex on #3091). `once` declares no `Async` (spawn_suspend discharges it),
+// which is what lets the entry's handle admit it. Every catch answers 1: 1100.
+// Executed by scripts/test_named_hostfutures_component_gate.sh.
+import @vibe/concurrent {
+  TaskGroup, TaskHandle, sleep_wait
+}
+
+fn once() -> Int with Exception {
+  TaskGroup::run((g) -> {
+    let s = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      sleep_wait(10000)
+      0
+    })
+    let a = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      await(host_future_named("fast"))
+    })
+    let v = TaskHandle::join(a)
+    if v > 0 {
+      throw("boom")
+    } else {
+      ()
+    }
+    TaskHandle::cancel(s)
+    v
+  })
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  let mut total = 0
+  let mut i = 0
+  while i < 1100 {
+    let got = handle { once() } with {
+      Exception::Throw(_m) => 1
+    }
+    total = total + got
+    i = i + 1
+  }
+  total
+}

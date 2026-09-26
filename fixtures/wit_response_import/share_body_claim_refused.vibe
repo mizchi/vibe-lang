@@ -1,0 +1,36 @@
+// #2066 (Codex on #3091): a closure RETURNED by a function would hide the
+// response future it captured, and the two spawns would hand one response body
+// to two tasks. The spawn check cannot see the returned closure's captures, so
+// it refuses the spawn (#3152); the adapter's one-time body claim is the
+// run-time backstop. Compiled and refused by
+// scripts/test_wit_async_import_component_gate.sh.
+import ./client_bindings.vibe {
+  fetch_a
+}
+
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+fn drain(s: HostStream) -> Int with Async {
+  let mut total = 0
+  for b in s {
+    total = total + b
+  }
+  total
+}
+
+fn reader(pending: Future[HostResponse]) -> () -> Int with Async {
+  () -> Int with Async {
+    drain(HostResponse::body(await(pending)))
+  }
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  let w = reader(fetch_a())
+  TaskGroup::run((g) -> {
+    let a = TaskGroup::spawn_suspend(g, w)
+    let b = TaskGroup::spawn_suspend(g, w)
+    TaskHandle::join(a) * 1000 + TaskHandle::join(b)
+  })
+}

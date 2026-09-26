@@ -1,0 +1,29 @@
+// #1537: an enclosing task and a task of a nested group await the SAME host
+// future. The nested group, waiting from ~100ms, takes the value when it lands
+// at ~300ms; the enclosing task must still resume with it rather than be left
+// parked on a released handle. 20 + (20 + 1) = 41. Executed by
+// scripts/test_named_hostfutures_component_gate.sh.
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  let shared = host_future_named("slow")
+  TaskGroup::run((g) -> {
+    let a = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      await(shared)
+    })
+    let b = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      let _ = await(host_future_named("fast"))
+      TaskGroup::run((h) -> {
+        let t = TaskGroup::spawn_suspend(h, () -> Int with Async + Exception {
+          await(shared) + 1
+        })
+        TaskGroup::pump_all(h)
+        TaskHandle::join(t)
+      })
+    })
+    TaskGroup::pump_all(g)
+    TaskHandle::join(a) + TaskHandle::join(b)
+  })
+}

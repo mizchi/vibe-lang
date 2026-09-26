@@ -1,0 +1,29 @@
+// #2066: a `wasi:http/middleware` handler. It awaits the `from_wit` binding's
+// `fetch` for the request's own path; the provider plugged in with
+// `scripts/build_http_client_provider.sh ... handler` hands that request to an
+// IMPORTED `wasi:http/handler`, so the composed middleware imports and exports
+// `handler`. scripts/test_serve_body_stream_gate.sh plugs `backend.vibe` into
+// that import and serves the chain: the answer wraps the backend's status and
+// body.
+import ../wit_response_request/client_bindings.vibe {
+  fetch
+}
+
+fn drain(s: HostStream) -> String with Async {
+  let mut out = ""
+  let mut go = true
+  while go {
+    let b = host_stream_next(s)
+    if b < 0 {
+      go = false
+    } else {
+      out = String::concat(out, String::from_byte(b))
+    }
+  }
+  out
+}
+
+export let handler = (method: String, url: String, headers: String, body: HostStream) -> String with Async {
+  let r = await(fetch(String::concat("http://backend.local", url)))
+  "200\n\nmiddleware(\{HostResponse::status(r)}): \{drain(HostResponse::body(r))}"
+}

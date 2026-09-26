@@ -110,16 +110,18 @@ half of this paragraph can go stale without a gate noticing.
 
 ### Dynamic import prefixes
 
-Four import families are minted per program rather than listed:
+Five import families are minted per program rather than listed:
 `vibe.host_future_get$<name>`, `vibe.wit_future_get$<address>` (#2064),
-`vibe.wit_response_get$<address>` (#2066) and `vibe.host_stream_get$<name>`.
+`vibe.wit_response_get$<address>` and `vibe.wit_response_arg_get$<address>`
+(#2066), and `vibe.host_stream_get$<name>`.
 Each has its own emission loop in `linked_compile.vibe` and its own
 `componentAdapterPatterns` row in `docs/generated/host-runtime-contract.json`.
 `check_host_runtime_contract.py`'s `validate_emitter_contract` compares the two
 by **exact dict equality**, so a loop added without its row (or a row without
 its loop) turns the required gate red in the same change. The composer reads
 the prefixes back in `component_codegen.vibe` (`comp_is_wit_future_get_import`,
-`comp_is_wit_response_get_import`, `comp_wit_future_interface` /
+`comp_is_wit_response_get_import`, `comp_is_wit_response_arg_import`,
+`comp_wit_future_interface` /
 `comp_wit_future_func`).
 
 ## What the values mean
@@ -207,18 +209,32 @@ override silently contradicting a module that says `raw` is the hazard #2903's
   a second one, and interprets its status exactly as before (a byte, the
   inline CLOSED latch, or `-1` at the end).
 - **The sleeper's timer in the same set** (#1537). While tasks wait on host
-  waitables and another task sleeps, `host_sleep_arm (i64) -> i64` starts ONE
+  waitables and another task sleeps, `host_sleep_arm (i64) -> i64` starts a
   `sleep-for` call for the earliest sleeper's remaining milliseconds and
-  joins its subtask to the shared set (scratch word 44 holds it, word 48 its
-  results). It answers `1` when the call returned inline, `0` when it is
-  pending or a timer is already armed. `host_future_wait_any` answers the
-  subtask's RETURNED event (status `2`) by dropping the subtask and returning
-  `1`, the poll payload, which no task parks on; the scheduler then elapses
-  every sleeper by the armed milliseconds. So a sleep and a host wait settle
-  in whichever order they land rather than sleep first
+  joins its subtask to the shared set (the results land in scratch word 48,
+  which nothing reads). It answers `1` when the call returned inline, else
+  the timer's id in the TIMER band, `n + 4096` for an adapter counter `n`
+  recorded per subtask (an i64 counter at word 56, an i64 per handle in band
+  28672), so an id never repeats even though a dropped subtask handle is reused
+  (the future band is [2, 1025], the stream band [2048, 3071]).
+  `host_future_wait_any` answers
+  the subtask's RETURNED event (status `2`) by dropping the subtask and
+  returning that id. Each task group keeps its own timer (`host_timer` /
+  `host_timer_ms` on `TaskGroup`) and, when it fires, debits only the
+  sleepers that were pending when it was armed. So a sleep and a host wait
+  settle in whichever order they land rather than sleep first
   (`fixtures/async_spawn_host_futures/sleep_and_host.vibe` and
-  `sleep_short.vibe`, each ~300ms where either fixed order takes ~400-500ms).
-  Imported only beside the other hooks, when the program also sleeps.
+  `sleep_short.vibe`, each ~300ms where either fixed order takes ~400-500ms;
+  `sleep_after_host.vibe` pins that a later sleep keeps its debt). Imported
+  only beside the other hooks, when the program also sleeps.
+- **Nested task groups share the set** (#1537). A group running inside a
+  task of another group waits on the same shared set, so it can receive an
+  event that belongs to the enclosing group. A timer id it did not arm goes
+  to a mailbox (`conc_host_fired_timers`) that the owning group checks on
+  its next settle. A future or stream event with no task of its own parked
+  on it is left untaken: the adapter already recorded it as completed, so
+  the owning group's next arm answers "ready" and takes the value
+  (`fixtures/async_spawn_host_futures/nested_groups.vibe`).
 - **Cancelling the last waiter** (#1537). `TaskHandle::cancel` on a task
   parked on a host future that no other task awaits calls
   `host_future_cancel (i64) -> i64`: a read still BLOCKED leaves the shared
@@ -234,7 +250,22 @@ override silently contradicting a module that says `raw` is the hazard #2903's
   bands are cleared and the readable end is dropped. Dropping is sound
   because a host stream cannot be captured by another task (it is neither
   Send nor a same-nursery endpoint), so the cancelled task was its only
-  reader (`stream_cancel_many.vibe`).
+  reader (`stream_cancel_many.vibe`). A task group's fail-fast sibling
+  cancel releases each parked sibling's read the same way, and an event that
+  fires with no task anywhere waiting on it is released by whichever group
+  receives it.
+- **Releasing a group's timer** (#1537). A group that closes with its timer
+  still armed -- every sleeper it covered was cancelled, or the group failed
+  -- calls `host_sleep_cancel (i64) -> i64` with the timer's id. The adapter
+  finds the subtask whose recorded id it is, takes it out of the shared set,
+  cancels it with a synchronous `subtask.cancel` (a timer that returned but
+  was not yet delivered answers RETURNED, which is just as done), drops it
+  and clears its slot; `host_future_wait_any` clears the slot when it drops a
+  delivered timer, so an id never matches a dropped handle. A timer that
+  already fired while another group waited is only a mailbox entry by then,
+  and the group removes that instead. Without it each such group held a
+  subtask handle for the rest of the run
+  (`fixtures/async_spawn_host_futures/timer_release_many.vibe`: 1100 groups).
 - **Drop** is conditional -- this is *the conditional-drop rule* the
   runtime-neutral list below names. A call that completed eagerly (status
   RETURNED, code `2`) created no subtask, so it is neither joined nor dropped
@@ -266,7 +297,8 @@ override silently contradicting a module that says `raw` is the hazard #2903's
   emitted by linked_compile as `vibe.wit_future_get$<address>` instead of
   `vibe.host_future_get$<name>`, with the same `() -> i64` type and the same
   wait half. The composer imports every such function from ONE instance of its
-  versioned interface, and each is a `future<s64>`. The addresses come from WIT text:
+  versioned interface, as the WIT declares it: `async func() -> s64`, whose
+  call is a subtask (the WIT-import bullet below). The addresses come from WIT text:
   `from_wit_future_imports` (`@vibex/wasm_wit_parser`) derives a binding per
   `async func() -> s64` and refuses any other function rather than skipping
   it. `scripts/test_wit_async_import_component_gate.sh` compiles
@@ -277,10 +309,55 @@ override silently contradicting a module that says `raw` is the hazard #2903's
   already did, so a program that imports its bindings builds to a component
   directly. viberun links a `VIBE_ASYNC_FUTURES` entry whose name is such an
   address (`example:prices/api@1.0.0#get-price=40:300`) inside that versioned
-  instance as `future<s64>`, so the gate also executes the program. It
+  instance as that `async func`, returning the value after its delay, so the
+  gate also executes the program. It
   measures 42 in about one producer delay for two concurrent futures, and
   bounds that from above (they were in flight together) and below (the task
   parked).
+
+- **A WIT async import is a subtask** (#3131). A WIT function
+  `async func() -> T` is imported with exactly that type -- never as
+  `-> future<T>`, which is a different function type that a provider written
+  against the WIT would not satisfy -- and `canon lower async` makes each call
+  a subtask whose result lands at the pointer given with the call. That
+  pointer must stay the call's own until the subtask returns, while the
+  subtask handle is only known afterwards, so the getter first takes a free
+  RESULT SLOT (512 of them, 8 bytes each, from 40960) and the core's handle
+  is `1024 + slot`, never the subtask handle. It stays inside the scheduler's
+  future band (`[2, 2047]` as handle + 2). The adapter keeps per slot a state
+  (from 45056: 0 free, 1 subtask pending, 2 landed) and the pending
+  subtask's handle (from 47104), and per subtask handle the slot + 1 (from
+  49152), which is how `waitable-set.wait`'s payload finds the slot.
+
+  A call RETURNED at the call has its value in the slot already. Otherwise
+  the wait parks on the subtask until its SUBTASK event reports RETURNED (an
+  earlier state change only loops), drops it with `subtask.drop`, reads the
+  slot and frees it. Arming joins the subtask to the shared set, and
+  `host_future_wait_any` does the same bookkeeping for a WIT subtask. Cancel
+  is a synchronous `subtask.cancel`; a call that returned first counts as
+  landed, and a landed response's body stream is dropped with it. A call
+  still STARTING has not read its arguments, and the argument buffer is reused
+  by the next call, so the getter of an argument response waits in a set of
+  its own until the subtask leaves STARTING. A host function starts at once;
+  a provider component plugged in with `wac` may not, which the service world
+  measures.
+
+  A future the program drops unawaited keeps its slot, and the program cannot
+  see the drop, so the guest reclaims slots itself. The boundary injection
+  records each WIT future cell under its slot (`__ws_track`), `__aw_pay`
+  marks the cell it waits on (`__ws_claim`), and a call that leaves every
+  slot taken cancels the oldest cell nobody is awaiting and poisons it
+  (state 9). Awaiting a poisoned cell traps rather than reading the call that
+  reused its slot. Only when all 512 slots are awaited does the next call
+  trap. `fixtures/wit_future_import/drop_many.vibe`,
+  `fixtures/wit_response_import/drop_many.vibe` and
+  `fixtures/wit_future_import/reclaimed_await_trap.vibe` pin both sides.
+  The composer still declares the `future` types and their canon pairs (now
+  unused), so no index moves; the subtask pair is appended last
+  (`[subtask-drop-wit]`, `[subtask-cancel-wit]`).
+  `fixtures/wit_future_import/cancel_many.vibe` and
+  `fixtures/wit_response_import/cancel_many.vibe` cancel 600 pending calls,
+  more than there are slots.
 
 - **A WIT response carries a status and a streaming body** (#2066).
   `host_response_named(<address>)` is `Future[HostResponse]`, for a WIT
@@ -288,25 +365,102 @@ override silently contradicting a module that says `raw` is the hazard #2903's
   interface's `record response { status: s32, body: stream<u8> }`.
   linked_compile emits `vibe.wit_response_get$<address>` (same `() -> i64`
   type, same wait half). The composer imports the `types` instance for the
-  record and the API instance for the functions, and declares
-  `future<response>` over the imported record. The adapter lands the record
-  in the future's 8-byte slot, `{status: s32 @0, body: stream<u8> @4}`, and
+  record and the API instance for the functions, each imported as
+  `async func() -> response` over the imported record. The adapter lands the
+  record in the call's 8-byte result slot, `{status: s32 @0, body: stream<u8> @4}`, and
   the wait returns it as one scalar, `(status << 32) | body`: the record's
   flat lowering side by side. A status outside `[-2^30, 2^30)` does not fit
   the tagged value and traps in the adapter. `HostResponse::status` and
   `HostResponse::body` take the scalar apart; `body` wraps the stream handle
   in a host-stream cell, which the shared stream read half reads (present
-  whenever a response is, even with no named stream). Each `body` call wraps
-  the same end, so read it through one cell: once one reaches end of stream
-  the end is dropped, and reading through another traps. The first slice
-  composes responses on their own: every future in the component is a
-  response and they share one interface, and anything else is refused by
-  name. `from_wit_future_imports` derives the bindings (it admits the
+  whenever a response is, even with no named stream). A response's body is
+  taken once: a second `body` call traps (the claim below), so keep the one
+  cell it returns. For the same reason a response future has ONE owner. `sp_spawnable_ok` refuses a spawn capture
+  of a future whose value owns a host stream. That covers the future
+  directly, through `Option`, tuples, records and declared fields, through a
+  type parameter with no `Send` bound (instantiable at `HostResponse`), and
+  through a closure whose captures the check cannot see: a closure is
+  accepted only as a literal at the spawn, a local `let` of a literal (its
+  captures are recorded when the `let` is checked), or a top-level function
+  (#3152). Each refusal names the edit: start the request inside the task,
+  add the bound, or write the literal. The adapter also enforces the rule at
+  run time, as a backstop: the
+  packed response's low half is `handle | generation << 10`, the generation
+  bumped per landed response for that handle (band 53248), and `body` first
+  CLAIMS the pair through `vibe.host_stream_claim` (claimed generations at
+  band 57344). A claim succeeds once, so a second `body` of the same response,
+  or a stale response whose handle a later one reused, traps instead of
+  reading another owner's stream
+  (`fixtures/wit_response_import/share_body_claim_refused.vibe`, a closure a
+  helper returned, answered 6006 -- the body read by both tasks -- before
+  either guard). Every future in a
+  response component comes from ONE interface, and anything else is refused
+  by name. Scalar `async func() -> s64` functions of that interface may sit
+  beside the responses (MIXED): the adapter records each slot's kind (band
+  36864, 1 = a response) at its getter and decodes the value by it
+  (`fixtures/wit_response_mixed`: 211 in ~320ms for a response beside a
+  scalar future). Named host streams may share it too: they are ROOT
+  imports, so they (then `sleep-for`) take the component funcs before the
+  interface's aliased functions, the lowers keep the core order (futures,
+  then streams), and the `stream<u8>` type the body declared serves their
+  getters as well (`fixtures/wit_response_import/stream_main.vibe`: 248). The
+  same mapping lets scalar WIT futures share a component with named streams
+  (`fixtures/wit_future_import/stream_main.vibe`, and `stream_spawn_main.vibe`
+  with `sleep-for` as well: 84 each). Runner-private root futures still cannot
+  share a WIT component: they are `func() -> future<u32>` root functions read
+  through `future.read`, while the WIT ones are subtasks. `from_wit_future_imports` derives the bindings (it admits the
   function only with `use types.{response};` and exactly that record).
+  A response function may take ONE `string` parameter (a request URL,
+  `async func(url: string) -> response`); the derivation spells it
+  `host_response_named_with("<address>?<label>", url)`. The guest pushes the
+  argument's bytes one at a time through `vibe.host_arg_push` into the
+  adapter's argument buffer (length at word 64, bytes from 65536 -- page 1,
+  above every fixed band -- growing the memory a page at a time, so a string
+  has no length bound short of a failed grow), then calls `vibe.wit_response_arg_get$<address>`,
+  which passes `(buffer, length)` as the lowered string, starts the call and
+  resets the length, so each request starts from an empty buffer. Any other
+  parameter shape is refused by name.
   viberun's `VIBE_ASYNC_RESPONSES="<address>=<status>:<delay_ms>:<b1>|<b2>"`
-  links each function inside its interface. The gate runs
+  links each function inside its interface; `echo` in place of the body links
+  a one-string-parameter function whose body is the argument's own bytes
+  (`fixtures/wit_response_request`: two requests, 594). `http` in place of
+  the body links a REAL provider: an HTTP GET of the argument, run on a
+  blocking thread so requests overlap, landing with the server's own status
+  (a non-2xx status is a response, not an error) and body; a transport
+  failure fails the future (`http_main.vibe` against a local file server:
+  898). The body is buffered before the future lands, so it is capped
+  (`VIBE_HTTP_BODY_LIMIT`, default 16 MiB) and the whole request is bounded
+  (`VIBE_HTTP_TIMEOUT_MS`, default 30s): a larger body or a stalled server
+  fails the future with a message naming the limit, rather than growing host
+  memory or holding the runner open on a thread it cannot abort. Handing the
+  response reader to the `stream<u8>` producer instead, so a long-lived body
+  delivers bytes before EOF, is not done yet. The provider is the runner's, over the same `fetch(url)` WIT
+  function -- the guest does not import `wasi:http` itself. The gate runs
   `fixtures/wit_response_import/main.vibe` with two 300ms responses, gets 440
   (both statuses plus every body byte) and bounds the wall clock the same way.
+- **Service world** (#2066). A `vibe serve` handler (`body: HostStream`) that
+  awaits WIT responses is composed by `comp_emit_component_wasm_service_handler`:
+  - the run lane's import half: the response instance imports, this adapter,
+    and the canon defs over memhost;
+  - under the stream lane's export half: the string trampoline, and a
+    `task.return` and async lift over MAIN's memory.
+
+  The request body and every response body share the one `stream<u8>` type,
+  so one `stream.read` reads both, and the adapter runs at the core's
+  `vibe.tagmode` (0 on the serve lane). A serve handler awaiting any other
+  host future is refused by name, since nothing behind `wasmtime serve`
+  provides it. A handler whose core imports anything the plain stream lane
+  cannot provide is refused the same way; it used to build an invalid
+  component with a success status.
+
+  `scripts/build_http_client_provider.sh` builds the other side: a component
+  exporting the binding's interface, whose `fetch` sends a GET through
+  `wasi:http/client` and hands over the upstream body stream uncollected.
+  With `handler` as its second argument the provider hands the request to an
+  imported `wasi:http/handler` instead. That is the `middleware` world: the
+  composed component imports and exports `handler`, and a backend plugged
+  into the import completes the chain (`fixtures/serve_middleware_world`,
+  the same gate).
 
 ### Host streams
 
@@ -405,19 +559,24 @@ cap without moving the bases silently overruns into the next band, which is why
 `scripts/check_async_band_contract.sh` asserts the arithmetic rather than the
 constants.
 
-## Cancellation does not exist
-
-No cancellation operation is emitted or implemented anywhere. `subtask.cancel`,
-`future.cancel-read`, `future.cancel-write` and `task.cancel` have zero
-occurrences across both emitters and `runtime/viberun`; the only hit for
-"cancel" in the async surface is a prose comment at
-`checker/builtins_async.vibe:160` recording that `future.cancel-*` remains
-M-conc-2.
+## Cancellation
 
 ADR-0068 (`concurrency.md`) specifies cooperative cancellation as the public
-model. That specification currently has no ABI under it. #1537 scope item 3
-names these operations; this file records their absence as a fact rather than
-leaving it to be inferred from a design document that describes the intent.
+model; what the component adapter emits under it is the three READ-side
+cancels, all synchronous: `future.cancel-read` (`host_future_cancel`),
+`stream.cancel-read` (`host_stream_cancel`) and `subtask.cancel`
+(`host_sleep_cancel`, a group's pending timer). Each runs when the last task
+that could take a value is gone -- cancelled, failed fast, or its group
+closed -- and is followed by the drop of the handle it cancelled; the bullets
+under `### Host futures` say when. A group's timer is released at the first
+of three points: the group's next settle round once no sleeper it covered is
+left (so a later `pump_all` does not wait out a cancelled sleep), the group's
+normal close, or a throw escaping the group's body, which `TaskGroup::run`
+re-throws unchanged after the release. On that throw the group's parked
+children are cancelled first, which releases their host reads the same way
+fail-fast does. `future.cancel-write` and `task.cancel` are
+not emitted: the guest never writes a host future, and a guest task is not a
+Component Model task (#1537 scope item 3).
 
 ## Runtime-neutral vs Wasmtime-specific
 
@@ -453,5 +612,6 @@ and `:1000` and link named root imports from an env spec. The runner reserves
   quietly answering differently.
 - The `stdin_read_char` "async by the host" description, which no host
   implements that way.
-- Cancellation, restated: there is no ABI for it, so nothing here says what a
-  dropped or abandoned future or stream does to the host side.
+- What an abandoned future or stream does to the HOST side beyond the canon
+  cancel: wasmtime drops the producer's future, and a second runtime could do
+  otherwise without any conformance row here noticing.

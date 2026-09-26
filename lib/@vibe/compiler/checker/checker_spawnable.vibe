@@ -15,6 +15,7 @@ import @vibe/compiler/core {
   expr_children_pop,
   expr_children_push,
   expr_children_top,
+  find_typedef,
   subst_apply,
   type_to_string
 }
@@ -25,6 +26,10 @@ import @vibe/core {
 
 import ./checker_trait.vibe {
   type_send_ok
+}
+
+import ./checker_resolve.vibe {
+  subst_type_params
 }
 
 //# Functions
@@ -385,11 +390,189 @@ fn sp_same_region(a: Type, b: Type) -> Bool {
   }
 }
 
+fn sp_formals_has(formals: Array[Int], id: Int) -> Bool {
+  let mut hit = false
+  let mut i = 0
+  while i < Array::length(formals) && !hit {
+    hit = Array::get(formals, i) == id
+    i = i + 1
+  }
+  hit
+}
+
+fn sp_is_stream_owning_future(s: Subst, defs: Array[TypeDef], t: Type, formals: Array[Int]) -> Bool {
+  match t {
+    CtNamed(n, targs) => n == "Future" && Array::length(targs) == 1 && sp_owns_host_stream(s, defs, Array::get(targs, 0), 0, formals),
+    _ => false
+  }
+}
+
+/// #2066: does a value of type `t` own a host stream's readable end -- a
+/// `HostResponse` or `HostStream` anywhere inside it: through `Option`,
+/// `Array`, tuples, records, the arguments of a named type, and the fields
+/// and payloads of a declared struct or enum (Codex on #3091). The descent
+/// is capped; a type too deep to finish is answered as owning, which only
+/// refuses a capture. So is a type parameter of an open generic declaration
+/// with no `Send` bound (`formals`): the helper is checked once, and a later
+/// instantiation at `HostResponse` would share the body end with every task
+/// the helper spawns (Codex on #3091). `Send` excludes a host stream, so the
+/// bound is what makes such a capture sound, and the call site checks it.
+fn sp_owns_host_stream(s: Subst, defs: Array[TypeDef], t: Type, depth: Int, formals: Array[Int]) -> Bool {
+  if depth > 16 {
+    true
+  } else {
+    match subst_apply(s, t) {
+      CtNamed(n, targs) => if n == "HostResponse" || n == "HostStream" {
+        true
+      } else {
+        // A declared type owns what its instantiated fields own; a type
+        // argument its fields never hold (a region or effect formal of
+        // `TaskGroup[rg, e]`, say) owns nothing. Only an undeclared builtin
+        // (`Future[T]`, `Option`-like carriers) is judged by its arguments.
+        match find_typedef(defs, n) {
+          Some(_) => sp_decl_owns_host_stream(s, defs, n, targs, depth + 1, formals),
+          None => sp_owns_host_stream_all(s, defs, targs, depth + 1, formals)
+        }
+      },
+      CtVar(id) => sp_formals_has(formals, id),
+      CtStruct(n) => sp_decl_owns_host_stream(s, defs, n, [], depth + 1, formals),
+      CtEnum(n) => sp_decl_owns_host_stream(s, defs, n, [], depth + 1, formals),
+      CtTuple(ts) => sp_owns_host_stream_all(s, defs, ts, depth + 1, formals),
+      CtArray(e) => sp_owns_host_stream(s, defs, e, depth + 1, formals),
+      CtOption(e) => sp_owns_host_stream(s, defs, e, depth + 1, formals),
+      CtApplied(h, args) => sp_owns_host_stream(s, defs, h, depth + 1, formals) || sp_owns_host_stream_all(s, defs, args, depth + 1, formals),
+      CtRecord(fields) => {
+        let mut hit = false
+        let mut i = 0
+        while i < Array::length(fields) {
+          let (_, ft) = Array::get(fields, i)
+          if sp_owns_host_stream(s, defs, ft, depth + 1, formals) {
+            hit = true
+          } else {
+            ()
+          }
+          i = i + 1
+        }
+        hit
+      },
+      _ => false
+    }
+  }
+}
+
+fn sp_owns_host_stream_all(s: Subst, defs: Array[TypeDef], ts: Array[Type], depth: Int, formals: Array[Int]) -> Bool {
+  let mut hit = false
+  let mut i = 0
+  while i < Array::length(ts) {
+    if sp_owns_host_stream(s, defs, Array::get(ts, i), depth, formals) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+/// The fields of a declared struct, or the payloads of a declared enum's
+/// variants, instantiated at `targs`.
+/// Declarations being walked, keyed by name and instantiation. A recursive
+/// declaration reached again at the SAME instantiation adds nothing its first
+/// visit does not already examine, so it answers "owns nothing" there rather
+/// than descending to the depth cap, which would count `List[Int]` as a
+/// stream owner (Codex on #3091). A non-regular recursion (new arguments at
+/// every level) still reaches the cap and is answered as owning.
+let sp_decl_walk: Array[String] = []
+
+fn sp_decl_walk_has(key: String) -> Bool {
+  let mut hit = false
+  let mut i = 0
+  while i < Array::length(sp_decl_walk) && !hit {
+    hit = Array::get(sp_decl_walk, i) == key
+    i = i + 1
+  }
+  hit
+}
+
+fn sp_decl_owns_host_stream(s: Subst, defs: Array[TypeDef], name: String, targs: Array[Type], depth: Int, formals: Array[Int]) -> Bool {
+  let mut key = name
+  let mut ki = 0
+  while ki < Array::length(targs) {
+    key = String::concat(key, String::concat("|", type_to_string(subst_apply(s, Array::get(targs, ki)))))
+    ki = ki + 1
+  }
+  if sp_decl_walk_has(key) {
+    false
+  } else {
+    Array::push(sp_decl_walk, key)
+    let owns = sp_decl_owns_host_stream_fields(s, defs, name, targs, depth, formals)
+    Array::truncate(sp_decl_walk, Array::length(sp_decl_walk) - 1)
+    owns
+  }
+}
+
+fn sp_decl_owns_host_stream_fields(s: Subst, defs: Array[TypeDef], name: String, targs: Array[Type], depth: Int, formals: Array[Int]) -> Bool {
+  match find_typedef(defs, name) {
+    Some(td) => match td {
+      TDStruct(_, fields, _, tparams) => {
+        let mut hit = false
+        let mut i = 0
+        while i < Array::length(fields) {
+          let (_, ft) = Array::get(fields, i)
+          let inst = if Array::length(tparams) == Array::length(targs) {
+            subst_type_params(ft, tparams, targs)
+          } else {
+            ft
+          }
+          if sp_owns_host_stream(s, defs, inst, depth, formals) {
+            hit = true
+          } else {
+            ()
+          }
+          i = i + 1
+        }
+        hit
+      },
+      TDEnum(_, tparams, variants) => {
+        let mut hit = false
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (_, payload) = Array::get(variants, vi)
+          let mut pi = 0
+          while pi < Array::length(payload) {
+            let pt = Array::get(payload, pi)
+            let inst = if Array::length(tparams) == Array::length(targs) {
+              subst_type_params(pt, tparams, targs)
+            } else {
+              pt
+            }
+            if sp_owns_host_stream(s, defs, inst, depth, formals) {
+              hit = true
+            } else {
+              ()
+            }
+            pi = pi + 1
+          }
+          vi = vi + 1
+        }
+        hit
+      },
+      TDAlias(_, aparams, body) => sp_owns_host_stream(s, defs, if Array::length(aparams) == Array::length(targs) {
+        subst_type_params(body, aparams, targs)
+      } else {
+        body
+      }, depth, formals),
+      _ => false
+    },
+    None => false
+  }
+}
+
 /// A capture is Spawnable-legal when it is structurally `Send`, or when it
 /// is a `TaskGroup[r]` / `TaskHandle[r,_]` / `Sender[r,_]` / `Receiver[r,_]`
 /// tagged with THIS spawn call's own region (`r_here`) -- an endpoint from
 /// a DIFFERENT nursery is rejected exactly like any other non-Send value.
-fn sp_spawnable_ok(env: TypeEnv, s: Subst, defs: Array[TypeDef], ty: Type, r_here: Type) -> Bool {
+fn sp_spawnable_ok(env: TypeEnv, s: Subst, defs: Array[TypeDef], ty: Type, r_here: Type, formals: Array[Int]) -> Bool {
   if type_send_ok(env, s, defs, ty) {
     true
   } else {
@@ -411,7 +594,14 @@ fn sp_spawnable_ok(env: TypeEnv, s: Subst, defs: Array[TypeDef], ty: Type, r_her
         // would prevent. When the cell gains a scheduler-visible waiter
         // list (the waitable/completion-order slice), `Future` should
         // grow a region tag and join the sp_same_region branch above.
-        true
+        //
+        // #2066: except a future whose VALUE owns a host stream. A
+        // `HostResponse` carries its body's one readable end, so every task
+        // that awaits a shared response future would be handed that same
+        // end; once one drains or closes it, another reads a dropped -- or
+        // reused -- handle (Codex on #3091). Like a `HostStream`, it has one
+        // owner: the task that makes the request.
+        !sp_owns_host_stream(s, defs, Array::get(targs, 0), 0, formals)
       } else {
         false
       },
@@ -634,7 +824,7 @@ fn sp_fact_name(fact_name: String) -> String {
 }
 
 /// Judge recorded capture facts against THIS spawn call's region.
-fn sp_judge_facts(env: TypeEnv, s: Subst, defs: Array[TypeDef], facts: Array[Type], r_here: Type) -> Array[String] {
+fn sp_judge_facts(env: TypeEnv, s: Subst, defs: Array[TypeDef], facts: Array[Type], r_here: Type, formals: Array[Int]) -> Array[String] {
   let out = sp_empty_strings()
   for fact in facts {
     match fact {
@@ -648,8 +838,13 @@ fn sp_judge_facts(env: TypeEnv, s: Subst, defs: Array[TypeDef], facts: Array[Typ
           Array::push(out, String::concat("no impl `Spawnable` for a `let mut` binding: capture `", String::concat(vname, "` shares a mutable cell across the spawn boundary")))
         } else if String::starts_with(tagged, "v:") && Array::length(targs) == 1 {
           let resolved = subst_apply(s, Array::get(targs, 0))
-          if sp_spawnable_ok(env, s, defs, resolved, r_here) {
+          if sp_spawnable_ok(env, s, defs, resolved, r_here, formals) {
             ()
+          } else if sp_is_stream_owning_future(s, defs, resolved, formals) && !sp_is_stream_owning_future(s, defs, resolved, [
+          ]) {
+            Array::push(out, String::concat("capture `", String::concat(vname, "` is a future whose value type is a type parameter with no `Send` bound; it may be instantiated at a host response, whose body only one task may read: add `Send` to that type parameter's bounds, or start the future inside the spawned task")))
+          } else if sp_is_stream_owning_future(s, defs, resolved, formals) {
+            Array::push(out, String::concat("capture `", String::concat(vname, "` is a future whose value owns a host stream (a response body), which only one task may read: start the request inside the spawned task and await it there, rather than sharing the future")))
           } else {
             Array::push(out, String::concat("no impl `Spawnable` for `", String::concat(type_to_string(resolved), String::concat("`: capture `", String::concat(vname, "` is neither Send nor a same-nursery endpoint")))))
           }
@@ -669,13 +864,13 @@ fn sp_judge_facts(env: TypeEnv, s: Subst, defs: Array[TypeDef], facts: Array[Typ
 /// and the ALREADY-ZONKED region argument of its `TaskGroup[r_here, _]`.
 /// Returns one message per violation, empty when the check passes. A closure
 /// value whose captures cannot be seen is refused rather than trusted (#3152).
-export fn check_spawnable_captures(env: TypeEnv, s: Subst, defs: Array[TypeDef], f_expr: Expr, r_here: Type) -> Array[String] {
+export fn check_spawnable_captures(env: TypeEnv, s: Subst, defs: Array[TypeDef], f_expr: Expr, r_here: Type, formals: Array[Int]) -> Array[String] {
   match f_expr {
-    EFn(_, _, params, _, _, body) => sp_judge_facts(env, s, defs, closure_capture_facts(env, body, params), r_here),
+    EFn(_, _, params, _, _, body) => sp_judge_facts(env, s, defs, closure_capture_facts(env, body, params), r_here, formals),
     EIdent(name, _) => match env_marker_before(env, spawn_safe_marker(name), name) {
       Some(_) => sp_empty_strings(),
       None => match env_marker_before(env, spawn_caps_marker(name), name) {
-        Some(CtTuple(facts)) => sp_judge_facts(env, s, defs, facts, r_here),
+        Some(CtTuple(facts)) => sp_judge_facts(env, s, defs, facts, r_here, formals),
         _ => if sp_is_top_level_function(env, name) {
           // A top-level function captures nothing.
           sp_empty_strings()

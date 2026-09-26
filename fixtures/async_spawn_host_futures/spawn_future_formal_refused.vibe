@@ -1,0 +1,19 @@
+// #2066: a generic helper that shares a `Future[T]` with a spawned task is
+// checked once, for every `T`. Instantiated at `HostResponse`, the body's one
+// readable end would reach every task that awaits the future, so a payload
+// that is a type parameter with no `Send` bound is refused as a capture, and
+// the message names the bound to add (Codex on #3091). Compiled and refused
+// by scripts/test_named_hostfutures_component_gate.sh.
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+fn fan[T](src: Future[T]) -> Int with Async + Exception {
+  TaskGroup::run((g) -> {
+    let t = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      let _ = await(src)
+      1
+    })
+    TaskHandle::join(t)
+  })
+}

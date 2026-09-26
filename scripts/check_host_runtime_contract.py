@@ -11,6 +11,7 @@ EMITTER = ROOT / "lib/@vibe/compiler/codegen/wasi/linked_compile.vibe"
 RUST = ROOT / "runtime/viberun/src/main.rs"
 NODE = ROOT / "scripts/wasm_vibe_host_runner.js"
 GC = ROOT / "lib/@vibe/compiler/codegen/gc/backend_body.vibe"
+LADDER = ROOT / "lib/@vibe/compiler/core/builtin_name.vibe"
 
 # `use_host` names the builtin a USER can write; `host_defs` registers the
 # name codegen lowers it to. Measured: `vibe_fs_read_dir_raw` is `unknown
@@ -443,6 +444,136 @@ def validate_gc_lists(
     return len(import_rows)
 
 
+# #1962 criterion 4: one operation identity on the linear lane. The algebraic
+# operation (`Fs::ReadFile`), the capability builtin (`Fs::read_file`) and the
+# core import (`vibe.fs_read_file`) are three spellings of one operation, and
+# each hop is hand-written: canonical_builtin_name's ladder, then
+# linked_compile's registry-name -> index match, then the import it reserves
+# and emits. The checks above compare the SET of emitted imports; nothing
+# pinned which builtin reaches which import, so swapping two same-typed rows
+# (`"Fs::is_dir" => fs_is_file_idx`) passed every assertion here.
+#
+# A binding is recovered structurally: `"B" => y_idx`, `let y_idx = if
+# x_import_idx >= 0 {`, and the `if x_import_idx >= 0 { emit_name(.., "vibe")
+# emit_name(.., "NAME")` block. NAME must be B's mechanical import name, or a
+# declared exception below. Declared rather than derived for the same reason
+# as GC_IMPORT_NAME_EXCEPTIONS: a rename FAILS instead of being accepted.
+LINEAR_IMPORT_NAME_EXCEPTIONS = {
+    "Env::get": "env-get",
+    "Env::args_len": "args-len",
+    "Env::args_get": "args-get",
+    "Profiler::now_us": "profile-now-us",
+    "Profiler::NowUs": "profile-now-us",
+    "Profiler::heap_bytes": "profile-heap-bytes",
+    "Profiler::HeapBytes": "profile-heap-bytes",
+    "sleep_blocking": "sleep",
+    "Console::read_stream": "stdin_read_stream",
+    "Console::read_char": "stdin_read_char",
+    "Console::write_stream": "stdout_write_stream",
+    "Console::write_char": "stdout_write_char",
+    "Console::write_err_stream": "stderr_write_stream",
+    "Console::write_err_char": "stderr_write_char",
+    "vibe_fs_read_dir_raw": "fs_read_dir_nul",
+    "Stdin::read_via_stream": "stdin_provider_acquire",
+    "StdinStream::next": "stdin_provider_read",
+    "StdinStream::close": "stdin_provider_close",
+}
+
+# An operation whose builtin codegen rewrites to another builtin before the
+# import is chosen (compile_call.vibe lowers `Fs::readdir` to the raw read).
+LINEAR_LOWERED_ALIASES = {"Fs::readdir": "vibe_fs_read_dir_raw"}
+
+# canonical_builtin_name's operation rows whose builtin is not the mechanical
+# snake_case of the operation.
+LADDER_NAME_EXCEPTIONS = {"Fs::ReadDir": "Fs::readdir"}
+
+_RAW_PREFIXES = (
+    ("hf_sleep_", "host_sleep_"),
+    ("hf_arg_", "host_arg_"),
+    ("hf_", "host_future_"),
+    ("hs_", "host_stream_"),
+)
+
+
+def linear_import_name_for(builtin: str) -> str:
+    """The import a builtin binds to when no exception is declared."""
+    if builtin in LINEAR_IMPORT_NAME_EXCEPTIONS:
+        return LINEAR_IMPORT_NAME_EXCEPTIONS[builtin]
+    if builtin.startswith("vibe_") and builtin.endswith("_raw"):
+        core = builtin[len("vibe_"):-len("_raw")]
+        for prefix, full in _RAW_PREFIXES:
+            if core.startswith(prefix):
+                return full + core[len(prefix):]
+        return core
+    return builtin.replace("::", "_").lower()
+
+
+def linear_bindings(text: str) -> list[tuple[str, str]]:
+    """(builtin, vibe import name) for every registry row bound to a static import."""
+    reserved = [name for name, _ in re.findall(r"^\s*let (\w+_import_idx) = if ([^\n{]+)\{", text, re.M)]
+    idx_of = dict(re.findall(r"^\s*let (\w+_idx) = if (\w+_import_idx) >= 0 \{", text, re.M))
+    emits = re.findall(
+        r'if (\w+_import_idx) >= 0 \{\s*\n\s*emit_name\(import_content, "vibe"\)\s*\n\s*emit_name\(import_content, "([^"]+)"\)',
+        text,
+    )
+    if not reserved or not emits:
+        die("linear lane: import reservation or emission shape changed; binding check cannot read it")
+    emitted = [var for var, _ in emits]
+    if [var for var in reserved if var in set(emitted)] != emitted:
+        die("linear lane: imports are emitted in a different order from their index reservation")
+    name_of = dict(emits)
+    out: list[tuple[str, str]] = []
+    for builtin, idx in re.findall(r'^\s*"([^"]+)" => (\w+_idx),', text, re.M):
+        var = idx_of.get(idx)
+        if var is None:
+            continue
+        if var not in name_of:
+            die(f"linear lane: `{builtin}` is bound through {var}, which emits no vibe import")
+        out.append((builtin, name_of[var]))
+    if not out:
+        die("linear lane: no builtin -> import bindings found")
+    return out
+
+
+def validate_linear_bindings(text: str) -> dict[str, str]:
+    bindings = linear_bindings(text)
+    for builtin, name in bindings:
+        expected = linear_import_name_for(builtin)
+        if name != expected:
+            die(f"linear lane: `{builtin}` is bound to vibe.{name}, expected vibe.{expected}")
+    bound = dict(bindings)
+    stale = sorted(set(LINEAR_IMPORT_NAME_EXCEPTIONS) - set(bound))
+    if stale:
+        die(f"LINEAR_IMPORT_NAME_EXCEPTIONS names builtins with no binding: {stale}")
+    return bound
+
+
+def operation_ladder(text: str) -> list[tuple[str, str]]:
+    start = text.find("fn canonical_builtin_name_ladder")
+    if start < 0:
+        die("canonical_builtin_name_ladder not found")
+    body = text[start:]
+    end = body.find("\n}\n")
+    rows = re.findall(r'^\s*"([A-Z]\w*::[A-Z]\w*)" => "([^"]+)",', body[:end], re.M)
+    if not rows:
+        die("canonical_builtin_name_ladder has no operation rows")
+    return rows
+
+
+def validate_operation_ladder(text: str, bound: dict[str, str]) -> int:
+    """Each operation row names its builtin mechanically and reaches a static import."""
+    rows = operation_ladder(text)
+    for op, builtin in rows:
+        effect, name = op.split("::")
+        expected = LADDER_NAME_EXCEPTIONS.get(op, effect + "::" + re.sub(r"(?<!^)([A-Z])", r"_\1", name).lower())
+        if builtin != expected:
+            die(f"operation ladder: `{op}` maps to `{builtin}`, expected `{expected}`")
+        target = LINEAR_LOWERED_ALIASES.get(builtin, builtin)
+        if target not in bound:
+            die(f"operation ladder: `{op}` -> `{builtin}` reaches no vibe import on the linear lane")
+    return len(rows)
+
+
 def node_imports(text: str) -> set[str]:
     pairs = re.findall(r'^\s*(?:\["([^"]+)"\]|([A-Za-z_][\w-]*))\s*\([^\n]*\)\s*\{', text, re.M)
     found = {quoted or bare for quoted, bare in pairs}
@@ -498,7 +629,10 @@ def main() -> None:
         all_names, GC.read_text(), manifest.get("importTypes", {}), manifest.get("coreTypeSignatures", {})
     )
 
-    print(f"host-runtime-contract: ok ({len(emitted)} static imports; {len(dynamic)} dynamic patterns; {len(portable)} portable; {gc_count} gc host imports; {rust_sig_count} viberun signatures match the emitter)")
+    bound = validate_linear_bindings(EMITTER.read_text())
+    ladder_count = validate_operation_ladder(LADDER.read_text(), bound)
+
+    print(f"host-runtime-contract: ok ({len(emitted)} static imports; {len(dynamic)} dynamic patterns; {len(portable)} portable; {gc_count} gc host imports; {rust_sig_count} viberun signatures match the emitter; {len(bound)} linear builtin bindings; {ladder_count} operations reach their import)")
 
 
 if __name__ == "__main__":

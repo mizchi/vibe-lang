@@ -361,7 +361,7 @@ export fn from_wit_typedefs(defs: Array[WitTypeDef]) -> String with Exception {
 /// and the address is what linked_compile turns into the
 /// `vibe.wit_future_get$ns:pkg/i@v#f` metadata import, which the composer
 /// imports from that versioned interface. Only that shape is admitted today --
-/// the composer's WIT future is `future<s64>` with no parameters -- so any
+/// the composer imports it as `async func() -> s64` with no parameters -- so any
 /// other function, an unversioned package, or two interfaces exporting the
 /// same function name is refused, named, rather than skipped: a binding file
 /// that silently lacks a function the interface declares is worse than none.
@@ -394,21 +394,22 @@ export fn from_wit_future_imports(source: String) -> String with Exception {
             _ => false
           }
           // #2066: `async func() -> response`, the `types` interface's
-          // `record response { status: s32, body: stream<u8> }`.
+          // `record response { status: s32, body: stream<u8> }` -- or with
+          // one `string` parameter (a request's URL, say).
           let response = match kind {
-            FKFreestanding => is_async && Array::length(params) == 0 && match result {
+            FKFreestanding => is_async && fw_response_params_admitted(params) && match result {
               Some(TyId(rname)) => rname == "response" && fw_uses_types_response(items) && fw_types_declares_response(ifaces),
               _ => false
             },
             _ => false
           }
           if !admitted && !response {
-            throw(fw_refusal("function `\{fname}` as a host-future import (only `async func() -> s64`, or `async func() -> response` over the `types` interface's `record response { status: s32, body: stream<u8> }`, is admitted)", ctx))
+            throw(fw_refusal("function `\{fname}` as a host-future import (only `async func() -> s64`, or `async func() -> response` / `async func(<name>: string) -> response` over the `types` interface's `record response { status: s32, body: stream<u8> }`, is admitted)", ctx))
           } else {
             ()
           }
           let vname = fw_ident(fw_snake(fname), ctx)
-          if vname == "host_future_get" || vname == "host_future_named" || vname == "host_response_named" || vname == "host_stream_named" || vname == "host_stream_next" || vname == "host_stream_close" || vname == "sleep" || vname == "sleep_blocking" || vname == "assert" || String::starts_with(vname, "vibe_hf_") || String::starts_with(vname, "vibe_hs_") {
+          if vname == "host_future_get" || vname == "host_future_named" || vname == "host_response_named" || vname == "host_response_named_with" || vname == "host_stream_named" || vname == "host_stream_next" || vname == "host_stream_close" || vname == "sleep" || vname == "sleep_blocking" || vname == "assert" || String::starts_with(vname, "vibe_hf_") || String::starts_with(vname, "vibe_hs_") {
             // A binding's body calls one of these builtins, which this
             // declaration would shadow; a program defining any of them also
             // turns off the entry boundary that settles host futures or
@@ -434,7 +435,21 @@ export fn from_wit_future_imports(source: String) -> String with Exception {
             j = j + 1
           }
           Array::push(seen, vname)
-          if response {
+          if response && Array::length(params) == 1 {
+            // The parameter's WIT label rides the address (`#<func>?<label>`)
+            // so the composer can declare the function exactly as the WIT does.
+            let (plabel, _) = Array::get(params, 0)
+            // The body calls `host_response_named_with`; a parameter spelled
+            // that way would shadow it (Codex on #3091), so it takes another
+            // name. The WIT label in the address stays as written.
+            let pname0 = fw_ident(fw_snake(plabel), ctx)
+            let pname = if pname0 == "host_response_named_with" {
+              "request_arg"
+            } else {
+              pname0
+            }
+            Array::push(out, "/// `\{iface_id}#\{fname}`, imported as a host response taking `\{plabel}` (#2066).\nexport fn \{vname}(\{pname}: String) -> Future[HostResponse] {\n  host_response_named_with(\"\{iface_id}#\{fname}?\{plabel}\", \{pname})\n}")
+          } else if response {
             Array::push(out, "/// `\{iface_id}#\{fname}`, imported as a host response (#2066).\nexport fn \{vname}() -> Future[HostResponse] {\n  host_response_named(\"\{iface_id}#\{fname}\")\n}")
           } else {
             Array::push(out, "/// `\{iface_id}#\{fname}`, imported as a host future (#2064).\nexport fn \{vname}() -> Future[Int] {\n  host_future_named(\"\{iface_id}#\{fname}\")\n}")
@@ -461,6 +476,21 @@ export fn from_wit_future_imports(source: String) -> String with Exception {
 /// Does this interface bring `response` in from its package's `types`
 /// interface (`use types.{response};`)? The composer imports the record from
 /// exactly that sibling, so no other spelling is admitted.
+/// #2066: a response function takes no parameter, or exactly one `string`.
+fn fw_response_params_admitted(params: Array[(String, WitTypeExpr)]) -> Bool {
+  if Array::length(params) == 0 {
+    true
+  } else if Array::length(params) == 1 {
+    let (_, pty) = Array::get(params, 0)
+    match pty {
+      TyString => true,
+      _ => false
+    }
+  } else {
+    false
+  }
+}
+
 fn fw_uses_types_response(items: Array[WitInterfaceItem]) -> Bool {
   let mut found = false
   let mut i = 0

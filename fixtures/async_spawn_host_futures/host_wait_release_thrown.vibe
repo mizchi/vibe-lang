@@ -1,0 +1,39 @@
+// #1537: a task group whose BODY throws cancels its parked children on the
+// way out, which releases their host waits. Each of 1100 iterations runs a
+// group whose child awaits a 10s host future beside a fast sibling; joining
+// the sibling parks the slow child on its read, then the body throws and the
+// entry catches and repeats. The read used to
+// stay pending with its handle allocated, so the run trapped past the
+// adapter's 1024-handle band (Codex on #3091). `once` declares no `Async`
+// (spawn_suspend discharges it), which lets the entry's handle admit it.
+// Every catch answers 1: 1100. Executed by
+// scripts/test_named_hostfutures_component_gate.sh.
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+fn once() -> Int with Exception {
+  TaskGroup::run((g) -> {
+    let _slow = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      await(host_future_named("slow"))
+    })
+    let fast = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      await(host_future_named("fast"))
+    })
+    let _ = TaskHandle::join(fast)
+    throw("boom")
+  })
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  let mut total = 0
+  let mut i = 0
+  while i < 1100 {
+    let got = handle { once() } with {
+      Exception::Throw(_m) => 1
+    }
+    total = total + got
+    i = i + 1
+  }
+  total
+}

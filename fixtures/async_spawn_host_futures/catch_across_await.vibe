@@ -1,0 +1,66 @@
+// #1537: `handle` around code that awaits, inside spawned tasks and in the
+// entry. Each handle is split with its body, so a throw before the first
+// await, after two awaits, and in a callee after its await are all caught by
+// the arms written around them, while the tasks interleave on the host
+// futures. 10 + 20 + 10 + 2 = 42. Compiled and executed by
+// scripts/test_named_hostfutures_component_gate.sh.
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+fn wait_fast() -> Int with Async {
+  await(host_future_named("fast"))
+}
+
+fn checked() -> Int with Async + Exception {
+  let v = wait_fast()
+  if v > 0 {
+    throw("after the await")
+  } else {
+    ()
+  }
+  v
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  let entry = handle {
+    checked()
+  } with {
+    Exception::Throw(_m) => 10
+  }
+  let tasks = TaskGroup::run((g) -> {
+    let twice = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      handle {
+        let x = wait_fast()
+        let y = wait_fast()
+        if x + y > 0 {
+          throw("after two awaits")
+        } else {
+          ()
+        }
+        0
+      } with {
+        Exception::Throw(_m) => 20
+      }
+    })
+    let clean = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      let r = handle {
+        let v = wait_fast()
+        v + 9
+      } with {
+        Exception::Throw(_m) => 0
+      }
+      r
+    })
+    let early = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      handle {
+        throw("before the await")
+        wait_fast()
+      } with {
+        Exception::Throw(_m) => 2
+      }
+    })
+    TaskHandle::join(twice) + TaskHandle::join(clean) + TaskHandle::join(early)
+  })
+  entry + tasks
+}

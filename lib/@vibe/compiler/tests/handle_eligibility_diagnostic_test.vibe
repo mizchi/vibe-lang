@@ -112,6 +112,24 @@ test "#2137: a call to a top-level fn compiles" {
   assert(compiles_both(src))
 }
 
+test "an annotated let beside a nested handle of the same effect compiles" {
+  // `let seen: Array[Int] = [1]` reaches the eligibility walk as a type
+  // ascription, `((__asc: Array[Int]) -> __asc)([1])` -- an identity closure
+  // applied on the spot. It used to count as a call through an expression,
+  // so a handle holding it next to a nested handle of the same effect was
+  // refused (#1962: every recording mock inside a test, whose body the entry
+  // provider wraps in a handle of its own, has exactly this shape).
+  let src = program("test \"t\" {\n  let r = handle {\n    let seen: Array[Int] = [1]\n    let inner = handle {\n      ask_once()\n    } with {\n      Ask::Get() => resume(Array::length(seen) + 1)\n    }\n    inner\n  } with {\n    Ask::Get() => resume(0)\n  }\n  assert_eq(r, 2)\n}\n")
+  assert(compiles_both(src))
+}
+
+test "a recording arm pushing into an annotated local compiles" {
+  // The mock-and-record shape itself: the inner arm records every operation
+  // into an annotated array bound inside the outer handle's body.
+  let src = program("test \"t\" {\n  let r = handle {\n    let seen: Array[Int] = []\n    let inner = handle {\n      ask_once() + ask_once()\n    } with {\n      Ask::Get() => {\n        Array::push(seen, 1)\n        resume(20)\n      }\n    }\n    inner + Array::length(seen)\n  } with {\n    Ask::Get() => resume(0)\n  }\n  assert_eq(r, 42)\n}\n")
+  assert(compiles_both(src))
+}
+
 //# Tests -- shapes that ARE rejected, and what the message says about them
 
 test "#3124: a rowless lambda whose body is visibly pure compiles outside the handle" {

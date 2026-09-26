@@ -1,0 +1,23 @@
+// #1537: `join` drives a task parked on a host future itself -- no
+// `pump_all` first. Joining it used to trap as a deadlock. A sibling sleeping
+// 5s beside it arms the group's timer; it is cancelled once the join answers,
+// and the run still ends with the 100ms future, not the timer. 7. Executed by
+// scripts/test_named_hostfutures_component_gate.sh.
+import @vibe/concurrent {
+  TaskGroup, TaskHandle, sleep_wait
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  TaskGroup::run((g) -> {
+    let s = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      sleep_wait(5000)
+      1
+    })
+    let a = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      await(host_future_named("fast"))
+    })
+    let v = TaskHandle::join(a)
+    TaskHandle::cancel(s)
+    v
+  })
+}

@@ -1,0 +1,22 @@
+// #3131 (Codex on #3091): `Future::resolve` on a WIT future answers the cell
+// but frees nothing -- the call still holds its adapter result slot. The
+// reclaim used to read "resolved" as "slot free", so 600 such futures filled
+// the table and the next call trapped. Each is now reclaimed like any other
+// unawaited future, and a resolved cell keeps the value it was given: each
+// `await(f)` below answers 1, and the price is read: 600 + 40 = 640. Executed
+// by scripts/test_wit_async_import_component_gate.sh.
+import ./prices_bindings.vibe {
+  get_price, get_tax
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  let mut total = 0
+  let mut i = 0
+  while i < 600 {
+    let f = get_tax()
+    Future::resolve(f, 1)
+    total = total + await(f)
+    i = i + 1
+  }
+  total + await(get_price())
+}

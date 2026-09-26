@@ -1,0 +1,23 @@
+// #2066: a `Future[HostResponse]` has one owner. Its value carries the body
+// stream's single readable end, so a response future shared with a spawned
+// task would hand that end to every waiter; once one drains it, another reads
+// a dropped or reused handle. Capturing it in a spawn closure is refused, and
+// the message names the edit: start the request inside the task. Compiled and
+// refused by scripts/test_wit_async_import_component_gate.sh.
+import ./client_bindings.vibe {
+  fetch_a
+}
+
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  let pending = fetch_a()
+  TaskGroup::run((g) -> {
+    let t = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      HostResponse::status(await(pending))
+    })
+    TaskHandle::join(t)
+  })
+}

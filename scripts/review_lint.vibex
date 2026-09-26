@@ -179,6 +179,94 @@ fn report_async_substring_hits(raw: String, emit: Bool) -> Int with Stderr {
   count
 }
 
+// #1963: a standard effect's policy (runtime scheduling, entry discharge, the
+// exception boundary, the legacy console labels) is decided by its OWNER --
+// core/standard_effect_policy.vibe or core/exception_effect.vibe -- never by
+// comparing a label to the effect's name. A name compare silently disagrees
+// with the owner on the spellings the owner accepts: `Async::Suspend` for the
+// runtime-scheduled predicate, the erased `Error` for the exception effect.
+// Only names that are unambiguously EFFECT names are listed; `Random` and the
+// provider names also spell types, and comparing a type name is not this rule.
+// `Error` is left out for the same reason, although the exception owner accepts
+// it as the erased effect alias: it is still the throwable TRAIT (`impl Error
+// for ..`), and the formatter's retired-label rewrite compares that token.
+// Qualified spellings (`Stdout::write_stream`, `Stdin::read_char`) are not
+// listed either: in the compiler they are BUILTIN FUNCTION names, compared to
+// dispatch a call (compile_call.vibe, checker.vibe, the gc backend), not effect
+// labels. Measured, no production site compares an operation-qualified or
+// kinded effect label (`Async::Suspend`, `Exception[K]`); the owners take those
+// spellings apart, which is why nothing needs to compare them.
+fn policy_effect_names() -> Array[String] {
+  ["Async", "Exception", "Stdin", "Stdout", "Stderr"]
+}
+
+// One LITERAL pattern per name and operator. A single `$(x:exp) == $(name:const)`
+// matches every equality in the tree; measured over lib/@vibe/compiler it ran
+// 8.5 minutes and then died with an out-of-bounds memory access, where a
+// literal pattern over the checker takes ~3s.
+fn effect_name_compare_patterns() -> Array[String] {
+  let out: Array[String] = []
+  let names = policy_effect_names()
+  let mut i = 0
+  while i < Array::length(names) {
+    // The matcher compares operands positionally, so the literal-first
+    // spelling (`"Async" == label`) needs its own pattern (Codex on #3091).
+    Array::push(out, "$(x:exp) == \"" + Array::get(names, i) + "\"")
+    Array::push(out, "$(x:exp) != \"" + Array::get(names, i) + "\"")
+    Array::push(out, "\"" + Array::get(names, i) + "\" == $(x:exp)")
+    Array::push(out, "\"" + Array::get(names, i) + "\" != $(x:exp)")
+    i = i + 1
+  }
+  out
+}
+
+fn is_effect_policy_owner(path: String) -> Bool {
+  String::ends_with(path, "/core/standard_effect_policy.vibe") ||
+  String::ends_with(path, "/core/exception_effect.vibe")
+}
+
+// The build-time generated bundles (scripts/ensure_generated.sh) inline the
+// owner's own compare under a mangled name; they are never staged, but a
+// whole-tree run would otherwise report the owner through them.
+fn is_generated_bundle(path: String) -> Bool {
+  String::ends_with(path, "_bundle.vibe") ||
+  String::ends_with(path, "/_cli_adapter_module_source.vibe")
+}
+
+// The compare's own line, or the line AFTER it -- where `pkf run fmt` moves a
+// trailing comment -- and never the line before, exactly as is_allowed does:
+// a marker between two compares then belongs to the one above it only, so
+// deleting the second one's own marker cannot leave it allowed (Codex on
+// #3091).
+fn effect_name_compare_suppressed(path: String, line: Int) -> Bool with Fs {
+  let marker = "review-lint: allow-effect-name-compare"
+  String::contains(source_line(path, line), marker) ||
+  String::contains(source_line(path, line + 1), marker)
+}
+
+fn report_effect_name_compare_hits(raw: String, literal: String, emit: Bool) -> Int with Fs + Stderr {
+  let hits = Json::parse(raw)
+  let mut i = 0
+  let mut count = 0
+  while i < Json::length(hits) {
+    let hit = Json::index(hits, i)
+    let path = Json::string(Json::field(hit, "path"))
+    let line = Double::to_int(Json::number(Json::field(hit, "line")))
+    if String::contains(path, "/compiler/") && is_production_compiler_path(path) && !is_effect_policy_owner(path) && !is_generated_bundle(path) && !effect_name_compare_suppressed(path, line) {
+      if emit {
+        report_finding(path, line, Json::string(Json::field(hit, "text")), "an effect's policy is decided by its owner (core/standard_effect_policy.vibe, core/exception_effect.vibe), not by comparing a label to " + literal + "; call the owner's predicate (#1963)")
+      } else {
+        ()
+      }
+      count = count + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  count
+}
+
 // #1809: the gc backend intercepts builtins by SPELLING in `compile_call_gc`
 // before ordinary func-table dispatch, and the lambda capture scan has to know
 // that same set -- a name it does not know is collected as a free variable of
@@ -465,6 +553,12 @@ fn lint(root: String, vibe: String) -> Int with Fs + Process + Stderr {
     "fname == $(name:const)",
     "EIdent($(name:const), $(rest:args))"
   ]
+  let effect_patterns = effect_name_compare_patterns()
+  let mut ep = 0
+  while ep < Array::length(effect_patterns) {
+    Array::push(patterns, Array::get(effect_patterns, ep))
+    ep = ep + 1
+  }
   let mut i = 0
   let mut violations = 0
   let mut failed = false
@@ -487,7 +581,7 @@ fn lint(root: String, vibe: String) -> Int with Fs + Process + Stderr {
         } else {
           violations = violations + report_gc_direct_abi_drift(output, names_source, true)
         }
-      } else {
+      } else if i == 5 {
         let ledger = gc_hijack_risk_names_source(root)
         if ledger == "" {
           ()
@@ -501,6 +595,10 @@ fn lint(root: String, vibe: String) -> Int with Fs + Process + Stderr {
         } else {
           violations = violations + report_bare_builtin_ref_hits(output, listed, true)
         }
+      } else {
+        // patterns 6.. are effect_name_compare_patterns(): four per name.
+        let name = Array::get(policy_effect_names(), (i - 6) / 4)
+        violations = violations + report_effect_name_compare_hits(output, "\"" + name + "\"", true)
       }
     }
     i = i + 1
@@ -519,6 +617,10 @@ fn lint(root: String, vibe: String) -> Int with Fs + Process + Stderr {
 // `"MapBuilder::get"` appearing in the file.
 fn gc_names_sample() -> String {
   "  [\n    \"Array::length\",\n    \"MapBuilder::get\",\n    \"Map::get\"\n  ]"
+}
+
+fn effect_compare_hit(path: String, literal: String) -> String {
+  "[{\"path\":\"" + path + "\",\"line\":0,\"text\":\"lbl == " + literal + "\",\"captures\":{\"name\":{\"text\":\"" + literal + "\"}}}]"
 }
 
 fn gc_dispatch_hit(literal: String) -> String {
@@ -596,6 +698,21 @@ fn self_test() -> Int with Fs + Stderr {
     1
   } else if report_async_substring_hits(bad_async, false) != 1 {
     Stderr::write_stream("review-lint self-test: Async substring rule failed\n")
+    1
+  } else if report_effect_name_compare_hits(effect_compare_hit("/repo/lib/@vibe/compiler/wit_gen.vibe", "\\\"Async\\\""), "\"Async\"", false) != 1 {
+    Stderr::write_stream("review-lint self-test: an effect-name compare was not reported\n")
+    1
+  } else if report_effect_name_compare_hits(effect_compare_hit("/repo/lib/@vibe/compiler/core/standard_effect_policy.vibe", "\\\"Async\\\""), "\"Async\"", false) != 0 {
+    Stderr::write_stream("review-lint self-test: the policy owner's own compare was reported\n")
+    1
+  } else if Array::length(effect_name_compare_patterns()) != 20 || !String::contains(Array::get(effect_name_compare_patterns(), 0), "== \"Async\"") || !String::starts_with(Array::get(effect_name_compare_patterns(), 2), "\"Async\" ==") {
+    Stderr::write_stream("review-lint self-test: the effect-name patterns are not one per name, operator and operand order\n")
+    1
+  } else if report_effect_name_compare_hits(effect_compare_hit("/repo/lib/@vibe/compiler/_cli_adapter_module_source.vibe", "\\\"Async\\\""), "\"Async\"", false) != 0 {
+    Stderr::write_stream("review-lint self-test: a generated bundle was reported\n")
+    1
+  } else if report_effect_name_compare_hits(effect_compare_hit("/repo/lib/@vibe/compiler/tests/x_test.vibe", "\\\"Exception\\\""), "\"Exception\"", false) != 0 {
+    Stderr::write_stream("review-lint self-test: a test file's compare was reported\n")
     1
   } else if report_gc_direct_abi_drift(gc_dispatch_hit("\\\"Array::brand_new\\\""), gc_names_sample, false) != 1 {
     Stderr::write_stream("review-lint self-test: gc direct-ABI drift was not reported\n")
