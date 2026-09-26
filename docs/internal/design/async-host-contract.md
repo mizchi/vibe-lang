@@ -379,19 +379,21 @@ override silently contradicting a module that says `raw` is the hazard #2903's
   of a future whose value owns a host stream. That covers the future
   directly, through `Option`, tuples, records and declared fields, through a
   type parameter with no `Send` bound (instantiable at `HostResponse`), and
-  through a closure that is not written at the spawn while such a value is in
-  scope. Each refusal names the edit: start the request inside the task, add
-  the bound, or pass the literal. The check reads types, so a closure
-  RETURNED by a function (whose type mentions no response) still carries one
-  past it. The adapter therefore also enforces the rule at run time: the
+  through a closure whose captures the check cannot see: a closure is
+  accepted only as a literal at the spawn, a local `let` of a literal (its
+  captures are recorded when the `let` is checked), or a top-level function
+  (#3152). Each refusal names the edit: start the request inside the task,
+  add the bound, or write the literal. The adapter also enforces the rule at
+  run time, as a backstop: the
   packed response's low half is `handle | generation << 10`, the generation
   bumped per landed response for that handle (band 53248), and `body` first
   CLAIMS the pair through `vibe.host_stream_claim` (claimed generations at
   band 57344). A claim succeeds once, so a second `body` of the same response,
   or a stale response whose handle a later one reused, traps instead of
   reading another owner's stream
-  (`fixtures/wit_response_import/share_body_claim_trap.vibe` answered 6006, the
-  body read by both tasks, before the claim). Every future in a
+  (`fixtures/wit_response_import/share_body_claim_refused.vibe`, a closure a
+  helper returned, answered 6006 -- the body read by both tasks -- before
+  either guard). Every future in a
   response component comes from ONE interface, and anything else is refused
   by name. Scalar `async func() -> s64` functions of that interface may sit
   beside the responses (MIXED): the adapter records each slot's kind (band

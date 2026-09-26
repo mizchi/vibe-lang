@@ -491,9 +491,9 @@ grep -qF "start the request inside the spawned task" "$SHARE_DIR/main.wasm.diag"
   exit 1
 }
 echo "[wit-async-import] a response future shared with a spawned task: refused"
-# A closure bound to a name hides its captures from the check, so while a
-# value owning a host stream is in scope, spawning a closure that is not
-# written at the spawn is refused, naming the edit (Codex on #3091).
+# A closure bound to a name by a local `let`: its captures were recorded when
+# the `let` was checked, so the spawn judges them and refuses the captured
+# response future, naming the edit (Codex on #3091; #3152 records captures).
 cp fixtures/wit_response_import/share_named_closure_refused.vibe "$SHARE_DIR/"
 VIBE_PREOPEN_DIR="$ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \
@@ -502,7 +502,7 @@ if [ -s "$SHARE_DIR/named.wasm" ]; then
   echo "WIT async import gate FAILED: a named closure awaiting a shared response future compiled" >&2
   exit 1
 fi
-grep -qF "pass the closure literal itself to the spawn" "$SHARE_DIR/named.wasm.diag" 2>/dev/null || {
+grep -qF "start the request inside the spawned task" "$SHARE_DIR/named.wasm.diag" 2>/dev/null || {
   echo "WIT async import gate FAILED: share_named_closure_refused gave an unexpected diagnostic: $(cat "$SHARE_DIR/named.wasm.diag" 2>/dev/null)" >&2
   exit 1
 }
@@ -667,33 +667,25 @@ cancel_row() { # <fixture dir> <main> <bindings> <expected> <futures spec> <resp
   }
   echo "[wit-async-import] $7: $got"
 }
-# A closure RETURNED by a function hides the response future from the spawn
-# capture check, so two tasks can reach one body. The adapter's one-time claim
-# must trap the second `HostResponse::body` (before the claim: 6006, the body
-# read by both tasks).
+# A closure RETURNED by a function would hide the response future it captured,
+# handing one body to two tasks. The spawn check refuses a closure whose
+# captures it cannot see (#3152), so this is a compile error; the adapter's
+# one-time body claim stays behind it as the run-time backstop.
 CLAIM_DIR="$OUT/share_body_claim"
 rm -rf "$CLAIM_DIR"; mkdir -p "$CLAIM_DIR"
-cp fixtures/wit_response_import/share_body_claim_trap.vibe fixtures/wit_response_import/client_bindings.vibe "$CLAIM_DIR/"
+cp fixtures/wit_response_import/share_body_claim_refused.vibe fixtures/wit_response_import/client_bindings.vibe "$CLAIM_DIR/"
 VIBE_PREOPEN_DIR="$ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \
-  "$COMPILER" "$CLAIM_DIR/share_body_claim_trap.vibe" "$CLAIM_DIR/main.wasm" run >/dev/null 2>&1 || true
-[ -s "$CLAIM_DIR/main.wasm" ] || {
-  echo "WIT async import gate FAILED: share_body_claim_trap did not compile: $(cat "$CLAIM_DIR/main.wasm.diag" 2>/dev/null)" >&2
-  exit 1
-}
-CLAIM_IFACE='example:http-lite/client@1.0.0'
-if GOT="$(VIBE_ASYNC_RESPONSES="$CLAIM_IFACE#fetch-a=200:50:1|2|3,$CLAIM_IFACE#fetch-b=204:1:9" run_bounded 60 "$RUNNER" "$CLAIM_DIR/main.wasm" 2>&1)"; then
-  echo "WIT async import gate FAILED: one response body read by two tasks exited 0 (answered $GOT); the second body claim must trap" >&2
+  "$COMPILER" "$CLAIM_DIR/share_body_claim_refused.vibe" "$CLAIM_DIR/main.wasm" run >/dev/null 2>&1 || true
+if [ -s "$CLAIM_DIR/main.wasm" ]; then
+  echo "WIT async import gate FAILED: a returned closure sharing one response body between two tasks compiled" >&2
   exit 1
 fi
-case "$GOT" in
-  *unreachable*) ;;
-  *)
-    echo "WIT async import gate FAILED: share_body_claim_trap failed for another reason: $GOT" >&2
-    exit 1
-    ;;
-esac
-echo "[wit-async-import] a response body reached by two tasks through a returned closure: the second claim traps"
+grep -qF "its captures cannot be seen here" "$CLAIM_DIR/main.wasm.diag" 2>/dev/null || {
+  echo "WIT async import gate FAILED: share_body_claim_refused gave an unexpected diagnostic: $(cat "$CLAIM_DIR/main.wasm.diag" 2>/dev/null)" >&2
+  exit 1
+}
+echo "[wit-async-import] a response body reached by two tasks through a returned closure: refused"
 PIFACE='example:prices/api@1.0.0'
 cancel_row wit_future_import cancel_many prices_bindings.vibe 1200 \
   "$PIFACE#get-price=40:10000,$PIFACE#get-tax=2:1" "" "600 cancelled get-price subtasks release their slots"
