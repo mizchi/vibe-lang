@@ -98,8 +98,7 @@ import @vibe/compiler/codegen/common_base {
   is_slet,
   lookup_ctor,
   resolve_func,
-  resolve_local,
-  str_table_fat_or_zero
+  resolve_local
 }
 
 import @vibe/compiler/codegen/common_extractors {
@@ -154,8 +153,6 @@ import @vibe/compiler/codegen/common_extractors {
   get_pstring_value,
   get_ptuple_pats,
   get_slet_export,
-  int_div_site,
-  int_divisor_may_be_zero,
   offset_to_line,
   str_table_lookup
 }
@@ -301,49 +298,6 @@ fn emit_assignop_rc_tag_fix(buf: Bytes, enable_rc: Bool, op: String) -> Unit {
     emit_i64_shl(buf)
   } else {
     ()
-  }
-}
-
-/// #3126: guard an `Int` `/` or `%` whose divisor may be zero. Called with the
-/// dividend and the divisor on the stack, right before the division; leaves
-/// them there. A zero divisor calls `__rt_div_zero_abort`, which prints
-/// `Int <op> by zero at <path>:<line>:<col>` and traps, instead of the engine's
-/// bare `divide by zero` with no source position.
-///
-/// `site_off` is the operator's merged source offset (the divisor's for
-/// `x /= y`). The location is printed only when it places in a source file
-/// whose path the string pool seeded (`collect_int_div_sites` walks the same
-/// program); anything else passes 0 and the message stops after the operation.
-///
-/// Costs one scratch local and `local.tee; i64.eqz; if .. end; local.get` on
-/// the fast path. A literal divisor other than 0 (`n / 10`, `i % 2`) is not
-/// guarded at all, and neither is anything in a module without the helper.
-/// Answers the next free local.
-export fn emit_int_div_zero_guard(buf: Bytes, op: String, divisor: Expr, site_off: Int, ctx: CompileCtx, local_names: Array[String], slot: Int) -> Int {
-  if ctx.div_zero_abort_func_idx < 0 || !(op == "/" || op == "%") || !int_divisor_may_be_zero(divisor) {
-    slot
-  } else {
-    let (path, line, col) = int_div_site(site_off)
-    let loc_fat = str_table_fat_or_zero(ctx.str_table, path)
-    Array::push(local_names, "__div_d")
-    emit_local_tee(buf, slot)
-    emit_i64_eqz(buf)
-    emit_if_void(buf)
-    emit_i64_const(buf, if op == "/" {
-      0
-    } else {
-      1
-    })
-    emit_i64_const(buf, loc_fat)
-    emit_i64_const(buf, if loc_fat == 0 {
-      0
-    } else {
-      (line<<32)|col
-    })
-    emit_call(buf, ctx.div_zero_abort_func_idx)
-    emit_end(buf)
-    emit_local_get(buf, slot)
-    slot + 1
   }
 }
 
@@ -3135,7 +3089,7 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
       emit_i32_wrap_i64(buf)
       emit_i64_load(buf, 3, 0)
       emit_assignop_rc_mul_pre(buf, ctx.enable_rc, op)
-      let nl = emit_int_div_zero_guard(buf, op, value, first_offset(value), ctx, local_names, compile_expr(buf, value, local_names, next_local, ctx, ld))
+      let nl = compile_expr(buf, value, local_names, next_local, ctx, ld)
       emit_assignop_op(buf, op)
       emit_assignop_rc_tag_fix(buf, ctx.enable_rc, op)
       emit_arith_wrap_int(buf, ctx.enable_rc, op)
@@ -3144,7 +3098,7 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     } else {
       emit_local_get(buf, idx)
       emit_assignop_rc_mul_pre(buf, ctx.enable_rc, op)
-      let nl = emit_int_div_zero_guard(buf, op, value, first_offset(value), ctx, local_names, compile_expr(buf, value, local_names, next_local, ctx, ld))
+      let nl = compile_expr(buf, value, local_names, next_local, ctx, ld)
       emit_assignop_op(buf, op)
       emit_assignop_rc_tag_fix(buf, ctx.enable_rc, op)
       emit_arith_wrap_int(buf, ctx.enable_rc, op)

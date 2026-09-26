@@ -64,7 +64,6 @@ import @vibe/compiler/codegen/common_base {
   gc_slot_map_set,
   resolve_func,
   resolve_local,
-  str_table_fat_or_zero,
   str_table_index_of,
   struct_field_candidates,
   struct_field_dispatch_cases,
@@ -73,14 +72,7 @@ import @vibe/compiler/codegen/common_base {
 }
 
 import @vibe/compiler/codegen/common_extractors {
-  array_contains_int,
-  array_contains_str,
-  emit_assignop_op,
-  emit_memory_copy,
-  find_catchall_idx,
-  first_offset,
-  int_div_site_text,
-  int_divisor_may_be_zero
+  array_contains_int, array_contains_str, emit_assignop_op, emit_memory_copy, find_catchall_idx
 }
 
 import @vibe/compiler/codegen/wasm_emit {
@@ -1298,39 +1290,13 @@ fn gc_compile_int_operand(buf: Bytes, op: String, is_lhs: Bool, e: Expr, local_n
   }
 }
 
-/// #3126: the gc lane's `emit_int_div_zero_guard` (codegen/expr). Same
-/// shape, one difference: this lane has no integer printer, so the site's
-/// whole `path:line:col` string is passed and the third argument is 0.
-fn gc_emit_int_div_zero_guard(buf: Bytes, op: String, divisor: Expr, site_off: Int, ctx: CompileCtxGc, local_names: Array[String], slot: Int) -> Int {
-  if ctx.gc_div_zero_abort_func_idx < 0 || !(op == "/" || op == "%") || !int_divisor_may_be_zero(divisor) {
-    slot
-  } else {
-    let loc_fat = str_table_fat_or_zero(ctx.str_table, int_div_site_text(site_off))
-    Array::push(local_names, "[gc-temp]__div_d")
-    emit_local_tee(buf, slot)
-    emit_i64_eqz(buf)
-    emit_if_void(buf)
-    emit_i64_const(buf, if op == "/" {
-      0
-    } else {
-      1
-    })
-    emit_i64_const(buf, loc_fat)
-    emit_i64_const(buf, 0)
-    emit_call(buf, ctx.gc_div_zero_abort_func_idx)
-    emit_end(buf)
-    emit_local_get(buf, slot)
-    slot + 1
-  }
-}
-
 /// Compile a wrap-arith expr with its trailing renorm ELIDED: bits 0..62
 /// exact, bit 63 unspecified. Only reachable as the operand of a wrapping
 /// consumer whose own renorm (or an ancestor's) runs before any observer.
 /// Operands of an interior `/` still normalize; only its RESULT renorm defers.
 fn gc_compile_wrap_arith_loose(buf: Bytes, e: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int) -> Int with Exception {
   match e {
-    EBinOp(op, lhs, rhs, boff) => {
+    EBinOp(op, lhs, rhs, _) => {
       let nl1 = gc_compile_int_operand(buf, op, true, lhs, local_names, next_local, ctx, ld)
       let nl2 = gc_compile_int_operand(buf, op, false, rhs, local_names, nl1, ctx, ld)
       let nl3 = if op == "<<" || op == ">>" {
@@ -1338,7 +1304,7 @@ fn gc_compile_wrap_arith_loose(buf: Bytes, e: Expr, local_names: Array[String], 
         emit_shift_count_clamp(buf, nl2)
         nl2 + 1
       } else {
-        gc_emit_int_div_zero_guard(buf, op, rhs, boff, ctx, local_names, nl2)
+        nl2
       }
       emit_binop_op(buf, op)
       nl3
@@ -1523,7 +1489,7 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
         }
       }
     },
-    EBinOp(op, lhs, rhs, gc_binop_site_off) => if op == "&&" || op == "||" {
+    EBinOp(op, lhs, rhs, _) => if op == "&&" || op == "||" {
       // Short-circuit lowering (mirrors the linear lane): the emit_binop_op
       // fallthrough's eager `i64.and`/`i64.or` evaluated BOTH operands, so
       // `false && inc()` ran inc()'s side effects. gc-lane bools are raw
@@ -1603,7 +1569,7 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
         emit_shift_count_clamp(buf, nl2)
         nl2 + 1
       } else {
-        gc_emit_int_div_zero_guard(buf, op, rhs, gc_binop_site_off, ctx, local_names, nl2)
+        nl2
       }
       emit_binop_op(buf, op)
       emit_arith_wrap_int(buf, false, op)
@@ -1988,14 +1954,14 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
         emit_local_get(buf, idx)
         emit_i32_wrap_i64(buf)
         emit_i64_load(buf, 3, 0)
-        let nl = gc_emit_int_div_zero_guard(buf, op, value, first_offset(value), ctx, local_names, ce(buf, value, local_names, next_local, ld))
+        let nl = ce(buf, value, local_names, next_local, ld)
         emit_assignop_op(buf, op)
         emit_arith_wrap_int(buf, false, op)
         emit_i64_store(buf, 3, 0)
         ce(buf, body, local_names, nl, ld)
       } else {
         emit_local_get(buf, idx)
-        let nl = gc_emit_int_div_zero_guard(buf, op, value, first_offset(value), ctx, local_names, ce(buf, value, local_names, next_local, ld))
+        let nl = ce(buf, value, local_names, next_local, ld)
         emit_assignop_op(buf, op)
         emit_arith_wrap_int(buf, false, op)
         emit_local_set(buf, idx)

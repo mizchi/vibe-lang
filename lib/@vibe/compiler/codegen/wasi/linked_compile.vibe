@@ -45,7 +45,7 @@ import @vibe/ast {
 }
 
 import @vibe/core {
-  array_empty, struct MutMap, struct MutSet
+  array_empty, struct MutMap
 }
 
 import @vibe/compiler/normalize {
@@ -100,10 +100,6 @@ import @vibe/compiler/perceus {
 import @vibe/compiler/codegen/builtin_bodies {
   array_capacity_error_message,
   bytes_capacity_error_message,
-  div_zero_at_fragment,
-  div_zero_colon_fragment,
-  div_zero_div_message,
-  div_zero_rem_message,
   gen_arr_concat_body,
   gen_arr_get_body,
   gen_arr_len_body,
@@ -133,7 +129,6 @@ import @vibe/compiler/codegen/builtin_bodies {
   gen_bytes_to_array_body,
   gen_bytes_with_capacity_body,
   gen_compact_fingerprint_hash_body,
-  gen_div_zero_abort_body,
   gen_eq_body,
   gen_generic_add_body,
   gen_generic_rel_diff_body,
@@ -324,7 +319,6 @@ import @vibe/compiler/codegen/common_base {
 import @vibe/compiler/codegen/common_extractors {
   array_contains_str,
   build_newline_offsets,
-  collect_int_div_sites,
   emit_assignop_op,
   emit_memory_copy,
   find_catchall_idx,
@@ -8765,7 +8759,7 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets_grants(stmts: Array
 
 // Build the complete pool outside the module emitter so loop temporaries and
 // the recursive map-key walk do not inflate that function's Wasm locals.
-fn lc_build_string_pool(stmts: Array[Stmt], srcs: Array[(String, String)], need_array_capacity: Bool, need_bytes_capacity: Bool, rc_shadow: Bool) -> (StrTable, Int, Int, Bool) {
+fn lc_build_string_pool(stmts: Array[Stmt], srcs: Array[(String, String)], need_array_capacity: Bool, need_bytes_capacity: Bool, rc_shadow: Bool) -> (StrTable, Int, Int) {
   let str_collected = collect_strings_stmts(stmts)
   let str_strs = lc_fresh_string_array()
   Array::push(str_strs, "")
@@ -8851,49 +8845,6 @@ fn lc_build_string_pool(stmts: Array[Stmt], srcs: Array[(String, String)], need_
   // the source never spells them: one prefix per operation, plus the shared
   // middle and the trailing newline (__rt_oob_abort assembles the line).
   seed_builtin_diagnostic_strings(str_strs, need_array_capacity, need_bytes_capacity, rc_shadow)
-  // #3126: an `Int` `/` or `%` whose divisor may be zero prints
-  // `Int <op> by zero at <path>:<line>:<col>` before it traps. Seed the
-  // fragments __rt_div_zero_abort assembles the line from, plus the PATH of
-  // every file holding a site, which codegen passes as the call's second
-  // argument (line and column ride the third as an integer). Only when the
-  // program has such a site, so a module without one stays byte-identical.
-  let div_sites: Array[String] = []
-  let need_div_zero_abort = collect_int_div_sites(stmts, div_sites, MutSet::new_string(), false)
-  if need_div_zero_abort {
-    let pool_seen: MutSet[String] = MutSet::new_string()
-    let mut __ps = 0
-    while __ps < Array::length(str_strs) {
-      let _ = MutSet::insert(pool_seen, Array::get(str_strs, __ps))
-      __ps = __ps + 1
-    }
-    let div_frags = [
-      div_zero_div_message(),
-      div_zero_rem_message(),
-      div_zero_at_fragment(),
-      div_zero_colon_fragment(),
-      "\n"
-    ]
-    let mut __df = 0
-    while __df < Array::length(div_frags) {
-      if MutSet::insert(pool_seen, Array::get(div_frags, __df)) {
-        Array::push(str_strs, Array::get(div_frags, __df))
-      } else {
-        ()
-      }
-      __df = __df + 1
-    }
-    let mut __ds = 0
-    while __ds < Array::length(div_sites) {
-      if MutSet::insert(pool_seen, Array::get(div_sites, __ds)) {
-        Array::push(str_strs, Array::get(div_sites, __ds))
-      } else {
-        ()
-      }
-      __ds = __ds + 1
-    }
-  } else {
-    ()
-  }
   let src_str_base = Array::length(str_strs)
   let num_src_pairs = Array::length(srcs)
   let mut __src_i = 0
@@ -8921,7 +8872,7 @@ fn lc_build_string_pool(stmts: Array[Stmt], srcs: Array[(String, String)], need_
   // #2386: the string table and its index, built once here after the last
   // push to str_strs and shared by every per-function CompileCtx below.
   let str_table_shared = str_table_new(str_strs, str_offsets, str_lengths)
-  (str_table_shared, src_str_base, heap_start, need_div_zero_abort)
+  (str_table_shared, src_str_base, heap_start)
 }
 
 /// #2575 item 2 step 3b: the same compile, given a `ModuleSplit`. The prelude
@@ -9708,7 +9659,7 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
   let used_builtin_names = collect_used_builtin_names(stmts, fn_names_list)
   let need_array_capacity = Map::has_key(used_builtin_names, "Array::with_capacity")
   let need_bytes_capacity = Map::has_key(used_builtin_names, "Bytes::with_capacity")
-  let (str_table_shared, src_str_base, heap_start, need_div_zero_abort) = lc_build_string_pool(stmts, srcs, need_array_capacity, need_bytes_capacity, rc_shadow)
+  let (str_table_shared, src_str_base, heap_start) = lc_build_string_pool(stmts, srcs, need_array_capacity, need_bytes_capacity, rc_shadow)
   let str_strs = str_table_shared.strs
   let str_offsets = str_table_shared.offsets
   let str_lengths = str_table_shared.lengths
@@ -10829,22 +10780,8 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
   // ADR-0090 (#1262) region arena bodies. Registered LAST and only when the
   // module has a region, so a module without one is byte-identical to what it
   // was before the arena existed (and max_builtin_func_idx below follows).
-  // #3126: the division-by-zero abort, registered only when the program has
-  // an `Int` `/` or `%` whose divisor may be zero, so a module without one
-  // keeps its function indices. After the shadow aborts, before the arena pair.
-  let div_zero_abort_idx = if need_div_zero_abort {
-    (if rc_shadow {
-      str_operand_abort_idx
-    } else {
-      array_capacity_idx
-    }) + 1
-  } else {
-    0 - 1
-  }
   let region_arr_new_idx = if need_region_arena {
-    (if need_div_zero_abort {
-      div_zero_abort_idx
-    } else if rc_shadow {
+    (if rc_shadow {
       str_operand_abort_idx
     } else {
       array_capacity_idx
@@ -11237,9 +11174,6 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
   // user-function call target in the module by the number of builtins added).
   let max_builtin_func_idx = if need_region_arena {
     region_bytes_new_idx
-  } else if need_div_zero_abort {
-    // #3126: registered after the shadow aborts, so it is last when present.
-    div_zero_abort_idx
   } else if rc_shadow {
     // #2427: the str-operand abort is registered after the UAF abort, so it,
     // not shadow_uaf_abort_idx, is the last builtin on the shadow lane.
@@ -11919,12 +11853,6 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
     // str_operand_abort_idx. Registered immediately after the UAF abort so
     // max_builtin_func_idx stays the last push.
     push_builtin(gen_oob_abort_body(print_str_idx, print_i64_raw_idx, oob_fat_of(", len="), oob_nl_fat), 0, 0, 7)
-  } else {
-    ()
-  }
-  // #3126: div_zero_abort_idx -- after the shadow aborts, before the arena.
-  if need_div_zero_abort {
-    push_builtin(gen_div_zero_abort_body(print_str_idx, print_i64_raw_idx, oob_fat_of(div_zero_div_message()), oob_fat_of(div_zero_rem_message()), oob_fat_of(div_zero_at_fragment()), oob_fat_of(div_zero_colon_fragment()), oob_nl_fat), 0, 0, 7)
   } else {
     ()
   }
@@ -12838,7 +12766,6 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
           dbg_line_idx: dbg_line_import_idx,
           dbg_line_nl: dbg_nls,
           dbg_line_file_id: dbg_fid,
-          div_zero_abort_func_idx: div_zero_abort_idx,
           loop_borrowed_names: lc_fresh_string_array(),
           loop_consumed_names: lc_fresh_string_array(),
           rc_path_drop_names: rc_path_drops,
@@ -15191,11 +15118,6 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
   Array::set(gen_sec_names, oob_abort_idx - num_imported_funcs, "__rt_oob_abort")
   if rc_shadow {
     Array::set(gen_sec_names, shadow_uaf_abort_idx - num_imported_funcs, "__rt_shadow_uaf_abort")
-  } else {
-    ()
-  }
-  if need_div_zero_abort {
-    Array::set(gen_sec_names, div_zero_abort_idx - num_imported_funcs, "__rt_div_zero_abort")
   } else {
     ()
   }

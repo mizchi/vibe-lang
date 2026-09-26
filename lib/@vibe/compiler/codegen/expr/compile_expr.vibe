@@ -235,7 +235,7 @@ import ./compile_call.vibe {
 }
 
 import ./compile_expr_tail.vibe {
-  compile_expr_tail, emit_int_div_zero_guard, expr_is_floatish, expr_is_intish, linemap_enter_call_site, linemap_leave_call_site
+  compile_expr_tail, expr_is_floatish, expr_is_intish, linemap_enter_call_site, linemap_leave_call_site
 }
 
 import ./compile_lambda.vibe {
@@ -942,15 +942,6 @@ fn is_untagged_wrap_arith(e: Expr, local_names: Array[String], ctx: CompileCtx) 
   }
 }
 
-/// #3126: the operator's source offset an `EBinOp` carries (-1 for one a
-/// desugaring synthesized), which a division-by-zero trap reports.
-fn ebinop_site_off(e: Expr) -> Int {
-  match e {
-    EBinOp(_, _, _, off) => off,
-    _ => 0 - 1
-  }
-}
-
 /// Compile one operand of the Int op `op`. When the consumer op wraps —
 /// `+`/`-`/`*`, or the shifted side of `<<` — and the operand is itself a
 /// wrapping arith expr on the untagged lane, compile it WITHOUT its trailing
@@ -983,7 +974,7 @@ fn compile_wrap_arith_loose(buf: Bytes, e: Expr, local_names: Array[String], nex
       emit_shift_count_clamp(buf, nl2)
       nl2 + 1
     } else {
-      emit_int_div_zero_guard(buf, op, get_ebinop_rhs(e), ebinop_site_off(e), ctx, local_names, nl2)
+      nl2
     }
     emit_binop_op(buf, op)
     nl3
@@ -1416,7 +1407,7 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
         } else {
           ()
         }
-        let nl2 = emit_int_div_zero_guard(buf, op, rhs, ebinop_site_off(expr), ctx, local_names, compile_expr(buf, rhs, local_names, nl1, ctx, ld))
+        let nl2 = compile_expr(buf, rhs, local_names, nl1, ctx, ld)
         emit_binop_op(buf, op)
         if op == "/" {
           emit_i64_const(buf, 1)
@@ -1439,7 +1430,7 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
         emit_shift_count_clamp(buf, nl2)
         nl2 + 1
       } else {
-        emit_int_div_zero_guard(buf, op, rhs, ebinop_site_off(expr), ctx, local_names, nl2)
+        nl2
       }
       emit_binop_op(buf, op)
       emit_arith_wrap_int(buf, false, op)
