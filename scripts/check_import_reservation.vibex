@@ -106,18 +106,27 @@ fn quoted_ending_at(text: String, end: Int) -> String {
 
 fn registry_names(text: String) -> Array[String] with Stderr + Process {
   let out: Array[String] = []
-  let marker = ", CtFn("
+  // Anchor on `CtFn(` and walk BACK over whitespace to the comma, then to
+  // the closing quote. The literal `", CtFn("` marker silently skipped a row
+  // formatted with a newline, a tab or two spaces after the comma, and the
+  // drift guard below only fires when EVERY row is lost -- so a skipped row's
+  // capability went unchecked while the gate stayed green (#3167 review).
+  let marker = "CtFn("
   let mut i = 0
   while i >= 0 {
     let hit = String::index_of_from(text, marker, i)
     if hit < 0 {
       i = -1
     } else {
-      let mut j = hit - 1
+      let mut c = hit - 1
+      while c >= 0 && is_ws(byte_at(text, c)) {
+        c = c - 1
+      }
+      let mut j = c - 1
       while j >= 0 && is_ws(byte_at(text, j)) {
         j = j - 1
       }
-      if j >= 0 && byte_at(text, j) == 34 {
+      if c >= 0 && byte_at(text, c) == 44 && j >= 0 && byte_at(text, j) == 34 {
         let name = quoted_ending_at(text, j)
         let mut k = j - String::length(name) - 2
         while k >= 0 && is_ws(byte_at(text, k)) {

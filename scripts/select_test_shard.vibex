@@ -123,18 +123,17 @@ fn load_weight_values(path: String, keys: Array[String]) -> Array[Double] with F
     out
   } else {
     let parsed = Json::parse(Fs::read_file(path))
+    // `keys` holds one slash-normalized key per raw JSON key, in the same
+    // order (load_weight_keys), so each value is read by its RAW key at the
+    // same index. Reconstructing the raw spelling from the normalized one
+    // found `a/b` and `a\\b` but not a mixed `a\\b/c`, whose weight then
+    // silently became the default (#3167 review).
+    let raw = Json::keys(parsed)
     let mut i = 0
-    while i < Array::length(keys) {
-      let key = Array::get(keys, i)
-      // The key was slash-normalized. The file may still spell backslashes,
-      // so try the stored key and the backslash spelling.
-      let back = String::replace_all(key, "/", "\\")
-      let value = match Json::get_opt(parsed, key) {
+    while i < Array::length(keys) && i < Array::length(raw) {
+      let value = match Json::get_opt(parsed, Array::get(raw, i)) {
         Some(v) => v,
-        None => match Json::get_opt(parsed, back) {
-          Some(v) => v,
-          None => Json::parse("null")
-        }
+        None => Json::parse("null")
       }
       Array::push(out, weight_num(value))
       i = i + 1
@@ -333,6 +332,11 @@ fn self_test() -> Unit with Fs + Console + Stderr + Process {
   expect(!String::contains(got, "negative"), "negative was kept: " + got)
   expect(!String::contains(got, "bad"), "nan was kept: " + got)
   expect(!String::contains(got, "inf"), "an infinite weight was kept: " + got)
+  // A key mixing both separators keeps its weight.
+  let mixed_path = dir + "/mixed.json"
+  Fs::write_file(mixed_path, "{\"dir\\\\sub/file.vibe\":7}\n")
+  let mixed = kept_weights(mixed_path)
+  expect(mixed == "dir/sub/file.vibe=7", "mixed-separator key lost its weight: " + mixed)
   let frac_path = dir + "/frac.json"
   Fs::write_file(frac_path, "{\"a_test.vibe\":0.9,\"b_test.vibe\":0.8,\"c_test.vibe\":0.1}\n")
   let frac_files = ["a_test.vibe", "b_test.vibe", "c_test.vibe"]
