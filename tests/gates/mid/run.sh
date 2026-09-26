@@ -724,6 +724,27 @@ if ! VIBE_TEST_BACKEND=gc VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMP
 fi
 rm -f "$ROOT_DIR/_build/_gate_builtin_shadow_lowering.log"
 echo "[compiler-gate] builtin-named internal calls ok on shadow and wasm-gc"
+# #3179: the other direction. A direct call the program wrote to its OWN
+# function of a spelling the checker arms by name (`Array::get`, `Map::get`,
+# `MutList::get`, `Future::ready`, `__index`, ...) is typed from that
+# function's declaration and answers its value. The checker used to type it
+# as the builtin while codegen called the program's function, so a String
+# result was added to as an Int. The unit runner covers the default lane.
+for dc_lane in shadow gc; do
+  case "$dc_lane" in
+    shadow) dc_env="VIBE_RC=shadow" ;;
+    gc) dc_env="VIBE_TEST_BACKEND=gc" ;;
+  esac
+  if ! env "$dc_env" VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+      bash scripts/vibe_test.sh fixtures/builtin_shadow_direct_call_typing_test.vibe \
+      >"$ROOT_DIR/_build/_gate_builtin_shadow_direct_call.log" 2>&1; then
+    echo "[compiler-gate] FAIL: a direct call to the program's own function of a builtin-armed spelling was typed, or run, as the builtin on the $dc_lane lane (#3179):" >&2
+    tail -20 "$ROOT_DIR/_build/_gate_builtin_shadow_direct_call.log" >&2
+    exit 1
+  fi
+done
+rm -f "$ROOT_DIR/_build/_gate_builtin_shadow_direct_call.log"
+echo "[compiler-gate] program-declared builtin spellings ok: direct calls answer the program's own functions (shadow + gc)"
 # #3158: the 63-bit wrap contract (#1877) holds the SAME values on every
 # backend, so its test runs on wasm-gc too (the unit runner covers linear).
 # It could not compile there: the erased-generic `[T: Add]` / `[T: Ord]`

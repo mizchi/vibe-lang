@@ -1,0 +1,159 @@
+//# Which call a builtin's by-name arm may type (#3146, #3179)
+
+// Split out of checker.vibe so the effect pass can ask the same question:
+// checker.vibe imports checker_effects.vibe, so checker_effects.vibe cannot
+// import checker.vibe.
+
+//# Imports
+
+import @vibe/compiler/core {
+  BindingOrigin, TypeEnv, env_has_reexport_surface_binding, env_lookup_binding_including_surface
+}
+
+import @vibe/ast {
+  is_builtin_ref_offset
+}
+
+//# Functions
+
+/// Whether no binding of the program claims `name`, so a reference to it
+/// means the builtin. A surface-only re-export alias does not count.
+fn builtin_is_unshadowed(env: TypeEnv, name: String) -> Bool {
+  match env_lookup_binding_including_surface(env, name) {
+    None => true,
+    Some(binding) => match binding.origin {
+      BindingOriginReExportSurface(_, _) => {
+        // An accelerator-only surface is not an authoritative source
+        // spelling. Keep the chain probe for this uncommon positive case.
+        !env_has_reexport_surface_binding(env, name)
+      },
+      _ => false
+    }
+  }
+}
+
+/// #3146: whether a reference to `name` at `ident_off` means the BUILTIN.
+/// A reference the compiler synthesized (`builtin_ref`, and the index-sugar
+/// keys below it) means the builtin whatever the program defines: codegen
+/// sends it there once `rename_builtin_shadow_defs` has moved the program's
+/// own definition aside (#3132), so the checker types it from the builtin's
+/// signature too. Any other reference means the builtin only while no binding
+/// of the program claims the spelling.
+export fn builtin_resolves_at(env: TypeEnv, name: String, ident_off: Int) -> Bool {
+  is_builtin_ref_offset(ident_off) || builtin_is_unshadowed(env, name)
+}
+
+// #3179: every call arm `check_expr_capture_impl` selects by the callee's
+// SPELLING, as (name, argument count, yields). An arm types a call from the
+// builtin's rules, so it may take only a call that RUNS the builtin.
+//
+// A `true` row yields to the program: codegen sends a direct call the program
+// wrote to the program's own function of that spelling (the definition is
+// renamed aside by `rename_builtin_shadow_defs`, #3132, or no lowering
+// intercepts the name), so that call is typed from the program's declaration
+// and the arm takes only a call that means the builtin (`builtin_resolves_at`).
+// Before this, `fn Array::get(xs: Array[Int], i: Int) -> String` had its own
+// `Array::get([1, 2], 0) + 1` typed `Int`, checked clean, and added 1 to a
+// string.
+//
+// A `false` row keeps the arm for every call: a lowering intercepts the
+// spelling ahead of the program's function, so a direct call runs the builtin
+// whatever the program declares, and typing it from the declaration would
+// describe a function that never runs. Measured on a stage2 built from main at
+// 6646ccbfb with a program function of each spelling: `Array::map` / `fold` /
+// `reverse`, `Map::set` / `delete`, `FixedArray::make` / `unsafe_set` /
+// `blit`, `__slice` and `__len` run the builtin on linear and wasm-gc; the
+// frozen-array conversions and the `MutList` / `MutBytes` constructors and
+// exits run it on linear (compile_call rewrites them first) and the program's
+// function on wasm-gc; `__region_run` is the `region` syntax's own call. A row
+// moves to `true` once codegen calls the program's function on every lane.
+//
+// `builtin_call_arm` answers "" for a spelling this table does not list, so an
+// arm cannot fire without a row here, and the checker test
+// `builtin_call_arm_shadow_test.vibe` walks every row. An arm that compares
+// `name` itself would bypass the table; scripts/review_lint.vibex reports the
+// `name == "X::y" && Array::length(args) == n` shape under checker/.
+let builtin_call_arm_table: Array[(String, Int, Bool)] = [
+  ("__index", 2, true),
+  ("__rec_field", 2, true),
+  ("__slice", 3, false),
+  ("__len", 1, false),
+  ("__region_run", 1, false),
+  ("Array::with_capacity", 1, true),
+  ("ArrayBuilder::new", 0, true),
+  ("ArrayBuilder::push", 2, true),
+  ("ArrayBuilder::freeze", 1, true),
+  ("FrozenArray::from_array", 1, false),
+  ("FrozenArray::to_array", 1, false),
+  ("FrozenArray::get", 2, true),
+  ("FrozenArray::length", 1, true),
+  ("MutList::empty", 1, false),
+  ("MutList::push", 2, true),
+  ("MutList::freeze", 1, false),
+  ("MutList::to_array", 1, false),
+  ("MutList::get", 2, true),
+  ("MutList::length", 1, true),
+  ("MutList::truncate", 2, true),
+  ("MutBytes::empty", 1, false),
+  ("MutBytes::push", 2, true),
+  ("MutBytes::append", 2, true),
+  ("MutBytes::length", 1, true),
+  ("MutBytes::to_bytes", 1, false),
+  ("FixedArray::make", 2, false),
+  ("FixedArray::get", 2, true),
+  ("FixedArray::set", 3, true),
+  ("FixedArray::unsafe_set", 3, false),
+  ("FixedArray::length", 1, true),
+  ("FixedArray::blit", 5, false),
+  ("Map::set", 3, false),
+  ("Map::get", 2, true),
+  ("MapBuilder::get", 2, true),
+  ("Map::keys", 1, true),
+  ("Map::values", 1, true),
+  ("Map::delete", 2, false),
+  ("Array::push", 2, true),
+  ("Array::set", 3, true),
+  ("Array::push_all", 2, true),
+  ("Array::get", 2, true),
+  ("Array::reverse", 1, false),
+  ("Array::concat", 2, true),
+  ("Array::slice", 3, true),
+  ("Array::fold", 3, false),
+  ("Array::map", 2, false),
+  ("TaskGroup::run", 1, true),
+  ("TaskGroup::spawn", 2, true),
+  ("TaskGroup::spawn_suspend", 2, true),
+  ("Future::ready", 1, true),
+  ("Future::pending", 0, true),
+  ("Future::resolve", 2, true),
+  ("await", 1, true)
+]
+
+/// #3179: the by-name call arm a direct call to `name` with `argc` arguments
+/// takes, or "" when it takes none: the spelling is not listed in
+/// `builtin_call_arm_table`, or its row yields and the call means the
+/// program's own function (`builtin_resolves_at`). The arity is compared
+/// first, so a call pays the string compares only against its own arity's rows.
+export fn builtin_call_arm(env: TypeEnv, name: String, argc: Int, callee_off: Int) -> String {
+  let mut i = 0
+  let mut arm = ""
+  while i < Array::length(builtin_call_arm_table) {
+    let (row_name, row_argc, yields) = Array::get(builtin_call_arm_table, i)
+    if row_argc == argc && row_name == name {
+      if !yields || builtin_resolves_at(env, name, callee_off) {
+        arm = name
+      } else {
+        ()
+      }
+      i = Array::length(builtin_call_arm_table)
+    } else {
+      i = i + 1
+    }
+  }
+  arm
+}
+
+/// #3179: `builtin_call_arm_table` as data, for the test that walks it.
+export fn builtin_call_arms() -> Array[(String, Int, Bool)] {
+  builtin_call_arm_table
+}

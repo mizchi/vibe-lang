@@ -75,6 +75,10 @@ import ./builtins.vibe {
   lookup_builtin
 }
 
+import ./builtin_call_arms.vibe {
+  builtin_call_arm
+}
+
 //# Types
 
 export enum EffectError {
@@ -1669,8 +1673,12 @@ fn afe_array_elem_head(args: Array[Expr], env: TypeEnv, locals: AfeLocals) -> Op
   }
 }
 
-fn afe_ident_call_head(f: String, args: Array[Expr], env: TypeEnv, locals: AfeLocals) -> Option[String] {
-  if f == "Array::get" || f == "__index" {
+/// #3179: `f_off` is the callee identifier's offset. The element-type
+/// shortcut reads the builtin `Array::get` / index sugar, so it answers only
+/// for a call the checker types as that builtin (`builtin_call_arm`); a
+/// program's own function of either spelling is read from its declaration.
+fn afe_ident_call_head(f: String, f_off: Int, args: Array[Expr], env: TypeEnv, locals: AfeLocals) -> Option[String] {
+  if (f == "Array::get" || f == "__index") && builtin_call_arm(env, f, Array::length(args), f_off) != "" {
     match afe_array_elem_head(args, env, locals) {
       Some(head) => Some(head),
       None => afe_ident_call_head_generic(f, args, env, locals)
@@ -1731,7 +1739,7 @@ fn afe_dot_call_head(obj: Expr, method: String, args: Array[Expr], env: TypeEnv,
       let display = afe_display_iter_head(receiver)
       let qualified = String::concat(display, String::concat("::", method))
       let call_args = afe_prepend_expr(obj, args)
-      match afe_ident_call_head(qualified, call_args, env, locals) {
+      match afe_ident_call_head(qualified, 0 - 1, call_args, env, locals) {
         Some(head) => Some(head),
         None => if receiver == afe_builtin_async_iter_head && afe_is_async_iter_publication_name(qualified) {
           Some(afe_builtin_async_iter_head)
@@ -2329,7 +2337,7 @@ fn afe_expr_head_name(e: Expr, env: TypeEnv, locals: AfeLocals) -> Option[String
       }
     },
     ECall(callee, args, _) => match callee {
-      EIdent(f, _) => afe_ident_call_head(f, args, env, locals),
+      EIdent(f, f_off) => afe_ident_call_head(f, f_off, args, env, locals),
       EDot(obj, method, _, _) => afe_dot_call_head(obj, method, args, env, locals),
       EFn(_, _, params, _, _, body) => afe_iife_head(params, body, args, env, locals),
       _ => None
