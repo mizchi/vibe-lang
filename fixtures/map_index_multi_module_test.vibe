@@ -1,0 +1,36 @@
+// #3133 review: an index's `[` key is a source offset like any other, and a
+// multi-file build gives each file a disjoint offset base -- the typed rows the
+// key is looked up in are rebased. The key used to keep its FILE-LOCAL offset,
+// so in any file but the first it named a site in another file: here the Map
+// index in `map_at` sits at the same file-local byte as the Array index in the
+// dependency's `arr_at`, and the Array index in `arr_second` at the same byte
+// as the dependency's Map index. Each was lowered by the other file's verdict:
+// the Map read positionally (an out-of-bounds trap) and the Array read through
+// `Map::get`. The padding rules below keep the two files aligned.
+import ./map_index_multi_module_dep.vibe { arr_at, dep_map_at }
+
+type Env = StringMap[Int]
+
+fn map_at(m: Env, k: String) -> Int {
+  m[k]
+}
+
+//---------------------------
+fn arr_second(xs: Array[Int], i: Int) -> Int {
+  xs[i]
+}
+
+test "a Map index in the entry file reads the Map" {
+  let m: Env = Map::set(Map::set(Map::new(), "a", 11), "b", 22)
+  inspect(map_at(m, "b"), content = "22")
+}
+
+test "an Array index in the entry file reads the Array" {
+  inspect(arr_second([4, 5, 6], 2), content = "6")
+}
+
+test "the dependency's own indexes" {
+  let m: Env = Map::set(Map::set(Map::new(), "a", 11), "b", 22)
+  inspect(dep_map_at(m, "a"), content = "11")
+  inspect(arr_at([7, 8, 9], 0), content = "7")
+}
