@@ -3489,6 +3489,9 @@ fn lc_ws_track_inject(stmts: Array[Stmt]) -> Unit {
   let seqs = EIdent("__ws_seq", -1)
   let ctr = EIdent("__ws_ctr", -1)
   let int_ty = TyName("Int")
+  // Typed, not inferred: the RC lane retains a cell stored in __ws_cells only
+  // when it knows the parameter is a heap array.
+  let cell_ty = TyApp("Array", [int_ty])
   Array::push(stmts, SLet(false, false, lc_fixed_synthetic_name("__ws_cells", "review-lint: allow-fixed-synthetic-name"), Some(TyApp("Array", [
     TyApp("Array", [int_ty])
   ])), EArray(lc_fresh_expr_array())))
@@ -3520,7 +3523,9 @@ fn lc_ws_track_inject(stmts: Array[Stmt]) -> Unit {
   let full = EBinOp("&&", EBinOp("<", EInt(lc_ws_slot_count() - 1), rlive, -1), EBinOp("<", EInt(0 - 1), rbest, -1), -1)
   let room_body = ELetMut("__wsr_i", EInt(0), ELetMut("__wsr_live", EInt(0), ELetMut("__wsr_best", EInt(0 - 1), ELetMut("__wsr_bq", EInt(0), ESeq(scan, EIf(full, evict, EUnit)), -1), -1), -1), -1)
   // review-lint: allow-fixed-synthetic-name (the injected __ws_room's own scope)
-  let room_params: Array[(String, Option[TypeExpr])] = [("__wsr_s", None)]
+  let room_params: Array[(String, Option[TypeExpr])] = [
+    ("__wsr_s", Some(int_ty))
+  ]
   Array::push(stmts, SLet(false, false, lc_fixed_synthetic_name("__ws_room", "review-lint: allow-fixed-synthetic-name"), None, EFn(lc_fresh_string_array(), array_empty(), room_params, Some(TyName("Unit")), None, room_body)))
   // __ws_track(f): record a WIT cell under its slot, then make room.
   let tf = EIdent("__wst_f", -1)
@@ -3538,15 +3543,19 @@ fn lc_ws_track_inject(stmts: Array[Stmt]) -> Unit {
   let is_slot = EBinOp("&&", EBinOp("==", get(tf, EInt(0)), EInt(2), -1), EBinOp("<", EInt(lc_ws_handle_base() - 1), th, -1), -1)
   let track_body = ELet("__wst_h", get(tf, EInt(1)), ESeq(EIf(is_slot, track, EUnit), tf), -1)
   // review-lint: allow-fixed-synthetic-name (the injected __ws_track's own scope)
-  let track_params: Array[(String, Option[TypeExpr])] = [("__wst_f", None)]
-  Array::push(stmts, SLet(false, false, lc_fixed_synthetic_name("__ws_track", "review-lint: allow-fixed-synthetic-name"), None, EFn(lc_fresh_string_array(), array_empty(), track_params, None, None, track_body)))
+  let track_params: Array[(String, Option[TypeExpr])] = [
+    ("__wst_f", Some(cell_ty))
+  ]
+  Array::push(stmts, SLet(false, false, lc_fixed_synthetic_name("__ws_track", "review-lint: allow-fixed-synthetic-name"), None, EFn(lc_fresh_string_array(), array_empty(), track_params, Some(cell_ty), None, track_body)))
   // __ws_claim(f): the cell is awaited; never evict it.
   let cf = EIdent("__wsc_f", -1)
   let cs = EIdent("__wsc_s", -1)
   let claimed = EBinOp("&&", EBinOp("==", get(cf, EInt(0)), EInt(2), -1), EBinOp("<", EInt(lc_ws_handle_base() - 1), get(cf, EInt(1)), -1), -1)
   let mark = ELet("__wsc_s", EBinOp("-", get(cf, EInt(1)), EInt(lc_ws_handle_base()), -1), EIf(EBinOp("<", cs, len(seqs), -1), set(seqs, cs, EInt(0 - 1)), EUnit), -1)
   // review-lint: allow-fixed-synthetic-name (the injected __ws_claim's own scope)
-  let claim_params: Array[(String, Option[TypeExpr])] = [("__wsc_f", None)]
+  let claim_params: Array[(String, Option[TypeExpr])] = [
+    ("__wsc_f", Some(cell_ty))
+  ]
   Array::push(stmts, SLet(false, false, lc_fixed_synthetic_name("__ws_claim", "review-lint: allow-fixed-synthetic-name"), None, EFn(lc_fresh_string_array(), array_empty(), claim_params, Some(TyName("Int")), None, ESeq(EIf(claimed, mark, EUnit), EInt(0)))))
   // Every WIT getter's cell goes through __ws_track, and __aw_pay (synthesized
   // earlier by await_poll_pass) claims the cell it is about to wait on.
