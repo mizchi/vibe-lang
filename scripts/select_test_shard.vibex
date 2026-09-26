@@ -78,13 +78,56 @@ fn canonical_abs(path: String) -> String {
 
 fn normalize_path(raw_file: String, root: String) -> String {
   let file = canonical_abs(raw_file)
-  let prefix = if String::ends_with(root, "/") { root } else { root + "/" }
-  let rel = if root != "" && String::starts_with(file, prefix) {
-    String::substring(file, String::length(prefix), String::length(file))
+  let rel = if root != "" && String::starts_with(file, "/") && String::starts_with(root, "/") {
+    relative_to(canonical_abs(root), file)
   } else {
     file
   }
   String::replace_all(rel, "\\", "/")
+}
+
+/// `path.relative(root, file)` for two canonical absolute paths: the shared
+/// leading segments drop, and each remaining root segment becomes `..`. A file
+/// OUTSIDE the root keeps a relative key (`../other/a_test.vibe`) rather than
+/// staying absolute, which matched no weight and silently took the default
+/// (#3167 review).
+fn relative_to(root: String, file: String) -> String {
+  let rs = abs_segments(root)
+  let fs = abs_segments(file)
+  let mut common = 0
+  while common < Array::length(rs) && common < Array::length(fs) && Array::get(rs, common) == Array::get(fs, common) {
+    common = common + 1
+  }
+  let parts: Array[String] = []
+  let mut i = common
+  while i < Array::length(rs) {
+    Array::push(parts, "..")
+    i = i + 1
+  }
+  let mut j = common
+  while j < Array::length(fs) {
+    Array::push(parts, Array::get(fs, j))
+    j = j + 1
+  }
+  let mut out = ""
+  let mut k = 0
+  while k < Array::length(parts) {
+    out = if k == 0 { Array::get(parts, k) } else { out + "/" + Array::get(parts, k) }
+    k = k + 1
+  }
+  out
+}
+
+fn abs_segments(path: String) -> Array[String] {
+  let out: Array[String] = []
+  let raw = String::split(path, "/")
+  let mut i = 0
+  while i < Array::length(raw) {
+    let seg = Array::get(raw, i)
+    if seg != "" { Array::push(out, seg) } else { () }
+    i = i + 1
+  }
+  out
 }
 
 /// The directory keys are made relative to. The Node original resolved
@@ -402,6 +445,10 @@ fn self_test() -> Unit with Fs + Console + Stderr + Process {
     normalize_path(root + "/x/../lib/y_test.vibe", resolve_root("sub/..", root)) == "lib/y_test.vibe",
     "a file and a root with dot segments still meet on a relative key"
   )
+  // A file outside the root gets a `..` key, as path.relative gave it.
+  expect(normalize_path("/repo/other/a_test.vibe", "/repo/sub") == "../other/a_test.vibe", "outside the root: " + normalize_path("/repo/other/a_test.vibe", "/repo/sub"))
+  expect(normalize_path("/repo/sub/x/a_test.vibe", "/repo/sub") == "x/a_test.vibe", "inside the root stays a plain relative key")
+  expect(normalize_path("rel/a_test.vibe", "/repo") == "rel/a_test.vibe", "a relative file is kept as written")
   // Unknown arguments are refused instead of silently switching weighting off.
   expect(first_unknown_arg(["--index", "0", "--total", "2", "--weights", "w.json", "--", "a.vibe"]) == "", "a well-formed line is accepted")
   expect(first_unknown_arg(["--index=0", "--total=2", "--root=.", "--", "--weigths"]) == "", "= forms are accepted; tokens after -- are files")
