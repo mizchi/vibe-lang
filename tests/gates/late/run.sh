@@ -2056,6 +2056,20 @@ if ! grep -qF 'no impl `Spawnable` for `Array[Int]`' "$spawnabledir/neg_array.wa
   cat "$spawnabledir/neg_array.wasm.diag" >&2 2>/dev/null || true
   exit 1
 fi
+# #3125: the same capture through `let sp2 = sp` where `sp` is
+# `TaskGroup::spawn`. Matching the callee's spelling accepted this.
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/err_spawnable_capture_alias.vibe "$spawnabledir/neg_alias.wasm" main >/dev/null 2>&1 || true
+if [ -s "$spawnabledir/neg_alias.wasm" ]; then
+  echo "[compiler-gate] FAIL: err_spawnable_capture_alias.vibe compiled successfully -- must be rejected" >&2
+  exit 1
+fi
+if ! grep -qF 'no impl `Spawnable` for `Array[Int]`' "$spawnabledir/neg_alias.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: err_spawnable_capture_alias.vibe did not produce the expected diagnostic" >&2
+  cat "$spawnabledir/neg_alias.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
 # #1571: the expectation for this rejection is the diagnostic grep below,
 # so the fixture no longer carries an unread `__DATA__` error_contains copy
 # and is compiled AS-IS -- no `sed` strip, no temp copy.

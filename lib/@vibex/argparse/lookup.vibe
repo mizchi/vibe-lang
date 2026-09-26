@@ -1,0 +1,90 @@
+// Lookups over the grammar in parser.vibe, including the process's own
+// argv. `--name value` is an option only for the name being looked up;
+// every other long option stays a flag. Names may be spelled `--name`
+// or `name`.
+
+import ./parser.vibe {
+  ArgList, ParseResult, has_flag, opt_value, parse_args, parse_args_taking, tokens_after_dash
+}
+
+fn guest_args() -> Array[String] with Env {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Env::args_len() {
+    Array::push(out, Env::args_get(i))
+    i = i + 1
+  }
+  out
+}
+
+fn bare(name: String) -> String {
+  if String::starts_with(name, "--") {
+    String::substring(name, 2, String::length(name))
+  } else if String::starts_with(name, "-") && String::length(name) > 1 {
+    String::substring(name, 1, String::length(name))
+  } else {
+    name
+  }
+}
+
+fn items_of(parsed: ParseResult) -> ArgList {
+  match parsed {
+    ParseOk(items) => items,
+    ParseErr(_) => ArgNil
+  }
+}
+
+export fn flag_in(args: Array[String], name: String) -> Bool {
+  has_flag(items_of(parse_args(args)), bare(name))
+}
+
+export fn flag(name: String) -> Bool with Env {
+  flag_in(guest_args(), name)
+}
+
+export fn option_in(args: Array[String], name: String) -> String {
+  let key = bare(name)
+  opt_value(items_of(parse_args_taking(args, [key])), key)
+}
+
+export fn option(name: String) -> String with Env {
+  option_in(guest_args(), name)
+}
+
+export fn option_or(name: String, fallback: String) -> String with Env {
+  let value = option(name)
+  if value == "" {
+    fallback
+  } else {
+    value
+  }
+}
+
+export fn arg_in(args: Array[String], index: Int) -> String {
+  if index >= 0 && index < Array::length(args) {
+    Array::get(args, index)
+  } else {
+    ""
+  }
+}
+
+export fn arg(index: Int) -> String with Env {
+  arg_in(guest_args(), index)
+}
+
+export fn arg_or(index: Int, fallback: String) -> String with Env {
+  let value = arg(index)
+  if value == "" {
+    fallback
+  } else {
+    value
+  }
+}
+
+export fn after_dash_in(args: Array[String]) -> Array[String] {
+  tokens_after_dash(args)
+}
+
+export fn after_dash() -> Array[String] with Env {
+  after_dash_in(guest_args())
+}

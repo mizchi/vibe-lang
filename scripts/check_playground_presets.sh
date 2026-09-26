@@ -48,8 +48,10 @@ trap 'rm -rf "$WORK"' EXIT
 MANIFEST="$WORK/manifest"
 
 # Extract each `{ id: "..", source: `..` }` entry of PRESETS into its own .vibe
-# file and write a (path, id) manifest.
-python3 scripts/extract_playground_presets.py "$SRC" "$WORK" > "$MANIFEST"
+# file and write a (path, id) manifest. The self-test covers an escaped
+# backtick and a TypeScript interpolation; the real file is the corpus.
+bash scripts/vibe_run.sh scripts/extract_playground_presets.vibex -- --self-test >/dev/null
+bash scripts/vibe_run.sh scripts/extract_playground_presets.vibex -- "$SRC" "$WORK" > "$MANIFEST"
 
 export VIBE_HOME="$WORK/home"
 export VIBE_BIN_DIR="$WORK/bin"

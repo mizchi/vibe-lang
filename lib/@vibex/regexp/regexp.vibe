@@ -994,21 +994,20 @@ fn do_match(re: Re, s: String, pos: Int) -> Int {
 }
 
 export fn find(re: Re, s: String) -> Int {
+  // Iterative on purpose. A recursive try-at-every-byte blows the host stack
+  // once the haystack is longer than that stack (measured: 200000 bytes,
+  // `find(compile("z"), hay)`), which is smaller than one compiler source.
   let len = String::length(s)
-  let rec try_pos = (pos: Int) -> Int {
-    if pos > len {
-      -1
-    }
-    else {
-      let r = do_match(re, s, pos)
-      if r >= 0 {
-        pos
-      } else {
-        try_pos(pos + 1)
-      }
+  let mut pos = 0
+  let mut found = -1
+  while found < 0 && pos <= len {
+    if do_match(re, s, pos) >= 0 {
+      found = pos
+    } else {
+      pos = pos + 1
     }
   }
-  try_pos(0)
+  found
 }
 
 export fn split(re: Re, s: String) -> Array[String] {
@@ -1060,20 +1059,19 @@ export fn is_match(re: Re, s: String) -> Bool {
 
 export fn find_match(re: Re, s: String) -> String {
   let len = String::length(s)
-  let rec try_pos = (pos: Int) -> String {
-    if pos > len {
-      ""
-    }
-    else {
-      let r = do_match(re, s, pos)
-      if r >= 0 {
-        s[pos: r]
-      } else {
-        try_pos(pos + 1)
-      }
+  let mut pos = 0
+  let mut out = ""
+  let mut done = false
+  while !done && pos <= len {
+    let r = do_match(re, s, pos)
+    if r >= 0 {
+      out = s[pos: r]
+      done = true
+    } else {
+      pos = pos + 1
     }
   }
-  try_pos(0)
+  out
 }
 
 export fn test_match(re: Re, s: String) -> Bool {
@@ -1141,20 +1139,19 @@ export fn match_groups(regex: Regex, s: String) -> Match {
 
 export fn replace_first(re: Re, s: String, replacement: String) -> String {
   let len = String::length(s)
-  let rec try_pos = (pos: Int) -> String {
-    if pos > len {
-      s
-    }
-    else {
-      let r = do_match(re, s, pos)
-      if r >= 0 {
-        "\{s[0:pos]}\{replacement}\{s[r:len]}"
-      } else {
-        try_pos(pos + 1)
-      }
+  let mut pos = 0
+  let mut out = s
+  let mut done = false
+  while !done && pos <= len {
+    let r = do_match(re, s, pos)
+    if r >= 0 {
+      out = "\{s[0:pos]}\{replacement}\{s[r:len]}"
+      done = true
+    } else {
+      pos = pos + 1
     }
   }
-  try_pos(0)
+  out
 }
 
 export fn debug_match_pos(re: Re, s: String) -> Int {

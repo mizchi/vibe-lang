@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Red test for check_import_reservation.py (#2248: a gate means nothing until
+# Red test for check_import_reservation.vibex (#2248: a gate means nothing until
 # it is shown to be able to FAIL).
 #
 # The mutation reconstructs #2905 exactly: `Console::read_char` is mapped onto
@@ -22,7 +22,9 @@ cd "$ROOT_DIR"
 
 unset VIBE_IMPORT_RESERVATION_LINKED VIBE_IMPORT_RESERVATION_REGISTRY || true
 
-GATE="$ROOT_DIR/scripts/check_import_reservation.py"
+run_gate() {
+  bash "$ROOT_DIR/scripts/vibe_run.sh" scripts/check_import_reservation.vibex
+}
 LINKED="$ROOT_DIR/lib/@vibe/compiler/codegen/wasi/linked_compile.vibe"
 REGISTRY="$ROOT_DIR/lib/@vibe/compiler/core/builtin_registry.vibe"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/vibe_import_reservation_selftest.XXXXXX")"
@@ -31,7 +33,7 @@ trap 'rm -rf "$WORK"' EXIT
 fail() { echo "import-reservation-selftest: FAIL: $1" >&2; exit 1; }
 
 # --- GREEN: the gate passes on the tree. ------------------------------------
-if ! python3 "$GATE" >"$WORK/green.log" 2>&1; then
+if ! run_gate >"$WORK/green.log" 2>&1; then
   echo "--- gate output ---" >&2; cat "$WORK/green.log" >&2
   fail "the gate does not pass on an unmutated tree, so a red below would prove nothing"
 fi
@@ -70,7 +72,7 @@ grep -q 'Map::has_key(used_builtin_names, "Console::read_char")' "$WORK/mutated_
 
 # --- RED: the gate must fail, and must NAME the spelling. -------------------
 if VIBE_IMPORT_RESERVATION_LINKED="$WORK/mutated_linked.vibe" \
-   python3 "$GATE" >"$WORK/red.log" 2>&1; then
+   run_gate >"$WORK/red.log" 2>&1; then
   echo "--- gate output ---" >&2; cat "$WORK/red.log" >&2
   fail "the gate PASSED on a tree carrying #2905; it cannot detect what it exists to detect"
 fi
@@ -98,7 +100,7 @@ PY
 grep -q '"Console::read_char" => stdin_read_char_idx,' "$WORK/unmapped_linked.vibe" \
   && fail "the control mutation did not land; the mapping row is still there"
 if ! VIBE_IMPORT_RESERVATION_LINKED="$WORK/unmapped_linked.vibe" \
-     python3 "$GATE" >"$WORK/control.log" 2>&1; then
+     run_gate >"$WORK/control.log" 2>&1; then
   echo "--- gate output ---" >&2; cat "$WORK/control.log" >&2
   fail "the gate failed on a tree with NO hazard; it is reacting to the edit, not the property"
 fi
@@ -108,14 +110,14 @@ fi
 # would make this gate report ok forever. Prove each one is reachable.
 : >"$WORK/empty.vibe"
 if VIBE_IMPORT_RESERVATION_LINKED="$WORK/empty.vibe" \
-   python3 "$GATE" >"$WORK/drift.log" 2>&1; then
+   run_gate >"$WORK/drift.log" 2>&1; then
   fail "the gate reported ok with an EMPTY input; a parser drift would pass silently"
 fi
 grep -q 'drifted' "$WORK/drift.log" \
   || fail "the empty-input failure did not name drift, so the cause would be misread"
 
 if VIBE_IMPORT_RESERVATION_REGISTRY="$WORK/empty.vibe" \
-   python3 "$GATE" >"$WORK/drift2.log" 2>&1; then
+   run_gate >"$WORK/drift2.log" 2>&1; then
   fail "the gate reported ok with an EMPTY registry; a parser drift would pass silently"
 fi
 grep -q 'drifted' "$WORK/drift2.log" \

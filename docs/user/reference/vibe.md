@@ -855,7 +855,7 @@ Notes:
   block; `vibe test --update` rewrites a stale expected literal to the actual
   value (#1571). A compile rejection is classified by verdict and message in
   `fixtures/typecheck/expected.tsv`. No fixture carries a `__DATA__` tail;
-  `scripts/check_fixture_snapshots.mjs` rejects one.
+  `scripts/check_fixture_snapshots.vibex` rejects one.
 
 CLI:
 - The canonical compiler / checker / CLI implementation lives under `lib/@vibe/compiler/`

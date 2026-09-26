@@ -1,0 +1,302 @@
+// Split a test file list across shards by weight. Heavier files go first;
+// each one lands in the lightest shard, and a tie keeps the lower shard
+// index. Within a shard the original order is restored.
+//
+//   bash scripts/vibe_run.sh scripts/select_test_shard.vibex -- \
+//     --index 0 --total 4 --root . --weights weights.json -- a.vibe b.vibe
+//   bash scripts/vibe_run.sh scripts/select_test_shard.vibex -- --self-test
+//
+// A missing weights file is an empty map. A negative or unreadable weight
+// is ignored and the file weighs 1000. A file under --root is stored
+// relative to it, with backslashes turned into slashes.
+
+import @vibe/builtin { String::compare, String::replace_all }
+import @vibe/json {
+  Json, Json::get_opt, Json::keys, Json::number, Json::parse, Json::string, Json::type_of
+}
+import @vibex/argparse { after_dash, flag, option }
+import @vibex/tasks { die }
+
+struct ShardItem {
+  file: String;
+  key: String;
+  original: Int;
+  weight: Int
+}
+
+fn require_int(name: String, raw: String) -> Int with Stderr + Process {
+  if raw == "" {
+    die("missing " + name)
+    0
+  } else {
+    match Int::parse(raw) {
+      Some(n) => n,
+      None => {
+        die("invalid " + name + ": " + raw)
+        0
+      }
+    }
+  }
+}
+
+fn normalize_path(file: String, root: String) -> String {
+  let prefix = if String::ends_with(root, "/") { root } else { root + "/" }
+  let rel = if root != "" && String::starts_with(file, prefix) {
+    String::substring(file, String::length(prefix), String::length(file))
+  } else {
+    file
+  }
+  String::replace_all(rel, "\\", "/")
+}
+
+fn weight_int(v: Json) -> Int {
+  let parsed = match Json::type_of(v) {
+    "number" => Some(Json::number(v)),
+    "string" => Double::parse(Json::string(v)),
+    _ => None
+  }
+  match parsed {
+    Some(n) => if n >= 0.0 { Double::to_int(n) } else { 0 - 1 },
+    None => 0 - 1
+  }
+}
+
+fn load_weight_keys(path: String) -> Array[String] with Fs + Stderr + Process {
+  if path == "" || !Fs::exists(path) {
+    []
+  } else {
+    let parsed = Json::parse(Fs::read_file(path))
+    if Json::type_of(parsed) != "object" {
+      die("weights file must be a JSON object: " + path)
+      []
+    } else {
+      let raw = Json::keys(parsed)
+      let out: Array[String] = []
+      let mut i = 0
+      while i < Array::length(raw) {
+        Array::push(out, String::replace_all(Array::get(raw, i), "\\", "/"))
+        i = i + 1
+      }
+      out
+    }
+  }
+}
+
+fn load_weight_values(path: String, keys: Array[String]) -> Array[Int] with Fs {
+  let out: Array[Int] = []
+  if path == "" || !Fs::exists(path) {
+    out
+  } else {
+    let parsed = Json::parse(Fs::read_file(path))
+    let mut i = 0
+    while i < Array::length(keys) {
+      let key = Array::get(keys, i)
+      // The key was slash-normalized. The file may still spell backslashes,
+      // so try the stored key and the backslash spelling.
+      let back = String::replace_all(key, "/", "\\")
+      let value = match Json::get_opt(parsed, key) {
+        Some(v) => v,
+        None => match Json::get_opt(parsed, back) {
+          Some(v) => v,
+          None => Json::parse("null")
+        }
+      }
+      Array::push(out, weight_int(value))
+      i = i + 1
+    }
+    out
+  }
+}
+
+fn weight_for(keys: Array[String], values: Array[Int], key: String, file: String) -> Int {
+  let mut i = 0
+  let mut found = 0 - 1
+  while i < Array::length(keys) && found < 0 {
+    let k = Array::get(keys, i)
+    if k == key || k == file {
+      found = Array::get(values, i)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if found >= 0 { found } else { 1000 }
+}
+
+fn before(a: ShardItem, b: ShardItem) -> Bool {
+  if a.weight != b.weight {
+    a.weight > b.weight
+  } else {
+    match String::compare(a.key, b.key) {
+      Less => true,
+      Greater => false,
+      Equal => a.original < b.original
+    }
+  }
+}
+
+fn sort_by_weight(xs: Array[ShardItem]) -> Unit {
+  let mut i = 1
+  while i < Array::length(xs) {
+    let key = Array::get(xs, i)
+    let mut j = i
+    while j > 0 && before(key, Array::get(xs, j - 1)) {
+      Array::set(xs, j, Array::get(xs, j - 1))
+      j = j - 1
+    }
+    Array::set(xs, j, key)
+    i = i + 1
+  }
+}
+
+fn sort_by_origin(xs: Array[ShardItem]) -> Unit {
+  let mut i = 1
+  while i < Array::length(xs) {
+    let key = Array::get(xs, i)
+    let mut j = i
+    while j > 0 && key.original < Array::get(xs, j - 1).original {
+      Array::set(xs, j, Array::get(xs, j - 1))
+      j = j - 1
+    }
+    Array::set(xs, j, key)
+    i = i + 1
+  }
+}
+
+fn select_shard(files: Array[String], index: Int, total: Int, root: String, keys: Array[String], values: Array[Int]) -> Array[String] with Stderr + Process {
+  if index < 0 {
+    die("invalid shard index: " + __to_string(index))
+  } else if total <= 0 {
+    die("invalid shard total: " + __to_string(total))
+  } else if index >= total {
+    die("shard index must be less than total: " + __to_string(index) + "/" + __to_string(total))
+  } else {
+    ()
+  }
+  let items: Array[ShardItem] = []
+  let mut i = 0
+  while i < Array::length(files) {
+    let file = Array::get(files, i)
+    let key = normalize_path(file, root)
+    Array::push(items, ShardItem::{
+      file: file,
+      key: key,
+      original: i,
+      weight: weight_for(keys, values, key, file)
+    })
+    i = i + 1
+  }
+  sort_by_weight(items)
+  let bins: Array[Array[ShardItem]] = []
+  let loads: Array[Int] = []
+  let mut b = 0
+  while b < total {
+    Array::push(bins, [])
+    Array::push(loads, 0)
+    b = b + 1
+  }
+  let mut k = 0
+  while k < Array::length(items) {
+    let item = Array::get(items, k)
+    let mut best = 0
+    let mut t = 1
+    while t < total {
+      if Array::get(loads, t) < Array::get(loads, best) {
+        best = t
+      } else {
+        ()
+      }
+      t = t + 1
+    }
+    Array::push(Array::get(bins, best), item)
+    Array::set(loads, best, Array::get(loads, best) + item.weight)
+    k = k + 1
+  }
+  let chosen = Array::get(bins, index)
+  sort_by_origin(chosen)
+  let out: Array[String] = []
+  let mut c = 0
+  while c < Array::length(chosen) {
+    Array::push(out, Array::get(chosen, c).file)
+    c = c + 1
+  }
+  out
+}
+
+fn expect(cond: Bool, message: String) -> Unit with Stderr + Process {
+  if cond { () } else { die("select-test-shard: " + message) }
+}
+
+fn joined(xs: Array[String]) -> String {
+  let mut out = ""
+  let mut i = 0
+  while i < Array::length(xs) {
+    if i > 0 { out = out + "," } else { () }
+    out = out + Array::get(xs, i)
+    i = i + 1
+  }
+  out
+}
+
+fn kept_weights(path: String) -> String with Fs + Stderr + Process {
+  let keys = load_weight_keys(path)
+  let values = load_weight_values(path, keys)
+  let mut out = ""
+  let mut i = 0
+  while i < Array::length(keys) {
+    let w = Array::get(values, i)
+    if w >= 0 {
+      if out != "" { out = out + "," } else { () }
+      out = out + Array::get(keys, i) + "=" + __to_string(w)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn self_test() -> Unit with Fs + Console + Stderr + Process {
+  let root = "/tmp/repo"
+  expect(
+    normalize_path(root + "/lib/@vibe/compiler/a_test.vibe", root) == "lib/@vibe/compiler/a_test.vibe",
+    "absolute path stays relative"
+  )
+  let files = ["a_test.vibe", "b_test.vibe", "c_test.vibe", "d_test.vibe", "e_test.vibe"]
+  let keys = ["a_test.vibe", "b_test.vibe", "c_test.vibe", "d_test.vibe", "e_test.vibe"]
+  let values = [1, 10, 9, 1, 1]
+  expect(joined(select_shard(files, 0, 2, "", keys, values)) == "b_test.vibe,d_test.vibe", "shard 0")
+  expect(joined(select_shard(files, 1, 2, "", keys, values)) == "a_test.vibe,c_test.vibe,e_test.vibe", "shard 1")
+  expect(Array::length(load_weight_keys("/tmp/missing-selfhost-weights.json")) == 0, "missing weights file is empty")
+  let dir = "_build/select-test-shard-selftest"
+  if Fs::exists(dir) { Fs::remove_tree(dir) } else { () }
+  Fs::mkdir_p(dir)
+  let wpath = dir + "/weights.json"
+  Fs::write_file(wpath, "{\"keep\":3,\"nested\\\\path\":2,\"negative\":-1,\"stringy\":\"4\",\"bad\":\"nan\"}\n")
+  let got = kept_weights(wpath)
+  expect(String::contains(got, "keep=3"), "keep: " + got)
+  expect(String::contains(got, "nested/path=2"), "nested: " + got)
+  expect(String::contains(got, "stringy=4"), "stringy: " + got)
+  expect(!String::contains(got, "negative"), "negative was kept: " + got)
+  expect(!String::contains(got, "bad"), "nan was kept: " + got)
+  Fs::remove_tree(dir)
+  println("select-test-shard: ok")
+}
+
+fn main() -> Unit allows Env + Fs + Console + Stderr + Process {
+  if flag("--self-test") {
+    self_test()
+  } else {
+    let index = require_int("--index", option("--index"))
+    let total = require_int("--total", option("--total"))
+    let root = option("--root")
+    let weights = option("--weights")
+    let keys = load_weight_keys(weights)
+    let chosen = select_shard(after_dash(), index, total, root, keys, load_weight_values(weights, keys))
+    let mut i = 0
+    while i < Array::length(chosen) {
+      println(Array::get(chosen, i))
+      i = i + 1
+    }
+  }
+}

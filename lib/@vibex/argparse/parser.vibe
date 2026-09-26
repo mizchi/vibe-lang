@@ -18,7 +18,24 @@ export enum ParseResult {
 
 //# Functions
 
-export fn parse_args(args: Array[String]) -> ParseResult {
+fn takes_value(valued: Array[String], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(valued) {
+    if Array::get(valued, i) == name {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// `valued` names long options that take the next token (`--index 0`),
+/// not only `--index=0`. A name that is not listed stays a flag, so
+/// `--verbose file` is still a flag plus a positional.
+export fn parse_args_taking(args: Array[String], valued: Array[String]) -> ParseResult {
   let total = Array::length(args)
   let starts_with_dash = (s: String) -> Bool {
     String::length(s) > 0 && s[0: 1] == "-"
@@ -60,6 +77,13 @@ export fn parse_args(args: Array[String]) -> ParseResult {
           let key = body[0: eq_pos]
           let value = body[eq_pos + 1: String::length(body)]
           prepend_token(Opt(key, value), r#loop(i + 1, false))
+        } else if takes_value(valued, body) && i + 1 < total {
+          let next = Array::get(args, i + 1)
+          if next == "--" {
+            prepend_token(Flag(body), r#loop(i + 1, false))
+          } else {
+            prepend_token(Opt(body, next), r#loop(i + 2, false))
+          }
         } else {
           prepend_token(Flag(body), r#loop(i + 1, false))
         }
@@ -95,5 +119,52 @@ export fn parse_args(args: Array[String]) -> ParseResult {
     }
   }
   r#loop(0, false)
+}
+
+export fn parse_args(args: Array[String]) -> ParseResult {
+  parse_args_taking(args, [])
+}
+
+export fn has_flag(items: ArgList, name: String) -> Bool {
+  match items {
+    ArgNil => false,
+    ArgCons(Flag(found), rest) => if found == name {
+      true
+    } else {
+      has_flag(rest, name)
+    },
+    ArgCons(_, rest) => has_flag(rest, name)
+  }
+}
+
+export fn opt_value(items: ArgList, name: String) -> String {
+  match items {
+    ArgNil => "",
+    ArgCons(Opt(found, value), rest) => if found == name {
+      value
+    } else {
+      opt_value(rest, name)
+    },
+    ArgCons(_, rest) => opt_value(rest, name)
+  }
+}
+
+/// Tokens after the first `--`. This is the same marker `parse_args` uses
+/// to stop recognising options.
+export fn tokens_after_dash(args: Array[String]) -> Array[String] {
+  let out: Array[String] = []
+  let mut i = 0
+  let mut take = false
+  while i < Array::length(args) {
+    if take {
+      Array::push(out, Array::get(args, i))
+    } else if Array::get(args, i) == "--" {
+      take = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
 }
 

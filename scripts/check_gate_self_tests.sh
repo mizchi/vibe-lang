@@ -123,8 +123,12 @@ missing=""
 # companion happened to exist. `.py` and a non-oracle `.mjs` are now asked like
 # any other gate. Nothing enters the baseline for this widening: the two `.py`
 # gates each have a companion.
+# A `.vibex` gate is asked the same way. The run loop below also accepts a
+# `.py` or `.vibex` sibling: discovery already required the companion, and
+# skipping the run credited the file for existing.
 for f in scripts/check_*.sh scripts/lint_*.sh scripts/*_gate.sh scripts/*_oracle.mjs \
-         scripts/check_*.py scripts/lint_*.py scripts/check_*.mjs scripts/lint_*.mjs; do
+         scripts/check_*.py scripts/lint_*.py scripts/check_*.mjs scripts/lint_*.mjs \
+         scripts/check_*.vibex scripts/lint_*.vibex; do
   # An unmatched glob arrives as its own literal text; skip it rather than
   # reporting `scripts/lint_*.sh` as a gate with no self-test.
   [ -e "$f" ] || continue
@@ -132,9 +136,9 @@ for f in scripts/check_*.sh scripts/lint_*.sh scripts/*_gate.sh scripts/*_oracle
   # widening to `.py`/`.mjs` brought their companion spellings in with them,
   # and `check_fixture_snapshots.test.mjs` was briefly reported as a gate with
   # no self-test -- a companion asked for a companion.
-  case "$f" in *_test.sh|*_test.py|*_test.mjs|*.test.mjs|*.test.py) continue ;; esac
+  case "$f" in *_test.sh|*_test.py|*_test.mjs|*.test.mjs|*.test.py|*.test.vibex) continue ;; esac
   base="${f%.sh}"
-  case "$f" in *.mjs) base="${f%.mjs}" ;; *.py) base="${f%.py}" ;; esac
+  case "$f" in *.mjs) base="${f%.mjs}" ;; *.py) base="${f%.py}" ;; *.vibex) base="${f%.vibex}" ;; esac
   [ -f "${base}_test.sh" ] && continue
   # `.test.mjs` is the other companion spelling already in this tree
   # (incremental_invalidation_oracle, artifact_input_trace_oracle), so it
@@ -153,7 +157,7 @@ stale=""
 while IFS= read -r name; do
   [ -n "$name" ] || continue
   base="${name%.sh}"
-  case "$name" in *.mjs) base="${name%.mjs}" ;; *.py) base="${name%.py}" ;; esac
+  case "$name" in *.mjs) base="${name%.mjs}" ;; *.py) base="${name%.py}" ;; *.vibex) base="${name%.vibex}" ;; esac
   if [ ! -f "scripts/$name" ]; then
     stale="$stale $name(script-gone)"
   elif [ -f "scripts/${base}_test.sh" ] || [ -f "scripts/${base}.test.mjs" ]; then
@@ -286,7 +290,7 @@ if [ "${VIBE_GATE_SELF_TESTS_RUN:-1}" = "1" ]; then
     # refusing to RUN theirs would credit the file for existing.
     case "$t" in
       *.test.mjs) [ -f "${t%.test.mjs}.mjs" ] || [ -f "${t%.test.mjs}.sh" ] || continue ;;
-      *) [ -f "${t%_test.sh}.sh" ] || [ -f "${t%_test.sh}.mjs" ] || continue ;;
+      *) [ -f "${t%_test.sh}.sh" ] || [ -f "${t%_test.sh}.mjs" ] || [ -f "${t%_test.sh}.py" ] || [ -f "${t%_test.sh}.vibex" ] || continue ;;
     esac
     base="${t#scripts/}"
     if printf '%s\n' "$failing_allowed" | grep -qxF "$base"; then

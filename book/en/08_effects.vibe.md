@@ -143,13 +143,12 @@ A `handle` has to be able to see every `perform` it covers. For each call
 in the handled body, the compiler needs to know what that call performs.
 
 Most calls it can see: a top-level `fn`, a builtin, a closure whose
-binding or parameter carries an effect row, and a closure written inside
-the handled body. The shape it cannot see is a **rowless closure bound
-outside** the handled body — there is no definition to look at and no row
-to read. It type-checks and is still rejected:
+binding or parameter carries an effect row, a closure written inside the
+handled body, and a rowless closure bound outside it whose body is only
+pure computation. `bump` below performs nothing. The perform is
+`ask_once()`, written in the handle, so the handle sees it:
 
-```vibe skip
-// skip: this is the rejected shape, shown for the diagnostic it produces
+```vibe run
 effect Ask {
   Once() -> Int
 }
@@ -158,26 +157,24 @@ fn ask_once() -> Int with Ask {
   perform Ask::Once()
 }
 
-fn main() -> Int {
+fn main allows Console {
   let bump = (x: Int) -> Int { x + 1 }
-  handle { bump(ask_once()) } with {
+  let n = handle { bump(ask_once()) } with {
     Ask::Once() => resume(41)
   }
+  println("\{n}")
 }
 ```
 
-```
-handle of effect 'Ask' cannot be compiled here: this handle cannot see what
-one call in its body performs (here: the call to 'bump'). Make that call
-visible -- declare 'bump' as a top-level `fn`, give the binding or parameter
-it arrives through an effect row (`with Ask`), or move its `let` inside the
-handled body. Moving the `handle` into the function that performs works too.
-(ADR-0076 evidence-passing migration.)
+```output
+42
 ```
 
-The message lists four repairs and any one of them works; here the
-smallest is to make `bump` a top-level `fn`. The ADR reference at the end
-is a maintainer's note — the four repairs are the part addressed to you.
+What it still cannot see is a call with no visible body: an
+immediately-applied closure, or a lambda whose own body performs or
+calls something this pass cannot name. That program type-checks and is
+rejected. The diagnostic names the edit. It does not name a compiler
+pass.
 
 ## Effects you do not handle: capabilities
 
