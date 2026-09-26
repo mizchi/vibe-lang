@@ -7246,7 +7246,7 @@ fn is_future_cell_ty(t: Type, defs: Array[TypeDef], depth: Int) -> Bool {
     true
   } else {
     match t {
-      CtNamed(n, targs) => n == "Future" || is_future_cell_ty_any(targs, defs, depth + 1) || decl_holds_future_cell(n, defs, depth + 1),
+      CtNamed(n, targs) => n == "Future" || named_args_hold_future_cell(n, targs, defs, depth + 1) || decl_holds_future_cell(n, defs, depth + 1),
       CtStruct(n) => decl_holds_future_cell(n, defs, depth + 1),
       CtEnum(n) => decl_holds_future_cell(n, defs, depth + 1),
       CtTuple(elems) => is_future_cell_ty_any(elems, defs, depth + 1),
@@ -7259,6 +7259,98 @@ fn is_future_cell_ty(t: Type, defs: Array[TypeDef], depth: Int) -> Bool {
       }, defs, depth + 1),
       _ => false
     }
+  }
+}
+
+/// The type arguments of `n` that hold a future cell. A declared type only
+/// stores the arguments its fields mention: `struct Marker[T] { tag: Int }`
+/// at `Marker[Future[a]]` holds no cell, so it must not keep `a` monomorphic
+/// (Codex on #3091). An undeclared head keeps every argument.
+fn named_args_hold_future_cell(n: String, targs: Array[Type], defs: Array[TypeDef], depth: Int) -> Bool {
+  match find_typedef(defs, n) {
+    Some(_) => {
+      let mut hit = false
+      let mut i = 0
+      while i < Array::length(targs) && !hit {
+        hit = is_future_cell_ty(Array::get(targs, i), defs, depth) && decl_param_stores_future(n, i, defs, depth)
+        i = i + 1
+      }
+      hit
+    },
+    None => is_future_cell_ty_any(targs, defs, depth)
+  }
+}
+
+/// Parameters being walked by `decl_param_stores_future`, keyed `name#index`,
+/// so a recursive declaration that never stores the parameter answers "no"
+/// instead of recursing.
+let future_param_walk: Array[String] = []
+
+/// Whether declaration `n` stores its `idx`-th type parameter where a future
+/// placed there is kept: the fields are instantiated with a `Future` in that
+/// position (and `Int` elsewhere) and asked the same question.
+fn decl_param_stores_future(n: String, idx: Int, defs: Array[TypeDef], depth: Int) -> Bool {
+  let key = String::concat(String::concat(n, "#"), Int::to_string(idx))
+  let mut seen = false
+  let mut wi = 0
+  while wi < Array::length(future_param_walk) && !seen {
+    seen = Array::get(future_param_walk, wi) == key
+    wi = wi + 1
+  }
+  if seen {
+    false
+  } else {
+    Array::push(future_param_walk, key)
+    let stores = match find_typedef(defs, n) {
+      Some(td) => {
+        let (tparams, field_tys) = match td {
+          TDStruct(_, fields, _, tps) => (tps, for f in fields {
+            let (_, ft) = f
+            ft
+          }),
+          TDEnum(_, tps, variants) => {
+            let all: Array[Type] = []
+            let mut vi = 0
+            while vi < Array::length(variants) {
+              let (_, payload) = Array::get(variants, vi)
+              let mut pi = 0
+              while pi < Array::length(payload) {
+                Array::push(all, Array::get(payload, pi))
+                pi = pi + 1
+              }
+              vi = vi + 1
+            }
+            (tps, all)
+          },
+          TDAlias(_, aps, body) => (aps, [body]),
+          _ => (array_empty(), array_empty())
+        }
+        if idx >= Array::length(tparams) {
+          true
+        } else {
+          let probe: Array[Type] = []
+          let mut pj = 0
+          while pj < Array::length(tparams) {
+            Array::push(probe, if pj == idx {
+              CtNamed("Future", [CtInt])
+            } else {
+              CtInt
+            })
+            pj = pj + 1
+          }
+          let inst: Array[Type] = []
+          let mut fi = 0
+          while fi < Array::length(field_tys) {
+            Array::push(inst, subst_type_params(Array::get(field_tys, fi), tparams, probe))
+            fi = fi + 1
+          }
+          is_future_cell_ty_any(inst, defs, depth + 1)
+        }
+      },
+      None => true
+    }
+    Array::truncate(future_param_walk, Array::length(future_param_walk) - 1)
+    stores
   }
 }
 

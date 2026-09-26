@@ -1205,7 +1205,7 @@ export fn TaskGroup::spawn_suspend[rg, e, T: Send](n: TaskGroup[rg, e], f: () ->
         TaskHandle::park_kind(h, resume, false, 0)
         h.cell.host_wait = r
         conc_host_register_parked(h.cell)
-        conc_host_record_cell(r)
+        conc_host_note_park(r, h.cell.serial)
       } else {
         TaskHandle::park_kind(h, resume, r >= 1, 0)
       }
@@ -1766,6 +1766,38 @@ export fn __aw_note(f: Array[Int]) -> Int {
   Array::truncate(conc_aw_noted, 0)
   Array::push(conc_aw_noted, f)
   0
+}
+
+/// #2066 (Codex on #3091): a host stream cell read by a task is stamped
+/// with that task's serial (slot 2), and a read by any other task traps.
+/// The capture check refuses sharing a stream it can see; a closure a helper
+/// returned hides it, and two readers of one stream would split or duplicate
+/// its bytes. Keyed by the CELL, so a stream handle reused by a later stream
+/// starts clean.
+fn conc_host_claim_stream(f: Array[Int], serial: Int) -> Unit {
+  if Array::length(f) >= 3 {
+    if Array::get(f, 2) != serial {
+      abort("vibe: a host stream is read by two tasks; give it one owner")
+    } else {
+      ()
+    }
+  } else {
+    Array::push(f, serial)
+  }
+}
+
+fn conc_host_note_park(payload: Int, serial: Int) -> Unit {
+  if Array::length(conc_aw_noted) > 0 {
+    let f = Array::get(conc_aw_noted, 0)
+    if Array::get(f, 0) == 3 && Array::get(f, 1) + 2048 == payload {
+      Array::truncate(conc_aw_noted, 0)
+      conc_host_claim_stream(f, serial)
+    } else {
+      conc_host_record_cell(payload)
+    }
+  } else {
+    ()
+  }
 }
 
 fn conc_host_record_cell(payload: Int) -> Unit {

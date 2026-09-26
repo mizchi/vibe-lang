@@ -4283,11 +4283,23 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
         EBinOp("+", hsn_hnd, EInt(lc_hs_req_base()), -1)
       ], -1)
     ], -1)
-    let hsn_body = EIf(EBinOp("==", hsn_state, EInt(3), -1), ELet("__hsn_v", hsn_suspend, ECall(EIdent("__hs_fin", -1), [
+    let hsn_read = ELet("__hsn_v", hsn_suspend, ECall(EIdent("__hs_fin", -1), [
       // review-lint: allow-fixed-synthetic-name
       hsn_s,
       EIdent("__hsn_v", -1)
-    ], -1), -1), EBinOp("-", EInt(0), EInt(1), -1))
+    ], -1), -1)
+    // #2066 (Codex on #3091): a stream has ONE reader. Note the cell before
+    // the read parks, so @vibe/concurrent can stamp the reading task into it
+    // and refuse a second task -- a closure a helper returned carries the
+    // stream past the spawn check.
+    let hsn_note = lc_aw_note_available(stmts, array_empty())
+    let hsn_guarded = if hsn_note != "" {
+      ELet("__hsn_n", ECall(EIdent(hsn_note, -1), [hsn_s], -1), hsn_read, -1)
+      // review-lint: allow-fixed-synthetic-name (the injected __hs_next's own scope)
+    } else {
+      hsn_read
+    }
+    let hsn_body = EIf(EBinOp("==", hsn_state, EInt(3), -1), hsn_guarded, EBinOp("-", EInt(0), EInt(1), -1))
     let hsn_params: Array[(String, Option[TypeExpr])] = [("__hsn_s", None)]
     Array::push(stmts, SLet(false, false, lc_fixed_synthetic_name("__hs_next", "review-lint: allow-fixed-synthetic-name"), None, EFn(lc_fresh_string_array(), array_empty(), hsn_params, Some(TyName("Int")), Some("Async"), hsn_body)))
     // #1955: public source protocol. Authority remains in the Async row and
