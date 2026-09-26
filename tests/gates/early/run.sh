@@ -2617,11 +2617,13 @@ echo "[compiler-gate] Map::get missing-key trap ok (linear and gc)"
 # lane's frame annotation pointed at the enclosing statement's line, gc at
 # nothing. Each fixture prints a line first, so a build or run that dies before
 # the division cannot satisfy the row, and the division still TRAPS: this adds
-# a message, not a checked operator.
+# a message, not a checked operator. The mixed fixture also divides Doubles:
+# the site pass skips a `/` whose operand is a Double by its own syntax, and
+# must still place the Int division beside them.
 echo "[compiler-gate] Int / and % by zero name the operation and path:line:col (#3126)"
 dzdir="_build/_gate_div_zero"
 rm -rf "$dzdir"; mkdir -p "$dzdir"
-for dz_case in "int_div_zero_trap|/|7|5" "int_rem_zero_trap|%|7|5" "int_div_assign_zero_trap|/|7|8" "int_div_zero_vibe_comment_trap|/|7|5"; do
+for dz_case in "int_div_zero_trap|/|7|5" "int_rem_zero_trap|%|7|5" "int_div_assign_zero_trap|/|7|8" "int_div_zero_vibe_comment_trap|/|7|5" "int_div_zero_mixed_double_trap|/|14|5"; do
   IFS='|' read -r dz_name dz_op dz_line dz_col <<<"$dz_case"
   dz_src="fixtures/$dz_name.vibe"
   dz_want="Int \`$dz_op\` by zero at $dz_src:$dz_line:$dz_col"

@@ -71,6 +71,24 @@ export fn int_divisor_may_be_zero(divisor: Expr) -> Bool {
   }
 }
 
+/// #3126: is `e` a `Double` by its own syntax alone? A `Double` literal, its
+/// negation, `Int::to_double` / `Int::to_float` / `Float::to_double`, an
+/// arithmetic operator with such an operand, or an `if` with such a branch.
+/// Operands of an arithmetic operator share one type, so a `/` or `%` with an
+/// operand this answers `true` for is a `Double` division and never traps.
+/// Only ever `true` for a `Double`: anything it cannot read says `false`,
+/// which keeps the site (an unused helper, never a missing one).
+fn expr_is_syntactic_double(e: Expr) -> Bool {
+  match e {
+    EFloat(_) => true,
+    EUnaryOp(op, x) => op == "-" && expr_is_syntactic_double(x),
+    EBinOp(op, l, r, _) => (op == "+" || op == "-" || op == "*" || op == "/" || op == "%") && (expr_is_syntactic_double(l) || expr_is_syntactic_double(r)),
+    ECall(EIdent(cn, _), _, _) => cn == "Int::to_double" || cn == "Int::to_float" || cn == "Float::to_double",
+    EIf(_, a, b) => expr_is_syntactic_double(a) || expr_is_syntactic_double(b),
+    _ => false
+  }
+}
+
 /// #3126: where an `Int` `/` or `%` by zero reports itself --
 /// `(path, line, col)` of the operator (of the divisor for `x /= y`, which
 /// carries no operator position), or `("", 0, 0)` when the offset cannot be
@@ -99,7 +117,7 @@ export fn int_div_site_text(off: Int) -> String {
 /// when `e` is not a `/` / `%` whose divisor may be zero.
 fn int_div_site_off(e: Expr) -> Int {
   match e {
-    EBinOp(op, _, rhs, off) => if (op == "/" || op == "%") && int_divisor_may_be_zero(rhs) {
+    EBinOp(op, lhs, rhs, off) => if (op == "/" || op == "%") && int_divisor_may_be_zero(rhs) && !expr_is_syntactic_double(lhs) && !expr_is_syntactic_double(rhs) {
       if off >= 0 {
         off
       } else {
@@ -108,7 +126,7 @@ fn int_div_site_off(e: Expr) -> Int {
     } else {
       0 - 1
     },
-    EAssignOp(_, op, value, _) => if (op == "/" || op == "%") && int_divisor_may_be_zero(value) {
+    EAssignOp(_, op, value, _) => if (op == "/" || op == "%") && int_divisor_may_be_zero(value) && !expr_is_syntactic_double(value) {
       let off = first_offset(value)
       if off >= 0 {
         off
@@ -133,8 +151,10 @@ fn int_div_site_off(e: Expr) -> Int {
 /// when a file gains its first division rather than on every edit that shifts
 /// a line.
 ///
-/// Syntactic: a `Double` `/` is counted too, since the operand types are not
-/// known here. That over-approximates only an unused string and helper.
+/// Syntactic: the operand types are not known here, so a `Double` `/` is
+/// counted too unless an operand says `Double` by its own syntax
+/// (`expr_is_syntactic_double`: `x / 10000.0`, `Int::to_double(n) / d`).
+/// What it cannot read over-approximates only an unused string and helper.
 export fn collect_int_div_sites(stmts: Array[Stmt], out: Array[String], seen: MutSet[String], whole: Bool) -> Bool {
   let found = [false]
   let mut i = 0
