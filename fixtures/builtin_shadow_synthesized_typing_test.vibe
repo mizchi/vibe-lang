@@ -1,0 +1,46 @@
+// #3146: a call the COMPILER synthesizes by a builtin's name (interpolation's
+// `String::concat` joins, index sugar, for-in) is typed from the BUILTIN's
+// signature and row, the way codegen sends it to the builtin (#3132). The
+// program below defines its own `String::concat` and `Array::get` with other
+// arities, other types and a row; before #3146 the checker typed the
+// interpolation joins against the program's `String::concat` and refused the
+// file (`argument type mismatch for String::concat: expected Int, got String`).
+// The program's OWN calls keep reaching, and being typed by, its own
+// functions.
+
+fn String::concat(a: Int, b: Int) -> Int {
+  a - b
+}
+
+fn Array::get(xs: Array[Int]) -> Int {
+  let _ = xs
+  77
+}
+
+fn label(n: Int) -> String {
+  "n=\{n}!"
+}
+
+test "interpolation joins are typed as the builtin String::concat" {
+  let n = 5
+  let s: String = "a\{n}b\{n + 1}c"
+  inspect(s, content = "a5b6c")
+  inspect(label(4), content = "n=4!")
+}
+
+test "index sugar, for-in and array interpolation reach the builtin Array::get" {
+  let xs = [10, 20, 30]
+  inspect(xs[1] - xs[0], content = "10")
+  let mut total = 0
+  for x in xs {
+    total = total + x
+  }
+  inspect(total, content = "60")
+  inspect("\{xs}", content = "[10, 20, 30]")
+}
+
+test "the program's own calls reach its own functions" {
+  let d: Int = String::concat(9, 4)
+  inspect(d, content = "5")
+  inspect(Array::get([1, 2]), content = "77")
+}

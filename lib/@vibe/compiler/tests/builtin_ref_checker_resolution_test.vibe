@@ -1,0 +1,61 @@
+//# A compiler-synthesized builtin call is typed as the builtin (#3146)
+
+// #3132 made codegen send a call the compiler synthesized with `builtin_ref`
+// (offset -2: interpolation joins, index sugar) to the builtin even when the
+// program defines a function of the same name. The checker still resolved
+// such a call through the environment, so it typed the join against the
+// program's function: a spurious type error in code the program never wrote,
+// and the program's effect row charged to a function that never calls it.
+// These run the same per-module lane `vibe check` and the FS compile run.
+
+//# Imports
+
+import @vibe/compiler/entry/compiler/fs_compile {
+  prepare_modules_cached
+}
+
+import ../type_db.vibe {
+  db_new
+}
+
+//# Functions
+
+/// The diagnostic the per-module lane gives `main.vibe`, or "" when it checks
+/// clean.
+fn diag_of(src: String) -> String with Env {
+  handle {
+    let _ = prepare_modules_cached(db_new(), "main.vibe", src, [])
+    ""
+  } with { Exception::Throw(msg) => msg }
+}
+
+fn int_concat() -> String {
+  "fn String::concat(a: Int, b: Int) -> Int {\n  a - b\n}\n\n"
+}
+
+//# Tests
+
+test "#3146 an interpolation join is typed from the builtin, not the program's String::concat" {
+  let src = String::concat(int_concat(), "fn label(n: Int) -> String {\n  \"n=\\{n}!\"\n}\n")
+  inspect(diag_of(src), content = "")
+}
+
+test "#3146 the program's own call is still typed from its own signature" {
+  let ok = String::concat(int_concat(), "fn f() -> Int {\n  String::concat(9, 4)\n}\n")
+  inspect(diag_of(ok), content = "")
+  let bad = String::concat(int_concat(), "fn f() -> String {\n  String::concat(9, 4)\n}\n")
+  assert(String::contains(diag_of(bad), "expected String, got Int"))
+}
+
+test "#3146 a synthesized join does not inherit the program's row" {
+  let src = "fn String::concat(a: String, b: String) -> String with Console {\n  println(\"shadow\")\n  a\n}\n\nfn label(n: Int) -> String {\n  \"n=\\{n}!\"\n}\n"
+  inspect(diag_of(src), content = "")
+  // ... while the program's own call still requires it.
+  let direct = "fn String::concat(a: String, b: String) -> String with Console {\n  println(\"shadow\")\n  a\n}\n\nfn f() -> String {\n  String::concat(\"x\", \"y\")\n}\n"
+  assert(String::contains(diag_of(direct), "missing { Console }"))
+}
+
+test "#3146 index sugar is typed from the builtin under a one-argument Array::get" {
+  let src = "fn Array::get(xs: Array[Int]) -> Int {\n  let _ = xs\n  77\n}\n\nfn f() -> Int {\n  let xs = [1, 2]\n  xs[1] + Array::get(xs)\n}\n"
+  inspect(diag_of(src), content = "")
+}

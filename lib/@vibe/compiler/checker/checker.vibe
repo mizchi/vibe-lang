@@ -125,6 +125,7 @@ import @vibe/ast {
   impl_encode_name,
   impl_method_owner_head,
   index_site_offset,
+  is_builtin_ref_offset,
   trait_ref_args,
   trait_ref_from_key,
   trait_ref_key,
@@ -8150,17 +8151,47 @@ fn future_builtin_type(name: String, arg_tys: Array[Type], args: Array[Expr], s:
   }
 }
 
-fn direct_call_return(env: TypeEnv, name: String) -> Option[Type] {
+fn direct_call_return(env: TypeEnv, name: String, callee_off: Int) -> Option[Type] {
   // Ask the builtin table first so user-defined callees pay no environment
   // scan. A lookup that includes surface bindings proves both kinds absent
   // in one walk; ordinary value lookup hides surfaces and needs a second.
   match direct_builtin_return(canonical_builtin_name(name)) {
     None => None,
-    Some(ret) => if builtin_is_unshadowed(env, name) {
+    Some(ret) => if builtin_resolves_at(env, name, callee_off) {
       Some(ret)
     } else {
       None
     }
+  }
+}
+
+/// #3146: whether a reference to `name` at `ident_off` means the BUILTIN.
+/// A reference the compiler synthesized (`builtin_ref`, and the index-sugar
+/// keys below it) means the builtin whatever the program defines: codegen
+/// sends it there once `rename_builtin_shadow_defs` has moved the program's
+/// own definition aside (#3132), so the checker types it from the builtin's
+/// signature too. Any other reference means the builtin only while no binding
+/// of the program claims the spelling.
+fn builtin_resolves_at(env: TypeEnv, name: String, ident_off: Int) -> Bool {
+  is_builtin_ref_offset(ident_off) || builtin_is_unshadowed(env, name)
+}
+
+/// #3146: the program's binding for `name`, skipped when `ident_off` marks a
+/// compiler-synthesized reference to a builtin of that name. The caller's
+/// builtin lookup then answers, so a program's same-named function cannot
+/// capture a call it never wrote.
+fn env_lookup_unless_synthesized_builtin(env: TypeEnv, name: String, ident_off: Int) -> Option[Type] {
+  if is_builtin_ref_offset(ident_off) && is_some_type(lookup_builtin(name)) {
+    None
+  } else {
+    env_lookup(env, name)
+  }
+}
+
+fn is_some_type(t: Option[Type]) -> Bool {
+  match t {
+    Some(_) => true,
+    None => false
   }
 }
 
@@ -11454,7 +11485,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       // the marker.
       Array::push(errors, String::concat(String::concat(String::concat("`", name), "` uses a reserved compiler-internal prefix (type-formal markers) -- rename the identifier"), off_marker_len(ident_off, String::length(name))))
       (CtUnknown, s, c)
-    } else match env_lookup(env, railway_ident_lookup_name(name)) {
+    } else match env_lookup_unless_synthesized_builtin(env, railway_ident_lookup_name(name), ident_off) {
       Some(t) => {
         let let_rhs = Array::length(spawn_value_let_rhs_cell) != 0
         Array::truncate(spawn_value_let_rhs_cell, 0)
@@ -12153,7 +12184,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             ()
           }
           (tab_call_ty(tytab, call_off, CtInt, capture, lane), s1, c1)
-        } else if name == "Array::with_capacity" && Array::length(args) == 1 && builtin_is_unshadowed(env, name) {
+        } else if name == "Array::with_capacity" && Array::length(args) == 1 && builtin_resolves_at(env, name, callee_off) {
           // Registry variables are erased on direct calls. A fresh element
           // slot keeps this mutable array monomorphic across all of its uses,
           // exactly as for an empty literal; the capacity expression is checked once.
@@ -13148,7 +13179,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             }
           }
         } else {
-          match direct_call_return(env, name) {
+          match direct_call_return(env, name, callee_off) {
             Some(ret_ty) => {
               let alen = Array::length(args)
               let want_head = builtin_param_head(name, 0)
@@ -13298,7 +13329,9 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                   // the form they allow. Unknown names still go through EIdent
                   // so the diagnostic uses the real callee offset.
                   let lookup_name = railway_ident_lookup_name(name)
-                  let (ct, s1, c1) = match env_lookup(env, lookup_name) {
+                  // #3146: a call the compiler synthesized skips the program's
+                  // same-named function and reaches the builtin below.
+                  let (ct, s1, c1) = match env_lookup_unless_synthesized_builtin(env, lookup_name, callee_off) {
                     Some(t) => {
                       let (ti, nc, new_bounds) = instantiate(t, c)
                       // #3027: the handle check reads a generic callee's
@@ -13527,7 +13560,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                 }
               }
             } else {
-              let direct_ret = direct_call_return(env, qualified)
+              let direct_ret = direct_call_return(env, qualified, 0 - 1)
               let method_ty = match env_lookup(env, qualified) {
                 Some(t) => {
                   let (ti, c2, _) = instantiate(t, c1)
@@ -13742,7 +13775,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           None => {
             let callee_name0 = expr_ident_name_or_empty(callee)
             if callee_name0 != "" {
-              match direct_call_return(env, callee_name0) {
+              match direct_call_return(env, callee_name0, 0 - 1) {
                 Some(ret_ty) => {
                   // A direct-return lookup avoids rechecking this callee.
                   typed_occurrence_capture_skip_children(capture, 1)
