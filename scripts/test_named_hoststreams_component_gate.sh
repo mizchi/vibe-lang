@@ -692,4 +692,96 @@ grep -qF "its captures cannot be seen here" "$SRC_OUT.diag" 2>/dev/null \
   || { echo "named hoststreams component gate FAILED: stream_returned_closure_refused gave an unexpected diagnostic: $(cat "$SRC_OUT.diag" 2>/dev/null)" >&2; exit 1; }
 echo "[named-hoststreams-component-gate] a stream opened by the entry reaching a task: refused at compile time (captured, or through a returned closure)"
 
+# #3189 review (Codex): whether @vibe/concurrent's hooks arm host streams, and
+# whether the entry boundary keeps its stream band, is decided from the
+# program the reachability prune LEFT. The next three rows pin both sides.
+#
+# fixtures/async_spawn_host_futures/stream_option_literal.vibe: every read runs
+# on a CPS spine through `HostStream::next`, so only the step clone of
+# `__hs_next_option` survives the prune. The survival test has to count that
+# clone, or the first read hits the group's deadlock trap (#3151's route).
+SOL_OUT="$OUT_DIR/spawn_stream_option_literal.component.wasm"
+rm -f "$SOL_OUT" "$SOL_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/stream_option_literal.vibe "$SOL_OUT" run >/dev/null 2>&1 || true
+[ -s "$SOL_OUT" ] || { echo "named hoststreams component gate FAILED: fixtures/async_spawn_host_futures/stream_option_literal.vibe did not compile: $(cat "$SOL_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+wasm-tools print "$SOL_OUT" >"$SOL_OUT.wat" 2>/dev/null || { echo "named hoststreams component gate FAILED: could not print stream_option_literal" >&2; exit 1; }
+grep -q '"host_stream_arm"' "$SOL_OUT.wat" \
+  || { echo "named hoststreams component gate FAILED: stream_option_literal composed without the host_stream_arm hook import (a read left only as a HostStream::next step clone was not counted, #3189)" >&2; exit 1; }
+SOL_LOG="$OUT_DIR/spawn_stream_option_literal.log"
+if ! VIBE_ASYNC_STREAMS="left=2|3|4@50,right=7|3@50" run_bounded 60 "$RUNNER" "$SOL_OUT" >"$SOL_LOG" 2>&1; then
+  echo "named hoststreams component gate FAILED: stream_option_literal did not exit 0 (the #3151 deadlock trap?)" >&2
+  cat "$SOL_LOG" >&2
+  exit 1
+fi
+[ "$(cat "$SOL_LOG")" = "2310" ] \
+  || { echo "named hoststreams component gate FAILED: stream_option_literal expected 2310 (2 * 10 + 3, then 7 + 3), got: $(cat "$SOL_LOG")" >&2; exit 1; }
+echo "[named-hoststreams-component-gate] stream_option_literal: 2310 (reads left only as step clones keep the stream hooks)"
+
+# fixtures/async_spawn_host_futures/stream_folded_spawn.vibe: the only read is
+# in a spawned literal on an arm a constant `false` removes, so the prune
+# removes every read. The component must build (the stream hooks made it a
+# refused build, "host_stream_cancel without a host stream"), carry no
+# host_stream import or adapter export at all, and answer 42 from its host
+# future. The future half of the hooks is the control: it proves the grep
+# below reads the composed imports.
+SFS_OUT="$OUT_DIR/spawn_stream_folded_spawn.component.wasm"
+rm -f "$SFS_OUT" "$SFS_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/stream_folded_spawn.vibe "$SFS_OUT" run >/dev/null 2>&1 || true
+[ -s "$SFS_OUT" ] || { echo "named hoststreams component gate FAILED: fixtures/async_spawn_host_futures/stream_folded_spawn.vibe did not compile (#3189): $(cat "$SFS_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+check_component_header "$SFS_OUT"
+wasm-tools print "$SFS_OUT" >"$SFS_OUT.wat" 2>/dev/null || { echo "named hoststreams component gate FAILED: could not print stream_folded_spawn" >&2; exit 1; }
+grep -q '"host_future_arm"' "$SFS_OUT.wat" \
+  || { echo "named hoststreams component gate FAILED: stream_folded_spawn composed without the host_future_arm hook import (the control for the check below)" >&2; exit 1; }
+if grep -q 'host_stream' "$SFS_OUT.wat"; then
+  echo "named hoststreams component gate FAILED: stream_folded_spawn has no reachable stream read but composed host-stream machinery (#3189): $(grep -o 'host_stream[a-z_$]*' "$SFS_OUT.wat" | sort -u | tr '\n' ' ')" >&2
+  exit 1
+fi
+SFS_LOG="$OUT_DIR/spawn_stream_folded_spawn.log"
+if ! VIBE_ASYNC_FUTURES="fast=1:100" run_bounded 60 "$RUNNER" "$SFS_OUT" >"$SFS_LOG" 2>&1; then
+  echo "named hoststreams component gate FAILED: stream_folded_spawn did not exit 0" >&2
+  cat "$SFS_LOG" >&2
+  exit 1
+fi
+[ "$(cat "$SFS_LOG")" = "42" ] \
+  || { echo "named hoststreams component gate FAILED: stream_folded_spawn expected 42 (1 + 41), got: $(cat "$SFS_LOG")" >&2; exit 1; }
+echo "[named-hoststreams-component-gate] stream_folded_spawn: 42 (a read the fold removed composes no stream machinery)"
+
+# fixtures/async_spawn_host_futures/stream_folded_helper.vibe: the only read is
+# in a helper closure on an arm a constant `false` removes, spelled
+# `HostStream::next`. With every read pruned the program has no host waitable
+# left, so it is a plain core module: it must import nothing from the host
+# waitable surface (it imported host_stream_read, and with the hooks also
+# host_stream_arm / host_stream_cancel / host_future_wait_any /
+# host_sleep_arm / host_sleep_cancel, which no host provides to a plain
+# module, so it could not be instantiated) and answer 42. Its other `vibe`
+# imports are the control: they prove the grep reads the module's imports.
+SFH_OUT="$OUT_DIR/spawn_stream_folded_helper.wasm"
+rm -f "$SFH_OUT" "$SFH_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/stream_folded_helper.vibe "$SFH_OUT" run >/dev/null 2>&1 || true
+[ -s "$SFH_OUT" ] || { echo "named hoststreams component gate FAILED: fixtures/async_spawn_host_futures/stream_folded_helper.vibe did not compile: $(cat "$SFH_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+wasm-tools print "$SFH_OUT" >"$SFH_OUT.wat" 2>/dev/null || { echo "named hoststreams component gate FAILED: could not print stream_folded_helper" >&2; exit 1; }
+grep -q '(import "vibe" ' "$SFH_OUT.wat" \
+  || { echo "named hoststreams component gate FAILED: stream_folded_helper printed no vibe import at all (the control for the check below)" >&2; exit 1; }
+# The IMPORT, not the bare name: @vibe/concurrent's own data segment carries
+# strings such as "host_wait" and "host_timer".
+if grep -q '(import "vibe" "host_' "$SFH_OUT.wat"; then
+  echo "named hoststreams component gate FAILED: stream_folded_helper has no reachable host waitable but imports host machinery (#3189): $(grep -o '(import "vibe" "host_[a-z_$]*"' "$SFH_OUT.wat" | sort -u | tr '\n' ' ')" >&2
+  exit 1
+fi
+SFH_LOG="$OUT_DIR/spawn_stream_folded_helper.log"
+if ! run_bounded 60 "$RUNNER" "$SFH_OUT" >"$SFH_LOG" 2>&1; then
+  echo "named hoststreams component gate FAILED: stream_folded_helper did not exit 0" >&2
+  cat "$SFH_LOG" >&2
+  exit 1
+fi
+[ "$(cat "$SFH_LOG")" = "42" ] \
+  || { echo "named hoststreams component gate FAILED: stream_folded_helper expected 42, got: $(cat "$SFH_LOG")" >&2; exit 1; }
+echo "[named-hoststreams-component-gate] stream_folded_helper: 42 (a read the fold removed leaves a plain module)"
+
 echo "named hoststreams component gate OK"
