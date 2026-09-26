@@ -882,12 +882,17 @@ nursery の capture は必ず異なる var id を持つ)。実装は
   common_analysis.vibe` の `collect_free_vars_expr`)がすでに存在し、
   この codebase では「解析目的ごとに package 内で複製する」のが既定の
   パターンなので、`checker_spawnable.vibe` 内に自前の走査を複製した。
-  **`ECall` の callee 位置にある裸の識別子は capture として数えない**
-  (builtin/トップレベル関数/コンストラクタはランタイムの capture を
-  要しない一方、`let cb = ...; TaskGroup::spawn(n, () -> { cb() })`
-  のように capture された**ローカルの closure 値**を間接呼び出しする
-  ケースはこの slice では検出できない — 未対応、既知のギャップとして
-  記録)。
+  A bare callee counts as a capture when it names a LOCAL binding (#3152):
+  `let cb = ...; TaskGroup::spawn(n, () -> { cb() })` judges `cb`, while a
+  builtin, top-level function or constructor in callee position still does
+  not. A closure argument passed by name is judged by what it captured:
+  a local `let` closure's captures are recorded where the `let` is checked
+  (`spawn_caps_marker`), the closure parameter of a spawn-shaped function
+  (a `TaskGroup` first, a closure last, e.g. `Parallel::map`) is trusted
+  because every call site of that function is itself checked
+  (`spawn_safe_marker`), and any other closure value is refused.
+  `TaskGroup::run` and the spawn check are both selected by the callee's
+  type rather than its spelling (#3125, #3153).
 - **判定**: `sp_spawnable_ok`(`checker_spawnable.vibe`)— `type_send_ok`
   を満たすか、または `TaskGroup[r]`/`TaskHandle[r,_]`/`Sender[r,_]`/
   `Receiver[r,_]` で `r` が spawn 呼び出し自身の region と一致する場合に

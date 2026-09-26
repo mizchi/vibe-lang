@@ -161,7 +161,7 @@ import ./checker_resolve.vibe {
 }
 
 import ./checker_spawnable.vibe {
-  check_spawnable_captures, closure_bare_callee_names, closure_free_names
+  check_spawnable_captures, closure_bare_callee_names, closure_capture_facts, closure_free_names, spawn_caps_marker, spawn_safe_marker
 }
 
 import ./checker_effects.vibe {
@@ -6062,41 +6062,84 @@ let handle_local_lambdas_cell: Array[(String, Int, Expr)] = []
 /// that calls itself is walked once.
 let handle_lambda_expanding_cell: Array[String] = []
 
-/// #3125: the `Spawnable` capture check needs the closure at the call, so it
-/// is keyed on the callee's TYPE, not its spelling: any callee of shape
-/// `(TaskGroup[r, e], () -> T) -> TaskHandle[r, e, T]` -- `TaskGroup::spawn`,
-/// `TaskGroup::spawn_suspend`, a `let` alias of either, a renamed import, or
-/// a user wrapper with that signature -- gets it. `CtForAll` is looked
-/// through so a generalized `let` alias answers like the declaration.
+/// #3125 / #3152: the `Spawnable` capture check needs the closure at the call,
+/// so it is keyed on the callee's TYPE, not its spelling. A function whose
+/// FIRST parameter is a `TaskGroup[r, e]` and whose LAST parameter is a
+/// closure is taken to run that closure in the group, and its closure
+/// argument is checked at every call: `TaskGroup::spawn`,
+/// `TaskGroup::spawn_suspend` and `Parallel::map` are the library's three, and
+/// a `let` alias, a renamed import, or a user wrapper with that shape answers
+/// the same way. Inside such a function the closure parameter is trusted
+/// (`spawn_safe_marker`), because every call site was checked. A function of
+/// this shape that runs its closure locally is checked anyway -- a
+/// conservative refusal, never a silent pass.
+fn param_types_are_spawn_shaped(params: Array[Type]) -> Bool {
+  let n = Array::length(params)
+  if n < 2 {
+    false
+  } else {
+    let group_ok = match Array::get(params, 0) {
+      CtNamed(gn, gargs) => gn == "TaskGroup" && Array::length(gargs) == 2,
+      _ => false
+    }
+    let closure_ok = match Array::get(params, n - 1) {
+      CtFn(_, _, _) => true,
+      _ => false
+    }
+    group_ok && closure_ok
+  }
+}
+
 fn type_is_spawn_shaped(t: Type) -> Bool {
   match t {
     CtForAll(_, _, body) => type_is_spawn_shaped(body),
-    CtFn(params, ret, _) => if Array::length(params) != 2 {
+    CtFn(params, _, _) => param_types_are_spawn_shaped(params),
+    _ => false
+  }
+}
+
+/// #3153: `TaskGroup::run`'s region-escape check, keyed on the callee's type
+/// like the spawn check: a function taking exactly one closure whose one
+/// parameter is a `TaskGroup[r, e]` (`((TaskGroup[r, e]) -> T) -> T`) is a
+/// nursery runner -- the only way to produce a `TaskGroup` is to be handed one
+/// by `TaskGroup::run` -- so a `let` alias, a renamed import, or a wrapper of
+/// that shape mints a fresh region per call exactly like the declaration.
+fn type_is_run_shaped(t: Type) -> Bool {
+  match t {
+    CtForAll(_, _, body) => type_is_run_shaped(body),
+    CtFn(params, _, _) => if Array::length(params) != 1 {
       false
     } else {
-      let group_ok = match Array::get(params, 0) {
-        CtNamed(gn, gargs) => gn == "TaskGroup" && Array::length(gargs) == 2,
+      match Array::get(params, 0) {
+        CtFn(body_params, _, _) => if Array::length(body_params) != 1 {
+          false
+        } else {
+          match Array::get(body_params, 0) {
+            CtNamed(gn, gargs) => gn == "TaskGroup" && Array::length(gargs) == 2,
+            _ => false
+          }
+        },
         _ => false
       }
-      let thunk_ok = match Array::get(params, 1) {
-        CtFn(tparams, _, _) => Array::length(tparams) == 0,
-        _ => false
-      }
-      let ret_ok = match ret {
-        CtNamed(hn, hargs) => hn == "TaskHandle" && Array::length(hargs) == 3,
-        _ => false
-      }
-      group_ok && thunk_ok && ret_ok
     },
     _ => false
   }
 }
 
-/// Whether the name a 2-argument call names resolves to a spawn-shaped
-/// function (see `type_is_spawn_shaped`).
+/// Whether the name a call names resolves to a spawn-shaped function (see
+/// `param_types_are_spawn_shaped`).
 fn callee_is_spawn_shaped(env: TypeEnv, s: Subst, name: String) -> Bool {
   match env_lookup(env, name) {
     Some(t) => type_is_spawn_shaped_under(s, t),
+    None => false
+  }
+}
+
+/// Whether the name a call names resolves to a run-shaped function (see
+/// `type_is_run_shaped`).
+fn callee_is_run_shaped(env: TypeEnv, s: Subst, name: String) -> Bool {
+  match env_lookup(env, name) {
+    Some(t) => type_is_run_shaped(resolve_bare_var(s, t)),
     None => false
   }
 }
@@ -6105,10 +6148,41 @@ fn callee_is_spawn_shaped(env: TypeEnv, s: Subst, name: String) -> Bool {
 /// the binding's type is still a bare variable -- the one shape the raw type
 /// cannot answer for, and the rare one, so ordinary lookups stay cheap.
 fn type_is_spawn_shaped_under(s: Subst, t: Type) -> Bool {
+  type_is_spawn_shaped(resolve_bare_var(s, t))
+}
+
+fn resolve_bare_var(s: Subst, t: Type) -> Type {
   match t {
-    CtVar(_) => type_is_spawn_shaped(subst_apply(s, t)),
-    _ => type_is_spawn_shaped(t)
+    CtVar(_) => subst_apply(s, t),
+    _ => t
   }
+}
+
+/// Run the `Spawnable` capture check for one spawn-shaped call: `group_ty` is
+/// the type of its `TaskGroup` argument and `closure` its closure argument.
+fn report_spawnable_violations(env: TypeEnv, s: Subst, defs: Array[TypeDef], group_ty: Type, closure: Expr, errors: Array[String], name: String, callee_off: Int) -> Unit {
+  match subst_apply(s, group_ty) {
+    CtNamed(tg_name, tg_args) => if tg_name == "TaskGroup" && Array::length(tg_args) == 2 {
+      let violations = check_spawnable_captures(env, s, defs, closure, Array::get(tg_args, 0))
+      let mut vi = 0
+      while vi < Array::length(violations) {
+        Array::push(errors, String::concat(Array::get(violations, vi), off_marker_len(callee_off, String::length(name))))
+        vi = vi + 1
+      }
+    } else {
+      ()
+    },
+    _ => ()
+  }
+}
+
+/// Whether a value of type `t` must not be handed on (#3125, #3153): the
+/// spawn check and the run check both run at a call, so a spawn- or
+/// run-shaped function reaching anything but a call or a local `let` would be
+/// applied where neither can see its closure.
+fn type_is_call_checked(s: Subst, t: Type) -> Bool {
+  let r = resolve_bare_var(s, t)
+  type_is_spawn_shaped(r) || type_is_run_shaped(r)
 }
 
 /// #3125: set while the right-hand side of a local `let` is a bare name, and
@@ -8949,8 +9023,18 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         record_local_let_type(let_off, gen, lane)
         let aliases_outer = spine_region_active && expression_aliases_outer_binding(val, cenv)
         note_local_generic_binding(val, gen, cenv)
+        let def_env = cenv
         cenv = env_bind(cenv, name, gen)
         cenv = bind_function_dependency_contracts(cenv, name, val)
+        // #3152: record what a local closure captured, read in the scope it
+        // was written in, so a later `TaskGroup::spawn(n, name)` -- or a
+        // spawned body that calls `name` -- is checked like the literal.
+        match val {
+          EFn(_, _, fparams, _, _, fbody) => {
+            cenv = env_bind(cenv, spawn_caps_marker(name), CtTuple(closure_capture_facts(def_env, fbody, fparams)))
+          },
+          _ => ()
+        }
         if aliases_outer {
           cenv = env_bind(cenv, String::concat("__region_outer_alias__", name), CtUnit)
         } else {
@@ -10722,12 +10806,18 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       Some(t) => {
         let let_rhs = Array::length(spawn_value_let_rhs_cell) != 0
         Array::truncate(spawn_value_let_rhs_cell, 0)
-        if !let_rhs && type_is_spawn_shaped_under(s, t) {
-          // #3125: a spawn-shaped function reaching anything but a call or a
-          // `let` would be applied where the `Spawnable` capture check cannot
-          // see the closure (`apply2(TaskGroup::spawn, n, () -> xs)` ran a
+        if !let_rhs && type_is_call_checked(s, t) {
+          // #3125 / #3153: a spawn- or run-shaped function reaching anything
+          // but a call or a `let` would be applied where its check cannot see
+          // the closure (`apply2(TaskGroup::spawn, n, () -> xs)` ran a
           // capture of a plain `Array`). Refuse it here instead.
-          Array::push(errors, String::concat(String::concat(String::concat("`", name), "` cannot be used as a value here: the `Spawnable` capture check runs where it is called, so the closure it is applied to would go unchecked -- call it directly (`TaskGroup::spawn(n, () -> ...)`) or bind it with a local `let` and call that name"), off_marker_len(ident_off, String::length(name))))
+          let is_run = type_is_run_shaped(resolve_bare_var(s, t))
+          let reason = if is_run {
+            "` cannot be used as a value here: the check that keeps a task group inside its `TaskGroup::run` body runs where it is called, so the body it is applied to would go unchecked -- call it directly (`TaskGroup::run((g) -> ...)`) or bind it with a local `let` and call that name"
+          } else {
+            "` cannot be used as a value here: the `Spawnable` capture check runs where it is called, so the closure it is applied to would go unchecked -- call it directly (`TaskGroup::spawn(n, () -> ...)`) or bind it with a local `let` and call that name"
+          }
+          Array::push(errors, String::concat(String::concat(String::concat("`", name), reason), off_marker_len(ident_off, String::length(name))))
         } else {
           ()
         }
@@ -12108,28 +12198,27 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             _ => CtUnknown
           }
           (tab_call_ty(tytab, call_off, result, capture, lane), s3, c2)
-        } else if name == "TaskGroup::run" && Array::length(args) == 1 {
+        } else if Array::length(args) == 1 && (name == "TaskGroup::run" || callee_is_run_shaped(env, s, name)) {
           // #1081 step 3: `TaskGroup::run` mints a fresh generative region.
           // There is no general rank-2/`Region`-bound mechanism in this
-          // checker (see docs/internal/design/concurrency.md's dated 実装ノート) — this
-          // qualified name is special-cased exactly like `resume`/`perform`/
-          // `Some` above, matched by its LITERAL spelling. (Codex review, PR
-          // #1135, P1: an attempted fix that matched by the callee's
-          // structural shape instead — so a first-class alias like `let run
-          // = TaskGroup::run; run(...)` would also get this treatment — was
-          // tried and reverted: it false-matched unrelated single-argument
-          // calls elsewhere in the compiler's own source, regressing 20
-          // unit-test files with runtime traps. The alias/import-rename/
-          // higher-order-wrapper bypass this literal-name match cannot close
-          // is therefore a documented, accepted gap for this slice — see
-          // docs/internal/design/concurrency.md's dated 実装ノート.) The scheme's `r` type
+          // checker (see docs/internal/design/concurrency.md's dated 実装ノート).
+          // #3153: the branch is selected by the callee's TYPE
+          // (`type_is_run_shaped`: one closure argument whose one parameter
+          // is a `TaskGroup[r, e]`), so a `let` alias, a renamed import and
+          // a wrapper of that shape get the same fresh region; the
+          // function taken as any other value is refused where it is taken.
+          // A structural match was tried once before and reverted (PR #1135
+          // review) because it matched any single-closure call and
+          // regressed 20 unit tests; this shape requires the closure's
+          // parameter to be a `TaskGroup`, which only a runner is handed.
+          // The scheme's `r` type
           // parameter is instantiated to a fresh RIGID skolem (a `CtNamed`
           // name no parsed source can ever spell — the lexer rejects `#` in
           // identifiers) instead of an ordinary unifiable `CtVar`, so nothing
           // outside this call can be coerced into it by accident; only a
           // real escape reaches it, which the two checks below catch by
           // scanning fully-zonked types for the skolem's name.
-          match env_lookup(env, "TaskGroup::run") {
+          match env_lookup(env, name) {
             Some(scheme) => {
               let (ti, c1, new_bounds) = instantiate(scheme, c)
               let mut s0 = s
@@ -12194,7 +12283,14 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                             }
                           }
                         },
-                        _ => (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), s0, c1)
+                        // #3153: a runner whose region is already fixed (a
+                        // monomorphic binding used twice) cannot mint a fresh
+                        // one, so its escape check cannot run. Say so rather
+                        // than answer Unknown in silence.
+                        _ => {
+                          Array::push(errors, String::concat(String::concat(String::concat("`", name), "` cannot run a new task group here: its group type is already fixed by an earlier use -- call `TaskGroup::run` directly, or bind it with a local `let` at each use"), off_marker_len(callee_off, String::length(name))))
+                          (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), s0, c1)
+                        }
                       }
                     } else {
                       (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), s0, c1)
@@ -12352,19 +12448,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                   let (a1_ty, s2, c3) = check_expr_capture(Array::get(args, 1), env, defs, s1, c2, errors, tytab, capture, lane)
                   let arg_tys = [a0_ty, a1_ty]
                   let s3 = unify_call_args(param_tys, arg_tys, args, s2, errors, name, callee_off)
-                  match subst_apply(s3, a0_ty) {
-                    CtNamed(tg_name, tg_args) => if tg_name == "TaskGroup" && Array::length(tg_args) == 2 {
-                      let violations = check_spawnable_captures(env, s3, defs, Array::get(args, 1), Array::get(tg_args, 0))
-                      let mut vi = 0
-                      while vi < Array::length(violations) {
-                        Array::push(errors, String::concat(Array::get(violations, vi), off_marker_len(callee_off, String::length(name))))
-                        vi = vi + 1
-                      }
-                    } else {
-                      ()
-                    },
-                    _ => ()
-                  }
+                  report_spawnable_violations(env, s3, defs, a0_ty, Array::get(args, 1), errors, name, callee_off)
                   (tab_call_ty(tytab, call_off, subst_apply(s3, ret_ty), capture, lane), s3, c3)
                 },
                 _ => (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), s0, c1)
@@ -12610,6 +12694,14 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                         Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(name, String::concat(": expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))))), off_marker_len(callee_off, String::length(name))))
                       }
                       let s3 = unify_call_args(call_param_tys, arg_tys, args, s2, errors, name, callee_off)
+                      // #3152: a spawn-shaped callee of another arity
+                      // (`Parallel::map(n, xs, f)`) keeps this general typing
+                      // path and gets the same capture check on its closure.
+                      if alen3 == plen2 && alen3 >= 2 && param_types_are_spawn_shaped(call_param_tys) {
+                        report_spawnable_violations(env, s3, defs, Array::get(arg_tys, 0), Array::get(args, alen3 - 1), errors, name, callee_off)
+                      } else {
+                        ()
+                      }
                       let call_ret = call_result_with_provenance(Array::get(ret_box, 0), call_param_tys, arg_tys, s3)
                       (tab_call_ty(tytab, call_off, call_ret, capture, lane), s3, c2)
                     },
@@ -14394,6 +14486,22 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         s1 = ns
         c1 = marked_nc
         pi = pi + 1
+      }
+      // #3152: inside a spawn-shaped function, its closure parameter is
+      // checked at every call site (the call branch keys on this same
+      // shape), so a spawned closure may capture or pass it on.
+      if plen >= 2 && param_types_are_spawn_shaped(param_types) {
+        let (last_raw, _) = Array::get(params, plen - 1)
+        let last_len = String::length(last_raw)
+        let last_name = if last_len > 0 {
+          let lc = String::char_code_at(last_raw, last_len - 1)
+          if lc == '~' || lc == '?' {
+            last_raw[0: last_len - 1]
+          } else last_raw
+        } else last_raw
+        fn_env = env_bind(fn_env, spawn_safe_marker(last_name), CtUnit)
+      } else {
+        ()
       }
       // Bind the function's annotated return type under a sentinel so an
       // explicit `return e` inside the body can be checked against it (the body

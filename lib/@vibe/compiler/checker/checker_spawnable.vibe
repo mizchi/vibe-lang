@@ -10,6 +10,7 @@ import @vibe/compiler/core {
   TypeExpr,
   env_lookup,
   env_mut_escape,
+  env_name_index_find,
   expr_child_at,
   expr_children_pop,
   expr_children_push,
@@ -414,63 +415,275 @@ fn sp_spawnable_ok(env: TypeEnv, s: Subst, defs: Array[TypeDef], ty: Type, r_her
   }
 }
 
-/// Entry point: given the closure literal passed as the second argument to
-/// `TaskGroup::spawn`/`TaskGroup::spawn_suspend` and the ALREADY-ZONKED
-/// region argument of the `n: TaskGroup[r_here]` passed as the first, check
-/// every captured free variable and return one error message per violation
-/// (empty when the check passes). A non-literal closure argument (`let f =
-/// ...; TaskGroup::spawn(n, f)`) is opaque to this analysis and tolerated --
-/// same documented-gap shape as the region-escape check's alias bypass.
+// #3152: what the `Spawnable` check knows about a closure VALUE.
+//
+// A closure type carries no record of what it captured, so a closure the check
+// cannot see as a literal used to pass unexamined (`let g = () -> xs;
+// TaskGroup::spawn(n, g)` ran a capture of a plain `Array`). The check now
+// accepts exactly three kinds of closure value, and refuses the rest:
+//
+//   1. a closure LITERAL at the call -- its captures are read directly;
+//   2. a name bound by a local `let` to a closure literal -- its captures were
+//      recorded when the `let` was checked, under `spawn_caps_marker`,
+//      in the environment the literal was written in;
+//   3. a name that cannot capture anything: a top-level function, or the
+//      closure PARAMETER of a spawn-shaped function (`spawn_safe_marker`),
+//      whose every call site is itself checked this way.
+//
+// A captured closure is judged the same way, so a local closure CALLED inside
+// the spawned body (`() -> cb()`) is a capture too; it used to be skipped as a
+// bare callee.
+//
+// Both markers are laid IN FRONT of the binding they describe, the way
+// `env_bind_mut` lays `EnvMutCell`, so a later rebinding of the same name
+// (a parameter, an inner `let`) sits in front of the marker and hides it:
+// `env_marker_before` answers for the binding that is actually in scope.
+
+/// Marker name for the recorded captures of the local `let` closure `name`.
+export fn spawn_caps_marker(name: String) -> String {
+  String::concat("#spawn_caps:", name)
+}
+
+/// Marker name for `name` as the closure parameter of a spawn-shaped function.
+export fn spawn_safe_marker(name: String) -> String {
+  String::concat("#spawn_safe:", name)
+}
+
+/// The marker `marker` when it is bound in front of every binding of `name`;
+/// `None` when `name` is bound first, or neither is bound locally.
+export fn env_marker_before(env: TypeEnv, marker: String, name: String) -> Option[Type] {
+  let mut cur = env
+  let mut result = None
+  let mut done = false
+  while !done {
+    match cur {
+      EnvBind(n, binding, rest) => if String::equals(n, marker) {
+        result = Some(binding.ty)
+        done = true
+      } else if String::equals(n, name) {
+        done = true
+      } else {
+        cur = rest
+      },
+      EnvMutCell(_, _, rest) => {
+        cur = rest
+      },
+      EnvTraitDef(_, _, _, _, rest, _, _) => {
+        cur = rest
+      },
+      EnvTraitImpl(_, _, rest) => {
+        cur = rest
+      },
+      EnvTraitImplGen(_, _, _, _, rest) => {
+        cur = rest
+      },
+      EnvTypeDefs(_, _, rest) => {
+        cur = rest
+      },
+      // The import cache stays at the HEAD of the chain and later bindings
+      // are tucked under it unless they shadow one of its names
+      // (`env_bind_with_origin`), so it is looked through, and a cached
+      // `name` answers "bound, and not by a marked local".
+      EnvCached(index, _, rest) => if env_name_index_find(index, name) >= 0 {
+        done = true
+      } else {
+        cur = rest
+      },
+      _ => {
+        done = true
+      }
+    }
+  }
+  result
+}
+
+/// Whether `name` resolves to a binding made inside some function body: a
+/// `__capture_boundary__` (bound on entry to every function) lies behind it.
+/// A top-level or imported name has no boundary behind it.
+export fn env_name_is_local(env: TypeEnv, name: String) -> Bool {
+  let mut cur = env
+  let mut found = false
+  let mut local = false
+  let mut done = false
+  while !done {
+    match cur {
+      EnvBind(n, _, rest) => {
+        if found && String::equals(n, "__capture_boundary__") {
+          local = true
+          done = true
+        } else if !found && String::equals(n, name) {
+          found = true
+        } else {
+          ()
+        }
+        cur = rest
+      },
+      EnvMutCell(_, _, rest) => {
+        cur = rest
+      },
+      EnvTraitDef(_, _, _, _, rest, _, _) => {
+        cur = rest
+      },
+      EnvTraitImpl(_, _, rest) => {
+        cur = rest
+      },
+      EnvTraitImplGen(_, _, _, _, rest) => {
+        cur = rest
+      },
+      EnvTypeDefs(_, _, rest) => {
+        cur = rest
+      },
+      // A name found in the import cache is an import, so not local; the
+      // cache is otherwise looked through (see `env_marker_before`).
+      EnvCached(index, _, rest) => if !found && env_name_index_find(index, name) >= 0 {
+        done = true
+      } else {
+        cur = rest
+      },
+      _ => {
+        done = true
+      }
+    }
+  }
+  local
+}
+
+fn sp_is_top_level_function(env: TypeEnv, name: String) -> Bool {
+  match env_lookup(env, name) {
+    Some(vty) => sp_is_function_type(vty) && !env_name_is_local(env, name),
+    None => false
+  }
+}
+
+fn sp_is_function_type(ty: Type) -> Bool {
+  match ty {
+    CtFn(_, _, _) => true,
+    CtForAll(_, _, body) => sp_is_function_type(body),
+    _ => false
+  }
+}
+
+/// Append the capture facts for `name` as seen from `env`. A fact is a
+/// `CtNamed` whose name is a one-letter kind, `:`, and the captured name:
+/// `v:` a value of the carried type, `m:` a `let mut` cell shared across the
+/// boundary, `p:` the checked closure parameter of a spawn-shaped function.
+/// A captured local `let` closure contributes its own recorded facts instead.
+fn sp_push_capture_facts(env: TypeEnv, name: String, out: Array[Type]) -> Unit {
+  match env_mut_escape(env, name) {
+    Some(_) => Array::push(out, CtNamed(String::concat("m:", name), [])),
+    None => ()
+  }
+  match env_marker_before(env, spawn_safe_marker(name), name) {
+    Some(_) => Array::push(out, CtNamed(String::concat("p:", name), [])),
+    None => match env_marker_before(env, spawn_caps_marker(name), name) {
+      Some(CtTuple(facts)) => {
+        let mut fi = 0
+        while fi < Array::length(facts) {
+          Array::push(out, Array::get(facts, fi))
+          fi = fi + 1
+        }
+      },
+      _ => match env_lookup(env, name) {
+        Some(vty) => if sp_is_top_level_function(env, name) {
+          // A top-level function captures nothing.
+          ()
+        } else {
+          Array::push(out, CtNamed(String::concat("v:", name), [vty]))
+        },
+        // Not a value binding in scope (a builtin, a constructor): nothing
+        // is captured.
+        None => ()
+      }
+    }
+  }
+}
+
+/// The capture facts of a closure literal written in `env`. Values read by
+/// name and LOCAL closures called by name are both captures; a bare callee
+/// that is not a local binding (a top-level function, a builtin) is not.
+export fn closure_capture_facts(env: TypeEnv, body: Expr, params: Array[(String, Option[TypeExpr])]) -> Array[Type] {
+  let pnames = sp_empty_strings()
+  for param in params {
+    let (pname, _) = param
+    Array::push(pnames, pname)
+  }
+  let names = sp_collect_free_vars(body, pnames)
+  let callees = sp_empty_strings()
+  sp_collect_bare_callees(body, pnames, callees)
+  for callee in callees {
+    if !sp_array_contains_str(names, callee) && env_name_is_local(env, callee) {
+      Array::push(names, callee)
+    } else {
+      ()
+    }
+  }
+  let out = array_empty()
+  for name in names {
+    sp_push_capture_facts(env, name, out)
+  }
+  out
+}
+
+fn sp_fact_name(fact_name: String) -> String {
+  String::substring(fact_name, 2, String::length(fact_name))
+}
+
+/// Judge recorded capture facts against THIS spawn call's region.
+fn sp_judge_facts(env: TypeEnv, s: Subst, defs: Array[TypeDef], facts: Array[Type], r_here: Type) -> Array[String] {
+  let out = sp_empty_strings()
+  for fact in facts {
+    match fact {
+      CtNamed(tagged, targs) => {
+        let vname = sp_fact_name(tagged)
+        if String::starts_with(tagged, "m:") {
+          // #1262: `type_send_ok` judges the captured value's TYPE alone, so
+          // a captured `let mut` needs its own verdict: sharing a mutable
+          // cell across the spawn boundary is what `Spawnable[r]` forbids,
+          // whatever the cell holds (ADR-0100 (1) put the fact in the env).
+          Array::push(out, String::concat("no impl `Spawnable` for a `let mut` binding: capture `", String::concat(vname, "` shares a mutable cell across the spawn boundary")))
+        } else if String::starts_with(tagged, "v:") && Array::length(targs) == 1 {
+          let resolved = subst_apply(s, Array::get(targs, 0))
+          if sp_spawnable_ok(env, s, defs, resolved, r_here) {
+            ()
+          } else {
+            Array::push(out, String::concat("no impl `Spawnable` for `", String::concat(type_to_string(resolved), String::concat("`: capture `", String::concat(vname, "` is neither Send nor a same-nursery endpoint")))))
+          }
+        } else {
+          // `p:` -- checked at the enclosing function's own call sites.
+          ()
+        }
+      },
+      _ => ()
+    }
+  }
+  out
+}
+
+/// Entry point: the closure argument of a spawn-shaped call (`TaskGroup::spawn`,
+/// `TaskGroup::spawn_suspend`, `Parallel::map`, a wrapper with the same shape)
+/// and the ALREADY-ZONKED region argument of its `TaskGroup[r_here, _]`.
+/// Returns one message per violation, empty when the check passes. A closure
+/// value whose captures cannot be seen is refused rather than trusted (#3152).
 export fn check_spawnable_captures(env: TypeEnv, s: Subst, defs: Array[TypeDef], f_expr: Expr, r_here: Type) -> Array[String] {
   match f_expr {
-    EFn(_, _, params, _, _, body) => {
-      let pnames = sp_empty_strings()
-      let mut i = 0
-      while i < Array::length(params) {
-        let (pname, _) = Array::get(params, i)
-        Array::push(pnames, pname)
-        i = i + 1
-      }
-      let free = sp_collect_free_vars(body, pnames)
-      let out = sp_empty_strings()
-      let mut fi = 0
-      while fi < Array::length(free) {
-        let vname = Array::get(free, fi)
-        match env_mut_escape(env, vname) {
-          // #1262: `type_send_ok` judges the captured value's TYPE alone, so a
-          // `let mut counter = 0` captured by a spawn closure used to pass as
-          // a plain Send `Int` -- docs/internal/design/concurrency.md lists "captured `let
-          // mut`" as never Send, independent of type, because sharing a
-          // mutable cell across the spawn boundary is exactly what
-          // `Spawnable[r]` exists to forbid. This used to need a whole second
-          // AST walk (`check_spawnable_mut_captures_stmts`) because `TypeEnv`
-          // carried no mutability; ADR-0100 (1) put the fact in the env, so
-          // the judgment is now one lookup at the very scope the capture
-          // happens in -- shadowing is exact by construction rather than by a
-          // hand-threaded visible-name list.
-          Some(_) => Array::push(out, String::concat("no impl `Spawnable` for a `let mut` binding: capture `", String::concat(vname, "` shares a mutable cell across the spawn boundary"))),
-          None => ()
+    EFn(_, _, params, _, _, body) => sp_judge_facts(env, s, defs, closure_capture_facts(env, body, params), r_here),
+    EIdent(name, _) => match env_marker_before(env, spawn_safe_marker(name), name) {
+      Some(_) => sp_empty_strings(),
+      None => match env_marker_before(env, spawn_caps_marker(name), name) {
+        Some(CtTuple(facts)) => sp_judge_facts(env, s, defs, facts, r_here),
+        _ => if sp_is_top_level_function(env, name) {
+          // A top-level function captures nothing.
+          sp_empty_strings()
+        } else {
+          [
+            String::concat("no impl `Spawnable` for closure `", String::concat(name, "`: its captures cannot be seen here -- write the closure literally at this call, or bind it with a local `let` to a closure literal"))
+          ]
         }
-        match env_lookup(env, vname) {
-          Some(vty) => {
-            let resolved = subst_apply(s, vty)
-            if sp_spawnable_ok(env, s, defs, resolved, r_here) {
-              ()
-            } else {
-              Array::push(out, String::concat("no impl `Spawnable` for `", String::concat(type_to_string(resolved), String::concat("`: capture `", String::concat(vname, "` is neither Send nor a same-nursery endpoint")))))
-            }
-          },
-          // Not a real value binding in scope (shouldn't happen for a
-          // genuine capture -- e.g. a name resolved only via a builtin
-          // table or trait-method dispatch, which sp_collect_free_vars's
-          // callee-position exclusion should already keep out). Tolerate.
-          None => ()
-        }
-        fi = fi + 1
       }
-      out
     },
-    _ => sp_empty_strings()
+    _ => [
+      "no impl `Spawnable` for this closure argument: its captures cannot be seen here -- write the closure literally at this call, or bind it with a local `let` to a closure literal"
+    ]
   }
 }
 
@@ -504,9 +717,11 @@ export fn check_spawnable_captures(env: TypeEnv, s: Subst, defs: Array[TypeDef],
 // unsure), surfaced as `vibe escapes` / `vibe escapes --strict`. See
 // docs/internal/design/side-effect-consolidation.md 4.5.
 //
-// Two limits carried over unchanged. A mutable binding captured by a HELPER
-// FUNCTION that itself calls `TaskGroup::spawn` is interprocedural and still
-// not detected. And the check now rides the same branch as the Send/region
+// A mutable binding reached through a HELPER FUNCTION that itself calls
+// `TaskGroup::spawn` is covered since #3152: the helper's closure parameter is
+// either the checked parameter of a spawn-shaped function (its callers are
+// checked) or a closure value the check cannot see, which is refused. The
+// check still rides the same branch as the Send/region
 // judgment in checker.vibe, so it needs `n` to have resolved to a
 // `TaskGroup[r, _]` -- a program whose nursery argument does not typecheck
 // reports that error instead.

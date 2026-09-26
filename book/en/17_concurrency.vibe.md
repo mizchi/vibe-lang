@@ -88,14 +88,20 @@ group, handles, senders, receivers — may not be in the value the body
 returns. Returning a handle would hand you something whose group has
 already finished, so the compiler rejects it instead.
 
-The spawn check follows the function, not how you spell it: a local
-alias (`let spawn = TaskGroup::spawn`) or a renamed import is checked
-like the direct call. Handing `TaskGroup::spawn` on as a value — an
-argument, a field, a return value — is refused, because the check could
-not see the closure it would later be applied to. One hole remains: the
-check reads the closure written at the call, so a closure first bound to
-a name (`let work = () -> ...` then `TaskGroup::spawn(n, work)`) is not
-checked.
+Both checks follow the function, not how you spell it: a local alias
+(`let spawn = TaskGroup::spawn`) or a renamed import is checked like the
+direct call, and so is `TaskGroup::run`. Handing either on as a value —
+an argument, a field, a return value — is refused, because the check
+could not see the closure it would later be applied to.
+
+The spawn check has to see what the closure captured. A closure written
+at the call, a closure bound by a local `let work = () -> ...`, and a
+top-level function passed by name all qualify, and a local closure the
+body calls counts as a capture. A closure the check cannot see into —
+say, a parameter of your own helper — is refused. The exception is a
+helper shaped like `spawn` (a `TaskGroup` first, a closure last, as
+`Parallel::map` is): its callers' closures are checked, so inside it the
+parameter can be spawned.
 
 ## Suspending versus blocking
 

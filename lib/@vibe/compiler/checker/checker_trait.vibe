@@ -15,6 +15,7 @@ import @vibe/compiler/core {
   find_typedef,
   impls_overlap_for,
   subst_apply,
+  subst_bounds_for,
   trait_defined,
   type_implements_trait,
   type_to_string
@@ -64,6 +65,18 @@ export fn satisfies_bound(env: TypeEnv, s: Subst, ty: Type, bound: String) -> Bo
 /// type already being checked does not fail the check on its own.
 export fn type_send_ok(env: TypeEnv, s: Subst, defs: Array[TypeDef], ty: Type) -> Bool {
   send_ok_rec(env, s, defs, ty, empty_strings())
+}
+
+fn send_bounds_have_send(bounds: Array[String]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(bounds) {
+    if Array::get(bounds, i) == "Send" {
+      found = true
+    }
+    i = i + 1
+  }
+  found
 }
 
 fn send_seen_has(seen: Array[String], name: String) -> Bool {
@@ -310,7 +323,10 @@ fn send_ok_rec(env: TypeEnv, s: Subst, defs: Array[TypeDef], ty: Type, seen: Arr
     } else {
       send_ok_named(env, s, defs, name, targs, seen)
     },
-    CtVar(_) => false,
+    // #3152: a formal declared `[T: Send]` is Send inside its own body --
+    // every instantiation was checked against the bound at its call site.
+    // `Parallel::map`'s spawned thunk captures its `x: T` this way.
+    CtVar(v) => send_bounds_have_send(subst_bounds_for(s, v)),
     CtConstructor(_, _) => false,
     CtApplied(_, _) => false,
     CtForAll(_, _, _) => false,
