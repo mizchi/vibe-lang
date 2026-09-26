@@ -4555,12 +4555,18 @@ fn is_bytestream_named_type(t: Type) -> Bool {
 /// the declarations are at hand, so the two can be told apart. Before this, a
 /// struct with one such field typed its literal as CtUnknown, and every use of
 /// the value was unchecked (`let s: String = Holder::{ tbl: m }` was clean).
-fn struct_fields_ground(dfields: Array[(String, Type)], defs: Array[TypeDef]) -> Bool {
+///
+/// `tparams` are the struct's own formals. A formal reads as a bare
+/// `CtNamed`, so one spelled like a declared type (`struct Box[T]` beside an
+/// imported `struct T`) is NOT that type: without this exclusion `Box::{ value:
+/// 42 }` was typed `CtStruct(Box)`, its instantiation was dropped, and
+/// `b.value` read as the imported `T` -- `let t: T = b.value` checked clean.
+fn struct_fields_ground(dfields: Array[(String, Type)], defs: Array[TypeDef], tparams: Array[String]) -> Bool {
   let mut ok = true
   let mut i = 0
   while i < Array::length(dfields) {
     let (_, ft) = Array::get(dfields, i)
-    if !struct_field_type_ground(ft, defs) {
+    if !struct_field_type_ground(ft, defs, tparams) {
       ok = false
     }
     i = i + 1
@@ -4568,21 +4574,25 @@ fn struct_fields_ground(dfields: Array[(String, Type)], defs: Array[TypeDef]) ->
   ok
 }
 
-fn struct_field_type_ground(t: Type, defs: Array[TypeDef]) -> Bool {
+fn struct_field_type_ground(t: Type, defs: Array[TypeDef], tparams: Array[String]) -> Bool {
   match t {
     CtNamed(n, args) => {
-      let known = match compiler_owned_type_arity(n) {
-        Some(arity) => arity == Array::length(args),
-        None => match find_typedef(defs, n) {
-          Some(TDStruct(_, _, _, tps)) => Array::length(tps) == Array::length(args),
-          Some(TDEnum(_, tps, _)) => Array::length(tps) == Array::length(args),
-          _ => false
+      let known = if formals_source_arity(tparams, n) >= 0 {
+        false
+      } else {
+        match compiler_owned_type_arity(n) {
+          Some(arity) => arity == Array::length(args),
+          None => match find_typedef(defs, n) {
+            Some(TDStruct(_, _, _, tps)) => Array::length(tps) == Array::length(args),
+            Some(TDEnum(_, tps, _)) => Array::length(tps) == Array::length(args),
+            _ => false
+          }
         }
       }
       let mut ok = known
       let mut i = 0
       while ok && i < Array::length(args) {
-        ok = struct_field_type_ground(Array::get(args, i), defs)
+        ok = struct_field_type_ground(Array::get(args, i), defs, tparams)
         i = i + 1
       }
       ok
@@ -4591,18 +4601,18 @@ fn struct_field_type_ground(t: Type, defs: Array[TypeDef]) -> Bool {
       let mut ok = true
       let mut i = 0
       while ok && i < Array::length(items) {
-        ok = struct_field_type_ground(Array::get(items, i), defs)
+        ok = struct_field_type_ground(Array::get(items, i), defs, tparams)
         i = i + 1
       }
       ok
     },
-    CtArray(e) => struct_field_type_ground(e, defs),
-    CtOption(e) => struct_field_type_ground(e, defs),
+    CtArray(e) => struct_field_type_ground(e, defs, tparams),
+    CtOption(e) => struct_field_type_ground(e, defs, tparams),
     CtFn(ps, r, _) => {
-      let mut ok = struct_field_type_ground(r, defs)
+      let mut ok = struct_field_type_ground(r, defs, tparams)
       let mut i = 0
       while ok && i < Array::length(ps) {
-        ok = struct_field_type_ground(Array::get(ps, i), defs)
+        ok = struct_field_type_ground(Array::get(ps, i), defs, tparams)
         i = i + 1
       }
       ok
@@ -6667,10 +6677,10 @@ fn resolve_record_struct_name(defs: Array[TypeDef], actual: Array[(String, Type)
   let mut di = 0
   while di < Array::length(defs) {
     match Array::get(defs, di) {
-      TDStruct(sname, dfields, _, _) => if struct_field_names_match(dfields, actual) {
+      TDStruct(sname, dfields, _, stps) => if struct_field_names_match(dfields, actual) {
         matchct = matchct + 1
         out = Some(sname)
-        ground = struct_fields_ground(dfields, defs)
+        ground = struct_fields_ground(dfields, defs, stps)
       },
       _ => ()
     }
@@ -14819,7 +14829,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               // every downstream use of the value unchecked). A non-ground
               // struct WITHOUT declared params (unresolved field type names)
               // keeps the old CtUnknown tolerance.
-              if struct_fields_ground(dfields, defs) {
+              if struct_fields_ground(dfields, defs, s_tparams) {
                 (CtStruct(rn), s1, c2)
               } else if tplen > 0 {
                 let inst_targs = for ta in fresh_targs {
