@@ -702,4 +702,30 @@ cancel_row wit_response_import cancel_many client_bindings.vibe 122400 \
   "" "$CIFACE#fetch-a=200:10000:1|2|3,$CIFACE#fetch-b=204:1:9" "600 cancelled pending responses release their slots"
 cancel_row wit_response_import cancel_many client_bindings.vibe 122400 \
   "" "$CIFACE#fetch-a=200:0:1|2|3,$CIFACE#fetch-b=204:5:9" "600 groups whose responses land at once"
+# A future whose read was cancelled, awaited again once its result slot is
+# reused by a later call. It used to answer that call's value (2, for a price)
+# with no error; the release now poisons the cell and the await traps naming
+# the cause (Codex on #3091).
+STALE_DIR="$OUT/stale_after_cancel"
+rm -rf "$STALE_DIR"; mkdir -p "$STALE_DIR"
+cp fixtures/wit_future_import/stale_after_cancel.vibe fixtures/wit_future_import/prices_bindings.vibe "$STALE_DIR/"
+VIBE_PREOPEN_DIR="$ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \
+  "$COMPILER" "$STALE_DIR/stale_after_cancel.vibe" "$STALE_DIR/main.wasm" run >/dev/null 2>&1 || true
+[ -s "$STALE_DIR/main.wasm" ] || {
+  echo "WIT async import gate FAILED: stale_after_cancel did not compile: $(cat "$STALE_DIR/main.wasm.diag" 2>/dev/null)" >&2
+  exit 1
+}
+if GOT="$(VIBE_ASYNC_FUTURES="$PIFACE#get-price=40:3000,$PIFACE#get-tax=2:1" run_bounded 60 "$RUNNER" "$STALE_DIR/main.wasm" 2>&1)"; then
+  echo "WIT async import gate FAILED: awaiting a future whose read was cancelled exited 0 (answered $GOT)" >&2
+  exit 1
+fi
+case "$GOT" in
+  *"await on a host future whose read was cancelled"*) ;;
+  *)
+    echo "WIT async import gate FAILED: stale_after_cancel failed for another reason: $GOT" >&2
+    exit 1
+    ;;
+esac
+echo "[wit-async-import] a future whose read was cancelled, awaited after its slot was reused: traps"
 echo "WIT async import component gate OK"

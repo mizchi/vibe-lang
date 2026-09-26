@@ -1,0 +1,33 @@
+// #1537 (Codex on #3091): a future whose read was CANCELLED must not be read
+// again. `p`'s only waiter is cancelled, so its read is released and its
+// result slot freed; 511 later calls move the adapter's slot cursor round to
+// that slot, and `q` takes it. Awaiting `p` then answered 2 -- `q`'s value,
+// not a price -- with no error. The release now poisons `p`'s cell, so the
+// await traps naming the cause. Compiled and run by
+// scripts/test_wit_async_import_component_gate.sh, which expects the trap.
+import ./prices_bindings.vibe {
+  get_price, get_tax
+}
+
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  let p = get_price()
+  let _ = TaskGroup::run((g) -> {
+    let t = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      await(p)
+    })
+    TaskHandle::cancel(t)
+    0
+  })
+  let mut i = 0
+  while i < 511 {
+    let _ = await(get_tax())
+    i = i + 1
+  }
+  let q = get_tax()
+  let _ = q
+  await(p)
+}

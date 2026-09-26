@@ -1205,6 +1205,7 @@ export fn TaskGroup::spawn_suspend[rg, e, T: Send](n: TaskGroup[rg, e], f: () ->
         TaskHandle::park_kind(h, resume, false, 0)
         h.cell.host_wait = r
         conc_host_register_parked(h.cell)
+        conc_host_record_cell(r)
       } else {
         TaskHandle::park_kind(h, resume, r >= 1, 0)
       }
@@ -1743,11 +1744,75 @@ fn conc_host_release_orphan[rg, e](n: TaskGroup[rg, e], waited: Int, serial: Int
     if conc_host_waiters_on(waited) > 0 {
       ()
     } else {
-      let _ = __conc_host_cancel(waited)
+      conc_host_release(waited)
+    }
+  } else {
+    ()
+  }
+}
+
+/// #1537 (Codex on #3091): the future cell a task parked on. A released read
+/// frees its handle -- a WIT result slot or a canonical waitable -- and the
+/// next call may be given the same one, so a cell still naming it would read
+/// that call's value. `__aw_pay` notes the cell it is about to suspend on
+/// (`__aw_note`), the park records it, and the release POISONS it: a later
+/// await of that future traps instead of reading whatever reused the handle.
+let conc_aw_noted: Array[Array[Int]] = []
+
+let conc_host_cells: Array[Array[Int]] = []
+
+/// Called by the synthesized `__aw_pay` right before a host-future park.
+export fn __aw_note(f: Array[Int]) -> Int {
+  Array::truncate(conc_aw_noted, 0)
+  Array::push(conc_aw_noted, f)
+  0
+}
+
+fn conc_host_record_cell(payload: Int) -> Unit {
+  if Array::length(conc_aw_noted) > 0 {
+    let f = Array::get(conc_aw_noted, 0)
+    Array::truncate(conc_aw_noted, 0)
+    if Array::get(f, 0) == 2 && Array::get(f, 1) + 2 == payload {
+      // Settled cells are done with their handle; keep only the live ones.
+      let live: Array[Array[Int]] = []
+      let mut i = 0
+      while i < Array::length(conc_host_cells) {
+        let c = Array::get(conc_host_cells, i)
+        if Array::get(c, 0) == 2 {
+          Array::push(live, c)
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      Array::truncate(conc_host_cells, 0)
+      let mut k = 0
+      while k < Array::length(live) {
+        Array::push(conc_host_cells, Array::get(live, k))
+        k = k + 1
+      }
+      Array::push(conc_host_cells, f)
+    } else {
       ()
     }
   } else {
     ()
+  }
+}
+
+/// Release a host read nobody waits on any more, poisoning every recorded
+/// cell that still names it (state 9: `__aw_pay` traps on it).
+fn conc_host_release(waited: Int) -> Unit {
+  let _ = __conc_host_cancel(waited)
+  let mut i = 0
+  while i < Array::length(conc_host_cells) {
+    let c = Array::get(conc_host_cells, i)
+    if Array::get(c, 0) == 2 && Array::get(c, 1) + 2 == waited {
+      Array::set(c, 0, 9)
+    } else {
+      ()
+    }
+    i = i + 1
   }
 }
 
@@ -1914,8 +1979,7 @@ fn conc_host_resume[rg, e](n: TaskGroup[rg, e], fired: Int) -> Bool {
     // NO task anywhere waits on it, nobody will take it: release it here
     // rather than hold its handle for the rest of the run (Codex on #3091).
     if conc_host_waiters_on(fired) == 0 {
-      let _ = __conc_host_cancel(fired)
-      ()
+      conc_host_release(fired)
     } else {
       ()
     }
