@@ -2454,6 +2454,10 @@ ur_refused fixtures/err_array_set_open_receiver_refused.vibe 'cannot tell whethe
 ur_refused fixtures/err_array_get_open_receiver_refused.vibe 'cannot tell whether this call reads an Array: `Array::get`' 'annotate it' linear 'fixtures/err_array_get_open_receiver_refused.vibe: line 8:3'
 ur_refused fixtures/err_array_get_open_receiver_refused.vibe 'cannot tell whether this call reads an Array: `Array::get`' 'annotate it' gc 'fixtures/err_array_get_open_receiver_refused.vibe: line 8:3'
 ur_refused fixtures/err_array_length_formal_refused.vibe 'cannot tell whether this call reads an Array: `Array::length`' 'annotate it' linear 'fixtures/err_array_length_formal_refused.vibe: line 8:3'
+# #3145 review: a two-array reader refuses naming the operand that is
+# actually unresolved -- here the second, `ys`, not the resolved `xs`.
+ur_refused fixtures/err_array_concat_second_formal_refused.vibe 'treats `ys` as an Array' 'annotate it' linear 'fixtures/err_array_concat_second_formal_refused.vibe: line 8:3'
+ur_refused fixtures/err_array_concat_second_formal_refused.vibe 'treats `ys` as an Array' 'annotate it' gc 'fixtures/err_array_concat_second_formal_refused.vibe: line 8:3'
 # #3148: a `for` over an iterand whose type never resolves (an erased formal
 # holding a map ran zero times). The green side -- a Map iterates its keys,
 # Arrays and Strings keep their loops -- is fixtures/for_in_map_keys_test.vibe.
