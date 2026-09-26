@@ -96,6 +96,18 @@ doc '- **String**: `length`
 
 - the types `Sender[s, e, T]`, `TaskStep[T]`'
 expect 1 "a package subsection type its contract does not declare" "@vibe/concurrent:TaskStep"
+doc '- **String**: `length`
+
+### 3.1 Concurrency (`@vibe/concurrent`)
+
+- `Sender::send` / `clone` / `release`'
+expect 0 "abbreviated package methods its contract declares"
+doc '- **String**: `length`
+
+### 3.1 Concurrency (`@vibe/concurrent`)
+
+- `Sender::send` / `clone` / `send_wait`'
+expect 1 "an abbreviated package method its contract does not declare" "@vibe/concurrent:Sender::send_wait"
 
 # 2b. #2275's case, re-founded by #2433. A real receiver with a NO-SUCH member
 #     must still fail: that is the population `unknown name` covers, and it is

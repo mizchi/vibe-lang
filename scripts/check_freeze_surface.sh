@@ -152,8 +152,17 @@ for line in m.group(0).splitlines():
     if pkg is not None:
         if any(k in line for k in NEG):
             continue
+        # `Sender::send` / `clone` / `release`: a bare lowercase token after a
+        # qualified one on the same line is a method of that receiver.
+        pkg_recv = None
         for tok in re.findall(r"`([^`]+)`", line):
-            for name in re.findall(r"\b([A-Z][A-Za-z0-9_]*::[a-z_][A-Za-z0-9_]*)\b", tok):
+            names = re.findall(r"\b([A-Z][A-Za-z0-9_]*)::([a-z_][A-Za-z0-9_]*)\b", tok)
+            if names:
+                pkg_recv = names[-1][0]
+            elif pkg_recv and re.fullmatch(r"[a-z_][A-Za-z0-9_]*", tok.strip()):
+                names = [(pkg_recv, tok.strip())]
+            for recv_name, member in names:
+                name = recv_name + "::" + member
                 if not re.search(r"^fn " + re.escape(name) + r"\b", declared, re.M):
                     pkg_missing.append(pkg + " " + name)
             # A bare type, written alone or applied (`TaskGroup[rg, e]`), is

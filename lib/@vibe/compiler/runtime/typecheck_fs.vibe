@@ -680,7 +680,8 @@ fn type_returns_name(ty: Type, type_name: String) -> Bool {
 /// `TaskGroup::spawn_suspend` (by prefix) and `TaskGroup::adopt` (it returns
 /// `TaskHandle`) past a contract that declares neither. A type declared in
 /// this module keeps the older rule, which is how its derived methods, never
-/// written in an export list, reach an importer.
+/// written in an export list, reach an importer. An unqualified foreign name
+/// travels only as a bare constructor of the type.
 fn is_selected_type_companion(name: String, binding: EnvValueBinding, type_surface: Array[String], all_defs: Array[TypeDef], trait_methods: Array[String]) -> Bool {
   let foreign = match binding.origin {
     BindingOriginUnavailable => false,
@@ -699,8 +700,13 @@ fn is_selected_type_companion(name: String, binding: EnvValueBinding, type_surfa
     }
     let keep = if name == type_name {
       true
-    } else if !foreign || !qualified {
+    } else if !foreign {
       String::starts_with(name, own) || type_returns_name(binding.ty, type_name)
+    } else if !qualified {
+      // An unqualified foreign companion is a bare constructor or nothing:
+      // `make_t() -> T` imported beside `T` is not published by listing `T`
+      // (Codex on #3172).
+      type_returns_name(binding.ty, type_name) && is_enum_variant_of(all_defs, type_name, name)
     } else {
       String::length(member) > 0 && (is_enum_variant_of(all_defs, type_name, member) || contains_str(trait_methods, member))
     }
