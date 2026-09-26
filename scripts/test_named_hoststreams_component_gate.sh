@@ -579,6 +579,24 @@ if [ "$SPAWN_ELAPSED_MS" -ge 450 ] || [ "$SPAWN_ELAPSED_MS" -lt 240 ]; then
 fi
 echo "[named-hoststreams-component-gate] spawned stream readers: 66 in ${SPAWN_ELAPSED_MS}ms (< 450: interleaved)"
 
+# fixtures/async_spawn_host_futures/stream_shared_refused.vibe: one stream
+# reached by two tasks through a closure a helper returned (Codex on #3091).
+# The spawn check refuses a closure whose captures it cannot see (#3152), so
+# this is a compile error; the scheduler's stream-cell claim stays behind it
+# as the run-time backstop.
+SST_OUT="$OUT_DIR/spawn_stream_shared_refused.component.wasm"
+rm -f "$SST_OUT" "$SST_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/stream_shared_refused.vibe "$SST_OUT" run >/dev/null 2>&1 || true
+if [ -s "$SST_OUT" ]; then
+  echo "named hoststreams component gate FAILED: one stream shared by two tasks through a returned closure compiled" >&2
+  exit 1
+fi
+grep -qF "its captures cannot be seen here" "$SST_OUT.diag" 2>/dev/null \
+  || { echo "named hoststreams component gate FAILED: stream_shared_refused gave an unexpected diagnostic: $(cat "$SST_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+echo "[named-hoststreams-component-gate] one stream reached by two tasks through a returned closure: refused"
+
 # fixtures/async_spawn_host_futures/stream_cancel_many.vibe: 1100 tasks park
 # on a fresh stream's read and are cancelled, past the adapter's 1023-handle
 # ceiling; each cancel must cancel the read and release the stream for the

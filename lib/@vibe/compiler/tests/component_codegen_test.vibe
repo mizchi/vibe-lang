@@ -903,7 +903,7 @@ test "component #1540: the stream lane's guard catches a wrong-arity core" {
   // and the arity a String handler's core has is INDISTINGUISHABLE from the
   // stream one's -- both five i64 -- so this guard accepts it. Pinning that
   // here keeps the fact from being rediscovered as a silent mis-lane.
-  let string_core = core_with_tag_mode(build_test_core_packed_handler_with_vibe_imports(), 0)
+  let string_core = core_with_tag_mode(build_test_core_packed_handler(), 0)
   let accepted = handle {
     let _ = comp_emit_component_wasm_stream_handler(string_core, "handler", "handler", [
       "method",
@@ -914,6 +914,20 @@ test "component #1540: the stream lane's guard catches a wrong-arity core" {
     true
   } with { Exception::Throw(_) => false }
   assert(accepted)
+  // #2066: the same arity with `vibe` imports the stream lane has no
+  // provider for (`env-get`, `fs_read_file`) is refused by name. It used to
+  // compose into a component that failed validation.
+  let imports_core = core_with_tag_mode(build_test_core_packed_handler_with_vibe_imports(), 0)
+  let refused = handle {
+    let _ = comp_emit_component_wasm_stream_handler(imports_core, "handler", "handler", [
+      "method",
+      "url",
+      "headers",
+      "body"
+    ])
+    ""
+  } with { Exception::Throw(m) => "\{m}" }
+  assert(String::contains(refused, "host import 'vibe.env-get'"))
 }
 
 test "component #1930: the serve stream lane requires explicit plain-i64 metadata" {

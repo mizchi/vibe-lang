@@ -1,0 +1,34 @@
+// #1537: a handle nested in a suspend-class `Async` entry whose body DOES
+// reach `Async`. The handled body calls `group()`, whose tasks await a host
+// future, and `group()` throws after the join. The suspend split used to
+// refuse this handle (it could not cut through one); an abortive handle --
+// arms that never resume and cannot reach `Async` -- is now split like the
+// body, and every resumed continuation runs under the same arms, so the
+// throw after the await is caught: 42. Compiled and executed by
+// scripts/test_named_hostfutures_component_gate.sh.
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+fn group() -> Int with Async + Exception {
+  let v = TaskGroup::run((g) -> {
+    let a = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      await(host_future_named("fast"))
+    })
+    TaskHandle::join(a)
+  })
+  if v > 0 {
+    throw("after the join")
+  } else {
+    ()
+  }
+  v
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  handle {
+    group()
+  } with {
+    Exception::Throw(_m) => 42
+  }
+}

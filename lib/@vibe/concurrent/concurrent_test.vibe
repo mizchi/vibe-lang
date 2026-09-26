@@ -1,6 +1,7 @@
 //# Imports
 
 import ./concurrent.vibe {
+  __conc_stream_claim,
   enum ChannelConfigError,
   enum SendError,
   enum TaskError,
@@ -673,4 +674,64 @@ test "a string child throw still surfaces its own message" {
     Some(Failed(m)) => assert_eq(m, "child boom"),
     _ => assert(false)
   }
+}
+
+/// #1537: `run` passes a throw escaping its body through a handler that
+/// releases the group's timer and re-throws. The re-throw must carry the
+/// payload AND its kind: a `String` throw still reaches a `String` arm with
+/// its text, and a group failure thrown from the body still reaches a
+/// `TaskError` arm as the same variant.
+test "a throw escaping the run body keeps its payload and kind" {
+  let text = handle {
+    TaskGroup::run((_g) -> {
+      throw("body failed")
+      0
+    })
+  } with { Exception::Throw(m) => if "\{m}" == "body failed" {
+    1
+  } else {
+    2
+  } }
+  assert_eq(text, 1)
+  let kinded = handle {
+    TaskGroup::run((_g) -> {
+      throw(TaskError::Failed("inner"))
+      0
+    })
+  } with { Exception[TaskError]::Throw(e) => match e {
+    TaskError::Failed(m) => if m == "inner" {
+      10
+    } else {
+      20
+    },
+    _ => 30
+  } }
+  assert_eq(kinded, 10)
+}
+
+/// #2066 (Codex on #3091): an ORDINARY spawned task is a task too. A stream
+/// operation claims its cell for the running task, and `drive_one` used to run
+/// an ordinary runner with no running-task identity, so the claim was skipped
+/// and another task could close a stream under its reader. The claim now
+/// stamps the cell with the runner's own serial (slot 2).
+test "an ordinary spawned task claims a host stream cell as its own task" {
+  let stamped = TaskGroup::run((g) -> {
+    let h = TaskGroup::spawn(g, () -> {
+      let cell = [3, 5]
+      __conc_stream_claim(cell)
+      Array::length(cell)
+    })
+    TaskHandle::join(h)
+  })
+  assert_eq(stamped, 3)
+}
+
+/// #2066 (Codex on #3091): code outside every task -- here the test body -- is
+/// an owner too, serial 0. It used to claim nothing, so a group body could
+/// close a stream a child task had claimed.
+test "a stream used outside every task is claimed by owner 0" {
+  let cell = [3, 5]
+  let _ = __conc_stream_claim(cell)
+  assert_eq(Array::length(cell), 3)
+  assert_eq(Array::get(cell, 2), 0)
 }

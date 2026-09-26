@@ -446,4 +446,214 @@ fi
 stop_server
 echo "[serve-body] a handler that reads 4 bytes and closes the body composes, serves, and answers abcd"
 
+# #2066 the `wasi:http/service` world: a handler that is also a CLIENT. It
+# awaits two responses from a `from_wit` binding, so the serve path composes
+# the run lane's response imports under the stream lane's handler export. A
+# provider built by scripts/build_http_client_provider.sh implements that
+# binding's interface over `wasi:http/client`; plugged in, the component
+# exports `handler` and imports `wasi:http/client`, and `wasmtime serve`
+# supplies the client. The upstream delays `/slow/<x>` by one second and
+# answers `<x>`, so the two fetches in flight together take about one second.
+SVC_SRC="$PROJECT_ROOT/fixtures/serve_service_world/handler.vibe"
+SVC_COMPONENT="$OUT_DIR/service.component.wasm"
+rm -f "$SVC_COMPONENT" "$SVC_COMPONENT.diag"
+env VIBE_SERVE_COMPONENT=1 VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main "$CLI_WASM" \
+  "${SVC_SRC#"$PROJECT_ROOT"/}" "${SVC_COMPONENT#"$PROJECT_ROOT"/}" main >/dev/null 2>&1 || true
+if [ ! -s "$SVC_COMPONENT" ]; then
+  echo "[serve-body] FAILED: the service handler did not componentize" >&2
+  cat "$SVC_COMPONENT.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+wasm-tools validate --features all "$SVC_COMPONENT" >/dev/null
+SVC_WIT="$(wasm-tools component wit "$SVC_COMPONENT")"
+case "$SVC_WIT" in
+  *'import example:http-lite/client@1.0.0;'*'export handler: async func('*'stream<u8>'*) ;;
+  *)
+    echo "[serve-body] FAILED: the service handler must import the client interface and export the stream handler" >&2
+    printf '%s\n' "$SVC_WIT" | head -20 >&2
+    exit 1 ;;
+esac
+echo "[serve-body] service handler: imports example:http-lite/client, exports handler(.., body: stream<u8>)"
+
+PROVIDER="$OUT_DIR/client_provider.component.wasm"
+bash "$SCRIPT_DIR/build_http_client_provider.sh" "$PROVIDER" >/dev/null
+SVC_CLIENT="$OUT_DIR/service_client.wasm"
+wac plug --plug "$PROVIDER" "$SVC_COMPONENT" -o "$SVC_CLIENT"
+wasm-tools validate --features all "$SVC_CLIENT" >/dev/null
+SVC_CLIENT_WIT="$(wasm-tools component wit "$SVC_CLIENT")"
+case "$SVC_CLIENT_WIT" in
+  *'example:http-lite'*)
+    echo "[serve-body] FAILED: the provider left the client interface unsatisfied" >&2
+    exit 1 ;;
+  *'import wasi:http/client@0.3.0;'*'export handler: async func('*) ;;
+  *)
+    echo "[serve-body] FAILED: the composed service does not import wasi:http/client and export handler" >&2
+    printf '%s\n' "$SVC_CLIENT_WIT" | head -20 >&2
+    exit 1 ;;
+esac
+echo "[serve-body] provider plugged: the service imports wasi:http/client and exports handler"
+SVC_SERVED="$OUT_DIR/service.serve.wasm"
+wac plug --plug "$SVC_CLIENT" "$ADAPTER" -o "$SVC_SERVED"
+wasm-tools validate --features all "$SVC_SERVED" >/dev/null
+
+UPSTREAM_PID=""
+python3 - <<'PYEOF' &
+import http.server, time
+class Slow(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path.startswith("/slow/"):
+            time.sleep(1)
+            body = self.path[len("/slow/"):].encode()
+            self.send_response(200)
+        else:
+            body = b"missing"
+            self.send_response(404)
+        self.send_header("content-length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    def log_message(self, *args):
+        pass
+http.server.ThreadingHTTPServer(("127.0.0.1", 18767), Slow).serve_forever()
+PYEOF
+UPSTREAM_PID=$!
+stop_upstream() {
+  if [ -n "$UPSTREAM_PID" ]; then
+    kill "$UPSTREAM_PID" 2>/dev/null || true
+    wait "$UPSTREAM_PID" 2>/dev/null || true
+    UPSTREAM_PID=""
+  fi
+}
+trap 'stop_upstream; cleanup' EXIT
+wait_port() {
+  python3 - "$1" "$2" <<'PYEOF'
+import socket, sys, time
+host, port = sys.argv[1], int(sys.argv[2])
+deadline = time.time() + 20
+while time.time() < deadline:
+    try:
+        socket.create_connection((host, port), timeout=1).close()
+        raise SystemExit(0)
+    except OSError:
+        time.sleep(0.1)
+raise SystemExit(1)
+PYEOF
+}
+wait_port 127.0.0.1 18767 || { echo "[serve-body] FAILED: the upstream on 127.0.0.1:18767 did not come up" >&2; exit 1; }
+ADDR="${ADDR%:*}:$((${ADDR##*:} + 1))"
+SERVE_LOG="$OUT_DIR/service.serve.log"
+"$WASMTIME_BIN" serve "${WASM_FLAGS[@]}" --addr "$ADDR" "$SVC_SERVED" >"$SERVE_LOG" 2>&1 &
+SERVE_PID=$!
+wait_port "${ADDR%:*}" "${ADDR##*:}" || { echo "[serve-body] FAILED: wasmtime did not listen at $ADDR (service)" >&2; cat "$SERVE_LOG" >&2 || true; exit 1; }
+printf '\n200:left|200:right|xyz' >"$OUT_DIR/want-service.bin"
+SVC_T0=$(date +%s%N)
+svc_code="$(curl -sS --noproxy '*' --max-time 20 -o "$OUT_DIR/got-service.bin" -w '%{http_code}' -X POST \
+  --data-binary 'xyz' "http://$ADDR/svc" || true)"
+SVC_MS=$(( ($(date +%s%N) - SVC_T0) / 1000000 ))
+stop_server
+stop_upstream
+if [ "$svc_code" != "200" ]; then
+  echo "[serve-body] FAILED: the service handler returned '$svc_code' (want 200)" >&2
+  cat "$SERVE_LOG" >&2 || true
+  exit 1
+fi
+if ! cmp -s "$OUT_DIR/want-service.bin" "$OUT_DIR/got-service.bin"; then
+  echo "[serve-body] FAILED: the service handler did not answer both upstream responses and its own body" >&2
+  cmp "$OUT_DIR/want-service.bin" "$OUT_DIR/got-service.bin" >&2 || true
+  cat "$SERVE_LOG" >&2 || true
+  exit 1
+fi
+if [ "$SVC_MS" -ge 1900 ]; then
+  echo "[serve-body] FAILED: two 1s upstream fetches took ${SVC_MS}ms -- they ran one after the other" >&2
+  exit 1
+fi
+echo "[serve-body] service world: two upstream fetches in flight answer 200:left|200:right|xyz in ${SVC_MS}ms"
+
+# #2066 the `wasi:http/middleware` world: the same composition with the
+# provider's `handler` mode, whose `fetch` hands the request to an IMPORTED
+# `wasi:http/handler`. The middleware then imports and exports `handler`, and
+# plugging a backend -- an ordinary `vibe serve` String handler composed with
+# the sync adapter -- into that import gives a chain `wasmtime serve` runs.
+for mw_part in middleware backend; do
+  mw_src="$PROJECT_ROOT/fixtures/serve_middleware_world/$mw_part.vibe"
+  mw_out="$OUT_DIR/mw_$mw_part.component.wasm"
+  rm -f "$mw_out" "$mw_out.diag"
+  env VIBE_SERVE_COMPONENT=1 VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_IMPORT_ABI=raw \
+    bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main "$CLI_WASM" \
+    "${mw_src#"$PROJECT_ROOT"/}" "${mw_out#"$PROJECT_ROOT"/}" main >/dev/null 2>&1 || true
+  if [ ! -s "$mw_out" ]; then
+    echo "[serve-body] FAILED: fixtures/serve_middleware_world/$mw_part.vibe did not componentize" >&2
+    cat "$mw_out.diag" >&2 2>/dev/null || true
+    exit 1
+  fi
+done
+SYNC_ADAPTER="$OUT_DIR/adapter_sync.component.wasm"
+bash "$SCRIPT_DIR/build_wasi_http_p3_full_adapter.sh" "$SYNC_ADAPTER" >/dev/null
+MW_PROVIDER="$OUT_DIR/handler_provider.component.wasm"
+bash "$SCRIPT_DIR/build_http_client_provider.sh" "$MW_PROVIDER" handler >/dev/null
+wac plug --plug "$MW_PROVIDER" "$OUT_DIR/mw_middleware.component.wasm" -o "$OUT_DIR/mw_client.wasm"
+wac plug --plug "$OUT_DIR/mw_client.wasm" "$ADAPTER" -o "$OUT_DIR/mw.serve.wasm"
+wasm-tools validate --features all "$OUT_DIR/mw.serve.wasm" >/dev/null
+MW_WIT="$(wasm-tools component wit "$OUT_DIR/mw.serve.wasm")"
+case "$MW_WIT" in
+  *'import wasi:http/handler@0.3.0;'*'export wasi:http/handler@0.3.0;'*) ;;
+  *)
+    echo "[serve-body] FAILED: the middleware does not import and export wasi:http/handler" >&2
+    printf '%s\n' "$MW_WIT" | head -20 >&2
+    exit 1 ;;
+esac
+echo "[serve-body] middleware world: the composed middleware imports and exports wasi:http/handler"
+wac plug --plug "$OUT_DIR/mw_backend.component.wasm" "$SYNC_ADAPTER" -o "$OUT_DIR/backend.serve.wasm"
+wac plug --plug "$OUT_DIR/backend.serve.wasm" "$OUT_DIR/mw.serve.wasm" -o "$OUT_DIR/chain.serve.wasm"
+wasm-tools validate --features all "$OUT_DIR/chain.serve.wasm" >/dev/null
+ADDR="${ADDR%:*}:$((${ADDR##*:} + 1))"
+SERVE_LOG="$OUT_DIR/chain.serve.log"
+"$WASMTIME_BIN" serve "${WASM_FLAGS[@]}" --addr "$ADDR" "$OUT_DIR/chain.serve.wasm" >"$SERVE_LOG" 2>&1 &
+SERVE_PID=$!
+wait_port "${ADDR%:*}" "${ADDR##*:}" || { echo "[serve-body] FAILED: wasmtime did not listen at $ADDR (middleware chain)" >&2; cat "$SERVE_LOG" >&2 || true; exit 1; }
+# The sync adapter's body begins after the status line's own newline, so the
+# backend's answer arrives as "\nbackend saw ..." inside the middleware's body.
+printf '\nmiddleware(200): \nbackend saw GET /items?id=7' >"$OUT_DIR/want-chain.bin"
+chain_code="$(curl -sS --noproxy '*' --max-time 20 -o "$OUT_DIR/got-chain.bin" -w '%{http_code}' -X POST \
+  --data-binary 'xyz' "http://$ADDR/items?id=7" || true)"
+stop_server
+if [ "$chain_code" != "200" ]; then
+  echo "[serve-body] FAILED: the middleware chain returned '$chain_code' (want 200)" >&2
+  cat "$SERVE_LOG" >&2 || true
+  exit 1
+fi
+if ! cmp -s "$OUT_DIR/want-chain.bin" "$OUT_DIR/got-chain.bin"; then
+  echo "[serve-body] FAILED: the middleware chain did not wrap the backend's answer" >&2
+  cmp "$OUT_DIR/want-chain.bin" "$OUT_DIR/got-chain.bin" >&2 || true
+  cat "$SERVE_LOG" >&2 || true
+  exit 1
+fi
+echo "[serve-body] middleware chain: the request reached the backend through the imported handler"
+
+# The service composer needs a provider behind every host future it imports,
+# and only a WIT response has one under `wasmtime serve`. A runner-private
+# root future is refused by name rather than composed into a component no
+# host can instantiate.
+ROOT_SRC="$OUT_DIR/root_future_handler.vibe"
+cat >"$ROOT_SRC" <<'HEOF'
+export let handler = (method: String, url: String, headers: String, body: HostStream) -> String with Async {
+  let v = await(host_future_named("x"))
+  "200\n\n\{v}"
+}
+HEOF
+ROOT_COMPONENT="$OUT_DIR/root_future.component.wasm"
+rm -f "$ROOT_COMPONENT" "$ROOT_COMPONENT.diag"
+env VIBE_SERVE_COMPONENT=1 VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main "$CLI_WASM" \
+  "${ROOT_SRC#"$PROJECT_ROOT"/}" "${ROOT_COMPONENT#"$PROJECT_ROOT"/}" main >/dev/null 2>&1 || true
+if [ -s "$ROOT_COMPONENT" ]; then
+  echo "[serve-body] FAILED: a serve handler awaiting a runner-private root future composed" >&2
+  exit 1
+fi
+grep -qF "must await a WIT response" "$ROOT_COMPONENT.diag" 2>/dev/null || {
+  echo "[serve-body] FAILED: the root-future handler gave an unexpected diagnostic: $(cat "$ROOT_COMPONENT.diag" 2>/dev/null)" >&2
+  exit 1
+}
+echo "[serve-body] a serve handler awaiting a runner-private root future: refused"
+
 echo "[serve-body] PASS: vibe serve hands the request body to the handler as a stream (#1540)"

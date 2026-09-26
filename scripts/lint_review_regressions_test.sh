@@ -136,7 +136,7 @@ cat > "$TMP_ROOT/fake-vibe-adjacency" <<'FAKEEOF'
 #!/usr/bin/env bash
 root="${@: -1}"
 f="$root/lib/@vibe/compiler/normalize/pass.vibe"
-if [[ "$*" == *'SLet('* || "$*" == *'EAssignOp('* || "$*" == *'String::contains('* ]]; then
+if [[ "$*" == *'SLet('* || "$*" == *'EAssignOp('* || "$*" == *'String::contains('* || "$*" == *' == '* || "$*" == *' != '* ]]; then
   echo '[]'; exit 0
 fi
 m=$(grep -n '__ast_adj_marked' "$f" | head -1 | cut -d: -f1)
@@ -164,6 +164,14 @@ if grep -q '__ast_adj_marked' "$TMP_ROOT/ast-adj.out"; then
   cat "$TMP_ROOT/ast-adj.out" >&2
   exit 1
 fi
+# The fake answers only the synthetic-name query; an effect-name report here
+# means it answered the effect-name patterns too, and every other assertion in
+# this case would be reading polluted output (Codex on #3091).
+if grep -q 'not by comparing a label' "$TMP_ROOT/ast-adj.out"; then
+  echo "review-regressions lint self-test: the adjacency fake answered an effect-name query" >&2
+  cat "$TMP_ROOT/ast-adj.out" >&2
+  exit 1
+fi
 
 git -C "$TMP_ROOT" reset -q HEAD -- .
 git -C "$TMP_ROOT" restore .
@@ -182,7 +190,7 @@ git -C "$TMP_ROOT" add .
 cat > "$TMP_ROOT/fake-vibe" <<EOF
 #!/usr/bin/env bash
 root="\${@: -1}"
-if [[ "\$*" == *'SLet('* || "\$*" == *'EAssignOp('* || "\$*" == *'String::contains('* ]]; then
+if [[ "\$*" == *'SLet('* || "\$*" == *'EAssignOp('* || "\$*" == *'String::contains('* || "\$*" == *' == '* || "\$*" == *' != '* ]]; then
   echo '[]'
 else
   jq -n --arg path "\$root/lib/@vibe/compiler/normalize/pass.vibe" \
@@ -290,7 +298,7 @@ git -C "$TMP_ROOT" add .
 cat > "$TMP_ROOT/fake-vibe-historical" <<EOF
 #!/usr/bin/env bash
 root="\${@: -1}"
-if [[ "\$*" == *'SLet('* || "\$*" == *'EAssignOp('* || "\$*" == *'String::contains('* ]]; then
+if [[ "\$*" == *'SLet('* || "\$*" == *'EAssignOp('* || "\$*" == *'String::contains('* || "\$*" == *' == '* || "\$*" == *' != '* ]]; then
   echo '[]'
 else
   jq -n --arg path "\$root/lib/@vibe/compiler/normalize/pass.vibe" \
@@ -581,6 +589,42 @@ fi
 if ! grep -q '__staged_only' "$TMP_ROOT/snap.out"; then
   echo "review-regressions lint self-test: snapshot case reported the wrong binder" >&2
   cat "$TMP_ROOT/snap.out" >&2
+  exit 1
+fi
+git -C "$TMP_ROOT" reset -q --hard HEAD
+
+# #1963: a standard effect's policy is decided by its owner, not by comparing
+# a label to the effect's name (`lbl == "Async"` disagrees with the owner on
+# `Async::Suspend`).
+git -C "$TMP_ROOT" reset -q HEAD -- .
+git -C "$TMP_ROOT" restore .
+mkdir -p "$TMP_ROOT/lib/@vibe/compiler/checker"
+cat > "$TMP_ROOT/lib/@vibe/compiler/checker/rows.vibe" <<'EOF'
+fn scheduled(label: String) -> Bool { label == "Async" }
+EOF
+git -C "$TMP_ROOT" add .
+
+cat > "$TMP_ROOT/fake-vibe-effect-name" <<EOF
+#!/usr/bin/env bash
+root="\${@: -1}"
+if [[ "\$*" == *'== "Async"'* ]]; then
+  jq -n --arg path "\$root/lib/@vibe/compiler/checker/rows.vibe" \
+    '[{path:\$path,line:1,col:39,start:1,end:2,text:"label == \\"Async\\"",captures:{x:{text:"label",start:1}}}]'
+else
+  echo '[]'
+fi
+EOF
+chmod +x "$TMP_ROOT/fake-vibe-effect-name"
+
+if VIBE_REVIEW_LINT_PROJECT_ROOT="$TMP_ROOT" \
+  VIBE_REVIEW_LINT_GREP_BIN="$TMP_ROOT/fake-vibe-effect-name" \
+  "$CHECK_SCRIPT" >"$TMP_ROOT/effect-name-fail.out" 2>&1; then
+  echo "review-regressions lint self-test: expected an effect-name compare violation" >&2
+  exit 1
+fi
+if ! grep -qE 'decided by its owner.*"Async"' "$TMP_ROOT/effect-name-fail.out"; then
+  echo "review-regressions lint self-test: missing effect-name compare diagnostic" >&2
+  cat "$TMP_ROOT/effect-name-fail.out" >&2
   exit 1
 fi
 git -C "$TMP_ROOT" reset -q --hard HEAD

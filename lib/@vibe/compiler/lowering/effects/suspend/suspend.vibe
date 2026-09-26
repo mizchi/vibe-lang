@@ -156,7 +156,10 @@ fn array_empty_kind_scope() -> Array[(String, Int)] {
 ///     ineligible -- the variable could be instantiated to E via a closure
 ///     argument this pass cannot see;
 ///   - no nested handle, and no closure containing a handled-op perform or
-///     needing call.
+///     needing call -- except an ABORTIVE handle (#1537: arms of another
+///     effect that never mention `resume`, like an `Exception::Throw` catch),
+///     which is split with its body and re-installed around every resumed
+///     continuation (scps_split_handle).
 /// Arm BODIES are unrestricted (under the driver they are plain code).
 ///
 /// Runs from compile_wasi_module_linked_impl (linear backend) BEFORE
@@ -1046,7 +1049,32 @@ fn scps_scope_bind_params(scope: Array[(String, Int)], params: Array[(String, Op
 fn scps_scope_bind_pat(scope: Array[(String, Int)], p: Pat) -> Array[(String, Int)] {
   let names = array_empty_str()
   scps_pat_collect_binds(p, names)
-  scps_scope_bind_names(scope, names, 0)
+  let bound = scps_scope_bind_names(scope, names, 0)
+  // #1537: an arm on this pass's own yield constructor binds its
+  // continuation last, and that binder is a step function (the rewrap of an
+  // abortive handle calls it). A source program cannot name `__ScpsY_`
+  // constructors, so nothing else is classified this way.
+  match p {
+    PCtor(q, sub) => if String::starts_with(q, "__ScpsY_") && Array::length(sub) > 0 {
+      match Array::get(sub, Array::length(sub) - 1) {
+        PBind(k) => scps_scope_bind(bound, k, 2),
+        _ => bound
+      }
+    } else {
+      bound
+    },
+    _ => bound
+  }
+}
+
+/// #1537: a `let rec` bound to a step literal is a step local, as a `let` is
+/// (the step wrapper of an abortive handle is one).
+fn scps_letrec_kind(v: Expr, eff: String) -> Int {
+  if scps_literal_is_step_for(v, eff) {
+    2
+  } else {
+    0
+  }
 }
 
 fn scps_scope_from_visible(visible: Array[(String, String)], eff: String, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> Array[(String, Int)] {
@@ -1106,6 +1134,158 @@ fn scps_named_call_ok(name: String, sctx: (String, Array[String], Array[String],
 /// --- body call policy: a call in a suspend-lowered body must be provably
 /// unable to perform E outside this pass's sight. Every recursive edge carries
 /// the same immutable lexical classification stack.
+/// #1537: a handle nested in a suspend-class body is admitted when neither
+/// its body nor its arms can reach the handled effect -- `scps_inert_taint`'s
+/// conservative reading: no perform, no needing or step-compiled callee, no
+/// captured name of unknown provenance, no nested handle, and no `resume`
+/// (an arm's own continuation is a name the arm did not bind). Such a handle
+/// is an ordinary value on the spine: nothing inside it suspends, so the
+/// split never has to cut through it. An `Async` entry that spawns
+/// suspendable tasks used to refuse EVERY nested handle, so a program could
+/// not catch an exception anywhere in the entry body.
+fn scps_nested_handle_inert(hb: Expr, harms: Array[(Pat, Expr)], eff: String, needing: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> Bool {
+  !scps_inert_taint(hb, eff, needing, array_empty_str(), ctx) && !scps_inert_taint_arms(harms, eff, needing, array_empty_str(), ctx)
+}
+
+/// #1537: a nested handle whose BODY reaches the split effect is still
+/// lowerable when it is ABORTIVE -- every arm names an operation of another
+/// effect, no arm mentions `resume`, and no arm can reach the split effect
+/// itself (an `Exception::Throw(m) => ..` catch is the shape). Such a handler
+/// never re-enters its body, so it only has to be in force whenever the body
+/// runs: scps_split_handle installs it around the body's first segment and
+/// again around every resumed continuation.
+fn scps_abortive_handle_ok(hb: Expr, harms: Array[(Pat, Expr)], sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), scope: Array[(String, Int)]) -> Bool {
+  let (eff, _, needing, _, _) = sctx
+  let own_prefix = String::concat(eff, "::")
+  let mut ok = Array::length(harms) > 0
+  let mut i = 0
+  while i < Array::length(harms) {
+    let (p, ex) = Array::get(harms, i)
+    match p {
+      PCtor(q, _) => if String::starts_with(q, own_prefix) || !String::contains(q, "::") {
+        ok = false
+      } else {
+        ()
+      },
+      _ => ok = false
+    }
+    if scps_mentions_name(ex, "resume") || scps_pat_binds_resume(p) {
+      ok = false
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ok && !scps_inert_taint_arms(scps_arms_unwrap_done(harms, eff), eff, needing, array_empty_str(), ctx) && scps_calls_ok(hb, sctx, ctx, scope)
+}
+
+/// The arms of an abortive handle this pass already split carry their value
+/// in `Done(..)` (scps_split_handle). An enclosing site re-walking that code
+/// judges the value itself: the constructor is this pass's own.
+fn scps_arms_unwrap_done(harms: Array[(Pat, Expr)], eff: String) -> Array[(Pat, Expr)] {
+  let dn = scps_done_name(eff)
+  let out = scps_empty_arms()
+  let mut i = 0
+  while i < Array::length(harms) {
+    let (p, ex) = Array::get(harms, i)
+    let inner = match ex {
+      ECall(EIdent(nm, _), vargs, _) => if nm == dn && Array::length(vargs) == 1 {
+        Array::get(vargs, 0)
+      } else {
+        ex
+      },
+      _ => ex
+    }
+    Array::push(out, (p, inner))
+    i = i + 1
+  }
+  out
+}
+
+/// #1537: the step of an abortive nested handle (scps_abortive_handle_ok).
+///
+///   let rec __scps_hwN = (st) -> match st {
+///     Done(v) => Done(v),
+///     Y_op(p.., k) => Y_op(p.., (rv) -> __scps_hwN(handle { k(rv) } with ARMS'))
+///   }
+///   __scps_hwN(handle { <split body> } with ARMS')
+///
+/// where ARMS' is each arm with its value wrapped in `Done`: an arm ends the
+/// handled computation, so its value is the handle's value. A step that
+/// yields re-installs the handler around the continuation, so a throw after
+/// the yield is caught by the same arms.
+fn scps_split_handle(hb: Expr, harms: Array[(Pat, Expr)], sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), st: (Array[Int], Array[String], Array[String], Array[String], Array[String], Array[Stmt], Array[String])) -> (Bool, Expr) {
+  let (eff, _, _, _, _) = sctx
+  let (bok, bstep) = scps_split_tail(hb, sctx, ctx, st)
+  if !bok {
+    (false, EHandle(hb, harms))
+  } else {
+    let hsite = scps_next_site(st)
+    let darms = scps_empty_arms()
+    let mut ai = 0
+    while ai < Array::length(harms) {
+      let (p, ex) = Array::get(harms, ai)
+      Array::push(darms, (p, scps_mk_done(eff, ex)))
+      ai = ai + 1
+    }
+    let wname = scps_local("__scps_hw", hsite)
+    let stn = scps_local("__scps_hst", hsite)
+    let vname = scps_local("__scps_hv", hsite)
+    let kname = scps_local("__scps_hk", hsite)
+    let rv = scps_local("__scps_hrv", hsite)
+    let marms = scps_empty_arms()
+    let done_pats = scps_empty_pats()
+    Array::push(done_pats, PBind(vname))
+    Array::push(marms, (PCtor(scps_done_name(eff), done_pats), scps_mk_done(eff, EIdent(vname, -1))))
+    let (_, decl_ops) = scps_effect_decl_ops(ctx, eff)
+    let mut oi = 0
+    while oi < Array::length(decl_ops) {
+      let (opname, arity) = Array::get(decl_ops, oi)
+      let ypats = scps_empty_pats()
+      let yargs = array_empty_expr()
+      let mut pi = 0
+      while pi < arity {
+        let pname = String::concat(scps_local("__scps_hp", hsite), String::concat("_", Int::to_string(pi)))
+        Array::push(ypats, PBind(pname))
+        Array::push(yargs, EIdent(pname, -1))
+        pi = pi + 1
+      }
+      Array::push(ypats, PBind(kname))
+      let resumed = EHandle(ECall(EIdent(kname, -1), [EIdent(rv, -1)], -1), darms)
+      Array::push(yargs, scps_mk_fn1(rv, ECall(EIdent(wname, -1), [resumed], -1)))
+      Array::push(marms, (PCtor(scps_y_name(eff, opname), ypats), ECall(EIdent(scps_y_name(eff, opname), -1), yargs, -1)))
+      oi = oi + 1
+    }
+    let wfn = scps_mk_fn1(stn, EMatch(EIdent(stn, -1), marms))
+    (true, ELetRec(wname, wfn, ECall(EIdent(wname, -1), [EHandle(bstep, darms)], -1)))
+  }
+}
+
+/// `let x = <abortive handle> REST`: bubble the handle's step into REST.
+fn scps_split_handle_bind(v: Expr, x: String, b: Expr, sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), st: (Array[Int], Array[String], Array[String], Array[String], Array[String], Array[Stmt], Array[String])) -> (Bool, Expr) {
+  let (eff, _, _, _, _) = sctx
+  match v {
+    EHandle(hb, harms) => {
+      let (hok, hstep) = scps_split_handle(hb, harms, sctx, ctx, st)
+      let (bok, bexpr) = scps_split_tail(b, sctx, ctx, st)
+      (hok && bok, ECall(EIdent(scps_bubble_name(eff), -1), [
+        hstep,
+        scps_mk_fn1(x, bexpr)
+      ], -1))
+    },
+    _ => (false, v)
+  }
+}
+
+/// A suspending abortive handle in a spine position: `EHandle` itself, which
+/// the split turns into a step (scps_split_handle).
+fn scps_as_split_handle(e: Expr, sctx: (String, Array[String], Array[String], Int, Array[String])) -> Bool {
+  match e {
+    EHandle(_, _) => scps_contains_susp(e, sctx),
+    _ => false
+  }
+}
+
 fn scps_calls_ok(e: Expr, sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), scope: Array[(String, Int)]) -> Bool {
   let (eff, _, needing, _, _) = sctx
   match e {
@@ -1139,7 +1319,7 @@ fn scps_calls_ok(e: Expr, sctx: (String, Array[String], Array[String], Int, Arra
     },
     ELetMut(nm, v, b, _) => scps_calls_ok(v, sctx, ctx, scope) && scps_calls_ok(b, sctx, ctx, scps_scope_bind(scope, nm, 0)),
     ELetRec(nm, v, b) => {
-      let ext = scps_scope_bind(scope, nm, 0)
+      let ext = scps_scope_bind(scope, nm, scps_letrec_kind(v, eff))
       scps_calls_ok(v, sctx, ctx, ext) && scps_calls_ok(b, sctx, ctx, ext)
     },
     ESeq(a, b) => scps_calls_ok(a, sctx, ctx, scope) && scps_calls_ok(b, sctx, ctx, scope),
@@ -1158,7 +1338,7 @@ fn scps_calls_ok(e: Expr, sctx: (String, Array[String], Array[String], Int, Arra
       }
       ok
     },
-    EHandle(_, _) => false,
+    EHandle(hb, harms) => scps_nested_handle_inert(hb, harms, eff, needing, ctx) || scps_abortive_handle_ok(hb, harms, sctx, ctx, scope),
     EFn(_, _, params, _, _, b) => scps_calls_ok(b, sctx, ctx, scps_scope_bind_params(scope, params, eff, ctx)),
     EWhile(c, b) => scps_calls_ok(c, sctx, ctx, scope) && scps_calls_ok(b, sctx, ctx, scope),
     EForIn(nm, idx, it, b) => {
@@ -1280,7 +1460,7 @@ fn scps_first_bad_call_info(e: Expr, sctx: (String, Array[String], Array[String]
       }
     },
     ELetRec(nm, v, b) => {
-      let ext = scps_scope_bind(scope, nm, 0)
+      let ext = scps_scope_bind(scope, nm, scps_letrec_kind(v, eff))
       scps_first_bad_call_info_pair(v, b, sctx, ctx, ext)
     },
     ESeq(a, b) => scps_first_bad_call_info_pair(a, b, sctx, ctx, scope),
@@ -1314,7 +1494,11 @@ fn scps_first_bad_call_info(e: Expr, sctx: (String, Array[String], Array[String]
         (found, nm, off)
       }
     },
-    EHandle(_, _) => (true, "", -1),
+    EHandle(hb, harms) => if scps_nested_handle_inert(hb, harms, eff, needing, ctx) || scps_abortive_handle_ok(hb, harms, sctx, ctx, scope) {
+      (false, "", -1)
+    } else {
+      (true, "", -1)
+    },
     EFn(_, _, params, _, _, b) => scps_first_bad_call_info(b, sctx, ctx, scps_scope_bind_params(scope, params, eff, ctx)),
     EWhile(c, b) => scps_first_bad_call_info_pair(c, b, sctx, ctx, scope),
     EForIn(nm, idx, it, b) => {
@@ -2041,6 +2225,8 @@ fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], Int, Ar
       }
     } else {
       match e {
+        // #1537: a suspending abortive handle in tail position is its step.
+        EHandle(hb, harms) => scps_split_handle(hb, harms, sctx, ctx, st),
         // #1536 tail short-circuit: preserve conditional RHS evaluation by
         // expressing the whole tail boolean as the equivalent conditional.
         // Re-entering this function reuses the established EIf condition and
@@ -2087,7 +2273,9 @@ fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], Int, Ar
               let vp = scps_as_target_perform(v, ops)
               let vn = scps_as_needing_call(v, sctx)
               let vc = scps_as_cps_local_call(v, sctx)
-              if vp >= 0 {
+              if scps_as_split_handle(v, sctx) {
+                scps_split_handle_bind(v, x, b, sctx, ctx, st)
+              } else if vp >= 0 {
                 let vargs = scps_perform_args(v)
                 if scps_exprs_contain_susp(vargs, sctx) {
                   (false, e)
@@ -2254,6 +2442,13 @@ fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], Int, Ar
             } else {
               scps_split_tail(EMatch(s, scps_seq_float_match_arms(arms, b, site)), sctx, ctx, st)
             }
+          } else {
+            let (bok, bexpr) = scps_split_tail(b, sctx, ctx, st)
+            (bok, ESeq(a, bexpr))
+          },
+          // #1537: a suspending abortive handle as a statement.
+          EHandle(_, _) => if scps_contains_susp(a, sctx) {
+            scps_split_handle_bind(a, scps_local("__scps_w", site), b, sctx, ctx, st)
           } else {
             let (bok, bexpr) = scps_split_tail(b, sctx, ctx, st)
             (bok, ESeq(a, bexpr))
@@ -4526,9 +4721,9 @@ fn scps_inert_taint(e: Expr, eff: String, needing: Array[String], locals: Array[
           // laundering route, not a discharge
           // (err_effect_closure_param_capture_launder.vibe), and every other
           // argument is still scanned as an ordinary expression.
-          scps_inert_taint_exprs(scps_undischarged_args(ctx, nm, args, eff), eff, needing, locals, ctx)
+          scps_inert_taint_exprs(scps_undischarged_args(ctx, nm, scps_plain_data_args_cleared(ctx, nm, args), eff), eff, needing, locals, ctx)
         } else if is_fn && !scps_row_contains(ctx, row, eff) && scps_callee_first_order(ctx, nm) {
-          scps_inert_taint_exprs(args, eff, needing, locals, ctx)
+          scps_inert_taint_exprs(scps_plain_data_args_cleared(ctx, nm, args), eff, needing, locals, ctx)
         } else {
           true
         }
@@ -4650,6 +4845,77 @@ fn scps_pats_collect_binds(ps: Array[Pat], acc: Array[String]) -> Unit {
 /// `__scps_cps_Async_..` for a step-source parameter). Everything else is
 /// returned for the ordinary scan, and so is every argument when the callee
 /// cannot be found.
+/// #1537: a declared parameter type that can only hold data -- the scalar
+/// builtins, and `Array` / `Option` / tuples of them. A value of such a type
+/// is not a closure, so it cannot smuggle a step-compiled one into the call.
+/// An allowlist rather than "no function type": a type parameter, an alias or
+/// a struct may still carry a closure.
+fn scps_ty_is_plain_data(t: TypeExpr) -> Bool {
+  match t {
+    TyName(n) => n == "Int" || n == "String" || n == "Bool" || n == "Double" || n == "Char" || n == "Bytes",
+    TyApp(h, targs) => (h == "Array" || h == "Option") && scps_tys_are_plain_data(targs),
+    TyTuple(ts) => scps_tys_are_plain_data(ts),
+    TyUnit => true,
+    _ => false
+  }
+}
+
+fn scps_tys_are_plain_data(ts: Array[TypeExpr]) -> Bool {
+  let mut ok = true
+  let mut i = 0
+  while i < Array::length(ts) {
+    if !scps_ty_is_plain_data(Array::get(ts, i)) {
+      ok = false
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ok
+}
+
+/// #1537: `args` with every bare identifier in a plain-data slot of the
+/// top-level function `name` replaced by `()`, slot for slot. A captured name
+/// of unknown provenance taints because it may alias a step-compiled closure;
+/// in a slot whose declared type is plain data it cannot be one (the checker
+/// has already matched the argument to that type), so it carries nothing the
+/// suspend lowering must see.
+fn scps_plain_data_args_cleared(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), name: String, args: Array[Expr]) -> Array[Expr] {
+  let (stmts, _, _, _, _, _) = ctx
+  let mut params: Array[(String, Option[TypeExpr])] = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, snm, _, EFn(_, _, ps, _, _, _)) => if snm == name {
+        params = ps
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  let out: Array[Expr] = []
+  let mut k = 0
+  while k < Array::length(args) {
+    let a = Array::get(args, k)
+    let plain_ident = match a {
+      EIdent(_, _) => k < Array::length(params) && match Array::get(params, k).1 {
+        Some(t) => scps_ty_is_plain_data(t),
+        None => false
+      },
+      _ => false
+    }
+    Array::push(out, if plain_ident {
+      EUnit
+    } else {
+      a
+    })
+    k = k + 1
+  }
+  out
+}
+
 fn scps_undischarged_args(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), name: String, args: Array[Expr], eff: String) -> Array[Expr] {
   let (stmts, _, _, _, _, _) = ctx
   let mut params: Array[(String, Option[TypeExpr])] = []

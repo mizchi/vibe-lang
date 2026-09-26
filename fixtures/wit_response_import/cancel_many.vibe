@@ -1,0 +1,42 @@
+// #3131: cancelling the task that awaits a WIT RESPONSE cancels its subtask;
+// one that already landed owns its body stream, which is dropped with it.
+// Each of 600 groups starts `fetch_a` and `fetch_b`, joins the task awaiting
+// `fetch_b` and cancels the other. With `fetch_a` slow the cancel finds the
+// subtask pending; with it immediate, the response has landed and its body
+// is dropped. A task that takes its response closes the body itself. 600 is
+// past the adapter's 512 result slots, so a slot, subtask or body kept by a
+// cancel traps a later call. Every group answers
+// `fetch_b`'s status, 204: 122400. Executed by
+// scripts/test_wit_async_import_component_gate.sh.
+import ./client_bindings.vibe {
+  fetch_a, fetch_b
+}
+
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  let mut total = 0
+  let mut i = 0
+  while i < 600 {
+    let got = TaskGroup::run((g) -> {
+      let a = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+        let r = await(fetch_a())
+        host_stream_close(HostResponse::body(r))
+        HostResponse::status(r)
+      })
+      let b = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+        let r = await(fetch_b())
+        host_stream_close(HostResponse::body(r))
+        HostResponse::status(r)
+      })
+      let v = TaskHandle::join(b)
+      TaskHandle::cancel(a)
+      v
+    })
+    total = total + got
+    i = i + 1
+  }
+  total
+}

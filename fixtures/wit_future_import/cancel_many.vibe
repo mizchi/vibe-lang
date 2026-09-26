@@ -1,0 +1,35 @@
+// #3131: a WIT future is a SUBTASK, so cancelling the task that awaits it
+// cancels the subtask (`subtask.cancel`) and frees its result slot. Each of
+// 600 groups starts a 10s `get_price` and a fast `get_tax`, joins the fast
+// one and cancels the slow one. 600 is past the adapter's 512 result slots,
+// so a cancel that kept its slot -- or its subtask -- traps a later call.
+// Every group answers 2: 1200. Executed by
+// scripts/test_wit_async_import_component_gate.sh.
+import ./prices_bindings.vibe {
+  get_price, get_tax
+}
+
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  let mut total = 0
+  let mut i = 0
+  while i < 600 {
+    let got = TaskGroup::run((g) -> {
+      let slow = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+        await(get_price())
+      })
+      let fast = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+        await(get_tax())
+      })
+      let v = TaskHandle::join(fast)
+      TaskHandle::cancel(slow)
+      v
+    })
+    total = total + got
+    i = i + 1
+  }
+  total
+}

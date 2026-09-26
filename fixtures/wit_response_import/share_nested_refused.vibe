@@ -1,0 +1,32 @@
+// #2066: the one-owner rule for a response looks INSIDE the future's value.
+// A `HostResponse` wrapped in an `Option` and a declared struct is still the
+// body stream's one readable end, so a future of it shared with a spawned task
+// is refused the same way `share_refused.vibe` is (Codex on #3091) -- with no
+// annotation: `Future::ready` carries its payload and the struct literal its
+// type (#3112). Compiled
+// and refused by scripts/test_wit_async_import_component_gate.sh.
+import ./client_bindings.vibe {
+  fetch_a
+}
+
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+struct Reply {
+  resp: HostResponse
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  let resp = await(fetch_a())
+  let shared = Future::ready(Some(Reply::{ resp: resp }))
+  TaskGroup::run((g) -> {
+    let t = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      match await(shared) {
+        Some(r) => HostResponse::status(r.resp),
+        None => 0
+      }
+    })
+    TaskHandle::join(t)
+  })
+}

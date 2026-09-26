@@ -1,0 +1,35 @@
+// #2066: a request PARAMETER. `fetch: async func(url: string) -> response`
+// takes the URL at run time: the guest pushes its bytes into the component
+// adapter's argument buffer and the adapter lowers that buffer as the string
+// parameter. The runner's echo response answers status 200 with the URL's own
+// bytes as the body, so the program sees what the host received.
+// 200 + ("a"=97 + "b"=98 + "c"=99) = 494; a second request for "d" (100)
+// proves the buffer is reset between calls, not appended to: 594. A third
+// request carries 70000 bytes of "a" -- past the first memory page the
+// buffer starts on, so the adapter grows its memory: + 97 * 70000 = 6790594.
+// Compiled, validated and executed by
+// scripts/test_wit_async_import_component_gate.sh.
+import ./client_bindings.vibe {
+  fetch
+}
+
+fn body_sum(body: HostStream) -> Int with Async {
+  let mut total = 0
+  for b in body {
+    total = total + b
+  }
+  total
+}
+
+let run: () -> Int with Async = () -> {
+  let url = String::concat("a", "bc")
+  let resp = await(fetch(url))
+  let first = HostResponse::status(resp) + body_sum(HostResponse::body(resp))
+  let again = await(fetch("d"))
+  let mut big = "a"
+  while String::length(big) < 70000 {
+    big = String::concat(big, big)
+  }
+  let long = await(fetch(String::substring(big, 0, 70000)))
+  first + body_sum(HostResponse::body(again)) + body_sum(HostResponse::body(long))
+}

@@ -718,8 +718,8 @@ const ASYNC_COMPONENT_GET_VALUE: u32 = 42;
 /// "concurrency must be observable" discipline as VIBE_ASYNC_FUTURES'
 /// per-entry delays.
 /// #2066: the `response` record of a WIT response import --
-/// `record { status: s32, body: stream<u8> }` -- as the payload of the
-/// `future<response>` the import returns.
+/// `record { status: s32, body: stream<u8> }` -- the result of the
+/// `async func` the import declares (#3131: returned by the call itself).
 #[derive(
     wasmtime::component::ComponentType,
     wasmtime::component::Lower,
@@ -782,6 +782,102 @@ impl<D> wasmtime::component::StreamProducer<D> for DelayedByteStreamProducer {
         }
     }
 }
+
+/// A named root future's producer: `value` after `ms`. Unlike an `async`
+/// block, it answers a cancelled read (`finish`) at once rather than running
+/// its delay out, so a guest that cancels a pending `future.cancel-read` is
+/// not held for the rest of the delay (Codex on #3091: a group whose body
+/// throws cancels its parked children's reads).
+struct DelayedValue {
+    value: u32,
+    sleep: Option<std::pin::Pin<Box<tokio::time::Sleep>>>,
+}
+
+impl DelayedValue {
+    fn new(value: u32, ms: u64) -> Self {
+        let sleep = if ms > 0 {
+            Some(Box::pin(tokio::time::sleep(std::time::Duration::from_millis(ms))))
+        } else {
+            None
+        };
+        DelayedValue { value, sleep }
+    }
+}
+
+impl<D: 'static> wasmtime::component::FutureProducer<D> for DelayedValue {
+    type Item = u32;
+
+    fn poll_produce(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        _store: wasmtime::StoreContextMut<D>,
+        finish: bool,
+    ) -> std::task::Poll<Result<Option<u32>>> {
+        use std::future::Future;
+        use std::task::Poll;
+        let this = self.get_mut();
+        let ready = match this.sleep.as_mut() {
+            Some(sleep) => sleep.as_mut().poll(cx).is_ready(),
+            None => true,
+        };
+        if ready {
+            Poll::Ready(Ok(Some(this.value)))
+        } else if finish {
+            Poll::Ready(Ok(None))
+        } else {
+            Poll::Pending
+        }
+    }
+}
+
+/// #2066: a REAL response provider. `VIBE_ASYNC_RESPONSES="<addr>=0:0:http"`
+/// links `func: async func(url: string) -> response` to an HTTP GET of the
+/// argument: the request runs on a blocking thread (ureq, like the core
+/// runner's Http imports), so several fetches are in flight together, and the
+/// call returns the server's own status -- a non-2xx status is a response,
+/// not an error -- and its body bytes streamed. A transport failure (no
+/// connection, bad URL) fails the call, which traps the guest's await.
+/// The whole request, connect through the last body byte, is bounded
+/// (`VIBE_HTTP_TIMEOUT_MS`, default 30s): a blocking thread cannot be aborted
+/// once it runs, and the runtime waits for it at shutdown, so a stalled server
+/// would otherwise hold the runner open after the component finished.
+const HTTP_PROVIDER_TIMEOUT_MS: u64 = 30_000;
+/// The body is buffered before the future lands, so it is capped
+/// (`VIBE_HTTP_BODY_LIMIT`, default 16 MiB) rather than letting an endpoint
+/// grow host memory past what `StoreLimits` governs. A larger body fails the
+/// future with a message naming the limit; it is never silently truncated.
+const HTTP_PROVIDER_BODY_LIMIT: u64 = 16 * 1024 * 1024;
+
+fn http_env_u64(name: &str, default: u64) -> u64 {
+    std::env::var(name).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
+}
+
+fn http_get_blocking(url: &str) -> Result<(i32, Vec<u8>)> {
+    let timeout = std::time::Duration::from_millis(http_env_u64(
+        "VIBE_HTTP_TIMEOUT_MS",
+        HTTP_PROVIDER_TIMEOUT_MS,
+    ));
+    let limit = http_env_u64("VIBE_HTTP_BODY_LIMIT", HTTP_PROVIDER_BODY_LIMIT);
+    let agent = ureq::AgentBuilder::new().timeout(timeout).build();
+    let resp = match agent.get(url).call() {
+        Ok(r) => r,
+        Err(ureq::Error::Status(_, r)) => r,
+        Err(e) => return Err(format_err!("http provider: GET {url}: {e}")),
+    };
+    let status = i32::from(resp.status());
+    let mut bytes = Vec::new();
+    resp.into_reader()
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|e| format_err!("http provider: GET {url}: reading the body: {e}"))?;
+    if bytes.len() as u64 > limit {
+        return Err(format_err!(
+            "http provider: GET {url}: the body is larger than {limit} bytes; raise VIBE_HTTP_BODY_LIMIT to accept it"
+        ));
+    }
+    Ok((status, bytes))
+}
+
 
 fn run_async_component(path: &str) -> Result<i32> {
     use wasmtime::component::{Accessor, Component, Linker as ComponentLinker};
@@ -949,8 +1045,8 @@ fn run_async_component(path: &str) -> Result<i32> {
             let name = name.trim().to_string();
             // #2064: a WIT function address (`example:prices/api@1.0.0#get-price`)
             // is linked inside that versioned INTERFACE instance, as the
-            // `future<s64>` the composer declares for a `wit_future_get$`
-            // import, instead of as a root `future<u32>` function.
+            // `async func() -> s64` the WIT declares (#3131), instead of as a
+            // root `future<u32>` function.
             if let Some((iface, func)) = name.split_once('#') {
                 let value: i64 = val_s
                     .trim()
@@ -1007,15 +1103,7 @@ fn run_async_component(path: &str) -> Result<i32> {
                             let reader = acc.with(|mut access| {
                                 wasmtime::component::FutureReader::<u32>::new(
                                     &mut access,
-                                    async move {
-                                        if ms > 0 {
-                                            tokio::time::sleep(std::time::Duration::from_millis(
-                                                ms,
-                                            ))
-                                            .await;
-                                        }
-                                        Ok::<u32, wasmtime::Error>(value)
-                                    },
+                                    DelayedValue::new(value, ms),
                                 )
                             })?;
                             Ok((reader,))
@@ -1031,7 +1119,11 @@ fn run_async_component(path: &str) -> Result<i32> {
     // with the body streaming those bytes then EOS. The body stream is
     // created when the call is made and handed over inside the record, so
     // it is the guest's readable end from the moment the response lands.
-    let mut responses: std::collections::BTreeMap<String, Vec<(String, i32, u64, Vec<u8>)>> =
+    // (func, status, delay, body, echo): `echo` in place of the body bytes
+    // links `func: async func(<label>: string) -> response` whose body is the
+    // argument's own bytes (#2066 request parameters).
+    // `http` in place of the body links the real provider above.
+    let mut responses: std::collections::BTreeMap<String, Vec<(String, i32, u64, Vec<u8>, bool, bool)>> =
         std::collections::BTreeMap::new();
     if let Ok(spec) = std::env::var("VIBE_ASYNC_RESPONSES") {
         for ent in spec.split(',').filter(|s| !s.trim().is_empty()) {
@@ -1054,8 +1146,11 @@ fn run_async_component(path: &str) -> Result<i32> {
                 .trim()
                 .parse()
                 .map_err(|e| format_err!("VIBE_ASYNC_RESPONSES '{addr}': bad delay: {e}"))?;
+            let body_spec = parts.next().unwrap_or("").trim();
+            let echo = body_spec == "echo";
+            let http = body_spec == "http";
             let mut body: Vec<u8> = Vec::new();
-            for b in parts.next().unwrap_or("").split('|').filter(|s| !s.trim().is_empty()) {
+            for b in body_spec.split('|').filter(|s| !s.trim().is_empty() && !echo && !http) {
                 body.push(
                     b.trim()
                         .parse()
@@ -1065,7 +1160,7 @@ fn run_async_component(path: &str) -> Result<i32> {
             responses
                 .entry(iface.to_string())
                 .or_default()
-                .push((func.to_string(), status, delay, body));
+                .push((func.to_string(), status, delay, body, echo, http));
         }
     }
     // One linker instance per WIT interface, carrying its scalar futures AND
@@ -1083,47 +1178,72 @@ fn run_async_component(path: &str) -> Result<i32> {
                 func_name,
                 move |acc: &Accessor<StoreLimits>, _params: ()| {
                     let ms = scale(entry_delay);
+                    // #3131: `async func() -> s64` as the WIT writes it -- the
+                    // call itself is the subtask, and its result is the value.
+                    let _ = acc;
                     Box::pin(async move {
-                        let reader = acc.with(|mut access| {
-                            wasmtime::component::FutureReader::<i64>::new(
-                                &mut access,
-                                async move {
-                                    if ms > 0 {
-                                        tokio::time::sleep(std::time::Duration::from_millis(ms))
-                                            .await;
-                                    }
-                                    Ok::<i64, wasmtime::Error>(value)
-                                },
-                            )
-                        })?;
-                        Ok((reader,))
+                        if ms > 0 {
+                            tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+                        }
+                        Ok((value,))
                     })
                 },
             )
             .map_err(|e| format_err!("link {iface}#{func_name}: {e}"))?;
         }
         let funcs = responses.remove(&iface).unwrap_or_default();
-        for (func_name, status, entry_delay, body) in funcs {
+        for (func_name, status, entry_delay, body, echo, http) in funcs {
+            if http {
+                inst.func_wrap_concurrent(
+                    &func_name,
+                    move |acc: &Accessor<StoreLimits>, (url,): (String,)| {
+                        Box::pin(async move {
+                            let (status, bytes) = tokio::task::spawn_blocking(move || http_get_blocking(&url))
+                                .await
+                                .map_err(|e| format_err!("http provider: request thread: {e}"))??;
+                            let body = acc.with(|mut access| {
+                                wasmtime::component::StreamReader::<u8>::new(&mut access, bytes)
+                            })?;
+                            Ok((HostResponse { status, body },))
+                        })
+                    },
+                )
+                .map_err(|e| format_err!("link {iface}#{func_name}: {e}"))?;
+                continue;
+            }
+            if echo {
+                inst.func_wrap_concurrent(
+                    &func_name,
+                    move |acc: &Accessor<StoreLimits>, (arg,): (String,)| {
+                        let ms = scale(entry_delay);
+                        let items = arg.into_bytes();
+                        Box::pin(async move {
+                            if ms > 0 {
+                                tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+                            }
+                            let body = acc.with(|mut access| {
+                                wasmtime::component::StreamReader::<u8>::new(&mut access, items)
+                            })?;
+                            Ok((HostResponse { status, body },))
+                        })
+                    },
+                )
+                .map_err(|e| format_err!("link {iface}#{func_name}: {e}"))?;
+                continue;
+            }
             inst.func_wrap_concurrent(
                 &func_name,
                 move |acc: &Accessor<StoreLimits>, _params: ()| {
                     let ms = scale(entry_delay);
                     let items = body.clone();
                     Box::pin(async move {
-                        let reader = acc.with(|mut access| {
-                            let body = wasmtime::component::StreamReader::<u8>::new(&mut access, items)?;
-                            wasmtime::component::FutureReader::<HostResponse>::new(
-                                &mut access,
-                                async move {
-                                    if ms > 0 {
-                                        tokio::time::sleep(std::time::Duration::from_millis(ms))
-                                            .await;
-                                    }
-                                    Ok::<HostResponse, wasmtime::Error>(HostResponse { status, body })
-                                },
-                            )
+                        if ms > 0 {
+                            tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+                        }
+                        let body = acc.with(|mut access| {
+                            wasmtime::component::StreamReader::<u8>::new(&mut access, items)
                         })?;
-                        Ok((reader,))
+                        Ok((HostResponse { status, body },))
                     })
                 },
             )

@@ -1,0 +1,34 @@
+// #2066 + #1537: WIT futures and a named host stream from spawned tasks. The
+// composition carries every root import kind at once -- the stream, then
+// `sleep-for` (@vibe/concurrent imports `sleep`) -- ahead of the aliased WIT
+// functions, and the group waits on the futures and the stream reads together.
+// 40 + 2 + (10 + 15 + 17) = 84. Compiled and executed by
+// scripts/test_wit_async_import_component_gate.sh.
+import ./prices_bindings.vibe {
+  get_price, get_tax
+}
+
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+fn drain(s: HostStream) -> Int with Async {
+  let mut total = 0
+  for b in s {
+    total = total + b
+  }
+  total
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  TaskGroup::run((g) -> {
+    let a = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      await(get_price()) + await(get_tax())
+    })
+    let b = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      drain(host_stream_named("body"))
+    })
+    TaskGroup::pump_all(g)
+    TaskHandle::join(a) + TaskHandle::join(b)
+  })
+}

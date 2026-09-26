@@ -1,0 +1,23 @@
+// #2066: the accepted side of spawn_future_formal_refused.vibe. A `Send`
+// bound on the payload's type parameter rules out a host response (which is
+// not `Send`, so `fan(fetch(..))` is refused at the call), and the helper may
+// share the future with a spawned task. The task awaits the host future and
+// answers 42. Executed by
+// scripts/test_named_hostfutures_component_gate.sh.
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+fn fan[T: Send](src: Future[T]) -> Int with Async + Exception {
+  TaskGroup::run((g) -> {
+    let t = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      let _ = await(src)
+      42
+    })
+    TaskHandle::join(t)
+  })
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  fan(host_future_named("fast"))
+}

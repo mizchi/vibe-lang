@@ -1,0 +1,32 @@
+// #2066 (Codex on #3091): a HostStream reached by two tasks through a closure
+// a helper RETURNED. Both tasks would read the one stream, splitting its bytes
+// between them. The spawn check cannot see the returned closure's captures, so
+// it refuses the spawn (#3152). Compiled and refused by
+// scripts/test_named_hoststreams_component_gate.sh.
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+fn drain(s: HostStream) -> Int with Async {
+  let mut total = 0
+  for b in s {
+    total = total + b
+  }
+  total
+}
+
+fn reader(s: HostStream) -> () -> Int with Async {
+  () -> Int with Async {
+    drain(s)
+  }
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  let w = reader(host_stream_named("left"))
+  TaskGroup::run((g) -> {
+    let a = TaskGroup::spawn_suspend(g, w)
+    let b = TaskGroup::spawn_suspend(g, w)
+    TaskGroup::pump_all(g)
+    TaskHandle::join(a) * 1000 + TaskHandle::join(b)
+  })
+}

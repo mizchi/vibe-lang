@@ -1,0 +1,20 @@
+// #3131 (Codex on #3091): the other half of drop_many.vibe. `p` is never
+// awaited while 600 later calls fill the adapter's 512 result slots, so its
+// slot is reclaimed for a later call. Awaiting `p` afterwards must not read
+// that call's value: the reclaim poisons `p`'s cell and the await traps
+// (abort: "await on a host future whose read was released"). Compiled and
+// run by scripts/test_wit_async_import_component_gate.sh, which expects the
+// trap.
+import ./prices_bindings.vibe {
+  get_price, get_tax
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  let p = get_price()
+  let mut i = 0
+  while i < 600 {
+    let _ = get_tax()
+    i = i + 1
+  }
+  await(p)
+}
