@@ -252,7 +252,15 @@ dirty_report=""
 run_checked() {
   local before after rc=0
   before="$(tree_state)"
+  local t0 t1
+  t0="$(date +%s)"
   run_companion "$1" >"$WORK_LOG" 2>&1 || rc=$?
+  t1="$(date +%s)"
+  # One line per companion with its wall seconds: the data
+  # gate_self_test_shards.txt is balanced from. Pins taken from a local run
+  # were wrong for CI (a companion that is 493s locally finished its whole
+  # shard in 108s there), so CI's own numbers have to be readable in its log.
+  echo "[gate-self-tests] $((t1 - t0))s rc=$rc $1"
   after="$(tree_state)"
   if [ "$before" != "$after" ]; then
     dirtied="$dirtied $1"
