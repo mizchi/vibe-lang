@@ -74,9 +74,17 @@ fn weight_num(v: Json) -> Double {
     _ => None
   }
   match parsed {
-    Some(n) => if n >= 0.0 { n } else { 0.0 - 1.0 },
+    Some(n) => if n >= 0.0 && is_finite(n) { n } else { 0.0 - 1.0 },
     None => 0.0 - 1.0
   }
+}
+
+/// `Double::parse("Infinity")` answers +inf, and an infinite weight gives its
+/// bin an infinite load, pushing every later file elsewhere. The Node original
+/// kept only `Number.isFinite` weights. `inf - inf` is NaN and NaN is not
+/// equal to itself, so this is false for both infinities and for NaN.
+fn is_finite(d: Double) -> Bool {
+  d - d == 0.0
 }
 
 fn show_weight(w: Double) -> String {
@@ -317,13 +325,14 @@ fn self_test() -> Unit with Fs + Console + Stderr + Process {
   if Fs::exists(dir) { Fs::remove_tree(dir) } else { () }
   Fs::mkdir_p(dir)
   let wpath = dir + "/weights.json"
-  Fs::write_file(wpath, "{\"keep\":3,\"nested\\\\path\":2,\"negative\":-1,\"stringy\":\"4\",\"bad\":\"nan\"}\n")
+  Fs::write_file(wpath, "{\"keep\":3,\"nested\\\\path\":2,\"negative\":-1,\"stringy\":\"4\",\"bad\":\"nan\",\"inf\":\"Infinity\",\"neginf\":\"-Infinity\"}\n")
   let got = kept_weights(wpath)
   expect(String::contains(got, "keep=3"), "keep: " + got)
   expect(String::contains(got, "nested/path=2"), "nested: " + got)
   expect(String::contains(got, "stringy=4"), "stringy: " + got)
   expect(!String::contains(got, "negative"), "negative was kept: " + got)
   expect(!String::contains(got, "bad"), "nan was kept: " + got)
+  expect(!String::contains(got, "inf"), "an infinite weight was kept: " + got)
   let frac_path = dir + "/frac.json"
   Fs::write_file(frac_path, "{\"a_test.vibe\":0.9,\"b_test.vibe\":0.8,\"c_test.vibe\":0.1}\n")
   let frac_files = ["a_test.vibe", "b_test.vibe", "c_test.vibe"]

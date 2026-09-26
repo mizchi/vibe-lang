@@ -106,12 +106,21 @@ fn format_rate(d: Double) -> String {
   if neg { "-" + body } else { body }
 }
 
-/// hit/total as a percentage rounded to hundredths, half to even -- Python's
-/// `round(x, 2)`, which the replaced script used. Computed on the integers:
-/// the percentage in hundredths is hit*10000/total exactly, so a tie is a
-/// remainder of exactly half the divisor and needs no reasoning about how a
-/// Double represents 3.125. Adding 0.5 instead rounded 1/32 up to 3.13, and a
-/// 3.13 floor then passed a rate Python reported as 3.12.
+/// hit/total as a percentage rounded to hundredths, half to even, DEFINED on
+/// the exact ratio: the percentage in hundredths is hit*10000/total, and a
+/// tie is a remainder of exactly half the divisor.
+///
+/// This is a deliberate rebaseline, not a port. The replaced script computed
+/// `round(hit / total * 100, 2)`, whose answer at an exact midpoint depends on
+/// which way the binary intermediate happened to round: 1/32 is exactly
+/// 3.125 and went to even (3.12), but 23/160 is exactly 14.375 and went DOWN
+/// (14.37), because 23/160*100 is 14.374999999999998 as a Double. Matching
+/// that needs the Double's bits, which this language does not expose, and it
+/// would make the gate's answer a property of float rounding rather than of
+/// the counts. The two definitions differ only at exact midpoints, by 0.01;
+/// the floors CI uses are the defaults (57.0 and 0.0, whole numbers) and no
+/// workflow or task sets a two-decimal one, so no current verdict moves.
+/// Adding 0.5 instead (the first port) rounded every tie up, 1/32 to 3.13.
 fn pct(hit: Int, total: Int) -> Double {
   if total <= 0 {
     0.0
@@ -280,6 +289,9 @@ fn self_test() -> Unit with Fs + Console + Stderr + Process {
   expect(format_rate(pct(1, 32)) == "3.12", "1/32 rounds half to even (3.12), got " + format_rate(pct(1, 32)))
   expect(rate_below(pct(1, 32), 3.13), "3.12 must miss a 3.13 floor")
   expect(format_rate(pct(3, 32)) == "9.38", "3/32 is 9.375, which rounds to even 9.38, got " + format_rate(pct(3, 32)))
+  // The rebaseline, pinned: Python read 23/160 as 14.37 through a binary
+  // intermediate (14.374999999999998); the exact ratio is a tie, and even is 14.38.
+  expect(format_rate(pct(23, 160)) == "14.38", "23/160 is exactly 14.375, half to even 14.38, got " + format_rate(pct(23, 160)))
   expect(format_rate(pct(0, 0)) == "0.0", "an empty corpus is 0.0")
   // A floor that is set must parse; unset or blank is the default.
   expect(parse_floor("", 57.0) == Some(57.0), "blank floor is the default")
