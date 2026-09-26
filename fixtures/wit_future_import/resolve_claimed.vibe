@@ -1,0 +1,37 @@
+// #3131 (Codex on #3091): a WIT future resolved by `Future::resolve` while a
+// task is parked awaiting it still holds its call's result slot until the
+// host answers. The reclaim counted such a claimed slot only while its cell
+// read state 2, so 300 of them plus 300 dropped futures looked like 300 live
+// slots: nothing was reclaimed and a later call trapped. A claimed slot now
+// counts until the adapter frees it. Each group below parks 300 tasks on slow
+// prices and resolves every one, drops 300 fast taxes, then makes one more
+// call, whose tax is read after the group: 2. Executed by scripts/test_wit_async_import_component_gate.sh.
+import ./prices_bindings.vibe {
+  get_price, get_tax
+}
+
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  let t = TaskGroup::run((g) -> {
+    let mut i = 0
+    while i < 300 {
+      let p = get_price()
+      let _ = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+        await(p)
+      })
+      Future::resolve(p, 1)
+      i = i + 1
+    }
+    let mut j = 0
+    while j < 300 {
+      let _ = get_tax()
+      j = j + 1
+    }
+    // The call itself is what trapped: the adapter had no free slot.
+    get_tax()
+  })
+  await(t)
+}

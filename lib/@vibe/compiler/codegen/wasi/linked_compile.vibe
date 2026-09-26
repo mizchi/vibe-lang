@@ -3406,6 +3406,9 @@ fn lc_is_hook_name(name: String, base: String) -> Bool {
 /// `vibe_hf_wait_any_raw` / `vibe_hf_wait_raw` instead, so only such a
 /// program imports them.
 fn lc_host_hooks_install(stmts: Array[Stmt], hf_machinery: Bool, hs_machinery: Bool) -> Unit {
+  // #3131: a take or a cancel frees a WIT result slot; the slot reclaim
+  // (lc_ws_track_inject) is told through `__ws_freed` when it is injected.
+  let ws_freed = hf_machinery && lc_program_defines_top_level(stmts, "__ws_freed")
   if hf_machinery || hs_machinery {
     let mut i = 0
     while i < Array::length(stmts) {
@@ -3425,9 +3428,9 @@ fn lc_host_hooks_install(stmts: Array[Stmt], hf_machinery: Bool, hs_machinery: B
           } else if lc_is_hook_name(name, "__conc_host_sleep_cancel") {
             Some(ECall(EIdent("vibe_hf_sleep_cancel_raw", -1), [param], -1))
           } else if lc_is_hook_name(name, "__conc_host_cancel") {
-            Some(lc_host_cancel_body(param, hf_machinery, hs_machinery))
+            Some(lc_host_cancel_body(param, hf_machinery, hs_machinery, ws_freed))
           } else if lc_is_hook_name(name, "__conc_host_take") {
-            Some(lc_host_hook_dispatch(param, hf_machinery, hs_machinery, "vibe_hf_wait_raw", "vibe_hs_read_raw"))
+            Some(lc_host_hook_dispatch_freeing(param, hf_machinery, hs_machinery, "vibe_hf_wait_raw", "vibe_hs_read_raw", ws_freed))
           } else {
             None
           }
@@ -3513,11 +3516,13 @@ fn lc_ws_track_inject(stmts: Array[Stmt]) -> Unit {
   // A slot's liveness is its own record, not only its cell's state: seq > 0
   // is an unclaimed cell still holding its slot -- landed, pending, or
   // overwritten by `Future::resolve`, which frees nothing (Codex on #3091);
-  // -1 is claimed, holding its slot until the wait settles it (state 0) or a
-  // release poisons it (9); -2 is free (a placeholder, or already reclaimed).
+  // -1 is claimed, holding its slot whatever its cell says until the adapter
+  // frees it -- a wait or a cancel, each followed by `__ws_freed` (a cell
+  // resolved while its waiter is parked still holds the call, Codex on
+  // #3091); -2 is free (a placeholder, already reclaimed, or freed).
   let rst = get(rc, EInt(0))
   let unclaimed = EBinOp("&&", EBinOp("<", EInt(0), rq, -1), EBinOp("!=", rst, EInt(9), -1), -1)
-  let holds = EBinOp("||", unclaimed, EBinOp("&&", EBinOp("==", rq, EInt(0 - 1), -1), EBinOp("==", rst, EInt(2), -1), -1), -1)
+  let holds = EBinOp("||", unclaimed, EBinOp("==", rq, EInt(0 - 1), -1), -1)
   let better = EBinOp("&&", unclaimed, EBinOp("&&", EBinOp("!=", ri, rs, -1), EBinOp("||", EBinOp("<", rbest, EInt(0), -1), EBinOp("<", rq, rbq, -1), -1), -1), -1)
   let take = EAssign("__wsr_best", ri, EAssign("__wsr_bq", rq, EUnit))
   let count = EAssign("__wsr_live", EBinOp("+", rlive, EInt(1), -1), EIf(better, take, EUnit))
@@ -3572,6 +3577,18 @@ fn lc_ws_track_inject(stmts: Array[Stmt]) -> Unit {
     ("__wsc_f", Some(cell_ty))
   ]
   Array::push(stmts, SLet(false, false, lc_fixed_synthetic_name("__ws_claim", "review-lint: allow-fixed-synthetic-name"), None, EFn(lc_fresh_string_array(), array_empty(), claim_params, Some(TyName("Int")), None, ESeq(EIf(claimed, mark, EUnit), EInt(0)))))
+  // __ws_freed(q, v): the adapter just freed the slot of payload `q` (handle
+  // + 2) by a wait or a cancel; mark it free and pass the answer `v` through.
+  let fq = EIdent("__wsf_q", -1)
+  let fs = EIdent("__wsf_s", -1)
+  let in_band = EBinOp("&&", EBinOp("<", EInt(0 - 1), fs, -1), EBinOp("<", fs, len(seqs), -1), -1)
+  let free_body = ELet("__wsf_s", EBinOp("-", fq, EInt(lc_ws_handle_base() + 2), -1), ESeq(EIf(in_band, set(seqs, fs, EInt(0 - 2)), EUnit), EIdent("__wsf_v", -1)), -1)
+  // review-lint: allow-fixed-synthetic-name (the injected __ws_freed's own scope)
+  let free_params: Array[(String, Option[TypeExpr])] = [
+    ("__wsf_q", Some(int_ty)),
+    ("__wsf_v", Some(int_ty))
+  ]
+  Array::push(stmts, SLet(false, false, lc_fixed_synthetic_name("__ws_freed", "review-lint: allow-fixed-synthetic-name"), None, EFn(lc_fresh_string_array(), array_empty(), free_params, Some(int_ty), None, free_body)))
   // Every WIT getter's cell goes through __ws_track, and __aw_pay (synthesized
   // earlier by await_poll_pass) claims the cell it is about to wait on.
   let mut i = 0
@@ -3583,7 +3600,7 @@ fn lc_ws_track_inject(stmts: Array[Stmt]) -> Unit {
         ], -1)
         Array::set(stmts, i, SLet(ex, isrec, name, ty, EFn(tps, tbs, params, ret, eff, ELet("__awp_k", claim, body, -1))))
         // review-lint: allow-fixed-synthetic-name (the injected __aw_pay's own scope)
-      } else if name == "__ws_track" || name == "__ws_room" || name == "__ws_claim" {
+      } else if name == "__ws_track" || name == "__ws_room" || name == "__ws_claim" || name == "__ws_freed" {
         ()
       } else {
         Array::set(stmts, i, SLet(ex, isrec, name, ty, EFn(tps, tbs, params, ret, eff, lc_ws_wrap_getters(body))))
@@ -3621,8 +3638,30 @@ fn lc_ws_slot_count() -> Int {
 /// handle released (`vibe_hf_cancel_raw`), and so is a stream's
 /// (`vibe_hs_cancel_raw`): a host stream cannot be captured by another task,
 /// so the cancelled task was its only reader.
-fn lc_host_cancel_body(payload: Expr, hf_machinery: Bool, hs_machinery: Bool) -> Expr {
-  lc_host_hook_dispatch(payload, hf_machinery, hs_machinery, "vibe_hf_cancel_raw", "vibe_hs_cancel_raw")
+fn lc_host_cancel_body(payload: Expr, hf_machinery: Bool, hs_machinery: Bool, ws_freed: Bool) -> Expr {
+  lc_host_hook_dispatch_freeing(payload, hf_machinery, hs_machinery, "vibe_hf_cancel_raw", "vibe_hs_cancel_raw", ws_freed)
+}
+
+/// lc_host_hook_dispatch for a hook that FREES the future it names (a take or
+/// a cancel): with `ws_freed`, the future half reports the freed WIT slot as
+/// `__ws_freed(payload, <call>)`.
+fn lc_host_hook_dispatch_freeing(payload: Expr, hf_machinery: Bool, hs_machinery: Bool, future_fn: String, stream_fn: String, ws_freed: Bool) -> Expr {
+  if ws_freed {
+    let future_call = ECall(EIdent("__ws_freed", -1), [
+      payload,
+      ECall(EIdent(future_fn, -1), [EBinOp("-", payload, EInt(2), -1)], -1)
+    ], -1)
+    if hs_machinery {
+      let stream_call = ECall(EIdent(stream_fn, -1), [
+        EBinOp("-", payload, EInt(lc_hs_req_base()), -1)
+      ], -1)
+      EIf(EBinOp("<", EInt(lc_hs_req_base() - 1), payload, -1), stream_call, future_call)
+    } else {
+      future_call
+    }
+  } else {
+    lc_host_hook_dispatch(payload, hf_machinery, hs_machinery, future_fn, stream_fn)
+  }
 }
 
 /// #1537: the name @vibe/concurrent's `__aw_note` has in this program, or ""
@@ -4622,9 +4661,15 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
     // original (byte-identical) inline arm.
     let arm = if hf_machinery || hs_machinery {
       let q = EIdent("__entry_hf_q", -1)
-      let wait_call = ECall(EIdent("vibe_hf_wait_raw", -1), [
+      let raw_wait = ECall(EIdent("vibe_hf_wait_raw", -1), [
         EBinOp("-", q, EInt(2), -1)
       ], -1)
+      // #3131: the wait frees a WIT slot; record it (lc_ws_track_inject).
+      let wait_call = if hf_machinery {
+        ECall(EIdent("__ws_freed", -1), [q, raw_wait], -1)
+      } else {
+        raw_wait
+      }
       let trap_zero = ESeq(ECall(EIdent("assert", -1), [
         EBinOp("==", q, EInt(0), -1)
       ], -1), EInt(0))
