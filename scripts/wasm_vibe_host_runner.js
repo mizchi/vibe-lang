@@ -2239,6 +2239,52 @@ function findClosureEnv(instance, heapStart, tableSlot) {
   return 0;
 }
 
+// #3109: this runner never calls `process.exit()` on a path that has run
+// guest code. On Node 24, `process.exit()` can hang forever: it shuts the V8
+// platform down (NodePlatform::Shutdown joins the platform worker threads)
+// while the isolate is still alive, and a concurrent Sparkplug job on one of
+// those workers can be blocked in CollectionBarrier::AwaitCollectionBackground,
+// waiting for a GC that only the exiting main thread could run. A NORMAL exit
+// disposes the isolate first, which releases that worker, so every exit here
+// sets `process.exitCode` and lets the event loop drain instead.
+//
+// The guest's `process_exit` import still has to stop the guest where it
+// stands, so it throws a GuestExit out of the wasm call. The runner's catch
+// paths recognise it and report its code rather than an error.
+class GuestExit extends Error {
+  constructor(code) {
+    super(`guest requested exit ${code}`);
+    this.name = "GuestExit";
+    this.code = code;
+  }
+}
+// The FIRST code the guest asked for, or null. `process.exit()` used to end
+// the process on the spot, so that code is final: the 'exit' listener
+// installed below re-applies it in case something (a guest `catch_all`, a
+// later success path) ran after the throw and overwrote `process.exitCode`.
+let guestExitCode = null;
+function requestGuestExit(code) {
+  if (guestExitCode === null) {
+    guestExitCode = code;
+  }
+  process.exitCode = guestExitCode;
+  throw new GuestExit(guestExitCode);
+}
+// Grace before the hard fallback in `exitAfterDrain`. A runner that has
+// failed normally has nothing left to wait for, so the drain finishes long
+// before this; the fallback exists only for a handle nobody closed.
+const EXIT_DRAIN_GRACE_MS = 10000;
+// End the process with `code` without `process.exit()`: record the code and
+// return, so the event loop drains and Node takes its normal exit path. If a
+// live handle (the daemon's stdin reader, say) would keep the loop open, the
+// unref'd timer falls back to a hard exit after the grace period; it does not
+// itself keep the process alive.
+function exitAfterDrain(code) {
+  process.exitCode = code;
+  const fallback = setTimeout(() => process.exit(code), EXIT_DRAIN_GRACE_MS);
+  fallback.unref();
+}
+
 let instanceRefGlobal = null;
 let covWasmBytesGlobal = null;
 // #1007 review (Codex P2): exposes the REAL positional output arg (argv[1]
@@ -2792,11 +2838,13 @@ async function main() {
       },
       // #903/#865: propagate a guest-chosen exit code to the real OS exit
       // status -- unlike `main() -> Int`'s return value, which `_start`
-      // only prints. `process.exit()` halts synchronously, so nothing
-      // after this call in the guest ever runs; the return value below is
-      // unreachable but kept for host-import type-signature consistency.
+      // only prints. #3109: the GuestExit thrown here unwinds the guest, so
+      // nothing after this call in the guest runs, and the process then
+      // exits with the code through the normal path (see `GuestExit`); the
+      // return value below is unreachable but kept for host-import
+      // type-signature consistency.
       process_exit(codeTagged) {
-        process.exit(Number(decodeHostInt(codeTagged)));
+        requestGuestExit(Number(decodeHostInt(codeTagged)));
         return 0n;
       },
       // vibe/io host effects (linear codegen `vibe.*` module). Both stdin
@@ -3737,6 +3785,11 @@ async function main() {
           lastErr = null;
           break;
         } catch (err) {
+          // #3109: the guest EXITED; retrying with the other env candidate
+          // would run the program a second time.
+          if (err instanceof GuestExit) {
+            throw err;
+          }
           lastErr = err;
         }
       }
@@ -3754,9 +3807,10 @@ async function main() {
       // range was a page of hex, ahead of the message that names the index and
       // the length. Off by default; the trap and its stack still print below,
       // which is what `vibe test`'s report parser reads.
-      const crashDebug = process.env.VIBE_CRASH_DEBUG === "1"
+      // A GuestExit (#3109) is the program ending, not a crash.
+      const crashDebug = !(err instanceof GuestExit) && (process.env.VIBE_CRASH_DEBUG === "1"
         || process.env.VIBE_DEBUG === "1"
-        || !!process.env.VIBE_DEBUG708_MEMDUMP;
+        || !!process.env.VIBE_DEBUG708_MEMDUMP);
       if (crashDebug) {
         const heapGlobal = instance.exports.__heap_ptr;
         const mem = new Uint8Array(instance.exports.memory.buffer);
@@ -3995,8 +4049,15 @@ async function main() {
         // stdout the same as a single-invoke run's.
         emitResult(invokes[i], result, isSelfhost);
       } catch (e) {
-        rc = 1;
-        err += `${decodeExceptionMessage(e)}\n`;
+        if (e instanceof GuestExit) {
+          // #3109: this target called `process_exit`. Its code is ITS status,
+          // like any other target's; the batch's own status is `anyFailed`.
+          rc = e.code;
+          guestExitCode = null;
+        } else {
+          rc = 1;
+          err += `${decodeExceptionMessage(e)}\n`;
+        }
       } finally {
         process.stdout.write = originalStdoutWrite;
         process.stderr.write = originalStderrWrite;
@@ -4192,22 +4253,37 @@ async function main() {
           };
         }
       } catch (err) {
-        const outOfMemory = daemonExhaustionMessage();
-        if (outOfMemory !== null) {
-          exhausted = outOfMemory;
-          writeDaemonDiag(requestArgs, outOfMemory);
+        if (err instanceof GuestExit) {
+          // #3109: the guest ended its own run with a code. That is this
+          // request's status, not a daemon failure, and the daemon keeps
+          // serving, so the code must not become the daemon's own.
+          guestExitCode = null;
+          process.exitCode = undefined;
+          response = {
+            exit_code: err.code,
+            elapsed_us: 1,
+            stdout: capturedStdout,
+            heap_ptr: readHeapPtr(),
+            heap_limit: daemonHeapLimit,
+          };
+        } else {
+          const outOfMemory = daemonExhaustionMessage();
+          if (outOfMemory !== null) {
+            exhausted = outOfMemory;
+            writeDaemonDiag(requestArgs, outOfMemory);
+          }
+          response = {
+            exit_code: 1,
+            elapsed_us: 1,
+            stdout: capturedStdout,
+            error: outOfMemory === null ? decodeExceptionMessage(err) : outOfMemory,
+            ...(outOfMemory === null
+              ? {}
+              : { memory_exhausted: true, trap: decodeExceptionMessage(err) }),
+            heap_ptr: readHeapPtr(),
+            heap_limit: daemonHeapLimit,
+          };
         }
-        response = {
-          exit_code: 1,
-          elapsed_us: 1,
-          stdout: capturedStdout,
-          error: outOfMemory === null ? decodeExceptionMessage(err) : outOfMemory,
-          ...(outOfMemory === null
-            ? {}
-            : { memory_exhausted: true, trap: decodeExceptionMessage(err) }),
-          heap_ptr: readHeapPtr(),
-          heap_limit: daemonHeapLimit,
-        };
       } finally {
         process.stdout.write = originalStdoutWrite;
       }
@@ -4284,7 +4360,17 @@ module.exports = {
 };
 
 if (require.main === module) {
+// #3109: a guest-requested exit code is final (see `GuestExit`).
+process.on("exit", () => {
+  if (guestExitCode !== null) {
+    process.exitCode = guestExitCode;
+  }
+});
 main().catch((err) => {
+  if (err instanceof GuestExit) {
+    exitAfterDrain(err.code);
+    return;
+  }
   // #946(4): a pathologically deep expression (e.g. thousands of chained
   // `+`) recurses the checker (itself compiled to wasm) past the native call
   // stack. That blows up the whole wasm instance -- nothing inside the
@@ -4315,7 +4401,8 @@ main().catch((err) => {
     try {
       annotateTrapWithLinemap(err, covWasmBytesGlobal);
     } catch (_) {}
-    process.exit(1);
+    exitAfterDrain(1);
+    return;
   }
   if (err instanceof RangeError && /call stack/i.test(err.message || "")) {
     // #2858: under the verb protocol the positional args are the verb's own
@@ -4338,7 +4425,8 @@ main().catch((err) => {
       } catch (_) {}
     }
     console.error("[vibe] stack overflow while type-checking: one expression nests too deeply, or the file has too many top-level declarations. Split the file, or raise the host stack with VIBE_NODE_STACK_SIZE=<KB>.");
-    process.exit(1);
+    exitAfterDrain(1);
+    return;
   }
   // #cov: even a failed run (parse/type error, trap) exercised many branches
   // before unwinding — capture its coverage from the still-live instance memory.
@@ -4355,7 +4443,8 @@ main().catch((err) => {
         const msg = tryDecodeExceptionString(instanceRefGlobal, payload);
         if (msg !== null) {
           console.error(`Error string: ${msg}`);
-          process.exit(1);
+          exitAfterDrain(1);
+          return;
         }
       }
     } catch (_) {}
@@ -4369,7 +4458,8 @@ main().catch((err) => {
               const msg = tryDecodeExceptionString(instanceRefGlobal, payload);
               if (msg !== null) {
                 console.error(`Error string (tag=${name}): ${msg}`);
-                process.exit(1);
+                exitAfterDrain(1);
+                return;
               }
               // Try to decode as tagged int
               if (typeof payload === "bigint" && (payload & TAG_MASK) === TAG_INT) {
@@ -4412,7 +4502,8 @@ main().catch((err) => {
   try {
     annotateTrapWithLinemap(err, covWasmBytesGlobal);
   } catch (_) {}
-  process.exit(1);
+  exitAfterDrain(1);
+  return;
 });
 }
 
