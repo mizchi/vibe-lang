@@ -68,6 +68,23 @@ expect 0 "a heading plus bare names all resolve"
 doc '- **String**: `length`, `no_such_builtin_here`'
 expect 1 "a frozen name that does not resolve" "no_such_builtin_here"
 
+# 2a. A package subsection is checked against the package's contract, not
+#     probed as builtins: a declared name passes, and an undeclared one fails
+#     naming the package. The first half is the green that makes the red mean
+#     something -- `TaskGroup::run` is no builtin, so a builtin probe fails it.
+doc '- **String**: `length`
+
+### 3.1 Concurrency (`@vibe/concurrent`)
+
+- `TaskGroup::run`, `TaskHandle::join`'
+expect 0 "a package subsection name declared in its contract"
+doc '- **String**: `length`
+
+### 3.1 Concurrency (`@vibe/concurrent`)
+
+- `TaskGroup::run`, `TaskGroup::spawn_suspend`'
+expect 1 "a package subsection name its contract does not declare" "@vibe/concurrent:TaskGroup::spawn_suspend"
+
 # 2b. #2275's case, re-founded by #2433. A real receiver with a NO-SUCH member
 #     must still fail: that is the population `unknown name` covers, and it is
 #     what stops the gate certifying a name from checker output alone.

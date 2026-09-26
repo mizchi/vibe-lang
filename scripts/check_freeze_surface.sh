@@ -132,7 +132,31 @@ NEG = ("not frozen", "cannot be frozen")
 
 recv = None
 frozen, negated = set(), set()
+# A `### ... (`@scope/pkg`)` subsection freezes a LIBRARY package's contract,
+# not builtins: its names are not probed as builtin operations (they are not
+# one) but looked up as declarations in that package's `index.vpkg`. The
+# loader's conformance check already refuses a contract whose declarations
+# have no implementation, so a declared name is a name that resolves.
+pkg = None
+pkg_missing = []
 for line in m.group(0).splitlines():
+    sub = re.match(r"^### .*\(`(@[a-z0-9_]+/[a-z0-9_/]+)`\)", line)
+    if line.startswith("### "):
+        pkg = sub.group(1) if sub else None
+        if pkg is not None:
+            contract = os.path.join("lib", pkg, "index.vpkg")
+            if not os.path.isfile(contract):
+                sys.exit("section 3 freezes " + pkg + " but " + contract + " does not exist")
+            declared = open(contract, encoding="utf-8").read()
+        continue
+    if pkg is not None:
+        if any(k in line for k in NEG):
+            continue
+        for tok in re.findall(r"`([^`]+)`", line):
+            for name in re.findall(r"\b([A-Z][A-Za-z0-9_]*::[a-z_][A-Za-z0-9_]*)\b", tok):
+                if not re.search(r"^fn " + re.escape(name) + r"\b", declared, re.M):
+                    pkg_missing.append(pkg + " " + name)
+        continue
     head = re.match(r"- \*\*([A-Za-z][A-Za-z0-9_]*)\*\*", line)
     if line.startswith("- "):
         # `**変換**`, `**反復**`, `**I/O**` are prose groupings, not types --
@@ -157,6 +181,8 @@ for line in m.group(0).splitlines():
 # would hide the contradiction, and it is how re-adding a deleted symbol
 # slipped past an earlier draft of this check: `Result::and_then` was excluded
 # because an older line still explained why it cannot be frozen.
+for entry in pkg_missing:
+    print("P " + entry.replace(" ", ":"))
 for name in sorted(frozen & negated):
     print("C " + name)
 for name in sorted(frozen - negated):
@@ -178,6 +204,16 @@ conflicts=()
 while IFS= read -r line || [ -n "$line" ]; do
   conflicts+=("$line")
 done < <(awk '$1=="C"{print $2}' "$freeze_lists")
+
+pkg_missing=()
+while IFS= read -r line || [ -n "$line" ]; do
+  pkg_missing+=("$line")
+done < <(awk '$1=="P"{print $2}' "$freeze_lists")
+if [ "${#pkg_missing[@]}" -gt 0 ]; then
+  echo "check-freeze-surface: FAIL: $DOC freezes ${#pkg_missing[@]} package name(s) its contract does not declare:" >&2
+  printf '  %s\n' "${pkg_missing[@]}" >&2
+  exit 1
+fi
 
 if [ "${#conflicts[@]}" -gt 0 ]; then
   echo "check-freeze-surface: FAIL: $DOC says two different things about ${#conflicts[@]} name(s):" >&2
