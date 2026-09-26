@@ -147,6 +147,26 @@ test "#3124: a later lambda does not inherit an earlier pure body of the same na
   assert(!compiles_linear(src))
 }
 
+test "#3124: a lambda parameter that shadows a pure fn is not read as that fn" {
+  // `apply`'s body calls its PARAMETER `side`, not the pure top-level `fn
+  // side`. Deciding the call from the flat inert set read it as the fn, so
+  // `apply` looked inert, the handle below compiled, and the performing
+  // callback answered wrong (a trap on gc). It must be refused exactly as
+  // it is when no top-level name collides.
+  let body = "test \"t\" {\n  let apply = (side: (Int) -> Int, n: Int) -> Int {\n    side(n)\n  }\n  let r = handle {\n    apply((n: Int) -> Int {\n      perform Ask::Get() + n\n    }, 1)\n  } with {\n    Ask::Get() => resume(42)\n  }\n  assert_eq(r, 43)\n}\n"
+  let with_top = program("fn side(n: Int) -> Int {\n  n\n}\n\n\{body}")
+  let without_top = program(body)
+  assert(!compiles_linear(without_top))
+  assert(!compiles_linear(with_top))
+  let msg = reject_message(with_top)
+  assert(String::contains(msg, "the call to 'apply'"))
+}
+
+test "#3124: a let inside the lambda that shadows a pure fn is not read as that fn" {
+  let body = "test \"t\" {\n  let apply = (f: (Int) -> Int, n: Int) -> Int {\n    let side = f\n    side(n)\n  }\n  let r = handle {\n    apply((n: Int) -> Int {\n      perform Ask::Get() + n\n    }, 1)\n  } with {\n    Ask::Get() => resume(42)\n  }\n  assert_eq(r, 43)\n}\n"
+  assert(!compiles_linear(program("fn side(n: Int) -> Int {\n  n\n}\n\n\{body}")))
+}
+
 test "#3124: two pure lambdas may share a spelling" {
   let src = program("test \"t\" {\n  let side = (n: Int) -> Int {\n    n\n  }\n  let side = (n: Int) -> Int {\n    n\n  }\n  let r = handle {\n    side(ask_once())\n  } with {\n    Ask::Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
   assert(compiles_both(src))

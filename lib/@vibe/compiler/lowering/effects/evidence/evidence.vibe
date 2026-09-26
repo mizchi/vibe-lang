@@ -3820,9 +3820,11 @@ fn edp_lambda_row_absent(eff: Option[String]) -> Bool {
 
 fn edp_note_lambda_candidate(name: String, val: Expr, names: Array[String], bodies: Array[Expr]) -> Unit {
   match val {
-    EFn(_, _, _, _, eff, lbody) => if edp_lambda_row_absent(eff) {
+    // The whole literal, not just its body: the purity check needs the
+    // parameters to know which callee spellings the body rebinds.
+    EFn(_, _, _, _, eff, _) => if edp_lambda_row_absent(eff) {
       Array::push(names, name)
-      Array::push(bodies, lbody)
+      Array::push(bodies, val)
     } else {
       ()
     },
@@ -3848,11 +3850,11 @@ fn edp_collect_lambda_candidates_expr(expr: Expr, names: Array[String], bodies: 
   }
 }
 
-fn edp_exprs_visible_pure(es: Array[Expr], pure_fns: Array[String]) -> Bool {
+fn edp_exprs_visible_pure(es: Array[Expr], pure_fns: Array[String], bound: Array[String]) -> Bool {
   let mut i = 0
   let mut ok = true
   while i < Array::length(es) && ok {
-    if edp_expr_visible_pure(Array::get(es, i), pure_fns) {
+    if edp_expr_visible_pure(Array::get(es, i), pure_fns, bound) {
       ()
     } else {
       ok = false
@@ -3862,19 +3864,123 @@ fn edp_exprs_visible_pure(es: Array[Expr], pure_fns: Array[String]) -> Bool {
   ok
 }
 
-fn edp_expr_visible_pure(expr: Expr, pure_fns: Array[String]) -> Bool {
+/// `bound` is every spelling the lambda under test binds for itself -- its
+/// parameters and each name bound anywhere in its body. A call to one of
+/// those reaches that binding, not whatever the flat inert set means by the
+/// spelling, so it is never visibly pure. Without this, `apply = (side:
+/// (Int) -> Int, n: Int) -> Int { side(n) }` next to a pure top-level `fn
+/// side` was read as inert: a callback that performed the handled effect
+/// then compiled and answered wrong (a trap on the gc lane), while the same
+/// program without the top-level fn was refused (#3167 review).
+fn edp_expr_visible_pure(expr: Expr, pure_fns: Array[String], bound: Array[String]) -> Bool {
   match expr {
     ECall(callee, args, _) => match callee {
-      EIdent(nm, _) => if nm == "perform" {
+      EIdent(nm, _) => if nm == "perform" || edp_str_array_contains(bound, nm) {
         false
       } else if edp_is_pure_builtin_call(nm) || edp_str_array_contains(pure_fns, nm) {
-        edp_exprs_visible_pure(args, pure_fns)
+        edp_exprs_visible_pure(args, pure_fns, bound)
       } else {
         false
       },
       _ => false
     },
-    _ => edp_exprs_visible_pure(expr_children(expr), pure_fns)
+    _ => edp_exprs_visible_pure(expr_children(expr), pure_fns, bound)
+  }
+}
+
+/// A candidate lambda literal is visibly pure when its body is, with every
+/// spelling the literal binds (parameters and inner binders) excluded from
+/// the inert set. Flow-insensitive on purpose: a binder anywhere in the
+/// literal covers the whole literal, which can only refuse more.
+fn edp_lambda_visible_pure(lam: Expr, pure_fns: Array[String]) -> Bool {
+  match lam {
+    EFn(_, _, _, _, _, body) => {
+      let bound = empty_str_array()
+      edp_collect_binders(lam, bound)
+      edp_expr_visible_pure(body, pure_fns, bound)
+    },
+    _ => false
+  }
+}
+
+/// Every spelling bound anywhere in `expr`: let / let rec / let mut names,
+/// lambda parameters, match and handler arm patterns, loop and for-in
+/// variables. Over-collecting only makes the purity check refuse more.
+fn edp_collect_binders(expr: Expr, out: Array[String]) -> Unit {
+  match expr {
+    ELet(n, _, _, _) => Array::push(out, n),
+    ELetRec(n, _, _) => Array::push(out, n),
+    ELetMut(n, _, _, _) => Array::push(out, n),
+    EFn(_, _, params, _, _, _) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        let (pn, _) = Array::get(params, i)
+        Array::push(out, pn)
+        i = i + 1
+      }
+    },
+    EMatch(_, arms) => edp_collect_arm_binders(arms, out),
+    EHandle(_, arms) => edp_collect_arm_binders(arms, out),
+    ELoop(binds, _) => {
+      let mut i = 0
+      while i < Array::length(binds) {
+        let (bn, _) = Array::get(binds, i)
+        Array::push(out, bn)
+        i = i + 1
+      }
+    },
+    EForIn(n, idx, _, _) => {
+      Array::push(out, n)
+      match idx {
+        Some(ix) => Array::push(out, ix),
+        None => ()
+      }
+    },
+    _ => ()
+  }
+  let kids = expr_children(expr)
+  let mut k = 0
+  while k < Array::length(kids) {
+    edp_collect_binders(Array::get(kids, k), out)
+    k = k + 1
+  }
+}
+
+fn edp_collect_arm_binders(arms: Array[(Pat, Expr)], out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (pat, _) = Array::get(arms, i)
+    edp_collect_pat_binders(pat, out)
+    i = i + 1
+  }
+}
+
+fn edp_collect_pat_binders(pat: Pat, out: Array[String]) -> Unit {
+  match pat {
+    PBind(n) => Array::push(out, n),
+    PCtor(_, subs) => edp_collect_pats_binders(subs, out),
+    PTuple(subs) => edp_collect_pats_binders(subs, out),
+    POr(a, b) => {
+      edp_collect_pat_binders(a, out)
+      edp_collect_pat_binders(b, out)
+    },
+    PStruct(_, fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fp) = Array::get(fields, i)
+        edp_collect_pat_binders(fp, out)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+fn edp_collect_pats_binders(pats: Array[Pat], out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(pats) {
+    edp_collect_pat_binders(Array::get(pats, i), out)
+    i = i + 1
   }
 }
 
@@ -3882,7 +3988,7 @@ fn edp_name_bodies_all_pure(name: String, names: Array[String], bodies: Array[Ex
   let mut i = 0
   let mut ok = true
   while i < Array::length(names) {
-    if Array::get(names, i) == name && !edp_expr_visible_pure(Array::get(bodies, i), pure_fns) {
+    if Array::get(names, i) == name && !edp_lambda_visible_pure(Array::get(bodies, i), pure_fns) {
       ok = false
     } else {
       ()
