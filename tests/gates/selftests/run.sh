@@ -46,10 +46,11 @@ gate_resolve_stage2
 # named suites below are partitioned by the slot each is given, so every one of
 # them runs in exactly one shard. Slots are assigned by measured cost, not by
 # position, and together with scripts/gate_self_test_shards.txt (which pins
-# the heavy companions): slot 0 carries the 493s compile-only-lanes companion
-# and only cheap suites here; slot 1 gets checked-module parity and capability
-# preflight (~80s on run 36248052145); slot 2 gets checked-module cost and
-# run_bounded (~190s).
+# the heavy companions; CI seconds from run 36252326885): slot 0 carries the
+# 297s grep-driver-parity companion plus capability preflight (~30s); slot 1
+# compile-only-lanes + lazy-dispatch (~312s) plus checked-module parity; slot 2
+# the grep budget/sweep and portable-boundary companions (~147s) plus
+# checked-module cost and run_bounded (~187s).
 shard="${COMPILER_GATE_SELFTESTS_SHARD:-0/1}"
 shard_i=""; shard_n=""
 case "$shard" in
@@ -122,7 +123,7 @@ if in_shard 0; then bash "$ROOT_DIR/scripts/host_capability_withhold_test.sh"; f
 # does export VIBE_STAGE2_WASM, but a gate that reads an ambient variable is
 # one environment change away from answering about a different compiler, which
 # is #2252's lesson and cost this gate a CI cycle already.
-if in_shard 1; then
+if in_shard 0; then
   CAPABILITY_PREFLIGHT_STAGE2="$stage2_wasm" bash "$ROOT_DIR/scripts/check_capability_preflight.sh"
   CAPABILITY_PREFLIGHT_STAGE2="$stage2_wasm" bash "$ROOT_DIR/scripts/check_capability_preflight_test.sh"
 fi
