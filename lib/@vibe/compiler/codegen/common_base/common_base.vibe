@@ -2300,6 +2300,26 @@ export struct CompileCtx {
   // assignments the Perceus plan proved may release the value they
   // overwrite (PaFieldRelease, `plan_setfield_release`).
   rc_setf_release: Array[String];
+  // #3141 early-exit release. An early `return` / `break` / `continue` /
+  // `throw` jumps past the scope-end drops of every scope it leaves, so it
+  // releases them itself (`rc_exit_release`, compile_call.vibe).
+  // `rc_exit_stack_names` / `rc_exit_stack_info` are the live stack of what a
+  // scope end would release -- a name and three ints `[kind, local, flag]`
+  // each (kinds in compile_call.vibe's `rc_exit_kind_*`: the owned bindings,
+  // the pinned ones, the captured cells, and the loop / try boundaries an
+  // exit stops at) -- pushed and truncated around each scope's body.
+  // `rc_exit_lets` is every enclosing `let` name, innermost last.
+  // `rc_exit_plan_names` / `rc_exit_plan_info` are the plan's exit rows
+  // (`perceus_exit_rows`), and `rc_exit_state` is `[the next exit ordinal,
+  // 1 once an exit failed to match its row]`: a mismatch means the plan and
+  // codegen numbered the exits differently, and every exit from there on
+  // releases nothing, which leaks rather than frees what is still live.
+  rc_exit_stack_names: Array[String];
+  rc_exit_stack_info: Array[Int];
+  rc_exit_lets: Array[String];
+  rc_exit_plan_names: Array[String];
+  rc_exit_plan_info: Array[Int];
+  rc_exit_state: Array[Int];
   // ADR-0092 / #2389 (plan-guided wide reuse): scrutinee names the Perceus
   // plan marked with a PaReuseToken candidate, with the pattern arity
   // parallel. compile_match consults these for arms the NARROW fusion above
@@ -3339,6 +3359,33 @@ export fn agg_ret_lookup_indexed(sorted: Array[String], pos: Array[Int], infos: 
   } else {
     Array::get(infos, Array::get(pos, slot))
   }
+}
+
+/// #3141: push one entry on an early-exit release stack
+/// (`CompileCtx.rc_exit_stack_names` / `rc_exit_stack_info`). `kind`:
+///
+///   0  an owned `let`: released as many times as the plan's `PaExitDrop`
+///      row for the exit says (none: nothing)
+///   1  an owned parameter: the same
+///   2  a borrowed parameter: one fewer (its caller keeps the initial one)
+///   4  a captured `let mut` cell: once (its scope end drops it on every path)
+///   5  a #2837 view pin: once (the pin is a reference of its own)
+///   100 a loop body starts (`break` / `continue` stop here)
+///   101 a `handle` body starts (`throw` stops here)
+///
+/// `flag` is a local the scope end guards its drop on (non-zero: the value
+/// was consumed on this path), or -1.
+export fn rc_exit_push(names: Array[String], info: Array[Int], name: String, kind: Int, local: Int, flag: Int) -> Unit {
+  Array::push(names, name)
+  Array::push(info, kind)
+  Array::push(info, local)
+  Array::push(info, flag)
+}
+
+/// #3141: pop the early-exit release stack back to `mark` entries.
+export fn rc_exit_truncate(ctx: CompileCtx, mark: Int) -> Unit {
+  Array::truncate(ctx.rc_exit_stack_names, mark)
+  Array::truncate(ctx.rc_exit_stack_info, mark * 3)
 }
 
 /// #724: non-throwing last-match local lookup (resolve_local throws on a

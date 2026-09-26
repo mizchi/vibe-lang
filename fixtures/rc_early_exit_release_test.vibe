@@ -1,0 +1,309 @@
+// #3141: an early `return` / `break` / `continue` / `throw` now releases the
+// bindings of every scope it leaves before it transfers (rc_exit_release,
+// driven by the Perceus plan's PaExitDrop rows). Releasing too much is a
+// use-after-free, so this file pins the other half: every value an exit hands
+// out, and every binding it does NOT leave, is still alive where it is read
+// afterwards -- the returned binding itself, a constructor or tuple around
+// it, a projection off a released-looking binding, a parameter, a closure's
+// return, a captured cell, a thrown payload, a binding outside the loop a
+// `break` / `continue` leaves, an inner `break` inside an outer loop body, a
+// collecting `for` that `continue`s, and the dup budget of a binding consumed
+// after a guard. Each reads its value AFTER an allocation that would reuse a
+// freed block, so a premature release answers with the churn string instead
+// (and VIBE_RC=shadow traps on the drop of a freed block). The bounded-heap
+// half is fixtures/rc_early_exit_bounded_test.vibe (tests/gates/mid/run.sh,
+// 40f0h).
+
+enum D {
+  A(String)
+}
+
+struct P {
+  name: String
+}
+
+fn name_of(d: D) -> String {
+  match d {
+    A(s) => s
+  }
+}
+
+fn fresh(s: String, i: Int) -> String {
+  String::concat(s, __to_string(i))
+}
+
+fn churn() -> String {
+  fresh("churn", 0)
+}
+
+fn keep(d: D) -> D {
+  d
+}
+
+fn ret_binding(c: Bool) -> D {
+  let d = A(fresh("d", 1))
+  let e = A(fresh("e", 1))
+  if c {
+    return d
+  }
+  e
+}
+
+fn ret_wrapped(c: Bool) -> Option[D] {
+  let d = A(fresh("w", 1))
+  let e = A(fresh("w", 2))
+  if c {
+    return Some(d)
+  }
+  Some(e)
+}
+
+fn ret_tuple(c: Bool) -> (D, Int) {
+  let d = A(fresh("t", 1))
+  let e = A(fresh("t", 2))
+  if c {
+    return (d, 1)
+  }
+  (e, 2)
+}
+
+fn ret_projection(c: Bool) -> String {
+  let p = P::{ name: fresh("p", 1) }
+  let q = P::{ name: fresh("q", 1) }
+  if c {
+    return p.name
+  }
+  q.name
+}
+
+fn ret_param(d: D, c: Bool) -> D {
+  let e = A(fresh("pe", 1))
+  if c {
+    return d
+  }
+  keep(e)
+}
+
+fn ret_budget(c: Bool) -> String {
+  let d = A(fresh("b", 1))
+  if c {
+    return "early"
+  }
+  let e = keep(d)
+  String::concat(name_of(e), name_of(keep(d)))
+}
+
+fn ret_from_closure(c: Bool) -> D {
+  let outer = A(fresh("o", 1))
+  let f = () -> D {
+    let d = A(fresh("cl", 1))
+    if c {
+      return d
+    }
+    A(fresh("cl", 2))
+  }
+  let r = f()
+  let _ = name_of(outer)
+  r
+}
+
+fn ret_cell(c: Bool) -> D {
+  let mut d = A(fresh("cell", 1))
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  if c {
+    return d
+  }
+  A(fresh("cell", 2))
+}
+
+fn ret_in_match(d: D) -> String {
+  let e = A(fresh("m", 1))
+  match d {
+    A(s) => {
+      let t = fresh(s, 9)
+      if String::length(t) > 0 {
+        return t
+      }
+    }
+  }
+  name_of(e)
+}
+
+fn brk_keeps_outer(ns: Array[Int]) -> String {
+  let d = A(fresh("bo", 1))
+  let mut acc = ""
+  for x in ns {
+    let e = A(fresh("bi", x))
+    if x == 2 {
+      break
+    }
+    acc = String::concat(acc, name_of(e))
+  }
+  let c = churn()
+  String::concat(String::concat(acc, name_of(d)), c)
+}
+
+fn cont_keeps_outer(ns: Array[Int]) -> String {
+  let d = A(fresh("co", 1))
+  let mut acc = ""
+  let mut i = 0
+  while i < Array::length(ns) {
+    let x = Array::get(ns, i)
+    i = i + 1
+    let e = A(fresh("ci", x))
+    if x == 2 {
+      continue
+    }
+    acc = String::concat(acc, name_of(e))
+  }
+  let c = churn()
+  String::concat(String::concat(acc, name_of(d)), c)
+}
+
+fn inner_break(ns: Array[Int]) -> String {
+  let mut acc = ""
+  for x in ns {
+    let outer = A(fresh("ob", x))
+    let mut j = 0
+    while j < 3 {
+      let inner = A(fresh("ib", j))
+      if j == 1 {
+        break
+      }
+      acc = String::concat(acc, name_of(inner))
+      j = j + 1
+    }
+    let c = churn()
+    acc = String::concat(String::concat(acc, name_of(outer)), c)
+  }
+  acc
+}
+
+fn collect_continue(ns: Array[Int]) -> Array[String] {
+  for x in ns {
+    let d = A(fresh("cc", x))
+    if x == 2 {
+      continue
+    }
+    name_of(d)
+  }
+}
+
+fn thrower(c: Bool) -> String with Exception[D] {
+  let d = A(fresh("th", 1))
+  let e = A(fresh("th", 2))
+  if c {
+    throw(d)
+  }
+  name_of(e)
+}
+
+fn throw_payload(c: Bool) -> String {
+  handle { thrower(c) } with { Exception[D]::Throw(p) => name_of(p) }
+}
+
+fn throw_local(c: Bool) -> String {
+  let outer = A(fresh("tl", 0))
+  let r = handle {
+    let d = A(fresh("tl", 1))
+    if c {
+      throw("stop")
+    }
+    name_of(d)
+  } with { Exception::Throw(_) => "caught" }
+  let x = churn()
+  String::concat(String::concat(r, name_of(outer)), x)
+}
+
+test "an early return hands its binding over and releases the other" {
+  let a = ret_binding(true)
+  let x = churn()
+  let b = ret_binding(false)
+  inspect(String::join([name_of(a), x, name_of(b)], ";"), content = "d1;churn0;e1")
+}
+
+test "an early return of a constructor around a binding" {
+  let a = ret_wrapped(true)
+  let x = churn()
+  let s = match a {
+    Some(d) => name_of(d),
+    None => "none"
+  }
+  inspect(String::concat(s, x), content = "w1churn0")
+}
+
+test "an early return of a tuple around a binding" {
+  let a = ret_tuple(true)
+  let x = churn()
+  inspect(String::concat(name_of(a.0), x), content = "t1churn0")
+}
+
+test "an early return of a projection keeps its root" {
+  let a = ret_projection(true)
+  let x = churn()
+  let b = ret_projection(false)
+  inspect(String::join([a, x, b], ";"), content = "p1;churn0;q1")
+}
+
+test "an early return of a parameter" {
+  let a = ret_param(A(fresh("arg", 1)), true)
+  let x = churn()
+  let b = ret_param(A(fresh("arg", 2)), false)
+  inspect(String::join([name_of(a), x, name_of(b)], ";"), content = "arg1;churn0;pe1")
+}
+
+test "a binding consumed twice after a guard" {
+  inspect(String::join([ret_budget(true), ret_budget(false), churn()], ";"), content = "early;b1b1;churn0")
+}
+
+test "an early return inside a closure" {
+  let a = ret_from_closure(true)
+  let x = churn()
+  let b = ret_from_closure(false)
+  inspect(String::join([name_of(a), x, name_of(b)], ";"), content = "cl1;churn0;cl2")
+}
+
+test "an early return of a captured cell" {
+  let a = ret_cell(true)
+  let x = churn()
+  let b = ret_cell(true)
+  let c = ret_cell(false)
+  inspect(String::join([name_of(a), x, name_of(b), name_of(c)], ";"), content = "cell1;churn0;cell1;cell2")
+}
+
+test "an early return inside a match arm" {
+  let a = ret_in_match(A(fresh("s", 1)))
+  let x = churn()
+  inspect(String::concat(a, x), content = "s19churn0")
+}
+
+test "a break leaves the loop body only" {
+  inspect(brk_keeps_outer([0, 1, 2, 3]), content = "bi0bi1bo1churn0")
+}
+
+test "a continue leaves the loop body only" {
+  inspect(cont_keeps_outer([1, 2, 3]), content = "ci1ci3co1churn0")
+}
+
+test "an inner break leaves the inner loop body only" {
+  inspect(inner_break([1, 2]), content = "ib0ob1churn0ib0ob2churn0")
+}
+
+test "a continue in a collecting for" {
+  let r = collect_continue([1, 2, 3])
+  let x = churn()
+  inspect(String::join(r, ","), content = "cc1,cc3")
+  inspect(x, content = "churn0")
+}
+
+test "a thrown binding reaches the handler" {
+  let a = throw_payload(true)
+  let x = churn()
+  let b = throw_payload(false)
+  inspect(String::join([a, x, b], ";"), content = "th1;churn0;th2")
+}
+
+test "a throw leaves the handle body only" {
+  inspect(String::join([throw_local(true), throw_local(false)], ";"), content = "caughttl0churn0;tl1tl0churn0")
+}

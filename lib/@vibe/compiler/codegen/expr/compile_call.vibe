@@ -43,7 +43,12 @@ import @vibe/compiler/codegen/common_analysis {
   is_mut_captured_in,
   md_borrow_mask_of,
   md_builtin_borrow_mask,
-  packed_dir_entries_to_array_expr
+  packed_dir_entries_to_array_expr,
+  proj_root_ident
+}
+
+import @vibe/compiler/perceus {
+  perceus_exit_fingerprint
 }
 
 import @vibe/compiler/codegen/common_base {
@@ -102,6 +107,7 @@ import @vibe/compiler/codegen/common_base {
   get_slet_expr,
   get_slet_name,
   int_parse_expr,
+  is_ctor_call,
   is_efn,
   is_eident,
   is_etuple,
@@ -4275,11 +4281,18 @@ fn compile_call_core(buf: Bytes, callee: Expr, raw_args: Array[Expr], local_name
       // perform-counter/memo-region machinery — Error is non-resumable.
       if is_exception_throw_operation(op_head) {
         let mut enl = next_local
+        let thrown = if expr_tag(op_expr) == 8 && Array::length(get_ecall_args(op_expr)) > 0 {
+          Array::get(get_ecall_args(op_expr), 0)
+        } else {
+          EUnit
+        }
         if expr_tag(op_expr) == 8 && Array::length(get_ecall_args(op_expr)) > 0 {
-          enl = ce(buf, Array::get(get_ecall_args(op_expr), 0), local_names, enl, ctx, ld)
+          enl = ce(buf, thrown, local_names, enl, ctx, ld)
         } else {
           emit_i64_const(buf, 0)
         }
+        // #3141: the throw leaves every scope up to the innermost `handle`.
+        rc_exit_release(buf, ctx, local_names, 3, thrown)
         bytebuf_push(buf, 8)
         bytebuf_push(buf, 2)
         enl
@@ -7734,5 +7747,272 @@ fn compile_call_core(buf: Bytes, callee: Expr, raw_args: Array[Expr], local_name
     }
     emit_closure_call_tail(buf, env_local, slot_local, 9, num_args)
     nl
+  }
+}
+
+/// #3141: may an exit hand out `e` while every binding it leaves, except the
+/// ones this appends to `keep`, is released? The operand is compiled before
+/// the releases, so the question is only whether the value it produced can
+/// be a VIEW into something about to be released:
+///
+/// - a literal, an arithmetic / comparison result, an interpolation: no;
+/// - a name: its own reference, which the plan accounts for, when the name
+///   is an owned binding on the release stack, or a known Int / Bool /
+///   String (a fat pointer, never an RC block); a
+///   captured cell's read is its payload, so the cell is kept; any other
+///   local (a pattern binder, a borrowed view, ...) is not known -> false;
+/// - an owned-return marker: retained by its own lowering, so no;
+/// - a constructor or literal aggregate: whatever its items are;
+/// - a call whose callee cannot return a view: no, whatever its arguments;
+/// - a projection: its root is kept;
+/// - an `if`: whatever either branch is.
+///
+/// Anything else answers false, and the exit then releases nothing -- the
+/// leak it had before, never a release of what the operand still reads.
+fn rc_exit_operand_ok(e: Expr, local_names: Array[String], ctx: CompileCtx, keep: Array[String]) -> Bool with Exception {
+  match e {
+    EInt(_) => true,
+    EFloat(_) => true,
+    EBool(_) => true,
+    EUnit => true,
+    EString(_, _) => true,
+    EStringInterp(_) => true,
+    EIdent(n, _) => if find_local_slot(local_names, n) < 0 {
+      true
+    } else {
+      let kind = rc_exit_entry_kind(ctx, n)
+      if kind == 4 {
+        Array::push(keep, n)
+        true
+      } else if kind >= 0 && kind <= 2 {
+        true
+      } else {
+        // An Int, a Bool, or a String -- a fat pointer rc_drop never
+        // releases, so no release below can free what it points at.
+        let sk = cc_ident_slot_kind(e, local_names, ctx)
+        sk == 1 || sk == 2 || sk == 3
+      }
+    },
+    EUnaryOp(op, _) => op == "!" || op == "-" || op == "~",
+    EBinOp(op, _, _, _) => op == "+" || op == "-" || op == "*" || op == "/" || op == "%" || op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>" || op == "<" || op == ">" || op == "<=" || op == ">=" || op == "==" || op == "!=" || op == "&&" || op == "||",
+    ETuple(items) => rc_exit_operands_ok(items, local_names, ctx, keep),
+    EArray(items) => rc_exit_operands_ok(items, local_names, ctx, keep),
+    EIf(_, t, f) => rc_exit_operand_ok(t, local_names, ctx, keep) && rc_exit_operand_ok(f, local_names, ctx, keep),
+    EDot(_, _, _, _) => {
+      let root = proj_root_ident(e)
+      if root == "" {
+        false
+      } else {
+        Array::push(keep, root)
+        true
+      }
+    },
+    ECall(callee, args, _) => match callee {
+      EIdent(f, off) => if f == "__lambda_return_owned" && off < 0 {
+        true
+      } else if find_local_slot(local_names, f) >= 0 {
+        false
+      } else if is_ctor_call(e, ctx.ctor_table) {
+        rc_exit_operands_ok(args, local_names, ctx, keep)
+      } else {
+        !cc_callee_may_return_view(f, ctx)
+      },
+      _ => false
+    },
+    _ => false
+  }
+}
+
+fn rc_exit_operands_ok(items: Array[Expr], local_names: Array[String], ctx: CompileCtx, keep: Array[String]) -> Bool with Exception {
+  let mut ok = true
+  let mut i = 0
+  while ok && i < Array::length(items) {
+    ok = rc_exit_operand_ok(Array::get(items, i), local_names, ctx, keep)
+    i = i + 1
+  }
+  ok
+}
+
+/// The kind of the innermost release-stack entry named `n`, or -1.
+fn rc_exit_entry_kind(ctx: CompileCtx, n: String) -> Int {
+  let names = ctx.rc_exit_stack_names
+  let mut i = Array::length(names) - 1
+  let mut kind = 0 - 1
+  while i >= 0 {
+    if Array::get(names, i) == n {
+      kind = Array::get(ctx.rc_exit_stack_info, i * 3)
+      i = 0 - 1
+    } else {
+      i = i - 1
+    }
+  }
+  kind
+}
+
+/// The plan's release count for binding `n` at exit `ord`, or 0.
+fn rc_exit_plan_count(ctx: CompileCtx, ord: Int, n: String) -> Int {
+  let names = ctx.rc_exit_plan_names
+  let info = ctx.rc_exit_plan_info
+  let mut i = 0
+  let mut count = 0
+  while i < Array::length(names) {
+    if Array::get(info, i * 4) == 1 && Array::get(info, i * 4 + 1) == ord && Array::get(names, i) == n {
+      count = Array::get(info, i * 4 + 2)
+      i = Array::length(names)
+    } else {
+      i = i + 1
+    }
+  }
+  count
+}
+
+/// Does exit `ord` of the plan have `kind`, `fingerprint` and innermost `let`
+/// `inner`? Anything else means plan and codegen numbered the exits apart.
+fn rc_exit_site_matches(ctx: CompileCtx, ord: Int, kind: Int, fingerprint: Int, inner: String) -> Bool {
+  let names = ctx.rc_exit_plan_names
+  let info = ctx.rc_exit_plan_info
+  let mut i = 0
+  let mut found = false
+  let mut ok = false
+  while !found && i < Array::length(names) {
+    if Array::get(info, i * 4) == 0 && Array::get(info, i * 4 + 1) == ord {
+      found = true
+      ok = Array::get(info, i * 4 + 2) == kind && Array::get(info, i * 4 + 3) == fingerprint && Array::get(names, i) == inner
+    } else {
+      i = i + 1
+    }
+  }
+  ok
+}
+
+/// Does another binding in `[lo, len)` -- another local -- share entry `i`'s
+/// name? (A `let` and its view pin are one binding, one local.)
+fn rc_exit_name_shared(names: Array[String], info: Array[Int], lo: Int, i: Int) -> Bool {
+  let n = Array::get(names, i)
+  let local = Array::get(info, i * 3 + 1)
+  let mut shared = false
+  let mut k = lo
+  while !shared && k < Array::length(names) {
+    if k != i && Array::get(names, k) == n && Array::get(info, k * 3 + 1) != local {
+      shared = true
+    } else {
+      ()
+    }
+    k = k + 1
+  }
+  shared
+}
+
+/// #3141: release what an early exit leaves, right before the exit's own
+/// transfer (`return`, `br`, `throw`); the operand, when there is one, is
+/// already on the wasm stack and stays there (`rc_drop` returns nothing).
+/// `kind` is the plan's exit kind: 0 return (the whole function), 1 break /
+/// 2 continue (the innermost loop body), 3 throw (the innermost `handle`
+/// body, else the whole function).
+///
+/// Each exit takes one ordinal, which must match the plan's `PaExitSite`
+/// for it; the first mismatch disables every later exit of the function.
+/// An owned binding releases what the plan's `PaExitDrop` row says it still
+/// holds; a cell and a view pin, whose scope ends release them on every
+/// path, release once. A name the operand may still read through is kept,
+/// and so is a name two entries in range share.
+export fn rc_exit_release(buf: Bytes, ctx: CompileCtx, local_names: Array[String], kind: Int, operand: Expr) -> Unit with Exception {
+  if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && Array::length(ctx.rc_exit_state) >= 2 {
+    let ord = Array::get(ctx.rc_exit_state, 0)
+    Array::set(ctx.rc_exit_state, 0, ord + 1)
+    let nlets = Array::length(ctx.rc_exit_lets)
+    let inner = if nlets > 0 {
+      Array::get(ctx.rc_exit_lets, nlets - 1)
+    } else {
+      ""
+    }
+    if Array::get(ctx.rc_exit_state, 1) != 0 {
+      ()
+    } else if !rc_exit_site_matches(ctx, ord, kind, perceus_exit_fingerprint(operand), inner) {
+      Array::set(ctx.rc_exit_state, 1, 1)
+    } else {
+      let keep: Array[String] = []
+      if rc_exit_operand_ok(operand, local_names, ctx, keep) {
+        let names = ctx.rc_exit_stack_names
+        let info = ctx.rc_exit_stack_info
+        // The range the exit leaves: down to the boundary it stops at. A
+        // `break` / `continue` outside every loop body releases nothing.
+        let mut lo = 0
+        let mut bounded = kind == 0 || kind == 3
+        let mut j = Array::length(names) - 1
+        while j >= 0 {
+          let ek = Array::get(info, j * 3)
+          if (kind == 1 || kind == 2) && ek == 100 {
+            lo = j + 1
+            bounded = true
+            j = 0 - 1
+          } else if kind == 3 && ek == 101 {
+            lo = j + 1
+            j = 0 - 1
+          } else {
+            j = j - 1
+          }
+        }
+        if bounded {
+          let mut i = Array::length(names) - 1
+          while i >= lo {
+            let n = Array::get(names, i)
+            let ek = Array::get(info, i * 3)
+            let local = Array::get(info, i * 3 + 1)
+            let flag = Array::get(info, i * 3 + 2)
+            let count = if ek >= 100 || array_contains_str(keep, n) || rc_exit_name_shared(names, info, lo, i) {
+              0
+            } else if ek == 4 || ek == 5 {
+              1
+            } else {
+              let planned = rc_exit_plan_count(ctx, ord, n)
+              if ek == 2 {
+                planned - 1
+              } else {
+                planned
+              }
+            }
+            if count > 0 {
+              if flag >= 0 {
+                emit_local_get(buf, flag)
+                emit_i64_eqz(buf)
+                emit_if_void(buf)
+              } else {
+                ()
+              }
+              let mut c = 0
+              while c < count {
+                emit_local_get(buf, local)
+                if ek == 4 {
+                  // A cell's local holds the even payload address; the
+                  // block's references are the odd-tagged pointer (see the
+                  // ELetMut scope end).
+                  emit_i64_const(buf, 1)
+                  emit_i64_or(buf)
+                } else {
+                  ()
+                }
+                emit_call(buf, ctx.rc_drop_func_idx)
+                c = c + 1
+              }
+              if flag >= 0 {
+                emit_end(buf)
+              } else {
+                ()
+              }
+            } else {
+              ()
+            }
+            i = i - 1
+          }
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+    }
+  } else {
+    ()
   }
 }

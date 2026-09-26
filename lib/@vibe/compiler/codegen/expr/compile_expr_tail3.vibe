@@ -60,6 +60,8 @@ import @vibe/compiler/codegen/common_base {
   is_pwild,
   is_slet,
   lookup_ctor,
+  rc_exit_push,
+  rc_exit_truncate,
   resolve_func,
   resolve_local
 }
@@ -201,7 +203,7 @@ import @vibe/compiler/codegen/wasm_emit {
 }
 
 import ./compile_call.vibe {
-  compile_call
+  compile_call, rc_exit_release
 }
 
 import ./compile_expr_tail4.vibe {
@@ -237,6 +239,9 @@ export fn compile_expr_tail3(buf: Bytes, expr: Expr, local_names: Array[String],
     } else {
       ()
     }
+    // #3141: a `break` / `continue` below leaves only what the body binds.
+    let xmark = Array::length(ctx.rc_exit_stack_names)
+    rc_exit_push(ctx.rc_exit_stack_names, ctx.rc_exit_stack_info, "", 100, 0 - 1, 0 - 1)
     emit_block_void(buf)
     emit_loop_void(buf)
     // ld measures wasm blocks between the current position and the INNERMOST
@@ -284,14 +289,22 @@ export fn compile_expr_tail3(buf: Bytes, expr: Expr, local_names: Array[String],
     emit_br(buf, 0)
     emit_end(buf)
     emit_end(buf)
+    rc_exit_truncate(ctx, xmark)
     Array::truncate(ctx.loop_borrowed_names, lb_base)
     emit_i64_const(buf, 0)
     nl2
   } else if __tag == 20 {
+    // #3141: release the loop body's scopes the `br` jumps past.
+    let brk_operand = match expr {
+      EBreak(Some(v)) => v,
+      _ => EUnit
+    }
+    rc_exit_release(buf, ctx, local_names, 1, brk_operand)
     emit_br(buf, ld + 1)
     emit_i64_const(buf, 0)
     next_local
   } else if __tag == 21 {
+    rc_exit_release(buf, ctx, local_names, 2, EUnit)
     emit_br(buf, ld)
     emit_i64_const(buf, 0)
     next_local
@@ -308,6 +321,9 @@ export fn compile_expr_tail3(buf: Bytes, expr: Expr, local_names: Array[String],
       ret_expr
     }
     let nl = compile_expr(buf, owned_ret, local_names, next_local, ctx, ld)
+    // #3141: the value is on the stack; release every scope the `return`
+    // leaves before it transfers.
+    rc_exit_release(buf, ctx, local_names, 0, ret_expr)
     // #1696: the exported entry's result is untagged, but that untag is emitted
     // AFTER the body -- and `return` branches out of the function, past it. So
     // the same untag has to happen here, or `return 777` hands the host 1554.

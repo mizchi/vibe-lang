@@ -97,6 +97,8 @@ import @vibe/compiler/codegen/common_base {
   is_pwild,
   is_slet,
   lookup_ctor,
+  rc_exit_push,
+  rc_exit_truncate,
   resolve_func,
   resolve_local,
   str_table_fat_or_zero
@@ -2525,7 +2527,40 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     } else {
       nl_after_reuse
     }
+    // #3141: what an early exit out of `body` releases for this binding. An
+    // owned binding (not borrow-bound: it holds a reference only when it
+    // acquired one, the same test the scope-end drop and the dups above
+    // make) releases what the plan says it still holds, guarded on the flag
+    // its scope-end drop is guarded on; a view pin is a reference of its own.
+    let xmark = Array::length(ctx.rc_exit_stack_names)
+    if ctx.enable_rc {
+      Array::push(ctx.rc_exit_lets, name)
+      if ctx.rc_drop_func_idx >= 0 && rc_kind > 0 && !is_borrow_ret_ext && !value_borrow_like && !alias_borrow_like {
+        rc_exit_push(ctx.rc_exit_stack_names, ctx.rc_exit_stack_info, name, 0, local_idx, if path_drop {
+          path_flag_l
+        } else if reuse_fusion {
+          reuse_flag_l
+        } else {
+          0 - 1
+        })
+      } else {
+        ()
+      }
+      if view_pin {
+        rc_exit_push(ctx.rc_exit_stack_names, ctx.rc_exit_stack_info, name, 5, local_idx, 0 - 1)
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
     let nl2 = compile_expr(buf, body, local_names, nl_body, ctx, ld)
+    if ctx.enable_rc {
+      rc_exit_truncate(ctx, xmark)
+      Array::truncate(ctx.rc_exit_lets, Array::length(ctx.rc_exit_lets) - 1)
+    } else {
+      ()
+    }
     if view_pin {
       Array::truncate(ctx.rc_pins_live, pins_mark)
     } else {
@@ -2767,7 +2802,12 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         let nl = compile_expr(buf, value, local_names, next_local + 1, ctx, ld)
         Array::set(local_names, local_idx, name)
         emit_i64_store(buf, 3, 0)
+        // #3141: the scope end below drops the cell on every path, so an
+        // early exit out of the body drops it too.
+        let xmark = Array::length(ctx.rc_exit_stack_names)
+        rc_exit_push(ctx.rc_exit_stack_names, ctx.rc_exit_stack_info, name, 4, local_idx, 0 - 1)
         let nl2 = compile_expr(buf, body, local_names, nl, ctx, ld)
+        rc_exit_truncate(ctx, xmark)
         emit_local_get(buf, local_idx)
         emit_i64_const(buf, 1)
         emit_i64_or(buf)

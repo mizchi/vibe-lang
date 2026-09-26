@@ -1,0 +1,156 @@
+// #3141: an early exit keeps the RC heap frontier bounded.
+//
+// `return`, `break`, `continue` and `throw` transfer control past the
+// scope-end drops of every scope they leave, so each binding in those scopes
+// leaked on every call that took the exit: a heap binding the early path
+// never consumed, the references a binding kept for uses after the exit (its
+// dup budget), a loop body's binding on `break` / `continue`, a function's
+// bindings on a `throw` into its caller's handle or into a handle of its own,
+// bindings of nested scopes, and a captured `let mut` cell with its closure.
+// Measured on a stage2 built from main at a3ad813eb, each exit form leaked
+// linearly (112 B per call for most shapes, 40 B for the cell); this fixture
+// grew __heap_ptr by 1,872,288 B over its 2000 rounds. With the release,
+// 440 B. The gate compiles it under VIBE_RC=1 and bounds the growth
+// (tests/gates/mid/run.sh, 40f0h); the same gate checks the answer on the
+// bump, rc, shadow and gc lanes, and the shadow lane traps on the drop of a
+// freed block. What each exit still hands out, and what it must not release,
+// is pinned by fixtures/rc_early_exit_release_test.vibe.
+//
+// `main` sums, per round i: 1 each from ret_guard, ret_budget, ret_pick, brk,
+// thr and thr_local, 2 from cont, 5 from nested, and i from ret_cell:
+// 2000 * (6 + 2 + 5) + 1999 * 2000 / 2 = 2025000.
+
+enum D {
+  A(Array[Int])
+}
+
+fn second(d: D) -> Int {
+  match d {
+    A(xs) => Array::get(xs, 1)
+  }
+}
+
+fn keep(d: D) -> D {
+  d
+}
+
+// A binding the early path never consumes.
+fn ret_guard(n: Int) -> Int {
+  let d = A([n, 1])
+  if n >= 0 {
+    return 1
+  }
+  second(d)
+}
+
+// A binding consumed twice after the guard: the early path also holds the
+// reference kept for the second use.
+fn ret_budget(n: Int) -> Int {
+  let d = A([n, 1])
+  if n >= 0 {
+    return 1
+  }
+  let e = keep(d)
+  second(e) + second(keep(d))
+}
+
+// One binding handed out, the other left behind.
+fn ret_pick(n: Int) -> D {
+  let d = A([n, 1])
+  let e = A([n, 1])
+  if n >= 0 {
+    return d
+  }
+  e
+}
+
+fn brk(n: Int) -> Int {
+  let mut i = 0
+  let mut acc = 0
+  while i < 3 {
+    let d = A([i + n, 1])
+    if i == 1 {
+      break
+    }
+    acc = acc + second(d)
+    i = i + 1
+  }
+  acc
+}
+
+fn cont(n: Int) -> Int {
+  let mut i = 0
+  let mut acc = 0
+  while i < 3 {
+    i = i + 1
+    let d = A([i + n, 1])
+    if i == 2 {
+      continue
+    }
+    acc = acc + second(d)
+  }
+  acc
+}
+
+fn thrower(n: Int) -> Int with Exception {
+  let d = A([n, 1])
+  if n >= 0 {
+    throw("stop")
+  }
+  second(d)
+}
+
+fn thr(n: Int) -> Int {
+  handle { thrower(n) } with { Exception::Throw(_) => 1 }
+}
+
+fn thr_local(n: Int) -> Int {
+  handle {
+    let d = A([n, 1])
+    if n >= 0 {
+      throw("stop")
+    }
+    second(d)
+  } with { Exception::Throw(_) => 1 }
+}
+
+// Nested scopes: a return from a block inside a loop body leaves the block,
+// the loop body and the function.
+fn nested(n: Int) -> Int {
+  let a = A([n, 1])
+  let mut i = 0
+  while i < 3 {
+    let b = A([i, 2])
+    if i == 1 {
+      let c = A([i, 3])
+      return second(b) + second(c)
+    }
+    i = i + 1
+  }
+  second(a)
+}
+
+// The #3141 report's own shape: a captured cell returned early.
+fn ret_cell(c: Bool, n: Int) -> D {
+  let mut d = A([n, n])
+  let f = () -> Int { second(d) }
+  let _ = f()
+  if c {
+    return d
+  }
+  A([0, 1])
+}
+
+fn round(i: Int) -> Int {
+  ret_guard(i) + ret_budget(i) + second(ret_pick(i)) + brk(i) + cont(i) + thr(i) + thr_local(i) + nested(i) + second(ret_cell(i >= 0, i))
+}
+
+export fn main() -> Int {
+  let mut i = 0
+  let mut acc = 0
+  while i < 2000 {
+    acc = acc + round(i)
+    i = i + 1
+  }
+  acc
+}

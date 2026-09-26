@@ -1113,6 +1113,64 @@ done
 rm -f "$ROOT_DIR/_build/_gate_rc_set_field_release.log"
 echo "[compiler-gate] field assignment release guard ok (2019000 on bump/rc/shadow/gc, rc heap_used=$sf_used B; release/decline shapes ok on rc + shadow)"
 
+# 40f0h. #3141: an early `return` / `break` / `continue` / `throw` jumped
+#        past the scope-end drops of every scope it left, so each binding in
+#        them leaked on every call that took the exit -- a binding the early
+#        path never consumed, the references kept for its later uses, a loop
+#        body's binding, a function's bindings on a throw, nested scopes, and
+#        a captured cell with its closure. The exit now releases them
+#        (rc_exit_release, from the plan's PaExitDrop rows). Unfixed, the
+#        bounded fixture grew __heap_ptr by 1,872,288 B over its 2000 rounds;
+#        fixed, 440 B. The answer is checked on bump, rc, shadow and gc;
+#        the shadow lane traps on the drop of a freed block.
+#        rc_early_exit_release_test.vibe then checks, on rc and shadow, that
+#        what each exit hands out, and every binding it does not leave, is
+#        still alive afterwards.
+echo "[compiler-gate] 40f0h/40 an early exit releases the scopes it leaves (#3141)"
+exdir="_build/_gate_rc_early_exit"
+rm -rf "$exdir"; mkdir -p "$exdir"
+for ex_lane in bump rc shadow gc; do
+  rm -f "$exdir/ex.wasm" "$exdir/ex.wasm.diag"
+  case "$ex_lane" in
+    bump) env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_early_exit_bounded_test.vibe" "$exdir/ex.wasm" main >/dev/null 2>&1 || true ;;
+    rc) env VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_early_exit_bounded_test.vibe" "$exdir/ex.wasm" main >/dev/null 2>&1 || true ;;
+    shadow) env VIBE_RC=shadow VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_early_exit_bounded_test.vibe" "$exdir/ex.wasm" main >/dev/null 2>&1 || true ;;
+    gc) env VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_early_exit_bounded_test.vibe" "$exdir/ex.wasm" main >/dev/null 2>&1 || true ;;
+  esac
+  if [ ! -s "$exdir/ex.wasm" ]; then
+    echo "[compiler-gate] FAIL: rc_early_exit_bounded fixture did not compile on the $ex_lane lane (#3141)" >&2
+    cat "$exdir/ex.wasm.diag" >&2 2>/dev/null || true
+    exit 1
+  fi
+  ex_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$exdir/ex.wasm" 2>&1 | tail -1)"
+  if [ "$ex_out" != "2025000" ]; then
+    echo "[compiler-gate] FAIL: rc_early_exit_bounded got '$ex_out' on the $ex_lane lane (want 2025000). A trap means an early exit released a binding it did not own or one still in use (#3141)." >&2
+    exit 1
+  fi
+  if [ "$ex_lane" = rc ]; then
+    ex_json="$(node scripts/measure_heap.mjs "$exdir/ex.wasm" main 2>/dev/null)"
+    ex_used="$(printf '%s' "$ex_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+    if [ -z "$ex_used" ]; then
+      echo "[compiler-gate] FAIL: could not measure rc_early_exit_bounded heap ($ex_json)" >&2; exit 1
+    fi
+    if [ "$ex_used" -ge 20000 ]; then
+      echo "[compiler-gate] FAIL: rc_early_exit_bounded heap_used=$ex_used >= 20000 (#3141 regressed: an early exit skips the scope-end drops of the scopes it leaves again; unfixed, this fixture measured 1,872,288 B)" >&2; exit 1
+    fi
+  fi
+done
+rm -rf "$exdir"
+for ex_lane in 1 shadow; do
+  if ! VIBE_RC="$ex_lane" VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+      bash scripts/vibe_test.sh fixtures/rc_early_exit_release_test.vibe \
+      >"$ROOT_DIR/_build/_gate_rc_early_exit_release.log" 2>&1; then
+    echo "[compiler-gate] FAIL: fixtures/rc_early_exit_release_test.vibe failed with VIBE_RC=$ex_lane (#3141). A trap or a churn string means an early exit released a value still in use:" >&2
+    tail -20 "$ROOT_DIR/_build/_gate_rc_early_exit_release.log" >&2
+    exit 1
+  fi
+done
+rm -f "$ROOT_DIR/_build/_gate_rc_early_exit_release.log"
+echo "[compiler-gate] early exit release guard ok (2025000 on bump/rc/shadow/gc, rc heap_used=$ex_used B; handed-out and outer values alive on rc + shadow)"
+
 # 40f1a. #2427: the shadow table must not overlap the heap it describes.
 #        40f above proves the marks catch a real dup/drop-of-freed; this
 #        proves they are marks at all. The table sat at a FIXED 256 MiB while
