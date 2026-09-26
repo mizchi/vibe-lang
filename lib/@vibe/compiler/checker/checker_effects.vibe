@@ -5604,6 +5604,14 @@ fn lookup_program_fn_param_effs(fn_index: MutMap[String, Int], param_effs: Array
 }
 
 fn lookup_fn_effs(names: Array[String], effs: Array[Array[String]], name: String) -> Option[Array[String]] {
+  match lookup_fn_effs_raw(names, effs, name) {
+    Some(labels) => Some(labels_without_alias_marker(labels)),
+    None => None
+  }
+}
+
+/// The overlay entry as stored, alias marker included.
+fn lookup_fn_effs_raw(names: Array[String], effs: Array[Array[String]], name: String) -> Option[Array[String]] {
   let mut i = 0
   let mut found = None
   while i < Array::length(names) {
@@ -5618,6 +5626,47 @@ fn lookup_fn_effs(names: Array[String], effs: Array[Array[String]], name: String
     i = i + 1
   }
   found
+}
+
+/// #3155: an overlay entry for a local alias of a TOP-LEVEL function carries
+/// this marker naming the source, so a call through the alias is checked as a
+/// call of the source -- its row variables instantiated from the arguments
+/// (`resolve_row_var_instantiation`), exactly like the direct call. `=` cannot
+/// begin an effect label, so no row spelling collides with it.
+fn alias_marker_prefix() -> String {
+  "=alias:"
+}
+
+fn labels_without_alias_marker(labels: Array[String]) -> Array[String] {
+  let out = no_str_labels()
+  let mut i = 0
+  while i < Array::length(labels) {
+    let l = Array::get(labels, i)
+    if !String::starts_with(l, alias_marker_prefix()) {
+      Array::push(out, l)
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// The top-level function a local alias in scope stands for, if `name` is one.
+fn lookup_alias_source(names: Array[String], effs: Array[Array[String]], name: String) -> Option[String] {
+  match lookup_fn_effs_raw(names, effs, name) {
+    Some(labels) => {
+      let mut found = None
+      let mut i = 0
+      while i < Array::length(labels) {
+        let l = Array::get(labels, i)
+        if String::starts_with(l, alias_marker_prefix()) {
+          found = Some(String::substring(l, String::length(alias_marker_prefix()), String::length(l)))
+        }
+        i = i + 1
+      }
+      found
+    },
+    None => None
+  }
 }
 
 /// #885 review (Codex): a `let`/`let rec`/`let mut` binding can reuse the NAME
@@ -5763,36 +5812,33 @@ fn overlay_bind_empty_pat(names: Array[String], effs: Array[Array[String]], pat:
 /// rejected. Resolution order matches `lookup_fn_effs`'s own: the OVERLAY first
 /// (an inner binding shadows an outer one), then the top-level call-graph map.
 ///
-/// #3155: an alias of a TOP-LEVEL function drops the source's row variables.
-/// Such a variable is the source's own quantifier -- a top-level declaration
-/// has no enclosing signature to share it with -- so, exactly as at a named
-/// call (`label_is_effect_var` in the named-callee arm), each call instantiates
-/// it and the closure argument's body is checked where it is written. Kept, it
-/// became a lexical-callee label no row can pay: `let r = TaskGroup::run;
-/// r((g) -> ..)` failed with `unresolved effect row { e }` while the direct call
-/// and a renamed import were clean. An overlay hit keeps its variables: a
-/// callback parameter's `e` IS the enclosing signature's `e` (#885).
+/// #3155: an alias of a TOP-LEVEL function keeps the source's row and adds a
+/// marker naming the source (`alias_marker_prefix`), so the call site checks it
+/// as a call of that function. Its row variables are the source's own
+/// quantifiers, instantiated per call from the arguments; left as a lexical
+/// callee they became labels no row could pay (`let r = TaskGroup::run;
+/// r((g) -> ..)` failed with `unresolved effect row { e }`), and dropped they
+/// let a named effectful argument through unchecked. An alias of an alias
+/// copies the entry, marker included; an overlay hit without one keeps its
+/// variables, since a callback parameter's `e` IS the enclosing signature's
+/// `e` (#885).
 fn alias_fn_overlay_labels(name: String, ov_names: Array[String], ov_effs: Array[Array[String]], fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int]) -> Array[String] {
-  match lookup_fn_effs(ov_names, ov_effs, name) {
+  match lookup_fn_effs_raw(ov_names, ov_effs, name) {
     Some(labels) => labels,
     None => match lookup_program_fn_effs(fn_index, fn_effs, name) {
-      Some(labels) => labels_without_effect_vars(labels),
+      Some(labels) => {
+        let out = no_str_labels()
+        let mut i = 0
+        while i < Array::length(labels) {
+          Array::push(out, Array::get(labels, i))
+          i = i + 1
+        }
+        Array::push(out, String::concat(alias_marker_prefix(), name))
+        out
+      },
       None => no_str_labels()
     }
   }
-}
-
-fn labels_without_effect_vars(labels: Array[String]) -> Array[String] {
-  let out = no_str_labels()
-  let mut i = 0
-  while i < Array::length(labels) {
-    let l = Array::get(labels, i)
-    if !label_is_effect_var(l) {
-      Array::push(out, l)
-    }
-    i = i + 1
-  }
-  out
 }
 
 fn local_fn_overlay_labels(val: Expr, ov_names: Array[String], ov_effs: Array[Array[String]], fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int]) -> Array[String] {
@@ -5945,7 +5991,17 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
             // #1723: the overlay is also the lexical-binding environment.
             // Some([]) means a pure local binding; only None may fall through
             // to the module-level function table.
-            let lexical_callee = lookup_fn_effs(ov_names, ov_effs, name)
+            // #3155: a local alias of a top-level function is checked as a
+            // call of that function (`alias_fn_overlay_labels`).
+            let alias_source = lookup_alias_source(ov_names, ov_effs, name)
+            let callee_fn = match alias_source {
+              Some(src) => src,
+              None => name
+            }
+            let lexical_callee = match alias_source {
+              Some(_) => None,
+              None => lookup_fn_effs(ov_names, ov_effs, name)
+            }
             if name == "perform?" && Array::length(args) == 1 {
               match perform_question_op_name(Array::get(args, 0)) {
                 Some(op_name) => {
@@ -6104,7 +6160,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
             // false positives (see `generic_effect_matrix_ok_passthrough_pure`).
             let top_level_callee = match lexical_callee {
               Some(_) => None,
-              None => lookup_program_fn_effs(fn_index, fn_effs, name)
+              None => lookup_program_fn_effs(fn_index, fn_effs, callee_fn)
             }
             match top_level_callee {
               Some(callee_effs) => {
@@ -6134,7 +6190,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                     // labels it turns out to denote are required like any
                     // other. Unresolvable instantiations still fall through to
                     // the old exemption (see resolve_row_var_instantiation).
-                    let callee_param_effs = match lookup_program_fn_param_effs(fn_index, fn_param_effs, name) {
+                    let callee_param_effs = match lookup_program_fn_param_effs(fn_index, fn_param_effs, callee_fn) {
                       Some(pe) => pe,
                       None => no_param_row()
                     }

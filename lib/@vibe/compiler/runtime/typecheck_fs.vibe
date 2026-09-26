@@ -745,24 +745,47 @@ fn env_trait_method_names(env: TypeEnv) -> Array[String] {
   out
 }
 
+/// Is `variant` a constructor of the enum `type_name` names? A re-export under
+/// another name (`export ./p.vibe { enum Choice as PublicChoice }`) projects
+/// `PublicChoice` as an alias of `Choice`, so an alias is followed to the enum
+/// it stands for (Codex on #3172).
 fn is_enum_variant_of(defs: Array[TypeDef], type_name: String, variant: String) -> Bool {
+  let mut target = type_name
+  let mut fuel = 8
   let mut found = false
-  let mut i = 0
-  while i < Array::length(defs) && !found {
-    match Array::get(defs, i) {
-      TDEnum(n, _, variants) => if n == type_name {
-        let mut k = 0
-        while k < Array::length(variants) && !found {
-          let (vn, _) = Array::get(variants, k)
-          if vn == variant {
-            found = true
+  let mut going = true
+  while going && fuel > 0 {
+    fuel = fuel - 1
+    let mut next = ""
+    let mut i = 0
+    while i < Array::length(defs) {
+      match Array::get(defs, i) {
+        TDEnum(n, _, variants) => if n == target {
+          let mut k = 0
+          while k < Array::length(variants) {
+            let (vn, _) = Array::get(variants, k)
+            if vn == variant {
+              found = true
+            }
+            k = k + 1
           }
-          k = k + 1
-        }
-      },
-      _ => ()
+        },
+        TDAlias(n, _, body) => if n == target {
+          next = match body {
+            CtEnum(h) => h,
+            CtNamed(h, _) => h,
+            _ => ""
+          }
+        },
+        _ => ()
+      }
+      i = i + 1
     }
-    i = i + 1
+    if found || String::length(next) == 0 || next == target {
+      going = false
+    } else {
+      target = next
+    }
   }
   found
 }

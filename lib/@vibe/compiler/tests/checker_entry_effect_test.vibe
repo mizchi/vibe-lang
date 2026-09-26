@@ -681,6 +681,18 @@ test "#3155: a local alias of a row-generic function checks like the direct call
   let via_alias = String::concat(decl, "fn main() -> Int {\n  let a = app\n  a(() -> { 42 })\n}\n")
   let direct = String::concat(decl, "fn main() -> Int {\n  app(() -> { 42 })\n}\n")
   assert_eq(first_check_error(via_alias), first_check_error(direct))
+  // A NAMED effectful argument instantiates the source's row at the alias
+  // call exactly as at the direct call (Codex on #3172: dropping the variable
+  // let `a(logged)` through while `invoke(logged)` was refused).
+  let named = "effect Log { Emit(Int) -> Unit }\nfn invoke[T, e](f: () -> T with e) -> T with e { f() }\nfn logged() -> Int with Log {\n  perform Log::Emit(1)\n  1\n}\n"
+  let named_direct = first_check_error(String::concat(named, "fn caller() -> Int {\n  invoke(logged)\n}\n"))
+  let named_alias = first_check_error(String::concat(named, "fn caller() -> Int {\n  let a = invoke\n  a(logged)\n}\n"))
+  assert(String::contains(named_direct, "missing { Log }"))
+  assert(String::contains(named_alias, "missing { Log }"))
+  let named_chain = first_check_error(String::concat(named, "fn caller() -> Int {\n  let a = invoke\n  let b = a\n  b(logged)\n}\n"))
+  assert(String::contains(named_chain, "missing { Log }"))
+  let named_granted = first_check_error(String::concat(named, "fn caller() -> Int with Log {\n  let a = invoke\n  a(logged)\n}\n"))
+  assert_eq(named_granted, "")
   // An effect the closure performs is still charged where it is written.
   let effectful = String::concat(decl, "effect Log { Emit(Int) -> Unit }\nfn main() -> Int allows Exception {\n  let a = app\n  a(() -> {\n    perform Log::Emit(1)\n    42\n  })\n}\n")
   assert(String::contains(first_check_error(effectful), "Log"))
