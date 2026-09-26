@@ -88,9 +88,11 @@ group, handles, senders, receivers — may not be in the value the body
 returns. Returning a handle would hand you something whose group has
 already finished, so the compiler rejects it instead.
 
-One hole worth knowing: the spawn check fires when `TaskGroup::spawn` is
-written literally. Reaching it through a rename (`let spawn =
-TaskGroup::spawn`) skips the check.
+The spawn check follows the function's type, not its spelling, so a
+rename (`let spawn = TaskGroup::spawn`) is checked like the direct call.
+What it reads is the closure written at the call: a closure bound to a
+name first and passed on is not inspected, so write the literal at the
+spawn.
 
 ## Suspending versus blocking
 

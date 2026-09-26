@@ -6632,6 +6632,40 @@ fn resolve_record_struct_name(defs: Array[TypeDef], actual: Array[(String, Type)
 /// of silently swallowing it. `__to_string` (the polymorphic interpolation
 /// stringifier: `"\{x}"` -> `__to_string(x)` wraps values of any type, but the
 /// polyfill annotates it `(Int) -> String`) is exempt.
+/// #3125: the spawn `Spawnable` capture check, keyed on the callee's TYPE
+/// rather than its spelling. The direct `TaskGroup::spawn` /
+/// `TaskGroup::spawn_suspend` branch runs it itself; every other callee with
+/// the same shape -- `(TaskGroup[r, e], <closure>) -> TaskHandle[..]`, which
+/// is what `let sp = TaskGroup::spawn` binds -- is checked here, so an alias
+/// is refused with the same diagnostic as the direct call.
+fn check_spawn_shaped_call(env: TypeEnv, s: Subst, defs: Array[TypeDef], param_tys: Array[Type], ret: Type, args: Array[Expr], errors: Array[String], marker: String) -> Unit {
+  if Array::length(param_tys) == 2 && Array::length(args) == 2 {
+    let is_handle = match subst_apply(s, ret) {
+      CtNamed(hn, _) => hn == "TaskHandle",
+      _ => false
+    }
+    let takes_fn = match subst_apply(s, Array::get(param_tys, 1)) {
+      CtFn(_, _, _) => true,
+      _ => false
+    }
+    match subst_apply(s, Array::get(param_tys, 0)) {
+      CtNamed(tg_name, tg_args) => if is_handle && takes_fn && tg_name == "TaskGroup" && Array::length(tg_args) == 2 {
+        let violations = check_spawnable_captures(env, s, defs, Array::get(args, 1), Array::get(tg_args, 0), unsent_open_formal_vars(s))
+        let mut vi = 0
+        while vi < Array::length(violations) {
+          Array::push(errors, String::concat(Array::get(violations, vi), marker))
+          vi = vi + 1
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+  } else {
+    ()
+  }
+}
+
 fn unify_call_args(param_tys: Array[Type], arg_tys: Array[Type], arg_exprs: Array[Expr], s: Subst, errors: Array[String], label: String, off: Int) -> Subst {
   let mut out = s
   let mut ui = 0
@@ -12524,6 +12558,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                         Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(name, String::concat(": expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))))), off_marker_len(callee_off, String::length(name))))
                       }
                       let s3 = unify_call_args(call_param_tys, arg_tys, args, s2, errors, name, callee_off)
+                      check_spawn_shaped_call(env, s3, defs, call_param_tys, Array::get(ret_box, 0), args, errors, off_marker_len(callee_off, String::length(name)))
                       let call_ret = call_result_with_provenance(Array::get(ret_box, 0), call_param_tys, arg_tys, s3)
                       (tab_call_ty(tytab, call_off, call_ret, capture, lane), s3, c2)
                     },
@@ -12896,6 +12931,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                         Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(callee_name0, String::concat(": expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))))), off_marker_len(call_off, String::length(callee_name0))))
                       }
                       let s3 = unify_call_args(call_param_tys, arg_tys, args, s2, errors, callee_name0, call_off)
+                      check_spawn_shaped_call(env, s3, defs, call_param_tys, Array::get(ret_box, 0), args, errors, off_marker_len(call_off, String::length(callee_name0)))
                       let call_ret = call_result_with_provenance(Array::get(ret_box, 0), call_param_tys, arg_tys, s3)
                       (tab_call_ty(tytab, call_off, call_ret, capture, lane), s3, c2)
                     },
@@ -12953,6 +12989,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                     Array::push(errors, String::concat(String::concat("function arity mismatch for <expr>: expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))), off_marker(call_off)))
                   }
                   let s3 = unify_call_args(call_param_tys, arg_tys, args, s2, errors, "<expr>", call_off)
+                  check_spawn_shaped_call(env, s3, defs, call_param_tys, Array::get(ret_box, 0), args, errors, off_marker(call_off))
                   let call_ret = call_result_with_provenance(Array::get(ret_box, 0), call_param_tys, arg_tys, s3)
                   (tab_call_ty(tytab, call_off, call_ret, capture, lane), s3, c2o)
                 },

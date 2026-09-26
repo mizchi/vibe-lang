@@ -2052,6 +2052,30 @@ if ! grep -qF 'no impl `Spawnable` for `Array[Int]`' "$spawnabledir/neg_array.wa
   cat "$spawnabledir/neg_array.wasm.diag" >&2 2>/dev/null || true
   exit 1
 fi
+# #3125: the same capture through an ALIAS of TaskGroup::spawn. The check
+# used to key on the spelling, so this compiled and ran; it now follows the
+# callee's type and gives the direct call's diagnostic. Its positive twin
+# captures only a Send value and still compiles.
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/err_spawnable_capture_alias.vibe "$spawnabledir/neg_alias.wasm" main >/dev/null 2>&1 || true
+if [ -s "$spawnabledir/neg_alias.wasm" ]; then
+  echo "[compiler-gate] FAIL: err_spawnable_capture_alias.vibe compiled successfully -- an alias of TaskGroup::spawn skipped the capture check" >&2
+  exit 1
+fi
+if ! grep -qF 'no impl `Spawnable` for `Array[Int]`' "$spawnabledir/neg_alias.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: err_spawnable_capture_alias.vibe did not produce the direct call's diagnostic" >&2
+  cat "$spawnabledir/neg_alias.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/spawnable_alias_send_ok.vibe "$spawnabledir/pos_alias.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$spawnabledir/pos_alias.wasm" ]; then
+  echo "[compiler-gate] FAIL: spawnable_alias_send_ok.vibe did not compile -- an alias capturing only Send values must pass" >&2
+  cat "$spawnabledir/pos_alias.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
 # #1571: the expectation for this rejection is the diagnostic grep below,
 # so the fixture no longer carries an unread `__DATA__` error_contains copy
 # and is compiled AS-IS -- no `sed` strip, no temp copy.

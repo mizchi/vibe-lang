@@ -920,8 +920,12 @@ nursery の capture は必ず異なる var id を持つ)。実装は
   `err_spawnable_capture_array.vibe`(非 Send な outer `Array` capture、
   reject)、`err_spawnable_capture_cross_region.vibe`(別 nursery の
   `Sender` capture、reject)。
-- **既知のギャップ**: `TaskGroup::run` と同じ alias/rename/wrapper すり
-  抜け(リテラル名一致のみ)。間接呼び出しされるローカル closure 値の
+- **Aliases are closed** (#3125): any callee typed
+  `(TaskGroup[r, e], <closure>) -> TaskHandle[..]` runs the same check,
+  whatever it is spelled (`check_spawn_shaped_call` in `checker.vibe`), so
+  `let sp = TaskGroup::spawn` is refused with the direct call's diagnostic
+  (`err_spawnable_capture_alias.vibe` / `spawnable_alias_send_ok.vibe`).
+- **既知のギャップ**: 間接呼び出しされるローカル closure 値の
   capture は検出しない(上記)。adoption レーン(`TaskGroup::adopt` +
   `TaskHandle::settle`)は `TaskGroup::spawn`/`spawn_suspend` の呼び出し
   形をしていないため、この check の対象外のまま(`suspend_test.vibe`
