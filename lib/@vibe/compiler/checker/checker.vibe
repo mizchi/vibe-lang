@@ -9002,14 +9002,57 @@ fn record_string_binop_operands(capture: Option[TypedOccurrenceRoleLaneCapture],
 /// later substitution, and such an index is array indexing whatever else the
 /// checker learns -- so the per-module capture carries a row only where the
 /// answer is still open.
-fn record_index_receiver(capture: Option[TypedOccurrenceRoleLaneCapture], bracket_off: Int, recv_ty: Type, resolved: Type) -> Unit {
-  record_receiver_kind(capture, bracket_off, recv_ty, resolved, 4)
+fn record_index_receiver(capture: Option[TypedOccurrenceRoleLaneCapture], bracket_off: Int, recv_ty: Type, resolved: Type, s: Subst) -> Unit {
+  record_receiver_kind(capture, bracket_off, recv_ty, resolved, 4, s)
+}
+
+/// #3156 review: the enclosing declaration's type formal that `t` reaches by
+/// following its variable chain (`t` itself, or a variable the substitution
+/// bound to one), or -1. Stops at the first non-variable, so a receiver whose
+/// raw type is already a concrete head never counts.
+fn receiver_formal_var(t: Type, s: Subst) -> Int {
+  let mut cur = t
+  let mut out = 0 - 1
+  let mut steps = 0
+  let mut done = false
+  while !done && steps < 64 {
+    match cur {
+      CtVar(v) => if eq_formal_row_of(v) >= 0 {
+        out = v
+        done = true
+      } else {
+        match subst_lookup(s, v) {
+          Some(next) => {
+            cur = next
+          },
+          None => {
+            done = true
+          }
+        }
+      },
+      _ => {
+        done = true
+      }
+    }
+    steps = steps + 1
+  }
+  out
 }
 
 /// #3145: `kind` 4 is an index read or write (#3133 / #3139); kind 5 is a
 /// builtin `Array::*` reader, whose extraction does not count a bare
 /// `CtUnknown` as open (see `index_receiver_rows_from_capture`).
-fn record_receiver_kind(capture: Option[TypedOccurrenceRoleLaneCapture], bracket_off: Int, recv_ty: Type, resolved: Type, kind: Int) -> Unit {
+///
+/// #3156 review: a head the substitution settled is not settled for every
+/// CALLER when the receiver is an enclosing declaration's type formal. The
+/// body may have unified the formal with an Array (`require_array(x); x[0]`
+/// in `fn f[T](x: T)`), and that local binding reaches a caller only through
+/// the declaration's scheme (#3149) -- not a caller checked against the
+/// hoisted signature, nor one reaching an exported declaration through its
+/// contract. Such a site is filed as the formal itself, under the formal
+/// kinds (6, or 8 for a `for` iterand), so the extraction refuses it unless
+/// `scheme_formal_constrained` says every caller saw the constraint.
+fn record_receiver_kind(capture: Option[TypedOccurrenceRoleLaneCapture], bracket_off: Int, recv_ty: Type, resolved: Type, kind: Int, s: Subst) -> Unit {
   match capture {
     Some(c) => if !c.provenance_enabled && bracket_off >= 0 {
       let settled = match resolved {
@@ -9018,13 +9061,30 @@ fn record_receiver_kind(capture: Option[TypedOccurrenceRoleLaneCapture], bracket
         CtBytes => true,
         _ => false
       }
-      if !settled {
+      let settled_formal = if settled {
+        receiver_formal_var(recv_ty, s)
+      } else {
+        0 - 1
+      }
+      let row_kind = if settled_formal < 0 {
+        kind
+      } else if kind == 7 || kind == 8 {
+        8
+      } else {
+        6
+      }
+      let row_ty = if settled_formal >= 0 {
+        CtVar(settled_formal)
+      } else {
+        recv_ty
+      }
+      if !settled || settled_formal >= 0 {
         Array::push(c.binop_offsets, bracket_off)
-        Array::push(c.binop_kinds, kind)
-        Array::push(c.binop_types, recv_ty)
+        Array::push(c.binop_kinds, row_kind)
+        Array::push(c.binop_types, row_ty)
         Array::push(c.binop_offsets, bracket_off)
-        Array::push(c.binop_kinds, kind)
-        Array::push(c.binop_types, recv_ty)
+        Array::push(c.binop_kinds, row_kind)
+        Array::push(c.binop_types, row_ty)
       } else {
         ()
       }
@@ -9059,7 +9119,7 @@ fn record_array_receiver(capture: Option[TypedOccurrenceRoleLaneCapture], name: 
       6
     } else {
       5
-    })
+    }, s)
   } else {
     ()
   }
@@ -11524,7 +11584,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           // #3133: the trait-dictionary pass lowers `m[k]` on a Map to
           // `Map::get`, and it asks THIS type, not the receiver's spelling.
           let bracket_off = index_site_offset(callee_off)
-          record_index_receiver(capture, bracket_off, obj_ty, resolved_obj)
+          record_index_receiver(capture, bracket_off, obj_ty, resolved_obj, s2)
           // A Map receiver indexes by its String key and yields the value slot,
           // exactly as `Map::get` does below (#983).
           let map_value = match resolved_obj {
@@ -12199,7 +12259,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           } else {
             index_site_offset(callee_off)
           }
-          record_index_receiver(capture, set_site, obj_ty, subst_apply(s3, obj_ty))
+          record_index_receiver(capture, set_site, obj_ty, subst_apply(s3, obj_ty), s3)
           // #826: same head checks as Array::get (this branch also bypasses the
           // direct fast path).
           let as_recv_head = head_kind(subst_apply(s3, obj_ty))
@@ -14187,11 +14247,17 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         CtVar(fv) => eq_formal_row_of(fv) >= 0,
         _ => false
       }
-      record_receiver_kind(capture, typed_lowering_arg_offset(iterable), subst_apply(s1a, it), subst_apply(s1a, it), if forin_formal {
+      // A formal the body already bound to an Array is filed from its raw
+      // type, whose variable chain still names it (#3156 review).
+      record_receiver_kind(capture, typed_lowering_arg_offset(iterable), if forin_formal {
+        subst_apply(s1a, it)
+      } else {
+        it
+      }, subst_apply(s1a, it), if forin_formal {
         8
       } else {
         7
-      })
+      }, s1a)
       let (s1, c1) = bind_builtin_arg_var(subst_apply(s1a, it), 9, s1a, c1a)
       // Element type bound by `for x in it`:
       //   - `Array[T]`                       -> T

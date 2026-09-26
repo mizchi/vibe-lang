@@ -2469,6 +2469,18 @@ ur_refused fixtures/err_array_concat_second_formal_refused.vibe 'treats `ys` as 
 ur_refused fixtures/err_for_in_open_iterand_refused.vibe 'cannot tell whether this `for` iterates an Array or a Map' 'Map::keys(m)' linear 'fixtures/err_for_in_open_iterand_refused.vibe: line 15:12'
 ur_refused fixtures/err_for_in_open_iterand_refused.vibe 'cannot tell whether this `for` iterates an Array or a Map' 'Map::keys(m)' gc 'fixtures/err_for_in_open_iterand_refused.vibe: line 15:12'
 ur_refused fixtures/err_array_length_formal_refused.vibe 'cannot tell whether this call reads an Array: `Array::length`' 'annotate it' gc 'fixtures/err_array_length_formal_refused.vibe: line 14:3'
+# #3156 review: a formal the body has ALREADY unified with an Array (through
+# an ordinary function) is a settled Array to the substitution, but not to a
+# caller the scheme cannot reach -- one above the declaration, or one through
+# an exported declaration's contract. An index or a `for` on it read a Map's
+# backing store by position; the site is refused as the formal it is. Declared
+# first, the call is a type error instead
+# (fixtures/typecheck/index_formal_bound_array_scheme_reject).
+ur_refused fixtures/err_index_formal_bound_array_refused.vibe 'cannot tell whether this index reads a Map or an Array' 'annotate it' linear 'fixtures/err_index_formal_bound_array_refused.vibe: line 22:4'
+ur_refused fixtures/err_index_formal_bound_array_refused.vibe 'cannot tell whether this index reads a Map or an Array' 'annotate it' gc 'fixtures/err_index_formal_bound_array_refused.vibe: line 22:4'
+ur_refused fixtures/err_index_formal_bound_array_exported_refused.vibe 'cannot tell whether this index reads a Map or an Array' 'annotate it' linear 'fixtures/err_index_formal_bound_array_exported_refused.vibe: line 13:4'
+ur_refused fixtures/err_for_in_formal_bound_array_refused.vibe 'cannot tell whether this `for` iterates an Array or a Map' 'Map::keys(m)' linear 'fixtures/err_for_in_formal_bound_array_refused.vibe: line 19:13'
+ur_refused fixtures/err_for_in_formal_bound_array_refused.vibe 'cannot tell whether this `for` iterates an Array or a Map' 'Map::keys(m)' gc 'fixtures/err_for_in_formal_bound_array_refused.vibe: line 19:13'
 # #3074: a generic enum whose instantiation cannot be recovered would render
 # its payload through the erased formal (`GA(1)` for `GA(true)`).
 ur_refused fixtures/err_interp_generic_enum_unknown_refused.vibe 'its type arguments are not known here' 'bind it with a type annotation' linear 'fixtures/err_interp_generic_enum_unknown_refused.vibe: line 12:4'
