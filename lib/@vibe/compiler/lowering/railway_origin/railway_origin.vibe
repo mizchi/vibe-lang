@@ -128,10 +128,122 @@ fn erase_try_none_stmt(s: Stmt, changed: Option[Array[Bool]]) -> Stmt {
   }
 }
 
+/// Does `erase_try_none_expr` have anything to rewrite in `expr`? The same
+/// walk, reading only: the marker is rare, and rebuilding every node of every
+/// statement to find none cost ~16 MB of the self-compile heap. Visits exactly
+/// the children the rewrite visits, so a `false` here means the rewrite would
+/// have returned an equal tree.
+fn has_try_none_expr(expr: Expr) -> Bool {
+  match expr {
+    EIdent(name, _) => name == "__try_none",
+    ESpread(e) => has_try_none_expr(e),
+    ETuple(elems) => has_try_none_exprs(elems),
+    EArray(elems) => has_try_none_exprs(elems),
+    ERecord(_, fields, _) => {
+      let mut found = false
+      let mut i = 0
+      while !found && i < Array::length(fields) {
+        let (_, fval) = Array::get(fields, i)
+        found = has_try_none_expr(fval)
+        i = i + 1
+      }
+      found
+    },
+    EMap(fields) => {
+      let mut found = false
+      let mut i = 0
+      while !found && i < Array::length(fields) {
+        let (_, v) = Array::get(fields, i)
+        found = has_try_none_expr(v)
+        i = i + 1
+      }
+      found
+    },
+    EIf(c, t, e) => has_try_none_expr(c) || has_try_none_expr(t) || has_try_none_expr(e),
+    ELet(_, val, body, _) => has_try_none_expr(val) || has_try_none_expr(body),
+    ELetRec(_, val, body) => has_try_none_expr(val) || has_try_none_expr(body),
+    ELetMut(_, val, body, _) => has_try_none_expr(val) || has_try_none_expr(body),
+    EAssign(_, val, cont) => has_try_none_expr(val) || has_try_none_expr(cont),
+    EAssignOp(_, _, val, cont) => has_try_none_expr(val) || has_try_none_expr(cont),
+    ESeq(a, b) => has_try_none_expr(a) || has_try_none_expr(b),
+    EMatch(scrut, arms) => has_try_none_expr(scrut) || has_try_none_arms(arms),
+    EHandle(scrut, arms) => has_try_none_expr(scrut) || has_try_none_arms(arms),
+    EWhile(c, b) => has_try_none_expr(c) || has_try_none_expr(b),
+    ELoop(params, body) => {
+      let mut found = false
+      let mut i = 0
+      while !found && i < Array::length(params) {
+        let (_, init) = Array::get(params, i)
+        found = has_try_none_expr(init)
+        i = i + 1
+      }
+      found || has_try_none_expr(body)
+    },
+    EForIn(_, _, iter, body) => has_try_none_expr(iter) || has_try_none_expr(body),
+    ECall(callee, args, _) => has_try_none_expr(callee) || has_try_none_exprs(args),
+    EBinOp(_, l, r, _) => has_try_none_expr(l) || has_try_none_expr(r),
+    EUnaryOp(_, e) => has_try_none_expr(e),
+    EFn(_, _, _, _, _, body) => has_try_none_expr(body),
+    EDot(obj, _, _, _) => has_try_none_expr(obj),
+    ELabeledArg(_, _, body) => has_try_none_expr(body),
+    EReturn(e) => has_try_none_expr(e),
+    EBreak(opt) => match opt {
+      Some(e) => has_try_none_expr(e),
+      None => false
+    },
+    EContinue(exprs) => has_try_none_exprs(exprs),
+    _ => false
+  }
+}
+
+fn has_try_none_exprs(exprs: Array[Expr]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(exprs) {
+    found = has_try_none_expr(Array::get(exprs, i))
+    i = i + 1
+  }
+  found
+}
+
+fn has_try_none_arms(arms: Array[(Pat, Expr)]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(arms) {
+    let (_, b) = Array::get(arms, i)
+    found = has_try_none_expr(b)
+    i = i + 1
+  }
+  found
+}
+
+fn has_try_none_stmt(s: Stmt) -> Bool {
+  match s {
+    SLet(_, _, _, _, body) => has_try_none_expr(body),
+    SLetMut(_, _, e) => has_try_none_expr(e),
+    STest(_, body) => has_try_none_expr(body),
+    SBench(_, body) => has_try_none_expr(body),
+    SExpr(e) => has_try_none_expr(e),
+    SModule(_, _, body) => {
+      let mut found = false
+      let mut i = 0
+      while !found && i < Array::length(body) {
+        found = has_try_none_stmt(Array::get(body, i))
+        i = i + 1
+      }
+      found
+    },
+    _ => false
+  }
+}
+
 fn erase_railway_origin_markers_impl(stmts: Array[Stmt], changed: Option[Array[Bool]]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
-    Array::set(stmts, i, erase_try_none_stmt(Array::get(stmts, i), changed))
+    let stmt = Array::get(stmts, i)
+    if has_try_none_stmt(stmt) {
+      Array::set(stmts, i, erase_try_none_stmt(stmt, changed))
+    }
     i = i + 1
   }
 }

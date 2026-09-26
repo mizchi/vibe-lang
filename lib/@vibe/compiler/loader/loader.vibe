@@ -346,7 +346,7 @@ fn exported_type_params_uncached_fs(path: String, dep_paths: Array[String], dep_
       ti = ti + 1
     }
   } else {
-    let stmts = parse_program(lex(ingest_source_text_fs(path, raw)))
+    let stmts = exported_type_params_parse_fs(path, ingest_source_text_fs(path, raw))
     let defs = collect_impl_type_defs(stmts)
     let mut ti = 0
     while ti < Array::length(defs) {
@@ -403,6 +403,20 @@ fn exported_type_params_uncached_fs(path: String, dep_paths: Array[String], dep_
   }
   Array::truncate(visiting, visiting_mark)
   out
+}
+
+/// The re-export source's statements through the shared located parse memo:
+/// the loader parses the same (path, ingested text) when it collects the
+/// module, so whichever asks second is answered from the first parse instead
+/// of lexing and parsing the file again (~35 MB of the self-compile heap).
+/// Only names and type parameters are read here, which the located parse
+/// spells identically. A text that does not parse is re-parsed the old way so
+/// the error a caller sees is the one it always saw; a throwing located parse
+/// is not memoized.
+fn exported_type_params_parse_fs(path: String, ingested: String) -> Array[Stmt] with Env + Exception + Fs {
+  handle {
+    parse_program_located_shared_fs(path, ingested)
+  } with { Exception::Throw(_) => parse_program(lex(ingested)) }
 }
 
 fn lookup_exported_type_params(defs: Array[(String, Array[String])], name: String) -> Option[Array[String]] {

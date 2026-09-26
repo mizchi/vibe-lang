@@ -268,4 +268,37 @@
 # size samples grow a fixed 20 B total, and a compiled fib.wasm contains zero
 # 0xFD bytes), so this is the compiler's own compiled size, not per-compile
 # allocation.
-1619751744
+#
+# 2026-09-26 rebaseline (1619751744 -> 896232328), ratchet DOWN by 44.7%.
+# The committed number had gone stale: main at 78d61eb measured 1,186,467,136
+# locally (CI's perf-metrics row: 1,186,600,296), up from 1,002,383,832 on
+# 2026-09-21 -- +185 MB in five days, while the compiler's own source (this
+# KPI's input closure) grew only 5.7%. The cuts, each measured with a
+# heap-sampling profile of this exact compile (bytes attributed to call
+# stacks at function entry):
+#   - bump-lane `array_empty()` starts at capacity 0 instead of an inline
+#     2-slot buffer (12 B instead of 28 B for an array that is never pushed;
+#     the first push allocates the same 2 slots): -38.6 MB
+#   - lexer token / start / end arrays presized from the source length
+#     instead of growing by doubling on a heap that never frees: ~-48 MB
+#   - the unstable-import closure scan no longer lexes files that mention
+#     `@vibe/concurrent` only on `//` lines (the compiler's own comments):
+#     -41 MB
+#   - the effect pass walks the env's function rows once, not three times
+#     (env_fn_sigs): ~-12 MB
+#   - the typed-`==` row union builds each file's private-rename lookup once
+#     instead of a mangled string + table scan per type name: ~-21 MB
+#   - re-export type-parameter collection reuses the loader's parse memo:
+#     ~-30 MB
+#   - three whole-AST rewrite passes (railway marker erase, array spread,
+#     local-lambda hoist) skip statements with nothing to rewrite: ~-35 MB
+#   - perceus planning scope, heap-inference env and the effect pass's
+#     throw-kind env are cons lists, not immutable arrays/Maps copied at
+#     every binder (quadratic in a function's binder count): ~-60 MB
+#   - smaller: presized alias indexes, allocation-free child walks, a set
+#     instead of sorting every identifier occurrence in cl_own_return_stmts.
+# Verified: stage2 == stage3 fixpoint; full unit-test runner on the new
+# stage2 (1437/1438; the one failure was prelude_split_allocation_test's
+# split/whole RATIO bound, re-derived in the same change -- see that test). Wall on this input moved ~13.6 s -> ~9.9 s on the same machine
+# (single runs, not a controlled measurement).
+896232328

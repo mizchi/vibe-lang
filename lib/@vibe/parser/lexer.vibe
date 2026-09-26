@@ -1298,9 +1298,16 @@ fn lex_one_token(source: String, len: Int, pos: Int) -> (Token, Int) with Except
 export fn lex_with_offsets(source: String) -> (Array[Token], Array[Int], Array[Int]) with Exception {
   let len = String::length(source)
   {
-    let b = ArrayBuilder::new()
-    let starts = ArrayBuilder::new()
-    let ends = ArrayBuilder::new()
+    // Presized from the source length. The three arrays grow in lockstep,
+    // and on the bump heap every doubling leaves the old buffer behind, so
+    // growing from empty cost ~3 slots per token per array -- ~70 MB of the
+    // self-compile heap. The compiler's own sources run about one token per
+    // 6.7 bytes (a dense file one per 3), so `len / 5` usually needs no
+    // regrow and overshoots by about a third when it does not.
+    let est = len / 5 + 16
+    let b = Array::with_capacity(est)
+    let starts = Array::with_capacity(est)
+    let ends = Array::with_capacity(est)
     let mut prev_tok = TEof
     let first_skip = skip_ws_with_newline(source, len, skip_bom(source, len))
     let mut pos = first_skip>>1
@@ -1309,24 +1316,24 @@ export fn lex_with_offsets(source: String) -> (Array[Token], Array[Int], Array[I
       let c = String::char_code_at(source, pos)
       let (tok, next) = lex_one_token(source, len, pos)
       if needs_synthetic_semicolon(c, nl_before, prev_tok, is_tight_prefix_op(tok, source, len, next)) {
-        ArrayBuilder::push(b, TSemicolon)
-        ArrayBuilder::push(starts, pos)
-        ArrayBuilder::push(ends, pos)
+        Array::push(b, TSemicolon)
+        Array::push(starts, pos)
+        Array::push(ends, pos)
       } else {
         ()
       }
-      ArrayBuilder::push(b, tok)
-      ArrayBuilder::push(starts, pos)
-      ArrayBuilder::push(ends, next)
+      Array::push(b, tok)
+      Array::push(starts, pos)
+      Array::push(ends, next)
       prev_tok = tok
       let skipped = skip_ws_with_newline(source, len, next)
       pos = skipped>>1
       nl_before = (skipped&1) == 1
     }
-    ArrayBuilder::push(b, TEof)
-    ArrayBuilder::push(starts, len)
-    ArrayBuilder::push(ends, len)
-    (ArrayBuilder::freeze(b), ArrayBuilder::freeze(starts), ArrayBuilder::freeze(ends))
+    Array::push(b, TEof)
+    Array::push(starts, len)
+    Array::push(ends, len)
+    (b, starts, ends)
   }
 }
 
@@ -1580,7 +1587,8 @@ export fn offset_to_line_col(source: String, offset: Int) -> (Int, Int) {
 export fn lex(source: String) -> Array[Token] with Exception {
   let len = String::length(source)
   {
-    let b = ArrayBuilder::new()
+    // Presized like lex_with_offsets.
+    let b = Array::with_capacity(len / 5 + 16)
     let mut prev_tok = TEof
     let first_skip = skip_ws_with_newline(source, len, skip_bom(source, len))
     let mut pos = first_skip>>1
@@ -1597,18 +1605,18 @@ export fn lex(source: String) -> Array[Token] with Exception {
       // parser already treats `;` as a separator. A same-line `(`/`[` (no
       // newline) still attaches as a call/subscript suffix.
       if needs_synthetic_semicolon(c, nl_before, prev_tok, is_tight_prefix_op(tok, source, len, next)) {
-        ArrayBuilder::push(b, TSemicolon)
+        Array::push(b, TSemicolon)
       } else {
         ()
       }
-      ArrayBuilder::push(b, tok)
+      Array::push(b, tok)
       prev_tok = tok
       let skipped = skip_ws_with_newline(source, len, next)
       pos = skipped>>1
       nl_before = (skipped&1) == 1
     }
-    ArrayBuilder::push(b, TEof)
-    ArrayBuilder::freeze(b)
+    Array::push(b, TEof)
+    b
   }
 }
 
