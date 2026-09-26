@@ -1,0 +1,170 @@
+// #3137: a `for` whose value is discarded -- the head of a sequence -- is
+// compiled in the no-collect form, which drops each body value off the stack
+// without releasing it. The Perceus plan still counted a bare name on the
+// body's result spine as an OWNING use, so `let d = A(..); for x in ns { d }`
+// handed `d`'s reference to a release that never happened and leaked `d`
+// whole on every call (the same held for a bare `d` statement). The plan now
+// counts those leaves as borrows, so the binding keeps its own scope-end drop.
+//
+// This file pins the other half: every value the rewritten plan no longer
+// consumes is still alive where it is read after the loop -- a heap binding,
+// the loop variable (a view into the iterated array), a projection, a
+// borrow-returning call, branch and block tails, a match arm, a nested
+// discarded `for`, and a plain sequence head. Each reads its value AFTER an
+// allocation that would reuse a freed block, so a premature release answers
+// with the churn string instead (and VIBE_RC=shadow traps on the drop of a
+// freed block). The bounded-heap half is fixtures/rc_forin_discard_bounded_test.vibe
+// (tests/gates/mid/run.sh, 40f0f).
+
+enum D {
+  A(String)
+}
+
+struct P {
+  name: String
+}
+
+fn name_of(d: D) -> String {
+  match d {
+    A(s) => s
+  }
+}
+
+fn fresh(s: String, i: Int) -> String {
+  String::concat(s, __to_string(i))
+}
+
+fn body_binding(ns: Array[Int]) -> String {
+  let d = A(fresh("d", 1))
+  for x in ns {
+    d
+  }
+  let churn = fresh("churn", 2)
+  String::concat(name_of(d), churn)
+}
+
+fn body_loop_var(xs: Array[String]) -> String {
+  for x in xs {
+    x
+  }
+  let churn = fresh("churn", 3)
+  String::concat(String::concat(Array::get(xs, 0), Array::get(xs, 1)), churn)
+}
+
+fn body_projection(ps: Array[P]) -> String {
+  for p in ps {
+    p.name
+  }
+  let churn = fresh("churn", 4)
+  String::concat((Array::get(ps, 1)).name, churn)
+}
+
+fn body_get(xs: Array[String]) -> String {
+  for i in [0, 1] {
+    Array::get(xs, i)
+  }
+  let churn = fresh("churn", 5)
+  String::concat(Array::get(xs, 1), churn)
+}
+
+fn body_branch(ns: Array[Int], c: Bool) -> String {
+  let d = A(fresh("br", 1))
+  let e = A(fresh("br", 2))
+  for x in ns {
+    if c {
+      d
+    } else {
+      e
+    }
+  }
+  let churn = fresh("churn", 6)
+  String::concat(String::concat(name_of(d), name_of(e)), churn)
+}
+
+fn body_block(ns: Array[Int]) -> String {
+  let d = A(fresh("bl", 1))
+  for x in ns {
+    let y = d
+    y
+  }
+  let churn = fresh("churn", 7)
+  String::concat(name_of(d), churn)
+}
+
+fn body_match(ns: Array[Int]) -> String {
+  let d = A(fresh("mt", 1))
+  let e = A(fresh("mt", 2))
+  for x in ns {
+    match x {
+      1 => d,
+      _ => e
+    }
+  }
+  let churn = fresh("churn", 8)
+  String::concat(String::concat(name_of(d), name_of(e)), churn)
+}
+
+fn body_nested(ns: Array[Int]) -> String {
+  let d = A(fresh("ne", 1))
+  for x in ns {
+    for y in ns {
+      d
+    }
+  }
+  let churn = fresh("churn", 9)
+  String::concat(name_of(d), churn)
+}
+
+fn body_fresh(ns: Array[Int]) -> Int {
+  for x in ns {
+    fresh("f", x)
+  }
+  Array::length(ns)
+}
+
+fn seq_head(n: Int) -> String {
+  let d = A(fresh("sq", n))
+  d
+  let churn = fresh("churn", 10)
+  String::concat(name_of(d), churn)
+}
+
+test "a heap binding as a discarded for body stays alive" {
+  inspect(body_binding([1, 2, 3]), content = "d1churn2")
+}
+
+test "the loop variable as a discarded for body stays in its array" {
+  inspect(body_loop_var([fresh("a", 1), fresh("b", 2)]), content = "a1b2churn3")
+}
+
+test "a projection as a discarded for body stays in its struct" {
+  inspect(body_projection([P::{ name: fresh("p", 1) }, P::{ name: fresh("q", 2) }]), content = "q2churn4")
+}
+
+test "a borrow-returning call as a discarded for body stays in its array" {
+  inspect(body_get([fresh("g", 1), fresh("h", 2)]), content = "h2churn5")
+}
+
+test "branch tails of a discarded for body stay alive" {
+  inspect(String::concat(body_branch([1, 2], true), body_branch([1, 2], false)), content = "br1br2churn6br1br2churn6")
+}
+
+test "a block tail of a discarded for body stays alive" {
+  inspect(body_block([1, 2, 3]), content = "bl1churn7")
+}
+
+test "match arm tails of a discarded for body stay alive" {
+  inspect(body_match([1, 2, 3]), content = "mt1mt2churn8")
+}
+
+test "a nested discarded for body stays alive" {
+  inspect(body_nested([1, 2]), content = "ne1churn9")
+}
+
+test "a fresh discarded for body value does not disturb the loop" {
+  inspect(body_fresh([1, 2, 3]), content = "3")
+}
+
+test "a bare name at the head of a sequence stays alive" {
+  inspect(seq_head(4), content = "sq4churn10")
+}

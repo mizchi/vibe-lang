@@ -2812,6 +2812,57 @@ fn frozen_array_conversion_copy(name: String) -> String {
 /// - `MutList::freeze(l)` / `MutList::to_array(l)` copy out -- see
 ///   `mutlist_exit_copy` for why these two do not share the identity cast,
 ///   and why the arena has no sound release point without them.
+/// #3140: does this field assignment `x.f = v` release the value the field
+/// held? Only when the Perceus plan approved `x` (see `plan_setfield_release`)
+/// and `x` is an ordinary local here. Every other store keeps the
+/// non-releasing lowering: a leak, never a release of a value a view still
+/// reads.
+fn cc_setf_releases(args: Array[Expr], local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  if !ctx.enable_rc || ctx.rc_drop_func_idx < 0 || Array::length(args) != 3 || !is_eident(Array::get(args, 0)) {
+    false
+  } else {
+    let x = get_eident_name(Array::get(args, 0))
+    array_contains_str(ctx.rc_setf_release, x) && find_local_slot(local_names, x) >= 0 && !array_contains_str(ctx.ref_cell_names, x)
+  }
+}
+
+/// #3140: load the field at `off` of the untagged struct pointer in `obj_l`,
+/// store `val_l` over it, then release what was there. The release comes
+/// AFTER the store: when the new value is the old one (`x.f = x.f`, retained
+/// by the store), the decrement only returns the retain.
+fn cc_setf_swap(buf: Bytes, obj_l: Int, val_l: Int, old_l: Int, off: Int, ctx: CompileCtx) -> Unit {
+  emit_local_get(buf, obj_l)
+  emit_i32_wrap_i64(buf)
+  emit_i64_load(buf, 3, off)
+  emit_local_set(buf, old_l)
+  emit_local_get(buf, obj_l)
+  emit_i32_wrap_i64(buf)
+  emit_local_get(buf, val_l)
+  emit_i64_store(buf, 3, off)
+  emit_local_get(buf, old_l)
+  emit_call(buf, ctx.rc_drop_func_idx)
+}
+
+/// #3140: the releasing store at a fixed field offset.
+fn cc_setf_release_store(buf: Bytes, args: Array[Expr], off: Int, local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
+  let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+  emit_i64_const(buf, -2)
+  emit_i64_and(buf)
+  let obj_l = nl
+  Array::push(local_names, "__setf_obj")
+  emit_local_set(buf, obj_l)
+  nl = ce(buf, Array::get(args, 2), local_names, nl + 1, ctx, ld)
+  nl = cc_retain_stored_arg(buf, Array::get(args, 2), local_names, nl, ctx)
+  let val_l = nl
+  Array::push(local_names, "__setf_val")
+  emit_local_set(buf, val_l)
+  let old_l = nl + 1
+  Array::push(local_names, "__setf_old")
+  cc_setf_swap(buf, obj_l, val_l, old_l, off, ctx)
+  emit_i64_const(buf, 0)
+  nl + 2
+}
+
 /// #2837: may this `Array::truncate(x, n)` release the elements it removes?
 /// Only when the Perceus plan approved `x` (see `plan_truncate_release`) AND
 /// every binding the plan pinned for `x` is live around this site -- a pin
@@ -7404,16 +7455,20 @@ fn compile_call_core(buf: Bytes, callee: Expr, raw_args: Array[Expr], local_name
           vi = vi * 10 + (String::char_code_at(field, vp) - 48)
           vp = vp + 1
         }
-        let mut nl = next_local
-        nl = ce(buf, Array::get(args, 0), local_names, nl, ctx, ld)
-        emit_i64_const(buf, -2)
-        emit_i64_and(buf)
-        emit_i32_wrap_i64(buf)
-        nl = ce(buf, Array::get(args, 2), local_names, nl, ctx, ld)
-        nl = cc_retain_stored_arg(buf, Array::get(args, 2), local_names, nl, ctx)
-        emit_i64_store(buf, 3, vi * 8)
-        emit_i64_const(buf, 0)
-        nl
+        if cc_setf_releases(args, local_names, ctx) {
+          cc_setf_release_store(buf, args, vi * 8, local_names, next_local, ctx, ld, ce)
+        } else {
+          let mut nl = next_local
+          nl = ce(buf, Array::get(args, 0), local_names, nl, ctx, ld)
+          emit_i64_const(buf, -2)
+          emit_i64_and(buf)
+          emit_i32_wrap_i64(buf)
+          nl = ce(buf, Array::get(args, 2), local_names, nl, ctx, ld)
+          nl = cc_retain_stored_arg(buf, Array::get(args, 2), local_names, nl, ctx)
+          emit_i64_store(buf, 3, vi * 8)
+          emit_i64_const(buf, 0)
+          nl
+        }
       } else {
         // #722: same struct-tag dispatch as the EDot read path
         // (compile_expr_tail4.vibe) — a same-named `mut` field can live at a
@@ -7425,7 +7480,9 @@ fn compile_call_core(buf: Bytes, callee: Expr, raw_args: Array[Expr], local_name
         }
         let (_, idx0) = Array::get(cands, 0)
         let dispatch = struct_field_dispatch_cases(cands)
-        if Array::length(dispatch) == 0 {
+        if Array::length(dispatch) == 0 && cc_setf_releases(args, local_names, ctx) {
+          cc_setf_release_store(buf, args, 8 + idx0 * 8, local_names, next_local, ctx, ld, ce)
+        } else if Array::length(dispatch) == 0 {
           let mut nl = next_local
           nl = ce(buf, Array::get(args, 0), local_names, nl, ctx, ld)
           emit_i64_const(buf, -2)
@@ -7449,6 +7506,14 @@ fn compile_call_core(buf: Bytes, callee: Expr, raw_args: Array[Expr], local_name
           let val_l = nl
           Array::push(local_names, "__setf_val")
           emit_local_set(buf, val_l)
+          // #3140: the slot differs per struct, so each arm swaps its own.
+          let release = cc_setf_releases(args, local_names, ctx)
+          let old_l = nl + 1
+          if release {
+            Array::push(local_names, "__setf_old")
+          } else {
+            ()
+          }
           let mut di = 0
           while di < Array::length(dispatch) {
             let (dtag, didx) = Array::get(dispatch, di)
@@ -7458,24 +7523,36 @@ fn compile_call_core(buf: Bytes, callee: Expr, raw_args: Array[Expr], local_name
             emit_i32_const(buf, dtag)
             emit_i32_eq(buf)
             emit_if_void(buf)
-            emit_local_get(buf, obj_l)
-            emit_i32_wrap_i64(buf)
-            emit_local_get(buf, val_l)
-            emit_i64_store(buf, 3, 8 + didx * 8)
+            if release {
+              cc_setf_swap(buf, obj_l, val_l, old_l, 8 + didx * 8, ctx)
+            } else {
+              emit_local_get(buf, obj_l)
+              emit_i32_wrap_i64(buf)
+              emit_local_get(buf, val_l)
+              emit_i64_store(buf, 3, 8 + didx * 8)
+            }
             emit_else(buf)
             di = di + 1
           }
-          emit_local_get(buf, obj_l)
-          emit_i32_wrap_i64(buf)
-          emit_local_get(buf, val_l)
-          emit_i64_store(buf, 3, 8 + idx0 * 8)
+          if release {
+            cc_setf_swap(buf, obj_l, val_l, old_l, 8 + idx0 * 8, ctx)
+          } else {
+            emit_local_get(buf, obj_l)
+            emit_i32_wrap_i64(buf)
+            emit_local_get(buf, val_l)
+            emit_i64_store(buf, 3, 8 + idx0 * 8)
+          }
           let mut de = 0
           while de < Array::length(dispatch) {
             emit_end(buf)
             de = de + 1
           }
           emit_i64_const(buf, 0)
-          nl + 1
+          if release {
+            nl + 2
+          } else {
+            nl + 1
+          }
         }
       }
     }

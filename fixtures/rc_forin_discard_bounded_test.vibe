@@ -1,0 +1,51 @@
+// #3137: a discarded `for` whose body is a heap binding keeps the RC heap
+// frontier bounded.
+//
+// A `for` at the head of a sequence drops each body value without releasing
+// it, while the Perceus plan counted a bare name there as an owning use, so
+// `d` below lost its scope-end drop and leaked whole on every call -- and the
+// same held for a bare `d` statement. Before the fix this fixture grew
+// `__heap_ptr` by 448,084 B over its 2000 calls, linearly (224,084 B at
+// 1000); with it, 196 B. The gate compiles it under VIBE_RC=1 and bounds the growth
+// (tests/gates/mid/run.sh, 40f0f); the same gate checks the answer on the
+// bump, rc, shadow and gc lanes, and the shadow lane traps on the drop of a
+// freed block. What each rewritten shape still reads after its loop is pinned
+// by fixtures/rc_forin_discard_body_test.vibe.
+//
+// `main` sums, per call, the payload's second element from the loop body (1)
+// and from the sequence head (i): 2000 + 1999 * 2000 / 2 = 2001000.
+
+enum D {
+  A(Array[Int])
+}
+
+fn second(d: D) -> Int {
+  match d {
+    A(xs) => Array::get(xs, 1)
+  }
+}
+
+fn in_loop(ns: Array[Int]) -> Int {
+  let d = A([0, 1])
+  for x in ns {
+    d
+  }
+  second(d)
+}
+
+fn at_head(n: Int) -> Int {
+  let d = A([n, n])
+  d
+  second(d)
+}
+
+export fn main() -> Int {
+  let ns = [1, 2, 3, 4]
+  let mut i = 0
+  let mut acc = 0
+  while i < 2000 {
+    acc = acc + in_loop(ns) + at_head(i)
+    i = i + 1
+  }
+  acc
+}
