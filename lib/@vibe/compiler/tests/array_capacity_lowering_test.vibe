@@ -6,6 +6,28 @@ import @vibex/wasm_parser {
   find_section, module_code
 }
 
+// Each call gets its own directory for the modules it writes. Fixed /tmp
+// names are shared by every concurrent run on the host -- another worktree,
+// another shard, a seed lane beside a stage2 lane -- and one run can replace
+// a module between another run's write and its subprocess (#3100).
+fn capacity_scratch_dir() -> String with Process {
+  let lines = sh_lines("mktemp -d \"${TMPDIR:-/tmp}/vibe_array_capacity.XXXXXX\"")
+  Array::get(lines, Array::length(lines) - 1)
+}
+
+fn capacity_drop_scratch(dir: String) -> Unit with Process {
+  let _ = sh_lines("rm -rf '" + dir + "'")
+  ()
+}
+
+// Every subprocess is bounded. A child that never exits otherwise holds the
+// whole file until the unit runner's 300s bound, which reports it as a trap
+// that no individual block reproduces (#3100); bounded, the block that ran it
+// fails on its own assertion within two minutes.
+fn capacity_sh(command: String) -> Array[String] with Process {
+  sh_lines("bash scripts/run_bounded.sh 120 " + command)
+}
+
 test "GC emits the capacity allocator only when used" {
   let plain = compile_wasi_gc("export fn main() -> Int { 0 }", "main")
   let reserved = compile_wasi_gc("export fn main() -> Int { Array::length(Array::with_capacity(2)) }", "main")
@@ -21,18 +43,21 @@ test "GC retains capacity calls through aliases and optional runtime bodies" {
     "export fn main() -> Int allows Console { let xs: Array[Int] = Array::with_capacity(2); let n = Array::length(xs) + 1234567; println(n); String::length(\"\\{n}\") }",
     "export fn main() -> Int { region r { let ys = MutList::empty(r); MutList::push(ys, 6); let xs: Array[Int] = Array::with_capacity(2); Array::push(xs, 1); MutList::get(ys, 0) + Array::get(xs, 0) } }"
   ]
+  let dir = capacity_scratch_dir()
   let mut i = 0
   for source in sources {
-    let path = "/tmp/_array_capacity_gc_optional_" + Int::to_string(i) + ".wasm"
+    let path = dir + "/gc_optional_" + Int::to_string(i) + ".wasm"
     Fs::write_bytes(path, compile_wasi_gc(source, "main"))
-    let output = sh_lines("bash scripts/run_wasm_vibe_host_runner.sh --invoke main " + path + " 0 2>/dev/null")
+    let output = capacity_sh("bash scripts/run_wasm_vibe_host_runner.sh --invoke main " + path + " 0 2>/dev/null")
     assert(Array::get(output, Array::length(output) - 1) == "7")
     i = i + 1
   }
+  capacity_drop_scratch(dir)
 }
 
 test "array growth rejects slot and frontier overflow before mutation" {
-  let prefix = "/tmp/_array_capacity_growth_"
+  let dir = capacity_scratch_dir()
+  let prefix = dir + "/growth_"
   for op in ["push", "push_all"] {
     let body = if op == "push" {
       "Array::push(xs, 7)"
@@ -52,8 +77,9 @@ test "array growth rejects slot and frontier overflow before mutation" {
       mode = mode + 1
     }
   }
-  let output = sh_lines("node --experimental-wasm-exnref lib/@vibe/compiler/tests/array_capacity_growth_test.mjs " + prefix)
+  let output = capacity_sh("node --experimental-wasm-exnref lib/@vibe/compiler/tests/array_capacity_growth_test.mjs " + prefix)
   assert(String::join(output, "") == "ok")
+  capacity_drop_scratch(dir)
 }
 
 test "reserved arrays dispatch a generic Array trait witness" {
@@ -188,9 +214,10 @@ fn run_capacity_probe(source: String, name: String, expected: String, wrap: Bool
 }
 
 fn run_capacity_modules(modules: Array[Bytes], name: String, expected: String, wrap: Bool, rejects: Bool) -> Unit with Exception + Fs + Process {
+  let dir = capacity_scratch_dir()
   let mut i = 0
   for wasm in modules {
-    let path = "/tmp/_array_capacity_" + name + "_" + Int::to_string(i) + ".wasm"
+    let path = dir + "/" + name + "_" + Int::to_string(i) + ".wasm"
     if wrap {
       capacity_near_memory_end(wasm)
     } else {
@@ -199,17 +226,17 @@ fn run_capacity_modules(modules: Array[Bytes], name: String, expected: String, w
     Fs::write_bytes(path, wasm)
     let command = "wasmtime run -W exceptions=y -W gc=y --invoke main " + path + " 0"
     if rejects {
-      let output = sh_lines(command + " 2>&1 || true")
+      let output = capacity_sh(command + " 2>&1 || true")
       let message = String::join(output, "\n")
       assert(String::contains(message, expected))
       assert(String::contains(message, "unreachable"))
     } else {
-      let output = sh_lines("bash scripts/run_wasm_vibe_host_runner.sh --invoke main " + path + " 0 2>/dev/null")
+      let output = capacity_sh("bash scripts/run_wasm_vibe_host_runner.sh --invoke main " + path + " 0 2>/dev/null")
       assert(String::join(output, "") == expected)
     }
     i = i + 1
   }
-  ()
+  capacity_drop_scratch(dir)
 }
 
 test "capacity rejects negative and wide arguments before narrowing" {
@@ -220,12 +247,15 @@ test "capacity rejects negative and wide arguments before narrowing" {
 
 test "capacity leaves room for the memory-growth guard page" {
   let source = "export fn main() -> Int { Array::length(Array::with_capacity(128)) }"
-  Fs::write_bytes("/tmp/_array_capacity_guard_0.wasm", compile_wasi(source, "main"))
-  Fs::write_bytes("/tmp/_array_capacity_guard_1.wasm", compile_wasi_rc(source, "main"))
-  Fs::write_bytes("/tmp/_array_capacity_guard_2.wasm", compile_wasi_rc_shadow(source, "main"))
-  Fs::write_bytes("/tmp/_array_capacity_guard_3.wasm", compile_wasi_gc(source, "main"))
-  let output = sh_lines("node --experimental-wasm-exnref lib/@vibe/compiler/tests/array_capacity_growth_test.mjs --guard /tmp/_array_capacity_guard_")
+  let dir = capacity_scratch_dir()
+  let prefix = dir + "/guard_"
+  Fs::write_bytes(prefix + "0.wasm", compile_wasi(source, "main"))
+  Fs::write_bytes(prefix + "1.wasm", compile_wasi_rc(source, "main"))
+  Fs::write_bytes(prefix + "2.wasm", compile_wasi_rc_shadow(source, "main"))
+  Fs::write_bytes(prefix + "3.wasm", compile_wasi_gc(source, "main"))
+  let output = capacity_sh("node --experimental-wasm-exnref lib/@vibe/compiler/tests/array_capacity_growth_test.mjs --guard " + prefix)
   assert(String::join(output, "") == "ok")
+  capacity_drop_scratch(dir)
 }
 
 test "capacity prevents the heap pointer from wrapping" {
@@ -241,20 +271,24 @@ test "reserved slots do not grow while filling or after truncation" {
 test "RC releases and reuses the reserved block and its live children" {
   let source = "fn fill() -> Int { let xs = Array::with_capacity(32); let mut i = 0; while i < 32 { Array::push(xs, [i, i + 1]); i = i + 1 }; Array::length(Array::get(xs, 0)) }\nexport fn main() -> Int allows Profiler { let warm = fill(); let before = Profiler::heap_bytes(); let mut total = 0; let mut i = 0; while i < 200 { total = total + fill(); i = i + 1 }; total + (Profiler::heap_bytes() - before) * 1000000 }"
   let wasm = compile_wasi_rc_shadow(source, "main")
-  let path = "/tmp/_array_capacity_rc_reuse.wasm"
+  let dir = capacity_scratch_dir()
+  let path = dir + "/rc_reuse.wasm"
   Fs::write_bytes(path, wasm)
-  let output = sh_lines("bash scripts/run_wasm_vibe_host_runner.sh --invoke main " + path + " 0 2>/dev/null")
+  let output = capacity_sh("bash scripts/run_wasm_vibe_host_runner.sh --invoke main " + path + " 0 2>/dev/null")
   inspect(String::join(output, ""), content = "400")
+  capacity_drop_scratch(dir)
 }
 
 test "GC reservation avoids growth through fill truncate and refill" {
+  let dir = capacity_scratch_dir()
   for n in [0, 4096, 4097] {
     let source = "export fn main() -> Int { let n = " + Int::to_string(n) + "; let xs: Array[Int] = Array::with_capacity(4096); let mut i = 0; while i < n { Array::push(xs, i); i = i + 1 }; Array::truncate(xs, 0); i = 0; while i < n { Array::push(xs, i); i = i + 1 }; Array::length(xs) }"
-    let path = "/tmp/_array_capacity_gc_" + Int::to_string(n) + ".wasm"
+    let path = dir + "/gc_" + Int::to_string(n) + ".wasm"
     Fs::write_bytes(path, compile_wasi_gc(source, "main"))
   }
-  let output = sh_lines("node lib/@vibe/compiler/tests/array_capacity_gc_probe.mjs /tmp/_array_capacity_gc_")
+  let output = capacity_sh("node lib/@vibe/compiler/tests/array_capacity_gc_probe.mjs " + dir + "/gc_")
   inspect(String::join(output, ""), content = "ok")
+  capacity_drop_scratch(dir)
 }
 
 test "a saved element survives truncation of its source array" {
@@ -264,8 +298,10 @@ test "a saved element survives truncation of its source array" {
 
 test "truncate borrows its array without leaking an extra retain" {
   let source = "fn fill() -> Int { let xs = Array::with_capacity(32); Array::push(xs, 1); Array::truncate(xs, 0); Array::push(xs, 2); Array::length(xs) }\nexport fn main() -> Int allows Profiler { let warm = fill(); let before = Profiler::heap_bytes(); let mut total = 0; let mut i = 0; while i < 200 { total = total + fill(); i = i + 1 }; total + (Profiler::heap_bytes() - before) * 1000000 }"
-  let path = "/tmp/_array_capacity_truncate_reuse.wasm"
+  let dir = capacity_scratch_dir()
+  let path = dir + "/truncate_reuse.wasm"
   Fs::write_bytes(path, compile_wasi_rc_shadow(source, "main"))
-  let output = sh_lines("bash scripts/run_wasm_vibe_host_runner.sh --invoke main " + path + " 0 2>/dev/null")
+  let output = capacity_sh("bash scripts/run_wasm_vibe_host_runner.sh --invoke main " + path + " 0 2>/dev/null")
   inspect(String::join(output, ""), content = "200")
+  capacity_drop_scratch(dir)
 }

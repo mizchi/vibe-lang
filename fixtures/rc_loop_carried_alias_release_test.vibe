@@ -1,0 +1,107 @@
+// #3134 companion to rc_loop_carried_alias_test.vibe. The fix makes a `let`
+// alias of a binding declared outside the loop acquire its own reference on
+// every iteration while the source keeps its initial one. This pins that the
+// extra references are all released: the alias's own is spent by `keep` or
+// its scope-end drop, and the source's by its own scope-end drop -- and that
+// an alias outside any loop is still the plain transfer it always was.
+//
+// On VIBE_RC=0 every round below grows the heap, so these bounds are also what
+// shows the probe measures a release at all.
+
+fn keep(a: Array[Int]) -> Int {
+  let outer = [a]
+  Array::length(outer) + Array::get(a, 0)
+}
+
+fn s_plain(p: Array[Int], n: Int) -> Int {
+  let mut s = 0
+  let mut i = 0
+  while i < n {
+    let w = p
+    s = s + keep(w)
+    i = i + 1
+  }
+  s
+}
+
+fn s_borrowed(p: Array[Int], n: Int) -> Int {
+  let mut s = 0
+  let mut i = 0
+  while i < n {
+    let w = p
+    s = s + Array::get(w, 1)
+    i = i + 1
+  }
+  s + Array::get(p, 0)
+}
+
+fn s_let_src(n: Int) -> Int {
+  let q = [n, n + 1]
+  let mut s = 0
+  let mut i = 0
+  while i < n {
+    let w = q
+    s = s + keep(w)
+    i = i + 1
+  }
+  s
+}
+
+/// Outside any loop the alias is still the transfer it always was.
+fn no_loop(p: Array[Int]) -> Int {
+  let w = p
+  keep(w)
+}
+
+fn round_plain(i: Int) -> Int {
+  s_plain([i, i + 1], 3) - 3 * i
+}
+
+fn round_borrowed(i: Int) -> Int {
+  s_borrowed([i, i + 1], 3) - 4 * i
+}
+
+fn round_let_src(i: Int) -> Int {
+  s_let_src(3) + i - i
+}
+
+fn round_no_loop(i: Int) -> Int {
+  no_loop([i, i + 1]) - i
+}
+
+fn growth(f: (Int) -> Int) -> Int with Profiler::heap_bytes {
+  let mut i = 0
+  while i < 100 {
+    let _ = f(i)
+    i = i + 1
+  }
+  let before = Profiler::heap_bytes()
+  while i < 10100 {
+    let _ = f(i)
+    i = i + 1
+  }
+  Profiler::heap_bytes() - before
+}
+
+test "values" {
+  inspect(round_plain(5), content = "3")
+  inspect(round_borrowed(5), content = "3")
+  inspect(round_let_src(5), content = "12")
+  inspect(round_no_loop(5), content = "1")
+}
+
+test "no leak: loop-carried parameter alias, consumed" {
+  inspect(growth(round_plain) < 4000, content = "true")
+}
+
+test "no leak: loop-carried parameter alias, borrowed" {
+  inspect(growth(round_borrowed) < 4000, content = "true")
+}
+
+test "no leak: loop-carried let alias" {
+  inspect(growth(round_let_src) < 4000, content = "true")
+}
+
+test "no leak: alias outside any loop" {
+  inspect(growth(round_no_loop) < 4000, content = "true")
+}

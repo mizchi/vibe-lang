@@ -1,5 +1,5 @@
 import ./compile_lambda.vibe {
-  cl_return_operand
+  cl_return_operand, rs_has_tail, rs_keep_bind, rs_map
 }
 
 //# Imports
@@ -42,6 +42,7 @@ import @vibe/compiler/codegen/common_analysis {
   emit_i64_extend_i32_u,
   is_mut_captured_in,
   md_borrow_mask_of,
+  md_builtin_borrow_mask,
   packed_dir_entries_to_array_expr
 }
 
@@ -85,6 +86,7 @@ import @vibe/compiler/codegen/common_base {
   emit_unbox_float,
   expr_tag,
   find_local_slot,
+  func_table_builtin_pos_of,
   func_table_index_of,
   func_table_user_index_of,
   get_arm_body,
@@ -660,6 +662,124 @@ fn cc_is_projection(e: Expr) -> Bool {
   match e {
     EDot(_, _, _, _) => true,
     _ => false
+  }
+}
+
+/// #3113: a read of a captured `let mut` loads the payload of its RC cell, and
+/// the cell keeps owning that payload -- so the read is a borrowed view,
+/// exactly like a projection. Handing it to an OWNING position (a consuming
+/// parameter, a constructor / tuple / array / record field) without a retain
+/// let the consumer free what the cell still held, and the cell's own drop
+/// then released it a second time. Neither the enclosing plan (the cell
+/// arm never applies it) nor a closure body's plan (captures are untracked)
+/// budgets a reference for such a read, so the site retains it itself.
+fn cc_is_ref_cell_read(e: Expr, ctx: CompileCtx) -> Bool {
+  match e {
+    EIdent(n, _) => array_contains_str(ctx.ref_cell_names, n),
+    _ => false
+  }
+}
+
+/// A read of a captured cell, directly or through a projection off one, not
+/// shadowed on the way to it.
+fn cc_is_cell_read_path(e: Expr, shadow: Array[String], ctx: CompileCtx) -> Bool {
+  match e {
+    EIdent(n, _) => array_contains_str(ctx.ref_cell_names, n) && !array_contains_str(shadow, n),
+    EDot(obj, _, _, _) => cc_is_cell_read_path(obj, shadow, ctx),
+    _ => false
+  }
+}
+
+/// Retain every cell read on a result path (`rs_map`) of a COMPOUND argument.
+/// A bare cell read or projection is left to the per-site checks
+/// (`cc_is_ref_cell_read`, `cc_is_projection`); wrapping it here would hide it
+/// from them without changing the count.
+fn cc_retain_cell_tails(e: Expr, ctx: CompileCtx) -> Expr {
+  if rs_has_tail(e) {
+    rs_map(e, array_empty(), (x: Expr, shadow: Array[String]) -> Expr {
+      if cc_is_cell_read_path(x, shadow, ctx) {
+        ECall(EIdent("__loop_tail_retain", -1), [x], -1)
+      } else {
+        x
+      }
+    }, rs_keep_bind)
+  } else {
+    e
+  }
+}
+
+/// #3130 review: a captured cell read on a branch or block tail of an
+/// argument handed to an OWNING position -- `keep(sink, if c { d } else {
+/// fresh() })`, `Some(match k { 0 => d, _ => .. })` -- was passed without a
+/// reference of its own. The per-site retain recognizes only a bare read, so
+/// the consumer and the cell shared one reference and the value was freed
+/// twice. Retain those tails, but only where the callee owns the position:
+/// `cc_internal_borrow_mask` says which, and a callee that resolves to a
+/// local or is not a name at all is a closure, which owns every argument. A
+/// borrowed position is left alone -- retaining there would add a reference
+/// nothing releases.
+fn cc_own_cell_compound_args(callee: Expr, args: Array[Expr], local_names: Array[String], ctx: CompileCtx) -> Array[Expr] {
+  if !ctx.enable_rc || Array::length(ctx.ref_cell_names) == 0 {
+    args
+  } else {
+    let mask = match callee {
+      EIdent(f, _) => if find_local_slot(local_names, f) >= 0 {
+        0
+      } else {
+        cc_internal_borrow_mask(f, ctx)
+      },
+      _ => 0
+    }
+    let out = array_empty()
+    let mut i = 0
+    while i < Array::length(args) {
+      let a = Array::get(args, i)
+      if cc_bmask_has(mask, i) {
+        Array::push(out, a)
+      } else {
+        Array::push(out, cc_retain_cell_tails(a, ctx))
+      }
+      i = i + 1
+    }
+    out
+  }
+}
+
+/// #3130 review: which argument positions of a callee BORROW (bit i set) --
+/// the complement is the positions that own the value they are handed.
+///
+/// A name spelled with `__` is not special by itself. Most of them are
+/// ordinary functions or closures a lowering synthesized (`__entry_k`,
+/// `__try_bind`, `__hs_fin`, the `__aw_*` and `__generic_*` helpers, the
+/// Double / String-view runtime preludes), and those own their arguments the
+/// way any call does, so they take the borrow mask like any other name. Only
+/// the internal builtins the ladder in `compile_call_core` lowers INLINE need
+/// a row of their own, because they have no signature for a mask to come from:
+///
+///   callee                  owning positions        what it does
+///   `__set_field(o, f, v)`  v                       stores v into o's field
+///   `__rec_field(o, i)`     none                    reads a field
+///   `__index(o, i)`         none                    reads an element / byte
+///   `__len(o)`              none                    reads a length
+///   `__slice(o, a, b)`      none                    copies a range out of o
+///   `__to_string(v)`        none                    renders v
+///   `__float_bits(v)`       none                    reinterprets a scalar
+///   `__lambda_return_owned(v)`, `__loop_tail_retain(v)`
+///                           none -- MARKERS. v is already a result path the
+///                           rewrite put the marker on, and the marker itself
+///                           decides whether to retain it; walking into v
+///                           again would retain it twice.
+///
+/// `__region_run` is lowered in `compile_call` before this runs, and its one
+/// argument is a lambda value, so it never reaches here with a cell read.
+fn cc_internal_borrow_mask(f: String, ctx: CompileCtx) -> Int {
+  if f == "__set_field" {
+    3
+  } else if f == "__rec_field" || f == "__index" || f == "__len" || f == "__slice" || f == "__to_string" || f == "__float_bits" || f == "__lambda_return_owned" || f == "__loop_tail_retain" {
+    // Every position borrows (bits 0..30).
+    2147483647
+  } else {
+    cc_borrow_mask(ctx, f)
   }
 }
 
@@ -1505,6 +1625,16 @@ fn cc_borrow_mask(ctx: CompileCtx, fname: String) -> Int {
   md_borrow_mask_of(fname, ctx.borrow_param_user, ctx.borrow_param_mask)
 }
 
+/// #3128: does the program define its own top-level function under the name
+/// of a builtin that borrows its arguments? The borrow table carries a row
+/// for exactly those definitions (compute_borrow_param_user_fns), so the
+/// question is one binary search, and it agrees with the planner by
+/// construction: a call the planner planned against the program's function
+/// is compiled as a call to it.
+fn cc_source_defines_borrow_builtin(ctx: CompileCtx, fname: String, fn_idx_in_list: Int) -> Bool {
+  fn_idx_in_list >= 0 && md_builtin_borrow_mask(fname) != 0 && bsearch_leftmost(ctx.borrow_param_user, fname) >= 0
+}
+
 fn cc_bmask_has(mask: Int, i: Int) -> Bool {
   i >= 0 && i < 32 && ((mask>>i)&1) == 1
 }
@@ -1519,7 +1649,7 @@ fn cc_bmask_has(mask: Int, i: Int) -> Bool {
 /// Expects the freshly compiled arg on the wasm stack; leaves it there.
 fn cc_retain_stored_arg(buf: Bytes, carg: Expr, local_names: Array[String], nl: Int, ctx: CompileCtx) -> Int with Exception {
   let is_loop_borrow = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx)
-  if ctx.enable_rc && (cc_is_projection(carg) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow) {
+  if ctx.enable_rc && (cc_is_projection(carg) || cc_is_ref_cell_read(carg, ctx) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow) {
     // #706 leak follow-up: a loop-borrowed trigger needs the epilogue's
     // compensating drop, same as the generic path's `__argdup` sites.
     if is_loop_borrow {
@@ -1579,7 +1709,7 @@ fn cc_retain_stored_arg(buf: Bytes, carg: Expr, local_names: Array[String], nl: 
 fn cc_hof_retain_arg(buf: Bytes, carg: Expr, local_idx: Int, fname: String, pos: Int, ctx: CompileCtx) -> Unit with Exception {
   let is_loop_borrow = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx)
   let planner_borrows = ctx.enable_rc && cc_bmask_has(md_borrow_mask_of(fname, ctx.borrow_param_user, ctx.borrow_param_mask), pos)
-  if ctx.enable_rc && (cc_is_projection(carg) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow || planner_borrows) {
+  if ctx.enable_rc && (cc_is_projection(carg) || cc_is_ref_cell_read(carg, ctx) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow || planner_borrows) {
     if is_loop_borrow {
       Array::push(ctx.loop_consumed_names, get_eident_name(carg))
     } else {
@@ -2683,6 +2813,107 @@ fn frozen_array_conversion_copy(name: String) -> String {
 /// - `MutList::freeze(l)` / `MutList::to_array(l)` copy out -- see
 ///   `mutlist_exit_copy` for why these two do not share the identity cast,
 ///   and why the arena has no sound release point without them.
+/// #2837: may this `Array::truncate(x, n)` release the elements it removes?
+/// Only when the Perceus plan approved `x` (see `plan_truncate_release`) AND
+/// every binding the plan pinned for `x` is live around this site -- a pin
+/// the lowering did not honour withdraws the release rather than letting it
+/// free a view. Returns the untagged-count source: 1 for a literal, 2 for a
+/// local, 0 for "do not release".
+fn cc_truncate_release_kind(args: Array[Expr], local_names: Array[String], ctx: CompileCtx) -> Int with Exception {
+  if !ctx.enable_rc || !ctx.rc_trunc_builtin || ctx.rc_drop_func_idx < 0 || Array::length(args) != 2 || !is_eident(Array::get(args, 0)) {
+    0
+  } else {
+    let x = get_eident_name(Array::get(args, 0))
+    let x_ok = array_contains_str(ctx.rc_trunc_release, x) && find_local_slot(local_names, x) >= 0 && !array_contains_str(ctx.ref_cell_names, x)
+    let mut pins_live = x_ok
+    let mut i = 0
+    while pins_live && i < Array::length(ctx.rc_trunc_pin_arrays) {
+      if Array::get(ctx.rc_trunc_pin_arrays, i) == x && !array_contains_str(ctx.rc_pins_live, Array::get(ctx.rc_trunc_pin_names, i)) {
+        pins_live = false
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    if !pins_live {
+      0
+    } else {
+      let n = Array::get(args, 1)
+      if expr_tag(n) == 0 {
+        1
+      } else if is_eident(n) && find_local_slot(local_names, get_eident_name(n)) >= 0 && !array_contains_str(ctx.ref_cell_names, get_eident_name(n)) {
+        2
+      } else {
+        0
+      }
+    }
+  }
+}
+
+/// #2837: release `x[new_len .. len)` with the ordinary decrement
+/// (`__rt_rc_drop`, never a raw free), BEFORE the truncate stores the new
+/// length -- the destructor walks only the live prefix, so an element outside
+/// it is released here or never. A scalar element is a no-op inside the drop
+/// helper (it tests the tag), so an `Array[Int]` pays the walk and nothing
+/// else. Leaves the stack as it found it; the ordinary truncate call follows.
+fn cc_emit_truncate_release(buf: Bytes, args: Array[Expr], kind: Int, local_names: Array[String], next_local: Int, ctx: CompileCtx) -> Int with Exception {
+  let x_slot = find_local_slot(local_names, get_eident_name(Array::get(args, 0)))
+  let len_l = next_local
+  let idx_l = next_local + 1
+  while Array::length(local_names) < next_local + 2 {
+    Array::push(local_names, "")
+  }
+  // len_l = old length (untagged)
+  emit_local_get(buf, x_slot)
+  emit_i64_const(buf, -2)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_i32_load(buf, 2, 4)
+  emit_i64_extend_i32_u(buf)
+  emit_local_set(buf, len_l)
+  // idx_l = new length (untagged)
+  let n = Array::get(args, 1)
+  if kind == 1 {
+    emit_i64_const(buf, get_eint_value(n))
+  } else {
+    emit_local_get(buf, find_local_slot(local_names, get_eident_name(n)))
+    emit_i64_const(buf, 1)
+    emit_i64_shr_s(buf)
+  }
+  emit_local_set(buf, idx_l)
+  emit_block_void(buf)
+  emit_loop_void(buf)
+  emit_local_get(buf, idx_l)
+  emit_local_get(buf, len_l)
+  emit_i64_ge_s(buf)
+  emit_br_if(buf, 1)
+  emit_local_get(buf, idx_l)
+  emit_i64_const(buf, 0)
+  emit_i64_lt_s(buf)
+  emit_br_if(buf, 1)
+  // __rt_rc_drop(load_i64(data_ptr + idx * 8))
+  emit_local_get(buf, x_slot)
+  emit_i64_const(buf, -2)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_i32_load(buf, 2, 8)
+  emit_local_get(buf, idx_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 8)
+  emit_i32_mul(buf)
+  emit_i32_add(buf)
+  emit_i64_load(buf, 3, 0)
+  emit_call(buf, ctx.rc_drop_func_idx)
+  emit_local_get(buf, idx_l)
+  emit_i64_const(buf, 1)
+  emit_i64_add(buf)
+  emit_local_set(buf, idx_l)
+  emit_br(buf, 0)
+  emit_end(buf)
+  emit_end(buf)
+  next_local + 2
+}
+
 export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
   if is_eident(callee) && get_eident_name(callee) == "__region_run" && Array::length(args) == 1 {
     if ctx.region_ptr_addr >= 0 {
@@ -2724,6 +2955,10 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
     ce(buf, array_value_copy(Array::get(args, 0), frozen_array_conversion_copy(get_eident_name(callee))), local_names, next_local, ctx, ld)
   } else if is_eident(callee) && get_eident_name(callee) == "Map::iter_get" && Array::length(args) == 2 && func_table_index_of(ctx.func_table, "Map::iter_get") < 0 && !array_contains_str(local_names, "Map::iter_get") {
     compile_map_iter_get_checked(buf, Array::get(args, 0), Array::get(args, 1), local_names, next_local, ctx, ld, ce)
+  } else if is_eident(callee) && get_eident_name(callee) == "Array::truncate" && !array_contains_str(local_names, "Array::truncate") && cc_truncate_release_kind(args, local_names, ctx) > 0 {
+    // #2837: release the removed suffix first, then the ordinary truncate.
+    let nl = cc_emit_truncate_release(buf, args, cc_truncate_release_kind(args, local_names, ctx), local_names, next_local, ctx)
+    compile_call_core(buf, callee, args, local_names, nl, ctx, ld, ce)
   } else {
     compile_call_core(buf, callee, args, local_names, next_local, ctx, ld, ce)
   }
@@ -2794,7 +3029,7 @@ fn cc_compile_resolved_call(buf: Bytes, fname: String, args: Array[Expr], local_
       // caller must not dup it.
       let borrows_this = cc_bmask_has(cc_bmask, ci)
       let is_loop_borrow1 = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx) && !borrows_this
-      if ctx.enable_rc && (cc_is_projection(carg) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow1) && !borrows_this {
+      if ctx.enable_rc && (cc_is_projection(carg) || cc_is_ref_cell_read(carg, ctx) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow1) && !borrows_this {
         // #706 leak follow-up: this dup's matching consume is INSIDE the loop
         // (the callee drops its own copy each iteration) and never touches
         // the binding's own slot-held reference, so the function epilogue
@@ -2895,7 +3130,7 @@ fn cc_compile_resolved_call(buf: Bytes, fname: String, args: Array[Expr], local_
       // through a `let rec`-captured closure value) was double-freed the same
       // way #704/#706's direct-call cases were, just one call-shape over.
       let is_loop_borrow2 = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx)
-      if ctx.enable_rc && (cc_is_projection(carg) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow2) {
+      if ctx.enable_rc && (cc_is_projection(carg) || cc_is_ref_cell_read(carg, ctx) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow2) {
         // #706 leak follow-up: log so the epilogue compensates (see above).
         if is_loop_borrow2 {
           Array::push(ctx.loop_consumed_names, get_eident_name(carg))
@@ -2930,7 +3165,8 @@ fn cc_compile_resolved_call(buf: Bytes, fname: String, args: Array[Expr], local_
   }
 }
 
-fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
+fn compile_call_core(buf: Bytes, callee: Expr, raw_args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
+  let args = cc_own_cell_compound_args(callee, raw_args, local_names, ctx)
   if is_eident(callee) {
     let source_name = get_eident_name(callee)
     // Builtin aliases are source-compatible fallbacks, not reserved names.
@@ -2970,7 +3206,13 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
     // in particular the two exits COPY (mutlist_exit_copy) instead of
     // aliasing, so these freeze rows are only a fallback for a call that got
     // past the checker with the wrong arity.
-    let fname: String = if !String::starts_with(fname0, "Mut") {
+    //
+    // #3129: the alias names the BUILTIN, not whatever the program calls by
+    // that spelling. A program's own `Array::length` used to capture
+    // `MutList::length(m)` (answered 77 for a three-element list). The
+    // target is looked up among the builtins only (`mut_alias_pos` below),
+    // and a program that defines the `Mut*` name itself keeps its own call.
+    let fname: String = if !String::starts_with(fname0, "Mut") || func_table_user_index_of(ctx.func_table, fname0, ctx.num_user_funcs) >= 0 {
       fname0
     } else if fname0 == "MutList::push" {
       "ArrayBuilder::push"
@@ -2993,7 +3235,26 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
     } else {
       fname0
     }
-    let fn_idx_in_list = func_table_index_of(ctx.func_table, fname)
+    // Only a target the program also defines needs the builtin-only lookup;
+    // otherwise the table holds one entry under that name and the ordinary
+    // lookup already answers the builtin. The ownership lookups of the
+    // resolved call then read the name the planner saw (`fname0`), not the
+    // program's function of the target's spelling.
+    let mut_alias_pos = if fname != fname0 && func_table_user_index_of(ctx.func_table, fname, ctx.num_user_funcs) >= 0 {
+      func_table_builtin_pos_of(ctx.func_table, fname, ctx.num_user_funcs)
+    } else {
+      -1
+    }
+    let fn_idx_in_list = if mut_alias_pos >= 0 {
+      mut_alias_pos
+    } else {
+      func_table_index_of(ctx.func_table, fname)
+    }
+    let resolved_name = if mut_alias_pos >= 0 {
+      fname0
+    } else {
+      fname
+    }
     let mut local_idx_hint = -1
     let mut li = Array::length(local_names) - 1
     while li >= 0 {
@@ -3141,7 +3402,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
           // #715: also retain a bare-ident arg whose binding is borrow-bound or
           // loop-borrowed (cc_is_loop_borrowed_ident) -- same gap as the ETuple
           // case in compile_expr_tail2.vibe (see the comment there).
-          if ctx.enable_rc && (cc_is_projection(carg_c) || cc_is_borrow_ret_call(carg_c, ctx) || cc_is_loop_borrowed_ident(carg_c, ctx)) {
+          if ctx.enable_rc && (cc_is_projection(carg_c) || cc_is_ref_cell_read(carg_c, ctx) || cc_is_borrow_ret_call(carg_c, ctx) || cc_is_loop_borrowed_ident(carg_c, ctx)) {
             emit_rc_dup_guarded(buf, val_local, ctx.rc_shadow, ctx.rc_dup_func_idx)
           } else {
             ()
@@ -3196,11 +3457,17 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
         nl_c
       }
     }
-    else if !cc_ladder_tests_name(fname) {
+    else if !cc_ladder_tests_name(fname) || cc_source_defines_borrow_builtin(ctx, fname, fn_idx_in_list) {
       // #2386: no arm below tests this callee (cc_ladder_names holds every
       // name they compare against), so only the resolved-call fallback can
       // apply; take it without the ~150 compares.
-      cc_compile_resolved_call(buf, fname, args, local_names, next_local, ctx, ld, ce, fn_idx_in_list, local_idx_hint)
+      // #3128: nor may an arm fire for a borrowing builtin the program
+      // defines itself. The planner already reads that definition's own
+      // ownership (compute_borrow_param_user_fns keeps its row), so an
+      // inlined `Map::size` / `Map::get` / `StringBuilder::push` ... would
+      // both ignore the program's function and leak the reference the call
+      // site now hands over.
+      cc_compile_resolved_call(buf, resolved_name, args, local_names, next_local, ctx, ld, ce, fn_idx_in_list, local_idx_hint)
     }
     else if fname == "eq" && Array::length(args) == 2 && local_idx_hint < 0 && (cc_expr_is_floatish(Array::get(args, 0), local_names, ctx) || cc_expr_is_floatish(Array::get(args, 1), local_names, ctx)) && func_table_user_index_of(ctx.func_table, fname, ctx.num_user_funcs) < 0 {
       // #745: under RC floats are BOXED — the scalar i64.eq below would
@@ -7194,6 +7461,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
         emit_i64_and(buf)
         emit_i32_wrap_i64(buf)
         nl = ce(buf, Array::get(args, 2), local_names, nl, ctx, ld)
+        nl = cc_retain_stored_arg(buf, Array::get(args, 2), local_names, nl, ctx)
         emit_i64_store(buf, 3, vi * 8)
         emit_i64_const(buf, 0)
         nl
@@ -7215,6 +7483,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
           emit_i64_and(buf)
           emit_i32_wrap_i64(buf)
           nl = ce(buf, Array::get(args, 2), local_names, nl, ctx, ld)
+          nl = cc_retain_stored_arg(buf, Array::get(args, 2), local_names, nl, ctx)
           emit_i64_store(buf, 3, 8 + idx0 * 8)
           emit_i64_const(buf, 0)
           nl
@@ -7227,6 +7496,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
           Array::push(local_names, "__setf_obj")
           emit_local_set(buf, obj_l)
           nl = ce(buf, Array::get(args, 2), local_names, nl + 1, ctx, ld)
+          nl = cc_retain_stored_arg(buf, Array::get(args, 2), local_names, nl, ctx)
           let val_l = nl
           Array::push(local_names, "__setf_val")
           emit_local_set(buf, val_l)
@@ -7347,7 +7617,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       ce(buf, sized_bytes_new_expr(Array::get(args, 0)), local_names, next_local, ctx, ld)
     }
     else {
-      cc_compile_resolved_call(buf, fname, args, local_names, next_local, ctx, ld, ce, fn_idx_in_list, local_idx_hint)
+      cc_compile_resolved_call(buf, resolved_name, args, local_names, next_local, ctx, ld, ce, fn_idx_in_list, local_idx_hint)
     }
   } else {
     let num_args = Array::length(args)
@@ -7369,7 +7639,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       // #708: also retain a projection / borrow-returning-call arg (see the
       // matching comment on the other closure-call path above).
       let is_loop_borrow3 = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx)
-      if ctx.enable_rc && (cc_is_projection(carg) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow3) {
+      if ctx.enable_rc && (cc_is_projection(carg) || cc_is_ref_cell_read(carg, ctx) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow3) {
         // #706 leak follow-up: log so the epilogue compensates (see above).
         if is_loop_borrow3 {
           Array::push(ctx.loop_consumed_names, get_eident_name(carg))

@@ -642,6 +642,150 @@ if ! VIBE_RC=shadow VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_N
 fi
 rm -f "$ROOT_DIR/_build/_gate_rc_branch_letrec.log"
 echo "[compiler-gate] let-rec / handle branch-tail borrow retain ok on shadow"
+# 40f-b3. #3113: a captured `let mut` cell owns its payload. The cell's drop
+#         releases what it holds, so every store into it must be an owned
+#         reference and every read that leaves for an owning place a
+#         retained one. The fixture covers both sides: borrowed initializers
+#         (direct, if/match, block, borrow-bound name, projection, if-arm
+#         projection, pattern binder), a borrowed assignment, the scope's
+#         tail, and a read handed to an owning parameter from the closure
+#         and from the defining scope. Two of its shapes pass on the plain RC
+#         lane even when broken and only show under VIBE_RC=shadow, so it
+#         runs on both.
+echo "[compiler-gate] 40f-b3/40 captured let mut cell owns its payload (#3113)"
+for cm_lane in 1 shadow; do
+  if ! VIBE_RC="$cm_lane" VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+      bash scripts/vibe_test.sh fixtures/rc_captured_mut_borrow_test.vibe \
+      >"$ROOT_DIR/_build/_gate_rc_captured_mut.log" 2>&1; then
+    echo "[compiler-gate] FAIL: fixtures/rc_captured_mut_borrow_test.vibe failed with VIBE_RC=$cm_lane (#3113). A trap means a captured let mut's RC cell released a payload it did not own -- a borrowed value stored without a retain, or a read of the cell handed to an owning place without one:" >&2
+    tail -20 "$ROOT_DIR/_build/_gate_rc_captured_mut.log" >&2
+    exit 1
+  fi
+done
+rm -f "$ROOT_DIR/_build/_gate_rc_captured_mut.log"
+echo "[compiler-gate] captured let mut cell ownership ok (rc + shadow)"
+
+# 40f-b4. #3128: a program's own top-level definition of a borrowing
+#         builtin's name (`Array::truncate`, `String::join`, `Bytes::compare`,
+#         `Map::size`) owns its parameters, so the call site must hand over a
+#         reference instead of the builtin's borrow. On the shadow lane the
+#         premature release traps on its first occurrence; the plain RC lane
+#         can answer right by luck when the freed block is not reused yet.
+echo "[compiler-gate] 40f-b4/40 shadowed borrowing builtin receives owned arguments on shadow (#3128)"
+if ! VIBE_RC=shadow VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+    bash scripts/vibe_test.sh fixtures/rc_shadowed_builtin_ownership_test.vibe \
+    >"$ROOT_DIR/_build/_gate_rc_shadowed_builtin.log" 2>&1; then
+  echo "[compiler-gate] FAIL: a source definition of a borrowing builtin's name was called with a borrowed argument it then released, under VIBE_RC=shadow (#3128):" >&2
+  tail -20 "$ROOT_DIR/_build/_gate_rc_shadowed_builtin.log" >&2
+  exit 1
+fi
+rm -f "$ROOT_DIR/_build/_gate_rc_shadowed_builtin.log"
+echo "[compiler-gate] shadowed borrowing builtin ownership ok on shadow"
+
+# 40f-b5. #3129: `MutList::*` / `MutBytes::*` lower to the builtin
+#         `Array::*` / `ArrayBuilder::push` / `Bytes::*`. A program that
+#         defines its own function under the target spelling must not capture
+#         the call: the plain RC lane answers the program's sentinel instead of
+#         the list's length, and the shadow lane traps on the program function
+#         releasing a list it was only lent.
+echo "[compiler-gate] 40f-b5/40 MutList / MutBytes and internal builtin calls reach the builtin under a same-named program function (#3129, #3132)"
+if ! VIBE_RC=shadow VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+    bash scripts/vibe_test.sh fixtures/mut_alias_shadowed_builtin_test.vibe \
+    >"$ROOT_DIR/_build/_gate_mut_alias_shadowed.log" 2>&1; then
+  echo "[compiler-gate] FAIL: a MutList / MutBytes operation was captured by the program's own function of the builtin's spelling under VIBE_RC=shadow (#3129):" >&2
+  tail -20 "$ROOT_DIR/_build/_gate_mut_alias_shadowed.log" >&2
+  exit 1
+fi
+rm -f "$ROOT_DIR/_build/_gate_mut_alias_shadowed.log"
+echo "[compiler-gate] MutList / MutBytes builtin aliases ok on shadow"
+# #3132: the compiler's OWN calls by a builtin's name -- for-in, the HOF and
+# Map loops, interpolation, structural `==` -- must reach the builtin when the
+# program defines `Array::length` / `get` / `push`, on the shadow lane and on
+# wasm-gc (whose native-array shortcuts used to answer a program's own direct
+# `Array::length` call with the builtin).
+if ! VIBE_RC=shadow VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+    bash scripts/vibe_test.sh fixtures/builtin_shadow_internal_lowering_test.vibe fixtures/builtin_shadow_parser_sugar_test.vibe \
+    >"$ROOT_DIR/_build/_gate_builtin_shadow_lowering.log" 2>&1; then
+  echo "[compiler-gate] FAIL: a compiler-internal call by a builtin's name reached the program's same-named function under VIBE_RC=shadow (#3132):" >&2
+  tail -20 "$ROOT_DIR/_build/_gate_builtin_shadow_lowering.log" >&2
+  exit 1
+fi
+if ! VIBE_TEST_BACKEND=gc VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+    bash scripts/vibe_test.sh fixtures/mut_alias_shadowed_builtin_test.vibe fixtures/builtin_shadow_internal_lowering_test.vibe fixtures/builtin_shadow_parser_sugar_test.vibe \
+    >"$ROOT_DIR/_build/_gate_builtin_shadow_lowering.log" 2>&1; then
+  echo "[compiler-gate] FAIL: on wasm-gc a builtin and a same-named program function were confused (#3129 / #3132):" >&2
+  tail -20 "$ROOT_DIR/_build/_gate_builtin_shadow_lowering.log" >&2
+  exit 1
+fi
+rm -f "$ROOT_DIR/_build/_gate_builtin_shadow_lowering.log"
+echo "[compiler-gate] builtin-named internal calls ok on shadow and wasm-gc"
+# #3132 review: `--entry` naming the program's own function spelled like a
+# builtin (renamed aside to `StringBuilder::new$user`) still resolves, and the
+# module exports it under the name the program wrote -- on linear and wasm-gc.
+bedir="_build/_gate_builtin_shadow_entry"
+rm -rf "$bedir"; mkdir -p "$bedir"
+for be_lane in linear gc; do
+  rm -f "$bedir/e.wasm" "$bedir/e.wasm.diag"
+  case "$be_lane" in
+    linear) env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" "fixtures/builtin_shadow_entry.vibe" "$bedir/e.wasm" 'StringBuilder::new' >/dev/null 2>&1 || true ;;
+    gc) env VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" "fixtures/builtin_shadow_entry.vibe" "$bedir/e.wasm" 'StringBuilder::new' >/dev/null 2>&1 || true ;;
+  esac
+  if [ ! -s "$bedir/e.wasm" ]; then
+    echo "[compiler-gate] FAIL: --entry StringBuilder::new naming the program's own function did not build on the $be_lane lane (#3132 review):" >&2
+    cat "$bedir/e.wasm.diag" >&2 2>/dev/null || true
+    exit 1
+  fi
+  if ! node -e 'const m=new WebAssembly.Module(require("fs").readFileSync(process.argv[1]));process.exit(WebAssembly.Module.exports(m).some(e=>e.name===process.argv[2])?0:1)' "$bedir/e.wasm" 'StringBuilder::new'; then
+    echo "[compiler-gate] FAIL: the $be_lane module does not export the entry as StringBuilder::new (#3132 review)" >&2
+    exit 1
+  fi
+done
+rm -rf "$bedir"
+echo "[compiler-gate] builtin-named --entry ok: resolves and exports its source name (linear + gc)"
+# #3144 round 4: tables keyed by a definition's NAME must agree with the
+# rename. A trait impl method binds `<Type>::<method>` (`impl Measured for
+# String { length(..) }` defines `String::length`), and the witness / dot-call
+# lookups that compute that name missed the moved definition: the witness
+# answered the builtin's 3 and `s.length()` trapped. On all three lanes.
+if ! VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+    bash scripts/vibe_test.sh fixtures/builtin_shadow_trait_impl_test.vibe \
+    >"$ROOT_DIR/_build/_gate_builtin_shadow_trait_impl.log" 2>&1 \
+  || ! VIBE_RC=shadow VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+    bash scripts/vibe_test.sh fixtures/builtin_shadow_trait_impl_test.vibe \
+    >>"$ROOT_DIR/_build/_gate_builtin_shadow_trait_impl.log" 2>&1 \
+  || ! VIBE_TEST_BACKEND=gc VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+    bash scripts/vibe_test.sh fixtures/builtin_shadow_trait_impl_test.vibe \
+    >>"$ROOT_DIR/_build/_gate_builtin_shadow_trait_impl.log" 2>&1; then
+  echo "[compiler-gate] FAIL: a trait impl method bound at a builtin's name was not reached through its witness or a dot-call (#3144):" >&2
+  tail -20 "$ROOT_DIR/_build/_gate_builtin_shadow_trait_impl.log" >&2
+  exit 1
+fi
+rm -f "$ROOT_DIR/_build/_gate_builtin_shadow_trait_impl.log"
+echo "[compiler-gate] builtin-named trait impl method dispatch ok (linear + shadow + gc)"
+# wasm-gc's native Array-reference ABI reads two name tables against the
+# renamed declarations: the pre-erasure GENERIC names (a generic signature is
+# excluded) and the `export { .. }` block (a public one is excluded). Either
+# one in the source spelling admitted a program's own `Array::length` --
+# measured as one native `array.new_default` literal where the same program
+# under any other name emits none. Count them: 0.
+gadir="_build/_gate_builtin_shadow_gc_abi"
+rm -rf "$gadir"; mkdir -p "$gadir"
+for ga_fx in fixtures/builtin_shadow_gc_direct_abi_generic_test.vibe fixtures/builtin_shadow_gc_direct_abi_export_test.vibe; do
+  ga_out="$gadir/$(basename "$ga_fx" .vibe).wasm"
+  env VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" "$ga_fx" "$ga_out" __no_entry__ >/dev/null 2>&1 || true
+  if [ ! -s "$ga_out" ]; then
+    echo "[compiler-gate] FAIL: $ga_fx did not build on wasm-gc (#3144):" >&2
+    cat "$ga_out.diag" >&2 2>/dev/null || true
+    exit 1
+  fi
+  ga_native=$(node -e 'const b=require("fs").readFileSync(process.argv[1]);let n=0;for(let i=0;i+2<b.length;i++){if(b[i]===0xfb&&b[i+1]===0x07&&b[i+2]===0x0c)n++}console.log(n)' "$ga_out")
+  if [ "$ga_native" != "0" ]; then
+    echo "[compiler-gate] FAIL: $ga_fx put a program's own Array::length on the gc native Array-reference ABI ($ga_native native literal(s), expected 0) (#3144)" >&2
+    exit 1
+  fi
+done
+rm -rf "$gadir"
+echo "[compiler-gate] builtin-named gc direct-ABI tables ok (generic + export block)"
 
 # 40f0. #2837: `Array::truncate` changes the array's LENGTH, not the lifetime
 #       of an element someone already took out of it. That is the ownership
@@ -679,6 +823,166 @@ for sv_lane in bump rc shadow gc; do
 done
 rm -rf "$svdir"
 echo "[compiler-gate] truncate saved-view guard ok (2122312 on bump/rc/shadow/gc)"
+
+# 40f0b. #2837: what a truncate removes is RELEASED on the RC lane, so a
+#        fill / truncate / refill loop of owned elements keeps the heap
+#        frontier bounded -- and a view read out of the array before the
+#        truncate and read after it survives, because the plan pins it.
+#        Before the release, the same fixture grew __heap_ptr by 17,777,044 B
+#        over its 2000 rounds (8,888 B per round of 100 owned pushes, linear:
+#        4,445,044 B at 500 rounds, 35,553,044 B at 4000); with it, 9,844 B at
+#        500, 2000 and 4000 rounds alike. The answer (2000 rounds whose saved view still
+#        read its own element) is checked on bump, rc, shadow and gc, and the
+#        shadow lane traps on the first drop of a freed block.
+echo "[compiler-gate] 40f0b/40 truncate releases removed owned elements (#2837)"
+trdir="_build/_gate_truncate_reclaim"
+rm -rf "$trdir"; mkdir -p "$trdir"
+for tr_lane in bump rc shadow gc; do
+  rm -f "$trdir/tr.wasm" "$trdir/tr.wasm.diag"
+  case "$tr_lane" in
+    bump) env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_truncate_reclaim_bounded_test.vibe" "$trdir/tr.wasm" main >/dev/null 2>&1 || true ;;
+    rc) env VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_truncate_reclaim_bounded_test.vibe" "$trdir/tr.wasm" main >/dev/null 2>&1 || true ;;
+    shadow) env VIBE_RC=shadow VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_truncate_reclaim_bounded_test.vibe" "$trdir/tr.wasm" main >/dev/null 2>&1 || true ;;
+    gc) env VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_truncate_reclaim_bounded_test.vibe" "$trdir/tr.wasm" main >/dev/null 2>&1 || true ;;
+  esac
+  if [ ! -s "$trdir/tr.wasm" ]; then
+    echo "[compiler-gate] FAIL: rc_truncate_reclaim_bounded fixture did not compile on the $tr_lane lane (#2837)" >&2
+    cat "$trdir/tr.wasm.diag" >&2 2>/dev/null || true
+    exit 1
+  fi
+  tr_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$trdir/tr.wasm" 2>&1 | tail -1)"
+  if [ "$tr_out" != "2000" ]; then
+    echo "[compiler-gate] FAIL: rc_truncate_reclaim_bounded got '$tr_out' on the $tr_lane lane (want 2000). A smaller count means a saved view read a freed, reused block; a trap means a truncate released an element something still held (#2837)." >&2
+    exit 1
+  fi
+  if [ "$tr_lane" = rc ]; then
+    tr_json="$(node scripts/measure_heap.mjs "$trdir/tr.wasm" main 2>/dev/null)"
+    tr_used="$(printf '%s' "$tr_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+    if [ -z "$tr_used" ]; then
+      echo "[compiler-gate] FAIL: could not measure rc_truncate_reclaim_bounded heap ($tr_json)" >&2; exit 1
+    fi
+    if [ "$tr_used" -ge 200000 ]; then
+      echo "[compiler-gate] FAIL: rc_truncate_reclaim_bounded heap_used=$tr_used >= 200000 (#2837 regressed: a truncate no longer releases the owned elements it removes; unreleased, this fixture measured 17,777,044 B)" >&2; exit 1
+    fi
+  fi
+done
+rm -rf "$trdir"
+echo "[compiler-gate] truncate reclamation guard ok (2000 on bump/rc/shadow/gc, rc heap_used=$tr_used B)"
+# A program's own top-level `Array::truncate` replaces the builtin, so the
+# release must not run before it (#3115 review). Under shadow a release
+# would trap on the drop of the freed suffix.
+if ! VIBE_RC=shadow VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh fixtures/rc_truncate_user_shadow_test.vibe >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: rc_truncate_user_shadow_test failed under VIBE_RC=shadow -- a truncate released elements before calling a user-defined Array::truncate (#3115)" >&2
+  exit 1
+fi
+echo "[compiler-gate] user-defined Array::truncate guard ok on shadow"
+if ! VIBE_RC=shadow VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh fixtures/rc_truncate_user_capacity_test.vibe >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: rc_truncate_user_capacity_test failed under VIBE_RC=shadow -- a truncate released elements of an array a user-defined Array::with_capacity returned (#3115)" >&2
+  exit 1
+fi
+echo "[compiler-gate] user-defined Array::with_capacity guard ok on shadow"
+# #3114 x #2837: an alias of a pinned view across a released truncate.
+if ! VIBE_RC=shadow VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh fixtures/rc_truncate_alias_pin_test.vibe >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: rc_truncate_alias_pin_test failed under VIBE_RC=shadow -- an alias of a pinned view did not survive a released truncate (#3114/#2837)" >&2
+  exit 1
+fi
+echo "[compiler-gate] alias of a pinned view across a released truncate ok on shadow"
+# 40f0c. #3114: `let w = v`, where `v` is a borrowed `Array::get` view, got a
+#        planned scope-end drop (or a last-use transfer into a consuming call,
+#        a push, a return) for a reference it never took, so the element the
+#        array still owned was released twice. The shadow lane traps at the
+#        second release; the plain RC lane corrupted the free list and died in
+#        a later allocation. Nine alias shapes at distinct decimal places, on
+#        all four lanes -- gc and bump are the value oracle, shadow is the pin.
+#        Above them, nine shapes whose source hands the view back through a
+#        block, a `let` chain, or an `if` / `match` / `handle` (#3114 review).
+echo "[compiler-gate] 40f0c/40 alias of a borrowed view is not released twice (#3114)"
+vadir="_build/_gate_rc_view_alias"
+rm -rf "$vadir"; mkdir -p "$vadir"
+for va_lane in bump rc shadow gc; do
+  rm -f "$vadir/va.wasm" "$vadir/va.wasm.diag"
+  case "$va_lane" in
+    bump) env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_view_alias_drop_test.vibe" "$vadir/va.wasm" main >/dev/null 2>&1 || true ;;
+    rc) env VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_view_alias_drop_test.vibe" "$vadir/va.wasm" main >/dev/null 2>&1 || true ;;
+    shadow) env VIBE_RC=shadow VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_view_alias_drop_test.vibe" "$vadir/va.wasm" main >/dev/null 2>&1 || true ;;
+    gc) env VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_view_alias_drop_test.vibe" "$vadir/va.wasm" main >/dev/null 2>&1 || true ;;
+  esac
+  if [ ! -s "$vadir/va.wasm" ]; then
+    echo "[compiler-gate] FAIL: rc_view_alias_drop fixture did not compile on the $va_lane lane (#3114)" >&2
+    cat "$vadir/va.wasm.diag" >&2 2>/dev/null || true
+    exit 1
+  fi
+  va_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$vadir/va.wasm" 2>&1 | tail -1)"
+  if [ "$va_out" != "126354332566498532" ]; then
+    echo "[compiler-gate] FAIL: rc_view_alias_drop got '$va_out' on the $va_lane lane (want 126354332566498532). Each alias shape sits at its own decimal place -- see the fixture header for which digit is which. A trap means an alias of a borrowed view released a reference it never took (#3114)." >&2
+    exit 1
+  fi
+done
+rm -rf "$vadir"
+echo "[compiler-gate] borrowed-view alias guard ok (126354332566498532 on bump/rc/shadow/gc)"
+
+# 40f0d. #3134: `let w = p` inside a loop body, with `p` bound outside the
+#        loop, transferred `p`'s one reference into `w` on every iteration,
+#        so the first iteration's consumer freed `p` and the next read freed
+#        memory (RC answered 529 for 18; shadow trapped). Nine loop shapes at
+#        distinct decimal places (while / for / nested / `loop` with continue
+#        and break, parameter and outer-let sources, chain, push, consumed
+#        twice), on all four lanes; the release side is the unit-lane
+#        rc_loop_carried_alias_release_test.vibe.
+echo "[compiler-gate] 40f0d/40 alias of a loop-carried binding is retained per iteration (#3134)"
+lcdir="_build/_gate_rc_loop_carried_alias"
+rm -rf "$lcdir"; mkdir -p "$lcdir"
+for lc_lane in bump rc shadow gc; do
+  rm -f "$lcdir/lc.wasm" "$lcdir/lc.wasm.diag"
+  case "$lc_lane" in
+    bump) env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_loop_carried_alias_test.vibe" "$lcdir/lc.wasm" main >/dev/null 2>&1 || true ;;
+    rc) env VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_loop_carried_alias_test.vibe" "$lcdir/lc.wasm" main >/dev/null 2>&1 || true ;;
+    shadow) env VIBE_RC=shadow VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_loop_carried_alias_test.vibe" "$lcdir/lc.wasm" main >/dev/null 2>&1 || true ;;
+    gc) env VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_loop_carried_alias_test.vibe" "$lcdir/lc.wasm" main >/dev/null 2>&1 || true ;;
+  esac
+  if [ ! -s "$lcdir/lc.wasm" ]; then
+    echo "[compiler-gate] FAIL: rc_loop_carried_alias fixture did not compile on the $lc_lane lane (#3134)" >&2
+    cat "$lcdir/lc.wasm.diag" >&2 2>/dev/null || true
+    exit 1
+  fi
+  lc_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$lcdir/lc.wasm" 2>&1 | tail -1)"
+  if [ "$lc_out" != "362412181109361818" ]; then
+    echo "[compiler-gate] FAIL: rc_loop_carried_alias got '$lc_out' on the $lc_lane lane (want 362412181109361818). Each loop shape owns a two-digit block -- see all_shapes in the fixture. A trap means an alias inside a loop body spent a reference of a binding declared outside it (#3134)." >&2
+    exit 1
+  fi
+done
+rm -rf "$lcdir"
+echo "[compiler-gate] loop-carried alias guard ok (362412181109361818 on bump/rc/shadow/gc)"
+
+# 40f0e. #3135 / #3134 review: the plan called a `Double` literal scalar while
+#        codegen boxes it, so an alias of one inside a loop body took no
+#        reference of its own and freed the source's box on the first
+#        iteration (RC: memory access out of bounds; shadow: trap).
+#        Four shapes at distinct decimal places, on all four lanes.
+echo "[compiler-gate] 40f0e/40 alias of a Double literal inside a loop keeps the box alive (#3135)"
+dldir="_build/_gate_rc_double_literal_alias"
+rm -rf "$dldir"; mkdir -p "$dldir"
+for dl_lane in bump rc shadow gc; do
+  rm -f "$dldir/dl.wasm" "$dldir/dl.wasm.diag"
+  case "$dl_lane" in
+    bump) env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_double_literal_alias_test.vibe" "$dldir/dl.wasm" main >/dev/null 2>&1 || true ;;
+    rc) env VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_double_literal_alias_test.vibe" "$dldir/dl.wasm" main >/dev/null 2>&1 || true ;;
+    shadow) env VIBE_RC=shadow VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_double_literal_alias_test.vibe" "$dldir/dl.wasm" main >/dev/null 2>&1 || true ;;
+    gc) env VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_double_literal_alias_test.vibe" "$dldir/dl.wasm" main >/dev/null 2>&1 || true ;;
+  esac
+  if [ ! -s "$dldir/dl.wasm" ]; then
+    echo "[compiler-gate] FAIL: rc_double_literal_alias fixture did not compile on the $dl_lane lane (#3135)" >&2
+    cat "$dldir/dl.wasm.diag" >&2 2>/dev/null || true
+    exit 1
+  fi
+  dl_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$dldir/dl.wasm" 2>&1 | tail -1)"
+  if [ "$dl_out" != "6333" ]; then
+    echo "[compiler-gate] FAIL: rc_double_literal_alias got '$dl_out' on the $dl_lane lane (want 6333). Each shape sits at its own decimal place -- see the fixture header. A trap means an alias of a Double inside a loop released the source's box (#3135)." >&2
+    exit 1
+  fi
+done
+rm -rf "$dldir"
+echo "[compiler-gate] Double-literal alias guard ok (6333 on bump/rc/shadow/gc)"
 
 # 40f1a. #2427: the shadow table must not overlap the heap it describes.
 #        40f above proves the marks catch a real dup/drop-of-freed; this

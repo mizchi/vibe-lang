@@ -237,10 +237,16 @@ result head is not recovered by trait lowering. Unresolved receiver types
 produce an annotation diagnostic before code generation.
 
 `Array::truncate(xs, n)` retains the allocated capacity for subsequent pushes.
-It currently does not release the removed elements' RC references: saved
-element views can still refer to them. Capacity reservation preserves that
-existing lifetime behavior; repeated truncation of owned elements is not yet
-a bounded-memory scratch-buffer contract.
+It only ever shrinks: an `n` at or above the current length, or a negative
+`n`, leaves the array unchanged.
+
+On the RC lane the removed elements are released only where the compiler can
+prove no view of them survives (#2837): `xs` is a fresh local (an array
+literal or `Array::with_capacity`) that never escapes, and any element read
+out of it and still used after the truncate is an immutable `let`. That makes
+a fill / truncate / refill scratch buffer bounded in memory. Anywhere else,
+for example an array passed in as a parameter, the removed elements are kept
+alive, so a saved view stays valid and the memory is not reclaimed.
 
 ### Collection naming convention (#1140, ADR-0082 → ADR-0100 (3))
 

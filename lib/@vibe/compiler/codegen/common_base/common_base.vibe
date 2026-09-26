@@ -2241,6 +2241,24 @@ export struct CompileCtx {
   rc_consume_mark_offs: Array[Int];
   rc_path_flag_names: Array[String];
   rc_path_flag_locals: Array[Int];
+  // #2837 truncate reclamation. `rc_trunc_release` are the local arrays the
+  // Perceus plan proved may release what a truncate removes
+  // (PaTruncRelease); `rc_trunc_pin_arrays[i]` needs `rc_trunc_pin_names[i]`
+  // pinned (PaViewPin) -- dup'd at its `let` and dropped at its scope end.
+  // `rc_pins_live` is the live stack of pins the let lowering actually
+  // emitted, pushed and truncated around the let body; a truncate releases
+  // only while every pin its array needs is on it, so a pin some other
+  // lowering skipped withdraws the release instead of freeing a view.
+  rc_trunc_release: Array[String];
+  rc_trunc_pin_arrays: Array[String];
+  rc_trunc_pin_names: Array[String];
+  rc_pins_live: Array[String];
+  // #3115 review: false when the program declares its own top-level
+  // `Array::truncate`, `Array::with_capacity`, `Array::push`, `Array::length`
+  // or `Array::get`. Calls spelled like those then resolve to the user
+  // function, whose semantics the release plan cannot assume, so no truncate
+  // releases.
+  rc_trunc_builtin: Bool;
   // ADR-0092 / #2389 (plan-guided wide reuse): scrutinee names the Perceus
   // plan marked with a PaReuseToken candidate, with the pattern arity
   // parallel. compile_match consults these for arms the NARROW fusion above
@@ -3886,6 +3904,21 @@ export fn func_table_user_index_of(ft: FuncTable, name: String, num_user_funcs: 
 /// view (duplicates of one name are adjacent there), linear before the view
 /// exists.
 export fn func_table_builtin_index_of(ft: FuncTable, name: String, num_user_funcs: Int) -> Int {
+  let pos = func_table_builtin_pos_of(ft, name, num_user_funcs)
+  if pos < 0 {
+    0 - 1
+  } else {
+    Array::get(ft.indices, pos)
+  }
+}
+
+/// The TABLE POSITION (not the wasm index) of the generated builtin
+/// registered as `name`, or -1 -- what `func_table_index_of` answers, but
+/// never a same-named program function. #3129: the `MutList::*` /
+/// `MutBytes::*` aliases dispatch to `Array::*` / `ArrayBuilder::push` /
+/// `Bytes::*` through this, so a program's own `Array::length` does not
+/// capture `MutList::length(m)`.
+export fn func_table_builtin_pos_of(ft: FuncTable, name: String, num_user_funcs: Int) -> Int {
   let n = Array::length(ft.names)
   let base = if num_user_funcs < 0 {
     0
@@ -3898,7 +3931,7 @@ export fn func_table_builtin_index_of(ft: FuncTable, name: String, num_user_func
     while slot >= 0 && slot < n && Array::get(ft.names_sorted, slot) == name {
       let pos = Array::get(ft.names_sorted_pos, slot)
       if pos >= base {
-        found = Array::get(ft.indices, pos)
+        found = pos
         slot = n
       } else {
         slot = slot + 1
@@ -3908,7 +3941,7 @@ export fn func_table_builtin_index_of(ft: FuncTable, name: String, num_user_func
     let mut i = base
     while i < n {
       if Array::get(ft.names, i) == name {
-        found = Array::get(ft.indices, i)
+        found = i
         i = n
       } else {
         i = i + 1

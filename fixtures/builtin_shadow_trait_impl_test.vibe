@@ -1,0 +1,70 @@
+// #3144 round 4: an impl method BINDS `<Type>::<method>`, so a program's
+// `impl Measured for String { length(..) }` defines `String::length` -- one of
+// the builtin names the compiler moves a program's definition away from
+// (`String::length$user`) so its own synthesized calls keep reaching the
+// builtin. The trait-dictionary desugar finds a witness field, and the method
+// a dot-call names, by COMPUTING `<Type>::<method>` after that move, so both
+// missed the program's definition: dispatch through `[T: Measured]` answered
+// the builtin's 3 instead of the impl's 42 (a trap on wasm-gc), and
+// `s.length()` trapped on every lane.
+
+trait Measured {
+  length(Self) -> Int
+}
+
+impl Measured for String {
+  length(value: String) -> Int {
+    let _ = value
+    42
+  }
+}
+
+trait Sized2 {
+  length(Self) -> Int
+}
+
+impl Sized2 for Bytes {
+  length(value: Bytes) -> Int {
+    let _ = value
+    7
+  }
+}
+
+fn measure[T: Measured](value: T) -> Int {
+  T::length(value)
+}
+
+fn sized[T: Sized2](value: T) -> Int {
+  T::length(value)
+}
+
+test "a witness for an impl method at a builtin's name dispatches to the impl" {
+  assert_eq(measure("abc"), 42)
+  let b: Bytes = Bytes::from_array([1, 2, 3])
+  assert_eq(sized(b), 7)
+}
+
+test "a dot-call on the receiver reaches the impl method" {
+  // Resolved by computing `String::length` from the receiver's type; that
+  // missed the moved definition and compiled as a field read that trapped
+  // (`null function or function signature mismatch`).
+  let s = "abc"
+  assert_eq(s.length(), 42)
+}
+
+test "the qualified call and the method taken as a value reach the impl" {
+  assert_eq(String::length("abc"), 42)
+  let f = String::length
+  assert_eq(f("abc"), 42)
+}
+
+test "the compiler's own builtin calls still reach the builtin beside it" {
+  let s = "hello"
+  assert_eq("\{s}!", "hello!")
+  let parts = ["a", "bc"]
+  let mut total = 0
+  for p in parts {
+    total = total + 1
+  }
+  assert_eq(total, 2)
+}

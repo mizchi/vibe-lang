@@ -34,7 +34,8 @@ import @vibe/compiler/perceus {
   pa_is_dup,
   pa_is_path_drop,
   pa_is_reuse_token,
-  param_is_heap_in_body
+  param_is_heap_in_body,
+  perceus_truncate_rows
 }
 
 import @vibe/compiler/codegen/reloc {
@@ -303,6 +304,10 @@ export fn cl_own_return_stmts(stmts: Array[Stmt]) -> Array[String] {
   // The may-view analysis already follows helper calls to a fixed point.
   // Normalize every candidate before recomputing the callers' RC contracts;
   // retaining a mixed result after its branches merge would leak fresh paths.
+  // #3113: captured `let mut` cells own what is stored into them. Rewritten
+  // here, before the borrow / view analyses and the Perceus plans read the
+  // bodies, for the same reason as the return normalization above.
+  cl_own_cell_stmts(stmts)
   sorted_names_of(owned)
 }
 
@@ -473,6 +478,550 @@ fn cl_own_binding_value(e: Expr, needed: Array[String]) -> Expr {
   }
 }
 
+/// #3113: a `let mut` that a closure captures lives in an RC cell, and the
+/// cell OWNS its payload -- dropping the cell releases it. So every value that
+/// goes INTO the cell is a consuming use, and every read of the cell that
+/// leaves it for an owning place is a borrow that has to be retained.
+///
+/// Neither held. The initializer was stored as compiled, so a borrowed one
+/// (`Array::get(xs, i)`, a projection, a branch or block ending in either)
+/// entered the cell with no reference of its own, and the cell's drop freed an
+/// element its container still owned. An assignment did the same, and the
+/// scope's own tail -- `{ let mut d = ..; ..; d }` -- handed the payload out
+/// while the cell's drop released it.
+///
+/// This rewrites those three places to the same owning contract a lambda's
+/// RETURN already uses (`cl_own_return_into`): every result path ends in the
+/// `__lambda_return_owned` marker, and codegen retains exactly the paths whose
+/// value is a borrow (a projection, a borrow-returning call, a ref-cell or
+/// loop-borrowed name), with the lexical scope live. It runs BEFORE the
+/// Perceus plan, so a binding feeding such a path is planned as an owner and
+/// no leaf is retained twice -- which is what a codegen-only walk could not
+/// get right (#3108: a pattern binder the match lowering had already retained
+/// leaked, and a block ending in a borrow-bound name was missed).
+///
+/// Other bindings get the narrower treatment: an `ELet` / uncaptured `let mut`
+/// initializer, or an assignment to an uncaptured name, has only a bare read
+/// of a cell name at a result path marked. `let e = d` is otherwise planned as
+/// a MOVE out of `d`, which the cell never gives up.
+///
+/// Aggregate literals (tuple / array / record / map) own their items, so a
+/// cell read on any item's result path is marked here too. A call argument is
+/// owning or borrowed depending on the callee's borrow mask, which is not known
+/// yet, so a cell read handed to an owning parameter or a constructor field is
+/// retained in codegen instead (`cc_is_ref_cell_read` for a bare read,
+/// `cc_own_cell_compound_args` for one on a branch or block tail).
+///
+/// A `test` / `bench` / `example` block is rewritten here too: this runs
+/// before those are lowered to `SLet`s, so a captured `let mut` written
+/// directly in one was otherwise left unmarked (#3130 review).
+fn cl_own_cell_stmts(stmts: Array[Stmt]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(ex, is_rec, n, ty, value) => if cl_has_letmut(value) {
+        Array::set(stmts, i, SLet(ex, is_rec, n, ty, cl_own_cells(value, array_empty())))
+      } else {
+        ()
+      },
+      STest(n, body) => if cl_has_letmut(body) {
+        Array::set(stmts, i, STest(n, cl_own_cells(body, array_empty())))
+      } else {
+        ()
+      },
+      SBench(n, body) => if cl_has_letmut(body) {
+        Array::set(stmts, i, SBench(n, cl_own_cells(body, array_empty())))
+      } else {
+        ()
+      },
+      SExample(n, body) => if cl_has_letmut(body) {
+        Array::set(stmts, i, SExample(n, cl_own_cells(body, array_empty())))
+      } else {
+        ()
+      },
+      SExpr(body) => if cl_has_letmut(body) {
+        Array::set(stmts, i, SExpr(cl_own_cells(body, array_empty())))
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+/// Cheap pre-check: most bodies declare no `let mut` at all, and those are
+/// left as the same tree.
+fn cl_has_letmut(e: Expr) -> Bool {
+  match e {
+    ELetMut(_, _, _, _) => true,
+    _ => {
+      let mark = expr_children_push(e)
+      let end = expr_children_top()
+      let mut i = mark
+      let mut found = false
+      while i < end && !found {
+        found = cl_has_letmut(expr_child_at(i))
+        i = i + 1
+      }
+      expr_children_pop(mark)
+      found
+    }
+  }
+}
+
+/// `cells` without `n`: a binder of that spelling shadows the cell below it.
+fn cl_cells_without(cells: Array[String], n: String) -> Array[String] {
+  if array_contains_str(cells, n) {
+    let out = array_empty()
+    for c in cells {
+      if c != n {
+        Array::push(out, c)
+      }
+    }
+    out
+  } else {
+    cells
+  }
+}
+
+fn cl_cells_without_all(cells: Array[String], names: Array[String]) -> Array[String] {
+  let mut out = cells
+  for n in names {
+    out = cl_cells_without(out, n)
+  }
+  out
+}
+
+/// Every name a pattern binds, including struct-field and or-pattern binders.
+fn cl_pat_binds(p: Pat, out: Array[String]) -> Unit {
+  match p {
+    PBind(n) => Array::push(out, n),
+    PCtor(_, args) => for a in args {
+      cl_pat_binds(a, out)
+    },
+    PTuple(ps) => for a in ps {
+      cl_pat_binds(a, out)
+    },
+    POr(a, b) => {
+      cl_pat_binds(a, out)
+      cl_pat_binds(b, out)
+    },
+    PStruct(_, fields) => for f in fields {
+      cl_pat_binds(f.1, out)
+    },
+    _ => ()
+  }
+}
+
+fn cl_arms_cells(arms: Array[(Pat, Expr)], cells: Array[String]) -> Array[(Pat, Expr)] {
+  let out = array_empty()
+  for arm in arms {
+    let binds = array_empty()
+    cl_pat_binds(arm.0, binds)
+    Array::push(out, (arm.0, cl_own_cells(arm.1, cl_cells_without_all(cells, binds))))
+  }
+  out
+}
+
+fn cl_list_cells(items: Array[Expr], cells: Array[String]) -> Array[Expr] {
+  let out = array_empty()
+  for item in items {
+    Array::push(out, cl_own_cells(item, cells))
+  }
+  out
+}
+
+fn cl_fields_cells(fields: Array[(String, Expr)], cells: Array[String]) -> Array[(String, Expr)] {
+  let out = array_empty()
+  for field in fields {
+    Array::push(out, (field.0, cl_own_cells(field.1, cells)))
+  }
+  out
+}
+
+/// The items of a tuple / array literal: each OWNS what it holds, so a cell
+/// read on any of an item's result paths is marked -- a bare `d`, and the
+/// branch or block tail of `[if c { d } else { fresh() }]` alike (#3130
+/// review: only the bare form was retained, so the array and the cell shared
+/// one reference).
+fn cl_agg_cells(items: Array[Expr], cells: Array[String]) -> Array[Expr] {
+  let out = array_empty()
+  for item in items {
+    Array::push(out, cl_cell_tails(cl_own_cells(item, cells), cells, true))
+  }
+  out
+}
+
+/// `cl_agg_cells` for the fields of a record / struct / map literal.
+fn cl_agg_fields_cells(fields: Array[(String, Expr)], cells: Array[String]) -> Array[(String, Expr)] {
+  let out = array_empty()
+  for field in fields {
+    Array::push(out, (field.0, cl_cell_tails(cl_own_cells(field.1, cells), cells, true)))
+  }
+  out
+}
+
+/// #3113 / #3130 review: the ONE walk of an expression's RESULT SPINE -- the
+/// sub-expressions whose value becomes the whole expression's value. Every
+/// captured-cell marker goes through it (the store into a cell, a cell read in
+/// an aggregate item or a binding value, a cell read in an owning call
+/// argument), so a result-bearing form is either walked for all of them or
+/// for none. Each review round of #3130 found one more form one of the
+/// hand-written copies had skipped (`if` / `match` / block, then `handle`).
+///
+/// The `Expr` constructors (lib/@vibe/ast/index.vpkg), and which carry a
+/// result tail:
+///
+///   EIf(_, t, f)            t and f
+///   EMatch(_, arms)         every arm body; the arm's pattern binders shadow
+///   EHandle(body, arms)     the body and every handler-arm body; an arm's
+///                           pattern binders shadow
+///   ELet / ELetMut / ELetRec(n, _, b)   b; `n` shadows
+///   ESeq(_, b)              b
+///   EAssign / EAssignOp(_, .., b)       b (the continuation)
+///   ELabeledArg(_, _, v)    v (a transparent wrapper)
+///   ELoop(params, body)     each `break v` in the body that targets this
+///                           loop: v; the params shadow. The payload is
+///                           searched through the same statement / tail
+///                           positions this walk descends, not into operands.
+///
+///   No result tail -- the walk stops there and hands the node to `leaf`:
+///   EInt EFloat EString EBool EUnit EStringInterp EIdent EDot ECall ETuple
+///   EArray ERecord EMap EBinOp EUnaryOp ESpread; EFn (a value, not run);
+///   EWhile (Unit); EForIn (a fresh array: its BODY is an owning place, which
+///   `cl_own_cells` marks as an aggregate item, not a tail of the for-in);
+///   EReturn / EBreak / EContinue (they leave the expression instead of
+///   producing its value).
+///
+/// Why a `return v` / `throw(v)` operand is NOT marked (#3130 review, fifth
+/// round, measured rather than assumed): these exits skip every scope-end
+/// release between them and the function boundary -- the `return` lowering
+/// (compile_expr_tail3.vibe, tag 26) compiles the operand and emits a wasm
+/// `return`, and the cell's drop sits after its body -- so the cell is never
+/// dropped on that path and its own reference is the one the receiver gets.
+/// Retaining the operand as well gives the payload a reference nothing
+/// releases: a directly called `if c { return d }` grows 9600 / 19200 B per
+/// 200 / 400 calls (the skipped cell and closure), while the same body under
+/// the owned-return ABI, which does retain the operand, grows 33600 / 67200 B
+/// -- the payload leaked on top. `break v` of a loop inside the cell's scope
+/// is a result tail of the loop (the ELoop row above), so it IS marked; a
+/// `break` or `continue` that leaves the cell's own scope skips its drop the
+/// same way `return` does. What would make marking correct is releasing the
+/// scopes an early exit leaves; until then the unmarked operand is the
+/// balanced choice.
+///
+/// A new constructor falls into the `_` arm, i.e. is treated as a leaf; add it
+/// to this list either way.
+///
+/// `leaf(node, shadow)` rewrites a leaf; `shadow` holds the names bound
+/// between the root and that leaf. `bind(n, v)` rewrites a `let`'s value
+/// after its body has been walked (the store walk uses it to normalize a
+/// binding that feeds a result path); a walk with no use for it passes
+/// `rs_keep_bind`.
+export fn rs_map(e: Expr, shadow: Array[String], leaf: (Expr, Array[String]) -> Expr, bind: (String, Expr) -> Expr) -> Expr {
+  match e {
+    EIf(c, t, f) => EIf(c, rs_map(t, shadow, leaf, bind), rs_map(f, shadow, leaf, bind)),
+    EMatch(sc, arms) => EMatch(sc, rs_map_arms(arms, shadow, leaf, bind)),
+    EHandle(body, arms) => EHandle(rs_map(body, shadow, leaf, bind), rs_map_arms(arms, shadow, leaf, bind)),
+    ELet(n, v, b, off) => {
+      let b2 = rs_map(b, rs_with(shadow, n), leaf, bind)
+      ELet(n, bind(n, v), b2, off)
+    },
+    ELetMut(n, v, b, off) => ELetMut(n, v, rs_map(b, rs_with(shadow, n), leaf, bind), off),
+    ELetRec(n, v, b) => ELetRec(n, v, rs_map(b, rs_with(shadow, n), leaf, bind)),
+    ESeq(a, b) => ESeq(a, rs_map(b, shadow, leaf, bind)),
+    EAssign(n, v, b) => EAssign(n, v, rs_map(b, shadow, leaf, bind)),
+    EAssignOp(n, op, v, b) => EAssignOp(n, op, v, rs_map(b, shadow, leaf, bind)),
+    ELabeledArg(n, l, v) => ELabeledArg(n, l, rs_map(v, shadow, leaf, bind)),
+    ELoop(params, body) => {
+      let names = array_empty()
+      for p in params {
+        Array::push(names, p.0)
+      }
+      ELoop(params, rs_breaks(body, rs_with_all(shadow, names), leaf, bind))
+    },
+    _ => leaf(e, shadow)
+  }
+}
+
+/// Does `e` have a result tail `rs_map` walks into (see its table)?
+export fn rs_has_tail(e: Expr) -> Bool {
+  match e {
+    EIf(_, _, _) => true,
+    EMatch(_, _) => true,
+    EHandle(_, _) => true,
+    ELet(_, _, _, _) => true,
+    ELetMut(_, _, _, _) => true,
+    ELetRec(_, _, _) => true,
+    ESeq(_, _) => true,
+    EAssign(_, _, _) => true,
+    EAssignOp(_, _, _, _) => true,
+    ELabeledArg(_, _, _) => true,
+    ELoop(_, _) => true,
+    _ => false
+  }
+}
+
+/// The value-less walk callback: leave every `let` value as it is.
+export fn rs_keep_bind(n: String, v: Expr) -> Expr {
+  let _ = n
+  v
+}
+
+fn rs_map_arms(arms: Array[(Pat, Expr)], shadow: Array[String], leaf: (Expr, Array[String]) -> Expr, bind: (String, Expr) -> Expr) -> Array[(Pat, Expr)] {
+  let out = array_empty()
+  for arm in arms {
+    let binds = array_empty()
+    cl_pat_binds(arm.0, binds)
+    Array::push(out, (arm.0, rs_map(arm.1, rs_with_all(shadow, binds), leaf, bind)))
+  }
+  out
+}
+
+/// `break v` payloads of the enclosing `loop`, reached through the positions
+/// a statement or a tail can occupy. A nested loop / while / for-in / lambda
+/// owns its own breaks and is not entered.
+fn rs_breaks(e: Expr, shadow: Array[String], leaf: (Expr, Array[String]) -> Expr, bind: (String, Expr) -> Expr) -> Expr {
+  match e {
+    EBreak(Some(v)) => EBreak(Some(rs_map(v, shadow, leaf, bind))),
+    EIf(c, t, f) => EIf(c, rs_breaks(t, shadow, leaf, bind), rs_breaks(f, shadow, leaf, bind)),
+    EMatch(sc, arms) => {
+      let out = array_empty()
+      for arm in arms {
+        let binds = array_empty()
+        cl_pat_binds(arm.0, binds)
+        Array::push(out, (arm.0, rs_breaks(arm.1, rs_with_all(shadow, binds), leaf, bind)))
+      }
+      EMatch(sc, out)
+    },
+    EHandle(body, arms) => {
+      let out = array_empty()
+      for arm in arms {
+        let binds = array_empty()
+        cl_pat_binds(arm.0, binds)
+        Array::push(out, (arm.0, rs_breaks(arm.1, rs_with_all(shadow, binds), leaf, bind)))
+      }
+      EHandle(rs_breaks(body, shadow, leaf, bind), out)
+    },
+    ELet(n, v, b, off) => ELet(n, rs_breaks(v, shadow, leaf, bind), rs_breaks(b, rs_with(shadow, n), leaf, bind), off),
+    ELetMut(n, v, b, off) => ELetMut(n, rs_breaks(v, shadow, leaf, bind), rs_breaks(b, rs_with(shadow, n), leaf, bind), off),
+    ELetRec(n, v, b) => ELetRec(n, v, rs_breaks(b, rs_with(shadow, n), leaf, bind)),
+    ESeq(a, b) => ESeq(rs_breaks(a, shadow, leaf, bind), rs_breaks(b, shadow, leaf, bind)),
+    EAssign(n, v, b) => EAssign(n, rs_breaks(v, shadow, leaf, bind), rs_breaks(b, shadow, leaf, bind)),
+    EAssignOp(n, op, v, b) => EAssignOp(n, op, rs_breaks(v, shadow, leaf, bind), rs_breaks(b, shadow, leaf, bind)),
+    _ => e
+  }
+}
+
+fn rs_with(shadow: Array[String], n: String) -> Array[String] {
+  let out = Array::slice(shadow, 0, Array::length(shadow))
+  Array::push(out, n)
+  out
+}
+
+fn rs_with_all(shadow: Array[String], names: Array[String]) -> Array[String] {
+  let out = Array::slice(shadow, 0, Array::length(shadow))
+  for n in names {
+    Array::push(out, n)
+  }
+  out
+}
+
+/// Is `e` a read of a cell not shadowed on the way to it, directly or (with
+/// `through_dot`) through a projection off one?
+fn cl_is_cell_read(e: Expr, cells: Array[String], shadow: Array[String], through_dot: Bool) -> Bool {
+  match e {
+    EIdent(x, _) => array_contains_str(cells, x) && !array_contains_str(shadow, x),
+    EDot(obj, _, _, _) => through_dot && cl_is_cell_read(obj, cells, shadow, true),
+    _ => false
+  }
+}
+
+/// Mark the result paths of `e` that read a cell (`rs_map`).
+fn cl_cell_tails(e: Expr, cells: Array[String], through_dot: Bool) -> Expr {
+  if Array::length(cells) == 0 {
+    e
+  } else {
+    rs_map(e, array_empty(), (x: Expr, shadow: Array[String]) -> Expr {
+      if cl_is_cell_read(x, cells, shadow, through_dot) {
+        ECall(EIdent("__lambda_return_owned", -1), [x], -1)
+      } else {
+        x
+      }
+    }, rs_keep_bind)
+  }
+}
+
+/// The value stored into a cell, normalized to the owning contract: every
+/// result leaf that can hold a reference is marked, and codegen retains the
+/// ones that are borrows. A `let` whose name reaches a result leaf has its own
+/// value normalized the same way, so a block ending in a borrow-bound name is
+/// owned by the time it reaches the cell.
+fn cl_cell_store_value(v: Expr) -> Expr {
+  let needed: Array[String] = []
+  cl_store_walk(v, needed)
+}
+
+fn cl_store_walk(v: Expr, needed: Array[String]) -> Expr {
+  rs_map(v, array_empty(), (x: Expr, shadow: Array[String]) -> Expr {
+    let _ = shadow
+    cl_store_leaf(x, needed)
+  }, (n: String, bv: Expr) -> Expr {
+    if array_contains_str(needed, n) {
+      match bv {
+        EIdent(src, _) => {
+          Array::push(needed, src)
+          bv
+        },
+        _ => if rs_has_tail(bv) {
+          cl_store_walk(bv, needed)
+        } else {
+          bv
+        }
+      }
+    } else {
+      bv
+    }
+  })
+}
+
+fn cl_store_leaf(x: Expr, needed: Array[String]) -> Expr {
+  match x {
+    EIdent(n, _) => {
+      Array::push(needed, n)
+      ECall(EIdent("__lambda_return_owned", -1), [x], -1)
+    },
+    EDot(_, _, _, _) => ECall(EIdent("__lambda_return_owned", -1), [x], -1),
+    ECall(EIdent("__lambda_return_owned", off), _, _) => if off < 0 {
+      x
+    } else {
+      ECall(EIdent("__lambda_return_owned", -1), [x], -1)
+    },
+    ECall(_, _, _) => ECall(EIdent("__lambda_return_owned", -1), [x], -1),
+    _ => x
+  }
+}
+
+/// #3130 review: is `e` a `for` in the one position whose lowering does NOT
+/// collect its body values -- the head of a sequence, compiled with
+/// `compile_forin_loop(.., collect = false)`, which drops each body value off
+/// the stack without releasing it? That lowering (compile_expr_tail.vibe's
+/// ESeq arm) and the cell marker (`cl_own_cells`) both ask THIS, so the two
+/// cannot disagree about which for-ins collect. Every other `for` collects
+/// into a fresh array that owns (and eventually releases) its items.
+export fn forin_is_discarded_seq_head(e: Expr) -> Bool {
+  match e {
+    EForIn(_, _, _, _) => true,
+    _ => false
+  }
+}
+
+/// A `for`: its iterand and body are walked as usual; when it COLLECTS, the
+/// body's value is an owning place (an item of the result array), so a cell
+/// read on its result path is marked. A discarded one's body value is dropped
+/// unreleased, so marking it would retain a reference nothing releases -- one
+/// per iteration.
+fn cl_forin_cells(e: Expr, cells: Array[String], collects: Bool) -> Expr {
+  match e {
+    EForIn(n, label, iter, body) => {
+      let inner = match label {
+        Some(l) => cl_cells_without(cl_cells_without(cells, n), l),
+        None => cl_cells_without(cells, n)
+      }
+      let body2 = cl_own_cells(body, inner)
+      let body3 = if collects {
+        cl_cell_tails(body2, inner, true)
+      } else {
+        body2
+      }
+      EForIn(n, label, cl_own_cells(iter, cells), body3)
+    },
+    _ => cl_own_cells(e, cells)
+  }
+}
+
+fn cl_own_cells(e: Expr, cells: Array[String]) -> Expr {
+  match e {
+    ELetMut(n, v, b, off) => {
+      let v2 = cl_own_cells(v, cells)
+      if is_mut_captured_in(b, n) {
+        // A fresh array: `cl_cells_without` hands `cells` itself back when
+        // `n` is not in it, and the enclosing scope must not see `n`.
+        let inner = array_empty()
+        for c in cl_cells_without(cells, n) {
+          Array::push(inner, c)
+        }
+        Array::push(inner, n)
+        let b2 = cl_cell_tails(cl_own_cells(b, inner), [n], true)
+        ELetMut(n, cl_cell_store_value(v2), b2, off)
+      } else {
+        ELetMut(n, cl_cell_tails(v2, cells, false), cl_own_cells(b, cl_cells_without(cells, n)), off)
+      }
+    },
+    ELet(n, v, b, off) => {
+      let v2 = cl_cell_tails(cl_own_cells(v, cells), cells, false)
+      ELet(n, v2, cl_own_cells(b, cl_cells_without(cells, n)), off)
+    },
+    ELetRec(n, v, b) => {
+      let inner = cl_cells_without(cells, n)
+      ELetRec(n, cl_own_cells(v, inner), cl_own_cells(b, inner))
+    },
+    EAssign(n, v, b) => {
+      let v2 = cl_own_cells(v, cells)
+      let v3 = if array_contains_str(cells, n) {
+        cl_cell_store_value(v2)
+      } else {
+        cl_cell_tails(v2, cells, false)
+      }
+      EAssign(n, v3, cl_own_cells(b, cells))
+    },
+    EAssignOp(n, op, v, b) => EAssignOp(n, op, cl_own_cells(v, cells), cl_own_cells(b, cells)),
+    ESeq(a, b) => {
+      // A discarded `for` collects nothing, so its body is no owning place.
+      let a2 = if forin_is_discarded_seq_head(a) {
+        cl_forin_cells(a, cells, false)
+      } else {
+        cl_own_cells(a, cells)
+      }
+      ESeq(a2, cl_own_cells(b, cells))
+    },
+    EIf(c, t, f) => EIf(cl_own_cells(c, cells), cl_own_cells(t, cells), cl_own_cells(f, cells)),
+    EMatch(s, arms) => EMatch(cl_own_cells(s, cells), cl_arms_cells(arms, cells)),
+    EHandle(body, arms) => EHandle(cl_own_cells(body, cells), cl_arms_cells(arms, cells)),
+    EFn(tps, bounds, ps, ret, eff, body) => {
+      let names = array_empty()
+      for p in ps {
+        Array::push(names, strip_param_label_marker(p.0))
+      }
+      EFn(tps, bounds, ps, ret, eff, cl_own_cells(body, cl_cells_without_all(cells, names)))
+    },
+    ECall(callee, args, off) => ECall(cl_own_cells(callee, cells), cl_list_cells(args, cells), off),
+    ETuple(items) => ETuple(cl_agg_cells(items, cells)),
+    EArray(items) => EArray(cl_agg_cells(items, cells)),
+    ERecord(n, fields, args) => ERecord(n, cl_agg_fields_cells(fields, cells), args),
+    EMap(fields) => EMap(cl_agg_fields_cells(fields, cells)),
+    EWhile(c, body) => EWhile(cl_own_cells(c, cells), cl_own_cells(body, cells)),
+    ELoop(inits, body) => {
+      let names = array_empty()
+      for init in inits {
+        Array::push(names, init.0)
+      }
+      ELoop(cl_fields_cells(inits, cells), cl_own_cells(body, cl_cells_without_all(cells, names)))
+    },
+    EForIn(_, _, _, _) => cl_forin_cells(e, cells, true),
+    EBinOp(op, a, b, off) => EBinOp(op, cl_own_cells(a, cells), cl_own_cells(b, cells), off),
+    EUnaryOp(op, value) => EUnaryOp(op, cl_own_cells(value, cells)),
+    EDot(obj, field, off, field_off) => EDot(cl_own_cells(obj, cells), field, off, field_off),
+    ELabeledArg(n, label, value) => ELabeledArg(n, label, cl_own_cells(value, cells)),
+    EReturn(value) => EReturn(cl_own_cells(value, cells)),
+    EBreak(Some(value)) => EBreak(Some(cl_own_cells(value, cells))),
+    EContinue(args) => EContinue(cl_list_cells(args, cells)),
+    ESpread(value) => ESpread(cl_own_cells(value, cells)),
+    _ => e
+  }
+}
+
 export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], fn_body: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, compile_fn: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
   // #1899: the capture scan must be told the parameters under the SAME names
   // the body uses. A labeled parameter is parsed as `x~` and an optional one as
@@ -614,6 +1163,9 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
   let lam_path_drops = array_empty()
   let lam_mark_names = array_empty()
   let lam_mark_offs = array_empty()
+  let lam_trunc_release = array_empty()
+  let lam_trunc_pin_arrays = array_empty()
+  let lam_trunc_pin_names = array_empty()
   if ctx.enable_rc {
     let lam_plan = build_perceus_plan_pinned(ctx.perceus_pin, norm_params, result_body, ctx.borrow_ret_names, ctx.borrow_param_user, ctx.borrow_param_mask, ctx.borrow_view_ret)
     let mut ldi = 0
@@ -640,6 +1192,9 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
       }
       ldi = ldi + 1
     }
+    // #2837: a lambda's result convention is not an immediate this lowering
+    // can vouch for, so a row that needs one is dropped.
+    perceus_truncate_rows(lam_plan, false, lam_trunc_release, lam_trunc_pin_arrays, lam_trunc_pin_names)
     let mut hpi = 0
     while hpi < Array::length(norm_params) {
       let (hpn, hpt) = Array::get(norm_params, hpi)
@@ -755,6 +1310,11 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
     rc_consume_mark_offs: lam_mark_offs,
     rc_path_flag_names: array_empty(),
     rc_path_flag_locals: array_empty(),
+    rc_trunc_release: lam_trunc_release,
+    rc_trunc_pin_arrays: lam_trunc_pin_arrays,
+    rc_trunc_pin_names: lam_trunc_pin_names,
+    rc_pins_live: array_empty(),
+    rc_trunc_builtin: ctx.rc_trunc_builtin,
     reuse_scrutinee_names: array_empty(),
     reuse_flag_locals: array_empty(),
     rc_reuse_token_names: lam_reuse_names,
