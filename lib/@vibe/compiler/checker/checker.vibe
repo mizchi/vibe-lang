@@ -8623,6 +8623,9 @@ fn type_name_prefix(ty: Type) -> String {
 /// checker-only `lookup_builtin` signature), then codegen dies with
 /// "unknown struct field: to_string" -- the exact class of bug #994 exists
 /// to catch.
+/// #3163: `Future` is listed too -- a guest future has no dot-callable
+/// methods of its own, and codegen compiles `f.m()` on one as a struct-field
+/// read and fails after `vibe check` answered clean.
 fn is_known_builtin_receiver_prefix(prefix: String) -> Bool {
   prefix == "String"
   || prefix == "Bytes"
@@ -8636,6 +8639,7 @@ fn is_known_builtin_receiver_prefix(prefix: String) -> Bool {
   || prefix == "Int"
   || prefix == "Double"
   || prefix == "Char"
+  || prefix == "Future"
 }
 
 fn is_equality_binop(op: String) -> Bool {
@@ -13464,7 +13468,23 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                     Some(_) => String::concat(String::concat("(...)` (a bare `fn ", method), String::concat("` is only callable as `", String::concat(method, String::concat("(x)` or `x |> ", String::concat(method, "`)"))))),
                     None => "(...)`"
                   }
-                  Array::push(errors, String::concat(String::concat("no method `", String::concat(method, String::concat("` on `", String::concat(type_prefix, "`: declare a top-level `fn ")))), String::concat(qualified, String::concat(bare_hint, off_marker_len(qcall_field_off, String::length(method))))))
+                  // #3163: `f.await()` on a `Future` named no method and
+                  // checked clean with an unknown result, then failed in
+                  // codegen ("unknown struct field: await"). A builtin
+                  // FUNCTION of that name is the edit the reader wants, so
+                  // lead with it rather than with declaring a method.
+                  let builtin_fn = match env_lookup(env, method) {
+                    Some(_) => false,
+                    None => match lookup_builtin_in_env(env, method) {
+                      Some(_) => true,
+                      None => false
+                    }
+                  }
+                  if builtin_fn {
+                    Array::push(errors, String::concat(String::concat("no method `", String::concat(method, String::concat("` on `", String::concat(type_prefix, "`: `")))), String::concat(method, String::concat("` is a function, not a method -- call it as `", String::concat(method, String::concat("(x)` or `x |> ", String::concat(method, String::concat("`", off_marker_len(qcall_field_off, String::length(method))))))))))
+                  } else {
+                    Array::push(errors, String::concat(String::concat("no method `", String::concat(method, String::concat("` on `", String::concat(type_prefix, "`: declare a top-level `fn ")))), String::concat(qualified, String::concat(bare_hint, off_marker_len(qcall_field_off, String::length(method))))))
+                  }
                   (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), s1, c1)
                 }
               }

@@ -916,6 +916,34 @@ fn afe_lookup_local(locals: AfeLocals, name: String) -> Option[String] {
   found
 }
 
+/// Whether `name` is bound by the walk's locals at all, with or without a
+/// known head (#3163).
+fn afe_binds_local(locals: AfeLocals, name: String) -> Bool {
+  let mut cur = locals
+  let mut found = false
+  let mut go = true
+  while go {
+    match cur {
+      AlNil => {
+        go = false
+      },
+      AlBind(n, _, rest) => if n == name {
+        found = true
+        go = false
+      } else {
+        cur = rest
+      },
+      AlMask(n, rest) => if n == name {
+        found = true
+        go = false
+      } else {
+        cur = rest
+      }
+    }
+  }
+  found
+}
+
 fn afe_bind_local(locals: AfeLocals, name: String, head: Option[String]) -> AfeLocals {
   match head {
     Some(h) => AlBind(name, h, locals),
@@ -2210,7 +2238,10 @@ fn check_async_effects_expr_lo_into(expr: Expr, env: TypeEnv, in_async: Bool, lo
   // Preserve the legacy preorder diagnostic order: inspect a call before its
   // structural children, then delegate their enumeration to expr_children.
   match expr {
-    ECall(EIdent(name, _), _, _) => if !in_async && is_async_primitive(name, env) {
+    // #3163: a local binding of the name (a parameter, a `let`, a loop
+    // variable) is what the call reaches, not the builtin of that spelling --
+    // `let await = (f: Future[Int]) -> "s"` does not perform `Async`.
+    ECall(EIdent(name, _), _, _) => if !in_async && !afe_binds_local(locals, name) && is_async_primitive(name, env) {
       Array::push(out, EEEffectfulCallOutsideEffect(name))
     } else {
       ()

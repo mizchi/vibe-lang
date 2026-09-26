@@ -1,0 +1,81 @@
+// #3163: a binding named `await` is the binding, not the builtin. The await
+// lowering used to decide by spelling, so every one of these called the
+// builtin instead -- `await(Future::ready(5))` answered the future's Int
+// where the checker had typed the call as the String the binding returns,
+// and `String::length` of it read 10 (the tagged 5) instead of 5.
+
+fn from_let() -> Int with Async {
+  let await = (f: Future[Int]) -> "hello"
+  let s: String = await(Future::ready(5))
+  String::length(s)
+}
+
+// Nothing here performs `Async`, so no row is needed: the effect check used to
+// demand one for any call spelled `await`.
+fn from_let_without_row() -> Int {
+  let await = (f: Future[Int]) -> "hello"
+  let s: String = await(Future::ready(5))
+  String::length(s)
+}
+
+fn from_param(await: (Future[Int]) -> String) -> Int with Async {
+  let s: String = await(Future::ready(5))
+  String::length(s)
+}
+
+fn from_lambda_param() -> Int with Async {
+  let run = (await: (Future[Int]) -> String) -> String::length(await(Future::ready(5)))
+  run((f: Future[Int]) -> "hello")
+}
+
+fn from_match_arm() -> Int with Async {
+  let picked: Option[(Future[Int]) -> String] = Some((f: Future[Int]) -> "hello")
+  match picked {
+    Some(await) => String::length(await(Future::ready(5))),
+    None => 0
+  }
+}
+
+fn from_captured_let() -> Int with Async {
+  let await = (f: Future[Int]) -> "hello"
+  let later = () -> await(Future::ready(5))
+  String::length(later())
+}
+
+// The builtin is untouched where nothing shadows it, including right after a
+// scope that did: the shadow ends with its binder.
+fn builtin_after_scope() -> Int with Async {
+  let inner = (await: (Future[Int]) -> String) -> String::length(await(Future::ready(1)))
+  let n = inner((f: Future[Int]) -> "abc")
+  let f = Future::pending()
+  Future::resolve(f, 40)
+  n + await(f) - 1
+}
+
+test "a let named await is the binding" {
+  inspect(from_let(), content = "5")
+}
+
+test "a let named await needs no Async row" {
+  inspect(from_let_without_row(), content = "5")
+}
+
+test "a parameter named await is the binding" {
+  inspect(from_param((f: Future[Int]) -> "hello"), content = "5")
+}
+
+test "a lambda parameter named await is the binding" {
+  inspect(from_lambda_param(), content = "5")
+}
+
+test "a pattern binder named await is the binding" {
+  inspect(from_match_arm(), content = "5")
+}
+
+test "a captured let named await is the binding" {
+  inspect(from_captured_let(), content = "5")
+}
+
+test "the builtin await is used outside the shadowing scope" {
+  inspect(builtin_after_scope(), content = "42")
+}
