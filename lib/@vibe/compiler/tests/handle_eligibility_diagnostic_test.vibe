@@ -140,6 +140,18 @@ test "#3124: a rowless lambda whose body is visibly pure compiles outside the ha
   assert(compiles_both(src))
 }
 
+test "#3124: a later lambda does not inherit an earlier pure body of the same name" {
+  // The inert set is keyed by spelling. Recording only the first `side`
+  // would treat the performing one as pure and let the handle compile.
+  let src = program("test \"t\" {\n  let side = (n: Int) -> Int {\n    n\n  }\n  let side = (n: Int) -> Int {\n    perform Ask::Get()\n  }\n  let r = handle {\n    side(1)\n  } with {\n    Ask::Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
+  assert(!compiles_linear(src))
+}
+
+test "#3124: two pure lambdas may share a spelling" {
+  let src = program("test \"t\" {\n  let side = (n: Int) -> Int {\n    n\n  }\n  let side = (n: Int) -> Int {\n    n\n  }\n  let r = handle {\n    side(ask_once())\n  } with {\n    Ask::Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
+  assert(compiles_both(src))
+}
+
 test "#3124: a rowless lambda whose body performs is still refused" {
   let src = program("test \"t\" {\n  let side = (n: Int) -> Int {\n    perform Ask::Get()\n  }\n  let r = handle {\n    side(1)\n  } with {\n    Ask::Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
   assert(!compiles_linear(src))

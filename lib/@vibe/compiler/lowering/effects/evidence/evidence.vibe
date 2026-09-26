@@ -3808,7 +3808,9 @@ fn edp_append_ctor_inert_names(stmts: Array[Stmt], pure_fns: Array[String]) -> U
 /// builtin, a name already inert, or another lambda added on an earlier pass
 /// of the fixpoint. A call to `perform`, to a parameter, or to a function
 /// with a row stays out, so that lambda is still an opaque callee. A declared
-/// effect row on the lambda itself stays out too.
+/// effect row on the lambda itself stays out too. Two lambdas that share a
+/// spelling are inert only when every one of those bodies is: the first pure
+/// `side` must not cover a later `side` whose body performs.
 fn edp_lambda_row_absent(eff: Option[String]) -> Bool {
   match eff {
     None => true,
@@ -3818,7 +3820,7 @@ fn edp_lambda_row_absent(eff: Option[String]) -> Bool {
 
 fn edp_note_lambda_candidate(name: String, val: Expr, names: Array[String], bodies: Array[Expr]) -> Unit {
   match val {
-    EFn(_, _, _, _, eff, lbody) => if edp_lambda_row_absent(eff) && !edp_str_array_contains(names, name) {
+    EFn(_, _, _, _, eff, lbody) => if edp_lambda_row_absent(eff) {
       Array::push(names, name)
       Array::push(bodies, lbody)
     } else {
@@ -3876,6 +3878,20 @@ fn edp_expr_visible_pure(expr: Expr, pure_fns: Array[String]) -> Bool {
   }
 }
 
+fn edp_name_bodies_all_pure(name: String, names: Array[String], bodies: Array[Expr], pure_fns: Array[String]) -> Bool {
+  let mut i = 0
+  let mut ok = true
+  while i < Array::length(names) {
+    if Array::get(names, i) == name && !edp_expr_visible_pure(Array::get(bodies, i), pure_fns) {
+      ok = false
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ok
+}
+
 fn edp_append_visible_pure_lambda_names(stmts: Array[Stmt], pure_fns: Array[String]) -> Unit {
   let names = empty_str_array()
   let bodies: Array[Expr] = []
@@ -3902,7 +3918,7 @@ fn edp_append_visible_pure_lambda_names(stmts: Array[Stmt], pure_fns: Array[Stri
       let nm = Array::get(names, j)
       if edp_str_array_contains(pure_fns, nm) {
         ()
-      } else if edp_expr_visible_pure(Array::get(bodies, j), pure_fns) {
+      } else if edp_name_bodies_all_pure(nm, names, bodies, pure_fns) {
         Array::push(pure_fns, nm)
         grew = true
       } else {
