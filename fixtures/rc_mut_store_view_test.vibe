@@ -1,0 +1,531 @@
+// #3184: a `let mut` slot owns what it holds, so a value stored into it must
+// be a reference of its own. Before the fix, two kinds of value were stored
+// without one:
+//
+// - a VIEW -- a borrowed `let` (`let v = Array::get(xs, 0)`), an alias or a
+//   block ending in one, a `for` element, a borrow-returning wrapper's
+//   result, or a conditional whose branch hands back one of those. The
+//   view's owner (`xs`) released the value at its scope end while the slot
+//   still held it.
+// - an owned binding declared OUTSIDE the loop the store runs in (`cur = p`
+//   in a loop body). The store runs once per iteration, so it cannot be the
+//   transfer of `p`'s one reference that a straight-line last use is: the
+//   second iteration released `p` through the slot's old value and stored the
+//   freed block again.
+//
+// The slot now retains the view at the store (and at a `let mut`
+// initializer), and the Perceus plan's `PaStoreDup` row makes a loop-carried
+// store -- bare, or as a branch or block tail -- take a reference of its own
+// while the binding keeps its own.
+//
+// On a stage2 from the #3181 branch (9159d7a76), run one test per file, 22 of
+// the 25 tests failed under VIBE_RC=shadow (a dup or a drop of a freed
+// block); under VIBE_RC=1 the first of them answered `zz3zz3` for `wh3zz3` --
+// `cur` read the `churn_d` value that reused its block. The three that passed
+// are the fresh-branch control and the `break` / `continue` ones, which the
+// #3181 exit keep held alive by leaking the loop body's bindings.
+//
+// Each test reads its values AFTER an allocation that would reuse a freed
+// block, and hands them to `hold`, which takes its argument owned and
+// consumes it twice, so a slot that shares a reference it does not own is
+// caught by the shadow lane.
+// The bounded-heap half is fixtures/rc_mut_store_view_bounded_test.vibe
+// (tests/gates/mid/run.sh, 40f0i).
+
+enum D {
+  A(String)
+}
+
+struct R {
+  d: D
+}
+
+struct Node {
+  name: String;
+  kids: Array[Node]
+}
+
+fn name_of(d: D) -> String {
+  match d {
+    A(s) => s
+  }
+}
+
+fn fresh(s: String, i: Int) -> String {
+  String::concat(s, __to_string(i))
+}
+
+fn churn() -> String {
+  fresh("churn", 0)
+}
+
+fn churn_d(i: Int) -> D {
+  A(fresh("zz", i))
+}
+
+// Takes `d` owned and consumes it twice.
+fn hold(d: D) -> String {
+  let h = [d, d]
+  name_of(Array::get(h, 1))
+}
+
+fn first(xs: Array[D]) -> D {
+  Array::get(xs, 0)
+}
+
+// The issue's repro: a borrowed `let` stored in a loop body whose drop of
+// `xs` ends every iteration.
+fn while_view(n: Int) -> String {
+  let mut cur = A(fresh("c", 0))
+  let mut i = 0
+  while i < n {
+    let xs = [A(fresh("cv", i + 1))]
+    let v = Array::get(xs, 0)
+    cur = v
+    i = i + 1
+  }
+  name_of(cur)
+}
+
+fn while_view_held(n: Int) -> String {
+  let mut cur = A(fresh("c", 0))
+  let mut i = 0
+  while i < n {
+    let xs = [A(fresh("wh", i + 1))]
+    let v = Array::get(xs, 0)
+    cur = v
+    i = i + 1
+  }
+  let z = churn_d(n)
+  String::concat(hold(cur), name_of(z))
+}
+
+// No loop: the owner's scope is an `if` branch.
+fn branch_view(c: Bool) -> String {
+  let mut cur = A(fresh("c", 0))
+  if c {
+    let xs = [A(fresh("bv", 1))]
+    let v = Array::get(xs, 0)
+    cur = v
+  } else {
+    ()
+  }
+  let z = churn_d(1)
+  String::concat(hold(cur), name_of(z))
+}
+
+// The owner outlives the slot: the slot's own release must not spend the
+// owner's reference.
+fn owner_outlives(k: Int) -> String {
+  let xs = [A(fresh("oo", k))]
+  let mut cur = A(fresh("c", 0))
+  let v = Array::get(xs, 0)
+  cur = v
+  let z = churn_d(k)
+  String::join([hold(cur), name_of(z), hold(Array::get(xs, 0))], ";")
+}
+
+// A view declared outside the loop, stored on every iteration: the slot's
+// release of its old value must not spend the owner's reference either.
+fn view_outside_loop(k: Int) -> String {
+  let xs = [A(fresh("vo", k))]
+  let v = Array::get(xs, 0)
+  let mut cur = A(fresh("c", 0))
+  let mut i = 0
+  while i < 3 {
+    cur = v
+    i = i + 1
+  }
+  String::join([hold(cur), hold(Array::get(xs, 0))], ";")
+}
+
+fn for_elem(k: Int) -> String {
+  let xs = [A(fresh("fo", k)), A(fresh("fo", k + 1))]
+  let mut cur = A(fresh("c", 0))
+  for x in xs {
+    cur = x
+  }
+  let z = churn_d(k)
+  String::join([hold(cur), name_of(z), hold(Array::get(xs, 1))], ";")
+}
+
+fn alias_view(n: Int) -> String {
+  let mut cur = A(fresh("c", 0))
+  let mut i = 0
+  while i < n {
+    let xs = [A(fresh("av", i + 1))]
+    let v = Array::get(xs, 0)
+    let w = v
+    cur = w
+    i = i + 1
+  }
+  hold(cur)
+}
+
+fn block_view(n: Int) -> String {
+  let mut cur = A(fresh("c", 0))
+  let mut i = 0
+  while i < n {
+    let xs = [A(fresh("kv", i + 1))]
+    cur = {
+      let v = Array::get(xs, 0)
+      v
+    }
+    i = i + 1
+  }
+  hold(cur)
+}
+
+fn wrapper_view(n: Int) -> String {
+  let mut cur = A(fresh("c", 0))
+  let mut i = 0
+  while i < n {
+    let xs = [A(fresh("uv", i + 1))]
+    let v = first(xs)
+    cur = v
+    i = i + 1
+  }
+  hold(cur)
+}
+
+fn cond_view(n: Int) -> String {
+  let mut cur = A(fresh("c", 0))
+  let mut i = 0
+  while i < n {
+    let xs = [A(fresh("cd", i + 1))]
+    let v = Array::get(xs, 0)
+    cur = if i >= 0 {
+      v
+    } else {
+      A(fresh("no", 0))
+    }
+    i = i + 1
+  }
+  hold(cur)
+}
+
+fn cond_proj(n: Int) -> String {
+  let mut cur = A(fresh("c", 0))
+  let mut i = 0
+  while i < n {
+    let r = R::{ d: A(fresh("cp", i + 1)) }
+    cur = if i >= 0 {
+      r.d
+    } else {
+      A(fresh("no", 0))
+    }
+    i = i + 1
+  }
+  hold(cur)
+}
+
+fn cond_call(n: Int) -> String {
+  let mut cur = A(fresh("c", 0))
+  let mut i = 0
+  while i < n {
+    let xs = [A(fresh("cc", i + 1))]
+    cur = if i >= 0 {
+      Array::get(xs, 0)
+    } else {
+      A(fresh("no", 0))
+    }
+    i = i + 1
+  }
+  hold(cur)
+}
+
+// A conditional whose OTHER branch is the fresh one: that branch stores its
+// own reference, and must not be retained a second time.
+fn cond_fresh(n: Int) -> String {
+  let mut cur = A(fresh("c", 0))
+  let mut i = 0
+  while i < n {
+    let xs = [A(fresh("cf", i + 1))]
+    let v = Array::get(xs, 0)
+    cur = if i < 0 {
+      v
+    } else {
+      A(fresh("fr", i + 1))
+    }
+    i = i + 1
+  }
+  hold(cur)
+}
+
+// The view reads INTO the slot's old value: it must be retained before that
+// value is released.
+fn kid_walk(depth: Int) -> String {
+  let mut cur = Node::{ name: "root", kids: [Node::{ name: "k1", kids: [Node::{ name: "k2", kids: [] }] }] }
+  let mut d = 0
+  while d < depth {
+    let k = Array::get(cur.kids, 0)
+    cur = k
+    d = d + 1
+  }
+  let z = churn_d(depth)
+  String::concat(cur.name, name_of(z))
+}
+
+// The same, through a conditional: the view is retained as the branch's
+// value, and the old value is released after it.
+fn kid_walk_cond(depth: Int) -> String {
+  let mut cur = Node::{ name: "root", kids: [Node::{ name: "k1", kids: [Node::{ name: "k2", kids: [] }] }] }
+  let mut d = 0
+  while d < depth {
+    let k = Array::get(cur.kids, 0)
+    cur = if d >= 0 {
+      k
+    } else {
+      Node::{ name: "no", kids: [] }
+    }
+    d = d + 1
+  }
+  let z = churn_d(depth)
+  String::concat(cur.name, name_of(z))
+}
+
+// `break v` of a parameterized loop stores `v` in the loop's result slot, and
+// `continue(v, ..)` stores it in the loop's parameter.
+fn break_view(n: Int) -> D {
+  loop (i = 0) {
+    let xs = [A(fresh("bk", i))]
+    let v = Array::get(xs, 0)
+    if i == n {
+      break v
+    }
+    continue(i + 1)
+  }
+}
+
+fn continue_view(n: Int) -> String {
+  loop (cur = A(fresh("c", 0)), i = 0) {
+    if i == n {
+      break hold(cur)
+    }
+    let xs = [A(fresh("ct", i + 1))]
+    let v = Array::get(xs, 0)
+    continue(v, i + 1)
+  }
+}
+
+// An owned binding from outside the loop, stored in it.
+fn loop_carried(k: Int) -> String {
+  let p = A(fresh("lc", k))
+  let mut cur = A(fresh("c", 0))
+  let mut i = 0
+  while i < 3 {
+    cur = p
+    i = i + 1
+  }
+  let z = churn_d(k)
+  String::concat(hold(cur), name_of(z))
+}
+
+fn loop_carried_used(k: Int) -> String {
+  let p = A(fresh("lu", k))
+  let mut cur = A(fresh("c", 0))
+  let mut i = 0
+  while i < 3 {
+    cur = p
+    i = i + 1
+  }
+  let z = churn_d(k)
+  String::join([hold(cur), name_of(z), hold(p)], ";")
+}
+
+// The same binding reached through a branch, and through a block tail.
+fn cond_loop_carried(k: Int) -> String {
+  let p = A(fresh("cl", k))
+  let mut cur = A(fresh("c", 0))
+  let mut i = 0
+  while i < 3 {
+    cur = if i >= 0 {
+      p
+    } else {
+      A(fresh("no", 0))
+    }
+    i = i + 1
+  }
+  let z = churn_d(k)
+  String::join([hold(cur), name_of(z), hold(p)], ";")
+}
+
+fn block_loop_carried(k: Int) -> String {
+  let p = A(fresh("bl", k))
+  let mut cur = A(fresh("c", 0))
+  let mut i = 0
+  while i < 3 {
+    cur = {
+      let _ = churn()
+      p
+    }
+    i = i + 1
+  }
+  let z = churn_d(k)
+  String::join([hold(cur), name_of(z), hold(p)], ";")
+}
+
+fn store_param(p: D) -> String {
+  let mut cur = A(fresh("c", 0))
+  let mut i = 0
+  while i < 3 {
+    cur = p
+    i = i + 1
+  }
+  hold(cur)
+}
+
+fn param_loop(k: Int) -> String {
+  let p = A(fresh("pl", k))
+  let a = store_param(p)
+  let z = churn_d(k)
+  String::join([a, name_of(z), hold(p)], ";")
+}
+
+// A `let mut` initialized from a view, and one initialized in a loop from an
+// owned binding outside it.
+fn init_view(n: Int) -> String {
+  let mut i = 0
+  let mut acc = ""
+  while i < n {
+    let xs = [A(fresh("iv", i + 1))]
+    let v = Array::get(xs, 0)
+    let mut cur = v
+    acc = String::concat(acc, hold(cur))
+    i = i + 1
+  }
+  acc
+}
+
+fn init_loop_carried(k: Int) -> String {
+  let p = A(fresh("il", k))
+  let mut i = 0
+  let mut acc = ""
+  while i < 3 {
+    let mut c = p
+    acc = String::concat(acc, hold(c))
+    i = i + 1
+  }
+  let z = churn_d(k)
+  String::join([acc, name_of(z), hold(p)], ";")
+}
+
+// A slot initialized from a borrowed call (retained at its declaration)
+// storing a view later.
+fn init_call_store_view(n: Int) -> String {
+  let ys = [A(fresh("c", 0))]
+  let mut cur = Array::get(ys, 0)
+  let mut i = 0
+  while i < n {
+    let xs = [A(fresh("is", i + 1))]
+    let v = Array::get(xs, 0)
+    cur = v
+    i = i + 1
+  }
+  String::join([hold(cur), hold(Array::get(ys, 0))], ";")
+}
+
+test "a while loop storing a view" {
+  let a = while_view(3)
+  let x = churn()
+  inspect(String::concat(a, x), content = "cv3churn0")
+}
+
+test "a while loop storing a view, read owned" {
+  inspect(while_view_held(3), content = "wh3zz3")
+}
+
+test "a view stored in a branch" {
+  inspect(branch_view(true), content = "bv1zz1")
+  inspect(branch_view(false), content = "c0zz1")
+}
+
+test "a view whose owner outlives the slot" {
+  inspect(owner_outlives(4), content = "oo4;zz4;oo4")
+}
+
+test "a view from outside the loop stored in it" {
+  inspect(view_outside_loop(5), content = "vo5;vo5")
+}
+
+test "a for element stored" {
+  inspect(for_elem(6), content = "fo7;zz6;fo7")
+}
+
+test "an alias of a view stored" {
+  inspect(alias_view(3), content = "av3")
+}
+
+test "a block ending in a view stored" {
+  inspect(block_view(3), content = "kv3")
+}
+
+test "a borrow-returning wrapper's result stored" {
+  inspect(wrapper_view(3), content = "uv3")
+}
+
+test "a conditional handing back a view" {
+  inspect(cond_view(3), content = "cd3")
+}
+
+test "a conditional handing back a projection" {
+  inspect(cond_proj(3), content = "cp3")
+}
+
+test "a conditional handing back a borrowed call" {
+  inspect(cond_call(3), content = "cc3")
+}
+
+test "a conditional handing back a fresh value" {
+  inspect(cond_fresh(3), content = "fr3")
+}
+
+test "a view into the slot's old value" {
+  inspect(kid_walk(2), content = "k2zz2")
+}
+
+test "a view into the slot's old value, through a conditional" {
+  inspect(kid_walk_cond(2), content = "k2zz2")
+}
+
+test "a break value stored from a view" {
+  let a = break_view(2)
+  let x = churn()
+  inspect(String::concat(hold(a), x), content = "bk2churn0")
+}
+
+test "a continue argument stored from a view" {
+  inspect(continue_view(3), content = "ct3")
+}
+
+test "an owned binding from outside the loop stored in it" {
+  inspect(loop_carried(7), content = "lc7zz7")
+}
+
+test "an owned binding stored in a loop and used after it" {
+  inspect(loop_carried_used(8), content = "lu8;zz8;lu8")
+}
+
+test "an owned binding from outside the loop stored through a branch" {
+  inspect(cond_loop_carried(5), content = "cl5;zz5;cl5")
+}
+
+test "an owned binding from outside the loop stored through a block tail" {
+  inspect(block_loop_carried(6), content = "bl6;zz6;bl6")
+}
+
+test "a parameter stored in a loop" {
+  inspect(param_loop(9), content = "pl9;zz9;pl9")
+}
+
+test "a let mut initialized from a view" {
+  inspect(init_view(3), content = "iv1iv2iv3")
+}
+
+test "a let mut initialized in a loop from an owned binding outside it" {
+  inspect(init_loop_carried(4), content = "il4il4il4;zz4;il4")
+}
+
+test "a let mut initialized from a borrowed call storing a view" {
+  inspect(init_call_store_view(3), content = "is3;c0")
+}

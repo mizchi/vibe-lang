@@ -88,7 +88,13 @@ export enum PerceusActionKind {
   // asks exit `use_offset` to release binding `x` `extra` times: the
   // references `x` still holds there. The bump and wasm-gc lanes ignore both.
   PaExitSite;
-  PaExitDrop
+  PaExitDrop;
+  // #3184: `PaStoreDup(src)`: the store `x = src` at the occurrence whose
+  // source offset is `use_offset` runs once per iteration of a loop `src` was
+  // declared outside of, so the slot takes a reference of its own there and
+  // `src` keeps its initial one (see `pe_store_dup`). Codegen retains at that
+  // store; the bump and wasm-gc lanes ignore it.
+  PaStoreDup
 }
 
 // PerceusAction is defined transparently in this package's contract
@@ -361,7 +367,9 @@ fn pe_note_initial_ref_spent(ctx: PCtx, sid: Int, name: String, use_offset: Int,
 }
 
 fn pe_use(ctx: PCtx, scope: PScope, name: String, use_offset: Int) -> Int {
-  if ps_has(scope, name) {
+  if pe_store_tail_marked(name, use_offset) && pe_store_dup_at(ctx, scope, name, use_offset) {
+    ()
+  } else if ps_has(scope, name) {
     let id = ps_get(scope, name)
     let rem = Array::get(ctx.remaining, id)
     // ADR-0092 per-use pairing: a view-call binding holds NO initial owned
@@ -397,6 +405,138 @@ fn pe_use(ctx: PCtx, scope: PScope, name: String, use_offset: Int) -> Int {
     }
   }
   0
+}
+
+/// #3184: `target = src` (an assignment, or a `let mut` initializer) inside
+/// a loop body, `src` an owned binding declared OUTSIDE that body. The store
+/// runs once per iteration, so it cannot be the transfer of `src`'s one
+/// initial reference that a straight-line last use would be: the first
+/// iteration handed that reference to the slot, the second released it
+/// through the slot's old value and stored the freed block again (VIBE_RC=1
+/// answered with whatever reused it, and VIBE_RC=shadow trapped on the next
+/// drop). The slot takes a reference of its own at every store instead, and
+/// `src` keeps its initial one for its own scope end -- the rule the #3134
+/// `let` alias follows. Unlike an alias, one slot is stored from many
+/// places, so the row is keyed by the OCCURRENCE: `PaStoreDup(src)` with the
+/// occurrence's source offset, which codegen retains at (compile_expr_tail's
+/// EAssign and ELetMut arms). An occurrence with no source offset cannot be
+/// told apart from another of the same name, so it keeps today's transfer.
+///
+/// Only a slot the plan treats as OWNING takes part (`target_owning`: not
+/// scalar -- a `let mut` initialized from a name always is). A scalar slot,
+/// the loop-result one above all (`break v` is `__loop_result = v`, stored
+/// once before the loop is left), keeps today's transfer: codegen gives it no
+/// release to balance a retain with.
+///
+/// Answers whether it took the value; the caller walks the value otherwise.
+fn pe_store_dup(ctx: PCtx, scope: PScope, target: String, target_owning: Bool, value: Expr) -> Bool {
+  match value {
+    EIdent(src, off) => target_owning && off >= 0 && src != target && pe_store_dup_at(ctx, scope, src, off),
+    _ => false
+  }
+}
+
+/// The occurrence `src` at source offset `off` is a value a slot stores:
+/// take it as a `PaStoreDup` when `src` is an owned binding from outside the
+/// enclosing loop (see `pe_store_dup`), and answer whether it did.
+fn pe_store_dup_at(ctx: PCtx, scope: PScope, src: String, off: Int) -> Bool {
+  if off >= 0 && ps_has(scope, src) {
+    let sid = ps_get(scope, src)
+    if sid < ctx.loop_floor && !Array::get(ctx.scalar, sid) {
+      let _ = pe_push_for(ctx, PaStoreDup, src, sid, off)
+      // A use of `src`'s budget like any other owning occurrence, except
+      // that the last one is not a transfer: `src` keeps its reference.
+      let rem = Array::get(ctx.remaining, sid)
+      if rem > 1 {
+        Array::set(ctx.remaining, sid, rem - 1)
+      } else {
+        ()
+      }
+      pe_note_initial_ref_spent(ctx, sid, src, off, false)
+      true
+    } else {
+      false
+    }
+  } else {
+    false
+  }
+}
+
+/// #3184: the names a stored value hands back from a BRANCH or a BLOCK tail
+/// -- `cur = if c { p } else { q }`, `cur = { f(); p }` -- are stores of
+/// their own, one per path: `pe_use` takes a marked occurrence through
+/// `pe_store_dup_at`. Marked by (name, source offset) on a stack, pushed
+/// before the value is walked and truncated after, so a store nested inside
+/// the value marks and unmarks its own. The tails are exactly the ones
+/// codegen's `assign_retain_store_dup_tails` visits (compile_expr_tail): the
+/// branches of an `if`, the arms of a `match` or `handle` and a `handle`'s
+/// body, and the body of a `let` / `let mut` / `let rec`, a sequence or an
+/// assignment. A name bound inside the value is a local of it, not the
+/// outer binding of that spelling, and is left alone; so is the slot itself.
+let pe_store_tail_names: Array[String] = []
+
+let pe_store_tail_offs: Array[Int] = []
+
+fn pe_store_tail_marked(name: String, off: Int) -> Bool {
+  let mut found = false
+  if off >= 0 {
+    let mut i = Array::length(pe_store_tail_offs) - 1
+    while !found && i >= 0 {
+      if Array::get(pe_store_tail_offs, i) == off && Array::get(pe_store_tail_names, i) == name {
+        found = true
+      } else {
+        ()
+      }
+      i = i - 1
+    }
+  } else {
+    ()
+  }
+  found
+}
+
+fn pe_mark_store_tails(e: Expr, target: String, inner: Array[String]) -> Unit {
+  match e {
+    EIdent(x, off) => if off >= 0 && x != target && !array_contains_str_pctx(inner, x) {
+      Array::push(pe_store_tail_names, x)
+      Array::push(pe_store_tail_offs, off)
+    } else {
+      ()
+    },
+    EIf(_, t, el) => {
+      pe_mark_store_tails(t, target, inner)
+      pe_mark_store_tails(el, target, inner)
+    },
+    EMatch(_, arms) => pe_mark_store_arm_tails(arms, target, inner),
+    EHandle(hb, arms) => {
+      pe_mark_store_tails(hb, target, inner)
+      pe_mark_store_arm_tails(arms, target, inner)
+    },
+    ELet(n, _, b, _) => pe_mark_store_tails(b, target, pe_with_name(inner, n)),
+    ELetMut(n, _, b, _) => pe_mark_store_tails(b, target, pe_with_name(inner, n)),
+    ELetRec(n, _, b) => pe_mark_store_tails(b, target, pe_with_name(inner, n)),
+    ESeq(_, b) => pe_mark_store_tails(b, target, inner),
+    EAssign(_, _, b) => pe_mark_store_tails(b, target, inner),
+    EAssignOp(_, _, _, b) => pe_mark_store_tails(b, target, inner),
+    _ => ()
+  }
+}
+
+fn pe_mark_store_arm_tails(arms: Array[(Pat, Expr)], target: String, inner: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (ap, ab) = Array::get(arms, i)
+    let arm_inner = Array::slice(inner, 0, Array::length(inner))
+    let _ = pat_names(ap, arm_inner)
+    pe_mark_store_tails(ab, target, arm_inner)
+    i = i + 1
+  }
+}
+
+fn pe_with_name(inner: Array[String], n: String) -> Array[String] {
+  let out = Array::slice(inner, 0, Array::length(inner))
+  Array::push(out, n)
+  out
 }
 
 /// `borrow_ret_names` is the whole-program borrow-returning-function-name set
@@ -654,6 +794,13 @@ export fn pa_is_exit_drop(a: PerceusAction) -> Bool {
 export fn pa_is_field_release(a: PerceusAction) -> Bool {
   match a.kind {
     PaFieldRelease => true,
+    _ => false
+  }
+}
+
+export fn pa_is_store_dup(a: PerceusAction) -> Bool {
+  match a.kind {
+    PaStoreDup => true,
     _ => false
   }
 }
@@ -3167,7 +3314,14 @@ fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
       pe_scope_end(ctx, id, name)
     },
     ELetMut(name, value, body, _) => {
-      pc_emit(ctx, scope, value)
+      // #3184: an initializer naming an owned binding from outside the
+      // enclosing loop runs once per iteration, like a store.
+      let owning = ctx.next_id < Array::length(ctx.scalar) && !Array::get(ctx.scalar, ctx.next_id)
+      if !pe_store_dup(ctx, scope, name, owning, value) {
+        pc_emit(ctx, scope, value)
+      } else {
+        ()
+      }
       let id = pe_declare(ctx, name)
       pe_flag_or(ctx, id, pf_exit_owner)
       if pe_assigns(body, name) {
@@ -3201,7 +3355,20 @@ fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
       }
       ctx.move_use_id = mid
       ctx.move_hit = false
-      pc_emit(ctx, scope, value)
+      let owning = ps_has(scope, name) && !Array::get(ctx.scalar, ps_get(scope, name))
+      if !pe_store_dup(ctx, scope, name, owning, value) {
+        let tail_mark = Array::length(pe_store_tail_offs)
+        if owning {
+          pe_mark_store_tails(value, name, array_empty())
+        } else {
+          ()
+        }
+        pc_emit(ctx, scope, value)
+        Array::truncate(pe_store_tail_names, tail_mark)
+        Array::truncate(pe_store_tail_offs, tail_mark)
+      } else {
+        ()
+      }
       ctx.move_use_id = 0 - 1
       if ctx.move_hit {
         Array::set(ctx.remaining, mid, Array::get(ctx.remaining, mid) + 1)
@@ -5940,6 +6107,22 @@ fn plan_setfield_release(ctx: PCtx, params: Array[(String, Option[TypeExpr])], b
     }
   } else {
     ()
+  }
+}
+
+/// #3184: the stores a slot retains at (`PaStoreDup`), as the source name
+/// and source offset of each occurrence, aligned.
+export fn perceus_store_dup_rows(plan: Array[PerceusAction], names: Array[String], offs: Array[Int]) -> Unit {
+  let mut i = 0
+  while i < Array::length(plan) {
+    let a = Array::get(plan, i)
+    if pa_is_store_dup(a) {
+      Array::push(names, a.name)
+      Array::push(offs, a.use_offset)
+    } else {
+      ()
+    }
+    i = i + 1
   }
 }
 

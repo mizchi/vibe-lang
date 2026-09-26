@@ -1,0 +1,89 @@
+//# Imports
+
+// #3184: a store into a `let mut` slot -- an assignment or the slot's
+// initializer -- of an owned binding declared OUTSIDE the loop the store runs
+// in cannot be the transfer of that binding's one reference: it runs once per
+// iteration. The plan says so with `store_dup:OFFSET` (the occurrence's source
+// offset), codegen retains there, and the binding keeps its own reference --
+// and so its scope-end drop. A straight-line store, a binding declared inside
+// the loop body, and the scalar loop-result slot keep the transfer. The
+// runtime halves are fixtures/rc_mut_store_view_test.vibe and
+// fixtures/rc_mut_store_view_bounded_test.vibe (tests/gates/mid/run.sh, 40f0i).
+
+import @vibe/compiler/runtime {
+  rc_plan_source
+}
+
+//# Functions
+
+fn plan_of(source: String) -> String with Exception {
+  rc_plan_source(source, "run")
+}
+
+let prologue = "enum D {\n  A(Array[Int])\n}\n\nfn keep(d: D) -> D {\n  d\n}\n\n"
+
+let epilogue = "\nlet main: () -> Int = () -> {\n  run(1)\n}"
+
+fn program(body: String) -> String {
+  String::concat(prologue, String::concat(body, epilogue))
+}
+
+test "a store in a loop of an owned binding from outside it retains" {
+  let plan = plan_of(program("let run: (Int) -> Int = (n) -> {\n  let p = A([n])\n  let mut cur = A([0])\n  let mut i = 0\n  while i < 3 {\n    cur = p\n    i = i + 1\n  }\n  let e = keep(cur)\n  0\n}"))
+  assert(String::contains(plan, "run p store_dup:"))
+  // The binding keeps its reference, so its scope end releases it.
+  assert(String::contains(plan, "run p drop 1"))
+}
+
+test "a later owning use takes the binding's own reference" {
+  let plan = plan_of(program("let run: (Int) -> Int = (n) -> {\n  let p = A([n])\n  let mut cur = A([0])\n  let mut i = 0\n  while i < 3 {\n    cur = p\n    i = i + 1\n  }\n  let e = keep(cur)\n  let f = keep(p)\n  0\n}"))
+  assert(String::contains(plan, "run p store_dup:"))
+  assert(!String::contains(plan, "run p drop"))
+  assert(!String::contains(plan, "run p dup"))
+}
+
+test "a branch or block tail naming an owned binding from outside the loop retains" {
+  let plan = plan_of(program("let run: (Int) -> Int = (n) -> {\n  let p = A([n])\n  let q = A([n])\n  let mut cur = A([0])\n  let mut i = 0\n  while i < 3 {\n    cur = if i > 1 {\n      p\n    } else {\n      let e = keep(q)\n      q\n    }\n    i = i + 1\n  }\n  let f = keep(cur)\n  0\n}"))
+  assert(String::contains(plan, "run p store_dup:"))
+  assert(String::contains(plan, "run p drop 1"))
+  // `q`'s tail is marked too; the branch's other use of it is an ordinary
+  // owning use, dup'd for.
+  assert(String::contains(plan, "run q store_dup:"))
+}
+
+test "a block tail retains, a binding the block declares transfers" {
+  let plan = plan_of(program("let run: (Int) -> Int = (n) -> {\n  let p = A([n])\n  let mut cur = A([0])\n  let mut i = 0\n  while i < 3 {\n    cur = {\n      let e = A([i])\n      p\n    }\n    cur = {\n      let g = A([i])\n      g\n    }\n    i = i + 1\n  }\n  let f = keep(cur)\n  0\n}"))
+  assert(String::contains(plan, "run p store_dup:"))
+  assert(!String::contains(plan, "run g store_dup"))
+}
+
+test "a straight-line store transfers" {
+  let plan = plan_of(program("let run: (Int) -> Int = (n) -> {\n  let p = A([n])\n  let mut cur = A([0])\n  cur = p\n  let e = keep(cur)\n  0\n}"))
+  assert(!String::contains(plan, "store_dup"))
+  assert(!String::contains(plan, "run p drop"))
+}
+
+test "a binding declared inside the loop body transfers" {
+  let plan = plan_of(program("let run: (Int) -> Int = (n) -> {\n  let mut cur = A([0])\n  let mut i = 0\n  while i < 3 {\n    let q = A([i])\n    cur = q\n    i = i + 1\n  }\n  let e = keep(cur)\n  0\n}"))
+  assert(!String::contains(plan, "store_dup"))
+}
+
+test "a let mut initializer in a loop retains" {
+  let plan = plan_of(program("let run: (Int) -> Int = (n) -> {\n  let p = A([n])\n  let mut i = 0\n  while i < 3 {\n    let mut c = p\n    let e = keep(c)\n    i = i + 1\n  }\n  0\n}"))
+  assert(String::contains(plan, "run p store_dup:"))
+  assert(String::contains(plan, "run p drop 1"))
+}
+
+test "a parameter stored in a loop retains and keeps its drop" {
+  let body = "let run: (D) -> Int = (p) -> {\n  let mut cur = A([0])\n  let mut i = 0\n  while i < 3 {\n    cur = p\n    i = i + 1\n  }\n  let e = keep(cur)\n  0\n}"
+  let plan = plan_of(String::concat(prologue, String::concat(body, "\nlet main: () -> Int = () -> {\n  run(A([1]))\n}")))
+  assert(String::contains(plan, "run p store_dup:"))
+  assert(String::contains(plan, "run p drop 1"))
+}
+
+test "the loop-result slot keeps the transfer" {
+  // `break p` is `__loop_result = p; break`: stored once, before the loop is
+  // left, into a slot the plan calls scalar.
+  let plan = plan_of(program("let run: (Int) -> Int = (n) -> {\n  let p = A([n])\n  let d = loop (i = 0) {\n    if i == 2 {\n      break p\n    }\n    continue(i + 1)\n  }\n  let e = keep(d)\n  0\n}"))
+  assert(!String::contains(plan, "store_dup"))
+}
