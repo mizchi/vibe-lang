@@ -994,7 +994,11 @@ echo "[compiler-gate] Double-literal alias guard ok (6333 on bump/rc/shadow/gc)"
 #        block. rc_forin_discard_body_test.vibe then checks, on rc and shadow,
 #        that every value the plan stopped consuming is still alive after the
 #        loop.
-echo "[compiler-gate] 40f0f/40 discarded for body releases its heap binding (#3137)"
+#        #3162: the same leak held for a `handle` at the head of a sequence
+#        (its handled body and each handler arm) and for a `while` body. With
+#        those three shapes added the fixture grew __heap_ptr by 672,172 B on
+#        the pre-#3162 compiler; fixed, it stays under the same bound.
+echo "[compiler-gate] 40f0f/40 discarded for, handle and while bodies release their heap binding (#3137, #3162)"
 fddir="_build/_gate_rc_forin_discard"
 rm -rf "$fddir"; mkdir -p "$fddir"
 for fd_lane in bump rc shadow gc; do
@@ -1011,8 +1015,8 @@ for fd_lane in bump rc shadow gc; do
     exit 1
   fi
   fd_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$fddir/fd.wasm" 2>&1 | tail -1)"
-  if [ "$fd_out" != "2001000" ]; then
-    echo "[compiler-gate] FAIL: rc_forin_discard_bounded got '$fd_out' on the $fd_lane lane (want 2001000). A trap means a discarded for body released a binding it never owned (#3137)." >&2
+  if [ "$fd_out" != "2007000" ]; then
+    echo "[compiler-gate] FAIL: rc_forin_discard_bounded got '$fd_out' on the $fd_lane lane (want 2007000). A trap means a discarded for, handle or while body released a binding it never owned (#3137, #3162)." >&2
     exit 1
   fi
   if [ "$fd_lane" = rc ]; then
@@ -1022,7 +1026,7 @@ for fd_lane in bump rc shadow gc; do
       echo "[compiler-gate] FAIL: could not measure rc_forin_discard_bounded heap ($fd_json)" >&2; exit 1
     fi
     if [ "$fd_used" -ge 20000 ]; then
-      echo "[compiler-gate] FAIL: rc_forin_discard_bounded heap_used=$fd_used >= 20000 (#3137 regressed: a name the discarded for body reads is counted as consumed again, so its binding loses its drop; unfixed, this fixture measured 448,084 B)" >&2; exit 1
+      echo "[compiler-gate] FAIL: rc_forin_discard_bounded heap_used=$fd_used >= 20000 (#3137 / #3162 regressed: a name a discarded for, handle or while body reads is counted as consumed again, so its binding loses its drop; unfixed, this fixture measured 672,172 B)" >&2; exit 1
     fi
   fi
 done
@@ -1037,7 +1041,7 @@ for fd_lane in 1 shadow; do
   fi
 done
 rm -f "$ROOT_DIR/_build/_gate_rc_forin_discard_body.log"
-echo "[compiler-gate] discarded for body guard ok (2001000 on bump/rc/shadow/gc, rc heap_used=$fd_used B; body shapes ok on rc + shadow)"
+echo "[compiler-gate] discarded for, handle and while body guard ok (2007000 on bump/rc/shadow/gc, rc heap_used=$fd_used B; body shapes ok on rc + shadow)"
 
 # 40f0g. #3140: `x.f = v` leaked the struct (the plan counted the receiver as
 #        an owning use and planned a reference nothing released) and never

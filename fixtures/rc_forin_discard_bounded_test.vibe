@@ -12,8 +12,14 @@
 // freed block. What each rewritten shape still reads after its loop is pinned
 // by fixtures/rc_forin_discard_body_test.vibe.
 //
-// `main` sums, per call, the payload's second element from the loop body (1)
-// and from the sequence head (i): 2000 + 1999 * 2000 / 2 = 2001000.
+// #3162: the same leak held for a `handle` at the head of a sequence (its
+// body and each handler arm are the handle's value, which the sequence drops
+// unreleased) and for a `while` body (dropped after every iteration). Unfixed,
+// those three shapes added 672,000 B over the 2000 calls (224,000 B each).
+//
+// `main` sums, per call, the payload's second element from the loop body (1),
+// from the sequence head (i), from the handled body (1), from the handler arm
+// (1) and from the while body (1): 2000 * 4 + 1999 * 2000 / 2 = 2007000.
 
 enum D {
   A(Array[Int])
@@ -39,12 +45,52 @@ fn at_head(n: Int) -> Int {
   second(d)
 }
 
+fn may_throw(n: Int) -> Int with Exception {
+  if n < 0 {
+    throw("negative")
+  } else {
+    n
+  }
+}
+
+fn in_handle_body(n: Int) -> Int {
+  let d = A([n, 1])
+  handle {
+    may_throw(n)
+    d
+  } with {
+    Exception::Throw(_) => A([0, 0])
+  }
+  second(d)
+}
+
+fn in_handle_arm(n: Int) -> Int {
+  let d = A([n, 1])
+  handle {
+    may_throw(0 - 1 - n)
+    A([0, 0])
+  } with {
+    Exception::Throw(_) => d
+  }
+  second(d)
+}
+
+fn in_while(n: Int) -> Int {
+  let d = A([n, 1])
+  let mut k = 0
+  while k < 2 {
+    k = k + 1
+    d
+  }
+  second(d)
+}
+
 export fn main() -> Int {
   let ns = [1, 2, 3, 4]
   let mut i = 0
   let mut acc = 0
   while i < 2000 {
-    acc = acc + in_loop(ns) + at_head(i)
+    acc = acc + in_loop(ns) + at_head(i) + in_handle_body(i) + in_handle_arm(i) + in_while(i)
     i = i + 1
   }
   acc

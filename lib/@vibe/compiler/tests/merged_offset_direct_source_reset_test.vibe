@@ -1,0 +1,53 @@
+// #3126 review: the direct-source compilers compile ONE source and record no
+// files, so a previous FS compile's offset table must not survive into them --
+// a division site at a small offset would otherwise be placed in that
+// program's file with a believable but wrong `path:line:col`.
+
+import @vibe/compiler/core {
+  merged_offset_line_col, merged_offset_space_add, merged_offset_space_reset
+}
+
+import @vibe/compiler/entry/source_compile/wasi_only {
+  compile_source_wasi_only
+}
+
+import @vibe/compiler/entry/source_compile/gc_only {
+  compile_source_gc_only
+}
+
+let stale_source: String = "fn f(a: Int, b: Int) -> Int {\n  a / b\n}\n"
+
+let direct_source: String = "fn q(a: Int, b: Int) -> Int {\n  a / b\n}\n\nlet main: () -> Int = () -> { q(7, 1) }\n"
+
+test "a wasi direct-source compile drops a previous FS compile's files" {
+  merged_offset_space_reset()
+  merged_offset_space_add("stale/prev.vibe", stale_source, 0)
+  let (seeded, _, _) = merged_offset_line_col(34)
+  assert_eq(seeded, "stale/prev.vibe")
+  let _bytes = compile_source_wasi_only(direct_source, "main")
+  let (path, line, col) = merged_offset_line_col(34)
+  assert_eq(path, "")
+  assert_eq(line, 0)
+  assert_eq(col, 0)
+}
+
+test "a gc direct-source compile drops a previous FS compile's files" {
+  merged_offset_space_reset()
+  merged_offset_space_add("stale/prev.vibe", stale_source, 0)
+  let _bytes = compile_source_gc_only(direct_source, "main")
+  let (path, _, _) = merged_offset_line_col(34)
+  assert_eq(path, "")
+}
+
+test "only the loader's exact marker lines mark a synthesized source" {
+  merged_offset_space_reset()
+  merged_offset_space_add("user.vibe", "// vibe: my own note\nfn f(a: Int, b: Int) -> Int {\n  a / b\n}\n", 0)
+  let (upath, uline, _) = merged_offset_line_col(52)
+  assert_eq(upath, "user.vibe")
+  assert_eq(uline, 3)
+  merged_offset_space_reset()
+  merged_offset_space_add("facade.vibe", "// vibe: contract facade (desugared from .vibei)\nfn f(a: Int, b: Int) -> Int {\n  a / b\n}\n", 0)
+  let (fpath, _, _) = merged_offset_line_col(80)
+  assert_eq(fpath, "")
+  merged_offset_space_reset()
+}
