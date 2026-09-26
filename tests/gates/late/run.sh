@@ -2142,6 +2142,7 @@ fi
 # before its fix.
 for spawn_route in \
   "err_spawnable_alias_capture:no impl \`Spawnable\` for \`Array[Int]\`" \
+  "err_spawnable_annotated_alias_capture:no impl \`Spawnable\` for \`Array[Int]\`" \
   "err_spawnable_rename_import_capture:no impl \`Spawnable\` for \`Array[Int]\`" \
   "err_spawnable_value_passed:\`TaskGroup::spawn\` cannot be used as a value here" \
   "err_spawnable_let_closure:no impl \`Spawnable\` for \`Array[Int]\`" \
@@ -2178,6 +2179,22 @@ if [ ! -s "$spawnabledir/pos_alias.wasm" ]; then
 fi
 if ! spawnable_alias_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$spawnabledir/pos_alias.wasm" 2>&1)"; then
   echo "[compiler-gate] FAIL: region_ok_spawnable_alias.vibe got '$spawnable_alias_out' (want 82)" >&2
+  exit 1
+fi
+# #3156 review: an ANNOTATED alias is the same alias -- its ascription wraps
+# the bare name, and it used to be refused as a value; its calls stay
+# Send-checked (err_spawnable_annotated_alias_capture above). 43 = 41 + 2,
+# pinned by the fixture's `inspect` block.
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/region_ok_spawnable_annotated_alias.vibe "$spawnabledir/pos_annotated_alias.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ ! -s "$spawnabledir/pos_annotated_alias.wasm" ]; then
+  echo "[compiler-gate] FAIL: region_ok_spawnable_annotated_alias.vibe did not compile -- an annotated Send-only spawn alias must stay legal (#3125)" >&2
+  cat "$spawnabledir/pos_annotated_alias.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+if ! spawnable_annotated_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$spawnabledir/pos_annotated_alias.wasm" 2>&1)"; then
+  echo "[compiler-gate] FAIL: region_ok_spawnable_annotated_alias.vibe got '$spawnable_annotated_out' (want 43)" >&2
   exit 1
 fi
 # #3152 positive side: the closure values the check can see -- a local `let`

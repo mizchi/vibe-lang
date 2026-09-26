@@ -7219,6 +7219,31 @@ fn call_result_with_provenance(ret: Type, param_tys: Array[Type], arg_tys: Array
   }
 }
 
+/// #3125: is a local `let`'s value an ALIAS -- a bare name, or a bare name
+/// under an annotation? An annotated `let sp: (..) -> .. = TaskGroup::spawn`
+/// reaches the checker as the parser's ascription call
+/// `((__asc: T) -> __asc)(TaskGroup::spawn)` (`ascription_lambda_ann`), and
+/// the ascription only fixes the type the new name carries, so it is the
+/// same alias as the unannotated spelling (#3156 review: it was refused,
+/// contradicting the diagnostic's own advice to bind it with a `let`).
+fn let_rhs_is_alias(val: Expr) -> Bool {
+  match val {
+    EIdent(_, _) => true,
+    ECall(callee, args, _) => if Array::length(args) == 1 {
+      match ascription_lambda_ann(callee) {
+        Some(_) => match Array::get(args, 0) {
+          EIdent(_, _) => true,
+          _ => false
+        },
+        None => false
+      }
+    } else {
+      false
+    },
+    _ => false
+  }
+}
+
 /// #844: recognize the EXACT synthetic call shape `parser_expr_dispatch.vibe`'s
 /// `ascribe_wrap` builds for a LOCAL `let x: T = val` --
 /// `((__asc: T) -> __asc)(val)` -- and return its annotation `T`. `"__asc"` is
@@ -9218,9 +9243,10 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         // #3125: a bare name bound by `let` may alias a spawn-shaped function;
         // calls through the new name are checked by type, so this one value
         // position is not refused (see `spawn_value_let_rhs_cell`).
-        match val {
-          EIdent(_, _) => Array::push(spawn_value_let_rhs_cell, true),
-          _ => ()
+        if let_rhs_is_alias(val) {
+          Array::push(spawn_value_let_rhs_cell, true)
+        } else {
+          ()
         }
         let (vt, ns, nc) = ce(val, cenv, defs, s1, c1, errors, tytab, capture, lane)
         Array::truncate(spawn_value_let_rhs_cell, 0)
