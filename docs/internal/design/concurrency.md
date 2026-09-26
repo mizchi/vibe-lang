@@ -850,92 +850,79 @@ choose する fresh var を返す `instantiate` しかなく、型に scope タ�
   一箇所のバグで露呈)ため撤回し、リテラル一致に戻した。alias/rename/
   wrapper 経由のすり抜けは this slice の既知のギャップとして
   `lib/@vibe/concurrent/index.vpkg` の `r` コメントに明記した。
-### 実装ノート (2026-07-27 追記2): `Spawnable[r]` capture check (#1081 step 3 後半)
+### Implementation note: the `Spawnable[r]` capture check (#1081 step 3, second half)
 
-上の「未着手のまま」で懸念していた不健全さ(`n` の region が spawn 呼び出し
-時点ではまだ skolem へ unify されていない)は実際に起こるが、**inline での
-判定自体は健全であることが判明した** — deferred な第二パスは不要だった。
-理由: `TaskGroup::spawn(n, f)` を検査する時点で `n` の region はまだ
-skolem ではなく、この nursery body の `EFn` パラメータ検査(checker.vibe
-の `EFn` 分岐、無注釈パラメータに `fresh_var` を新規発行する箇所)で
-割り当てられた、その場限りの `CtVar` のままである。しかし **異なる
-`TaskGroup::run` 呼び出しは必ず異なる `EFn` パラメータ検査を経る**ため、
-必ず異なる(プログラム全体を貫くモノトニックなカウンタから発行された)
-`CtVar` id を得る。したがって「capture の region の zonk 結果」と
-「`n` 自身の region の zonk 結果」を比較する際、**両者が構造的に
-`CtNamed(skolem_name, [])` なら name で比較、まだ未解決な `CtVar` 同士
-なら var id の一致で比較**すれば、後者の場合でも誤って許可することは
-ない(同じ nursery 由来の capture だけが同じ var id を共有し、別の
-nursery の capture は必ず異なる var id を持つ)。実装は
-`checker/checker_spawnable.vibe` の `sp_same_region`。
+The worry recorded above -- that `n`'s region is not yet unified with a
+skolem when the spawn call is checked -- is real, but judging inline is still
+sound, so no deferred second pass is needed. When `TaskGroup::spawn(n, f)` is
+checked, `n`'s region is still the fresh `CtVar` the nursery body's `EFn`
+parameter check issued (an unannotated parameter gets `fresh_var`). Two
+different `TaskGroup::run` calls always pass through two different parameter
+checks, so they get different ids from the program-wide monotonic counter.
+Comparing a capture's zonked region with `n`'s is therefore exact: by name
+when both are `CtNamed(skolem, [])`, by var id when both are still `CtVar`.
+Only a capture from the same nursery shares the id. The comparison is
+`sp_same_region` in `checker/checker_spawnable.vibe`.
 
-- **checker 側の配線**: `TaskGroup::run` と同じ場所(`checker.vibe` の
-  `ECall(EIdent(name),...)` 分岐)に `"TaskGroup::spawn"` /
-  `"TaskGroup::spawn_suspend"` の枝を追加。通常の呼び出しチェック
-  (instantiate → 両引数を `check_expr` → `unify_call_args`)をそのまま
-  行った**上で**、`n` (第一引数)の zonk 済み region 型引数を
-  `check_spawnable_captures`(`checker_spawnable.vibe`)に渡す。
-- **capture 収集**: `checker_capture.vibe`(root package `@vibe/compiler`)
-  の `collect_free_vars` は checker package から import できない
-  (checker package は root package の依存元であり、逆方向 import は
-  循環になる)。codegen 側にも別実装(`codegen/common_analysis/
-  common_analysis.vibe` の `collect_free_vars_expr`)がすでに存在し、
-  この codebase では「解析目的ごとに package 内で複製する」のが既定の
-  パターンなので、`checker_spawnable.vibe` 内に自前の走査を複製した。
-  A bare callee counts as a capture when it names a LOCAL binding (#3152):
-  `let cb = ...; TaskGroup::spawn(n, () -> { cb() })` judges `cb`, while a
-  builtin, top-level function or constructor in callee position still does
-  not. A closure argument passed by name is judged by what it captured:
-  a local `let` closure's captures are recorded where the `let` is checked
-  (`spawn_caps_marker`), the closure parameter of a spawn-shaped function
-  (a `TaskGroup` first, a closure last, e.g. `Parallel::map`) is trusted
-  because every call site of that function is itself checked
-  (`spawn_safe_marker`), and any other closure value is refused.
-  `TaskGroup::run` and the spawn check are both selected by the callee's
-  type rather than its spelling (#3125, #3153).
-- **判定**: `sp_spawnable_ok`(`checker_spawnable.vibe`)— `type_send_ok`
-  を満たすか、または `TaskGroup[r]`/`TaskHandle[r,_]`/`Sender[r,_]`/
-  `Receiver[r,_]` で `r` が spawn 呼び出し自身の region と一致する場合に
-  legal。
-- **副産物のバグ修正 (checker 全体に影響、Phase B 固有ではない)**:
-  検証中に `check_pattern`(`checker_pattern.vibe` の `PCtor` 分岐)の
-  ジェネリック enum ペイロード置換が **常に無効化されていた**ことが
-  判明した — `defs`(`TDEnum`)に保存されるペイロード型は
-  `checker_stmt.vibe` の `SEnum` 処理時点で既に宣言時の固定 `CtVar` id
-  へ置換済みなのに、`check_pattern` 側は名前ベースの `subst_type_params`
-  で(存在しない)`CtNamed(paramname, [])` を探そうとしていたため、
-  一致せず静かに no-op していた。プレーンな `Result[Int, String]` の
-  `Ok(a)` だけで再現する(region も Sender も無関係)一般バグで、
-  `CtUnknown` 相当の緩い型がどこでも許容されるために誰も気付いていな
-  かった。`checker_trait.vibe` の `send_ok_named`/`send_subst_vars`
-  (`Send` 判定がジェネリック enum に対してすでに正しく行っている、
-  ctor の `env` 束縛スキーム `CtForAll(param_var_ids, _, ...)` から
-  実際の var id を復元して置換する手法)を `check_pattern` にも適用して
-  修正。`Foo[r]` のような一般ケースでも `Ok(a)` の `a` が正しく型付け
-  されるようになった、副作用として広い範囲の改善。
-- **副産物のバグ修正 2**: 地域タグ付き endpoint (`TaskGroup`/
-  `TaskHandle`/`Sender`/`Receiver`) を `let` で束縛すると通常の
-  Hindley-Milner let 多相と同様に generalize され、以後の各参照が独立
-  した fresh instantiation を得てしまい、region の同一性が失われる
-  ("同じ nursery 由来" を正しく判定できなくなる)。`ArrayBuilder` の
-  既存の value-restriction 特例(`is_array_builder_ty`)と全く同じ理由
-  で `is_region_tagged_ty` を追加し、同じ扱いにした。
-- **fixtures/compiler_gate.sh 60/60**: `region_ok_spawnable_capture.vibe`
-  (同一 nursery の `Sender` capture、42 で正常終了)、
-  `err_spawnable_capture_array.vibe`(非 Send な outer `Array` capture、
-  reject)、`err_spawnable_capture_cross_region.vibe`(別 nursery の
-  `Sender` capture、reject)。
-- **Aliases are closed** (#3125): any callee typed
-  `(TaskGroup[r, e], <closure>) -> TaskHandle[..]` runs the same check,
-  whatever it is spelled (`check_spawn_shaped_call` in `checker.vibe`), so
-  `let sp = TaskGroup::spawn` is refused with the direct call's diagnostic
-  (`err_spawnable_capture_alias.vibe` / `spawnable_alias_send_ok.vibe`).
-- **既知のギャップ**: 間接呼び出しされるローカル closure 値の
-  capture は検出しない(上記)。adoption レーン(`TaskGroup::adopt` +
-  `TaskHandle::settle`)は `TaskGroup::spawn`/`spawn_suspend` の呼び出し
-  形をしていないため、この check の対象外のまま(`suspend_test.vibe`
-  の adoption-site テストが `log: Array[Int]` を無検査で capture できる
-  のはこのため — 意図した既存の適用範囲どおり)。
+- **Where it runs.** The check is attached to the call, not to a trait bound:
+  there is no general `Spawnable` bound in the checker. It is selected by the
+  callee's TYPE, not its spelling (#3125, #3153): any callee typed
+  `(TaskGroup[r, e], <closure>) -> TaskHandle[..]` runs it after the ordinary
+  call check (instantiate, check both arguments, `unify_call_args`), with the
+  zonked region argument of `n` passed to `check_spawnable_captures`. So a
+  `let` alias, a renamed import and a wrapper with spawn's signature are
+  checked like the direct call. Handing a spawn- or run-shaped function on as
+  a value (an argument, a field, a return value) is refused where the value
+  is taken, because no later call could see the closure it is applied to
+  (`err_spawnable_capture_alias.vibe`, `spawnable_alias_send_ok.vibe`).
+- **What it reads.** The checker package cannot import the root package's
+  free-variable walk (that would be a cycle), so `checker_spawnable.vibe`
+  carries its own, the codebase's usual per-purpose copy. A closure's
+  captures are recorded as capture facts (#3152):
+  - a closure literal at the call is read directly;
+  - a local `let` bound to a closure literal has its captures recorded where
+    the `let` is checked (`spawn_caps_marker`), and a spawn of that name
+    judges them;
+  - a top-level function captures nothing, and the closure parameter of a
+    spawn-shaped function (a `TaskGroup` first, a closure last, as
+    `Parallel::map` is) is trusted because every call site of that function
+    is itself checked (`spawn_safe_marker`);
+  - any other closure value -- a closure a helper returned, a field -- is
+    refused, and the message says to write the literal.
+
+  A bare callee counts as a capture when it names a local binding, so
+  `let cb = ...; TaskGroup::spawn(n, () -> { cb() })` judges `cb`. A builtin,
+  a top-level function or a constructor in callee position does not.
+- **The judgment.** `sp_spawnable_ok` accepts a capture that satisfies
+  `type_send_ok`, or a `TaskGroup[r]` / `TaskHandle[r, _]` / `Sender[r, _]` /
+  `Receiver[r, _]` whose `r` is this spawn call's own region. A captured
+  `let mut` is refused whatever it holds (ADR-0100 (1) records the escape in
+  the environment). A future is accepted unless its value owns a host stream
+  (#2066): a `HostResponse` or `HostStream` anywhere inside the payload,
+  through `Option`, tuples, records and declared fields, or a type parameter
+  with no `Send` bound in an open generic declaration, which could be
+  instantiated at a response. Each refusal names the edit.
+- **Bugs found on the way (checker-wide, not specific to this check).**
+  - `check_pattern`'s generic enum payload substitution (the `PCtor` branch in
+    `checker_pattern.vibe`) was always a no-op. `SEnum` had already replaced
+    payload types with the declaration's fixed `CtVar` ids, while
+    `check_pattern` searched by name for a `CtNamed(paramname, [])` that no
+    longer existed. Plain `Result[Int, String]` with `Ok(a)` reproduced it.
+    It now recovers the real var ids from the constructor's
+    `CtForAll(param_var_ids, _, ..)` scheme, as `send_ok_named` /
+    `send_subst_vars` in `checker_trait.vibe` already did.
+  - A region-tagged endpoint bound by `let` was generalized like any
+    Hindley-Milner `let`, so every use got a fresh instantiation and region
+    identity was lost. `is_region_tagged_ty` gives these types the same value
+    restriction `ArrayBuilder` has (`is_array_builder_ty`).
+- **Fixtures.** `region_ok_spawnable_capture.vibe` (a same-nursery `Sender`
+  capture, exits 42), `err_spawnable_capture_array.vibe` (a non-Send outer
+  `Array`, refused) and `err_spawnable_capture_cross_region.vibe` (another
+  nursery's `Sender`, refused).
+- **Out of scope.** The adoption lane (`TaskGroup::adopt` +
+  `TaskHandle::settle`) is not spawn-shaped, so the check does not see it;
+  that is why `suspend_test.vibe`'s adoption-site tests can capture a
+  `log: Array[Int]`.
 
 ### 実装ノート (2026-07-27 追記3): `taskgroup { g => body }` 構文糖衣 (#1081 step 4 の一部)
 
