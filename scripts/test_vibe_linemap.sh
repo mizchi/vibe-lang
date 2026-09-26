@@ -181,8 +181,26 @@ if [ -z "$legacy_dump" ]; then
 else
   bad "unmarked vibe.linemap was decoded anyway: $legacy_dump"
 fi
+# #3126: the division by zero prints its OWN location before it traps
+# (`Int `/` by zero at <path>/t.vibex:4:13`), so a `t.vibex:N` in the output
+# no longer means the linemap spoke. What an unmarked table must not add is a
+# SECOND location: every `t.vibex:N` has to sit on the program's own line.
+# The marked module is the control -- the runner annotates its frame from the
+# linemap, so the negative check below is not vacuous.
+div_msg_re='^Int `/` by zero at .*/t\.vibex:4:[0-9]+$'
+marked_trap="$(env -u VIBE_RUNNER_BACKTRACE -u RUST_BACKTRACE "$VIBERUN" "$OUT_T" 2>&1 || true)"
+if printf '%s\n' "$marked_trap" | grep -vE "$div_msg_re" | grep -qE 't\.vibex:[0-9]+'; then
+  ok "a marked vibe.linemap adds a location of its own at a trap (control)"
+else
+  bad "expected the marked module's trap to carry a linemap location besides the program's message: $marked_trap"
+fi
 legacy_trap="$(env -u VIBE_RUNNER_BACKTRACE -u RUST_BACKTRACE "$VIBERUN" "$LEGACY" 2>&1 || true)"
-if ! printf '%s' "$legacy_trap" | grep -qE 't\.vibex:[0-9]+'; then
+if printf '%s\n' "$legacy_trap" | grep -qE "$div_msg_re"; then
+  ok "the unmarked module still reaches the trap and prints the program's own message"
+else
+  bad "expected 'Int \`/\` by zero at <path>/t.vibex:4:<col>' from the unmarked module: $legacy_trap"
+fi
+if ! printf '%s\n' "$legacy_trap" | grep -vE "$div_msg_re" | grep -qE 't\.vibex:[0-9]+'; then
   ok "an unmarked vibe.linemap annotates no location at a trap"
 else
   bad "unmarked vibe.linemap produced a location: $legacy_trap"
