@@ -1835,13 +1835,51 @@ fn builtin_ident_is_value(name: String, t: Type) -> Bool {
 ///
 /// A row with no variables (`String::concat`) instantiates to itself, so this
 /// is a no-op for every concrete builtin.
+/// #3149: a branch typed `Option[?a]` with the payload still a VARIABLE
+/// (a `None`) takes the payload of a sibling branch typed `Option[..]`. The
+/// branch-agreement checks for `if` / `match` are ground-gated (a `match`
+/// only cross-checks arms at all when its first arm is a scalar), so without
+/// this `match f { true => None, false => Some(xs) }` kept the `None` arm's
+/// open payload and the value's real type was lost. Refinement only: a
+/// failed unification leaves the substitution as it was and reports nothing.
+fn refine_open_option_branch(result: Type, other: Type, s: Subst) -> Subst {
+  let open_payload = match subst_apply(s, result) {
+    CtOption(inner) => match inner {
+      CtVar(_) => true,
+      _ => false
+    },
+    _ => false
+  }
+  let other_option = match subst_apply(s, other) {
+    CtOption(_) => true,
+    _ => false
+  }
+  if open_payload && other_option {
+    match unify(result, other, s) {
+      Some(s2) => s2,
+      None => s
+    }
+  } else {
+    s
+  }
+}
+
 fn builtin_ident_value_type(name: String, erased: Type, c: Int) -> (Type, Int) {
   match registry_builtin_scheme(canonical_builtin_name(name)) {
     Some(scheme) => {
       let (ty, c1, _bounds) = instantiate(scheme, c)
       (ty, c1)
     },
-    None => (erased, c)
+    // #3149: `None` is `Option[?a]` with a fresh `?a` per occurrence, not
+    // `Option[unknown]`: the unknown absorbed every unification, so a `match`
+    // or `if` whose first branch was `None` typed as `Option[unknown]` and
+    // lost the other branch's type (`Array::length(callee_effs)` in
+    // checker_effects.vibe reached its Array reader with no type).
+    None => if name == "None" {
+      (CtOption(CtVar(c)), c + 1)
+    } else {
+      (erased, c)
+    }
   }
 }
 
@@ -3497,7 +3535,53 @@ let eq_group_next: Array[Int] = [0]
 /// turn. Reset with the other per-run tables.
 let deferred_field_reads: Array[(Int, String, Int, Int, String, Int)] = []
 
+/// #3149: the generic formals whose scheme the body constrained (bound to a
+/// concrete head, so the declaration's scheme substitutes them) AND whose
+/// every caller is known to have been checked against that scheme: a
+/// non-exported top-level declaration no earlier statement of its list
+/// references. A caller written ABOVE the declaration was checked against the
+/// hoisted signature, which knows nothing of the body; an exported one may be
+/// called through a contract that says the same. For these formals the
+/// #3145 / #3148 build-time refusal is redundant -- a Map argument is already
+/// a type error at the call -- and is not filed. Reset per run.
+let scheme_constrained_formals: Array[Int] = []
+
+/// #3149: the formals each generic `EFn` substituted into its scheme, pending
+/// until the enclosing top-level declaration decides whether they count as
+/// constrained (`efn_head_bound_commit`).
+let efn_substituted_formals: Array[Int] = []
+
+export fn efn_head_bound_mark() -> Int {
+  Array::length(efn_substituted_formals)
+}
+
+/// Commit (or drop) the formals the declaration's value substituted since
+/// `mark`. `callers_checked` is the declaration-level answer described at
+/// `scheme_constrained_formals`.
+export fn efn_head_bound_commit(mark: Int, callers_checked: Bool) -> Unit {
+  if callers_checked {
+    let mut i = mark
+    while i < Array::length(efn_substituted_formals) {
+      Array::push(scheme_constrained_formals, Array::get(efn_substituted_formals, i))
+      i = i + 1
+    }
+  } else {
+    ()
+  }
+  if mark <= Array::length(efn_substituted_formals) {
+    Array::truncate(efn_substituted_formals, mark)
+  } else {
+    ()
+  }
+}
+
+export fn scheme_formal_constrained(vid: Int) -> Bool {
+  int_array_has(scheme_constrained_formals, vid)
+}
+
 export fn reset_eq_formal_vars() -> Unit {
+  Array::truncate(scheme_constrained_formals, 0)
+  Array::truncate(efn_substituted_formals, 0)
   Array::truncate(eq_formal_vars, 0)
   Array::truncate(eq_formal_arity, 0)
   Array::truncate(eq_formal_group, 0)
@@ -4541,6 +4625,70 @@ fn reject_non_frozen_receiver(recv: Type, name: String, callee_off: Int, errors:
 fn is_bytestream_named_type(t: Type) -> Bool {
   match t {
     CtNamed(n, _) => n == "ByteStream",
+    _ => false
+  }
+}
+
+/// #3149: a generic formal's binding (already zonked) whose HEAD is a
+/// concrete constructor -- `Array[?e]`, `Option[?e]`, a tuple, a declared or
+/// builtin nominal `N[..]` -- even though some argument is still open. The
+/// scheme substitutes such a formal rather than leaving it quantified. A
+/// variable head, a compiler-internal `#ctor.` / `#hktformal.` spelling, a
+/// function type, or anything containing one keeps the old answer.
+fn scheme_formal_head_bound(t: Type) -> Bool {
+  match t {
+    CtArray(e) => !scheme_type_mentions_internal(e),
+    CtOption(e) => !scheme_type_mentions_internal(e),
+    CtTuple(items) => {
+      let mut ok = true
+      for it in items {
+        if scheme_type_mentions_internal(it) {
+          ok = false
+        } else {
+          ()
+        }
+      }
+      ok
+    },
+    CtNamed(n, args) => !String::starts_with(n, "#") && Array::length(args) > 0 && !scheme_type_mentions_internal(t),
+    _ => false
+  }
+}
+
+fn scheme_type_mentions_internal(t: Type) -> Bool {
+  match t {
+    CtNamed(n, args) => if String::starts_with(n, "#") {
+      true
+    } else {
+      let mut hit = false
+      for a in args {
+        if scheme_type_mentions_internal(a) {
+          hit = true
+        } else {
+          ()
+        }
+      }
+      hit
+    },
+    CtArray(e) => scheme_type_mentions_internal(e),
+    CtOption(e) => scheme_type_mentions_internal(e),
+    CtTuple(items) => {
+      let mut hit = false
+      for it in items {
+        if scheme_type_mentions_internal(it) {
+          hit = true
+        } else {
+          ()
+        }
+      }
+      hit
+    },
+    CtFn(_, _, _) => true,
+    CtForAll(_, _, _) => true,
+    CtApplied(_, _) => true,
+    CtConstructor(_, _) => true,
+    CtUnknown => true,
+    CtRecord(_) => true,
     _ => false
   }
 }
@@ -8901,7 +9049,13 @@ fn record_receiver_kind(capture: Option[TypedOccurrenceRoleLaneCapture], bracket
 /// 6, which the extraction reads as open whatever the substitution says.
 fn record_array_receiver(capture: Option[TypedOccurrenceRoleLaneCapture], name: String, callee_off: Int, arg_ty: Type, s: Subst, formal: Bool) -> Unit {
   if callee_off >= 0 && array_receiver_reads(name) {
-    record_receiver_kind(capture, callee_off, arg_ty, subst_apply(s, arg_ty), if formal {
+    // A formal is filed as its own variable, which the extraction looks up
+    // in `scheme_constrained_formals`.
+    record_receiver_kind(capture, callee_off, if formal {
+      subst_apply(s, arg_ty)
+    } else {
+      arg_ty
+    }, subst_apply(s, arg_ty), if formal {
       6
     } else {
       5
@@ -10960,6 +11114,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       // unchecked — `if c { 1 } else { "x" }` was accepted). A `CtUnit` branch
       // is tolerated: `if c { stmt }` desugars to an `else ()` whose value is
       // discarded, and a statement-position `if` need not have matching arms.
+      let s3 = refine_open_option_branch(tt, et, refine_open_option_branch(et, tt, s3))
       let rtt = subst_apply(s3, tt)
       let ret = subst_apply(s3, et)
       // When one branch yields Unit (an else-less `if`, whose missing else is
@@ -13371,6 +13526,11 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           } else if !result_anchored {
             ()
           } else {
+            if arm_tail_all_return(body) {
+              ()
+            } else {
+              si = refine_open_option_branch(result_ty, arm_ty, si)
+            }
             if check_arms {
               // Tolerate a `CtUnit` arm (statement-position match); rely on
               // check_assignable's ground/ground gate otherwise. Also tolerate a
@@ -14019,22 +14179,20 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       // the way an Array builtin binds its argument (#3006 / #3145): an
       // unannotated lambda parameter used as an iterand is then an Array to
       // its callers, and a Map argument is a type error at the call. A
-      // declared type parameter is not bound -- that binding would not reach
-      // its callers -- and is filed as kind 8, always open, so it is refused.
+      // declared type parameter is bound too, and since #3149 the binding
+      // reaches the declaration's scheme; it is filed as kind 8, which is
+      // refused unless every caller was checked against that scheme
+      // (`scheme_formal_constrained`).
       let forin_formal = match subst_apply(s1a, it) {
         CtVar(fv) => eq_formal_row_of(fv) >= 0,
         _ => false
       }
-      record_receiver_kind(capture, typed_lowering_arg_offset(iterable), it, subst_apply(s1a, it), if forin_formal {
+      record_receiver_kind(capture, typed_lowering_arg_offset(iterable), subst_apply(s1a, it), subst_apply(s1a, it), if forin_formal {
         8
       } else {
         7
       })
-      let (s1, c1) = if forin_formal {
-        (s1a, c1a)
-      } else {
-        bind_builtin_arg_var(subst_apply(s1a, it), 9, s1a, c1a)
-      }
+      let (s1, c1) = bind_builtin_arg_var(subst_apply(s1a, it), 9, s1a, c1a)
       // Element type bound by `for x in it`:
       //   - `Array[T]`                       -> T
       //   - a parameterized iterator type
@@ -14065,7 +14223,15 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       //  1 = residual collection (Array/String/builtin eager containers)
       //  0 = positively non-collecting iterator lowering
       // -1 = classification unavailable
-      let collection_class = match it_resolved {
+      // #3149: a declared type parameter is classified from its type BEFORE
+      // the Array binding above -- that binding constrains callers, it is not
+      // evidence about what the loop lowers to inside the generic body.
+      let class_ty = if forin_formal {
+        subst_apply(s1a, it)
+      } else {
+        it_resolved
+      }
+      let collection_class = match class_ty {
         CtArray(_) => 1,
         CtString => 1,
         CtNamed(nm, _) => if nm == "Map" || nm == "ByteStream" {
@@ -14113,7 +14279,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         // is different — builtins such as `String::split` surface as a
         // fresh var when their return is not yet in the env, and the
         // compiler itself iterates those in statement position.
-        let rigid_param = match it_resolved {
+        let rigid_param = match class_ty {
           CtNamed(nm, args) => Array::length(args) == 0 && nm != "HostStream" && match find_typedef(defs, nm) {
             None => true,
             Some(_) => false
@@ -14700,7 +14866,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         // a nullary `#ctor.Array` / `#hktformal.F` / unbound vars. HKT
         // constructor params are rigid in the body and simply unbound in s3.
         let still_free = match subst_lookup(s3, kid) {
-          Some(t) => !type_fully_concrete(t),
+          Some(t) => !type_fully_concrete(t) && !scheme_formal_head_bound(subst_apply(s3, t)),
           None => true
         }
         if still_free {
@@ -14709,6 +14875,58 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           ()
         }
         ki0 = ki0 + 1
+      }
+      // #3149: a formal the body bound to a CONCRETE HEAD whose arguments are
+      // still open (`T := Array[?e]`, the binding an Array builtin makes,
+      // #3006) is substituted into the scheme like a fully concrete one, so a
+      // caller passing a Map is a type error at the call. The variables left
+      // inside it are quantified with the formals -- each call gets its own
+      // element -- except those still reachable from the environment, which
+      // belong to something else (#2459's rule).
+      let head_bound_vars = array_empty()
+      if tplen > 0 {
+        let mut hbi = 0
+        while hbi < tplen {
+          let hid = Array::get(tparam_ids, hbi)
+          if int_array_has(keep_ids, hid) {
+            ()
+          } else {
+            match subst_lookup(s3, hid) {
+              Some(t) => {
+                let tvs = collect_tvars(subst_apply(s3, t))
+                let mut tvi = 0
+                while tvi < Array::length(tvs) {
+                  let tv = Array::get(tvs, tvi)
+                  if int_array_has(head_bound_vars, tv) || int_array_has(tparam_ids, tv) {
+                    ()
+                  } else {
+                    Array::push(head_bound_vars, tv)
+                  }
+                  tvi = tvi + 1
+                }
+              },
+              None => ()
+            }
+          }
+          hbi = hbi + 1
+        }
+      } else {
+        ()
+      }
+      let head_bound_env = if Array::length(head_bound_vars) == 0 {
+        array_empty()
+      } else {
+        env_reachable_tvars(expr, env, s3, None)
+      }
+      let mut sfi = 0
+      while sfi < tplen {
+        let sfid = Array::get(tparam_ids, sfi)
+        if int_array_has(keep_ids, sfid) {
+          ()
+        } else {
+          Array::push(efn_substituted_formals, sfid)
+        }
+        sfi = sfi + 1
       }
       let inferred_ret = subst_apply_except(s3, final_ret, keep_ids)
       let scheme_ret_raw = match ret_ty {
@@ -14746,7 +14964,27 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           }
           vbi = vbi + 1
         }
-        (CtForAll(tparam_ids, var_bounds, subst_apply_except(s3, fn_ty, keep_ids)), s3, c2)
+        // #3149: the head-bound formals' own variables, quantified after the
+        // formals (so a positional reading of the first `tplen` ids is kept).
+        let scheme_ids = array_empty()
+        for tid in tparam_ids {
+          Array::push(scheme_ids, tid)
+        }
+        for hv in head_bound_vars {
+          if int_array_has(head_bound_env, hv) {
+            ()
+          } else {
+            Array::push(scheme_ids, hv)
+            Array::push(keep_ids, hv)
+            let hbl = subst_bounds_for(s3, hv)
+            if Array::length(hbl) != 0 {
+              Array::push(var_bounds, (hv, hbl))
+            } else {
+              ()
+            }
+          }
+        }
+        (CtForAll(scheme_ids, var_bounds, subst_apply_except(s3, fn_ty, keep_ids)), s3, c2)
       }
     },
     EBreak(opt) => {

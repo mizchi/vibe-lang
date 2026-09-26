@@ -2451,19 +2451,24 @@ ur_refused fixtures/err_array_set_open_receiver_refused.vibe 'cannot tell whethe
 # reaching callers; it answered 0 for a one-entry map). An unannotated lambda
 # parameter is now bound to `Array[_]` instead, so a Map argument is a type
 # error at the call (fixtures/typecheck/array_reader_lambda_param_binds_reject).
-ur_refused fixtures/err_array_get_open_receiver_refused.vibe 'cannot tell whether this call reads an Array: `Array::get`' 'annotate it' linear 'fixtures/err_array_get_open_receiver_refused.vibe: line 8:3'
-ur_refused fixtures/err_array_get_open_receiver_refused.vibe 'cannot tell whether this call reads an Array: `Array::get`' 'annotate it' gc 'fixtures/err_array_get_open_receiver_refused.vibe: line 8:3'
-ur_refused fixtures/err_array_length_formal_refused.vibe 'cannot tell whether this call reads an Array: `Array::length`' 'annotate it' linear 'fixtures/err_array_length_formal_refused.vibe: line 8:3'
+# #3149: since the declaration's scheme carries that binding, a caller BELOW
+# the declaration is a type error too (array_reader_formal_scheme_reject); the
+# refusal remains for what the scheme cannot reach -- a caller ABOVE the
+# declaration, checked against its hoisted signature, as in these fixtures,
+# and an exported declaration, callable through its contract.
+ur_refused fixtures/err_array_get_open_receiver_refused.vibe 'cannot tell whether this call reads an Array: `Array::get`' 'annotate it' linear 'fixtures/err_array_get_open_receiver_refused.vibe: line 16:3'
+ur_refused fixtures/err_array_get_open_receiver_refused.vibe 'cannot tell whether this call reads an Array: `Array::get`' 'annotate it' gc 'fixtures/err_array_get_open_receiver_refused.vibe: line 16:3'
+ur_refused fixtures/err_array_length_formal_refused.vibe 'cannot tell whether this call reads an Array: `Array::length`' 'annotate it' linear 'fixtures/err_array_length_formal_refused.vibe: line 14:3'
 # #3145 review: a two-array reader refuses naming the operand that is
 # actually unresolved -- here the second, `ys`, not the resolved `xs`.
-ur_refused fixtures/err_array_concat_second_formal_refused.vibe 'treats `ys` as an Array' 'annotate it' linear 'fixtures/err_array_concat_second_formal_refused.vibe: line 8:3'
-ur_refused fixtures/err_array_concat_second_formal_refused.vibe 'treats `ys` as an Array' 'annotate it' gc 'fixtures/err_array_concat_second_formal_refused.vibe: line 8:3'
+ur_refused fixtures/err_array_concat_second_formal_refused.vibe 'treats `ys` as an Array' 'annotate it' linear 'fixtures/err_array_concat_second_formal_refused.vibe: line 15:3'
+ur_refused fixtures/err_array_concat_second_formal_refused.vibe 'treats `ys` as an Array' 'annotate it' gc 'fixtures/err_array_concat_second_formal_refused.vibe: line 15:3'
 # #3148: a `for` over an iterand whose type never resolves (an erased formal
 # holding a map ran zero times). The green side -- a Map iterates its keys,
 # Arrays and Strings keep their loops -- is fixtures/for_in_map_keys_test.vibe.
-ur_refused fixtures/err_for_in_open_iterand_refused.vibe 'cannot tell whether this `for` iterates an Array or a Map' 'Map::keys(m)' linear 'fixtures/err_for_in_open_iterand_refused.vibe: line 9:12'
-ur_refused fixtures/err_for_in_open_iterand_refused.vibe 'cannot tell whether this `for` iterates an Array or a Map' 'Map::keys(m)' gc 'fixtures/err_for_in_open_iterand_refused.vibe: line 9:12'
-ur_refused fixtures/err_array_length_formal_refused.vibe 'cannot tell whether this call reads an Array: `Array::length`' 'annotate it' gc 'fixtures/err_array_length_formal_refused.vibe: line 8:3'
+ur_refused fixtures/err_for_in_open_iterand_refused.vibe 'cannot tell whether this `for` iterates an Array or a Map' 'Map::keys(m)' linear 'fixtures/err_for_in_open_iterand_refused.vibe: line 15:12'
+ur_refused fixtures/err_for_in_open_iterand_refused.vibe 'cannot tell whether this `for` iterates an Array or a Map' 'Map::keys(m)' gc 'fixtures/err_for_in_open_iterand_refused.vibe: line 15:12'
+ur_refused fixtures/err_array_length_formal_refused.vibe 'cannot tell whether this call reads an Array: `Array::length`' 'annotate it' gc 'fixtures/err_array_length_formal_refused.vibe: line 14:3'
 # #3074: a generic enum whose instantiation cannot be recovered would render
 # its payload through the erased formal (`GA(1)` for `GA(true)`).
 ur_refused fixtures/err_interp_generic_enum_unknown_refused.vibe 'its type arguments are not known here' 'bind it with a type annotation' linear 'fixtures/err_interp_generic_enum_unknown_refused.vibe: line 12:4'

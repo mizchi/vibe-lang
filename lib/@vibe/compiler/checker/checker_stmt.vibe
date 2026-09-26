@@ -37,6 +37,10 @@ import ./builtins.vibe {
   lookup_builtin
 }
 
+import ./checker_spawnable.vibe {
+  closure_bare_callee_names, closure_free_names
+}
+
 import @vibe/compiler/core {
   Expr,
   ImportItem,
@@ -121,6 +125,8 @@ import ./checker.vibe {
   check_expr_capture,
   collect_formal_applications_by,
   constructor_dependency_row,
+  efn_head_bound_commit,
+  efn_head_bound_mark,
   fn_return_env_name,
   formal_application_error,
   interp_is_shim_body,
@@ -149,6 +155,7 @@ import ./checker.vibe {
   resolve_deferred_field_reads,
   resolve_impl_self_field_reads,
   resolve_trait_bound_self_reference,
+  scheme_formal_constrained,
   set_generic_fn_decls,
   throw_kind_of_type,
   throw_payload_site_types,
@@ -2384,6 +2391,131 @@ fn check_import_kinds(stmts: Array[Stmt], initial_env: TypeEnv, errors: Array[St
   }
 }
 
+fn int_array_has_id(items: Array[Int], wanted: Int) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(items) && !hit {
+    hit = Array::get(items, i) == wanted
+    i = i + 1
+  }
+  hit
+}
+
+/// One past the largest FREE type-variable id in `t` (quantified ids are
+/// skipped), or `acc` when that is larger.
+fn type_free_tvar_ceiling(t: Type, bound: Array[Int], acc: Int) -> Int {
+  match t {
+    CtVar(id) => if id + 1 > acc && !int_array_has_id(bound, id) {
+      id + 1
+    } else {
+      acc
+    },
+    CtFn(params, ret, _) => {
+      let mut out = acc
+      for p in params {
+        out = type_free_tvar_ceiling(p, bound, out)
+      }
+      type_free_tvar_ceiling(ret, bound, out)
+    },
+    CtArray(elem) => type_free_tvar_ceiling(elem, bound, acc),
+    CtOption(elem) => type_free_tvar_ceiling(elem, bound, acc),
+    CtTuple(elems) => {
+      let mut out = acc
+      for e in elems {
+        out = type_free_tvar_ceiling(e, bound, out)
+      }
+      out
+    },
+    CtRecord(fields) => {
+      let mut out = acc
+      for f in fields {
+        let (_, ft) = f
+        out = type_free_tvar_ceiling(ft, bound, out)
+      }
+      out
+    },
+    CtNamed(_, args) => {
+      let mut out = acc
+      for a in args {
+        out = type_free_tvar_ceiling(a, bound, out)
+      }
+      out
+    },
+    CtApplied(head, args) => {
+      let mut out = type_free_tvar_ceiling(head, bound, acc)
+      for a in args {
+        out = type_free_tvar_ceiling(a, bound, out)
+      }
+      out
+    },
+    CtForAll(ids, _, body) => {
+      let inner = array_empty()
+      for b in bound {
+        Array::push(inner, b)
+      }
+      for id in ids {
+        Array::push(inner, id)
+      }
+      type_free_tvar_ceiling(body, inner, acc)
+    },
+    _ => acc
+  }
+}
+
+/// #3149: the first type-variable id the importing module may hand out. An
+/// imported VALUE binding can carry a free variable from the exporting
+/// module's counter (`export let no_tb = array_empty()` publishes
+/// `Array[?t4]`: a non-function `let` is not generalized). Such an id is not
+/// renamed by `instantiate`, so when the importer's own counter reaches it the
+/// two unrelated variables are one -- measured, `take(no_tb, None)` bound the
+/// `None`'s payload to `no_tb`'s element type and reported a mismatch on a
+/// correct call. Starting the importer's counter above every free id it can
+/// see makes its fresh variables fresh. Walks the authoritative chain only
+/// (an `EnvCached` node's arrays mirror it, see `env_cache`).
+fn env_free_tvar_ceiling(env: TypeEnv) -> Int {
+  let no_bound = array_empty()
+  let mut out = 0
+  let mut cur = env
+  let mut done = false
+  while !done {
+    match cur {
+      EnvEmpty => {
+        done = true
+      },
+      EnvBind(_, binding, rest) => {
+        out = type_free_tvar_ceiling(binding.ty, no_bound, out)
+        cur = rest
+      },
+      EnvTraitDef(_, _, _, _, rest, _, _) => {
+        cur = rest
+      },
+      EnvTraitImpl(_, _, rest) => {
+        cur = rest
+      },
+      EnvMutCell(_, _, rest) => {
+        cur = rest
+      },
+      EnvTraitImplGen(_, _, _, _, rest) => {
+        cur = rest
+      },
+      EnvTypeDefs(_, _, rest) => {
+        cur = rest
+      },
+      EnvFlat(bindings) => {
+        for entry in bindings {
+          let (_, binding) = entry
+          out = type_free_tvar_ceiling(binding.ty, no_bound, out)
+        }
+        done = true
+      },
+      EnvCached(_, _, rest) => {
+        cur = rest
+      }
+    }
+  }
+  out
+}
+
 fn seed_imported_type_defs(stmts: Array[Stmt], initial_env: TypeEnv, defs: Array[TypeDef], type_def_binders: Array[Array[Int]]) -> (Int, Int) {
   let imported = env_type_defs(initial_env)
   // `find_typedef` is first-match-wins. Local declarations are checked after
@@ -3165,6 +3297,75 @@ fn hoisted_fn_scheme(value: Expr, defs: Array[TypeDef], c: Int) -> (Type, Int) {
 /// source reads `__exn_kind_cell` that way. The head is what the literal
 /// syntactically IS, so it can only be right; the element stays as permissive
 /// as the old `CtUnknown`.
+/// #3149: the names of this list's GENERIC value declarations that an earlier
+/// statement mentions (any free name or bare callee, shadowing ignored -- a
+/// false hit only keeps the conservative answer).
+fn string_array_has(items: Array[String], wanted: String) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(items) && !hit {
+    hit = Array::get(items, i) == wanted
+    i = i + 1
+  }
+  hit
+}
+
+fn generic_forward_referenced_names(stmts: Array[Stmt], idx: Int) -> Array[String] {
+  let generic_names = array_empty()
+  let mut gi = idx
+  while gi < Array::length(stmts) {
+    match Array::get(stmts, gi) {
+      SLet(_, _, gname, _, EFn(gtps, _, _, _, _, _)) => if Array::length(gtps) > 0 {
+        Array::push(generic_names, gname)
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    gi = gi + 1
+  }
+  let out = array_empty()
+  if Array::length(generic_names) == 0 {
+    out
+  } else {
+    let seen = MutMap::new_string()
+    let mut si = idx
+    while si < Array::length(stmts) {
+      let stmt = Array::get(stmts, si)
+      match stmt {
+        SLet(_, _, sname, _, _) => if string_array_has(generic_names, sname) && MutMap::has(seen, sname) {
+          Array::push(out, sname)
+        } else {
+          ()
+        },
+        _ => ()
+      }
+      let body = match stmt {
+        SLet(_, _, _, _, v) => Some(v),
+        SLetMut(_, _, v) => Some(v),
+        SLetPat(_, v) => Some(v),
+        STest(_, b) => Some(b),
+        SBench(_, b) => Some(b),
+        SExpr(e) => Some(e),
+        _ => None
+      }
+      match body {
+        Some(b) => {
+          for n in closure_free_names(b, array_empty()) {
+            MutMap::set(seen, n, 1)
+          }
+          for n in closure_bare_callee_names(b) {
+            MutMap::set(seen, n, 1)
+          }
+        },
+        None => ()
+      }
+      si = si + 1
+    }
+    out
+  }
+}
+
 fn hoisted_value_type(annotation: Option[TypeExpr], value: Expr, defs: Array[TypeDef], c: Int) -> (Type, Int) {
   match annotation {
     Some(type_expr) => (resolve_type_expr(type_expr, defs), c),
@@ -3334,6 +3535,11 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
   resource_decl_errors(stmts, idx, errors)
   // #1464: same shape -- duplicate value declarations need the WHOLE list.
   duplicate_value_decl_errors(stmts, idx, errors)
+  // #3149: the generic declarations some EARLIER statement of this list
+  // already references. Such a caller was checked against the hoisted
+  // signature, which knows nothing the body adds, so those declarations'
+  // formals never count as constrained (see `scheme_constrained_formals`).
+  let generic_forward_used = generic_forward_referenced_names(stmts, idx)
   // #942 (Codex P2 on #969): if any top-level declaration in this statement
   // list binds the name `resume` (fn/let — fn decls are lowered to SLet
   // before the checker — let-pattern, extern let, or an import), codegen's
@@ -3476,11 +3682,17 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
           EFn(_, _, _, _, _, _) => CtBool,
           _ => CtUnit
         })
+        let head_bound_mark = efn_head_bound_mark()
         let (vt, ns0, nc) = if is_rec {
           check_expr_capture(val, env_bind(val_env, name, CtUnknown), defs, s, c, errors, tytab, role_lane_capture, "Primary")
         } else {
           check_expr_capture(val, val_env, defs, s, c, errors, tytab, role_lane_capture, "Primary")
         }
+        // #3149: an exported declaration may be called through a contract,
+        // and a forward-referenced one was called against its hoisted
+        // signature; only the rest has every caller checked against the
+        // scheme its body produced.
+        efn_head_bound_commit(head_bound_mark, !exported && !string_array_has(generic_forward_used, name))
         attach_unlocated_decl_name_marker(errors, err_before, name)
         // The value must be assignable to a declared annotation (previously
         // unchecked — `let x: Int = "s"` was accepted).
@@ -9180,8 +9392,16 @@ fn receiver_rows_from_capture(checked: CheckedProgram, capture: TypedOccurrenceR
       // one in `checker_effects.vibe` (`Array::length(callee_effs)`).
       // Kind 6 is a declared formal the fast path bound (`record_array_receiver`);
       // kind 8 is a declared formal used as a `for` iterand (#3148).
+      // #3149: unless the formal's scheme already constrains every caller.
       let v = if kind == 6 || kind == 8 {
-        typed_index_open_verdict()
+        match Array::get(capture.binop_types, i) {
+          CtVar(fv) => if scheme_formal_constrained(fv) {
+            ""
+          } else {
+            typed_index_open_verdict()
+          },
+          _ => typed_index_open_verdict()
+        }
       } else {
         index_receiver_verdict(checked, Array::get(capture.binop_types, i), kind == 4)
       }
@@ -10624,7 +10844,14 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
       // `seed_next_c` is the first type-variable id seeding did NOT consume;
       // checking has to start there or a parameterized imported enum's formals
       // would be handed out a second time.
-      let (local_defs_start, seed_next_c) = seed_imported_type_defs(stmts, initial_env, empty_defs, type_def_binders)
+      let (local_defs_start, seed_defs_next_c) = seed_imported_type_defs(stmts, initial_env, empty_defs, type_def_binders)
+      // #3149: and above every free variable an imported value carries.
+      let imported_free_ceiling = env_free_tvar_ceiling(initial_env)
+      let seed_next_c = if imported_free_ceiling > seed_defs_next_c {
+        imported_free_ceiling
+      } else {
+        seed_defs_next_c
+      }
       let cached_env = env_cache(initial_env)
       let seeded_raw_env = if trait_defined(cached_env, "Eq") {
         cached_env
