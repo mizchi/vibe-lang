@@ -4669,7 +4669,16 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
 /// Returns "" when no impl for this trait mentions the type's constructor, i.e.
 /// when "no impl" is the whole truth.
 fn unsatisfied_bound_hint(env: TypeEnv, trait_name: String, resolved: Type) -> String {
-  if trait_impl_declared_for_ctor(env, trait_name, resolved) && trait_is_marker(env, trait_name) {
+  if trait_reference_display(trait_name) == "Add" && marker_cmp_bound_is_unsound(env, trait_name, resolved) {
+    // #3158 review: the `+` twin of the comparison messages below.
+    let display = trait_reference_display(trait_name)
+    let shown = type_to_string(resolved)
+    let declared = String::concat(": an `impl ", String::concat(display, String::concat(" for ", String::concat(shown, "` may be declared, but `"))))
+    let why = String::concat(display, String::concat("` is a marker trait (declared with no methods) so `+` on the erased type adds `Int`s and joins `String`s and nothing else -- on a `", String::concat(shown, "` it adds the raw representation, not the value")))
+    let cost = " -- honouring the impl would make the sum silently wrong (`1.5 + 2.25` answered `0`)"
+    let edit = String::concat(". Add at the concrete type (take a `", String::concat(shown, "` parameter) instead of through the bound, or pass the addition in as a function"))
+    String::concat(declared, String::concat(why, String::concat(cost, edit)))
+  } else if trait_impl_declared_for_ctor(env, trait_name, resolved) && trait_is_marker(env, trait_name) {
     let display = trait_reference_display(trait_name)
     let ctor = type_constructor_name(resolved)
     // String::concat rather than `\{}` interpolation, for the reason recorded
@@ -4766,12 +4775,33 @@ fn marker_cmp_is_by_value(ty: Type) -> Bool {
 /// ADR-0097 wants, and landing it deletes this guard.
 fn marker_cmp_bound_is_unsound(env: TypeEnv, trait_bound: String, resolved: Type) -> Bool {
   let display = trait_reference_display(trait_bound)
-  if display != "Eq" && display != "Ord" {
+  if display != "Eq" && display != "Ord" && display != "Add" {
     false
   } else if not(trait_is_marker(env, trait_bound)) {
     false
+  } else if display == "Add" {
+    not(marker_add_is_by_value(resolved))
   } else {
     not(marker_cmp_is_by_value(resolved))
+  }
+}
+
+/// #3158 review: does the erased `+` an `[T: Add]` body lowers to
+/// (`__generic_add`) add a value of this type correctly?
+///
+/// `Add` is a marker trait too, so `a + b` over an erased `T` cannot dispatch
+/// through a witness: it lowers to `__generic_add`, which concatenates two
+/// packed strings and otherwise runs a raw `i64.add`. That is right for `Int`
+/// (a tagged immediate) and `String`, and wrong for everything else. The
+/// prelude declares `impl Add for Double`, and measured on main at 18a0dcef3,
+/// `add2[T: Add](1.5, 2.25)` printed `add=0` on the linear lane: the raw add of
+/// two boxes. A user `impl Add for Pt` would add two pointers the same way.
+fn marker_add_is_by_value(ty: Type) -> Bool {
+  match ty {
+    CtInt => true,
+    CtString => true,
+    CtNamed(name, args) => Array::length(args) == 0 && (name == "Int" || name == "String"),
+    _ => false
   }
 }
 

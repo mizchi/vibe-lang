@@ -719,6 +719,19 @@ if ! VIBE_TEST_BACKEND=gc VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMP
 fi
 rm -f "$ROOT_DIR/_build/_gate_builtin_shadow_lowering.log"
 echo "[compiler-gate] builtin-named internal calls ok on shadow and wasm-gc"
+# #3158: the 63-bit wrap contract (#1877) holds the SAME values on every
+# backend, so its test runs on wasm-gc too (the unit runner covers linear).
+# It could not compile there: the erased-generic `[T: Add]` / `[T: Ord]`
+# dispatch (#973) reached gc codegen as an unresolved `__generic_add`.
+if ! VIBE_TEST_BACKEND=gc VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+    bash scripts/vibe_test.sh lib/@vibe/compiler/tests/int_overflow_wrap_test.vibe fixtures/generic_marker_dispatch_test.vibe \
+    >"$ROOT_DIR/_build/_gate_gc_int_wrap.log" 2>&1; then
+  echo "[compiler-gate] FAIL: the Int wrap / erased-generic dispatch tests fail on wasm-gc (#3158):" >&2
+  tail -20 "$ROOT_DIR/_build/_gate_gc_int_wrap.log" >&2
+  exit 1
+fi
+rm -f "$ROOT_DIR/_build/_gate_gc_int_wrap.log"
+echo "[compiler-gate] Int wrap and erased-generic + / < ok on wasm-gc"
 # #3132 review: `--entry` naming the program's own function spelled like a
 # builtin (renamed aside to `StringBuilder::new$user`) still resolves, and the
 # module exports it under the name the program wrote -- on linear and wasm-gc.

@@ -1,0 +1,39 @@
+// #3126 + #3158: a guarded `Int` `/` by zero AND the erased-generic
+// `[T: Add]` / `[T: Ord]` dispatch in ONE program. On wasm-gc all three are
+// conditionally pushed builtin bodies whose indices are positional -- the
+// integer renderer, then the division-by-zero abort, then the
+// `__generic_rel_diff` / `__generic_add` pair -- so this is the shape where
+// an index computed without counting its predecessors calls the wrong body.
+// The `Array::with_capacity` call pushes the optional capacity allocator ahead
+// of all of them. Pinned by the early gate on linear and gc: the `before` line
+// must carry the right generic answers (String `+` and the asymmetric `<` pin
+// argument order), then the program must FAIL with the located message.
+trait Add
+
+impl Add for Int
+
+impl Add for String
+
+fn add2[T: Add](a: T, b: T) -> T {
+  a + b
+}
+
+fn lt2[T: Ord](a: T, b: T) -> Bool {
+  a < b
+}
+
+fn opaque(x: Int) -> Int {
+  x + 0
+}
+
+fn quotient(a: Int, b: Int) -> Int {
+  let q = a
+  q / b
+}
+
+fn main allows Console {
+  let buf: Array[Int] = Array::with_capacity(opaque(4))
+  Array::push(buf, add2(opaque(40), opaque(2)))
+  println("before add=\{Array::get(buf, 0)} neg=\{add2(opaque(0) - 5, opaque(3))} cat=\{add2("ab", "cd")} lt=\{lt2(opaque(1), opaque(2))} gt=\{lt2(opaque(2), opaque(1))} lts=\{lt2("banana", "apple")}")
+  println("after \{quotient(7, 0)}")
+}

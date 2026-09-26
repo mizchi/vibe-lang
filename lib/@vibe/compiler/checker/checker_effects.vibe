@@ -5650,8 +5650,10 @@ fn shadow_overlay(names: Array[String], effs: Array[Array[String]], name: String
   let out_effs = array_empty()
   let mut i = 0
   while i < Array::length(names) {
-    if Array::get(names, i) != name {
-      Array::push(out_names, Array::get(names, i))
+    let entry = Array::get(names, i)
+    // #3155: an alias's target entry goes with the alias it describes.
+    if entry != name && !overlay_entry_is_alias_of(entry, name) {
+      Array::push(out_names, entry)
       Array::push(out_effs, Array::get(effs, i))
     } else {
       ()
@@ -5772,6 +5774,52 @@ fn alias_fn_overlay_labels(name: String, ov_names: Array[String], ov_effs: Array
   }
 }
 
+/// #3155: a local alias of a TOP-LEVEL function (`let r = TaskGroup::run`,
+/// or an alias of such an alias) is registered with the target's row, and a
+/// row VARIABLE in that row belongs to the target's scheme -- not to the
+/// enclosing signature, as a callback parameter's does (#885). A call through
+/// the alias has to instantiate it the way the direct call does
+/// (`resolve_row_var_instantiation`); charging the bare token instead left
+/// `e` in `main`'s row as "unresolved effect row { e }". So the overlay also
+/// records the target, under a key no source name can spell (`#` is rejected
+/// in identifiers), and `shadow_overlay` drops that key with the alias.
+fn alias_target_key(name: String) -> String {
+  String::concat("#alias ", name)
+}
+
+fn overlay_entry_is_alias_of(entry: String, name: String) -> Bool {
+  String::length(entry) == String::length(name) + 7 && String::starts_with(entry, "#alias ") && String::ends_with(entry, name)
+}
+
+/// The top-level function a local alias names, read against the pre-shadow
+/// overlay: a bare name no local binds, or a local that is itself an alias.
+/// A local closure or a callback parameter has no target -- its row
+/// variables are the enclosing signature's own.
+fn local_alias_target(val: Expr, ov_names: Array[String], ov_effs: Array[Array[String]], fn_index: MutMap[String, Int]) -> Option[String] {
+  match val {
+    EIdent(n, _) => match lookup_fn_effs(ov_names, ov_effs, n) {
+      Some(_) => overlay_alias_target(ov_names, ov_effs, n),
+      None => if program_fn_exists(fn_index, n) {
+        Some(n)
+      } else {
+        None
+      }
+    },
+    _ => None
+  }
+}
+
+fn overlay_alias_target(ov_names: Array[String], ov_effs: Array[Array[String]], name: String) -> Option[String] {
+  match lookup_fn_effs(ov_names, ov_effs, alias_target_key(name)) {
+    Some(t) => if Array::length(t) == 1 {
+      Some(Array::get(t, 0))
+    } else {
+      None
+    },
+    None => None
+  }
+}
+
 fn local_fn_overlay_labels(val: Expr, ov_names: Array[String], ov_effs: Array[Array[String]], fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int]) -> Array[String] {
   match val {
     EFn(_, _, _, _, eff, _) => effect_row_labels(effect_row_parse(eff)),
@@ -5798,6 +5846,18 @@ fn overlay_bind_local(names: Array[String], effs: Array[Array[String]], name: St
   }
   let out_names = [name]
   let out_effs = [labels]
+  // #3155: only a row can carry a variable to instantiate.
+  if Array::length(labels) > 0 {
+    match local_alias_target(val, names, effs, fn_index) {
+      Some(target) => {
+        Array::push(out_names, alias_target_key(name))
+        Array::push(out_effs, [target])
+      },
+      None => ()
+    }
+  } else {
+    ()
+  }
   let (sn, se) = shadowed
   let mut i = 0
   while i < Array::length(sn) {
@@ -6206,13 +6266,46 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                   }
                   Array::set(requirement_marked_cell, 0, (peff, peff_marked))
                   Array::set(row_callback_scope_start_cell, 0, row_scope_callback_start(name))
-                  // #1343: same operation-awareness as the named-callee case
-                  // above -- a callback parameter whose row names an operation
-                  // is covered by a caller holding the whole effect.
-                  if String::length(peff) > 0 && (!is_exception_effect_name(peff) || error_row_checked() || under_kinded_handle(declared)) && !in_handle && !decl_authorizes_op(declared, peff) {
-                    Array::push(missing, peff)
+                  // #3155: through an alias of a top-level function, a row
+                  // variable is the TARGET's and is instantiated from this
+                  // call's arguments exactly as the direct call does it --
+                  // including the same exemption when it cannot be read.
+                  let alias_target = if label_is_effect_var(peff) {
+                    overlay_alias_target(ov_names, ov_effs, name)
                   } else {
-                    ()
+                    None
+                  }
+                  match alias_target {
+                    Some(target) => {
+                      let target_param_effs = match lookup_program_fn_param_effs(fn_index, fn_param_effs, target) {
+                        Some(pe) => pe,
+                        None => no_param_row()
+                      }
+                      match resolve_row_var_instantiation(peff, target_param_effs, args, fn_names, fn_effs, fn_index, ov_names, ov_effs) {
+                        Some(inst) => {
+                          let mut ii = 0
+                          while ii < Array::length(inst) {
+                            let ieff = Array::get(inst, ii)
+                            Array::set(requirement_marked_cell, 0, (ieff, ieff))
+                            if String::length(ieff) > 0 && (!is_exception_effect_name(ieff) || error_row_checked() || under_kinded_handle(declared)) && !label_is_effect_var(ieff) && !in_handle && !decl_authorizes_op(declared, ieff) {
+                              Array::push(missing, ieff)
+                            } else {
+                              ()
+                            }
+                            ii = ii + 1
+                          }
+                        },
+                        None => ()
+                      }
+                    },
+                    // #1343: same operation-awareness as the named-callee case
+                    // above -- a callback parameter whose row names an
+                    // operation is covered by a caller holding the whole effect.
+                    None => if String::length(peff) > 0 && (!is_exception_effect_name(peff) || error_row_checked() || under_kinded_handle(declared)) && !in_handle && !decl_authorizes_op(declared, peff) {
+                      Array::push(missing, peff)
+                    } else {
+                      ()
+                    }
                   }
                   Array::set(requirement_marked_cell, 0, ("", ""))
                   Array::set(row_callback_scope_start_cell, 0, 1)
