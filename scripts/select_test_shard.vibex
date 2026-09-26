@@ -271,21 +271,34 @@ fn load_weight_values(path: String, keys: Array[String]) -> Array[Double] with F
   }
 }
 
-fn weight_for(keys: Array[String], values: Array[Double], key: String, file: String) -> Double {
-  let mut i = 0
+/// The Node original normalized every key into one object, so of two raw
+/// keys that normalize alike (`dir\\f.vibe` and `dir/f.vibe`) the LATER one
+/// won, and a key match beat a match on the file as written
+/// (`weights[key] ?? weights[file]`). Invalid values were never stored, so
+/// they cannot shadow a valid earlier entry. Search from the end for each
+/// spelling in that order (#3167 review).
+fn last_weight(keys: Array[String], values: Array[Double], want: String) -> Double {
+  let mut i = Array::length(keys) - 1
   let mut found = 0.0 - 1.0
-  let mut seen = false
-  while i < Array::length(keys) && !seen {
-    let k = Array::get(keys, i)
-    if k == key || k == file {
+  while i >= 0 && found < 0.0 {
+    if Array::get(keys, i) == want {
       found = Array::get(values, i)
-      seen = true
     } else {
       ()
     }
-    i = i + 1
+    i = i - 1
   }
-  if found >= 0.0 { found } else { 1000.0 }
+  found
+}
+
+fn weight_for(keys: Array[String], values: Array[Double], key: String, file: String) -> Double {
+  let by_key = last_weight(keys, values, key)
+  if by_key >= 0.0 {
+    by_key
+  } else {
+    let by_file = last_weight(keys, values, file)
+    if by_file >= 0.0 { by_file } else { 1000.0 }
+  }
 }
 
 fn heavier(a: Double, b: Double) -> Bool {
@@ -482,6 +495,16 @@ fn self_test() -> Unit with Fs + Console + Stderr + Process {
   Fs::write_file(mixed_path, "{\"dir\\\\sub/file.vibe\":7}\n")
   let mixed = kept_weights(mixed_path)
   expect(mixed == "dir/sub/file.vibe=7", "mixed-separator key lost its weight: " + mixed)
+  // Two raw keys normalizing alike: the later one wins, like the Node
+  // original's object. An invalid later value does not shadow a valid one,
+  // and a key match beats a match on the file as written.
+  let dup_path = dir + "/dup.json"
+  Fs::write_file(dup_path, "{\"dir\\\\f.vibe\":1,\"dir/f.vibe\":10,\"dir/g.vibe\":5,\"dir\\\\g.vibe\":-1,\"/abs/dir/h.vibe\":3,\"dir/h.vibe\":6}\n")
+  let dup_keys = load_weight_keys(dup_path)
+  let dup_values = load_weight_values(dup_path, dup_keys)
+  expect(weight_for(dup_keys, dup_values, "dir/f.vibe", "dir/f.vibe") == 10.0, "the later of two alike keys must win")
+  expect(weight_for(dup_keys, dup_values, "dir/g.vibe", "dir/g.vibe") == 5.0, "an invalid later value shadowed a valid one")
+  expect(weight_for(dup_keys, dup_values, "dir/h.vibe", "/abs/dir/h.vibe") == 6.0, "the normalized key must beat the file as written")
   let frac_path = dir + "/frac.json"
   Fs::write_file(frac_path, "{\"a_test.vibe\":0.9,\"b_test.vibe\":0.8,\"c_test.vibe\":0.1}\n")
   let frac_files = ["a_test.vibe", "b_test.vibe", "c_test.vibe"]
