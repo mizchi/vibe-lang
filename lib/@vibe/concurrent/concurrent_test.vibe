@@ -1,6 +1,7 @@
 //# Imports
 
 import ./concurrent.vibe {
+  __conc_stream_claim,
   enum ChannelConfigError,
   enum SendError,
   enum TaskError,
@@ -706,4 +707,21 @@ test "a throw escaping the run body keeps its payload and kind" {
     _ => 30
   } }
   assert_eq(kinded, 10)
+}
+
+/// #2066 (Codex on #3091): an ORDINARY spawned task is a task too. A stream
+/// operation claims its cell for the running task, and `drive_one` used to run
+/// an ordinary runner with no running-task identity, so the claim was skipped
+/// and another task could close a stream under its reader. The claim now
+/// stamps the cell with the runner's own serial (slot 2).
+test "an ordinary spawned task claims a host stream cell as its own task" {
+  let stamped = TaskGroup::run((g) -> {
+    let h = TaskGroup::spawn(g, () -> {
+      let cell = [3, 5]
+      __conc_stream_claim(cell)
+      Array::length(cell)
+    })
+    TaskHandle::join(h)
+  })
+  assert_eq(stamped, 3)
 }

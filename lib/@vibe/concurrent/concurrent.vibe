@@ -356,8 +356,9 @@ fn conc_chan_notify[rg, e, T](c: Channel[rg, e, T]) -> Unit {
 }
 
 /// Push/pop the currently running task (see conc_running_stack). Every
-/// task leg — the initial spawn_suspend run and every resumed leg through
-/// park_kind's wrapper — brackets itself with these; the Error boundaries
+/// task leg — an ordinary runner in drive_one, the initial spawn_suspend
+/// run, and every resumed leg through park_kind's wrapper — brackets
+/// itself with these; the Error boundaries
 /// at both sites catch throws before the pop, so the bracket balances.
 fn conc_running_push(c: TaskCell) -> Unit {
   Array::push(conc_running_stack, c)
@@ -635,7 +636,14 @@ fn drive_one[rg, e](n: TaskGroup[rg, e]) -> Bool with e {
     } else {
       c.status = 1
       let r = Array::get(n.runners, idx)
+      // #2066 (Codex on #3091): an ordinary runner is a task too, so it runs
+      // as the running task like every suspendable leg does. A stream
+      // operation claims its cell for that task (`__conc_stream_claim`), and
+      // with no identity here the claim was skipped. The runner catches its
+      // own throws, so the bracket balances.
+      conc_running_push(c)
       r()
+      conc_running_pop()
     }
     true
   }

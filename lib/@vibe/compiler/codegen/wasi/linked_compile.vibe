@@ -41,7 +41,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/ast {
-  TypeExpr::is_array_of_int
+  TypeExpr::is_array_of_int, builtin_ref
 }
 
 import @vibe/core {
@@ -2262,51 +2262,61 @@ fn lc_rename_sleep_calls(e: Expr, active: Bool) -> Expr {
 /// 150-line total walk is exactly the kind of thing that drifts and silently
 /// stops covering a container.
 fn lc_rename_hs_call(e: Expr, active: Bool, from_name: String, to_name: String) -> Expr {
+  lc_retarget_call(e, active, from_name, to_name, false)
+}
+
+/// Shadow-aware call retarget: every call of `from_name` that still names the
+/// top-level builtin is renamed to `to_name`, or -- with `wrap` -- kept and
+/// passed to `to_name` (`to_name(from_name(..))`).
+fn lc_retarget_call(e: Expr, active: Bool, from_name: String, to_name: String) -> Expr {
   match e {
     ECall(callee, args, off) => {
       let new_args = lc_fresh_expr_array()
       let mut i = 0
       while i < Array::length(args) {
-        Array::push(new_args, lc_rename_hs_call(Array::get(args, i), active, from_name, to_name))
+        Array::push(new_args, lc_retarget_call(Array::get(args, i), active, from_name, to_name, wrap))
         i = i + 1
       }
-      let new_callee = match callee {
+      match callee {
         EIdent(nm, coff) => if active && nm == from_name {
-          EIdent(to_name, coff)
+          if wrap {
+            ECall(EIdent(to_name, -1), [ECall(callee, new_args, off)], off)
+          } else {
+            ECall(EIdent(to_name, coff), new_args, off)
+          }
         } else {
-          callee
+          ECall(callee, new_args, off)
         },
-        _ => lc_rename_hs_call(callee, active, from_name, to_name)
+        _ => ECall(lc_retarget_call(callee, active, from_name, to_name, wrap), new_args, off)
       }
-      ECall(new_callee, new_args, off)
     },
-    ELet(x, v, b, off) => ELet(x, lc_rename_hs_call(v, active, from_name, to_name), lc_rename_hs_call(b, active && x != from_name, from_name, to_name), off),
-    ELetMut(x, v, b, off) => ELetMut(x, lc_rename_hs_call(v, active, from_name, to_name), lc_rename_hs_call(b, active && x != from_name, from_name, to_name), off),
+    ELet(x, v, b, off) => ELet(x, lc_retarget_call(v, active, from_name, to_name, wrap), lc_retarget_call(b, active && x != from_name, from_name, to_name, wrap), off),
+    ELetMut(x, v, b, off) => ELetMut(x, lc_retarget_call(v, active, from_name, to_name, wrap), lc_retarget_call(b, active && x != from_name, from_name, to_name, wrap), off),
     ELetRec(x, v, b) => {
       let inner = active && x != from_name
-      ELetRec(x, lc_rename_hs_call(v, inner, from_name, to_name), lc_rename_hs_call(b, inner, from_name, to_name))
+      ELetRec(x, lc_retarget_call(v, inner, from_name, to_name, wrap), lc_retarget_call(b, inner, from_name, to_name, wrap))
     },
-    ESeq(a, b) => ESeq(lc_rename_hs_call(a, active, from_name, to_name), lc_rename_hs_call(b, active, from_name, to_name)),
-    EIf(c, t, el) => EIf(lc_rename_hs_call(c, active, from_name, to_name), lc_rename_hs_call(t, active, from_name, to_name), lc_rename_hs_call(el, active, from_name, to_name)),
+    ESeq(a, b) => ESeq(lc_retarget_call(a, active, from_name, to_name, wrap), lc_retarget_call(b, active, from_name, to_name, wrap)),
+    EIf(c, t, el) => EIf(lc_retarget_call(c, active, from_name, to_name, wrap), lc_retarget_call(t, active, from_name, to_name, wrap), lc_retarget_call(el, active, from_name, to_name, wrap)),
     EMatch(s, arms) => {
       let out: Array[(Pat, Expr)] = array_empty()
       let mut i = 0
       while i < Array::length(arms) {
         let (mp, mb) = Array::get(arms, i)
-        Array::push(out, (mp, lc_rename_hs_call(mb, active && !lc_pat_binds_name(mp, from_name), from_name, to_name)))
+        Array::push(out, (mp, lc_retarget_call(mb, active && !lc_pat_binds_name(mp, from_name), from_name, to_name, wrap)))
         i = i + 1
       }
-      EMatch(lc_rename_hs_call(s, active, from_name, to_name), out)
+      EMatch(lc_retarget_call(s, active, from_name, to_name, wrap), out)
     },
     EHandle(b, arms) => {
       let out: Array[(Pat, Expr)] = array_empty()
       let mut i = 0
       while i < Array::length(arms) {
         let (mp, mb) = Array::get(arms, i)
-        Array::push(out, (mp, lc_rename_hs_call(mb, active && !lc_pat_binds_name(mp, from_name), from_name, to_name)))
+        Array::push(out, (mp, lc_retarget_call(mb, active && !lc_pat_binds_name(mp, from_name), from_name, to_name, wrap)))
         i = i + 1
       }
-      EHandle(lc_rename_hs_call(b, active, from_name, to_name), out)
+      EHandle(lc_retarget_call(b, active, from_name, to_name, wrap), out)
     },
     EFn(tps, tbs, params, ret, eff, b) => {
       let mut shadowed = false
@@ -2320,12 +2330,12 @@ fn lc_rename_hs_call(e: Expr, active: Bool, from_name: String, to_name: String) 
         }
         i = i + 1
       }
-      EFn(tps, tbs, params, ret, eff, lc_rename_hs_call(b, active && !shadowed, from_name, to_name))
+      EFn(tps, tbs, params, ret, eff, lc_retarget_call(b, active && !shadowed, from_name, to_name, wrap))
     },
-    EWhile(c, b) => EWhile(lc_rename_hs_call(c, active, from_name, to_name), lc_rename_hs_call(b, active, from_name, to_name)),
+    EWhile(c, b) => EWhile(lc_retarget_call(c, active, from_name, to_name, wrap), lc_retarget_call(b, active, from_name, to_name, wrap)),
     EForIn(x, ix, it, b) => {
       let inner = active && x != from_name
-      EForIn(x, ix, lc_rename_hs_call(it, active, from_name, to_name), lc_rename_hs_call(b, inner, from_name, to_name))
+      EForIn(x, ix, lc_retarget_call(it, active, from_name, to_name, wrap), lc_retarget_call(b, inner, from_name, to_name, wrap))
     },
     ELoop(pairs, b) => {
       let out: Array[(String, Expr)] = array_empty()
@@ -2338,27 +2348,27 @@ fn lc_rename_hs_call(e: Expr, active: Bool, from_name: String, to_name: String) 
         } else {
           ()
         }
-        Array::push(out, (pn, lc_rename_hs_call(pv, active, from_name, to_name)))
+        Array::push(out, (pn, lc_retarget_call(pv, active, from_name, to_name, wrap)))
         i = i + 1
       }
-      ELoop(out, lc_rename_hs_call(b, inner, from_name, to_name))
+      ELoop(out, lc_retarget_call(b, inner, from_name, to_name, wrap))
     },
-    EBinOp(op, l, r, boff) => EBinOp(op, lc_rename_hs_call(l, active, from_name, to_name), lc_rename_hs_call(r, active, from_name, to_name), boff),
-    EUnaryOp(op, a) => EUnaryOp(op, lc_rename_hs_call(a, active, from_name, to_name)),
-    EAssign(x, v, b) => EAssign(x, lc_rename_hs_call(v, active, from_name, to_name), lc_rename_hs_call(b, active, from_name, to_name)),
-    EAssignOp(n, op, v, b) => EAssignOp(n, op, lc_rename_hs_call(v, active, from_name, to_name), lc_rename_hs_call(b, active, from_name, to_name)),
-    EReturn(a) => EReturn(lc_rename_hs_call(a, active, from_name, to_name)),
-    EDot(o, f, m, off) => EDot(lc_rename_hs_call(o, active, from_name, to_name), f, m, off),
-    ELabeledArg(l, s, v) => ELabeledArg(l, s, lc_rename_hs_call(v, active, from_name, to_name)),
+    EBinOp(op, l, r, boff) => EBinOp(op, lc_retarget_call(l, active, from_name, to_name, wrap), lc_retarget_call(r, active, from_name, to_name, wrap), boff),
+    EUnaryOp(op, a) => EUnaryOp(op, lc_retarget_call(a, active, from_name, to_name, wrap)),
+    EAssign(x, v, b) => EAssign(x, lc_retarget_call(v, active, from_name, to_name, wrap), lc_retarget_call(b, active, from_name, to_name, wrap)),
+    EAssignOp(n, op, v, b) => EAssignOp(n, op, lc_retarget_call(v, active, from_name, to_name, wrap), lc_retarget_call(b, active, from_name, to_name, wrap)),
+    EReturn(a) => EReturn(lc_retarget_call(a, active, from_name, to_name, wrap)),
+    EDot(o, f, m, off) => EDot(lc_retarget_call(o, active, from_name, to_name, wrap), f, m, off),
+    ELabeledArg(l, s, v) => ELabeledArg(l, s, lc_retarget_call(v, active, from_name, to_name, wrap)),
     EBreak(opt) => match opt {
-      Some(a) => EBreak(Some(lc_rename_hs_call(a, active, from_name, to_name))),
+      Some(a) => EBreak(Some(lc_retarget_call(a, active, from_name, to_name, wrap))),
       None => e
     },
     EContinue(args) => {
       let out = lc_fresh_expr_array()
       let mut i = 0
       while i < Array::length(args) {
-        Array::push(out, lc_rename_hs_call(Array::get(args, i), active, from_name, to_name))
+        Array::push(out, lc_retarget_call(Array::get(args, i), active, from_name, to_name, wrap))
         i = i + 1
       }
       EContinue(out)
@@ -2367,7 +2377,7 @@ fn lc_rename_hs_call(e: Expr, active: Bool, from_name: String, to_name: String) 
       let out = lc_fresh_expr_array()
       let mut i = 0
       while i < Array::length(items) {
-        Array::push(out, lc_rename_hs_call(Array::get(items, i), active, from_name, to_name))
+        Array::push(out, lc_retarget_call(Array::get(items, i), active, from_name, to_name, wrap))
         i = i + 1
       }
       ETuple(out)
@@ -2376,7 +2386,7 @@ fn lc_rename_hs_call(e: Expr, active: Bool, from_name: String, to_name: String) 
       let out = lc_fresh_expr_array()
       let mut i = 0
       while i < Array::length(items) {
-        Array::push(out, lc_rename_hs_call(Array::get(items, i), active, from_name, to_name))
+        Array::push(out, lc_retarget_call(Array::get(items, i), active, from_name, to_name, wrap))
         i = i + 1
       }
       EArray(out)
@@ -2386,7 +2396,7 @@ fn lc_rename_hs_call(e: Expr, active: Bool, from_name: String, to_name: String) 
       let mut i = 0
       while i < Array::length(fields) {
         let (fn2, fv) = Array::get(fields, i)
-        Array::push(out, (fn2, lc_rename_hs_call(fv, active, from_name, to_name)))
+        Array::push(out, (fn2, lc_retarget_call(fv, active, from_name, to_name, wrap)))
         i = i + 1
       }
       ERecord(nm, out, off)
@@ -2396,12 +2406,12 @@ fn lc_rename_hs_call(e: Expr, active: Bool, from_name: String, to_name: String) 
       let mut i = 0
       while i < Array::length(fields) {
         let (fk, fv) = Array::get(fields, i)
-        Array::push(out, (fk, lc_rename_hs_call(fv, active, from_name, to_name)))
+        Array::push(out, (fk, lc_retarget_call(fv, active, from_name, to_name, wrap)))
         i = i + 1
       }
       EMap(out)
     },
-    ESpread(a) => ESpread(lc_rename_hs_call(a, active, from_name, to_name)),
+    ESpread(a) => ESpread(lc_retarget_call(a, active, from_name, to_name, wrap)),
     _ => e
   }
 }
@@ -3455,6 +3465,134 @@ fn lc_host_hook_dispatch(payload: Expr, hf_machinery: Bool, hs_machinery: Bool, 
   }
 }
 
+/// #3131 (Codex on #3091): a WIT call takes one of the adapter's 512 result
+/// slots and keeps it until the future is awaited or cancelled, so a program
+/// that dropped 512 futures trapped on its next, otherwise valid, call. A
+/// dropped future is invisible to the program, so the slot is reclaimed here
+/// instead: every WIT future cell (a handle of 1024 or more) is recorded under
+/// its slot as it is made (`__ws_track`), `__aw_pay` marks the cell it awaits
+/// (`__ws_claim`), and when a call leaves every slot taken the oldest cell
+/// nobody is awaiting is cancelled -- its slot freed -- and poisoned (state 9).
+/// Awaiting it later traps with `__aw_pay`'s message rather than reading the
+/// call that reused its slot. With every slot awaited, the next call still
+/// traps, as before: 512 futures really are in flight.
+fn lc_ws_track_inject(stmts: Array[Stmt]) -> Unit {
+  let get = (a: Expr, i: Expr) -> ECall(builtin_ref("Array::get"), [a, i], -1)
+  let set = (a: Expr, i: Expr, v: Expr) -> ECall(builtin_ref("Array::set"), [
+    a,
+    i,
+    v
+  ], -1)
+  let len = (a: Expr) -> ECall(builtin_ref("Array::length"), [a], -1)
+  let push = (a: Expr, v: Expr) -> ECall(builtin_ref("Array::push"), [a, v], -1)
+  let cells = EIdent("__ws_cells", -1)
+  let seqs = EIdent("__ws_seq", -1)
+  let ctr = EIdent("__ws_ctr", -1)
+  let int_ty = TyName("Int")
+  Array::push(stmts, SLet(false, false, lc_fixed_synthetic_name("__ws_cells", "review-lint: allow-fixed-synthetic-name"), Some(TyApp("Array", [
+    TyApp("Array", [int_ty])
+  ])), EArray(lc_fresh_expr_array())))
+  Array::push(stmts, SLet(false, false, lc_fixed_synthetic_name("__ws_seq", "review-lint: allow-fixed-synthetic-name"), Some(TyApp("Array", [
+    int_ty
+  ])), EArray(lc_fresh_expr_array())))
+  Array::push(stmts, SLet(false, false, lc_fixed_synthetic_name("__ws_ctr", "review-lint: allow-fixed-synthetic-name"), Some(TyApp("Array", [
+    int_ty
+  ])), EArray([EInt(0)])))
+  // __ws_room(s): the slot table is full -- evict the oldest unclaimed cell
+  // other than slot `s`, the one just recorded.
+  let rs = EIdent("__wsr_s", -1)
+  let ri = EIdent("__wsr_i", -1)
+  let rlive = EIdent("__wsr_live", -1)
+  let rbest = EIdent("__wsr_best", -1)
+  let rbq = EIdent("__wsr_bq", -1)
+  let rc = EIdent("__wsr_c", -1)
+  let rq = EIdent("__wsr_q", -1)
+  let better = EBinOp("&&", EBinOp("<", EInt(0 - 1), rq, -1), EBinOp("&&", EBinOp("!=", ri, rs, -1), EBinOp("||", EBinOp("<", rbest, EInt(0), -1), EBinOp("<", rq, rbq, -1), -1), -1), -1)
+  let take = EAssign("__wsr_best", ri, EAssign("__wsr_bq", rq, EUnit))
+  let count = EAssign("__wsr_live", EBinOp("+", rlive, EInt(1), -1), EIf(better, take, EUnit))
+  let per_slot = ELet("__wsr_c", get(cells, ri), ELet("__wsr_q", get(seqs, ri), EIf(EBinOp("==", get(rc, EInt(0)), EInt(2), -1), count, EUnit), -1), -1)
+  // review-lint: allow-fixed-synthetic-name (the injected __ws_* helpers' own scopes)
+  let scan = EWhile(EBinOp("<", ri, len(cells), -1), ESeq(per_slot, EAssign("__wsr_i", EBinOp("+", ri, EInt(1), -1), EUnit)))
+  let victim = EIdent("__wsr_v", -1)
+  let cancel = ECall(builtin_ref("vibe_hf_cancel_raw"), [get(victim, EInt(1))], -1)
+  let evict = ELet("__wsr_v", get(cells, rbest), ELet("__wsr_x", cancel, set(victim, EInt(0), EInt(9)), -1), -1)
+  // review-lint: allow-fixed-synthetic-name (the injected __ws_* helpers' own scopes)
+  let full = EBinOp("&&", EBinOp("<", EInt(lc_ws_slot_count() - 1), rlive, -1), EBinOp("<", EInt(0 - 1), rbest, -1), -1)
+  let room_body = ELetMut("__wsr_i", EInt(0), ELetMut("__wsr_live", EInt(0), ELetMut("__wsr_best", EInt(0 - 1), ELetMut("__wsr_bq", EInt(0), ESeq(scan, EIf(full, evict, EUnit)), -1), -1), -1), -1)
+  // review-lint: allow-fixed-synthetic-name (the injected __ws_room's own scope)
+  let room_params: Array[(String, Option[TypeExpr])] = [("__wsr_s", None)]
+  Array::push(stmts, SLet(false, false, lc_fixed_synthetic_name("__ws_room", "review-lint: allow-fixed-synthetic-name"), None, EFn(lc_fresh_string_array(), array_empty(), room_params, Some(TyName("Unit")), None, room_body)))
+  // __ws_track(f): record a WIT cell under its slot, then make room.
+  let tf = EIdent("__wst_f", -1)
+  let th = EIdent("__wst_h", -1)
+  let ts = EIdent("__wst_s", -1)
+  let grow = EWhile(EBinOp("<", len(cells), EBinOp("+", ts, EInt(1), -1), -1), ESeq(push(cells, EArray([
+    EInt(0),
+    EInt(0)
+  ])), push(seqs, EInt(0))))
+  let bump = set(ctr, EInt(0), EBinOp("+", get(ctr, EInt(0)), EInt(1), -1))
+  let record = ESeq(set(cells, ts, tf), set(seqs, ts, get(ctr, EInt(0))))
+  let room = ECall(EIdent("__ws_room", -1), [ts], -1)
+  let track = ELet("__wst_s", EBinOp("-", th, EInt(lc_ws_handle_base()), -1), ESeq(grow, ESeq(bump, ESeq(record, room))), -1)
+  // review-lint: allow-fixed-synthetic-name (the injected __ws_* helpers' own scopes)
+  let is_slot = EBinOp("&&", EBinOp("==", get(tf, EInt(0)), EInt(2), -1), EBinOp("<", EInt(lc_ws_handle_base() - 1), th, -1), -1)
+  let track_body = ELet("__wst_h", get(tf, EInt(1)), ESeq(EIf(is_slot, track, EUnit), tf), -1)
+  // review-lint: allow-fixed-synthetic-name (the injected __ws_track's own scope)
+  let track_params: Array[(String, Option[TypeExpr])] = [("__wst_f", None)]
+  Array::push(stmts, SLet(false, false, lc_fixed_synthetic_name("__ws_track", "review-lint: allow-fixed-synthetic-name"), None, EFn(lc_fresh_string_array(), array_empty(), track_params, None, None, track_body)))
+  // __ws_claim(f): the cell is awaited; never evict it.
+  let cf = EIdent("__wsc_f", -1)
+  let cs = EIdent("__wsc_s", -1)
+  let claimed = EBinOp("&&", EBinOp("==", get(cf, EInt(0)), EInt(2), -1), EBinOp("<", EInt(lc_ws_handle_base() - 1), get(cf, EInt(1)), -1), -1)
+  let mark = ELet("__wsc_s", EBinOp("-", get(cf, EInt(1)), EInt(lc_ws_handle_base()), -1), EIf(EBinOp("<", cs, len(seqs), -1), set(seqs, cs, EInt(0 - 1)), EUnit), -1)
+  // review-lint: allow-fixed-synthetic-name (the injected __ws_claim's own scope)
+  let claim_params: Array[(String, Option[TypeExpr])] = [("__wsc_f", None)]
+  Array::push(stmts, SLet(false, false, lc_fixed_synthetic_name("__ws_claim", "review-lint: allow-fixed-synthetic-name"), None, EFn(lc_fresh_string_array(), array_empty(), claim_params, Some(TyName("Int")), None, ESeq(EIf(claimed, mark, EUnit), EInt(0)))))
+  // Every WIT getter's cell goes through __ws_track, and __aw_pay (synthesized
+  // earlier by await_poll_pass) claims the cell it is about to wait on.
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(ex, isrec, name, ty, EFn(tps, tbs, params, ret, eff, body)) => if name == "__aw_pay" {
+        let claim = ECall(EIdent("__ws_claim", -1), [
+          EIdent(Array::get(params, 0).0, -1)
+        ], -1)
+        Array::set(stmts, i, SLet(ex, isrec, name, ty, EFn(tps, tbs, params, ret, eff, ELet("__awp_k", claim, body, -1))))
+        // review-lint: allow-fixed-synthetic-name (the injected __aw_pay's own scope)
+      } else if name == "__ws_track" || name == "__ws_room" || name == "__ws_claim" {
+        ()
+      } else {
+        Array::set(stmts, i, SLet(ex, isrec, name, ty, EFn(tps, tbs, params, ret, eff, lc_ws_wrap_getters(body))))
+      },
+      SLet(ex, isrec, name, ty, v) => Array::set(stmts, i, SLet(ex, isrec, name, ty, lc_ws_wrap_getters(v))),
+      SLetMut(name, ty, v) => Array::set(stmts, i, SLetMut(name, ty, lc_ws_wrap_getters(v))),
+      STest(name, v) => Array::set(stmts, i, STest(name, lc_ws_wrap_getters(v))),
+      SBench(name, v) => Array::set(stmts, i, SBench(name, lc_ws_wrap_getters(v))),
+      SExpr(v) => Array::set(stmts, i, SExpr(lc_ws_wrap_getters(v))),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+/// The getters whose handle can be a WIT slot, each wrapped as
+/// `__ws_track(getter(..))` (shadow-aware, lc_retarget_call).
+fn lc_ws_wrap_getters(e: Expr) -> Expr {
+  let a = lc_retarget_call(e, true, "host_future_named", "__ws_track", true)
+  let b = lc_retarget_call(a, true, "host_response_named", "__ws_track", true)
+  lc_retarget_call(b, true, "host_response_named_with", "__ws_track", true)
+}
+
+/// The adapter's WIT slot handle base and slot count
+/// (component_codegen's comp_ws_handle_base / comp_ws_max_slot + 1).
+fn lc_ws_handle_base() -> Int {
+  1024
+}
+
+fn lc_ws_slot_count() -> Int {
+  512
+}
+
 /// #1537: `__conc_host_cancel`'s body. A future's read is cancelled and its
 /// handle released (`vibe_hf_cancel_raw`), and so is a stream's
 /// (`vibe_hs_cancel_raw`): a host stream cannot be captured by another task,
@@ -4427,6 +4565,11 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
       }
       hsr = hsr + 1
     }
+  }
+  if hf_machinery {
+    lc_ws_track_inject(stmts)
+  } else {
+    ()
   }
   if entry_has_async && (sleep_machinery || hf_machinery || hs_machinery) {
     let req = EIdent("__entry_slp_req", -1)
