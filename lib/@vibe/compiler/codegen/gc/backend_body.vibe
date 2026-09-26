@@ -203,6 +203,8 @@ import @vibe/compiler/codegen/builtin_bodies {
   gen_bytes_with_capacity_body,
   gen_div_zero_abort_body,
   gen_eq_body,
+  gen_generic_add_body,
+  gen_generic_rel_diff_body,
   gen_int_clz_body,
   gen_int_ctz_body,
   gen_int_popcount_body,
@@ -1937,10 +1939,20 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String, genera
   } else {
     0
   }
-  let num_generated = if need_region_arena {
-    gc_unconditional_body_count + capacity_extra + ts_int_extra + div_zero_extra + 2
+  // #3158: the erased-generic `[T: Add]` / `[T: Ord]` dispatch pair, pushed
+  // only when desugar_trait_dicts emitted a call to either (the gc lane runs
+  // that pass too). Conditional for the same size reason as the renderer.
+  // Pushed after the #3126 abort body, so its indices add `div_zero_extra`.
+  let need_generic_dispatch = Map::has_key(used_builtins, "__generic_add") || Map::has_key(used_builtins, "__generic_rel_diff")
+  let generic_extra = if need_generic_dispatch {
+    2
   } else {
-    gc_unconditional_body_count + capacity_extra + ts_int_extra + div_zero_extra
+    0
+  }
+  let num_generated = if need_region_arena {
+    gc_unconditional_body_count + capacity_extra + ts_int_extra + div_zero_extra + generic_extra + 2
+  } else {
+    gc_unconditional_body_count + capacity_extra + ts_int_extra + div_zero_extra + generic_extra
   }
   // #538: host imports (module "vibe", tagged-i64 ABI -- the same raw ABI the
   // linear backend and the node host runner speak). Gated as a GROUP: pure
@@ -2050,6 +2062,10 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String, genera
         "Array::truncate" => 40,
         "Array::push_all" => 41,
         "str_lex_diff" => 42,
+        // #3158: pushed after the optional renderer and the optional #3126
+        // abort body (see need_generic_dispatch).
+        "__generic_rel_diff" => gc_unconditional_body_count + capacity_extra + ts_int_extra + div_zero_extra + 1,
+        "__generic_add" => gc_unconditional_body_count + capacity_extra + ts_int_extra + div_zero_extra + 2,
         "eq" => 29,
         "not" => 6,
         "String::join" => 35,
@@ -2507,6 +2523,19 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String, genera
   // body 2 (`hbo + 2`, as the capacity allocator above passes it).
   if need_div_zero_abort {
     push_gc_builtin(gen_div_zero_abort_body(hbo + 2, 0 - 1, gc_str_fat(str_strs, str_offsets, str_lengths, div_zero_div_message()), gc_str_fat(str_strs, str_offsets, str_lengths, div_zero_rem_message()), gc_str_fat(str_strs, str_offsets, str_lengths, div_zero_at_fragment()), 0, gc_str_fat(str_strs, str_offsets, str_lengths, "\n")), 0, 0, 7)
+  } else {
+    ()
+  }
+  // #3158: the linear lane's erased-generic dispatch bodies, shared verbatim:
+  // gc strings are the same packed (offset<<32)|len and gc ints are untagged
+  // (enable_rc=false keeps the #1877 wrap renormalization in `+`). Their
+  // callees are str_lex_diff (body 42) and String::concat (body 5); type 4 is
+  // (i64, i64) -> i64 and neither body needs a local beyond its params.
+  // Pushed after the #3126 abort body; the match arms above add
+  // `div_zero_extra` for exactly that reason.
+  if need_generic_dispatch {
+    push_gc_builtin(gen_generic_rel_diff_body(false, hbo + 42), 0, 0, 4)
+    push_gc_builtin(gen_generic_add_body(false, hbo + 5), 0, 0, 4)
   } else {
     ()
   }
