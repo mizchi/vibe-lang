@@ -9,7 +9,7 @@ import @vibe/core {
 }
 
 import @vibe/ast {
-  impl_method_owner, trait_ref_from_key, trait_ref_key, type_param_name
+  builtin_ref_offset, impl_method_owner, trait_ref_from_key, trait_ref_key, type_param_name
 }
 
 import ./module_graph_path.vibe {
@@ -913,9 +913,9 @@ struct AliasIdx {
   entries: Array[(String, String)];
   idx: MutMap[String, String];
   shadow_keys: MutSet[String];
-  // #3132: rename only identifiers the USER wrote (a source offset >= 0),
-  // keeping that offset, and never rewrite a qualified head. A call the
-  // compiler synthesized (offset -1) keeps its spelling. Only
+  // #3132: rename every identifier EXCEPT a compiler-synthesized builtin
+  // reference (`builtin_ref`, offset `builtin_ref_offset()`), keeping its
+  // offset, and never rewrite a qualified head. Only
   // `rename_builtin_shadow_defs` sets it.
   user_refs_only: Bool
 }
@@ -1326,7 +1326,7 @@ fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
   } else {
     match expr {
       EIdent(name, off) => if am.user_refs_only {
-        if off < 0 {
+        if off == builtin_ref_offset() {
           expr
         } else {
           match aliasidx_get(am, name) {
@@ -4064,6 +4064,22 @@ export fn builtin_shadow_rename_of(name: String) -> String {
   String::concat(name, "$user")
 }
 
+/// The source spelling of a function name: `builtin_shadow_rename_of`
+/// undone, any other name unchanged. The rename is internal to one
+/// compilation; what leaves it -- a wasm export of a library that defines
+/// `export fn Array::length` -- keeps the name the program wrote (#3132
+/// review), so an importer finds `Array::length`, not `Array::length$user`.
+export fn builtin_shadow_source_name(name: String) -> String {
+  let suffix = "$user"
+  let n = String::length(name)
+  let k = String::length(suffix)
+  if n > k && String::ends_with(name, suffix) && is_builtin_shadow_rename_name(name[0: n - k]) {
+    name[0: n - k]
+  } else {
+    name
+  }
+}
+
 /// #3132: a program may define its own top-level `Array::length`,
 /// `Map::keys`, ... The checker resolves the program's calls to that
 /// definition, but everything downstream is keyed by NAME -- the lowerings
@@ -4074,14 +4090,20 @@ export fn builtin_shadow_rename_of(name: String) -> String {
 /// `Map::keys`, `"\{xs}"` and `==` on arrays compiled to invalid wasm or
 /// answered with the program's sentinel.
 ///
-/// So give the program's definition, and every reference the program WROTE
-/// (a source offset >= 0), a spelling of its own, and leave the builtin name
-/// to mean the builtin everywhere after this pass. A call the compiler
-/// synthesized before this point (offset -1, e.g. the spread desugar's
-/// `Array::concat`) keeps meaning the builtin. Idempotent: once renamed, no
-/// definition carries a listed name. Must run on the WHOLE program before any
-/// pass synthesizes a call to one of these names; a module partition cannot
-/// see a definition in another module.
+/// So give the program's definition, and every reference to its name, a
+/// spelling of its own, and leave the builtin name to mean the builtin
+/// everywhere after this pass. The one exception is a reference the COMPILER
+/// wrote -- the parser's index-assignment and spread sugar, interpolation's
+/// joins, the effect lowerings -- which every such pass spells with
+/// `builtin_ref` and so carries `builtin_ref_offset()`. Provenance is that
+/// explicit mark, not the absence of a source offset: interpolation
+/// re-parses the program's own expressions without offsets, and the library
+/// lanes parse whole programs without them (#3132 review), so a program's
+/// call can carry -1 too. scripts/review_lint.vibex refuses a bare listed
+/// `EIdent` outside codegen, which runs after every rename point.
+/// Idempotent: once renamed, no definition carries a listed name. Must run on
+/// the WHOLE program; a module partition cannot see a definition in another
+/// module.
 export fn rename_builtin_shadow_defs(stmts: Array[Stmt]) -> Unit {
   let renames = empty_aliases()
   let mut i = 0

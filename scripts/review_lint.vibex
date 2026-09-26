@@ -407,6 +407,84 @@ fn report_gc_bare_builtin_hits(raw: String, ledger: String, emit: Bool) -> Int w
   count
 }
 
+// #3132: a program may define its own `Array::length`; the compiler moves that
+// definition aside (`rename_builtin_shadow_defs`), and every reference to the
+// name with it -- EXCEPT one the compiler marked as meaning the builtin, by
+// spelling it `builtin_ref(name)` (offset `builtin_ref_offset()`). A pass that
+// synthesizes `EIdent("Array::get", -1)` instead hands the program's function
+// every call it meant for the builtin, silently, and only when the program
+// shadows that name -- no ordinary test sees it. So outside codegen (which
+// runs after every rename point) a listed name may only be built through
+// `builtin_ref`. The list is READ from the compiler source, the one place it
+// is defined.
+fn builtin_shadow_names_source(root: String) -> String with Fs {
+  // Same three-candidate lookup as gc_direct_abi_names_source, for the same
+  // reason: a staged snapshot need not contain the list's file.
+  let suffix = "/core/import_alias_rewrite.vibe"
+  let in_subtree = root + suffix
+  let in_snapshot = root + "/lib/@vibe/compiler" + suffix
+  let in_worktree = "lib/@vibe/compiler" + suffix
+  let text = if Fs::exists(in_subtree) {
+    Fs::read_file(in_subtree)
+  } else if Fs::exists(in_snapshot) {
+    Fs::read_file(in_snapshot)
+  } else if Fs::exists(in_worktree) {
+    Fs::read_file(in_worktree)
+  } else {
+    ""
+  }
+  let head = "let builtin_shadow_rename_names: Array[String] = ["
+  let start = String::index_of(text, head)
+  if start < 0 {
+    ""
+  } else {
+    let rest = String::substring(text, start + String::length(head), String::length(text))
+    let close = String::index_of(rest, "]")
+    if close < 0 {
+      ""
+    } else {
+      String::substring(rest, 0, close)
+    }
+  }
+}
+
+fn builtin_ref_suppressed(path: String, line: Int) -> Bool with Fs {
+  let marker = "review-lint: allow-bare-builtin-ref"
+  String::contains(source_line(path, line), marker) ||
+  String::contains(source_line(path, line + 1), marker) ||
+  String::contains(source_line(path, line - 1), marker)
+}
+
+fn builtin_ref_scoped_path(path: String) -> Bool {
+  (String::contains(path, "/@vibe/compiler/") || String::contains(path, "/@vibe/parser/")) && !String::contains(path, "/codegen/") && is_production_compiler_path(path)
+}
+
+fn report_bare_builtin_ref_hits(raw: String, listed: String, emit: Bool) -> Int with Fs + Stderr {
+  let hits = Json::parse(raw)
+  let mut i = 0
+  let mut count = 0
+  while i < Json::length(hits) {
+    let hit = Json::index(hits, i)
+    let path = Json::string(Json::field(hit, "path"))
+    // The capture keeps its quotes, so `"Map::get"` is not satisfied by
+    // `"MapBuilder::get"` in the list.
+    let literal = Json::string(Json::field(Json::field(Json::field(hit, "captures"), "name"), "text"))
+    let line = Double::to_int(Json::number(Json::field(hit, "line")))
+    if String::starts_with(literal, "\"") && String::contains(listed, literal) && builtin_ref_scoped_path(path) && !builtin_ref_suppressed(path, line) {
+      if emit {
+        report_finding(path, line, Json::string(Json::field(hit, "text")), "spell a compiler-synthesized reference to the builtin " + literal + " as builtin_ref(" + literal + ") (@vibe/ast): a bare EIdent is renamed to the program's own function when the program defines that name (#3132)")
+      } else {
+        ()
+      }
+      count = count + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  count
+}
+
 fn lint(root: String, vibe: String) -> Int with Fs + Process + Stderr {
   let patterns = [
     "$(ctor:id)($(name:const), $(rest:args))",
@@ -444,6 +522,13 @@ fn lint(root: String, vibe: String) -> Int with Fs + Process + Stderr {
           ()
         } else {
           violations = violations + report_gc_bare_builtin_hits(output, ledger, true)
+        }
+        let listed = builtin_shadow_names_source(root)
+        if listed == "" {
+          Stderr::write_stream("review-lint: the builtin-shadow name list was not found; the bare builtin-reference rule cannot run\n")
+          failed = true
+        } else {
+          violations = violations + report_bare_builtin_ref_hits(output, listed, true)
         }
       }
     }
@@ -594,6 +679,57 @@ fn self_test() -> Int with Fs + Stderr {
   } else if gc_hijack_risk_names_source("/nonexistent-staged-snapshot") == "" {
     // Must reach the working tree, same as the direct-ABI list lookup.
     Stderr::write_stream("review-lint self-test: the ledger lookup did not fall back to the working tree\n")
+    1
+  } else {
+    builtin_ref_self_test()
+  }
+}
+
+fn builtin_ref_write_probe(path: String, with_marker: Bool) -> Unit with Fs {
+  let body = if with_marker {
+    "EIdent(\"Array::get\", -1)\n// review-lint: allow-bare-builtin-ref\n"
+  } else {
+    "EIdent(\"Array::get\", -1)\n// ordinary comment\n"
+  }
+  Fs::write_file(path, body)
+}
+
+fn builtin_ref_self_test() -> Int with Fs + Stderr {
+  // Shaped like the real list: quoted names, `MapBuilder::get` but not
+  // `Map::get`, so containment must respect the quotes.
+  let listed = "\n  \"Array::get\", \"Array::length\",\n  \"MapBuilder::get\"\n"
+  let marked = "_build/_review_lint_bref_marked/@vibe/compiler/normalize/p.vibe"
+  let plain = "_build/_review_lint_bref_plain/@vibe/compiler/normalize/p.vibe"
+  builtin_ref_write_probe(marked, true)
+  builtin_ref_write_probe(plain, false)
+  let get = "\\\"Array::get\\\""
+  if report_bare_builtin_ref_hits(gc_ident_hit("/repo/lib/@vibe/compiler/normalize/pass.vibe", get), listed, false) != 1 {
+    Stderr::write_stream("review-lint self-test: a bare builtin reference in a pre-codegen pass was not reported\n")
+    1
+  } else if report_bare_builtin_ref_hits(gc_ident_hit("/repo/lib/@vibe/parser/parser.vibe", get), listed, false) != 1 {
+    Stderr::write_stream("review-lint self-test: a bare builtin reference in the parser was not reported\n")
+    1
+  } else if report_bare_builtin_ref_hits(gc_ident_hit("/repo/lib/@vibe/compiler/codegen/expr/compile_call.vibe", get), listed, false) != 0 {
+    // Codegen runs after every rename point.
+    Stderr::write_stream("review-lint self-test: a codegen reference was reported\n")
+    1
+  } else if report_bare_builtin_ref_hits(gc_ident_hit("/repo/lib/@vibe/compiler/tests/x_test.vibe", get), listed, false) != 0 {
+    Stderr::write_stream("review-lint self-test: a test file was reported\n")
+    1
+  } else if report_bare_builtin_ref_hits(gc_ident_hit("/repo/lib/@vibe/compiler/normalize/pass.vibe", "\\\"Array::iter\\\""), listed, false) != 0 {
+    Stderr::write_stream("review-lint self-test: an unlisted name was reported\n")
+    1
+  } else if report_bare_builtin_ref_hits(gc_ident_hit("/repo/lib/@vibe/compiler/normalize/pass.vibe", "\\\"Map::get\\\""), listed, false) != 0 {
+    Stderr::write_stream("review-lint self-test: quoted containment matched a longer listed name\n")
+    1
+  } else if report_bare_builtin_ref_hits(gc_ident_hit(marked, get), listed, false) != 0 {
+    Stderr::write_stream("review-lint self-test: the bare builtin-reference suppression marker was ignored\n")
+    1
+  } else if report_bare_builtin_ref_hits(gc_ident_hit(plain, get), listed, false) != 1 {
+    Stderr::write_stream("review-lint self-test: an unmarked bare builtin reference was suppressed anyway\n")
+    1
+  } else if !String::contains(builtin_shadow_names_source("/nonexistent-staged-snapshot"), "\"Array::length\"") {
+    Stderr::write_stream("review-lint self-test: the builtin-shadow list lookup did not fall back to the working tree\n")
     1
   } else {
     0

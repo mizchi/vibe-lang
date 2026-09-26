@@ -1,14 +1,16 @@
 import @vibe/ast {
-  Expr, Stmt
+  Expr, Stmt, builtin_ref
 }
 import @vibe/compiler/core {
   builtin_shadow_rename_of, rename_builtin_shadow_defs
 }
 
 // #3132: a program's own definition of a builtin the compiler calls by name
-// moves to a spelling of its own, and so does every reference the program
-// WROTE (a source offset). A call the compiler synthesized (offset -1) keeps
-// the builtin's name, so it still reaches the builtin.
+// moves to a spelling of its own, and so does every reference to it -- located
+// or not. Only a reference the compiler MARKED as the builtin (`builtin_ref`)
+// keeps the builtin's name. Provenance is the mark, never the offset: an
+// interpolated expression is re-parsed without offsets, and the library lanes
+// parse whole programs that way (#3132 review).
 
 fn one_param_fn(name: String, param: String, body: Expr) -> Stmt {
   SLet(false, false, name, None, EFn([], [], [(param, None)], None, None, body))
@@ -33,14 +35,20 @@ test "#3132: the definition and the program's own calls are renamed" {
   let user_call = one_param_fn("caller", "xs", ECall(EIdent("Array::length", 40), [
     EIdent("xs", 55)
   ], 40))
-  let synthesized = one_param_fn("lowered", "xs", ECall(EIdent("Array::length", -1), [
+  // What an interpolation's re-parse or an unlocated lane hands the pass: the
+  // program's own call with no source offset.
+  let unlocated_user_call = one_param_fn("interp", "xs", ECall(EIdent("Array::length", -1), [
     EIdent("xs", -1)
   ], -1))
-  let stmts = [def, user_call, synthesized]
+  let synthesized = one_param_fn("lowered", "xs", ECall(builtin_ref("Array::length"), [
+    EIdent("xs", -1)
+  ], -1))
+  let stmts = [def, user_call, unlocated_user_call, synthesized]
   rename_builtin_shadow_defs(stmts)
   assert_eq(let_name(Array::get(stmts, 0)), builtin_shadow_rename_of("Array::length"))
   assert_eq(callee_of_body(Array::get(stmts, 1)), "Array::length$user")
-  assert_eq(callee_of_body(Array::get(stmts, 2)), "Array::length")
+  assert_eq(callee_of_body(Array::get(stmts, 2)), "Array::length$user")
+  assert_eq(callee_of_body(Array::get(stmts, 3)), "Array::length")
 }
 
 test "#3132: nothing is renamed without a definition, or for an unlisted name" {
