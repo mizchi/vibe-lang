@@ -399,5 +399,68 @@ class RustProviderSignatureTest(unittest.TestCase):
         )
 
 
+class OperationIdentityTest(unittest.TestCase):
+    """#1962 criterion 4: operation -> builtin -> linear import, pinned per row."""
+
+    def setUp(self):
+        self.linked = (ROOT / "lib/@vibe/compiler/codegen/wasi/linked_compile.vibe").read_text()
+        self.ladder = (ROOT / "lib/@vibe/compiler/core/builtin_name.vibe").read_text()
+
+    def assert_mutation_fails(self, check, mutated):
+        with self.assertRaises(SystemExit):
+            check(mutated)
+
+    def test_live_tree_binds_every_row(self):
+        bound = module.validate_linear_bindings(self.linked)
+        # Not merely "did not raise": a reader that matched nothing would pass.
+        self.assertGreaterEqual(len(bound), 70)
+        self.assertEqual(bound["Fs::is_dir"], "fs_is_dir")
+        self.assertGreaterEqual(module.validate_operation_ladder(self.ladder, bound), 24)
+
+    def test_swapped_same_typed_binding_fails(self):
+        # The swap the set comparison could not see: both are type 3.
+        a = '"Fs::is_dir" => fs_is_dir_idx,'
+        b = '"Fs::is_file" => fs_is_file_idx,'
+        self.assertIn(a, self.linked)
+        self.assertIn(b, self.linked)
+        mutated = self.linked.replace(a, "@@A@@").replace(b, a.replace("fs_is_dir_idx", "fs_is_file_idx")).replace(
+            "@@A@@", b.replace("fs_is_file_idx", "fs_is_dir_idx")
+        )
+        self.assertNotEqual(mutated, self.linked)
+        self.assert_mutation_fails(module.validate_linear_bindings, mutated)
+
+    def test_emission_order_drift_fails(self):
+        anchor = 'emit_name(import_content, "fs_is_dir")'
+        self.assertIn(anchor, self.linked)
+        start = self.linked.index("  if fs_is_dir_import_idx >= 0 {\n    emit_name(import_content, \"vibe\")")
+        end = self.linked.index("  if fs_is_file_import_idx >= 0 {\n    emit_name(import_content, \"vibe\")")
+        block = self.linked[start:end]
+        rest = self.linked[end:]
+        close = rest.index("\n  }\n") + len("\n  }\n")
+        mutated = self.linked[:start] + rest[:close] + block + rest[close:]
+        self.assertNotEqual(mutated, self.linked)
+        self.assert_mutation_fails(module.linear_bindings, mutated)
+
+    def test_ladder_rename_fails(self):
+        row = '"Fs::IsDir" => "Fs::is_dir",'
+        self.assertIn(row, self.ladder)
+        bound = module.validate_linear_bindings(self.linked)
+        mutated = self.ladder.replace(row, '"Fs::IsDir" => "Fs::is_file",')
+        with self.assertRaises(SystemExit):
+            module.validate_operation_ladder(mutated, bound)
+
+    def test_ladder_row_without_import_fails(self):
+        row = '"Fs::IsDir" => "Fs::is_dir",'
+        bound = dict(module.validate_linear_bindings(self.linked))
+        del bound["Fs::is_dir"]
+        with self.assertRaises(SystemExit):
+            module.validate_operation_ladder(self.ladder, bound)
+
+    def test_stale_exception_fails(self):
+        mutated = self.linked.replace('"sleep_blocking" =>', '"sleep_blocking_renamed" =>')
+        self.assertNotEqual(mutated, self.linked)
+        self.assert_mutation_fails(module.validate_linear_bindings, mutated)
+
+
 if __name__ == "__main__":
     unittest.main()
