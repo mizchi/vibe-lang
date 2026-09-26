@@ -68,22 +68,20 @@ DEFAULT_RUNNER="$PROJECT_ROOT/runtime/viberun/target/release/viberun"
 RUNNER="${VIBE_HOSTFUTURE_SOURCE_GATE_RUNNER:-$DEFAULT_RUNNER}"
 # Same rebuild-when-stale convention as the host-future-value gate: an
 # explicit override is trusted as-is; the default in-tree binary is rebuilt
-# when missing or older than any viberun build input.
+# when missing or stale against any viberun build input (by content,
+# scripts/ensure_viberun.sh).
 if [ "$RUNNER" = "$DEFAULT_RUNNER" ]; then
   needs_build=0
   if [ ! -x "$RUNNER" ]; then
     needs_build=1
-  elif find "$PROJECT_ROOT/runtime/viberun/src" \
-        "$PROJECT_ROOT/runtime/viberun/Cargo.toml" \
-        "$PROJECT_ROOT/runtime/viberun/Cargo.lock" \
-        -newer "$RUNNER" -print -quit 2>/dev/null | grep -q .; then
+  elif ! bash "$PROJECT_ROOT/scripts/ensure_viberun.sh" --check >/dev/null 2>&1; then
     needs_build=1
-    echo "[hostfuture-source-component-gate] viberun is older than its build inputs; rebuilding..."
+    echo "[hostfuture-source-component-gate] viberun does not match its sources; rebuilding..."
   fi
   if [ "$needs_build" = "1" ]; then
     command -v cargo >/dev/null 2>&1 || require_or_skip "viberun needs a (re)build and cargo is not installed"
     echo "[hostfuture-source-component-gate] building viberun..."
-    if ! (cd "$PROJECT_ROOT/runtime/viberun" && cargo build --release >/dev/null 2>&1); then
+    if ! bash "$PROJECT_ROOT/scripts/ensure_viberun.sh" >/dev/null 2>&1; then
       require_or_skip "failed to build runtime/viberun"
     fi
   fi
