@@ -116,6 +116,7 @@ import @vibe/compiler/core {
   type_name_has_iterator_impl,
   type_to_string,
   typed_lowering_arg_offset,
+  types_equal,
   unify
 }
 
@@ -6254,16 +6255,49 @@ fn type_is_spawn_shaped(t: Type) -> Bool {
 /// that shape mints a fresh region per call exactly like the declaration.
 fn type_is_run_shaped(t: Type) -> Bool {
   match t {
-    CtForAll(_, _, body) => type_is_run_shaped(body),
-    CtFn(params, _, _) => if Array::length(params) != 1 {
+    CtForAll(ids, _, body) => run_shaped_body(body, ids),
+    _ => false
+  }
+}
+
+fn run_bound_contains(bound: Array[Int], id: Int) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(bound) {
+    if Array::get(bound, i) == id {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// The body of a runner scheme: `((TaskGroup[r, e]) -> T) -> T` where `r` is
+/// quantified by THIS scheme (#3156 review). A monomorphic helper over an
+/// enclosing function's region is not a runner -- only a region the callee
+/// binds can be minted fresh per call -- and a function whose result is not
+/// its callback's result (`((TaskGroup[r, e]) -> Int) -> String`) is not one
+/// either.
+fn run_shaped_body(t: Type, bound: Array[Int]) -> Bool {
+  match t {
+    CtFn(params, ret, _) => if Array::length(params) != 1 {
       false
     } else {
       match Array::get(params, 0) {
-        CtFn(body_params, _, _) => if Array::length(body_params) != 1 {
+        CtFn(body_params, body_ret, _) => if Array::length(body_params) != 1 || !types_equal(ret, body_ret) {
           false
         } else {
           match Array::get(body_params, 0) {
-            CtNamed(gn, gargs) => gn == "TaskGroup" && Array::length(gargs) == 2,
+            CtNamed(gn, gargs) => if gn == "TaskGroup" && Array::length(gargs) == 2 {
+              match Array::get(gargs, 0) {
+                CtVar(rid) => run_bound_contains(bound, rid),
+                _ => false
+              }
+            } else {
+              false
+            },
             _ => false
           }
         },

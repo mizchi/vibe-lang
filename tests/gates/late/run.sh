@@ -2261,6 +2261,22 @@ if ! spawnable_ann_closure_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_
   echo "[compiler-gate] FAIL: region_ok_spawnable_annotated_closure.vibe got '$spawnable_ann_closure_out' (want 41)" >&2
   exit 1
 fi
+# #3153 review: a function is a nursery runner only when its scheme binds the
+# `TaskGroup` region and returns its callback's result; a String-returning
+# lookalike and a monomorphic helper over an enclosing region are ordinary
+# values (15).
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/region_ok_not_a_runner.vibe "$spawnabledir/pos_not_runner.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ ! -s "$spawnabledir/pos_not_runner.wasm" ]; then
+  echo "[compiler-gate] FAIL: region_ok_not_a_runner.vibe did not compile -- a non-runner was classified as TaskGroup::run (#3153)" >&2
+  cat "$spawnabledir/pos_not_runner.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+if ! spawnable_not_runner_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$spawnabledir/pos_not_runner.wasm" 2>&1)"; then
+  echo "[compiler-gate] FAIL: region_ok_not_a_runner.vibe got '$spawnable_not_runner_out' (want 15)" >&2
+  exit 1
+fi
 rm -rf "$spawnabledir"
 echo "[compiler-gate] ADR-0068 Spawnable[r] capture check ok"
 

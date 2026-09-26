@@ -1,0 +1,33 @@
+// #3153 review: only a function whose scheme QUANTIFIES the `TaskGroup`
+// region, and whose result is its callback's result, is a nursery runner.
+// - `describe` returns a `String` from an `Int` callback, so it is not
+//   `((TaskGroup[r, e]) -> T) -> T` and passing it as a value is legal.
+// - `apply` is a monomorphic helper over the ENCLOSING function's region:
+//   it cannot mint a fresh region per call, so it is not a runner either.
+// Both used to be refused as "cannot be used as a value here".
+// 7 + 7 + 1 = 15.
+import @vibe/concurrent {
+  TaskGroup
+}
+
+fn describe[r, e](body: (TaskGroup[r, e]) -> Int) -> String {
+  "runner-like"
+}
+
+fn keep[A](x: A) -> Int {
+  7
+}
+
+fn use_group[rg, e](n: TaskGroup[rg, e]) -> Int {
+  let apply = (f: (TaskGroup[rg, e]) -> Int) -> f(n)
+  keep(apply) + apply((g) -> 1)
+}
+
+export let main = () -> Int with Exception {
+  let d = keep(describe)
+  TaskGroup::run((n) -> d + use_group(n))
+}
+
+test "region ok not a runner" allows Exception {
+  inspect(main(), "15")
+}
