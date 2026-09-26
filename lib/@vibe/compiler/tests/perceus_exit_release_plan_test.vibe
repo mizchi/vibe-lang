@@ -99,3 +99,42 @@ test "exits are numbered in walk order" {
   assert(String::contains(plan, "run d exit_drop:1:1 1"))
   assert(String::contains(plan, "run e exit_drop:1:1 1"))
 }
+
+test "a pattern binder or a for element gets no row" {
+  // Codegen releases only a `let`, a `let mut` or a parameter, and addresses
+  // a row by NAME: a row for a binder could only be applied to an owned
+  // binding the binder shadows.
+  let arm = plan_of(program("let run: (Int) -> Int = (n) -> {\n  let e = A([n])\n  match e {\n    A(xs) => if n > 0 {\n      return 1\n    } else {\n      ()\n    }\n  }\n  0\n}"))
+  assert(String::contains(arm, "run e exit_drop:0:1 1"))
+  assert(!String::contains(arm, "run xs exit_drop"))
+  let elem = plan_of(program("let run: (Int) -> Int = (n) -> {\n  for x in [A([n])] {\n    if n > 0 {\n      return 1\n    }\n  }\n  0\n}"))
+  assert(String::contains(elem, "exit_site:0:0"))
+  assert(!String::contains(elem, "run x exit_drop"))
+}
+
+test "an unassigned let mut is released like a let" {
+  let plan = plan_of(program("let run: (Int) -> Int = (n) -> {\n  let mut d = A([n])\n  if n > 0 {\n    return 1\n  }\n  let e = keep(d)\n  let f = keep(d)\n  0\n}"))
+  assert(String::contains(plan, "run d exit_drop:0:2 1"))
+}
+
+test "a let mut with no dup budget is released once, stored before the exit or after" {
+  // Every store leaves the slot exactly one reference to what it stored.
+  let before = plan_of(program("let run: (Int) -> Int = (n) -> {\n  let mut d = A([n])\n  d = A([n])\n  if n > 0 {\n    return 1\n  }\n  let e = keep(d)\n  0\n}"))
+  assert(String::contains(before, "run d exit_drop:0:1 1"))
+  let after = plan_of(program("let run: (Int) -> Int = (n) -> {\n  let mut d = A([n])\n  if n > 0 {\n    return 1\n  }\n  d = A([n])\n  let e = keep(d)\n  0\n}"))
+  assert(String::contains(after, "run d exit_drop:0:1 1"))
+}
+
+test "a stored let mut with a dup budget is not released" {
+  // A store re-applies the dup budget -- except the self-reusing tuple
+  // store -- so what the slot holds at the exit is not known.
+  let plan = plan_of(program("let run: (Int) -> Int = (n) -> {\n  let mut d = A([n])\n  d = A([n])\n  if n > 0 {\n    return 1\n  }\n  let e = keep(d)\n  let f = keep(d)\n  0\n}"))
+  assert(String::contains(plan, "exit_site:0:0"))
+  assert(!String::contains(plan, "run d exit_drop"))
+}
+
+test "a let mut a call moves out of and back into is released once" {
+  // `d = keep(d)` spends the slot's reference and stores the result's.
+  let plan = plan_of(program("let run: (Int) -> Int = (n) -> {\n  let mut d = A([n])\n  let mut i = 0\n  while i < 3 {\n    d = keep(d)\n    i = i + 1\n  }\n  if n > 0 {\n    return 1\n  }\n  0\n}"))
+  assert(String::contains(plan, "run d exit_drop:0:1 1"))
+}

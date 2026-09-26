@@ -8,17 +8,27 @@
 // bindings on a `throw` into its caller's handle or into a handle of its own,
 // bindings of nested scopes, and a captured `let mut` cell with its closure.
 // Measured on a stage2 built from main at a3ad813eb, each exit form leaked
-// linearly (112 B per call for most shapes, 40 B for the cell); this fixture
-// grew __heap_ptr by 1,872,288 B over its 2000 rounds. With the release,
-// 440 B. The gate compiles it under VIBE_RC=1 and bounds the growth
+// linearly (112 B per call for most shapes, 40 B for the cell); those shapes
+// alone grew __heap_ptr by 1,872,288 B over the 2000 rounds. With the
+// release, 440 B. The gate compiles it under VIBE_RC=1 and bounds the growth
 // (tests/gates/mid/run.sh, 40f0h); the same gate checks the answer on the
 // bump, rc, shadow and gc lanes, and the shadow lane traps on the drop of a
 // freed block. What each exit still hands out, and what it must not release,
 // is pinned by fixtures/rc_early_exit_release_test.vibe.
 //
+// The rounds also take a `let mut` no closure captures -- unassigned (with
+// and without a dup budget), stored before the exit, stored after it, stored
+// in the loop the exit leaves, and declared in a loop body a `break` leaves
+// -- and a parameterized loop, whose `break v` and `continue(a)` are stores
+// followed by the exit (#3181 review). With them the fixture grows
+// 3,888,084 B on a stage2 from main at 6646ccbfb (no exit releases
+// anything), 1,344,212 B when every exit releases what it leaves except a
+// `let mut`, and 440 B now.
+//
 // `main` sums, per round i: 1 each from ret_guard, ret_budget, ret_pick, brk,
-// thr and thr_local, 2 from cont, 5 from nested, and i from ret_cell:
-// 2000 * (6 + 2 + 5) + 1999 * 2000 / 2 = 2025000.
+// thr, thr_local, mut_guard, mut_budget, mut_store_before, mut_store_after,
+// mut_store_in_loop, mut_brk and loop_exit, 2 from cont, 5 from nested, and i
+// from ret_cell: 2000 * (13 + 2 + 5) + 1999 * 2000 / 2 = 2039000.
 
 enum D {
   A(Array[Int])
@@ -141,8 +151,89 @@ fn ret_cell(c: Bool, n: Int) -> D {
   A([0, 1])
 }
 
+// A `let mut` no closure captures: the exit releases what the slot holds
+// when it is taken.
+fn mut_guard(n: Int) -> Int {
+  let mut d = A([n, 1])
+  if n >= 0 {
+    return 1
+  }
+  second(d)
+}
+
+// With a dup budget and no store, the slot holds both references on the
+// early path, as a `let` does, and releases both.
+fn mut_budget(n: Int) -> Int {
+  let mut d = A([n, 1])
+  if n >= 0 {
+    return 1
+  }
+  let e = keep(d)
+  second(e) + second(keep(d))
+}
+
+fn mut_store_before(n: Int) -> Int {
+  let mut d = A([n, 1])
+  d = A([n, 2])
+  if n >= 0 {
+    return 1
+  }
+  second(d)
+}
+
+fn mut_store_after(n: Int) -> Int {
+  let mut d = A([n, 1])
+  if n >= 0 {
+    return 1
+  }
+  d = A([n, 2])
+  second(d)
+}
+
+fn mut_store_in_loop(n: Int) -> Int {
+  let mut d = A([n, 1])
+  let mut i = 0
+  while i < 3 {
+    d = A([i, n])
+    if i == 1 {
+      return i
+    }
+    i = i + 1
+  }
+  second(d)
+}
+
+fn mut_brk(n: Int) -> Int {
+  let mut i = 0
+  let mut acc = 0
+  while i < 3 {
+    let mut d = A([i + n, 1])
+    d = A([i + n, 1])
+    if i == 1 {
+      break
+    }
+    acc = acc + second(d)
+    i = i + 1
+  }
+  acc
+}
+
+// `break v` is `__loop_result = v; break` and `continue(a)` assigns the
+// loop's parameter before it jumps: both release the body's binding.
+fn loop_exit(n: Int) -> Int {
+  loop (i = 0) {
+    let d = A([i + n, 1])
+    if i == 2 {
+      break i - 1
+    }
+    continue(i + 1)
+  }
+}
+
 fn round(i: Int) -> Int {
-  ret_guard(i) + ret_budget(i) + second(ret_pick(i)) + brk(i) + cont(i) + thr(i) + thr_local(i) + nested(i) + second(ret_cell(i >= 0, i))
+  let mixed = ret_guard(i) + ret_budget(i) + second(ret_pick(i)) + brk(i) + cont(i) + thr(i) + thr_local(i) + nested(i) + second(ret_cell(i >= 0, i))
+  let muts = mut_guard(i) + mut_budget(i) + mut_store_before(i) + mut_store_after(i) + mut_store_in_loop(i) + mut_brk(i) + loop_exit(i)
+  mixed + muts
 }
 
 export fn main() -> Int {

@@ -246,7 +246,13 @@ import @vibe/compiler/codegen/wasm_emit {
 }
 
 import ./compile_call.vibe {
-  cc_builtin_call_ret_kind, cc_expr_is_stringish, cc_fn_returns_float, compile_call
+  cc_builtin_call_ret_kind,
+  cc_expr_is_stringish,
+  cc_fn_returns_float,
+  compile_call,
+  rc_exit_end_store,
+  rc_exit_note_store,
+  rc_exit_value_owned
 }
 
 import ./compile_expr_tail2.vibe {
@@ -2855,12 +2861,20 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
       // straight-line spine leaf rather than `_mut_is_borrow_ret_ext`, whose
       // wrapper answer is broader (branches, projections, aliases) than the
       // plan's.
-      if ctx.enable_rc && spine_leaf_unowned(value, local_names, ctx) {
+      let spine_retained = ctx.enable_rc && spine_leaf_unowned(value, local_names, ctx)
+      if spine_retained {
         emit_rc_dup_guarded(buf, local_idx, ctx.rc_shadow, ctx.rc_dup_func_idx)
         Array::push(ctx.heap_binding_names, name)
       } else {
         ()
       }
+      // #3141: may an early exit out of `body` release this slot? Only when
+      // it holds a reference of its own -- retained just above, or a heap
+      // value the exit operand's test vouches for (read here, while the
+      // binder is still masked) -- so that every store after this one keeps
+      // the slot owning (compile_expr_tail's EAssign arm, and the plan's
+      // `pe_emit_exit_rows` for what it then holds).
+      let exit_owned = ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && (spine_retained || (_mut_rc_kind > 0 && rc_exit_value_owned(ctx, local_names, value)))
       // `let mut peek = peek(xs, 0)` calls the outer `peek`. Both ownership
       // classifiers above must see that same scope, even though the value
       // has already been stored so their retains can target local_idx.
@@ -2892,7 +2906,20 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
       } else {
         ()
       }
+      // #3141: an early exit out of `body` releases what the slot holds at
+      // that point, as many times as the plan's row says.
+      let xmark = Array::length(ctx.rc_exit_stack_names)
+      if exit_owned {
+        rc_exit_push(ctx.rc_exit_stack_names, ctx.rc_exit_stack_info, name, 0, local_idx, 0 - 1)
+      } else {
+        ()
+      }
       let nl2 = compile_expr(buf, body, local_names, nl, ctx, ld)
+      if exit_owned {
+        rc_exit_truncate(ctx, xmark)
+      } else {
+        ()
+      }
       if ctx.enable_rc && array_contains_str(ctx.heap_binding_names, name) && array_contains_str(ctx.rc_drop_names, name) && ctx.rc_drop_func_idx >= 0 {
         if scope_tail_proj_root(body) == name {
           emit_local_set(buf, nl2)
@@ -2973,7 +3000,12 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         emit_local_set(buf, idx)
         emit_local_get(buf, old_temp)
         emit_call(buf, ctx.rc_drop_func_idx)
-        compile_expr(buf, body, local_names, nl, ctx, ld)
+        // #3141: an early exit in the continuation must not release what
+        // the stored value may still read (see rc_exit_note_store).
+        let xtok = rc_exit_note_store(ctx, local_names, value)
+        let rnl = compile_expr(buf, body, local_names, nl, ctx, ld)
+        rc_exit_end_store(ctx, xtok)
+        rnl
       } else {
         if is_heap_mut && !is_self {
           emit_local_get(buf, idx)
@@ -3159,7 +3191,17 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         } else {
           ()
         }
-        compile_expr(buf, body, local_names, nl_after, ctx, ld)
+        // #3141: an early exit in the continuation must not release what the
+        // stored value may still read (see rc_exit_note_store) -- unless the
+        // slot retained it above and so holds a reference of its own.
+        let xtok = if replacement_unowned {
+          0 - 1
+        } else {
+          rc_exit_note_store(ctx, local_names, value)
+        }
+        let rnl = compile_expr(buf, body, local_names, nl_after, ctx, ld)
+        rc_exit_end_store(ctx, xtok)
+        rnl
       }
     }
   } else if __tag == 13 {

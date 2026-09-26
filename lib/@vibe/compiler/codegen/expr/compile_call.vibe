@@ -7764,8 +7764,16 @@ fn compile_call_core(buf: Bytes, callee: Expr, raw_args: Array[Expr], local_name
 /// - an owned-return marker: retained by its own lowering, so no;
 /// - a constructor or literal aggregate: whatever its items are;
 /// - a call whose callee cannot return a view: no, whatever its arguments;
-/// - a projection: its root is kept;
+/// - a projection: its root is kept when the root is itself a binding on the
+///   release stack; a projection through anything else (a borrowed `let`, a
+///   pattern binder, a `for` element, a capture) may be a view into a
+///   binding the exit releases, which keeping the root's NAME would not
+///   protect -> false;
 /// - an `if`: whatever either branch is.
+///
+/// "On the release stack" means the entry is the local the name resolves to
+/// here (`rc_exit_owner_kind`): an owned `let` shadowed by a pattern binder
+/// or a `for` element of the same name does not vouch for the shadowing one.
 ///
 /// Anything else answers false, and the exit then releases nothing -- the
 /// leak it had before, never a release of what the operand still reads.
@@ -7780,7 +7788,7 @@ fn rc_exit_operand_ok(e: Expr, local_names: Array[String], ctx: CompileCtx, keep
     EIdent(n, _) => if find_local_slot(local_names, n) < 0 {
       true
     } else {
-      let kind = rc_exit_entry_kind(ctx, n)
+      let kind = rc_exit_owner_kind(ctx, local_names, n)
       if kind == 4 {
         Array::push(keep, n)
         true
@@ -7801,6 +7809,11 @@ fn rc_exit_operand_ok(e: Expr, local_names: Array[String], ctx: CompileCtx, keep
     EDot(_, _, _, _) => {
       let root = proj_root_ident(e)
       if root == "" {
+        false
+      } else if find_local_slot(local_names, root) < 0 {
+        // A global: nothing an exit releases.
+        true
+      } else if rc_exit_owner_kind(ctx, local_names, root) < 0 {
         false
       } else {
         Array::push(keep, root)
@@ -7833,14 +7846,23 @@ fn rc_exit_operands_ok(items: Array[Expr], local_names: Array[String], ctx: Comp
   ok
 }
 
-/// The kind of the innermost release-stack entry named `n`, or -1.
-fn rc_exit_entry_kind(ctx: CompileCtx, n: String) -> Int {
+/// The kind of the innermost release-stack entry named `n`, or -1 -- and -1
+/// as well when that entry is not the local `n` resolves to here. A pattern
+/// binder, a `for` element or a borrowed `let` gets a local of its own but
+/// no entry, so the innermost ENTRY named `n` can be an outer binding the
+/// name no longer denotes; answering with its kind would vouch for a view.
+fn rc_exit_owner_kind(ctx: CompileCtx, local_names: Array[String], n: String) -> Int {
   let names = ctx.rc_exit_stack_names
+  let slot = find_local_slot(local_names, n)
   let mut i = Array::length(names) - 1
   let mut kind = 0 - 1
   while i >= 0 {
     if Array::get(names, i) == n {
-      kind = Array::get(ctx.rc_exit_stack_info, i * 3)
+      if Array::get(ctx.rc_exit_stack_info, i * 3 + 1) == slot {
+        kind = Array::get(ctx.rc_exit_stack_info, i * 3)
+      } else {
+        ()
+      }
       i = 0 - 1
     } else {
       i = i - 1
@@ -7915,9 +7937,18 @@ fn rc_exit_name_shared(names: Array[String], info: Array[Int], lo: Int, i: Int) 
 /// An owned binding releases what the plan's `PaExitDrop` row says it still
 /// holds; a cell and a view pin, whose scope ends release them on every
 /// path, release once. A name the operand may still read through is kept,
-/// and so is a name two entries in range share.
+/// and so is a name two entries in range share, and so is an entry whose
+/// name resolves to another local here (a pattern binder or `for` element
+/// shadowing it): the plan's row for that name describes the shadowing
+/// binding, not this one.
+///
+/// The operand is not the only value an exit hands on: an assignment it
+/// follows (`rc_exit_note_store`) may have put a view of a binding the exit
+/// leaves into a slot that outlives it -- `break v` of a parameterized loop
+/// is `__loop_result = v; break`, and `continue(a)` assigns the loop's
+/// parameters. Those values are held to the operand's test too.
 export fn rc_exit_release(buf: Bytes, ctx: CompileCtx, local_names: Array[String], kind: Int, operand: Expr) -> Unit with Exception {
-  if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && Array::length(ctx.rc_exit_state) >= 2 {
+  if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && Array::length(ctx.rc_exit_state) >= 3 {
     let ord = Array::get(ctx.rc_exit_state, 0)
     Array::set(ctx.rc_exit_state, 0, ord + 1)
     let nlets = Array::length(ctx.rc_exit_lets)
@@ -7932,7 +7963,12 @@ export fn rc_exit_release(buf: Bytes, ctx: CompileCtx, local_names: Array[String
       Array::set(ctx.rc_exit_state, 1, 1)
     } else {
       let keep: Array[String] = []
-      if rc_exit_operand_ok(operand, local_names, ctx, keep) {
+      let mut ki = 0
+      while ki < Array::length(ctx.rc_exit_keep) {
+        Array::push(keep, Array::get(ctx.rc_exit_keep, ki))
+        ki = ki + 1
+      }
+      if Array::get(ctx.rc_exit_state, 2) == 0 && rc_exit_operand_ok(operand, local_names, ctx, keep) {
         let names = ctx.rc_exit_stack_names
         let info = ctx.rc_exit_stack_info
         // The range the exit leaves: down to the boundary it stops at. A
@@ -7960,7 +7996,7 @@ export fn rc_exit_release(buf: Bytes, ctx: CompileCtx, local_names: Array[String
             let ek = Array::get(info, i * 3)
             let local = Array::get(info, i * 3 + 1)
             let flag = Array::get(info, i * 3 + 2)
-            let count = if ek >= 100 || array_contains_str(keep, n) || rc_exit_name_shared(names, info, lo, i) {
+            let count = if ek >= 100 || array_contains_str(keep, n) || rc_exit_name_shared(names, info, lo, i) || find_local_slot(local_names, n) != local {
               0
             } else if ek == 4 || ek == 5 {
               1
@@ -8015,4 +8051,58 @@ export fn rc_exit_release(buf: Bytes, ctx: CompileCtx, local_names: Array[String
   } else {
     ()
   }
+}
+
+/// #3141: an assignment `x = value` is about to compile its continuation,
+/// where an early exit may still come. If `value` is a view of a binding
+/// such an exit leaves, the slot `x` holds it past the release -- `break v`
+/// of a parameterized loop is `__loop_result = v; break`, and `__loop_result`
+/// is a plain local that neither retains what it stores nor releases it.
+/// So the value is held to the exit operand's test (`rc_exit_operand_ok`),
+/// evaluated here, where its names still resolve to what the store read:
+/// what it keeps is kept by every exit in the continuation, and a value it
+/// cannot place makes every one of them release nothing. The caller skips
+/// a store that retained its value. Returns the token `rc_exit_end_store`
+/// takes once the continuation is compiled.
+export fn rc_exit_note_store(ctx: CompileCtx, local_names: Array[String], value: Expr) -> Int with Exception {
+  if ctx.enable_rc && Array::length(ctx.rc_exit_state) >= 3 {
+    let mark = Array::length(ctx.rc_exit_keep)
+    let keep: Array[String] = []
+    let ok = rc_exit_operand_ok(value, local_names, ctx, keep)
+    let mut i = 0
+    while i < Array::length(keep) {
+      Array::push(ctx.rc_exit_keep, Array::get(keep, i))
+      i = i + 1
+    }
+    if ok {
+      mark * 2
+    } else {
+      Array::set(ctx.rc_exit_state, 2, Array::get(ctx.rc_exit_state, 2) + 1)
+      mark * 2 + 1
+    }
+  } else {
+    0 - 1
+  }
+}
+
+/// #3141: the continuation of the store `token` came from is compiled; its
+/// value no longer constrains the exits that follow.
+export fn rc_exit_end_store(ctx: CompileCtx, token: Int) -> Unit {
+  if token >= 0 {
+    Array::truncate(ctx.rc_exit_keep, token / 2)
+    if token % 2 == 1 {
+      Array::set(ctx.rc_exit_state, 2, Array::get(ctx.rc_exit_state, 2) - 1)
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+}
+
+/// #3141: does a `let mut` initialized with `value` hold a reference of its
+/// own, by the exit operand's test? Only then may an exit release the slot.
+export fn rc_exit_value_owned(ctx: CompileCtx, local_names: Array[String], value: Expr) -> Bool with Exception {
+  let keep: Array[String] = []
+  rc_exit_operand_ok(value, local_names, ctx, keep) && Array::length(keep) == 0
 }

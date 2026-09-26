@@ -1119,13 +1119,19 @@ echo "[compiler-gate] field assignment release guard ok (2019000 on bump/rc/shad
 #        path never consumed, the references kept for its later uses, a loop
 #        body's binding, a function's bindings on a throw, nested scopes, and
 #        a captured cell with its closure. The exit now releases them
-#        (rc_exit_release, from the plan's PaExitDrop rows). Unfixed, the
-#        bounded fixture grew __heap_ptr by 1,872,288 B over its 2000 rounds;
-#        fixed, 440 B. The answer is checked on bump, rc, shadow and gc;
-#        the shadow lane traps on the drop of a freed block.
+#        (rc_exit_release, from the plan's PaExitDrop rows), a `let mut` no
+#        closure captures included, stored before the exit or after it or in
+#        the loop it leaves (#3181 review). Unfixed, the bounded fixture grew
+#        __heap_ptr by 3,888,084 B over its 2000 rounds, and 1,344,212 B with
+#        every exit releasing except a `let mut`; fixed, 440 B. The answer is
+#        checked on bump, rc, shadow and gc; the shadow lane traps on the
+#        drop of a freed block.
 #        rc_early_exit_release_test.vibe then checks, on rc and shadow, that
 #        what each exit hands out, and every binding it does not leave, is
-#        still alive afterwards.
+#        still alive afterwards -- including a `break v` / `continue(a)` of a
+#        parameterized loop, which store a value in a slot that outlives the
+#        exit (it trapped under shadow when the exit released what that value
+#        was a view of).
 echo "[compiler-gate] 40f0h/40 an early exit releases the scopes it leaves (#3141)"
 exdir="_build/_gate_rc_early_exit"
 rm -rf "$exdir"; mkdir -p "$exdir"
@@ -1143,8 +1149,8 @@ for ex_lane in bump rc shadow gc; do
     exit 1
   fi
   ex_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$exdir/ex.wasm" 2>&1 | tail -1)"
-  if [ "$ex_out" != "2025000" ]; then
-    echo "[compiler-gate] FAIL: rc_early_exit_bounded got '$ex_out' on the $ex_lane lane (want 2025000). A trap means an early exit released a binding it did not own or one still in use (#3141)." >&2
+  if [ "$ex_out" != "2039000" ]; then
+    echo "[compiler-gate] FAIL: rc_early_exit_bounded got '$ex_out' on the $ex_lane lane (want 2039000). A trap means an early exit released a binding it did not own or one still in use (#3141)." >&2
     exit 1
   fi
   if [ "$ex_lane" = rc ]; then
@@ -1154,7 +1160,7 @@ for ex_lane in bump rc shadow gc; do
       echo "[compiler-gate] FAIL: could not measure rc_early_exit_bounded heap ($ex_json)" >&2; exit 1
     fi
     if [ "$ex_used" -ge 20000 ]; then
-      echo "[compiler-gate] FAIL: rc_early_exit_bounded heap_used=$ex_used >= 20000 (#3141 regressed: an early exit skips the scope-end drops of the scopes it leaves again; unfixed, this fixture measured 1,872,288 B)" >&2; exit 1
+      echo "[compiler-gate] FAIL: rc_early_exit_bounded heap_used=$ex_used >= 20000 (#3141 regressed: an early exit skips the scope-end drops of the scopes it leaves again; unfixed, this fixture measured 3,888,084 B)" >&2; exit 1
     fi
   fi
 done
@@ -1169,7 +1175,7 @@ for ex_lane in 1 shadow; do
   fi
 done
 rm -f "$ROOT_DIR/_build/_gate_rc_early_exit_release.log"
-echo "[compiler-gate] early exit release guard ok (2025000 on bump/rc/shadow/gc, rc heap_used=$ex_used B; handed-out and outer values alive on rc + shadow)"
+echo "[compiler-gate] early exit release guard ok (2039000 on bump/rc/shadow/gc, rc heap_used=$ex_used B; handed-out and outer values alive on rc + shadow)"
 
 # 40f1a. #2427: the shadow table must not overlap the heap it describes.
 #        40f above proves the marks catch a real dup/drop-of-freed; this
