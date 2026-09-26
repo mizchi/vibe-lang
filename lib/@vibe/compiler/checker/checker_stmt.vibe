@@ -98,6 +98,7 @@ import @vibe/compiler/core {
   type_constructor_name,
   type_implements_trait,
   type_to_string,
+  typed_forin_row_head,
   typed_index_map_verdict,
   typed_index_open_verdict,
   typed_index_row_head,
@@ -9147,13 +9148,29 @@ fn index_receiver_alias_body(defs: Array[TypeDef], name: String) -> Option[Type]
 /// Rows are kept sorted by offset; the capture visits sites in source order,
 /// so the insertion is an append in the common case.
 fn index_receiver_rows_from_capture(checked: CheckedProgram, capture: TypedOccurrenceRoleLaneCapture) -> (Array[Int], Array[String]) {
+  receiver_rows_from_capture(checked, capture, false)
+}
+
+/// #3148: the same extraction for the `for` iterand rows (kind 7), under
+/// `typed_forin_row_head()`. A bare `CtUnknown` iterand is not open, as for
+/// an Array reader (#3145).
+fn forin_receiver_rows_from_capture(checked: CheckedProgram, capture: TypedOccurrenceRoleLaneCapture) -> (Array[Int], Array[String]) {
+  receiver_rows_from_capture(checked, capture, true)
+}
+
+fn receiver_rows_from_capture(checked: CheckedProgram, capture: TypedOccurrenceRoleLaneCapture, forin: Bool) -> (Array[Int], Array[String]) {
   let offs: Array[Int] = []
   let verdicts: Array[String] = []
   let n = Array::length(capture.binop_offsets)
   let mut i = 0
   while i + 1 < n {
     let kind = Array::get(capture.binop_kinds, i)
-    if kind == 4 || kind == 5 || kind == 6 {
+    let wanted = if forin {
+      kind == 7 || kind == 8
+    } else {
+      kind == 4 || kind == 5 || kind == 6
+    }
+    if wanted {
       let off = Array::get(capture.binop_offsets, i)
       // #3145: a builtin Array reader (kind 5) is refused only for a type
       // VARIABLE -- an erased formal, or a generalised lambda's parameter.
@@ -9161,8 +9178,9 @@ fn index_receiver_rows_from_capture(checked: CheckedProgram, capture: TypedOccur
       // expression it could (a `None` match arm, an untyped builtin result),
       // not a value that can be anything at run time; the self-build meets
       // one in `checker_effects.vibe` (`Array::length(callee_effs)`).
-      // Kind 6 is a declared formal the fast path bound (`record_array_receiver`).
-      let v = if kind == 6 {
+      // Kind 6 is a declared formal the fast path bound (`record_array_receiver`);
+      // kind 8 is a declared formal used as a `for` iterand (#3148).
+      let v = if kind == 6 || kind == 8 {
         typed_index_open_verdict()
       } else {
         index_receiver_verdict(checked, Array::get(capture.binop_types, i), kind == 4)
@@ -9207,9 +9225,11 @@ fn index_receiver_rows_from_capture(checked: CheckedProgram, capture: TypedOccur
     let v = Array::get(verdicts, k)
     if String::length(v) > 0 {
       Array::push(out_offs, Array::get(offs, k))
-      Array::push(out_keys, impl_target_key(TyApp(typed_index_row_head(), [
-        TyName(v)
-      ])))
+      Array::push(out_keys, impl_target_key(TyApp(if forin {
+        typed_forin_row_head()
+      } else {
+        typed_index_row_head()
+      }, [TyName(v)])))
     } else {
       ()
     }
@@ -10294,7 +10314,10 @@ fn check_program_double_call_result_observation_impl(stmts: Array[Stmt]) -> Opti
       let (eq_render_offs, eq_render_keys) = append_render_rows(eq_only_offs, eq_only_keys, row_offs, row_keys)
       // #3133: the index-receiver rows ride the same channel.
       let (index_offs, index_keys) = index_receiver_rows_from_capture(checked, capture)
-      let (eq_offs, eq_keys) = append_render_rows(eq_render_offs, eq_render_keys, index_offs, index_keys)
+      let (eq_index_offs, eq_index_keys) = append_render_rows(eq_render_offs, eq_render_keys, index_offs, index_keys)
+      // #3148: and the `for` iterand rows.
+      let (forin_offs, forin_keys) = forin_receiver_rows_from_capture(checked, capture)
+      let (eq_offs, eq_keys) = append_render_rows(eq_index_offs, eq_index_keys, forin_offs, forin_keys)
       // #2424: the Double table is the union of the call results above and
       // the render/`eq` ARGUMENTS the checker typed Double (tag 4 on the
       // modular channel) -- see union_double_render_arg_offsets.
@@ -10464,7 +10487,10 @@ fn typed_lowering_located_observation_impl(stmts: Array[Stmt], initial_env: Type
       let (eq_render_offs, eq_render_keys) = append_render_rows(eq_only_offs, eq_only_keys, row_offs, row_keys)
       // #3133: the index-receiver rows ride the same channel.
       let (index_offs, index_keys) = index_receiver_rows_from_capture(checked, capture)
-      let (eq_offs, eq_keys) = append_render_rows(eq_render_offs, eq_render_keys, index_offs, index_keys)
+      let (eq_index_offs, eq_index_keys) = append_render_rows(eq_render_offs, eq_render_keys, index_offs, index_keys)
+      // #3148: and the `for` iterand rows.
+      let (forin_offs, forin_keys) = forin_receiver_rows_from_capture(checked, capture)
+      let (eq_offs, eq_keys) = append_render_rows(eq_index_offs, eq_index_keys, forin_offs, forin_keys)
       (checked, Some(enc), eq_offs, eq_keys)
     }
   }

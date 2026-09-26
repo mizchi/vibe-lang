@@ -2454,6 +2454,11 @@ ur_refused fixtures/err_array_set_open_receiver_refused.vibe 'cannot tell whethe
 ur_refused fixtures/err_array_get_open_receiver_refused.vibe 'cannot tell whether this call reads an Array: `Array::get`' 'annotate it' linear 'fixtures/err_array_get_open_receiver_refused.vibe: line 8:3'
 ur_refused fixtures/err_array_get_open_receiver_refused.vibe 'cannot tell whether this call reads an Array: `Array::get`' 'annotate it' gc 'fixtures/err_array_get_open_receiver_refused.vibe: line 8:3'
 ur_refused fixtures/err_array_length_formal_refused.vibe 'cannot tell whether this call reads an Array: `Array::length`' 'annotate it' linear 'fixtures/err_array_length_formal_refused.vibe: line 8:3'
+# #3148: a `for` over an iterand whose type never resolves (an erased formal
+# holding a map ran zero times). The green side -- a Map iterates its keys,
+# Arrays and Strings keep their loops -- is fixtures/for_in_map_keys_test.vibe.
+ur_refused fixtures/err_for_in_open_iterand_refused.vibe 'cannot tell whether this `for` iterates an Array or a Map' 'Map::keys(m)' linear 'fixtures/err_for_in_open_iterand_refused.vibe: line 9:12'
+ur_refused fixtures/err_for_in_open_iterand_refused.vibe 'cannot tell whether this `for` iterates an Array or a Map' 'Map::keys(m)' gc 'fixtures/err_for_in_open_iterand_refused.vibe: line 9:12'
 ur_refused fixtures/err_array_length_formal_refused.vibe 'cannot tell whether this call reads an Array: `Array::length`' 'annotate it' gc 'fixtures/err_array_length_formal_refused.vibe: line 8:3'
 # #3074: a generic enum whose instantiation cannot be recovered would render
 # its payload through the erased formal (`GA(1)` for `GA(true)`).

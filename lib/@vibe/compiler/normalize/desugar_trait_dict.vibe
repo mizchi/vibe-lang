@@ -62,6 +62,7 @@ import @vibe/compiler/core {
   test_bench_default_effects,
   trait_definition,
   trait_method_sig_binders_deep,
+  typed_forin_row_head,
   typed_index_map_verdict,
   typed_index_open_verdict,
   typed_index_row_head,
@@ -1506,6 +1507,55 @@ let dtd_typed_index_offs: Array[Int] = []
 
 let dtd_typed_index_verdicts: Array[String] = []
 
+/// #3148: the checker's `for` iterand rows for THIS program, keyed by
+/// `typed_lowering_arg_offset(iterand)`; the same verdicts as the index rows.
+let dtd_typed_forin_offs: Array[Int] = []
+
+let dtd_typed_forin_verdicts: Array[String] = []
+
+/// #3148: `for x in e` over a Map. The residual loop (and every classified
+/// lowering) reads the iterand as an Array, so a Map iterated zero times --
+/// even one whose type was known (`for k in m` with `m: StringMap[Int]`
+/// counted 0). The checker binds the loop variable to the Map's KEY type, so
+/// the loop is the loop over `Map::keys(m)`, and it is lowered to exactly
+/// that. A Map known from the checker's row, or from the iterand's own
+/// spelling on a lane with no rows, is rewritten; an iterand whose type
+/// never resolved (an erased formal, a generalised lambda's parameter) is
+/// refused -- it may be a Map at run time. Returns the rewritten iterand, or
+/// None to keep the loop as it is.
+fn dtd_forin_map_iterand(iter: Expr, riter: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[Expr] {
+  let off = typed_lowering_arg_offset(iter)
+  let verdict = dtd_typed_row_verdict_for(dtd_typed_forin_offs, dtd_typed_forin_verdicts, off)
+  let spelled = match infer_arg_type_name(iter, struct_sets, var_types, fn_returns) {
+    Some(t) => t,
+    None => ""
+  }
+  if verdict == typed_index_map_verdict() || spelled == "Map" || spelled == "StringMap" {
+    Some(ECall(EIdent("Map::keys", -1), [riter], -1))
+  } else {
+    if verdict == typed_index_open_verdict() {
+      let what = match iter {
+        EIdent(n, _) => String::concat("`", String::concat(n, "`")),
+        EDot(_, f, _, _) => String::concat("field `", String::concat(f, "`")),
+        _ => "the iterated value"
+      }
+      let msg = String::concat("cannot tell whether this `for` iterates an Array or a Map: the type of ", String::concat(what, String::concat(" is not known where it is iterated -- annotate it (`xs: Array[T]`), or iterate a Map's keys with `for k in Map::keys(m)` (#3148)", if off >= 0 {
+        String::concat(" [@off=", String::concat(__to_string(off), "]"))
+      } else {
+        ""
+      })))
+      if !str_array_contains(dtd_index_refusals, msg) {
+        Array::push(dtd_index_refusals, msg)
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    None
+  }
+}
+
 /// #3133: the index sites this run refused, reported after the rewrite
 /// alongside the structural-`==` refusals.
 let dtd_index_refusals: Array[String] = empty_str_array()
@@ -1514,6 +1564,10 @@ let dtd_index_refusals: Array[String] = empty_str_array()
 /// append in the common case; a second row for one offset that disagrees
 /// leaves the site open, because one lowering cannot serve both.
 fn dtd_typed_index_insert(off: Int, verdict: String) -> Unit {
+  dtd_typed_row_insert(dtd_typed_index_offs, dtd_typed_index_verdicts, off, verdict)
+}
+
+fn dtd_typed_row_insert(dtd_typed_index_offs: Array[Int], dtd_typed_index_verdicts: Array[String], off: Int, verdict: String) -> Unit {
   let mut lo = 0
   let mut hi = Array::length(dtd_typed_index_offs)
   while lo < hi {
@@ -1546,6 +1600,10 @@ fn dtd_typed_index_insert(off: Int, verdict: String) -> Unit {
 
 /// The checker's verdict for the index whose `[` sits at `off`, or "".
 fn dtd_typed_index_verdict_for(off: Int) -> String {
+  dtd_typed_row_verdict_for(dtd_typed_index_offs, dtd_typed_index_verdicts, off)
+}
+
+fn dtd_typed_row_verdict_for(dtd_typed_index_offs: Array[Int], dtd_typed_index_verdicts: Array[String], off: Int) -> String {
   if off < 0 {
     ""
   } else {
@@ -11894,10 +11952,14 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
       // trait machinery, and their consumers (the prelude's AsyncIter
       // terminals, @vibe/console's pull streams) are trait-free files.
       let riter = rewrite_expr(iter, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
-      if Array::length(traits) == 0 {
-        classify_trait_free_for_loop(name, idx, iter, riter, rbody, struct_sets, var_types, fn_returns)
-      } else {
-        classify_sync_for_loop(name, idx, iter, riter, rbody, struct_sets, var_types, fn_returns)
+      match dtd_forin_map_iterand(iter, riter, struct_sets, var_types, fn_returns) {
+        // #3148: a Map's loop is the Array loop over its keys.
+        Some(keys) => EForIn(name, idx, keys, rbody),
+        None => if Array::length(traits) == 0 {
+          classify_trait_free_for_loop(name, idx, iter, riter, rbody, struct_sets, var_types, fn_returns)
+        } else {
+          classify_sync_for_loop(name, idx, iter, riter, rbody, struct_sets, var_types, fn_returns)
+        }
       }
     },
     EBinOp(op, l, r, boff) => {
@@ -23973,6 +24035,14 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
   Array::truncate(dtd_typed_index_offs, 0)
   Array::truncate(dtd_typed_index_verdicts, 0)
   Array::truncate(dtd_index_refusals, 0)
+  Array::truncate(dtd_typed_forin_offs, 0)
+  Array::truncate(dtd_typed_forin_verdicts, 0)
+  let forin_map_key = impl_target_key(TyApp(typed_forin_row_head(), [
+    TyName(typed_index_map_verdict())
+  ]))
+  let forin_open_key = impl_target_key(TyApp(typed_forin_row_head(), [
+    TyName(typed_index_open_verdict())
+  ]))
   let index_map_key = impl_target_key(TyApp(typed_index_row_head(), [
     TyName(typed_index_map_verdict())
   ]))
@@ -23982,7 +24052,11 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
   let mut teq_i = 0
   while teq_i < Array::length(typed_eq_offsets) {
     let tkey = Array::get(typed_eq_keys, teq_i)
-    if tkey == index_map_key {
+    if tkey == forin_map_key {
+      dtd_typed_row_insert(dtd_typed_forin_offs, dtd_typed_forin_verdicts, Array::get(typed_eq_offsets, teq_i), typed_index_map_verdict())
+    } else if tkey == forin_open_key {
+      dtd_typed_row_insert(dtd_typed_forin_offs, dtd_typed_forin_verdicts, Array::get(typed_eq_offsets, teq_i), typed_index_open_verdict())
+    } else if tkey == index_map_key {
       dtd_typed_index_insert(Array::get(typed_eq_offsets, teq_i), typed_index_map_verdict())
     } else if tkey == index_open_key {
       dtd_typed_index_insert(Array::get(typed_eq_offsets, teq_i), typed_index_open_verdict())

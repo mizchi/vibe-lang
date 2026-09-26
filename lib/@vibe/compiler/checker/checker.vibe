@@ -115,6 +115,7 @@ import @vibe/compiler/core {
   type_implements_trait,
   type_name_has_iterator_impl,
   type_to_string,
+  typed_lowering_arg_offset,
   unify
 }
 
@@ -13814,7 +13815,31 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       // `__await_iter(s)` marker to unwrap here -- the iterable is checked
       // directly, and whether the loop awaits each step is decided from the
       // iterand's type in the dict-passing desugar.
-      let (it, s1, c1) = check_expr_capture(iterable, env, defs, s, c, errors, tytab, capture, lane)
+      let (it, s1a, c1a) = check_expr_capture(iterable, env, defs, s, c, errors, tytab, capture, lane)
+      // #3148: file the iterand for the trait-dictionary pass, which lowers a
+      // Map iterand to its keys and refuses one whose type never resolves --
+      // the loop reads its value as an Array, so a Map (or a value that may
+      // be one) iterated zero times. Keyed like a render argument, by the
+      // iterand's own offset. A type VARIABLE iterand is bound to `Array[_]`,
+      // the way an Array builtin binds its argument (#3006 / #3145): an
+      // unannotated lambda parameter used as an iterand is then an Array to
+      // its callers, and a Map argument is a type error at the call. A
+      // declared type parameter is not bound -- that binding would not reach
+      // its callers -- and is filed as kind 8, always open, so it is refused.
+      let forin_formal = match subst_apply(s1a, it) {
+        CtVar(fv) => eq_formal_row_of(fv) >= 0,
+        _ => false
+      }
+      record_receiver_kind(capture, typed_lowering_arg_offset(iterable), it, subst_apply(s1a, it), if forin_formal {
+        8
+      } else {
+        7
+      })
+      let (s1, c1) = if forin_formal {
+        (s1a, c1a)
+      } else {
+        bind_builtin_arg_var(subst_apply(s1a, it), 9, s1a, c1a)
+      }
       // Element type bound by `for x in it`:
       //   - `Array[T]`                       -> T
       //   - a parameterized iterator type
