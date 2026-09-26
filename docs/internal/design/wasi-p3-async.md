@@ -272,17 +272,20 @@ materializes bytes internally. Array builtins reject it, so that representation
 is not part of the source contract. Exact-byte and empty-stream conversion are
 covered by the linear/component gates.
 
-### 2.5 `Task[T]` は撤去済み (#1227)
+### 2.5 `Task[T]` was removed (#1227)
 
-`Task::spawn`/`join`/`cancel`/`race`/`timeout` は front-end から**撤去済み**で、
-書くと `unknown name` になる。`spawn` が thunk を即時実行していたため
-`spawn(f); spawn(g)` が常に直列化する — 並行に見えて黙って直列化し、警告も
-失敗もしなかったのが理由。
+`Task::spawn` / `join` / `cancel` / `race` / `timeout` were **removed** from the
+front end; writing them gives `unknown name`. `spawn` ran its thunk immediately,
+so `spawn(f); spawn(g)` was always serial -- it looked concurrent and was
+silently serial, with no warning and no failure.
 
-動く並行 surface は `lib/@vibe/concurrent` (`TaskGroup::spawn_suspend` /
-`TaskHandle::join` / `sleep_wait`)。公開意味論の source of truth は
-[ADR-0068 詳細仕様](concurrency.md)。真の subtask spawn
-(waitable-set / `future.cancel-*`) は M-conc-2 として未着手。
+The concurrency surface that ships is `lib/@vibe/concurrent`: the stable core
+(`TaskGroup::run` / `spawn`, `TaskHandle::join`, channels, `Parallel::map`) in
+`@vibe/concurrent/experimental`, and the suspendable-task lane (`TaskGroup::spawn_suspend` /
+`sleep_wait`) in `@vibe/concurrent/experimental` behind `VIBE_UNSTABLE=1`. The
+source of truth for the public semantics is the
+[ADR-0068 detailed specification](concurrency.md). A true subtask spawn
+(waitable-set / `future.cancel-*`) is M-conc-2 and has not started.
 
 ## 3. codegen 戦略: Component Model async canonical ABI（stackless）
 
@@ -601,7 +604,7 @@ future を作る側は `Future::ready` / `Stream::next` の2つで、
 `suspend_cps_pass` / `evidence_dict_pass` が走り終わった後なので、pending future
 が要る `perform Async::Suspend(..)` を出しても discharge できる相手がいない。
 新パスは `desugar_trait_dicts` の直後（= async `for` が `await(..)` を生成した
-直後）かつ全 effect パスの**前**に走り、`@vibe/concurrent` の `Receiver::recv_wait`
+直後）かつ全 effect パスの**前**に走り、`@vibe/concurrent/experimental` の `Receiver::recv_wait`
 と同じ suspend-and-retry 形へ **spine に持ち上げて**展開する:
 
 ```
@@ -634,7 +637,7 @@ fixture は `fixtures/async_await_multi.vibe`（let-value / match scrutinee /
 クリアする ―― 逆順だと awaiter が「ready なのに値がまだ」を観測しうる）。
 これで `Future[T]` は ready / pending の両方を作れる。まだ未解決の future を
 await する側には continuation を park する driver が要る（in-tree では
-`@vibe/concurrent` の `spawn_suspend` の `handle .. with Async`）。fixture
+`@vibe/concurrent/experimental` の `spawn_suspend` の `handle .. with Async`）。fixture
 `fixtures/async_future_pending.vibe` は await 前に resolve する形で、表現と
 builtin 2本を pin している（スケジューリングは pin していない）。
 
@@ -1021,7 +1024,7 @@ park する」形が component lowering レベルで実現した:
   get-future が eager に完了しなかった / 1000+x = read が BLOCK しなかった /
   3000+ev = wait が FUTURE_READ 以外を返した。
 
-**in-guest scheduler との関係**: `@vibe/concurrent` の pump は linear
+**in-guest scheduler との関係**: `@vibe/concurrent/experimental` の pump は linear
 backend 上で動き host waitable を持たないため、Suspend payload の
 **>= 2 を waitable handle 用に予約**した上で in-guest では poller として
 park する（= 完了源が無いので deadlock trap に縮退。yield 扱いだと silent
@@ -2068,7 +2071,7 @@ wasmtime 46.0.1 リリースに合わせて ratified `wasi:http@0.3.0` への cu
 | **stdin provider / `StdinStream` P3 connection** (#1539, #1956) | **The atomic public source route and compiler-owned direct chunk operation are implemented.** `StdinStream` is nominal and unforgeable, carries exact authority/effects, uses the exact `vibe.stdin_provider_*` raw imports and tagged-i64 bridge, and supports arbitrary-core composition plus stdin-first sniffing. `StdinStream::read_chunk` is the only chunked pull surface; the legacy standalone `stdin_stream(chunk_size)` closure has been removed. A direct `for` adapter still waits for transitive HOF effect evidence (#1536). | Wasmtime 47 real-source drain/early-close/function-alias/sequential-reacquire/multiple-active + binary `00 80 ff 41 42` manual while-loop chunks (linear/RC, n=4/1/0/negative, EOF/post-close) gate; GC/standalone/mixed reject; generic `[3, handle]` `HostStream` import remains unused. |
 | **A real provider: `wasi:http` incoming-body** (#1540) | Needs the serve composition and the host-stream composition merged (§3.19 gives the structural reason and a three-part breakdown) | — |
 | **M-conc-2: real subtask spawn** (#1537) | Real concurrency and cancellation through waitable sets and `future.cancel-*`, lowering ADR-0068's nursery to the backend. A cancelled host-future read is released through `future.cancel-read` (the M1b-3c-1c row); a guest task is still not a canonical subtask | ADR-0076 CPS/suspend lowering |
-| **M1b-3c-1c: interleaving spawn** (#1537) | **Landed for host futures:** a `TaskGroup::spawn_suspend` task that awaits a host future parks on its handle; when no task can run, `pump` arms every pending handle into one shared waitable set (`host_future_arm`) and resumes whichever lands (`host_future_wait_any`, dispatching on `payload[0]` as §3.11 measured), with its value. `fixtures/async_spawn_host_futures/main.vibe`: a 300ms task and a task doing two 150ms reads in sequence finish in ~330ms, not the ~450ms park order would take (`test_named_hostfutures_component_gate.sh`). WIT-addressed futures work from spawned tasks too (the root `sleep-for` import `@vibe/concurrent` brings is component func 0, the interface's aliased functions after it; `test_wit_async_import_component_gate.sh`). Host stream reads park the same way (`host_stream_arm` starts a one-byte read in the shared set; `fixtures/async_spawn_host_futures/streams.vibe`: two three-byte streams at 100ms a byte drain in ~330ms, not ~600ms). A sleeping task and host waiters share the wait: the earliest sleeper's `sleep-for` subtask joins the same set (`host_sleep_arm`), so `fixtures/async_spawn_host_futures/sleep_and_host.vibe` / `sleep_short.vibe` finish in ~300ms whichever lands first. Cancelling the last task parked on a host future cancels its read and releases the handle (`host_future_cancel`: `future.cancel-read`, then `future.drop-readable`); `fixtures/async_spawn_host_futures/cancel_many.vibe` parks and cancels 1100 tasks, past the adapter's 1023-handle ceiling. A cancelled stream reader's read is cancelled and the stream released the same way (`host_stream_cancel`: `stream.cancel-read`, then `stream.drop-readable`; a host stream cannot be captured by another task), pinned by `stream_cancel_many.vibe`. **Remaining:** `subtask.cancel`, which needs a guest task to be a canonical subtask (the M-conc-2 row) | ADR-0076 CPS/suspend lowering |
+| **M1b-3c-1c: interleaving spawn** (#1537) | **Landed for host futures:** a `TaskGroup::spawn_suspend` task that awaits a host future parks on its handle; when no task can run, `pump` arms every pending handle into one shared waitable set (`host_future_arm`) and resumes whichever lands (`host_future_wait_any`, dispatching on `payload[0]` as §3.11 measured), with its value. `fixtures/async_spawn_host_futures/main.vibe`: a 300ms task and a task doing two 150ms reads in sequence finish in ~330ms, not the ~450ms park order would take (`test_named_hostfutures_component_gate.sh`). WIT-addressed futures work from spawned tasks too (the root `sleep-for` import `@vibe/concurrent/experimental` brings is component func 0, the interface's aliased functions after it; `test_wit_async_import_component_gate.sh`). Host stream reads park the same way (`host_stream_arm` starts a one-byte read in the shared set; `fixtures/async_spawn_host_futures/streams.vibe`: two three-byte streams at 100ms a byte drain in ~330ms, not ~600ms). A sleeping task and host waiters share the wait: the earliest sleeper's `sleep-for` subtask joins the same set (`host_sleep_arm`), so `fixtures/async_spawn_host_futures/sleep_and_host.vibe` / `sleep_short.vibe` finish in ~300ms whichever lands first. Cancelling the last task parked on a host future cancels its read and releases the handle (`host_future_cancel`: `future.cancel-read`, then `future.drop-readable`); `fixtures/async_spawn_host_futures/cancel_many.vibe` parks and cancels 1100 tasks, past the adapter's 1023-handle ceiling. A cancelled stream reader's read is cancelled and the stream released the same way (`host_stream_cancel`: `stream.cancel-read`, then `stream.drop-readable`; a host stream cannot be captured by another task), pinned by `stream_cancel_many.vibe`. **Remaining:** `subtask.cancel`, which needs a guest task to be a canonical subtask (the M-conc-2 row) | ADR-0076 CPS/suspend lowering |
 | **M3** (#2066) | **Landed:** `Future[HostResponse]` from a WIT `async func() -> response` (`record { status: s32, body: stream<u8> }` from the package `types` interface): `host_response_named`, derived by `from_wit_future_imports`, composed as a `types` + API instance import pair, the body read through the shared host-stream half, two responses in flight in one producer delay (`scripts/test_wit_async_import_component_gate.sh`, contract in `async-host-contract.md`). A response function may take one `string` parameter (the request URL: `host_response_named_with`, bytes pushed into the adapter's argument buffer, `fixtures/wit_response_request`). **Remaining:** richer requests (method and headers as records, a realloc-capable read), mixing responses with runner-private `future<u32>` root futures in one component (a scalar WIT future of the same interface and named host streams now mix: `fixtures/wit_response_mixed`, `fixtures/wit_response_import/stream_main.vibe`), and the guest importing `wasi:http/client` itself rather than through a provider component. **The `middleware` world is composed too:** the provider's `handler` mode sends the binding's `fetch` to an imported `wasi:http/handler`, so the composed middleware imports and exports `handler`, and a `vibe serve` backend plugged into that import makes a chain `wasmtime serve` runs (`fixtures/serve_middleware_world`). **WIT async imports are lowered as written** (#3131): `async func() -> T` is imported with that type and each call is a subtask whose result lands in an adapter slot, so a provider generated from the source WIT plugs in (`scripts/build_http_client_provider.sh` builds from `fixtures/wit_response_request/client.wit` itself). **The `wasi:http/service` world is composed:** a `vibe serve` handler that awaits a `from_wit` response binding goes through `comp_emit_component_wasm_service_handler`, which puts the run lane's response imports under the stream lane's handler export. `scripts/build_http_client_provider.sh` implements the binding's interface over `wasi:http/client`, and `wac plug` yields one component that exports `handler` and imports `wasi:http/client`. Under `wasmtime serve`, `fixtures/serve_service_world/handler.vibe` makes two upstream fetches in flight in about one delay (`scripts/test_serve_body_stream_gate.sh`). A real HTTP provider also answers the `fetch(url)` WIT function from the runner (viberun's `http` mode, `fixtures/wit_response_request/http_main.vibe`) | the provider above |
 | **M4** | Parity, gates, CI and docs; ADR-0012 → accepted | Everything above |
 

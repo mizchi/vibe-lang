@@ -1,33 +1,46 @@
 # ADR-0068 詳細仕様: 構造化並行と message passing
 
-Status: proposed
+Status: accepted for the core (`@vibe/concurrent`); the suspendable-task lane
+(`@vibe/concurrent/experimental`) is proposed
 
 Date: 2026-07-16
 
 Related: ADR-0012, ADR-0050, ADR-0060, ADR-0068, ADR-0071, ADR-0075, ADR-0076,
 #488, #806, #817, #818, #906
 
-## 位置づけ
+## Scope
 
-本書を v0.2.0 の並行処理に関する公開意味論の source of truth とする。
-`docs/internal/design/wasi-p3-async.md` は WASI 0.3 への lowering、#488 は
-shared-everything-threads の実験を扱う。両者が本書と衝突する場合、公開 API と
-観測可能な挙動は本書を優先する。
+This document is the source of truth for the public semantics of concurrency.
+`docs/internal/design/wasi-p3-async.md` covers the lowering onto WASI 0.3, and
+#488 the shared-everything-threads experiment. Where either disagrees with this
+document, this document decides the public API and the observable behaviour.
 
-`Task[T]` の eager prototype（`Task::spawn`/`join`/`cancel`/`race`/`timeout`）は
-**#1227 で撤去した**。`spawn` が thunk を即時実行するため `spawn(f); spawn(g)` が
-常に `f` 完了後に `g` を始める——並行に見えて黙って直列化する——という理由による。
-現在これらの名前は `unknown name` でコンパイルエラーになる。撤去済みの
-`Threads::*` probe と Int channel id API も同様に公開契約ではない。
+The eager `Task[T]` prototype (`Task::spawn` / `join` / `cancel` / `race` /
+`timeout`) was **removed in #1227**. `spawn` ran its thunk immediately, so
+`spawn(f); spawn(g)` always started `g` after `f` finished -- it looked
+concurrent and was silently serial. Those names are now `unknown name`
+compile errors. The removed `Threads::*` probe and the Int channel id API are
+not public contract either.
 
-**現行の動く並行 surface は `lib/@vibe/concurrent`** である:
-`TaskGroup::spawn_suspend` が suspend 可能なタスクを生成し、`TaskHandle::join`
-が結果を回収し、`sleep_wait`（#1253）は並行 sleep を直列化させず重ねる。本書が
-記述する `Task[r,T]` / nursery / typed channel はその上に載る v0.2.0 の目標形。
+**The concurrency surface that ships is `lib/@vibe/concurrent`**, in two parts:
 
-本書のコードは提案中の surface を示す疑似 vibe であり、まだコンパイルできない。
-そのためコードブロックは理由付きの `vibe skip` とする。「必須」は v0.2.0 の適合実装が
-満たす条件、「将来」は互換性を約束しない拡張を表す。
+- **The stable core, `@vibe/concurrent`** (no opt-in; stable-surface §3.1):
+  `TaskGroup::run` / `spawn`, `TaskHandle::join` / `cancel`, bounded channels
+  (`Channel::bounded`, `Sender` / `Receiver`), `Parallel::map`, and the
+  `Send` / `Spawnable` / region checks.
+- **The suspendable-task lane, `@vibe/concurrent/experimental`** (behind
+  `VIBE_UNSTABLE=1`): `TaskGroup::spawn_suspend` starts a task that can
+  suspend, `TaskHandle::join` / `result_wait` collect results, and
+  `sleep_wait` (#1253) lets concurrent sleeps overlap instead of serializing
+  them.
+
+The `Task[r,T]` / nursery / typed-channel shapes this document describes are
+the target form those build towards.
+
+The code in this document is pseudo-vibe showing the proposed surface and does
+not compile yet, so its blocks are `vibe skip` with a reason. "Required" marks a
+condition a conforming v0.2.0 implementation meets; "future" marks an extension
+with no compatibility promise.
 
 ## 決定の要約
 

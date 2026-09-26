@@ -2017,7 +2017,7 @@ gate 50 更新。
 ### 追記30 (2026-07-25): 3c — @vibe/concurrent への接続と
 safe-mut builtin list
 
-`@vibe/concurrent` に suspendable task API (adopt/settle/park/wake/
+`@vibe/concurrent/experimental` に suspendable task API (adopt/settle/park/wake/
 pump — docs/internal/design/concurrency.md 実装ノート「3c」参照) を実装し、2 task の
 mid-body 相互 interleave の conformance lock (`suspend_test.vibe`) が
 Phase 3a/3b の lowering 上で green。パターンの要点:
@@ -2247,7 +2247,7 @@ frontier 付き replay loop の第一級消費者は以下だけ:
 ### 追記33 (2026-07-25): channel blocking スライスと desugar 内部
 primitive の safe-mut 追加
 
-`@vibe/concurrent` の `Sender::send_wait` / `Receiver::recv_wait`
+`@vibe/concurrent/experimental` の `Sender::send_wait` / `Receiver::recv_wait`
 (`with Async`、deposit → suspend → 自己再帰リトライ) を closure-CPS
 機構の上に実装した (docs/internal/design/concurrency.md 実装ノート参照)。compiler 側の
 変更は 1 点だけ: `scps_is_safe_mut_builtin` に parser desugar の内部
