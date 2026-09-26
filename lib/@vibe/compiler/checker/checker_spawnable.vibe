@@ -225,6 +225,22 @@ fn sp_collect_free_vars(expr: Expr, bound: Array[String]) -> Array[String] {
   out
 }
 
+/// A labeled (`x~`) or optional (`x?`) parameter keeps its marker on the
+/// name; the body and the environment bind the bare name.
+fn sp_param_base(raw_name: String) -> String {
+  let len = String::length(raw_name)
+  if len > 0 {
+    let last = String::char_code_at(raw_name, len - 1)
+    if last == 126 || last == 63 {
+      String::substring(raw_name, 0, len - 1)
+    } else {
+      raw_name
+    }
+  } else {
+    raw_name
+  }
+}
+
 /// Free value names captured by a closure body. Capture provenance uses this
 /// once per closure and then performs direct TypeEnv lookups, avoiding an
 /// O(all visible bindings x body size) scan during self-compilation.
@@ -232,18 +248,7 @@ export fn closure_free_names(body: Expr, params: Array[(String, Option[TypeExpr]
   let bound = sp_empty_strings()
   for param in params {
     let (raw_name, _) = param
-    let len = String::length(raw_name)
-    let name = if len > 0 {
-      let last = String::char_code_at(raw_name, len - 1)
-      if last == 126 || last == 63 {
-        String::substring(raw_name, 0, len - 1)
-      } else {
-        raw_name
-      }
-    } else {
-      raw_name
-    }
-    Array::push(bound, name)
+    Array::push(bound, sp_param_base(raw_name))
   }
   sp_collect_free_vars(body, bound)
 }
@@ -605,7 +610,7 @@ export fn closure_capture_facts(env: TypeEnv, body: Expr, params: Array[(String,
   let pnames = sp_empty_strings()
   for param in params {
     let (pname, _) = param
-    Array::push(pnames, pname)
+    Array::push(pnames, sp_param_base(pname))
   }
   let names = sp_collect_free_vars(body, pnames)
   let callees = sp_empty_strings()

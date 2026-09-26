@@ -2196,6 +2196,21 @@ if ! spawnable_values_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_
   echo "[compiler-gate] FAIL: region_ok_spawnable_closure_values.vibe got '$spawnable_values_out' (want 249)" >&2
   exit 1
 fi
+# #3152 review: a labeled / optional parameter of a closure passed by name
+# shadows an outer non-Send binding of the same bare name; it is not a capture
+# (9, pinned by the fixture's `inspect` block).
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/region_ok_spawnable_labeled_param.vibe "$spawnabledir/pos_labeled.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ ! -s "$spawnabledir/pos_labeled.wasm" ]; then
+  echo "[compiler-gate] FAIL: region_ok_spawnable_labeled_param.vibe did not compile -- a labeled parameter was counted as a capture (#3152)" >&2
+  cat "$spawnabledir/pos_labeled.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+if ! spawnable_labeled_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$spawnabledir/pos_labeled.wasm" 2>&1)"; then
+  echo "[compiler-gate] FAIL: region_ok_spawnable_labeled_param.vibe got '$spawnable_labeled_out' (want 9)" >&2
+  exit 1
+fi
 rm -rf "$spawnabledir"
 echo "[compiler-gate] ADR-0068 Spawnable[r] capture check ok"
 
