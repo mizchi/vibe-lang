@@ -702,6 +702,39 @@ cancel_row wit_response_import cancel_many client_bindings.vibe 122400 \
   "" "$CIFACE#fetch-a=200:10000:1|2|3,$CIFACE#fetch-b=204:1:9" "600 cancelled pending responses release their slots"
 cancel_row wit_response_import cancel_many client_bindings.vibe 122400 \
   "" "$CIFACE#fetch-a=200:0:1|2|3,$CIFACE#fetch-b=204:5:9" "600 groups whose responses land at once"
+# #3131 (Codex on #3091): futures dropped unawaited hold their result slots
+# until the table fills; the oldest is then reclaimed, so a later call still
+# gets a slot (before: the 513th call trapped).
+cancel_row wit_future_import drop_many prices_bindings.vibe 40 \
+  "$PIFACE#get-price=40:30,$PIFACE#get-tax=2:1" "" "600 dropped get-tax futures do not starve a later call"
+cancel_row wit_response_import drop_many client_bindings.vibe 204 \
+  "" "$CIFACE#fetch-a=200:0:1|2|3,$CIFACE#fetch-b=204:5:9" "600 dropped landed responses (and their bodies) are reclaimed"
+cancel_row wit_response_import drop_many client_bindings.vibe 204 \
+  "" "$CIFACE#fetch-a=200:10000:1|2|3,$CIFACE#fetch-b=204:5:9" "600 dropped pending responses are reclaimed"
+# A reclaimed future awaited afterwards: its slot now holds a later call, so
+# the await must trap rather than answer that call's value.
+RECLAIM_DIR="$OUT/reclaimed_await_trap"
+rm -rf "$RECLAIM_DIR"; mkdir -p "$RECLAIM_DIR"
+cp fixtures/wit_future_import/reclaimed_await_trap.vibe fixtures/wit_future_import/prices_bindings.vibe "$RECLAIM_DIR/"
+VIBE_PREOPEN_DIR="$ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \
+  "$COMPILER" "$RECLAIM_DIR/reclaimed_await_trap.vibe" "$RECLAIM_DIR/main.wasm" run >/dev/null 2>&1 || true
+[ -s "$RECLAIM_DIR/main.wasm" ] || {
+  echo "WIT async import gate FAILED: reclaimed_await_trap did not compile: $(cat "$RECLAIM_DIR/main.wasm.diag" 2>/dev/null)" >&2
+  exit 1
+}
+if GOT="$(VIBE_ASYNC_FUTURES="$PIFACE#get-price=40:30,$PIFACE#get-tax=2:1" run_bounded 60 "$RUNNER" "$RECLAIM_DIR/main.wasm" 2>&1)"; then
+  echo "WIT async import gate FAILED: awaiting a reclaimed future exited 0 (answered $GOT)" >&2
+  exit 1
+fi
+case "$GOT" in
+  *unreachable*) ;;
+  *)
+    echo "WIT async import gate FAILED: reclaimed_await_trap failed for another reason: $GOT" >&2
+    exit 1
+    ;;
+esac
+echo "[wit-async-import] a future reclaimed unawaited, awaited afterwards: traps"
 # A future whose read was cancelled, awaited again once its result slot is
 # reused by a later call. It used to answer that call's value (2, for a price)
 # with no error; the release now poisons the cell and the await traps (Codex
