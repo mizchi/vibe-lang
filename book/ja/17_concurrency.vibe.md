@@ -87,9 +87,13 @@ Sender、Receiver — は本体が返す値に含められません。ハンド�
 既に終わったグループに属する何かを受け取ることになるので、コンパイラが
 拒否します。
 
-知っておく価値のある穴が一つ: spawn の検査は `TaskGroup::spawn` が字面通りに
-書かれたときに働きます。改名を経由すると (`let spawn = TaskGroup::spawn`)
-検査を素通りします。
+spawn の検査は綴りではなく関数そのものを追います: ローカルな別名
+(`let spawn = TaskGroup::spawn`) や改名した import も、直接呼び出しと同じく
+検査されます。`TaskGroup::spawn` を値として渡すこと — 引数・フィールド・
+戻り値 — は拒否されます。後で適用される closure を検査が見られないからです。
+残る穴が一つ: 検査は呼び出しに書かれた closure を読むので、先に名前へ束縛した
+closure (`let work = () -> ...` の後に `TaskGroup::spawn(n, work)`) は検査
+されません。
 
 ## 中断とブロック
 

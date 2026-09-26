@@ -88,9 +88,14 @@ group, handles, senders, receivers — may not be in the value the body
 returns. Returning a handle would hand you something whose group has
 already finished, so the compiler rejects it instead.
 
-One hole worth knowing: the spawn check fires when `TaskGroup::spawn` is
-written literally. Reaching it through a rename (`let spawn =
-TaskGroup::spawn`) skips the check.
+The spawn check follows the function, not how you spell it: a local
+alias (`let spawn = TaskGroup::spawn`) or a renamed import is checked
+like the direct call. Handing `TaskGroup::spawn` on as a value — an
+argument, a field, a return value — is refused, because the check could
+not see the closure it would later be applied to. One hole remains: the
+check reads the closure written at the call, so a closure first bound to
+a name (`let work = () -> ...` then `TaskGroup::spawn(n, work)`) is not
+checked.
 
 ## Suspending versus blocking
 

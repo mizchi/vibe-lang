@@ -2002,9 +2002,9 @@ rm -rf "$depsdir"
 echo "[compiler-gate] deps missing-for-imports scan (#1145 follow-up 2) ok"
 
 # 61/61. #1081 step 3 Phase B: `Spawnable[r]` capture check for
-# `TaskGroup::spawn`/`TaskGroup::spawn_suspend`. Like `TaskGroup::run`
-# above, hardcoded by literal qualified name (same alias/rename bypass
-# caveat, see checker.vibe/docs/internal/design/concurrency.md). A captured free variable
+# `TaskGroup::spawn`/`TaskGroup::spawn_suspend`, and (#3125) any callee with
+# their type -- a `let` alias, a renamed import, a same-signature wrapper;
+# the alias rows live in fixtures/typecheck (spawn_*). A captured free variable
 # must be structurally `Send`, or a `TaskGroup`/`TaskHandle`/`Sender`/
 # `Receiver` endpoint tagged with THIS spawn call's own region. Positive: a
 # same-region `Sender` capture through `Channel::bounded` keeps compiling
@@ -2128,6 +2128,45 @@ fi
 if ! grep -qE 'line [0-9]+:[0-9]+-[0-9]+' "$spawnabledir/neg_letmut_outer.wasm.diag" 2>/dev/null; then
   echo "[compiler-gate] FAIL: err_spawnable_capture_letmut_outer_scope.vibe diagnostic lost its located line:col-col source range" >&2
   cat "$spawnabledir/neg_letmut_outer.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+# #3125: the check follows the callee's TYPE, not its spelling. A local alias
+# and a renamed import of `TaskGroup::spawn` get the same diagnostic as the
+# literal call (err_spawnable_capture_array.vibe above), and the function
+# handed on as a value is refused with the edit that fixes it. Each of these
+# compiled and ran before the fix.
+for spawn_route in \
+  "err_spawnable_alias_capture:no impl \`Spawnable\` for \`Array[Int]\`" \
+  "err_spawnable_rename_import_capture:no impl \`Spawnable\` for \`Array[Int]\`" \
+  "err_spawnable_value_passed:\`TaskGroup::spawn\` cannot be used as a value here"; do
+  spawn_fx="${spawn_route%%:*}"
+  spawn_needle="${spawn_route#*:}"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "fixtures/$spawn_fx.vibe" "$spawnabledir/$spawn_fx.wasm" main >/dev/null 2>&1 || true
+  if [ -s "$spawnabledir/$spawn_fx.wasm" ]; then
+    echo "[compiler-gate] FAIL: $spawn_fx.vibe compiled successfully -- must be rejected (#3125)" >&2
+    exit 1
+  fi
+  if ! grep -qF "$spawn_needle" "$spawnabledir/$spawn_fx.wasm.diag" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: $spawn_fx.vibe did not produce the expected diagnostic (#3125)" >&2
+    cat "$spawnabledir/$spawn_fx.wasm.diag" >&2 2>/dev/null || true
+    exit 1
+  fi
+done
+# #3125 positive side: an alias whose closures capture only `Send` values
+# keeps compiling and running (82 = 41 + 1 + 40, pinned by the fixture's
+# `inspect` block).
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/region_ok_spawnable_alias.vibe "$spawnabledir/pos_alias.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ ! -s "$spawnabledir/pos_alias.wasm" ]; then
+  echo "[compiler-gate] FAIL: region_ok_spawnable_alias.vibe did not compile -- a Send-only spawn alias must stay legal (#3125)" >&2
+  cat "$spawnabledir/pos_alias.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+if ! spawnable_alias_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$spawnabledir/pos_alias.wasm" 2>&1)"; then
+  echo "[compiler-gate] FAIL: region_ok_spawnable_alias.vibe got '$spawnable_alias_out' (want 82)" >&2
   exit 1
 fi
 rm -rf "$spawnabledir"

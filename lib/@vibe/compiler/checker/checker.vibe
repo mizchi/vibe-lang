@@ -6052,6 +6052,63 @@ let handle_local_lambdas_cell: Array[(String, Int, Expr)] = []
 /// that calls itself is walked once.
 let handle_lambda_expanding_cell: Array[String] = []
 
+/// #3125: the `Spawnable` capture check needs the closure at the call, so it
+/// is keyed on the callee's TYPE, not its spelling: any callee of shape
+/// `(TaskGroup[r, e], () -> T) -> TaskHandle[r, e, T]` -- `TaskGroup::spawn`,
+/// `TaskGroup::spawn_suspend`, a `let` alias of either, a renamed import, or
+/// a user wrapper with that signature -- gets it. `CtForAll` is looked
+/// through so a generalized `let` alias answers like the declaration.
+fn type_is_spawn_shaped(t: Type) -> Bool {
+  match t {
+    CtForAll(_, _, body) => type_is_spawn_shaped(body),
+    CtFn(params, ret, _) => if Array::length(params) != 2 {
+      false
+    } else {
+      let group_ok = match Array::get(params, 0) {
+        CtNamed(gn, gargs) => gn == "TaskGroup" && Array::length(gargs) == 2,
+        _ => false
+      }
+      let thunk_ok = match Array::get(params, 1) {
+        CtFn(tparams, _, _) => Array::length(tparams) == 0,
+        _ => false
+      }
+      let ret_ok = match ret {
+        CtNamed(hn, hargs) => hn == "TaskHandle" && Array::length(hargs) == 3,
+        _ => false
+      }
+      group_ok && thunk_ok && ret_ok
+    },
+    _ => false
+  }
+}
+
+/// Whether the name a 2-argument call names resolves to a spawn-shaped
+/// function (see `type_is_spawn_shaped`).
+fn callee_is_spawn_shaped(env: TypeEnv, s: Subst, name: String) -> Bool {
+  match env_lookup(env, name) {
+    Some(t) => type_is_spawn_shaped_under(s, t),
+    None => false
+  }
+}
+
+/// `type_is_spawn_shaped` after the running substitution, applied only when
+/// the binding's type is still a bare variable -- the one shape the raw type
+/// cannot answer for, and the rare one, so ordinary lookups stay cheap.
+fn type_is_spawn_shaped_under(s: Subst, t: Type) -> Bool {
+  match t {
+    CtVar(_) => type_is_spawn_shaped(subst_apply(s, t)),
+    _ => type_is_spawn_shaped(t)
+  }
+}
+
+/// #3125: set while the right-hand side of a local `let` is a bare name, and
+/// read (then cleared) by that name's `EIdent` check. A spawn-shaped value
+/// may be bound to a new name there, because calls through that name are
+/// checked by type; everywhere else (an argument, a field, a return value,
+/// an `if` branch) the value would reach a call the checker cannot see, so
+/// it is refused.
+let spawn_value_let_rhs_cell: Array[Bool] = []
+
 /// Record `value` under `name` when it is a lambda or names a function
 /// (`let f = get_int`, #3022 review); returns the depth to truncate back to
 /// when the binding's scope ends.
@@ -8848,7 +8905,15 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
       },
       ELet(name, val, body, let_off) => {
         let err_before = Array::length(errors)
+        // #3125: a bare name bound by `let` may alias a spawn-shaped function;
+        // calls through the new name are checked by type, so this one value
+        // position is not refused (see `spawn_value_let_rhs_cell`).
+        match val {
+          EIdent(_, _) => Array::push(spawn_value_let_rhs_cell, true),
+          _ => ()
+        }
         let (vt, ns, nc) = ce(val, cenv, defs, s1, c1, errors, tytab, capture, lane)
+        Array::truncate(spawn_value_let_rhs_cell, 0)
         attach_unlocated_decl_name_marker(errors, err_before, name)
         // #938 value restriction: a builder is a MUTABLE container, so its
         // element var must stay un-quantified — generalizing
@@ -10645,6 +10710,17 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       (CtUnknown, s, c)
     } else match env_lookup(env, railway_ident_lookup_name(name)) {
       Some(t) => {
+        let let_rhs = Array::length(spawn_value_let_rhs_cell) != 0
+        Array::truncate(spawn_value_let_rhs_cell, 0)
+        if !let_rhs && type_is_spawn_shaped_under(s, t) {
+          // #3125: a spawn-shaped function reaching anything but a call or a
+          // `let` would be applied where the `Spawnable` capture check cannot
+          // see the closure (`apply2(TaskGroup::spawn, n, () -> xs)` ran a
+          // capture of a plain `Array`). Refuse it here instead.
+          Array::push(errors, String::concat(String::concat(String::concat("`", name), "` cannot be used as a value here: the `Spawnable` capture check runs where it is called, so the closure it is applied to would go unchecked -- call it directly (`TaskGroup::spawn(n, () -> ...)`) or bind it with a local `let` and call that name"), off_marker_len(ident_off, String::length(name))))
+        } else {
+          ()
+        }
         let (ti, c1, new_bounds) = instantiate(t, c)
         let nblen = Array::length(new_bounds)
         let mut s1 = s
@@ -12230,12 +12306,17 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               }
             }
           }
-        } else if (name == "TaskGroup::spawn" || name == "TaskGroup::spawn_suspend") && Array::length(args) == 2 {
-          // #1081 step 3 Phase B: `Spawnable[r]` capture check. Like
-          // `TaskGroup::run` above, there is no general `Spawnable`
-          // trait/bound in this checker -- these two qualified names are
-          // special-cased by literal spelling (same alias/rename bypass
-          // caveat as TaskGroup::run, documented in docs/internal/design/concurrency.md).
+        } else if Array::length(args) == 2 && (name == "TaskGroup::spawn" || name == "TaskGroup::spawn_suspend" || callee_is_spawn_shaped(env, s, name)) {
+          // #1081 step 3 Phase B: `Spawnable[r]` capture check. There is no
+          // general `Spawnable` trait/bound in this checker, so the check is
+          // attached to the call. #3125: it used to be selected by the
+          // literal spelling of these two names, so `let sp =
+          // TaskGroup::spawn; sp(n, () -> xs)` ran a capture the literal
+          // spelling refuses. It is now selected by the callee's TYPE
+          // (`callee_is_spawn_shaped`), which covers a `let` alias, a renamed
+          // import and a wrapper with spawn's signature; the one route a
+          // call cannot see -- the function handed on as a value -- is
+          // refused where the value is taken (`EIdent` arm).
           // This branch does exactly the SAME instantiate + check-args +
           // unify work the generic call-checking fallback below would (so
           // ordinary type errors on `n`/`f` are unaffected), then additionally

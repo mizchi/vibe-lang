@@ -1,0 +1,24 @@
+// #3125: the alias route is checked, not banned. A local `let` alias of
+// `TaskGroup::spawn` (and an alias of that alias) whose closures capture only
+// `Send` values keeps compiling and running, beside the literal spelling.
+// Negative pins: err_spawnable_alias_capture.vibe,
+// err_spawnable_rename_import_capture.vibe, err_spawnable_value_passed.vibe.
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+export let main = () -> Int with Exception {
+  let k = 40
+  TaskGroup::run((n) -> {
+    let sp = TaskGroup::spawn
+    let again = sp
+    let a = sp(n, () -> k + 1)
+    let b = again(n, () -> 1)
+    let c = TaskGroup::spawn(n, () -> k)
+    TaskHandle::join(a) + TaskHandle::join(b) + TaskHandle::join(c)
+  })
+}
+
+test "region ok spawnable alias" allows Exception {
+  inspect(main(), "82")
+}
