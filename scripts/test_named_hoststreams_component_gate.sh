@@ -643,4 +643,53 @@ fi
   || { echo "named hoststreams component gate FAILED: stream_read_arith expected 42067 (2 + 40, 7 * 10 - 3), got: $(cat "$SRA_LOG") (40000 = the reads resumed with 0, #3150)" >&2; exit 1; }
 echo "[named-hoststreams-component-gate] stream_read_arith: 42067 (reads in spawned literals deliver their bytes)"
 
+# fixtures/async_spawn_host_futures/stream_option_own.vibe (#3151): tasks read
+# streams they opened through `HostStream::next`, and one closes its stream
+# early. Without a `host_stream_next` anywhere, `__hs_next` was pruned, the
+# stream hooks were never installed, and the first read hit the group's
+# deadlock trap.
+SOO_OUT="$OUT_DIR/spawn_stream_option_own.component.wasm"
+rm -f "$SOO_OUT" "$SOO_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/stream_option_own.vibe "$SOO_OUT" run >/dev/null 2>&1 || true
+[ -s "$SOO_OUT" ] || { echo "named hoststreams component gate FAILED: fixtures/async_spawn_host_futures/stream_option_own.vibe did not compile: $(cat "$SOO_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+SOO_LOG="$OUT_DIR/spawn_stream_option_own.log"
+if ! VIBE_ASYNC_STREAMS="left=1|2|3@50,right=4|5|6@50" run_bounded 60 "$RUNNER" "$SOO_OUT" >"$SOO_LOG" 2>&1; then
+  echo "named hoststreams component gate FAILED: stream_option_own did not exit 0 (the #3151 deadlock trap?)" >&2
+  cat "$SOO_LOG" >&2
+  exit 1
+fi
+[ "$(cat "$SOO_LOG")" = "6040" ] \
+  || { echo "named hoststreams component gate FAILED: stream_option_own expected 6040 (drain 6; read 4, close, then None), got: $(cat "$SOO_LOG")" >&2; exit 1; }
+echo "[named-hoststreams-component-gate] stream_option_own: 6040 (HostStream::next and close inside tasks)"
+
+# #3151: a stream opened by the entry cannot reach a task. Captured by a
+# closure literal, the spawn check refuses it and says to open the stream in
+# the task; handed over in a closure a helper returned (the program as filed),
+# the check refuses the closure it cannot see into (#3152). Both used to trap.
+SCR_OUT="$OUT_DIR/spawn_stream_captured_refused.component.wasm"
+rm -f "$SCR_OUT" "$SCR_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/stream_captured_refused.vibe "$SCR_OUT" run >/dev/null 2>&1 || true
+if [ -s "$SCR_OUT" ]; then
+  echo "named hoststreams component gate FAILED: a host stream opened by the entry and captured by a task compiled (#3151)" >&2
+  exit 1
+fi
+grep -qF 'open the stream inside the spawned task' "$SCR_OUT.diag" 2>/dev/null \
+  || { echo "named hoststreams component gate FAILED: stream_captured_refused gave an unexpected diagnostic: $(cat "$SCR_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+SRC_OUT="$OUT_DIR/spawn_stream_returned_closure_refused.component.wasm"
+rm -f "$SRC_OUT" "$SRC_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/stream_returned_closure_refused.vibe "$SRC_OUT" run >/dev/null 2>&1 || true
+if [ -s "$SRC_OUT" ]; then
+  echo "named hoststreams component gate FAILED: a host stream handed to one task through a returned closure compiled (#3151)" >&2
+  exit 1
+fi
+grep -qF "its captures cannot be seen here" "$SRC_OUT.diag" 2>/dev/null \
+  || { echo "named hoststreams component gate FAILED: stream_returned_closure_refused gave an unexpected diagnostic: $(cat "$SRC_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+echo "[named-hoststreams-component-gate] a stream opened by the entry reaching a task: refused at compile time (captured, or through a returned closure)"
+
 echo "named hoststreams component gate OK"
