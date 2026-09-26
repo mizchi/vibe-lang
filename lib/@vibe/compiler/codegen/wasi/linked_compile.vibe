@@ -3510,15 +3510,26 @@ fn lc_ws_track_inject(stmts: Array[Stmt]) -> Unit {
   let rbq = EIdent("__wsr_bq", -1)
   let rc = EIdent("__wsr_c", -1)
   let rq = EIdent("__wsr_q", -1)
-  let better = EBinOp("&&", EBinOp("<", EInt(0 - 1), rq, -1), EBinOp("&&", EBinOp("!=", ri, rs, -1), EBinOp("||", EBinOp("<", rbest, EInt(0), -1), EBinOp("<", rq, rbq, -1), -1), -1), -1)
+  // A slot's liveness is its own record, not only its cell's state: seq > 0
+  // is an unclaimed cell still holding its slot -- landed, pending, or
+  // overwritten by `Future::resolve`, which frees nothing (Codex on #3091);
+  // -1 is claimed, holding its slot until the wait settles it (state 0) or a
+  // release poisons it (9); -2 is free (a placeholder, or already reclaimed).
+  let rst = get(rc, EInt(0))
+  let unclaimed = EBinOp("&&", EBinOp("<", EInt(0), rq, -1), EBinOp("!=", rst, EInt(9), -1), -1)
+  let holds = EBinOp("||", unclaimed, EBinOp("&&", EBinOp("==", rq, EInt(0 - 1), -1), EBinOp("==", rst, EInt(2), -1), -1), -1)
+  let better = EBinOp("&&", unclaimed, EBinOp("&&", EBinOp("!=", ri, rs, -1), EBinOp("||", EBinOp("<", rbest, EInt(0), -1), EBinOp("<", rq, rbq, -1), -1), -1), -1)
   let take = EAssign("__wsr_best", ri, EAssign("__wsr_bq", rq, EUnit))
   let count = EAssign("__wsr_live", EBinOp("+", rlive, EInt(1), -1), EIf(better, take, EUnit))
-  let per_slot = ELet("__wsr_c", get(cells, ri), ELet("__wsr_q", get(seqs, ri), EIf(EBinOp("==", get(rc, EInt(0)), EInt(2), -1), count, EUnit), -1), -1)
+  let per_slot = ELet("__wsr_c", get(cells, ri), ELet("__wsr_q", get(seqs, ri), EIf(holds, count, EUnit), -1), -1)
   // review-lint: allow-fixed-synthetic-name (the injected __ws_* helpers' own scopes)
   let scan = EWhile(EBinOp("<", ri, len(cells), -1), ESeq(per_slot, EAssign("__wsr_i", EBinOp("+", ri, EInt(1), -1), EUnit)))
   let victim = EIdent("__wsr_v", -1)
   let cancel = ECall(builtin_ref("vibe_hf_cancel_raw"), [get(victim, EInt(1))], -1)
-  let evict = ELet("__wsr_v", get(cells, rbest), ELet("__wsr_x", cancel, set(victim, EInt(0), EInt(9)), -1), -1)
+  // A cell `Future::resolve` already answered keeps its value; only a cell
+  // still waiting on the host is poisoned.
+  let poison = EIf(EBinOp("==", get(victim, EInt(0)), EInt(2), -1), set(victim, EInt(0), EInt(9)), EUnit)
+  let evict = ELet("__wsr_v", get(cells, rbest), ELet("__wsr_x", cancel, ESeq(set(seqs, rbest, EInt(0 - 2)), poison), -1), -1)
   // review-lint: allow-fixed-synthetic-name (the injected __ws_* helpers' own scopes)
   let full = EBinOp("&&", EBinOp("<", EInt(lc_ws_slot_count() - 1), rlive, -1), EBinOp("<", EInt(0 - 1), rbest, -1), -1)
   let room_body = ELetMut("__wsr_i", EInt(0), ELetMut("__wsr_live", EInt(0), ELetMut("__wsr_best", EInt(0 - 1), ELetMut("__wsr_bq", EInt(0), ESeq(scan, EIf(full, evict, EUnit)), -1), -1), -1), -1)
@@ -3534,7 +3545,7 @@ fn lc_ws_track_inject(stmts: Array[Stmt]) -> Unit {
   let grow = EWhile(EBinOp("<", len(cells), EBinOp("+", ts, EInt(1), -1), -1), ESeq(push(cells, EArray([
     EInt(0),
     EInt(0)
-  ])), push(seqs, EInt(0))))
+  ])), push(seqs, EInt(0 - 2))))
   let bump = set(ctr, EInt(0), EBinOp("+", get(ctr, EInt(0)), EInt(1), -1))
   let record = ESeq(set(cells, ts, tf), set(seqs, ts, get(ctr, EInt(0))))
   let room = ECall(EIdent("__ws_room", -1), [ts], -1)

@@ -711,6 +711,8 @@ cancel_row wit_response_import drop_many client_bindings.vibe 204 \
   "" "$CIFACE#fetch-a=200:0:1|2|3,$CIFACE#fetch-b=204:5:9" "600 dropped landed responses (and their bodies) are reclaimed"
 cancel_row wit_response_import drop_many client_bindings.vibe 204 \
   "" "$CIFACE#fetch-a=200:10000:1|2|3,$CIFACE#fetch-b=204:5:9" "600 dropped pending responses are reclaimed"
+cancel_row wit_future_import resolve_many prices_bindings.vibe 640 \
+  "$PIFACE#get-price=40:30,$PIFACE#get-tax=2:1" "" "600 get-tax futures answered by Future::resolve release their slots"
 # A reclaimed future awaited afterwards: its slot now holds a later call, so
 # the await must trap rather than answer that call's value.
 RECLAIM_DIR="$OUT/reclaimed_await_trap"

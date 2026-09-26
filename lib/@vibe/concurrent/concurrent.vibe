@@ -1798,14 +1798,18 @@ fn conc_host_claim_stream(f: Array[Int], serial: Int) -> Unit {
 /// #2066 (Codex on #3091): a stream operation that does not park -- a close
 /// -- claims the cell for the running task directly. A reader and a closer
 /// handed out by one helper would otherwise let another task drop the stream
-/// under its reader, which then saw a silent end of stream.
+/// under its reader, which then saw a silent end of stream. Code running
+/// outside every task -- a `TaskGroup::run` body, the entry itself -- is one
+/// owner too, serial 0 (task serials start at 1), so a group body cannot close
+/// a stream a child claimed (Codex on #3091).
 export fn __conc_stream_claim(f: Array[Int]) -> Int {
   let depth = Array::length(conc_running_stack)
-  if depth > 0 {
-    conc_host_claim_stream(f, Array::get(conc_running_stack, depth - 1).serial)
+  let owner = if depth > 0 {
+    Array::get(conc_running_stack, depth - 1).serial
   } else {
-    ()
+    0
   }
+  conc_host_claim_stream(f, owner)
   0
 }
 
