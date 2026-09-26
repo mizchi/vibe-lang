@@ -9,7 +9,7 @@ import @vibe/core {
 }
 
 import @vibe/ast {
-  impl_method_owner, trait_ref_from_key, trait_ref_key, type_param_name
+  builtin_ref_offset, impl_method_owner, trait_ref_from_key, trait_ref_key, type_param_name
 }
 
 import ./module_graph_path.vibe {
@@ -912,10 +912,25 @@ fn alias_map_without_params(aliases: Array[(String, String)], params: Array[(Str
 struct AliasIdx {
   entries: Array[(String, String)];
   idx: MutMap[String, String];
-  shadow_keys: MutSet[String]
+  shadow_keys: MutSet[String];
+  // #3132: rename every identifier EXCEPT a compiler-synthesized builtin
+  // reference (`builtin_ref`, offset `builtin_ref_offset()`), keeping its
+  // offset, and never rewrite a qualified head. Only
+  // `rename_builtin_shadow_defs` sets it.
+  user_refs_only: Bool
 }
 
 fn aliasidx_build(entries: Array[(String, String)]) -> AliasIdx {
+  aliasidx_build_mode(entries, false)
+}
+
+/// The same index over `entries`, in `am`'s mode -- what the binder
+/// reductions (`aliasidx_without_*`) rebuild with.
+fn aliasidx_rebuild(am: AliasIdx, entries: Array[(String, String)]) -> AliasIdx {
+  aliasidx_build_mode(entries, am.user_refs_only)
+}
+
+fn aliasidx_build_mode(entries: Array[(String, String)], user_refs_only: Bool) -> AliasIdx {
   let idx: MutMap[String, String] = MutMap::new_string()
   let shadow_keys = MutSet::new_string()
   let mut i = 0
@@ -941,7 +956,8 @@ fn aliasidx_build(entries: Array[(String, String)]) -> AliasIdx {
   AliasIdx::{
     entries: entries,
     idx: idx,
-    shadow_keys: shadow_keys
+    shadow_keys: shadow_keys,
+    user_refs_only: user_refs_only
   }
 }
 
@@ -1071,7 +1087,7 @@ fn aliasidx_shadows(am: AliasIdx, name: String) -> Bool {
 
 fn aliasidx_without_name(am: AliasIdx, name: String) -> AliasIdx {
   if aliasidx_shadows(am, name) {
-    aliasidx_build(alias_map_without_name(am.entries, name))
+    aliasidx_rebuild(am, alias_map_without_name(am.entries, name))
   } else {
     am
   }
@@ -1088,7 +1104,7 @@ fn aliasidx_without_names(am: AliasIdx, names: Array[String]) -> AliasIdx {
     }
   }
   if any {
-    aliasidx_build(alias_map_without_names(am.entries, names))
+    aliasidx_rebuild(am, alias_map_without_names(am.entries, names))
   } else {
     am
   }
@@ -1146,7 +1162,7 @@ fn aliasidx_without_pat(am: AliasIdx, pat: Pat) -> AliasIdx {
     }
   }
   if any {
-    aliasidx_build(alias_map_without_pat(am.entries, pat))
+    aliasidx_rebuild(am, alias_map_without_pat(am.entries, pat))
   } else {
     am
   }
@@ -1164,7 +1180,7 @@ fn aliasidx_without_params(am: AliasIdx, params: Array[(String, Option[TypeExpr]
     }
   }
   if any {
-    aliasidx_build(alias_map_without_params(am.entries, params))
+    aliasidx_rebuild(am, alias_map_without_params(am.entries, params))
   } else {
     am
   }
@@ -1309,16 +1325,27 @@ fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
     expr
   } else {
     match expr {
-      EIdent(name, _) => match aliasidx_get(am, name) {
-        Some(original) => EIdent(original, -1),
-        // #1502: a qualified constructor reference carries the alias in its
-        // HEAD (`import { Hue as H }` then `H::Crimson`), and the whole string
-        // is never an alias key, so the lookup above misses and the alias used
-        // to survive all the way to codegen -- whose constructor table is keyed
-        // by the ORIGINAL unqualified name -- as `undefined variable (ident):
-        // H::Crimson`. Rewriting the head here hands the rest of the pipeline
-        // the same `Hue::Crimson` an unaliased import would have produced.
-        None => rewrite_alias_qualified_head(expr, name, am)
+      EIdent(name, off) => if am.user_refs_only {
+        if off == builtin_ref_offset() {
+          expr
+        } else {
+          match aliasidx_get(am, name) {
+            Some(renamed) => EIdent(renamed, off),
+            None => expr
+          }
+        }
+      } else {
+        match aliasidx_get(am, name) {
+          Some(original) => EIdent(original, -1),
+          // #1502: a qualified constructor reference carries the alias in its
+          // HEAD (`import { Hue as H }` then `H::Crimson`), and the whole string
+          // is never an alias key, so the lookup above misses and the alias used
+          // to survive all the way to codegen -- whose constructor table is keyed
+          // by the ORIGINAL unqualified name -- as `undefined variable (ident):
+          // H::Crimson`. Rewriting the head here hands the rest of the pipeline
+          // the same `Hue::Crimson` an unaliased import would have produced.
+          None => rewrite_alias_qualified_head(expr, name, am)
+        }
       },
       ETuple(items) => {
         let m = alias_marks()
@@ -3954,6 +3981,258 @@ export fn apply_top_level_fn_alias_renames(stmts: Array[Stmt], renames: Array[(S
       si = si + 1
     }
   }
+}
+
+/// #3132: the container builtins the compiler itself calls BY NAME -- the
+/// runtime helpers its lowerings resolve (`__len`, the HOF and Map loops),
+/// the calls its desugarings synthesize (for-in, interpolation, structural
+/// `==`, effect lowering), and the targets of the `MutList` / `MutBytes`
+/// aliases and the borrowing-builtin table. Excluded on purpose:
+/// `Map::iter_get` / `Map::__iter_get_unchecked`, whose source definition
+/// the compiler deliberately honours (#2379), and `String::equals`, which the
+/// prelude defines as source (#2483). None of these names is defined anywhere
+/// under `lib/`.
+///
+/// `__index` / `__rec_field` are here too (#3132 review): the parser spells
+/// `a[i]` and a record pattern's field reads with them, and both are in the
+/// borrowing-builtin table, so a program's own `fn __index` used to capture
+/// the sugar -- `xs[2]` answered the program's function.
+let builtin_shadow_rename_names: Array[String] = [
+  "__index",
+  "__rec_field",
+  "Array::concat",
+  "Array::get",
+  "Array::length",
+  "Array::push",
+  "Array::push_all",
+  "Array::set",
+  "Array::slice",
+  "Array::truncate",
+  "ArrayBuilder::freeze",
+  "ArrayBuilder::new",
+  "ArrayBuilder::push",
+  "Bytes::append",
+  "Bytes::compare",
+  "Bytes::count",
+  "Bytes::get",
+  "Bytes::index_of",
+  "Bytes::index_of_bytes",
+  "Bytes::last_index_of",
+  "Bytes::length",
+  "Bytes::new",
+  "Bytes::push",
+  "Bytes::set",
+  "Bytes::slice",
+  "FixedArray::get",
+  "FixedArray::length",
+  "FixedArray::set",
+  "FrozenArray::get",
+  "FrozenArray::length",
+  "Map::get",
+  "Map::has",
+  "Map::has_key",
+  "Map::keys",
+  "Map::size",
+  "Map::values",
+  "MapBuilder::get",
+  "MapBuilder::has_key",
+  "MapBuilder::set",
+  "String::char_code_at",
+  "String::concat",
+  "String::ends_with",
+  "String::from_char_code",
+  "String::join",
+  "String::last_index_of",
+  "String::length",
+  "String::split",
+  "String::substring",
+  "StringBuilder::freeze",
+  "StringBuilder::new",
+  "StringBuilder::push"
+]
+
+fn is_builtin_shadow_rename_name(name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(builtin_shadow_rename_names) {
+    if Array::get(builtin_shadow_rename_names, i) == name {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// The spelling a program's own definition of a compiler-called builtin is
+/// renamed to. `$` cannot appear in a source identifier, so no program can
+/// declare it and no user call can collide with it.
+export fn builtin_shadow_rename_of(name: String) -> String {
+  String::concat(name, "$user")
+}
+
+/// The source spelling of a function name: `builtin_shadow_rename_of`
+/// undone, any other name unchanged. The rename is internal to one
+/// compilation; what leaves it -- a wasm export of a library that defines
+/// `export fn Array::length` -- keeps the name the program wrote (#3132
+/// review), so an importer finds `Array::length`, not `Array::length$user`.
+/// The name the compilation knows the ENTRY by (#3132 review). `vibe build
+/// --entry StringBuilder::new` names the program's own function, which the
+/// rename moves to `StringBuilder::new$user`; every internal lookup and DCE
+/// root has to use that spelling while the export keeps the source one
+/// (`builtin_shadow_source_name`). Answers the same before or after the
+/// rename has run, since the lanes differ in where they run it.
+export fn builtin_shadow_entry_name(stmts: Array[Stmt], entry_name: String) -> String {
+  if !is_builtin_shadow_rename_name(entry_name) {
+    entry_name
+  } else {
+    let renamed = builtin_shadow_rename_of(entry_name)
+    let mut found = false
+    let mut i = 0
+    while !found && i < Array::length(stmts) {
+      let name = match Array::get(stmts, i) {
+        SLet(_, _, n, _, _) => n,
+        SFnDecl(_, n, _, _, _) => n,
+        _ => ""
+      }
+      if name == entry_name || name == renamed {
+        found = true
+      } else {
+        i = i + 1
+      }
+    }
+    if found {
+      renamed
+    } else {
+      entry_name
+    }
+  }
+}
+
+export fn builtin_shadow_source_name(name: String) -> String {
+  let suffix = "$user"
+  let n = String::length(name)
+  let k = String::length(suffix)
+  if n > k && String::ends_with(name, suffix) && is_builtin_shadow_rename_name(name[0: n - k]) {
+    name[0: n - k]
+  } else {
+    name
+  }
+}
+
+/// #3132: a program may define its own top-level `Array::length`,
+/// `Map::keys`, ... The checker resolves the program's calls to that
+/// definition, but everything downstream is keyed by NAME -- the lowerings
+/// that call `Array::get` to walk an array, the desugarings that synthesize
+/// `Array::length` for a for-in or an interpolation, the ladders, the
+/// borrow tables -- and each of those meant the builtin. Resolved by name,
+/// they reached the program's function instead: a for-in, `Array::map`,
+/// `Map::keys`, `"\{xs}"` and `==` on arrays compiled to invalid wasm or
+/// answered with the program's sentinel.
+///
+/// So give the program's definition, and every reference to its name, a
+/// spelling of its own, and leave the builtin name to mean the builtin
+/// everywhere after this pass. The one exception is a reference the COMPILER
+/// wrote -- the parser's index-assignment and spread sugar, interpolation's
+/// joins, the effect lowerings -- which every such pass spells with
+/// `builtin_ref` and so carries `builtin_ref_offset()`. Provenance is that
+/// explicit mark, not the absence of a source offset: interpolation
+/// re-parses the program's own expressions without offsets, and the library
+/// lanes parse whole programs without them (#3132 review), so a program's
+/// call can carry -1 too. scripts/review_lint.vibex refuses a bare listed
+/// `EIdent` outside codegen, which runs after every rename point.
+///
+/// Re-runnable, and deliberately so (#3144 round 4): a definition already
+/// renamed still puts its SOURCE spelling in the table, so a later run renames
+/// the references a pass wrote SINCE by computing a name rather than spelling
+/// a literal. The trait-dictionary desugar builds a witness field as
+/// `<Type>::<method>`, which for `impl Measured for String { length(..) }` is
+/// `String::length`, the impl's own binding; left alone it reached the
+/// builtin, and `measure("abc")` through `[T: Measured]` answered 3 instead
+/// of the impl's 42. So one sentence holds for every pass: a reference means
+/// the program's definition unless it was written with `builtin_ref`. With no
+/// listed definition a run is one top-level scan and changes nothing.
+///
+/// An `export { Array::length }` block is renamed with its definition. Every
+/// consumer of an export block matches its entries against declaration names
+/// (the split prelude's interface filter, the GC lane's direct-ABI "is this
+/// public" test, DCE roots), so an entry left in the source spelling named a
+/// declaration that no longer existed. What leaves the compilation keeps the
+/// source spelling through `builtin_shadow_source_name`.
+///
+/// Must run on the WHOLE program; a module partition cannot see a definition
+/// in another module.
+export fn rename_builtin_shadow_defs(stmts: Array[Stmt]) -> Unit {
+  let renames = empty_aliases()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let name = match Array::get(stmts, i) {
+      SLet(_, _, n, _, _) => n,
+      SFnDecl(_, n, _, _, _) => n,
+      _ => ""
+    }
+    let source = builtin_shadow_source_name(name)
+    if name != "" && is_builtin_shadow_rename_name(source) && !builtin_shadow_rename_listed(renames, source) {
+      Array::push(renames, (source, builtin_shadow_rename_of(source)))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if Array::length(renames) == 0 {
+    ()
+  } else {
+    let am = aliasidx_build_mode(renames, true)
+    let mut si = 0
+    while si < Array::length(stmts) {
+      match Array::get(stmts, si) {
+        SLet(exported, is_rec, name, ty, body) => {
+          let new_name = if is_builtin_shadow_rename_name(name) {
+            builtin_shadow_rename_of(name)
+          } else {
+            name
+          }
+          Array::set(stmts, si, SLet(exported, is_rec, new_name, ty, rewrite_alias_expr_ix(body, am)))
+        },
+        SFnDecl(exported, name, value, reqs, enss) => {
+          let new_name = if is_builtin_shadow_rename_name(name) {
+            builtin_shadow_rename_of(name)
+          } else {
+            name
+          }
+          Array::set(stmts, si, SFnDecl(exported, new_name, rewrite_alias_expr_ix(value, am), rewrite_alias_exprs_ix(reqs, am), rewrite_alias_exprs_ix(enss, am)))
+        },
+        SLetMut(name, ty, body) => Array::set(stmts, si, SLetMut(name, ty, rewrite_alias_expr_ix(body, am))),
+        STest(name, body) => Array::set(stmts, si, STest(name, rewrite_alias_expr_ix(body, am))),
+        SBench(name, body) => Array::set(stmts, si, SBench(name, rewrite_alias_expr_ix(body, am))),
+        SExpr(body) => Array::set(stmts, si, SExpr(rewrite_alias_expr_ix(body, am))),
+        SLetPat(pat, body) => Array::set(stmts, si, SLetPat(pat, rewrite_alias_expr_ix(body, am))),
+        SExport(items) => Array::set(stmts, si, SExport(for item in items {
+          if builtin_shadow_rename_listed(renames, item) {
+            builtin_shadow_rename_of(item)
+          } else {
+            item
+          }
+        })),
+        _ => ()
+      }
+      si = si + 1
+    }
+  }
+}
+
+fn builtin_shadow_rename_listed(renames: Array[(String, String)], name: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(renames) {
+    let (source, _) = Array::get(renames, i)
+    if source == name {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
 }
 
 /// Like append_import_alias_rewritten_non_import_stmts_skipping, but with

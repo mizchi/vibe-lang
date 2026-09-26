@@ -69,6 +69,7 @@ import @vibe/compiler/codegen/common_base {
   expr_tag,
   find_func_stmt,
   find_local_slot,
+  func_table_builtin_pos_of,
   func_table_index_of,
   func_table_user_index_of,
   gc_ctor_field_is_ref,
@@ -830,6 +831,52 @@ fn gc_name_is_user_defined(ctx: CompileCtxGc, local_names: Array[String], name: 
   find_local_slot(local_names, name) >= 0 || func_table_user_index_of(ctx.func_table, name, ctx.num_user_funcs) >= 0
 }
 
+/// #3129: a `MutList::*` / `MutBytes::*` call is the BUILTIN `target` under
+/// another spelling. Re-dispatching it as a call spelled `target` let a
+/// program's own function of that name capture it (a program `Array::length`
+/// answered 77 for `MutList::length` of a three-element list). When the
+/// program defines `target`, call the builtin's table entry directly, with
+/// the same argument handling as the resolved-call fallback in
+/// `compile_call_gc`; otherwise the spelling is unambiguous and keeps its
+/// ordinary lowering.
+fn gc_mut_alias_call(buf: Bytes, target: String, args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, ce: (Bytes, Expr, Array[String], Int, Int) -> Int with Exception) -> Int with Exception {
+  let eff_target = gc_direct_abi_twin_callee(ctx, target)
+  let pos = if func_table_user_index_of(ctx.func_table, target, ctx.num_user_funcs) >= 0 {
+    func_table_builtin_pos_of(ctx.func_table, eff_target, ctx.num_user_funcs)
+  } else {
+    -1
+  }
+  if pos < 0 {
+    ce(buf, ECall(EIdent(target, -1), args, -1), local_names, next_local, ld)
+  } else {
+    let fidx = Array::get(ctx.func_table.indices, pos)
+    let has_ret = Array::get(ctx.func_table.returns, pos)
+    let direct_idx = gc_direct_abi_call_index(ctx, eff_target)
+    let mut nl = next_local
+    let mut ci = 0
+    while ci < Array::length(args) {
+      if direct_idx >= 0 && Array::get(Array::get(ctx.gc_direct_abi_param_refs, direct_idx), ci) {
+        nl = gc_compile_native_array_ref(buf, Array::get(args, ci), local_names, nl, ctx, ld, ce)
+      } else {
+        nl = ce(buf, Array::get(args, ci), local_names, nl, ld)
+      }
+      ci = ci + 1
+    }
+    if ctx.func_offset > 0 && fidx >= ctx.func_offset {
+      emit_i64_const(buf, 0)
+    } else {
+      ()
+    }
+    emit_call(buf, fidx)
+    if has_ret == 0 {
+      emit_i64_const(buf, 0)
+    } else {
+      ()
+    }
+    nl
+  }
+}
+
 /// wasm-gc counterpart of the linear checked Map key-slot load. Bounds and
 /// trapping are emitted directly so source bindings cannot intercept them.
 fn gc_compile_map_iter_get_checked(buf: Bytes, map_expr: Expr, index_expr: Expr, local_names: Array[String], next_local: Int, ld: Int, ce: (Bytes, Expr, Array[String], Int, Int) -> Int with Exception) -> Int with Exception {
@@ -963,22 +1010,22 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
       // as builtins whose bodies alias those; rewriting at the call site keeps
       // the gc lane's arena-free tier in one block.
       if !source_is_bound && fname == "MutList::push" && Array::length(args) == 2 {
-        return ce(buf, ECall(EIdent("ArrayBuilder::push", -1), args, -1), local_names, next_local, ld)
+        return gc_mut_alias_call(buf, "ArrayBuilder::push", args, local_names, next_local, ctx, ld, ce)
       } else {
         ()
       }
       if !source_is_bound && fname == "MutList::get" && Array::length(args) == 2 {
-        return ce(buf, ECall(EIdent("Array::get", -1), args, -1), local_names, next_local, ld)
+        return gc_mut_alias_call(buf, "Array::get", args, local_names, next_local, ctx, ld, ce)
       } else {
         ()
       }
       if !source_is_bound && fname == "MutList::length" && Array::length(args) == 1 {
-        return ce(buf, ECall(EIdent("Array::length", -1), args, -1), local_names, next_local, ld)
+        return gc_mut_alias_call(buf, "Array::length", args, local_names, next_local, ctx, ld, ce)
       } else {
         ()
       }
       if !source_is_bound && fname == "MutList::truncate" && Array::length(args) == 2 {
-        return ce(buf, ECall(EIdent("Array::truncate", -1), args, -1), local_names, next_local, ld)
+        return gc_mut_alias_call(buf, "Array::truncate", args, local_names, next_local, ctx, ld, ce)
       } else {
         ()
       }
@@ -1003,17 +1050,17 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         ()
       }
       if !source_is_bound && fname == "MutBytes::push" && Array::length(args) == 2 {
-        return ce(buf, ECall(EIdent("Bytes::push", -1), args, -1), local_names, next_local, ld)
+        return gc_mut_alias_call(buf, "Bytes::push", args, local_names, next_local, ctx, ld, ce)
       } else {
         ()
       }
       if !source_is_bound && fname == "MutBytes::append" && Array::length(args) == 2 {
-        return ce(buf, ECall(EIdent("Bytes::append", -1), args, -1), local_names, next_local, ld)
+        return gc_mut_alias_call(buf, "Bytes::append", args, local_names, next_local, ctx, ld, ce)
       } else {
         ()
       }
       if !source_is_bound && fname == "MutBytes::length" && Array::length(args) == 1 {
-        return ce(buf, ECall(EIdent("Bytes::length", -1), args, -1), local_names, next_local, ld)
+        return gc_mut_alias_call(buf, "Bytes::length", args, local_names, next_local, ctx, ld, ce)
       } else {
         ()
       }
@@ -1053,7 +1100,9 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         ()
       }
       let native_slot = gc_native_array_receiver_slot(args, local_names, ctx)
-      let native_receiver = Array::length(args) > 0 && (native_slot >= 0 || gc_expr_is_native_array_ref(Array::get(args, 0), local_names, ctx))
+      // #3132: the shortcuts below ARE the builtins; a call the program
+      // resolves to its own function of that name must not take them.
+      let native_receiver = Array::length(args) > 0 && (native_slot >= 0 || gc_expr_is_native_array_ref(Array::get(args, 0), local_names, ctx)) && !gc_name_is_user_defined(ctx, local_names, fname)
       if native_receiver && fname == "Array::length" && Array::length(args) == 1 {
         let nl = if native_slot >= 0 {
           emit_local_get(buf, native_slot)
@@ -3705,6 +3754,9 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
       }
       else {
         let fn_len2 = Array::length(ctx.func_table.names)
+        // The `$ref` twin is the direct-ABI entry of the callee -- a builtin's,
+        // and also a program function's (gc_add_ref_twins makes one for an
+        // exported function taking a native array), so it applies to both.
         let eff_fname = gc_direct_abi_twin_callee(ctx, fname)
         let local_callee_idx = find_local_slot(local_names, fname)
         let mut fn_idx_in_list = -1

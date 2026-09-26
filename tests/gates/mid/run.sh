@@ -665,6 +665,128 @@ done
 rm -f "$ROOT_DIR/_build/_gate_rc_captured_mut.log"
 echo "[compiler-gate] captured let mut cell ownership ok (rc + shadow)"
 
+# 40f-b4. #3128: a program's own top-level definition of a borrowing
+#         builtin's name (`Array::truncate`, `String::join`, `Bytes::compare`,
+#         `Map::size`) owns its parameters, so the call site must hand over a
+#         reference instead of the builtin's borrow. On the shadow lane the
+#         premature release traps on its first occurrence; the plain RC lane
+#         can answer right by luck when the freed block is not reused yet.
+echo "[compiler-gate] 40f-b4/40 shadowed borrowing builtin receives owned arguments on shadow (#3128)"
+if ! VIBE_RC=shadow VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+    bash scripts/vibe_test.sh fixtures/rc_shadowed_builtin_ownership_test.vibe \
+    >"$ROOT_DIR/_build/_gate_rc_shadowed_builtin.log" 2>&1; then
+  echo "[compiler-gate] FAIL: a source definition of a borrowing builtin's name was called with a borrowed argument it then released, under VIBE_RC=shadow (#3128):" >&2
+  tail -20 "$ROOT_DIR/_build/_gate_rc_shadowed_builtin.log" >&2
+  exit 1
+fi
+rm -f "$ROOT_DIR/_build/_gate_rc_shadowed_builtin.log"
+echo "[compiler-gate] shadowed borrowing builtin ownership ok on shadow"
+
+# 40f-b5. #3129: `MutList::*` / `MutBytes::*` lower to the builtin
+#         `Array::*` / `ArrayBuilder::push` / `Bytes::*`. A program that
+#         defines its own function under the target spelling must not capture
+#         the call: the plain RC lane answers the program's sentinel instead of
+#         the list's length, and the shadow lane traps on the program function
+#         releasing a list it was only lent.
+echo "[compiler-gate] 40f-b5/40 MutList / MutBytes and internal builtin calls reach the builtin under a same-named program function (#3129, #3132)"
+if ! VIBE_RC=shadow VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+    bash scripts/vibe_test.sh fixtures/mut_alias_shadowed_builtin_test.vibe \
+    >"$ROOT_DIR/_build/_gate_mut_alias_shadowed.log" 2>&1; then
+  echo "[compiler-gate] FAIL: a MutList / MutBytes operation was captured by the program's own function of the builtin's spelling under VIBE_RC=shadow (#3129):" >&2
+  tail -20 "$ROOT_DIR/_build/_gate_mut_alias_shadowed.log" >&2
+  exit 1
+fi
+rm -f "$ROOT_DIR/_build/_gate_mut_alias_shadowed.log"
+echo "[compiler-gate] MutList / MutBytes builtin aliases ok on shadow"
+# #3132: the compiler's OWN calls by a builtin's name -- for-in, the HOF and
+# Map loops, interpolation, structural `==` -- must reach the builtin when the
+# program defines `Array::length` / `get` / `push`, on the shadow lane and on
+# wasm-gc (whose native-array shortcuts used to answer a program's own direct
+# `Array::length` call with the builtin).
+if ! VIBE_RC=shadow VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+    bash scripts/vibe_test.sh fixtures/builtin_shadow_internal_lowering_test.vibe fixtures/builtin_shadow_parser_sugar_test.vibe \
+    >"$ROOT_DIR/_build/_gate_builtin_shadow_lowering.log" 2>&1; then
+  echo "[compiler-gate] FAIL: a compiler-internal call by a builtin's name reached the program's same-named function under VIBE_RC=shadow (#3132):" >&2
+  tail -20 "$ROOT_DIR/_build/_gate_builtin_shadow_lowering.log" >&2
+  exit 1
+fi
+if ! VIBE_TEST_BACKEND=gc VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+    bash scripts/vibe_test.sh fixtures/mut_alias_shadowed_builtin_test.vibe fixtures/builtin_shadow_internal_lowering_test.vibe fixtures/builtin_shadow_parser_sugar_test.vibe \
+    >"$ROOT_DIR/_build/_gate_builtin_shadow_lowering.log" 2>&1; then
+  echo "[compiler-gate] FAIL: on wasm-gc a builtin and a same-named program function were confused (#3129 / #3132):" >&2
+  tail -20 "$ROOT_DIR/_build/_gate_builtin_shadow_lowering.log" >&2
+  exit 1
+fi
+rm -f "$ROOT_DIR/_build/_gate_builtin_shadow_lowering.log"
+echo "[compiler-gate] builtin-named internal calls ok on shadow and wasm-gc"
+# #3132 review: `--entry` naming the program's own function spelled like a
+# builtin (renamed aside to `StringBuilder::new$user`) still resolves, and the
+# module exports it under the name the program wrote -- on linear and wasm-gc.
+bedir="_build/_gate_builtin_shadow_entry"
+rm -rf "$bedir"; mkdir -p "$bedir"
+for be_lane in linear gc; do
+  rm -f "$bedir/e.wasm" "$bedir/e.wasm.diag"
+  case "$be_lane" in
+    linear) env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" "fixtures/builtin_shadow_entry.vibe" "$bedir/e.wasm" 'StringBuilder::new' >/dev/null 2>&1 || true ;;
+    gc) env VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" "fixtures/builtin_shadow_entry.vibe" "$bedir/e.wasm" 'StringBuilder::new' >/dev/null 2>&1 || true ;;
+  esac
+  if [ ! -s "$bedir/e.wasm" ]; then
+    echo "[compiler-gate] FAIL: --entry StringBuilder::new naming the program's own function did not build on the $be_lane lane (#3132 review):" >&2
+    cat "$bedir/e.wasm.diag" >&2 2>/dev/null || true
+    exit 1
+  fi
+  if ! node -e 'const m=new WebAssembly.Module(require("fs").readFileSync(process.argv[1]));process.exit(WebAssembly.Module.exports(m).some(e=>e.name===process.argv[2])?0:1)' "$bedir/e.wasm" 'StringBuilder::new'; then
+    echo "[compiler-gate] FAIL: the $be_lane module does not export the entry as StringBuilder::new (#3132 review)" >&2
+    exit 1
+  fi
+done
+rm -rf "$bedir"
+echo "[compiler-gate] builtin-named --entry ok: resolves and exports its source name (linear + gc)"
+# #3144 round 4: tables keyed by a definition's NAME must agree with the
+# rename. A trait impl method binds `<Type>::<method>` (`impl Measured for
+# String { length(..) }` defines `String::length`), and the witness / dot-call
+# lookups that compute that name missed the moved definition: the witness
+# answered the builtin's 3 and `s.length()` trapped. On all three lanes.
+if ! VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+    bash scripts/vibe_test.sh fixtures/builtin_shadow_trait_impl_test.vibe \
+    >"$ROOT_DIR/_build/_gate_builtin_shadow_trait_impl.log" 2>&1 \
+  || ! VIBE_RC=shadow VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+    bash scripts/vibe_test.sh fixtures/builtin_shadow_trait_impl_test.vibe \
+    >>"$ROOT_DIR/_build/_gate_builtin_shadow_trait_impl.log" 2>&1 \
+  || ! VIBE_TEST_BACKEND=gc VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+    bash scripts/vibe_test.sh fixtures/builtin_shadow_trait_impl_test.vibe \
+    >>"$ROOT_DIR/_build/_gate_builtin_shadow_trait_impl.log" 2>&1; then
+  echo "[compiler-gate] FAIL: a trait impl method bound at a builtin's name was not reached through its witness or a dot-call (#3144):" >&2
+  tail -20 "$ROOT_DIR/_build/_gate_builtin_shadow_trait_impl.log" >&2
+  exit 1
+fi
+rm -f "$ROOT_DIR/_build/_gate_builtin_shadow_trait_impl.log"
+echo "[compiler-gate] builtin-named trait impl method dispatch ok (linear + shadow + gc)"
+# wasm-gc's native Array-reference ABI reads two name tables against the
+# renamed declarations: the pre-erasure GENERIC names (a generic signature is
+# excluded) and the `export { .. }` block (a public one is excluded). Either
+# one in the source spelling admitted a program's own `Array::length` --
+# measured as one native `array.new_default` literal where the same program
+# under any other name emits none. Count them: 0.
+gadir="_build/_gate_builtin_shadow_gc_abi"
+rm -rf "$gadir"; mkdir -p "$gadir"
+for ga_fx in fixtures/builtin_shadow_gc_direct_abi_generic_test.vibe fixtures/builtin_shadow_gc_direct_abi_export_test.vibe; do
+  ga_out="$gadir/$(basename "$ga_fx" .vibe).wasm"
+  env VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" "$ga_fx" "$ga_out" __no_entry__ >/dev/null 2>&1 || true
+  if [ ! -s "$ga_out" ]; then
+    echo "[compiler-gate] FAIL: $ga_fx did not build on wasm-gc (#3144):" >&2
+    cat "$ga_out.diag" >&2 2>/dev/null || true
+    exit 1
+  fi
+  ga_native=$(node -e 'const b=require("fs").readFileSync(process.argv[1]);let n=0;for(let i=0;i+2<b.length;i++){if(b[i]===0xfb&&b[i+1]===0x07&&b[i+2]===0x0c)n++}console.log(n)' "$ga_out")
+  if [ "$ga_native" != "0" ]; then
+    echo "[compiler-gate] FAIL: $ga_fx put a program's own Array::length on the gc native Array-reference ABI ($ga_native native literal(s), expected 0) (#3144)" >&2
+    exit 1
+  fi
+done
+rm -rf "$gadir"
+echo "[compiler-gate] builtin-named gc direct-ABI tables ok (generic + export block)"
+
 # 40f0. #2837: `Array::truncate` changes the array's LENGTH, not the lifetime
 #       of an element someone already took out of it. That is the ownership
 #       rule stable-surface.md §2.2a freezes and the one #2837 asks to define

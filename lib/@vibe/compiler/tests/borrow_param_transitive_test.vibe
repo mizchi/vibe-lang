@@ -204,6 +204,44 @@ test "#2379 review: a source-owned Map accessor overrides the builtin borrow see
   assert_eq(md_consume_count_pre(unchecked_call, "m", names, masks), 1)
 }
 
+test "#3128: a source definition of any borrowing builtin keeps a zero-mask row" {
+  // `Array::truncate` / `Array::length` / `String::join` borrow arg0 and
+  // `Bytes::compare` borrows both operands as builtins. A source definition
+  // that consumes them must be recorded, or md_borrow_mask_of falls back to
+  // the builtin mask and every call site hands over a borrow the body drops.
+  let truncate = one_param_fn("Array::truncate", "xs", EIdent("xs", -1))
+  let length = one_param_fn("Array::length", "xs", EIdent("xs", -1))
+  let join = one_param_fn("String::join", "xs", EIdent("xs", -1))
+  let compare = SLet(false, false, "Bytes::compare", None, EFn([], [], [
+    ("a", None),
+    ("b", None)
+  ], None, None, ETuple([EIdent("a", -1), EIdent("b", -1)])))
+  let plain = one_param_fn("plain", "xs", EIdent("xs", -1))
+  let masks: Array[Int] = []
+  let names = compute_borrow_param_user_fns([
+    truncate,
+    length,
+    join,
+    compare,
+    plain
+  ], [], masks)
+  assert_eq(Array::length(names), 4)
+  assert_eq(mask_for(names, masks, "Array::truncate"), 0)
+  assert_eq(mask_for(names, masks, "Bytes::compare"), 0)
+  let call = ECall(EIdent("Array::truncate", -1), [EIdent("xs", -1), EInt(2)], -1)
+  assert_eq(md_consume_count_pre(call, "xs", names, masks), 1)
+  let cmp_call = ECall(EIdent("Bytes::compare", -1), [
+    EIdent("a", -1),
+    EIdent("b", -1)
+  ], -1)
+  assert_eq(md_consume_count_pre(cmp_call, "b", names, masks), 1)
+  // Not shadowed: the builtin keeps borrowing.
+  let plain_masks: Array[Int] = []
+  let unshadowed = compute_borrow_param_user_fns([plain], [], plain_masks)
+  assert_eq(Array::length(unshadowed), 0)
+  assert_eq(md_consume_count_pre(call, "xs", unshadowed, plain_masks), 0)
+}
+
 test "#2379 review: a source-owned Map accessor may still infer a borrowed receiver" {
   let borrowed = one_param_fn("Map::iter_get", "m", ECall(EIdent("Array::length", -1), [
     EIdent("m", -1)

@@ -1,0 +1,120 @@
+// #3128: a program may declare its own top-level function under the name of
+// a builtin that BORROWS its argument (`Array::truncate`, `String::join`,
+// `Bytes::compare`, `Map::size`, ...). The call resolves to the program's
+// function, but the RC lane read the callee's ownership from the spelling:
+// the call site passed the argument as a borrow, the way it does for the
+// builtin, while the program's body owns its parameter and released it. The
+// caller's array was freed under it -- `Array::get: index 7 out of bounds for
+// length 1` once the freed block was reused.
+//
+// Each shadow below consumes its parameters (`let _ = xs`), so a call must
+// hand over a reference of its own. The allocations after each call reuse
+// whatever was freed, so a premature release shows up as a wrong answer on the
+// RC lane and as a trap on VIBE_RC=shadow.
+
+fn Array::truncate(xs: Array[Array[Int]], n: Int) -> Unit {
+  let _ = xs
+  let _ = n
+  ()
+}
+
+fn String::join(xs: Array[String], sep: String) -> String {
+  let _ = xs
+  sep
+}
+
+fn Bytes::compare(a: Bytes, b: Bytes) -> Int {
+  let _ = a
+  let _ = b
+  3
+}
+
+fn Map::size(m: Map[String, Int]) -> Int {
+  let _ = m
+  7
+}
+
+fn truncate_round(r: Int) -> Int {
+  let xs: Array[Array[Int]] = Array::with_capacity(8)
+  let mut i = 0
+  while i < 8 {
+    Array::push(xs, [r, i])
+    i = i + 1
+  }
+  Array::truncate(xs, 2)
+  let _ = [String::concat("z", "z")]
+  Array::length(xs) * 100 + Array::get(Array::get(xs, 7), 1)
+}
+
+fn join_round() -> String {
+  let xs: Array[String] = Array::with_capacity(8)
+  let mut i = 0
+  while i < 8 {
+    Array::push(xs, String::concat("a", "b"))
+    i = i + 1
+  }
+  let s = String::join(xs, ",")
+  let _ = [String::concat("z", "z"), String::concat("y", "y")]
+  String::concat(s, Array::get(xs, 7))
+}
+
+fn compare_round() -> Int {
+  let a = Bytes::new()
+  Bytes::push(a, 1)
+  let b = Bytes::new()
+  Bytes::push(b, 2)
+  Bytes::push(b, 5)
+  let c = Bytes::compare(a, b)
+  let d = Bytes::new()
+  Bytes::push(d, 9)
+  Bytes::push(d, 9)
+  c * 100 + Bytes::get(b, 1) + Bytes::length(a) * 10
+}
+
+fn size_round(r: Int) -> Int {
+  let m0: Map[String, Int] = Map::new()
+  let m1 = Map::set(m0, "a", r)
+  let m = Map::set(m1, "b", r + 1)
+  let n = Map::size(m)
+  let _ = [String::concat("z", "z")]
+  n * 100 + Map::get(m, "b")
+}
+
+fn run_truncate(rounds: Int) -> Int {
+  let mut total = 0
+  let mut i = 0
+  while i < rounds {
+    total = total + truncate_round(i) % 1000
+    i = i + 1
+  }
+  total
+}
+
+test "a shadowed Array::truncate receives an owned array" {
+  inspect(truncate_round(0), content = "807")
+  inspect(truncate_round(5), content = "807")
+}
+
+test "a shadowed String::join receives an owned array" {
+  inspect(join_round(), content = ",ab")
+}
+
+test "a shadowed Bytes::compare receives both operands owned" {
+  inspect(compare_round(), content = "315")
+}
+
+test "a shadowed Map::size receives an owned map" {
+  inspect(size_round(4), content = "705")
+}
+
+test "the owned hand-over is released by the shadow, not leaked" {
+  // Every round now hands the shadow one reference it drops; a missing drop
+  // would leak the eight-element array and its rows each round.
+  let warm = run_truncate(200)
+  let before = Profiler::heap_bytes()
+  let total = run_truncate(2000)
+  let grown = Profiler::heap_bytes() - before
+  inspect(warm, content = "161400")
+  inspect(total, content = "1614000")
+  inspect(grown < 2000 * 64, content = "true")
+}

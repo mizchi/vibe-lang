@@ -34,6 +34,7 @@ import @vibe/compiler/core {
   builtin_iterator_namespace_from_marker,
   builtin_iterator_namespace_markers,
   builtin_iterator_serialized_boundary_markers,
+  builtin_shadow_rename_of,
   builtin_value_form_arity,
   canonical_builtin_name,
   compiler_owned_type_arity,
@@ -50,6 +51,7 @@ import @vibe/compiler/core {
   namespace_rename_original,
   namespace_rename_originals_reset,
   prelude_ordering_stmt,
+  rename_builtin_shadow_defs,
   resolve_builtin,
   sort_perm_by_names,
   stmts_declare_prelude_ordering_shape,
@@ -64,6 +66,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/ast {
+  builtin_ref,
   impl_applied_target_key,
   impl_method_owner,
   impl_specialized_method_binding_name,
@@ -582,11 +585,11 @@ fn exn_kind_cell_stmt() -> Stmt {
 /// entry boundary (`wrap_entry_exception_boundary`) is built AFTER this pass and
 /// so has to spell the lowered form itself.
 export fn exn_kind_read_expr() -> Expr {
-  ECall(EIdent("Array::get", -1), [EIdent(exn_kind_cell_name(), -1), EInt(0)], -1)
+  ECall(builtin_ref("Array::get"), [EIdent(exn_kind_cell_name(), -1), EInt(0)], -1)
 }
 
 fn exn_kind_write_expr(kind: String) -> Expr {
-  ECall(EIdent("Array::set", -1), [
+  ECall(builtin_ref("Array::set"), [
     EIdent(exn_kind_cell_name(), -1),
     EInt(0),
     EString(kind, -1)
@@ -596,11 +599,11 @@ fn exn_kind_write_expr(kind: String) -> Expr {
 /// What `__exn_message()` lowers to. Exported for the same reason
 /// `exn_kind_read_expr` is: the entry boundary is synthesized after this pass.
 export fn exn_msg_read_expr() -> Expr {
-  ECall(EIdent("Array::get", -1), [EIdent(exn_kind_cell_name(), -1), EInt(1)], -1)
+  ECall(builtin_ref("Array::get"), [EIdent(exn_kind_cell_name(), -1), EInt(1)], -1)
 }
 
 fn exn_msg_write_expr(rendered: Expr) -> Expr {
-  ECall(EIdent("Array::set", -1), [
+  ECall(builtin_ref("Array::set"), [
     EIdent(exn_kind_cell_name(), -1),
     EInt(1),
     rendered
@@ -649,14 +652,14 @@ export fn wrap_entry_exception_boundary(stmts: Array[Stmt], entry_name: String) 
           kind_ident,
           EString("Int", -1)
         ], -1), -1), -1)
-        let rendered_ok = EBinOp("!=", ECall(EIdent("String::length", -1), [
+        let rendered_ok = EBinOp("!=", ECall(builtin_ref("String::length"), [
           msg_ident
         ], -1), EInt(0), -1)
         let text = EIf(printable, ECall(EIdent("__to_string", -1), [
           EIdent(payload_name, -1)
-        ], -1), EIf(rendered_ok, msg_ident, ECall(EIdent("String::concat", -1), [
+        ], -1), EIf(rendered_ok, msg_ident, ECall(builtin_ref("String::concat"), [
           EString("<", -1),
-          ECall(EIdent("String::concat", -1), [kind_ident, EString(">", -1)], -1)
+          ECall(builtin_ref("String::concat"), [kind_ident, EString(">", -1)], -1)
         ], -1)))
         // #2976: leave through the host's exit call with status 1, so the run
         // ends on the diagnosis instead of a second report of the trap that
@@ -1503,7 +1506,7 @@ fn map_index_rewrite(callee: Expr, args: Array[Expr], rwargs: Array[Expr], struc
         None => false
       }
       if recv_map {
-        Some(ECall(EIdent("Map::get", -1), rwargs, -1))
+        Some(ECall(builtin_ref("Map::get"), rwargs, -1))
       } else {
         None
       }
@@ -1829,7 +1832,11 @@ fn anon_dot_rewrite(obj: Expr, field: String, off: Int, robj: Expr, var_types: A
       Some(t) => {
         let idx = anon_field_index(t, field)
         if idx >= 0 {
-          Some(ECall(EIdent("__rec_field", off), [robj, EInt(idx)], off))
+          // builtin_ref: the checker runs this rewrite (desugar_railway_binds)
+          // BEFORE any rename, so a bare name here was redirected to a
+          // program's own `fn __rec_field` on wasm-gc (#3132 review). The call
+          // keeps the source offset.
+          Some(ECall(builtin_ref("__rec_field"), [robj, EInt(idx)], off))
         } else {
           None
         }
@@ -4089,7 +4096,7 @@ fn build_concrete_dict_for_target(actual_target: TypeExpr, trait_name: String, t
       let mut failed = false
       while mi < Array::length(mnames) {
         let m = Array::get(mnames, mi)
-        let plain_qm = String::concat(cname, String::concat("::", m))
+        let plain_qm = dtd_program_fn_name(fn_returns, String::concat(cname, String::concat("::", m)))
         let specialized_qm = impl_specialized_method_binding_name(cname, trait_name, impl_target_key(actual_target), m)
         let qm = if specialized_qm != "" && fn_exists(fn_returns, specialized_qm) {
           specialized_qm
@@ -4353,7 +4360,7 @@ fn infer_constructor_arg_type_name(arg: Expr, gens: Array[DictGen], struct_sets:
     ECall(EDot(obj, method, _, _), args, _) => {
       let resolved = match infer_arg_type_name(obj, struct_sets, var_types, fn_returns) {
         Some(receiver) => {
-          let qualified = String::concat(receiver, String::concat("::", method))
+          let qualified = dtd_program_fn_name(fn_returns, String::concat(receiver, String::concat("::", method)))
           if !struct_set_member(struct_sets, receiver, method) && fn_exists(fn_returns, qualified) {
             Some(qualified)
           } else {
@@ -7870,6 +7877,28 @@ fn fn_exists(fn_returns: Array[(String, String)], fname: String) -> Bool {
   fn_returns_find(fn_returns, fname) >= 0
 }
 
+/// #3144 round 4: the program's definition for a name this pass COMPUTED as
+/// `<Type>::<method>` (a trait witness field, a dot-call receiver's method).
+/// An impl method binds that name, and when it is one of the builtin names the
+/// compiler moves a program's definition away from (`String::length` ->
+/// `String::length$user`, see rename_builtin_shadow_defs) the table holds the
+/// moved spelling, so a lookup by the computed one missed it: the witness fell
+/// back to the builtin (`measure("abc")` answered 3, not the impl's 42) and
+/// `"abc".length()` compiled as a field read that trapped. Answers the moved
+/// spelling when that is what the program defines, else `qual` unchanged.
+fn dtd_program_fn_name(fn_returns: Array[(String, String)], qual: String) -> String {
+  if fn_exists(fn_returns, qual) {
+    qual
+  } else {
+    let moved = builtin_shadow_rename_of(qual)
+    if fn_exists(fn_returns, moved) {
+      moved
+    } else {
+      qual
+    }
+  }
+}
+
 /// #1350 (Codex P1): the recorded return-type head for a FUNCTION-typed
 /// return. Not a legal type name, so it can never collide with a real head.
 /// Only fn_return_is_fn_type reads it; fn_return_type maps it to None so the
@@ -9880,14 +9909,14 @@ fn interp_expand_var_tuple(name: String, elem_types: Array[String], derived_only
 fn interp_expand_var_array(name: String, derived_only: Bool, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
   let iv = String::concat(show_tmp_name(), "_i")
   let av = String::concat(show_tmp_name(), "_acc")
-  let elem_piece = interp_render_sub(ECall(EIdent("Array::get", -1), Array::slice([
+  let elem_piece = interp_render_sub(ECall(builtin_ref("Array::get"), Array::slice([
     EIdent(name, -1),
     EIdent(iv, -1)
   ], 0, 2), -1), derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
   let sep = EIf(EBinOp("==", EIdent(iv, -1), EInt(0), -1), EString("", -1), EString(", ", -1))
   let append = concat2(concat2(EIdent(av, -1), sep), elem_piece)
   let body = ESeq(EAssign(av, append, EUnit), EAssign(iv, EBinOp("+", EIdent(iv, -1), EInt(1), -1), EUnit))
-  let len_call = ECall(EIdent("Array::length", -1), Array::slice([
+  let len_call = ECall(builtin_ref("Array::length"), Array::slice([
     EIdent(name, -1)
   ], 0, 1), -1)
   let loop_e = EWhile(EBinOp("<", EIdent(iv, -1), len_call, -1), body)
@@ -10023,14 +10052,14 @@ fn interp_expand_shape(subject: Expr, sh: String, derived_only: Bool, gens: Arra
     let iv = String::concat(show_tmp_name(), "_i")
     let av = String::concat(show_tmp_name(), "_acc")
     let ev = show_tmp_name()
-    let elem_piece = ELet(ev, ECall(EIdent("Array::get", -1), Array::slice([
+    let elem_piece = ELet(ev, ECall(builtin_ref("Array::get"), Array::slice([
       EIdent(nm, -1),
       EIdent(iv, -1)
     ], 0, 2), -1), interp_render_shaped(EIdent(ev, -1), elem_sh, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns), -1)
     let sep = EIf(EBinOp("==", EIdent(iv, -1), EInt(0), -1), EString("", -1), EString(", ", -1))
     let append = concat2(concat2(EIdent(av, -1), sep), elem_piece)
     let body = ESeq(EAssign(av, append, EUnit), EAssign(iv, EBinOp("+", EIdent(iv, -1), EInt(1), -1), EUnit))
-    let len_call = ECall(EIdent("Array::length", -1), Array::slice([
+    let len_call = ECall(builtin_ref("Array::length"), Array::slice([
       EIdent(nm, -1)
     ], 0, 1), -1)
     let loop_e = EWhile(EBinOp("<", EIdent(iv, -1), len_call, -1), body)
@@ -10324,7 +10353,7 @@ fn char_render_expr(val: Expr) -> Expr {
   let c = show_tmp_name()
   let cv = EIdent(c, -1)
   let byte = (e: Expr) -> Expr {
-    ECall(EIdent("String::from_char_code", -1), [e], -1)
+    ECall(builtin_ref("String::from_char_code"), [e], -1)
   }
   let shr = (n: Int) -> Expr {
     EBinOp(">>", cv, EInt(n), -1)
@@ -10839,7 +10868,7 @@ fn user_assert_eq_set_merged_source(stmts: Array[Stmt], start: Int, names: Array
 }
 
 fn assert_eq_concat(a: Expr, b: Expr) -> Expr {
-  ECall(EIdent("String::concat", -1), [a, b], -1)
+  ECall(builtin_ref("String::concat"), [a, b], -1)
 }
 
 /// Render one `assert_eq` operand. Reuses the throw-site renderer
@@ -11425,7 +11454,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
                 Some(_) => None,
                 None => match recv_tn {
                   Some(tn) => {
-                    let qual = String::concat(tn, String::concat("::", m))
+                    let qual = dtd_program_fn_name(fn_returns, String::concat(tn, String::concat("::", m)))
                     let is_field = struct_set_member(struct_sets, tn, m)
                     if !is_field && fn_exists(fn_returns, qual) {
                       Some(qual)
@@ -11738,7 +11767,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
           } else {
             rl
           }
-          let lencmp = EBinOp("==", ECall(EIdent("Array::length", -1), [other], -1), EInt(0), -1)
+          let lencmp = EBinOp("==", ECall(builtin_ref("Array::length"), [other], -1), EInt(0), -1)
           if op == "==" {
             lencmp
           } else {
@@ -11795,7 +11824,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
               let rn = dinsp_fresh_name("__eqempty_r", rl, rr)
               let either_empty = EBinOp("||", EBinOp("==", EIdent(ln, -1), EInt(0), -1), EBinOp("==", EIdent(rn, -1), EInt(0), -1), -1)
               let decided = EIf(either_empty, EBinOp("==", EIdent(ln, -1), EIdent(rn, -1), -1), eq_refuse("both operands are untyped empty-array bindings that were pushed to, so neither side describes its element type. Annotate one of them (`let xs: Array[<type>] = []`)."))
-              let guarded = ELet(ln, ECall(EIdent("Array::length", -1), [rl], -1), ELet(rn, ECall(EIdent("Array::length", -1), [
+              let guarded = ELet(ln, ECall(builtin_ref("Array::length"), [rl], -1), ELet(rn, ECall(builtin_ref("Array::length"), [
                 rr
               ], -1), decided, -1), -1)
               if op == "==" {
@@ -12038,7 +12067,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
           None => false
         })
         if stringish {
-          ECall(EIdent("String::concat", -1), [rl, rr], -1)
+          ECall(builtin_ref("String::concat"), [rl, rr], -1)
         } else if is_erased_generic_operand(l, r, struct_sets, var_types, fn_returns) {
           // #973: same erased-`[T: Add]` case as the relational branch above.
           ECall(EIdent("__generic_add", -1), [rl, rr], -1)
@@ -12635,7 +12664,7 @@ fn top_level_fn_exists(stmts: Array[Stmt], fname: String) -> Bool {
 }
 
 fn concat2(a: Expr, b: Expr) -> Expr {
-  ECall(EIdent("String::concat", -1), [a, b], -1)
+  ECall(builtin_ref("String::concat"), [a, b], -1)
 }
 
 /// A stable, fn-name-safe key for a TypeExpr, used to name the monomorphic array
@@ -13422,7 +13451,7 @@ fn arr_helper_tparams(elem_ty: TypeExpr) -> Array[String] {
 /// element type is a type variable the helper is generic over it instead —
 /// see the `dtd_type_param_names` block above (#2136).
 fn gen_arr_to_string_fn(elem_ty: TypeExpr, known_types: Array[String]) -> Stmt {
-  let elem_get = ECall(EIdent("Array::get", -1), Array::slice([
+  let elem_get = ECall(builtin_ref("Array::get"), Array::slice([
     EIdent("a", -1),
     EIdent("__as_i", -1)
   ], 0, 2), -1)
@@ -13433,7 +13462,7 @@ fn gen_arr_to_string_fn(elem_ty: TypeExpr, known_types: Array[String]) -> Stmt {
   let set_acc = EAssign("__as_acc", append, EUnit)
   let incr = EAssign("__as_i", EBinOp("+", EIdent("__as_i", -1), EInt(1), -1), EUnit)
   let loop_body = ESeq(set_acc, incr)
-  let while_loop = EWhile(EBinOp("<", EIdent("__as_i", -1), ECall(EIdent("Array::length", -1), Array::slice([
+  let while_loop = EWhile(EBinOp("<", EIdent("__as_i", -1), ECall(builtin_ref("Array::length"), Array::slice([
     EIdent("a", -1)
   ], 0, 1), -1), -1), loop_body)
   let closed = concat2(EIdent("__as_acc", -1), EString("]", -1))
@@ -13912,32 +13941,32 @@ fn gen_map_equals_fn(k_ty: TypeExpr, v_ty: TypeExpr, known_types: Array[String])
   let n_ks = String::concat("__me_ks", uid)
   let n_i = String::concat("__me_i", uid)
   let n_ok = String::concat("__me_ok", uid)
-  let size_a = ECall(EIdent("Map::size", -1), Array::slice([EIdent("a", -1)], 0, 1), -1)
-  let size_b = ECall(EIdent("Map::size", -1), Array::slice([EIdent("b", -1)], 0, 1), -1)
-  let val_a = ECall(EIdent("Map::get", -1), Array::slice([
+  let size_a = ECall(builtin_ref("Map::size"), Array::slice([EIdent("a", -1)], 0, 1), -1)
+  let size_b = ECall(builtin_ref("Map::size"), Array::slice([EIdent("b", -1)], 0, 1), -1)
+  let val_a = ECall(builtin_ref("Map::get"), Array::slice([
     EIdent("a", -1),
     EIdent(n_k, -1)
   ], 0, 2), -1)
-  let val_b = ECall(EIdent("Map::get", -1), Array::slice([
+  let val_b = ECall(builtin_ref("Map::get"), Array::slice([
     EIdent("b", -1),
     EIdent(n_k, -1)
   ], 0, 2), -1)
   let val_eq = eq_for_typed(v_ty, val_a, val_b, known_types)
   let val_bad = EIf(ECall(EIdent("not", -1), Array::slice([val_eq], 0, 1), -1), EAssign(n_ok, EBool(false), EUnit), EUnit)
-  let has_b = ECall(EIdent("Map::has_key", -1), Array::slice([
+  let has_b = ECall(builtin_ref("Map::has_key"), Array::slice([
     EIdent("b", -1),
     EIdent(n_k, -1)
   ], 0, 2), -1)
   let check_one = EIf(ECall(EIdent("not", -1), Array::slice([has_b], 0, 1), -1), EAssign(n_ok, EBool(false), EUnit), val_bad)
   let incr = EAssign(n_i, EBinOp("+", EIdent(n_i, -1), EInt(1), -1), EUnit)
-  let loop_body = ELet(n_k, ECall(EIdent("Array::get", -1), Array::slice([
+  let loop_body = ELet(n_k, ECall(builtin_ref("Array::get"), Array::slice([
     EIdent(n_ks, -1),
     EIdent(n_i, -1)
   ], 0, 2), -1), ESeq(check_one, incr), -1)
-  let while_loop = EWhile(EBinOp("<", EIdent(n_i, -1), ECall(EIdent("Array::length", -1), Array::slice([
+  let while_loop = EWhile(EBinOp("<", EIdent(n_i, -1), ECall(builtin_ref("Array::length"), Array::slice([
     EIdent(n_ks, -1)
   ], 0, 1), -1), -1), loop_body)
-  let body_eq = ELet(n_ks, ECall(EIdent("Map::keys", -1), Array::slice([
+  let body_eq = ELet(n_ks, ECall(builtin_ref("Map::keys"), Array::slice([
     EIdent("a", -1)
   ], 0, 1), -1), ELetMut(n_i, EInt(0), ELetMut(n_ok, EBool(true), ESeq(while_loop, EIdent(n_ok, -1)), -1), -1), -1)
   let body = EIf(EBinOp("!=", size_a, size_b, -1), EBool(false), body_eq)
@@ -13973,23 +14002,23 @@ fn bytes_eq_needed_record() -> Unit {
 /// this body records nothing, so one pass closes the worklist.
 fn emit_recorded_bytes_equals(stmts: Array[Stmt]) -> Unit {
   if Array::length(dtd_bytes_eq_needed) > 0 && !top_level_fn_exists(stmts, bytes_equals_name()) {
-    let len_a = ECall(EIdent("Bytes::length", -1), Array::slice([
+    let len_a = ECall(builtin_ref("Bytes::length"), Array::slice([
       EIdent("a", -1)
     ], 0, 1), -1)
-    let len_b = ECall(EIdent("Bytes::length", -1), Array::slice([
+    let len_b = ECall(builtin_ref("Bytes::length"), Array::slice([
       EIdent("b", -1)
     ], 0, 1), -1)
-    let byte_a = ECall(EIdent("Bytes::get", -1), Array::slice([
+    let byte_a = ECall(builtin_ref("Bytes::get"), Array::slice([
       EIdent("a", -1),
       EIdent("__be_i", -1)
     ], 0, 2), -1)
-    let byte_b = ECall(EIdent("Bytes::get", -1), Array::slice([
+    let byte_b = ECall(builtin_ref("Bytes::get"), Array::slice([
       EIdent("b", -1),
       EIdent("__be_i", -1)
     ], 0, 2), -1)
     let set_false = EIf(EBinOp("!=", byte_a, byte_b, -1), EAssign("__be_ok", EBool(false), EUnit), EUnit)
     let incr = EAssign("__be_i", EBinOp("+", EIdent("__be_i", -1), EInt(1), -1), EUnit)
-    let while_loop = EWhile(EBinOp("<", EIdent("__be_i", -1), ECall(EIdent("Bytes::length", -1), Array::slice([
+    let while_loop = EWhile(EBinOp("<", EIdent("__be_i", -1), ECall(builtin_ref("Bytes::length"), Array::slice([
       EIdent("a", -1)
     ], 0, 1), -1), -1), ESeq(set_false, incr))
     let body_eq = ELetMut("__be_i", EInt(0), ELetMut("__be_ok", EBool(true), ESeq(while_loop, EIdent("__be_ok", -1)), -1), -1)
@@ -16229,13 +16258,17 @@ fn eq_for_typed_declared_app(fty: TypeExpr, n: String, args: Array[TypeExpr], lh
 /// Array[T])` — instead of naming a `T` nothing binds; see the
 /// `dtd_type_param_names` block above (#2136).
 fn gen_arr_equals_fn(elem_ty: TypeExpr, known_types: Array[String]) -> Stmt {
-  let len_a = ECall(EIdent("Array::length", -1), Array::slice([EIdent("a", -1)], 0, 1), -1)
-  let len_b = ECall(EIdent("Array::length", -1), Array::slice([EIdent("b", -1)], 0, 1), -1)
-  let elem_a = ECall(EIdent("Array::get", -1), Array::slice([
+  let len_a = ECall(builtin_ref("Array::length"), Array::slice([
+    EIdent("a", -1)
+  ], 0, 1), -1)
+  let len_b = ECall(builtin_ref("Array::length"), Array::slice([
+    EIdent("b", -1)
+  ], 0, 1), -1)
+  let elem_a = ECall(builtin_ref("Array::get"), Array::slice([
     EIdent("a", -1),
     EIdent("__ae_i", -1)
   ], 0, 2), -1)
-  let elem_b = ECall(EIdent("Array::get", -1), Array::slice([
+  let elem_b = ECall(builtin_ref("Array::get"), Array::slice([
     EIdent("b", -1),
     EIdent("__ae_i", -1)
   ], 0, 2), -1)
@@ -16244,7 +16277,7 @@ fn gen_arr_equals_fn(elem_ty: TypeExpr, known_types: Array[String]) -> Stmt {
   let set_false = EIf(not_eq, EAssign("__ae_ok", EBool(false), EUnit), EUnit)
   let incr = EAssign("__ae_i", EBinOp("+", EIdent("__ae_i", -1), EInt(1), -1), EUnit)
   let loop_body = ESeq(set_false, incr)
-  let while_loop = EWhile(EBinOp("<", EIdent("__ae_i", -1), ECall(EIdent("Array::length", -1), Array::slice([
+  let while_loop = EWhile(EBinOp("<", EIdent("__ae_i", -1), ECall(builtin_ref("Array::length"), Array::slice([
     EIdent("a", -1)
   ], 0, 1), -1), -1), loop_body)
   let body_eq = ELetMut("__ae_i", EInt(0), ELetMut("__ae_ok", EBool(true), ESeq(while_loop, EIdent("__ae_ok", -1)), -1), -1)
@@ -21885,12 +21918,12 @@ fn inspect_lowering_expr(value: Expr, content: Expr) -> Expr {
   let actual = EIdent(actual_name, 0 - 1)
   let expected = EIdent(expected_name, 0 - 1)
   // Nested String::concat rather than one variadic call: `concat` is binary.
-  let tail = ECall(EIdent("String::concat", 0 - 1), [
+  let tail = ECall(builtin_ref("String::concat"), [
     EString("\n  expected: ", -1),
     expected
   ], 0 - 1)
-  let body_msg = ECall(EIdent("String::concat", 0 - 1), [actual, tail], 0 - 1)
-  let msg = ECall(EIdent("String::concat", 0 - 1), [
+  let body_msg = ECall(builtin_ref("String::concat"), [actual, tail], 0 - 1)
+  let msg = ECall(builtin_ref("String::concat"), [
     EString("inspect mismatch:\n  actual:   ", -1),
     body_msg
   ], 0 - 1)
@@ -23508,6 +23541,12 @@ fn eq_ty_mentions_scope_formal(t: TypeExpr) -> Bool {
 }
 
 export fn desugar_trait_dicts_with_typed_eq(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Array[String]) -> Unit with Exception {
+  // #3132: this pass synthesizes `Array::get` / `Array::length` / ... calls
+  // (interpolation, structural `==`, iteration), which must reach the
+  // builtin. Every entry pipeline reaches here before its first such
+  // synthesis; a program's own definition of one of those names is moved
+  // aside first. A no-op when the linked prelude already ran it.
+  rename_builtin_shadow_defs(stmts)
   Array::set(dtd_own_limit, 0, 0 - 1)
   Array::set(dtd_ctx_len, 0, 0)
   Array::set(dlh_module_tag, 0, "")
@@ -23527,6 +23566,12 @@ export fn desugar_trait_dicts_with_typed_eq(stmts: Array[Stmt], typed_eq_offsets
   // that boundary (#2642 review, Codex P2).
   eq_deferred_reset()
   dtd_run(stmts, typed_eq_offsets, typed_eq_keys)
+  // #3144 round 4: a witness field is named by COMPUTING `<Type>::<method>`,
+  // which for an impl method at a listed name (`impl Measured for String {
+  // length(..) }`) is the source spelling of a definition renamed above.
+  // This run points those references at the definition; the builtin calls
+  // this pass wrote carry `builtin_ref` and stay on the builtin.
+  rename_builtin_shadow_defs(stmts)
   // The lane is over: clear the merge rename table so a later compilation in
   // this process cannot see stale entries (#2205, moved here in #2647 round 6).
   namespace_rename_originals_reset()
@@ -23576,6 +23621,10 @@ export fn desugar_trait_dicts_module_with_facts(own: Array[Stmt], ctx: Array[Stm
   Array::set(dtd_own_growth, 0, 0)
   Array::set(dlh_module_tag, 0, module_tag)
   dtd_run(stmts, typed_eq_offsets, typed_eq_keys)
+  // #3144 round 4: as in the whole-program entry. The module's own
+  // definitions and its context's are both in `stmts`, so a witness naming
+  // either is pointed at the renamed definition.
+  rename_builtin_shadow_defs(stmts)
   let own_n = Array::length(own)
   let own_end = own_n + Array::get(dtd_own_growth, 0)
   let mut wi = 0

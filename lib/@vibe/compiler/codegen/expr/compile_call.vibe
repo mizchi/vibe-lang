@@ -42,6 +42,7 @@ import @vibe/compiler/codegen/common_analysis {
   emit_i64_extend_i32_u,
   is_mut_captured_in,
   md_borrow_mask_of,
+  md_builtin_borrow_mask,
   packed_dir_entries_to_array_expr
 }
 
@@ -85,6 +86,7 @@ import @vibe/compiler/codegen/common_base {
   emit_unbox_float,
   expr_tag,
   find_local_slot,
+  func_table_builtin_pos_of,
   func_table_index_of,
   func_table_user_index_of,
   get_arm_body,
@@ -1620,6 +1622,16 @@ fn compile_map_iter_get_checked(buf: Bytes, map_expr: Expr, index_expr: Expr, lo
 /// already routes a shadowed name elsewhere).
 fn cc_borrow_mask(ctx: CompileCtx, fname: String) -> Int {
   md_borrow_mask_of(fname, ctx.borrow_param_user, ctx.borrow_param_mask)
+}
+
+/// #3128: does the program define its own top-level function under the name
+/// of a builtin that borrows its arguments? The borrow table carries a row
+/// for exactly those definitions (compute_borrow_param_user_fns), so the
+/// question is one binary search, and it agrees with the planner by
+/// construction: a call the planner planned against the program's function
+/// is compiled as a call to it.
+fn cc_source_defines_borrow_builtin(ctx: CompileCtx, fname: String, fn_idx_in_list: Int) -> Bool {
+  fn_idx_in_list >= 0 && md_builtin_borrow_mask(fname) != 0 && bsearch_leftmost(ctx.borrow_param_user, fname) >= 0
 }
 
 fn cc_bmask_has(mask: Int, i: Int) -> Bool {
@@ -3193,7 +3205,13 @@ fn compile_call_core(buf: Bytes, callee: Expr, raw_args: Array[Expr], local_name
     // in particular the two exits COPY (mutlist_exit_copy) instead of
     // aliasing, so these freeze rows are only a fallback for a call that got
     // past the checker with the wrong arity.
-    let fname: String = if !String::starts_with(fname0, "Mut") {
+    //
+    // #3129: the alias names the BUILTIN, not whatever the program calls by
+    // that spelling. A program's own `Array::length` used to capture
+    // `MutList::length(m)` (answered 77 for a three-element list). The
+    // target is looked up among the builtins only (`mut_alias_pos` below),
+    // and a program that defines the `Mut*` name itself keeps its own call.
+    let fname: String = if !String::starts_with(fname0, "Mut") || func_table_user_index_of(ctx.func_table, fname0, ctx.num_user_funcs) >= 0 {
       fname0
     } else if fname0 == "MutList::push" {
       "ArrayBuilder::push"
@@ -3216,7 +3234,26 @@ fn compile_call_core(buf: Bytes, callee: Expr, raw_args: Array[Expr], local_name
     } else {
       fname0
     }
-    let fn_idx_in_list = func_table_index_of(ctx.func_table, fname)
+    // Only a target the program also defines needs the builtin-only lookup;
+    // otherwise the table holds one entry under that name and the ordinary
+    // lookup already answers the builtin. The ownership lookups of the
+    // resolved call then read the name the planner saw (`fname0`), not the
+    // program's function of the target's spelling.
+    let mut_alias_pos = if fname != fname0 && func_table_user_index_of(ctx.func_table, fname, ctx.num_user_funcs) >= 0 {
+      func_table_builtin_pos_of(ctx.func_table, fname, ctx.num_user_funcs)
+    } else {
+      -1
+    }
+    let fn_idx_in_list = if mut_alias_pos >= 0 {
+      mut_alias_pos
+    } else {
+      func_table_index_of(ctx.func_table, fname)
+    }
+    let resolved_name = if mut_alias_pos >= 0 {
+      fname0
+    } else {
+      fname
+    }
     let mut local_idx_hint = -1
     let mut li = Array::length(local_names) - 1
     while li >= 0 {
@@ -3419,11 +3456,17 @@ fn compile_call_core(buf: Bytes, callee: Expr, raw_args: Array[Expr], local_name
         nl_c
       }
     }
-    else if !cc_ladder_tests_name(fname) {
+    else if !cc_ladder_tests_name(fname) || cc_source_defines_borrow_builtin(ctx, fname, fn_idx_in_list) {
       // #2386: no arm below tests this callee (cc_ladder_names holds every
       // name they compare against), so only the resolved-call fallback can
       // apply; take it without the ~150 compares.
-      cc_compile_resolved_call(buf, fname, args, local_names, next_local, ctx, ld, ce, fn_idx_in_list, local_idx_hint)
+      // #3128: nor may an arm fire for a borrowing builtin the program
+      // defines itself. The planner already reads that definition's own
+      // ownership (compute_borrow_param_user_fns keeps its row), so an
+      // inlined `Map::size` / `Map::get` / `StringBuilder::push` ... would
+      // both ignore the program's function and leak the reference the call
+      // site now hands over.
+      cc_compile_resolved_call(buf, resolved_name, args, local_names, next_local, ctx, ld, ce, fn_idx_in_list, local_idx_hint)
     }
     else if fname == "eq" && Array::length(args) == 2 && local_idx_hint < 0 && (cc_expr_is_floatish(Array::get(args, 0), local_names, ctx) || cc_expr_is_floatish(Array::get(args, 1), local_names, ctx)) && func_table_user_index_of(ctx.func_table, fname, ctx.num_user_funcs) < 0 {
       // #745: under RC floats are BOXED — the scalar i64.eq below would
@@ -7523,7 +7566,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, raw_args: Array[Expr], local_name
       ce(buf, sized_bytes_new_expr(Array::get(args, 0)), local_names, next_local, ctx, ld)
     }
     else {
-      cc_compile_resolved_call(buf, fname, args, local_names, next_local, ctx, ld, ce, fn_idx_in_list, local_idx_hint)
+      cc_compile_resolved_call(buf, resolved_name, args, local_names, next_local, ctx, ld, ce, fn_idx_in_list, local_idx_hint)
     }
   } else {
     let num_args = Array::length(args)
