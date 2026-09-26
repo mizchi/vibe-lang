@@ -156,6 +156,13 @@ for line in m.group(0).splitlines():
             for name in re.findall(r"\b([A-Z][A-Za-z0-9_]*::[a-z_][A-Za-z0-9_]*)\b", tok):
                 if not re.search(r"^fn " + re.escape(name) + r"\b", declared, re.M):
                     pkg_missing.append(pkg + " " + name)
+            # A bare type, written alone or applied (`TaskGroup[rg, e]`), is
+            # frozen too: it must be a type the contract declares.
+            head = re.fullmatch(r"([A-Z][A-Za-z0-9_]*)(\[[^\]]*\])?", tok.strip())
+            if head:
+                name = head.group(1)
+                if not re.search(r"^(opaque )?type " + re.escape(name) + r"\b", declared, re.M):
+                    pkg_missing.append(pkg + " " + name)
         continue
     head = re.match(r"- \*\*([A-Za-z][A-Za-z0-9_]*)\*\*", line)
     if line.startswith("- "):

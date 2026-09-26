@@ -437,9 +437,10 @@ is frozen, and importing it needs no opt-in:
   `TaskHandle::join`, `TaskHandle::cancel`;
 - `Channel::bounded`, `Sender::send` / `clone` / `release`, `Receiver::recv`;
 - `Parallel::map`, whose results are index-ordered;
-- the checks that come with them: a spawned closure captures only `Send`
-  values or endpoints of its own group, and a group's handles and endpoints
-  cannot escape `TaskGroup::run` through its return value.
+- the checks that come with them: a spawned closure captures only values
+  whose type is Send (the compiler's structural judgement, §2) or endpoints of
+  its own group, and a group's handles and endpoints cannot escape
+  `TaskGroup::run` through its return value.
 
 What is frozen is the meaning, not the backend: the scheduler is cooperative
 and deterministic today (a task runs until it waits), and moving it onto

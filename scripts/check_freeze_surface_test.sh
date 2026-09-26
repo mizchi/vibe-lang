@@ -84,6 +84,18 @@ doc '- **String**: `length`
 
 - `TaskGroup::run`, `TaskGroup::spawn_suspend`'
 expect 1 "a package subsection name its contract does not declare" "@vibe/concurrent:TaskGroup::spawn_suspend"
+doc '- **String**: `length`
+
+### 3.1 Concurrency (`@vibe/concurrent`)
+
+- the types `TaskGroup[rg, e]`, `TaskError`'
+expect 0 "a package subsection type its contract declares"
+doc '- **String**: `length`
+
+### 3.1 Concurrency (`@vibe/concurrent`)
+
+- the types `TaskGroup[rg, e]`, `TaskStep[T]`'
+expect 1 "a package subsection type its contract does not declare" "@vibe/concurrent:TaskStep"
 
 # 2b. #2275's case, re-founded by #2433. A real receiver with a NO-SUCH member
 #     must still fail: that is the population `unknown name` covers, and it is
