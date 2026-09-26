@@ -122,6 +122,100 @@ fn body_fresh(ns: Array[Int]) -> Int {
   Array::length(ns)
 }
 
+// #3162: a `handle` at the head of a sequence -- its handled body and each
+// handler arm are the handle's value, dropped unreleased -- and a `while` body,
+// dropped after every iteration.
+
+fn may_throw(n: Int) -> Int with Exception {
+  if n < 0 {
+    throw("negative")
+  } else {
+    n
+  }
+}
+
+fn handle_body(n: Int) -> String {
+  let d = A(fresh("hb", n))
+  handle {
+    may_throw(n)
+    d
+  } with {
+    Exception::Throw(_) => A(fresh("no", 0))
+  }
+  let churn = fresh("churn", 11)
+  String::concat(name_of(d), churn)
+}
+
+fn handle_arm(n: Int) -> String {
+  let d = A(fresh("ha", n))
+  handle {
+    may_throw(0 - 1)
+    A(fresh("no", 0))
+  } with {
+    Exception::Throw(_) => d
+  }
+  let churn = fresh("churn", 12)
+  String::concat(name_of(d), churn)
+}
+
+fn handle_branches(n: Int, c: Bool) -> String {
+  let d = A(fresh("hd", n))
+  let e = A(fresh("he", n))
+  handle {
+    may_throw(n - 4)
+    if c {
+      d
+    } else {
+      e
+    }
+  } with {
+    Exception::Throw(_) => match n {
+      0 => d,
+      _ => e
+    }
+  }
+  let churn = fresh("churn", 13)
+  String::concat(String::concat(name_of(d), name_of(e)), churn)
+}
+
+fn handle_local(n: Int) -> String {
+  handle {
+    let local = A(fresh("lo", n))
+    local
+  } with {
+    Exception::Throw(_) => A(fresh("no", 0))
+  }
+  let churn = fresh("churn", 14)
+  String::concat(fresh("hl", n), churn)
+}
+
+fn while_body(n: Int) -> String {
+  let d = A(fresh("wb", n))
+  let mut k = 0
+  while k < 3 {
+    k = k + 1
+    d
+  }
+  let churn = fresh("churn", 15)
+  String::concat(name_of(d), churn)
+}
+
+fn while_handle(n: Int) -> String {
+  let d = A(fresh("wh", n))
+  let mut k = 0
+  while k < 3 {
+    k = k + 1
+    handle {
+      may_throw(k)
+      d
+    } with {
+      Exception::Throw(_) => d
+    }
+  }
+  let churn = fresh("churn", 16)
+  String::concat(name_of(d), churn)
+}
+
 fn seq_head(n: Int) -> String {
   let d = A(fresh("sq", n))
   d
@@ -167,4 +261,29 @@ test "a fresh discarded for body value does not disturb the loop" {
 
 test "a bare name at the head of a sequence stays alive" {
   inspect(seq_head(4), content = "sq4churn10")
+}
+
+test "a heap binding as a discarded handled body stays alive" {
+  inspect(handle_body(1), content = "hb1churn11")
+}
+
+test "a heap binding as a discarded handler arm stays alive" {
+  inspect(handle_arm(2), content = "ha2churn12")
+}
+
+test "branch and arm tails of a discarded handle stay alive" {
+  // 3 throws (the arm's match), 5 does not (the body's `if`).
+  inspect(String::concat(handle_branches(3, true), handle_branches(5, false)), content = "hd3he3churn13hd5he5churn13")
+}
+
+test "a binding local to a discarded handled body does not disturb the caller" {
+  inspect(handle_local(5), content = "hl5churn14")
+}
+
+test "a heap binding as a while body stays alive" {
+  inspect(while_body(6), content = "wb6churn15")
+}
+
+test "a discarded handle inside a while body stays alive" {
+  inspect(while_handle(7), content = "wh7churn16")
 }

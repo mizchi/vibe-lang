@@ -72,23 +72,21 @@ DEFAULT_RUNNER="$PROJECT_ROOT/runtime/viberun/target/release/viberun"
 RUNNER="${VIBE_CONCURRENT_AWAITS_GATE_RUNNER:-$DEFAULT_RUNNER}"
 # Same rebuild-when-stale convention as the spawned-future gate: an explicit
 # override is trusted as-is, the in-tree default is rebuilt when missing or
-# older than any build input (Cargo.lock included -- wasmtime/tokio ARE the
+# stale against any build input (by content,
+# scripts/ensure_viberun.sh) (Cargo.lock included -- wasmtime/tokio ARE the
 # async behavior under test, so a stale binary is a false pass, not a crash).
 if [ "$RUNNER" = "$DEFAULT_RUNNER" ]; then
   needs_build=0
   if [ ! -x "$RUNNER" ]; then
     needs_build=1
-  elif find "$PROJECT_ROOT/runtime/viberun/src" \
-        "$PROJECT_ROOT/runtime/viberun/Cargo.toml" \
-        "$PROJECT_ROOT/runtime/viberun/Cargo.lock" \
-        -newer "$RUNNER" -print -quit 2>/dev/null | grep -q .; then
+  elif ! bash "$PROJECT_ROOT/scripts/ensure_viberun.sh" --check >/dev/null 2>&1; then
     needs_build=1
-    echo "[concurrent-awaits-gate] viberun is older than its build inputs; rebuilding..."
+    echo "[concurrent-awaits-gate] viberun does not match its sources; rebuilding..."
   fi
   if [ "$needs_build" = "1" ]; then
     command -v cargo >/dev/null 2>&1 || require_or_skip "viberun needs a (re)build and cargo is not installed"
     echo "[concurrent-awaits-gate] building viberun..."
-    if ! (cd "$PROJECT_ROOT/runtime/viberun" && cargo build --release >/dev/null 2>&1); then
+    if ! bash "$PROJECT_ROOT/scripts/ensure_viberun.sh" >/dev/null 2>&1; then
       require_or_skip "failed to build runtime/viberun"
     fi
   fi

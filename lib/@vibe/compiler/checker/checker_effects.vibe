@@ -784,8 +784,18 @@ fn append_eff_errs(dst: Array[EffectError], src: Array[EffectError]) -> Unit {
 // exactly as the desugar leaves an unclassifiable loop as a sync EForIn -- so
 // this can MISS a requirement, but never invent one.
 
-fn afe_no_locals() -> Array[(String, String)] {
-  array_empty()
+/// The walk's locals: `name -> head type name`, innermost binding first.
+/// A cons list, so binding is O(1) and shares the outer scope; the array this
+/// replaced was copied on every bind (five copies per `let`). `AlMask(n, ..)`
+/// is a binding of `n` with no known head: it hides an outer `n`.
+enum AfeLocals {
+  AlNil;
+  AlBind(String, String, AfeLocals);
+  AlMask(String, AfeLocals)
+}
+
+fn afe_no_locals() -> AfeLocals {
+  AlNil
 }
 
 // Selected package imports are the source-level provenance that survives even
@@ -881,49 +891,39 @@ fn afe_texpr_head_name(t: TypeExpr) -> Option[String] {
   }
 }
 
-fn afe_lookup_local(locals: Array[(String, String)], name: String) -> Option[String] {
-  let mut i = 0
+fn afe_lookup_local(locals: AfeLocals, name: String) -> Option[String] {
+  let mut cur = locals
   let mut found = None
-  while i < Array::length(locals) {
-    let entry = Array::get(locals, i)
-    match found {
-      None => if entry.0 == name {
-        found = Some(entry.1)
-      } else {
-        ()
+  let mut go = true
+  while go {
+    match cur {
+      AlNil => {
+        go = false
       },
-      Some(_) => ()
+      AlBind(n, h, rest) => if n == name {
+        found = Some(h)
+        go = false
+      } else {
+        cur = rest
+      },
+      AlMask(n, rest) => if n == name {
+        go = false
+      } else {
+        cur = rest
+      }
     }
-    i = i + 1
   }
   found
 }
 
-/// Bind `name` to a head type for the scope below, REMOVING any outer entry of
-/// the same name first. Dropping the shadow would let an outer async-iterator
-/// binding be resolved through an inner, unrelated one of the same name — a
-/// false positive (a rejected valid program), which this pass must never
-/// produce. `None` therefore still shadows; it just adds nothing.
-fn afe_bind_local(locals: Array[(String, String)], name: String, head: Option[String]) -> Array[(String, String)] {
-  let out = array_empty()
+fn afe_bind_local(locals: AfeLocals, name: String, head: Option[String]) -> AfeLocals {
   match head {
-    Some(h) => Array::push(out, (name, h)),
-    None => ()
+    Some(h) => AlBind(name, h, locals),
+    None => AlMask(name, locals)
   }
-  let mut i = 0
-  while i < Array::length(locals) {
-    let entry = Array::get(locals, i)
-    if entry.0 != name {
-      Array::push(out, entry)
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  out
 }
 
-fn afe_bind_params(locals: Array[(String, String)], params: Array[(String, Option[TypeExpr])], env: TypeEnv) -> Array[(String, String)] {
+fn afe_bind_params(locals: AfeLocals, params: Array[(String, Option[TypeExpr])], env: TypeEnv) -> AfeLocals {
   let mut cur = locals
   let mut i = 0
   while i < Array::length(params) {
@@ -1243,7 +1243,7 @@ fn afe_prepend_expr(head: Expr, rest: Array[Expr]) -> Array[Expr] {
 /// constructor variable on the receiver and result, so follow that receiver
 /// back to its source expression instead of treating the abstract `F[B]` as
 /// an unknown head.
-fn afe_call_result_head(callee_type: Type, args: Array[Expr], env: TypeEnv, locals: Array[(String, String)]) -> Option[String] {
+fn afe_call_result_head(callee_type: Type, args: Array[Expr], env: TypeEnv, locals: AfeLocals) -> Option[String] {
   match callee_type {
     CtForAll(_, _, body) => afe_call_result_head(body, args, env, locals),
     CtFn(params, ret, _) => {
@@ -1323,7 +1323,7 @@ fn afe_heads_agree(left: Option[String], right: Option[String]) -> Option[String
   }
 }
 
-fn afe_bind_shapes(locals: Array[(String, String)], name: String, val: Expr, env: TypeEnv) -> Array[(String, String)] {
+fn afe_bind_shapes(locals: AfeLocals, name: String, val: Expr, env: TypeEnv) -> AfeLocals {
   let without = afe_bind_local(afe_bind_local(locals, afe_tuple_shape_key(name), None), afe_array_elem_key(name), None)
   match val {
     ETuple(items) => if Array::length(items) > 0 {
@@ -1363,17 +1363,17 @@ fn afe_fn_return_head(val: Expr, env: TypeEnv) -> Option[String] {
   }
 }
 
-fn afe_bind_local_fn_return(locals: Array[(String, String)], name: String, val: Expr, env: TypeEnv) -> Array[(String, String)] {
+fn afe_bind_local_fn_return(locals: AfeLocals, name: String, val: Expr, env: TypeEnv) -> AfeLocals {
   afe_bind_local(locals, afe_local_fn_return_key(name), afe_fn_return_head(val, env))
 }
 
-fn afe_bind_value(locals: Array[(String, String)], name: String, val: Expr, env: TypeEnv) -> Array[(String, String)] {
+fn afe_bind_value(locals: AfeLocals, name: String, val: Expr, env: TypeEnv) -> AfeLocals {
   let with_head = afe_bind_local(locals, name, afe_expr_head_name(val, env, locals))
   let with_fn = afe_bind_local_fn_return(with_head, name, val, env)
   afe_bind_shapes(with_fn, name, val, env)
 }
 
-fn afe_match_arm_locals(scrut: Expr, pat: Pat, env: TypeEnv, locals: Array[(String, String)]) -> Array[(String, String)] {
+fn afe_match_arm_locals(scrut: Expr, pat: Pat, env: TypeEnv, locals: AfeLocals) -> AfeLocals {
   match pat {
     PBind(name) => afe_bind_local(locals, name, afe_expr_head_name(scrut, env, locals)),
     PCtor(cn, sub) => match scrut {
@@ -1394,7 +1394,7 @@ fn afe_match_arm_locals(scrut: Expr, pat: Pat, env: TypeEnv, locals: Array[(Stri
   }
 }
 
-fn afe_tuple_elem_head(obj: Expr, field: String, env: TypeEnv, locals: Array[(String, String)]) -> Option[String] {
+fn afe_tuple_elem_head(obj: Expr, field: String, env: TypeEnv, locals: AfeLocals) -> Option[String] {
   match afe_digit_index(field) {
     None => None,
     Some(idx) => match obj {
@@ -1424,7 +1424,7 @@ fn afe_tuple_elem_head(obj: Expr, field: String, env: TypeEnv, locals: Array[(St
   }
 }
 
-fn afe_array_elem_head(args: Array[Expr], env: TypeEnv, locals: Array[(String, String)]) -> Option[String] {
+fn afe_array_elem_head(args: Array[Expr], env: TypeEnv, locals: AfeLocals) -> Option[String] {
   if Array::length(args) == 2 {
     match Array::get(args, 0) {
       EIdent(arrname, _) => afe_lookup_local(locals, afe_array_elem_key(arrname)),
@@ -1440,7 +1440,7 @@ fn afe_array_elem_head(args: Array[Expr], env: TypeEnv, locals: Array[(String, S
   }
 }
 
-fn afe_ident_call_head(f: String, args: Array[Expr], env: TypeEnv, locals: Array[(String, String)]) -> Option[String] {
+fn afe_ident_call_head(f: String, args: Array[Expr], env: TypeEnv, locals: AfeLocals) -> Option[String] {
   if f == "Array::get" || f == "__index" {
     match afe_array_elem_head(args, env, locals) {
       Some(head) => Some(head),
@@ -1451,14 +1451,14 @@ fn afe_ident_call_head(f: String, args: Array[Expr], env: TypeEnv, locals: Array
   }
 }
 
-fn afe_ident_call_head_generic(f: String, args: Array[Expr], env: TypeEnv, locals: Array[(String, String)]) -> Option[String] {
+fn afe_ident_call_head_generic(f: String, args: Array[Expr], env: TypeEnv, locals: AfeLocals) -> Option[String] {
   match afe_lookup_local(locals, afe_local_fn_return_key(f)) {
     Some(head) => Some(head),
     None => afe_ident_call_head_env(f, args, env, locals)
   }
 }
 
-fn afe_ident_call_head_env(f: String, args: Array[Expr], env: TypeEnv, locals: Array[(String, String)]) -> Option[String] {
+fn afe_ident_call_head_env(f: String, args: Array[Expr], env: TypeEnv, locals: AfeLocals) -> Option[String] {
   match env_lookup(env, f) {
     Some(callee_type) => match afe_call_result_head(callee_type, args, env, locals) {
       Some(head) => Some(afe_finish_call_head(head, env, f)),
@@ -1496,7 +1496,7 @@ fn afe_ident_call_head_env(f: String, args: Array[Expr], env: TypeEnv, locals: A
   }
 }
 
-fn afe_dot_call_head(obj: Expr, method: String, args: Array[Expr], env: TypeEnv, locals: Array[(String, String)]) -> Option[String] {
+fn afe_dot_call_head(obj: Expr, method: String, args: Array[Expr], env: TypeEnv, locals: AfeLocals) -> Option[String] {
   match afe_expr_head_name(obj, env, locals) {
     Some(receiver) => {
       let display = afe_display_iter_head(receiver)
@@ -1515,7 +1515,7 @@ fn afe_dot_call_head(obj: Expr, method: String, args: Array[Expr], env: TypeEnv,
   }
 }
 
-fn afe_iife_head(params: Array[(String, Option[TypeExpr])], body: Expr, args: Array[Expr], env: TypeEnv, locals: Array[(String, String)]) -> Option[String] {
+fn afe_iife_head(params: Array[(String, Option[TypeExpr])], body: Expr, args: Array[Expr], env: TypeEnv, locals: AfeLocals) -> Option[String] {
   let mut body_locals = afe_bind_params(locals, params, env)
   let mut i = 0
   while i < Array::length(params) {
@@ -1531,7 +1531,7 @@ fn afe_iife_head(params: Array[(String, Option[TypeExpr])], body: Expr, args: Ar
   afe_expr_head_name(body, env, body_locals)
 }
 
-fn afe_handler_arm_head(arm_body: Expr, expected: String, env: TypeEnv, locals: Array[(String, String)]) -> Option[String] {
+fn afe_handler_arm_head(arm_body: Expr, expected: String, env: TypeEnv, locals: AfeLocals) -> Option[String] {
   match arm_body {
     ECall(EIdent("resume", _), resume_args, _) => if Array::length(resume_args) == 1 {
       Some(expected)
@@ -1742,7 +1742,7 @@ fn afe_callable_reaches_op(name: String, op: String) -> Bool {
   }
 }
 
-fn afe_callable_body_locals(params: Array[(String, Option[TypeExpr])], args: Array[Expr], env: TypeEnv, locals: Array[(String, String)]) -> Array[(String, String)] {
+fn afe_callable_body_locals(params: Array[(String, Option[TypeExpr])], args: Array[Expr], env: TypeEnv, locals: AfeLocals) -> AfeLocals {
   let mut body_locals = afe_bind_params(locals, params, env)
   let mut i = 0
   while i < Array::length(params) {
@@ -1758,7 +1758,7 @@ fn afe_callable_body_locals(params: Array[(String, Option[TypeExpr])], args: Arr
   body_locals
 }
 
-fn afe_collect_perform_payloads(expr: Expr, op: String, payload_index: Int, env: TypeEnv, locals: Array[(String, String)], out: Array[Option[String]]) -> Unit {
+fn afe_collect_perform_payloads(expr: Expr, op: String, payload_index: Int, env: TypeEnv, locals: AfeLocals, out: Array[Option[String]]) -> Unit {
   match expr {
     EHandle(body, arms) => {
       if !afe_handler_consumes_op(arms, op) {
@@ -1846,7 +1846,7 @@ fn afe_collect_perform_payloads(expr: Expr, op: String, payload_index: Int, env:
   }
 }
 
-fn afe_perform_payload_head(body: Expr, op: String, payload_index: Int, env: TypeEnv, locals: Array[(String, String)]) -> Option[String] {
+fn afe_perform_payload_head(body: Expr, op: String, payload_index: Int, env: TypeEnv, locals: AfeLocals) -> Option[String] {
   let payloads = array_empty()
   afe_collect_perform_payloads(body, op, payload_index, env, locals, payloads)
   if Array::length(payloads) == 0 {
@@ -1876,7 +1876,7 @@ fn afe_perform_payload_head(body: Expr, op: String, payload_index: Int, env: Typ
   }
 }
 
-fn afe_handler_arm_locals(body: Expr, pat: Pat, env: TypeEnv, locals: Array[(String, String)]) -> Array[(String, String)] {
+fn afe_handler_arm_locals(body: Expr, pat: Pat, env: TypeEnv, locals: AfeLocals) -> AfeLocals {
   match pat {
     PCtor(cn, sub) => {
       let mut arm_locals = locals
@@ -1896,7 +1896,7 @@ fn afe_handler_arm_locals(body: Expr, pat: Pat, env: TypeEnv, locals: Array[(Str
   }
 }
 
-fn afe_handle_head(body: Expr, arms: Array[(Pat, Expr)], env: TypeEnv, locals: Array[(String, String)]) -> Option[String] {
+fn afe_handle_head(body: Expr, arms: Array[(Pat, Expr)], env: TypeEnv, locals: AfeLocals) -> Option[String] {
   match afe_expr_head_name(body, env, locals) {
     None => None,
     Some(expected) => {
@@ -1929,7 +1929,7 @@ fn afe_handle_head(body: Expr, arms: Array[(Pat, Expr)], env: TypeEnv, locals: A
   }
 }
 
-fn afe_match_head(scrut: Expr, arms: Array[(Pat, Expr)], env: TypeEnv, locals: Array[(String, String)]) -> Option[String] {
+fn afe_match_head(scrut: Expr, arms: Array[(Pat, Expr)], env: TypeEnv, locals: AfeLocals) -> Option[String] {
   if Array::length(arms) == 0 {
     None
   } else {
@@ -1967,7 +1967,7 @@ fn afe_match_head(scrut: Expr, arms: Array[(Pat, Expr)], env: TypeEnv, locals: A
   }
 }
 
-fn afe_collect_loop_head(expr: Expr, env: TypeEnv, locals: Array[(String, String)], expected: Array[String], valid: Array[Bool]) -> Unit {
+fn afe_collect_loop_head(expr: Expr, env: TypeEnv, locals: AfeLocals, expected: Array[String], valid: Array[Bool]) -> Unit {
   if !Array::get(valid, 0) {
     ()
   } else {
@@ -2038,7 +2038,7 @@ fn afe_collect_loop_head(expr: Expr, env: TypeEnv, locals: Array[(String, String
   }
 }
 
-fn afe_parameterized_loop_head(body: Expr, env: TypeEnv, locals: Array[(String, String)]) -> Option[String] {
+fn afe_parameterized_loop_head(body: Expr, env: TypeEnv, locals: AfeLocals) -> Option[String] {
   match body {
     ESeq(EWhile(_, loop_body), EIdent("__loop_result", _)) => {
       let expected = array_empty()
@@ -2054,7 +2054,7 @@ fn afe_parameterized_loop_head(body: Expr, env: TypeEnv, locals: Array[(String, 
   }
 }
 
-fn afe_loop_head(inits: Array[(String, Expr)], body: Expr, env: TypeEnv, locals: Array[(String, String)]) -> Option[String] {
+fn afe_loop_head(inits: Array[(String, Expr)], body: Expr, env: TypeEnv, locals: AfeLocals) -> Option[String] {
   let mut body_locals = locals
   let mut i = 0
   while i < Array::length(inits) {
@@ -2072,7 +2072,7 @@ fn afe_loop_head(inits: Array[(String, Expr)], body: Expr, env: TypeEnv, locals:
   }
 }
 
-fn afe_expr_head_name(e: Expr, env: TypeEnv, locals: Array[(String, String)]) -> Option[String] {
+fn afe_expr_head_name(e: Expr, env: TypeEnv, locals: AfeLocals) -> Option[String] {
   match e {
     EIdent(n, _) => match afe_lookup_local(locals, n) {
       Some(h) => Some(h),
@@ -2145,7 +2145,7 @@ fn afe_has_builtin_async_iter_provenance(env: TypeEnv) -> Bool {
 
 /// The iterand's type name when driving it with `for` awaits each step,
 /// otherwise None. Named so the diagnostic can point at `<T>::next`.
-fn afe_async_iterand(iter: Expr, env: TypeEnv, locals: Array[(String, String)]) -> Option[String] {
+fn afe_async_iterand(iter: Expr, env: TypeEnv, locals: AfeLocals) -> Option[String] {
   match afe_expr_head_name(iter, env, locals) {
     // #1341: the p3 host stream is async by construction and has no
     // AsyncIterator impl to find -- its read primitive is the scalar
@@ -2200,13 +2200,13 @@ export fn check_async_effects_expr(expr: Expr, env: TypeEnv, in_async: Bool) -> 
 /// #1358: the same walk with a `name -> head type name` table for the bindings
 /// in scope, so an async `for` can be recognised through an ordinary local
 /// (`let it = Array::iter(xs); for x in it`) and through a typed parameter.
-fn check_async_effects_expr_lo(expr: Expr, env: TypeEnv, in_async: Bool, locals: Array[(String, String)]) -> Array[EffectError] {
+fn check_async_effects_expr_lo(expr: Expr, env: TypeEnv, in_async: Bool, locals: AfeLocals) -> Array[EffectError] {
   let out = array_empty()
   check_async_effects_expr_lo_into(expr, env, in_async, locals, out)
   out
 }
 
-fn check_async_effects_expr_lo_into(expr: Expr, env: TypeEnv, in_async: Bool, locals: Array[(String, String)], out: Array[EffectError]) -> Unit {
+fn check_async_effects_expr_lo_into(expr: Expr, env: TypeEnv, in_async: Bool, locals: AfeLocals, out: Array[EffectError]) -> Unit {
   // Preserve the legacy preorder diagnostic order: inspect a call before its
   // structural children, then delegate their enumeration to expr_children.
   match expr {
@@ -5904,17 +5904,37 @@ fn check_perform_effects_expr_tx_indexed(root: Expr, root_declared: Array[String
 /// so row-mismatch diagnostics can blame the caller's declaration in the fix-it
 /// hint. The name is constant per walk (lambdas are anonymous), so it rides as
 /// a plain parameter, not on the work stack.
+fn pe_push(stack: Array[Expr], stack_ci: Array[Int], e: Expr, ci: Int) -> Unit {
+  Array::push(stack, e)
+  Array::push(stack_ci, ci)
+}
+
+fn pe_ctx(ctxs: Array[(Array[String], Bool, Array[String], Array[Array[String]], TkEnv)], declared: Array[String], in_handle: Bool, ov_names: Array[String], ov_effs: Array[Array[String]], kinds: TkEnv) -> Int {
+  Array::push(ctxs, (declared, in_handle, ov_names, ov_effs, kinds))
+  Array::length(ctxs) - 1
+}
+
 fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: Array[String], root_in_handle: Bool, fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], fn_param_effs: Array[Array[Array[String]]], root_ov_names: Array[String], root_ov_effs: Array[Array[String]], root_kinds: TkEnv) -> Array[EffectError] {
   let errors = array_empty()
   let scope_depth = Array::length(row_formal_scope)
   Array::push(row_mismatch_roots, root_declared)
-  let stack = Array::slice([
-    (root, root_declared, root_in_handle, root_ov_names, root_ov_effs, root_kinds)
+  // The pending nodes and, in parallel, the index of the context each one is
+  // checked under. Children almost always inherit their parent's context, so
+  // a context is stored once and shared by index; pushing a per-node
+  // 6-tuple instead cost one heap allocation per AST node (~22 MB of the
+  // self-compile heap).
+  let stack: Array[Expr] = Array::slice([root], 0, 1)
+  let stack_ci: Array[Int] = Array::slice([0], 0, 1)
+  let ctxs = Array::slice([
+    (root_declared, root_in_handle, root_ov_names, root_ov_effs, root_kinds)
   ], 0, 1)
   while Array::length(stack) > 0 {
     let n = Array::length(stack)
-    let (expr, declared, in_handle, ov_names, ov_effs, kinds) = Array::get(stack, n - 1)
+    let expr = Array::get(stack, n - 1)
+    let ci = Array::get(stack_ci, n - 1)
+    let (declared, in_handle, ov_names, ov_effs, kinds) = Array::get(ctxs, ci)
     Array::truncate(stack, n - 1)
+    Array::truncate(stack_ci, n - 1)
     match expr {
       ECall(callee, args, call_off) => {
         match callee {
@@ -5955,7 +5975,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                 ECall(_, opargs, _) => {
                   let mut oi = 0
                   while oi < Array::length(opargs) {
-                    Array::push(stack, (Array::get(opargs, oi), declared, in_handle, ov_names, ov_effs, kinds))
+                    pe_push(stack, stack_ci, Array::get(opargs, oi), ci)
                     oi = oi + 1
                   }
                 },
@@ -6213,11 +6233,17 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
           EIdent(cname, _) => if cname == "perform?" {
             ()
           } else {
-            Array::push(stack, (callee, declared, in_handle, ov_names, ov_effs, kinds))
+            pe_push(stack, stack_ci, callee, ci)
             let mut ai = 0
             while ai < Array::length(args) {
               let arg = Array::get(args, ai)
-              Array::push(stack, (arg, closure_arg_declared(arg, declared, cname, lookup_fn_effs(ov_names, ov_effs, cname), ai), in_handle, ov_names, ov_effs, kinds))
+              match arg {
+                // Only a function literal can get a row of its own
+                // (`closure_arg_declared` answers `declared` for anything
+                // else), so only it needs a context of its own.
+                EFn(_, _, _, _, _, _) => pe_push(stack, stack_ci, arg, pe_ctx(ctxs, closure_arg_declared(arg, declared, cname, lookup_fn_effs(ov_names, ov_effs, cname), ai), in_handle, ov_names, ov_effs, kinds)),
+                _ => pe_push(stack, stack_ci, arg, ci)
+              }
               ai = ai + 1
             }
           },
@@ -6225,10 +6251,10 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
             // A callee that is not a name (a field, a call result) is one
             // this pass cannot see, so a closure literal handed to it stays
             // as strict as the body (closure_arg_declared).
-            Array::push(stack, (callee, declared, in_handle, ov_names, ov_effs, kinds))
+            pe_push(stack, stack_ci, callee, ci)
             let mut bi = 0
             while bi < Array::length(args) {
-              Array::push(stack, (Array::get(args, bi), declared, in_handle, ov_names, ov_effs, kinds))
+              pe_push(stack, stack_ci, Array::get(args, bi), ci)
               bi = bi + 1
             }
           }
@@ -6334,11 +6360,11 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
         }
         if Array::length(entry) > 0 {
           Array::push(row_formal_scope, entry)
-          Array::push(stack, (EIdent(row_scope_pop_marker(), 0 - 1), declared, in_handle, ov_names, ov_effs, kinds))
+          pe_push(stack, stack_ci, EIdent(row_scope_pop_marker(), 0 - 1), ci)
         } else {
           ()
         }
-        Array::push(stack, (body, body_declared, in_handle, body_ov_names, body_ov_effs, throw_kind_bind_params(kinds, params)))
+        pe_push(stack, stack_ci, body, pe_ctx(ctxs, body_declared, in_handle, body_ov_names, body_ov_effs, throw_kind_bind_params(kinds, params)))
       },
       EIdent(ident, _) => if ident == row_scope_pop_marker() {
         row_scope_pop()
@@ -6391,12 +6417,12 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
         } else {
           in_handle
         }
-        Array::push(stack, (body, body_declared, body_in_handle, ov_names, ov_effs, kinds))
+        pe_push(stack, stack_ci, body, pe_ctx(ctxs, body_declared, body_in_handle, ov_names, ov_effs, kinds))
         let mut ai = 0
         while ai < Array::length(arms) {
           let (arm_pat, arm_body) = Array::get(arms, ai)
           let (arm_ov_names, arm_ov_effs) = overlay_bind_empty_pat(ov_names, ov_effs, arm_pat, fn_names, fn_index)
-          Array::push(stack, (arm_body, declared, in_handle, arm_ov_names, arm_ov_effs, throw_kind_bind_pat(kinds, arm_pat)))
+          pe_push(stack, stack_ci, arm_body, pe_ctx(ctxs, declared, in_handle, arm_ov_names, arm_ov_effs, throw_kind_bind_pat(kinds, arm_pat)))
           ai = ai + 1
         }
       },
@@ -6409,8 +6435,8 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
         // #1344 follow-up: the local's payload kind is its initializer's, read
         // in the OUTER scope for the same non-recursive reason.
         let body_kinds = throw_kind_bind(kinds, name, throw_payload_kind(val, kinds))
-        Array::push(stack, (val, declared, in_handle, ov_names, ov_effs, kinds))
-        Array::push(stack, (body, declared, in_handle, body_ov_names, body_ov_effs, body_kinds))
+        pe_push(stack, stack_ci, val, ci)
+        pe_push(stack, stack_ci, body, pe_ctx(ctxs, declared, in_handle, body_ov_names, body_ov_effs, body_kinds))
       },
       ELetRec(name, val, body) => {
         // #885 review (Codex): unlike ELet, `let rec` allows `val` itself to
@@ -6422,8 +6448,8 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
         // it, so the name binds unresolvable on both sides (which is also what
         // stops it resolving through a same-named top-level binding).
         let rec_kinds = throw_kind_bind(kinds, name, "")
-        Array::push(stack, (val, declared, in_handle, rec_ov_names, rec_ov_effs, rec_kinds))
-        Array::push(stack, (body, declared, in_handle, rec_ov_names, rec_ov_effs, rec_kinds))
+        pe_push(stack, stack_ci, val, pe_ctx(ctxs, declared, in_handle, rec_ov_names, rec_ov_effs, rec_kinds))
+        pe_push(stack, stack_ci, body, pe_ctx(ctxs, declared, in_handle, rec_ov_names, rec_ov_effs, rec_kinds))
       },
       ELetMut(name, val, body, _) => {
         // #885 review (Codex): same as ELet -- non-recursive, only body shadows.
@@ -6432,31 +6458,31 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
         // different type is a type error), so its initializer's kind holds for
         // the body just as ELet's does.
         let body_kinds = throw_kind_bind(kinds, name, throw_payload_kind(val, kinds))
-        Array::push(stack, (val, declared, in_handle, ov_names, ov_effs, kinds))
-        Array::push(stack, (body, declared, in_handle, body_ov_names, body_ov_effs, body_kinds))
+        pe_push(stack, stack_ci, val, ci)
+        pe_push(stack, stack_ci, body, pe_ctx(ctxs, declared, in_handle, body_ov_names, body_ov_effs, body_kinds))
       },
       ESeq(a, b) => {
-        Array::push(stack, (a, declared, in_handle, ov_names, ov_effs, kinds))
-        Array::push(stack, (b, declared, in_handle, ov_names, ov_effs, kinds))
+        pe_push(stack, stack_ci, a, ci)
+        pe_push(stack, stack_ci, b, ci)
       },
       EIf(cond, then_e, else_e) => {
-        Array::push(stack, (cond, declared, in_handle, ov_names, ov_effs, kinds))
-        Array::push(stack, (then_e, declared, in_handle, ov_names, ov_effs, kinds))
-        Array::push(stack, (else_e, declared, in_handle, ov_names, ov_effs, kinds))
+        pe_push(stack, stack_ci, cond, ci)
+        pe_push(stack, stack_ci, then_e, ci)
+        pe_push(stack, stack_ci, else_e, ci)
       },
       EMatch(scrutinee, arms) => {
-        Array::push(stack, (scrutinee, declared, in_handle, ov_names, ov_effs, kinds))
+        pe_push(stack, stack_ci, scrutinee, ci)
         let mut ai = 0
         while ai < Array::length(arms) {
           let (arm_pat, arm_body) = Array::get(arms, ai)
           let (arm_ov_names, arm_ov_effs) = overlay_bind_empty_pat(ov_names, ov_effs, arm_pat, fn_names, fn_index)
-          Array::push(stack, (arm_body, declared, in_handle, arm_ov_names, arm_ov_effs, throw_kind_bind_pat(kinds, arm_pat)))
+          pe_push(stack, stack_ci, arm_body, pe_ctx(ctxs, declared, in_handle, arm_ov_names, arm_ov_effs, throw_kind_bind_pat(kinds, arm_pat)))
           ai = ai + 1
         }
       },
       EWhile(cond, body) => {
-        Array::push(stack, (cond, declared, in_handle, ov_names, ov_effs, kinds))
-        Array::push(stack, (body, declared, in_handle, ov_names, ov_effs, kinds))
+        pe_push(stack, stack_ci, cond, ci)
+        pe_push(stack, stack_ci, body, ci)
       },
       ELoop(params, body) => {
         // A loop parameter is re-bound by every `continue`, so its initializer's
@@ -6466,13 +6492,13 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
         let mut i = 0
         while i < Array::length(params) {
           let (pname, init) = Array::get(params, i)
-          Array::push(stack, (init, declared, in_handle, ov_names, ov_effs, kinds))
+          pe_push(stack, stack_ci, init, ci)
           body_kinds = throw_kind_bind(body_kinds, pname, "")
           Array::push(loop_names, pname)
           i = i + 1
         }
         let (body_ov_names, body_ov_effs) = overlay_bind_empty_names(ov_names, ov_effs, loop_names, fn_names, fn_index)
-        Array::push(stack, (body, declared, in_handle, body_ov_names, body_ov_effs, body_kinds))
+        pe_push(stack, stack_ci, body, pe_ctx(ctxs, declared, in_handle, body_ov_names, body_ov_effs, body_kinds))
       },
       EForIn(value_name, index_name, iter, body) => {
         // The element (and optional index) binder has no syntactic kind here --
@@ -6483,40 +6509,40 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
           Some(iname) => throw_kind_bind(throw_kind_bind(kinds, value_name, ""), iname, ""),
           None => throw_kind_bind(kinds, value_name, "")
         }
-        Array::push(stack, (iter, declared, in_handle, ov_names, ov_effs, kinds))
+        pe_push(stack, stack_ci, iter, ci)
         let (value_ov_names, value_ov_effs) = overlay_bind_empty(ov_names, ov_effs, value_name, fn_names, fn_index)
         let for_overlay = match index_name {
           Some(iname) => overlay_bind_empty(value_ov_names, value_ov_effs, iname, fn_names, fn_index),
           None => (value_ov_names, value_ov_effs)
         }
-        Array::push(stack, (body, declared, in_handle, for_overlay.0, for_overlay.1, for_kinds))
+        pe_push(stack, stack_ci, body, pe_ctx(ctxs, declared, in_handle, for_overlay.0, for_overlay.1, for_kinds))
       },
       EBinOp(_, left, right, _) => {
-        Array::push(stack, (left, declared, in_handle, ov_names, ov_effs, kinds))
-        Array::push(stack, (right, declared, in_handle, ov_names, ov_effs, kinds))
+        pe_push(stack, stack_ci, left, ci)
+        pe_push(stack, stack_ci, right, ci)
       },
-      EReturn(e) => Array::push(stack, (e, declared, in_handle, ov_names, ov_effs, kinds)),
-      EUnaryOp(_, operand) => Array::push(stack, (operand, declared, in_handle, ov_names, ov_effs, kinds)),
+      EReturn(e) => pe_push(stack, stack_ci, e, ci),
+      EUnaryOp(_, operand) => pe_push(stack, stack_ci, operand, ci),
       EAssign(_, val, cont) => {
-        Array::push(stack, (val, declared, in_handle, ov_names, ov_effs, kinds))
-        Array::push(stack, (cont, declared, in_handle, ov_names, ov_effs, kinds))
+        pe_push(stack, stack_ci, val, ci)
+        pe_push(stack, stack_ci, cont, ci)
       },
       EAssignOp(_, _, val, cont) => {
-        Array::push(stack, (val, declared, in_handle, ov_names, ov_effs, kinds))
-        Array::push(stack, (cont, declared, in_handle, ov_names, ov_effs, kinds))
+        pe_push(stack, stack_ci, val, ci)
+        pe_push(stack, stack_ci, cont, ci)
       },
-      EDot(obj, _, _, _) => Array::push(stack, (obj, declared, in_handle, ov_names, ov_effs, kinds)),
+      EDot(obj, _, _, _) => pe_push(stack, stack_ci, obj, ci),
       ETuple(elems) => {
         let mut ei = 0
         while ei < Array::length(elems) {
-          Array::push(stack, (Array::get(elems, ei), declared, in_handle, ov_names, ov_effs, kinds))
+          pe_push(stack, stack_ci, Array::get(elems, ei), ci)
           ei = ei + 1
         }
       },
       EArray(elems) => {
         let mut ei = 0
         while ei < Array::length(elems) {
-          Array::push(stack, (Array::get(elems, ei), declared, in_handle, ov_names, ov_effs, kinds))
+          pe_push(stack, stack_ci, Array::get(elems, ei), ci)
           ei = ei + 1
         }
       },
@@ -6533,7 +6559,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
             EFn(_, _, _, _, _, _) => labels_union(declared, struct_field_rows_for(rec_sname, fname)),
             _ => declared
           }
-          Array::push(stack, (fval, field_declared, in_handle, ov_names, ov_effs, kinds))
+          pe_push(stack, stack_ci, fval, pe_ctx(ctxs, field_declared, in_handle, ov_names, ov_effs, kinds))
           fi = fi + 1
         }
       },
@@ -6541,18 +6567,18 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
         let mut fi = 0
         while fi < Array::length(fields) {
           let (_, fval) = Array::get(fields, fi)
-          Array::push(stack, (fval, declared, in_handle, ov_names, ov_effs, kinds))
+          pe_push(stack, stack_ci, fval, ci)
           fi = fi + 1
         }
       },
-      ELabeledArg(_, _, value) => Array::push(stack, (value, declared, in_handle, ov_names, ov_effs, kinds)),
-      ESpread(value) => Array::push(stack, (value, declared, in_handle, ov_names, ov_effs, kinds)),
-      EBreak(Some(value)) => Array::push(stack, (value, declared, in_handle, ov_names, ov_effs, kinds)),
+      ELabeledArg(_, _, value) => pe_push(stack, stack_ci, value, ci),
+      ESpread(value) => pe_push(stack, stack_ci, value, ci),
+      EBreak(Some(value)) => pe_push(stack, stack_ci, value, ci),
       EBreak(None) => (),
       EContinue(args) => {
         let mut ai = 0
         while ai < Array::length(args) {
-          Array::push(stack, (Array::get(args, ai), declared, in_handle, ov_names, ov_effs, kinds))
+          pe_push(stack, stack_ci, Array::get(args, ai), ci)
           ai = ai + 1
         }
       },
@@ -6562,7 +6588,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
         let children = expr_children(expr)
         let mut i = 0
         while i < Array::length(children) {
-          Array::push(stack, (Array::get(children, i), declared, in_handle, ov_names, ov_effs, kinds))
+          pe_push(stack, stack_ci, Array::get(children, i), ci)
           i = i + 1
         }
       }

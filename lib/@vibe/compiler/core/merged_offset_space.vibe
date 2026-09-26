@@ -22,12 +22,21 @@ let merged_offset_sources: Array[String] = []
 
 let merged_offset_bases: Array[Int] = []
 
+// Per-file newline offsets for `merged_offset_location`, built the first time
+// a file is asked about. Parallel to the arrays above; `merged_offset_nls_built`
+// tells "not built yet" apart from a file with no newline.
+let merged_offset_nls: Array[Array[Int]] = []
+
+let merged_offset_nls_built: Array[Bool] = []
+
 /// Forget the recorded merge. Called by every merge before it records, and by
 /// the CLI before each compile.
 export fn merged_offset_space_reset() -> Unit {
   Array::truncate(merged_offset_paths, 0)
   Array::truncate(merged_offset_sources, 0)
   Array::truncate(merged_offset_bases, 0)
+  Array::truncate(merged_offset_nls, 0)
+  Array::truncate(merged_offset_nls_built, 0)
 }
 
 /// Record that `path`, parsed from `source`, occupies merged offsets
@@ -36,6 +45,9 @@ export fn merged_offset_space_add(path: String, source: String, base: Int) -> Un
   Array::push(merged_offset_paths, path)
   Array::push(merged_offset_sources, source)
   Array::push(merged_offset_bases, base)
+  let unbuilt: Array[Int] = []
+  Array::push(merged_offset_nls, unbuilt)
+  Array::push(merged_offset_nls_built, false)
 }
 
 /// The file that owns merged offset `off`, as `(path, source, local offset)`.
@@ -57,4 +69,89 @@ export fn merged_offset_owner(off: Int) -> Option[(String, String, Int)] {
     }
   }
   found
+}
+
+/// Merged offset `off` as `(path, line, col)` -- 1-based line, 1-based
+/// BYTE column (ADR-0108) -- or `("", 0, 0)` when it cannot be placed.
+///
+/// Built for a location that is PRINTED at run time (#3126: `Int` `/` and `%`
+/// by zero), so it declines rather than guess: no merge recorded, an offset
+/// past every file (an alias-collision clone), or a file whose parsed text is
+/// not the text on disk. The loader prepends a `// vibe: ...` marker line to
+/// the two sources it synthesizes (a contract facade, a vpkg's shared
+/// imports), and a position in that text is not one the reader can open.
+///
+/// Called once per division site by the string-pool pass and again by
+/// codegen, so each file's newline table is built once and searched.
+export fn merged_offset_line_col(off: Int) -> (String, Int, Int) {
+  let n = Array::length(merged_offset_paths)
+  let mut file = 0 - 1
+  let mut i = 0
+  while i < n {
+    let base = Array::get(merged_offset_bases, i)
+    if off >= base && off <= base + String::length(Array::get(merged_offset_sources, i)) {
+      file = i
+      i = n
+    } else {
+      i = i + 1
+    }
+  }
+  if off < 0 || file < 0 {
+    ("", 0, 0)
+  } else if merged_offset_is_synthesized(Array::get(merged_offset_sources, file)) {
+    ("", 0, 0)
+  } else {
+    let local = off - Array::get(merged_offset_bases, file)
+    let nls = merged_offset_newlines(file)
+    // The count of newlines strictly before `local` is the 0-based line; the
+    // last of them ends the previous line.
+    let mut lo = 0
+    let mut hi = Array::length(nls)
+    while lo < hi {
+      let mid = (lo + hi) / 2
+      if Array::get(nls, mid) < local {
+        lo = mid + 1
+      } else {
+        hi = mid
+      }
+    }
+    let col = if lo == 0 {
+      local + 1
+    } else {
+      local - Array::get(nls, lo - 1)
+    }
+    (Array::get(merged_offset_paths, file), lo + 1, col)
+  }
+}
+
+/// Whether `source` is one of the texts the loader synthesizes. Each opens
+/// with its exact marker line (`contract.vibe`: `contract_facade_marker`,
+/// `vpkg_shared_import_marker`, `vpkg_types_module_marker`); `core` cannot
+/// import `contract`, so the lines are spelled here. Matching the whole
+/// marker, not the `// vibe: ` prefix, keeps a user file that merely starts
+/// with such a comment located (#3126 review).
+fn merged_offset_is_synthesized(source: String) -> Bool {
+  String::starts_with(source, "// vibe: contract facade (desugared from .vibei)\n") || String::starts_with(source, "// vibe: vpkg directory-shared imports (#897)\n") || String::starts_with(source, "// vibe: vpkg contract types module (#1840)\n")
+}
+
+fn merged_offset_newlines(file: Int) -> Array[Int] {
+  if Array::get(merged_offset_nls_built, file) {
+    Array::get(merged_offset_nls, file)
+  } else {
+    let source = Array::get(merged_offset_sources, file)
+    let nls: Array[Int] = []
+    let len = String::length(source)
+    let mut k = 0
+    while k < len {
+      if String::char_code_at(source, k) == 10 {
+        Array::push(nls, k)
+      } else {
+        ()
+      }
+      k = k + 1
+    }
+    Array::set(merged_offset_nls, file, nls)
+    Array::set(merged_offset_nls_built, file, true)
+    nls
+  }
 }

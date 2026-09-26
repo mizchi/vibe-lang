@@ -151,6 +151,39 @@ export fn str_table_lite(strs: Array[String], offsets: Array[Int], lengths: Arra
   }
 }
 
+/// #3126: the raw `(ptr << 32) | len` constant of `s` in the string table, or 0 when
+/// `s` is empty or was not seeded. Never throws: a missing location is a
+/// shorter message, not a failed build.
+export fn str_table_fat_or_zero(st: StrTable, s: String) -> Int {
+  if String::length(s) == 0 {
+    0
+  } else {
+    let idx = if MutMap::size(st.index) > 0 {
+      match MutMap::get(st.index, s) {
+        Some(i) => i,
+        None => 0 - 1
+      }
+    } else {
+      let mut found = 0 - 1
+      let mut i = 0
+      while i < Array::length(st.strs) {
+        if String::equals(Array::get(st.strs, i), s) {
+          found = i
+          i = Array::length(st.strs)
+        } else {
+          i = i + 1
+        }
+      }
+      found
+    }
+    if idx < 0 {
+      0
+    } else {
+      (Array::get(st.offsets, idx)<<32)|Array::get(st.lengths, idx)
+    }
+  }
+}
+
 /// The slot of `s` in `st` -- the first one that holds it -- or a thrown
 /// "string not in table" (the message str_table_lookup throws).
 export fn str_table_index_of(st: StrTable, s: String) -> Int with Exception {
@@ -2189,6 +2222,10 @@ export struct CompileCtx {
   // file (index into `vibe.dbgfiles`), emitted alongside the line so the runner
   // matches `--break <file>:<line>` against the right file. 0 when off.
   dbg_line_file_id: Int;
+  // #3126: `__rt_div_zero_abort`, called by an `Int` `/` or `%` whose divisor
+  // is zero so the trap names the operation and its `path:line:col`. -1 when
+  // the module has none: the division then keeps the engine's bare trap.
+  div_zero_abort_func_idx: Int;
   // #706 (RC): names live-in to the innermost enclosing `while` loop. A loop body
   // re-executes, so passing such an owned heap value to a consuming call frees it
   // on iteration 1 and dangles on the next (use-after-free). compile_call emits a
@@ -2749,6 +2786,9 @@ export struct CompileCtxGc {
   /// reads the `gc_int_locals` slot log -- so a call is never emitted to a
   /// body that was not pushed.
   gc_to_string_int_func_idx: Int;
+  // #3126: the gc lane's `__rt_div_zero_abort` (see CompileCtx), -1 when the
+  // module has no guarded `/` or `%`.
+  gc_div_zero_abort_func_idx: Int;
   // Native wasm-gc array references are permitted only for a proven-local
   // literal binding. `gc_native_array_locals` is the current lexical set used
   // by call lowering; it is pruned when slots are reused by sibling scopes.

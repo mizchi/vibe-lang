@@ -193,10 +193,14 @@ EOF
 # each need their own tree, and then they would no longer be testing this one.
 # One companion, run the way its spelling requires. `node --test` is how
 # Taskfile.pkl already runs the `.test.mjs` ones.
+# The shard is THIS driver's input, never a companion's: a companion that runs
+# a scratch copy of this driver (check_gate_self_tests_test.sh does) would
+# otherwise inherit I/N and silently skip its own scratch companions -- which
+# is how shard 1/3 once reported "a FAILING companion was accepted" (#3171).
 run_companion() {
   case "$1" in
-    *.test.mjs) node --test "$1" ;;
-    *) bash "$1" ;;
+    *.test.mjs) env -u VIBE_GATE_SELF_TESTS_SHARD node --test "$1" ;;
+    *) env -u VIBE_GATE_SELF_TESTS_SHARD bash "$1" ;;
   esac
 }
 
@@ -252,7 +256,15 @@ dirty_report=""
 run_checked() {
   local before after rc=0
   before="$(tree_state)"
+  local t0 t1
+  t0="$(date +%s)"
   run_companion "$1" >"$WORK_LOG" 2>&1 || rc=$?
+  t1="$(date +%s)"
+  # One line per companion with its wall seconds: the data
+  # gate_self_test_shards.txt is balanced from. Pins taken from a local run
+  # were wrong for CI (a companion that is 493s locally finished its whole
+  # shard in 108s there), so CI's own numbers have to be readable in its log.
+  echo "[gate-self-tests] $((t1 - t0))s rc=$rc $1"
   after="$(tree_state)"
   if [ "$before" != "$after" ]; then
     dirtied="$dirtied $1"
@@ -263,8 +275,49 @@ $(diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") | grep -E '^[<>]' | 
   return "$rc"
 }
 
+# SHARDING, across RUNNERS and never inside one. The loop below is serial for
+# the reason given above, and at ~60 companions it was 814s of the selftests
+# lane -- the whole critical path of a CI run (run 36248052145: that job
+# 1377s, every other job done by 1039s). CI runs this lane as N jobs, each on
+# its own checkout, and each runs the companions whose discovery index k has
+# k % N == I. The discovery glob is the same in every shard, so the shards
+# partition it exactly: every companion runs in exactly one of them, and a new
+# companion lands in one without anyone assigning it.
+#
+# The BOOKKEEPING (missing self-tests, stale and out-of-baseline exemptions) is
+# cheap and runs in every shard, so no shard can report ok on a tree whose
+# ratchet is broken. Default 0/1: one shard, every companion -- what a local
+# run and `pkf run full-gate` get.
+shard="${VIBE_GATE_SELF_TESTS_SHARD:-0/1}"
+shard_i=""; shard_n=""
+case "$shard" in
+  *[!0-9/]* | /* | */ | */*/* ) ;;
+  */*) shard_i="${shard%/*}"; shard_n="${shard#*/}" ;;
+esac
+if [ -z "$shard_n" ] || [ "$shard_n" -lt 1 ] || [ "$shard_i" -ge "$shard_n" ]; then
+  # A malformed shard must not run a DIFFERENT subset than asked (or none) and
+  # say ok: that is a companion going dark with a green check beside it.
+  echo "[gate-self-tests] FAIL: VIBE_GATE_SELF_TESTS_SHARD='$shard' is not I/N with 0 <= I < N" >&2
+  exit 1
+fi
+
+# PINNED SLOTS. Round-robin by index alone put the two heaviest companions in
+# one shard ([333, 277, 682]s locally): five companions are ~80% of the suite.
+# scripts/gate_self_test_shards.txt pins those to a slot (`name slot`, measured
+# cost in its comments); every unlisted companion is dealt round-robin. A slot
+# is reduced mod N like an index, so any N is still an exact partition. An
+# entry naming no companion is stale and fails below, like a stale exemption.
+SHARD_PINS="scripts/gate_self_test_shards.txt"
+pins=""
+[ -f "$SHARD_PINS" ] && pins="$(grep -v '^\s*#' "$SHARD_PINS" | grep -v '^\s*$' || true)"
+pin_slot() { printf '%s\n' "$pins" | awk -v n="$1" '$1 == n { print $2; exit }'; }
+
 failed_tests=""
 repaired=""
+ran=0
+k=-1
+seen_pins=""
+rr=-1
 if [ "${VIBE_GATE_SELF_TESTS_RUN:-1}" = "1" ]; then
   # The snapshot needs a git work tree. Without one it cannot tell a clean run
   # from a dirty one, and saying nothing would be reporting "unchecked" as
@@ -293,6 +346,15 @@ if [ "${VIBE_GATE_SELF_TESTS_RUN:-1}" = "1" ]; then
       *) [ -f "${t%_test.sh}.sh" ] || [ -f "${t%_test.sh}.mjs" ] || [ -f "${t%_test.sh}.py" ] || [ -f "${t%_test.sh}.vibex" ] || continue ;;
     esac
     base="${t#scripts/}"
+    k=$((k + 1))
+    slot="$(pin_slot "$base")"
+    if [ -n "$slot" ]; then
+      seen_pins="$seen_pins $base"
+    else
+      rr=$((rr + 1)); slot="$rr"
+    fi
+    [ $((slot % shard_n)) -eq "$shard_i" ] || continue
+    ran=$((ran + 1))
     if printf '%s\n' "$failing_allowed" | grep -qxF "$base"; then
       # A known-failing exemption is still RUN, because the interesting case is
       # that it starts passing: skipping it outright means a repaired test (or
@@ -321,7 +383,24 @@ if [ "${VIBE_GATE_SELF_TESTS_RUN:-1}" = "1" ]; then
   fi
 fi
 
+stale_pins=""
+if [ "${VIBE_GATE_SELF_TESTS_RUN:-1}" = "1" ]; then
+  while read -r name slot _; do
+    [ -n "$name" ] || continue
+    case "$slot" in ''|*[!0-9]*) stale_pins="$stale_pins $name(slot-not-a-number)"; continue ;; esac
+    printf ' %s \n' "$seen_pins " | grep -qF " $name " || stale_pins="$stale_pins $name(no-such-companion)"
+  done <<EOF4
+$pins
+EOF4
+fi
+
 rc=0
+if [ -n "$stale_pins" ]; then
+  echo "[gate-self-tests] FAIL: stale entries in $SHARD_PINS:" >&2
+  for n in $stale_pins; do echo "  $n" >&2; done
+  echo "  Each line is '<companion> <slot>' for a companion discovery finds." >&2
+  rc=1
+fi
 if [ -n "$dirtied" ]; then
   echo "[gate-self-tests] FAIL: gate self-tests that left the working tree changed (#2899):" >&2
   for t in $dirtied; do echo "  $t" >&2; done
@@ -362,7 +441,11 @@ fi
 
 n_all="$(printf '%s\n' "$allowed" | grep -c . || true)"
 if [ "${VIBE_GATE_SELF_TESTS_RUN:-1}" = "1" ]; then
-  echo "[gate-self-tests] ok (every gate has a self-test; every companion passed and left the working tree unchanged; $n_all pre-existing exemptions)"
+  if [ "$shard_n" -eq 1 ]; then
+    echo "[gate-self-tests] ok (every gate has a self-test; every companion passed and left the working tree unchanged; $n_all pre-existing exemptions)"
+  else
+    echo "[gate-self-tests] ok (shard $shard_i/$shard_n: $ran of $((k + 1)) companions passed and left the working tree unchanged; every gate has a self-test; $n_all pre-existing exemptions)"
+  fi
 else
   echo "[gate-self-tests] ok (every gate has a self-test; companions not run; $n_all pre-existing exemptions)"
 fi

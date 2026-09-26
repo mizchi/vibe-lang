@@ -37,42 +37,71 @@ GATES_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
 source "$GATES_LIB"
 gate_resolve_stage2
 
+# SHARDED ACROSS RUNNERS (COMPILER_GATE_SELFTESTS_SHARD=I/N, default 0/1 =
+# everything). Split by lanes the suite overlapped early/mid/late, but it was
+# still 1085s on its own -- the longest job of the run by 340s (run
+# 36248052145). CI now runs this lane as N matrix jobs, each on its own
+# checkout, so the serial-inside rule above still holds per tree.
+# check_gate_self_tests.sh partitions the discovered companions by index; the
+# named suites below are partitioned by the slot each is given, so every one of
+# them runs in exactly one shard. Slots are assigned by measured cost, not by
+# position, and together with scripts/gate_self_test_shards.txt (which pins
+# the heavy companions; CI seconds from run 36252326885): slot 0 carries the
+# 297s grep-driver-parity companion plus capability preflight (~30s); slot 1
+# compile-only-lanes + lazy-dispatch (~312s) plus checked-module parity; slot 2
+# the grep budget/sweep and portable-boundary companions (~147s) plus
+# checked-module cost and run_bounded (~187s).
+shard="${COMPILER_GATE_SELFTESTS_SHARD:-0/1}"
+shard_i=""; shard_n=""
+case "$shard" in
+  *[!0-9/]* | /* | */ | */*/* ) ;;
+  */*) shard_i="${shard%/*}"; shard_n="${shard#*/}" ;;
+esac
+if [ -z "$shard_n" ] || [ "$shard_n" -lt 1 ] || [ "$shard_i" -ge "$shard_n" ]; then
+  echo "[compiler-gate] FAIL: COMPILER_GATE_SELFTESTS_SHARD='$shard' is not I/N with 0 <= I < N" >&2
+  exit 1
+fi
+# in_shard <slot>: does this shard run the suite given that slot? A slot is
+# reduced mod N, so any N is a complete partition.
+in_shard() { [ $(($1 % shard_n)) -eq "$shard_i" ]; }
+
 echo "[compiler-gate] selftests: every gate self-test, serially"
-bash "$ROOT_DIR/scripts/check_gate_self_tests.sh"
-bash "$ROOT_DIR/scripts/check_gate_self_tests_test.sh"
+echo "  shard $shard_i/$shard_n"
+VIBE_GATE_SELF_TESTS_SHARD="$shard_i/$shard_n" bash "$ROOT_DIR/scripts/check_gate_self_tests.sh"
+if in_shard 0; then bash "$ROOT_DIR/scripts/check_gate_self_tests_test.sh"; fi
 # The gate LIBRARY's own helpers. check_gate_self_tests.sh discovers companions
 # by globbing scripts/, so anything under tests/gates/ is invisible to it --
 # and `gate_split_cli_cache_is_current` decides WHICH compiler the #2305 lane
 # questions, which is exactly the kind of answer that must not go unchecked.
-bash "$ROOT_DIR/tests/gates/lib_test.sh"
+if in_shard 0; then bash "$ROOT_DIR/tests/gates/lib_test.sh"; fi
 # The relocation measurement is not a check_* gate, so its synthetic-module
 # regression is explicit here. gate_resolve_stage2 supplies this lane's compiler.
-bash "$ROOT_DIR/scripts/reloc_crossbuild_test.sh"
+if in_shard 0; then bash "$ROOT_DIR/scripts/reloc_crossbuild_test.sh"; fi
 # Same reason for the checked-module parity oracle (#1959): `checked_module_*`
 # does not match the `check_*` glob discovery uses, so its companion is named
 # here rather than found. Its rows decide when a module may keep a checked
 # artifact across an edit -- reusing one whose dependency changed its public
 # interface is a silently wrong build, so the rows have to be able to fail.
-bash "$ROOT_DIR/scripts/checked_module_cache_parity_test.sh"
+if in_shard 1; then bash "$ROOT_DIR/scripts/checked_module_cache_parity_test.sh"; fi
 # The two incremental MEASUREMENTS, named here for the same glob reason. They
 # are not checks and hold no budget, but each one now refuses a sample it
 # cannot show is what it is called -- a warm run that reused nothing, a cold
 # run that did not start cold -- and a refusal nobody has made fire is a
 # comment (#2836 §2). Both narrow their corpus so the mutations cost
 # seconds rather than minutes.
-bash "$ROOT_DIR/scripts/checked_module_cache_cost_test.sh"
-bash "$ROOT_DIR/scripts/incremental_kpi_test.sh"
+if in_shard 2; then bash "$ROOT_DIR/scripts/checked_module_cache_cost_test.sh"; fi
+if in_shard 1; then bash "$ROOT_DIR/scripts/incremental_kpi_test.sh"; fi
 # And the resolver both of them ask which compiler to measure. Its strict half
 # exists to REFUSE -- a stale generation, an empty artifact, a missing override
 # -- and a resolver that answered anyway would hand every measurement above a
 # compiler that does not contain the change, with nothing in the report saying
 # so (#2836 §1). Cheap: no compiler, synthetic git trees.
-bash "$ROOT_DIR/scripts/resolve_stage2_test.sh"
+if in_shard 0; then bash "$ROOT_DIR/scripts/resolve_stage2_test.sh"; fi
 # The portable timeout(1) every bounded call in scripts/ and tests/ goes
 # through (#2958). Its shell watchdog only runs where GNU timeout is absent --
 # never in CI by accident -- so the companion forces it and holds it to
 # timeout(1)'s contract, with a mutant per property. No compiler; ~35s.
-bash "$ROOT_DIR/scripts/run_bounded_test.sh"
+if in_shard 2; then bash "$ROOT_DIR/scripts/run_bounded_test.sh"; fi
 # The host half of the capability contract (#2825 step 1,
 # docs/internal/design/capability-host-contract.md). Same glob reason again -- and this one is
 # a case where the gate that already exists could not see the property:
@@ -82,7 +111,7 @@ bash "$ROOT_DIR/scripts/run_bounded_test.sh"
 # answered `0`, so removing a method did not withhold a capability, it made the
 # capability lie. The companion asserts the withheld run traps by name AFTER
 # instantiating, and that removing the branch lets the same run succeed.
-bash "$ROOT_DIR/scripts/host_capability_withhold_test.sh"
+if in_shard 0; then bash "$ROOT_DIR/scripts/host_capability_withhold_test.sh"; fi
 
 # #2828 rung 1: ADR-0088's L1 flags and L3 preflight, end to end. The unit
 # tests cover the two readers; this covers the thing that was actually wrong --
@@ -94,6 +123,8 @@ bash "$ROOT_DIR/scripts/host_capability_withhold_test.sh"
 # does export VIBE_STAGE2_WASM, but a gate that reads an ambient variable is
 # one environment change away from answering about a different compiler, which
 # is #2252's lesson and cost this gate a CI cycle already.
-CAPABILITY_PREFLIGHT_STAGE2="$stage2_wasm" bash "$ROOT_DIR/scripts/check_capability_preflight.sh"
-CAPABILITY_PREFLIGHT_STAGE2="$stage2_wasm" bash "$ROOT_DIR/scripts/check_capability_preflight_test.sh"
-echo "[compiler-gate] gate self-tests ok (#2248)"
+if in_shard 0; then
+  CAPABILITY_PREFLIGHT_STAGE2="$stage2_wasm" bash "$ROOT_DIR/scripts/check_capability_preflight.sh"
+  CAPABILITY_PREFLIGHT_STAGE2="$stage2_wasm" bash "$ROOT_DIR/scripts/check_capability_preflight_test.sh"
+fi
+echo "[compiler-gate] gate self-tests ok (shard $shard_i/$shard_n, #2248)"

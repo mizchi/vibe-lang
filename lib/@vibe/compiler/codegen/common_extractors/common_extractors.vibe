@@ -1,11 +1,21 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr, bytebuf_push, leb128_encode_u32
+  Expr,
+  Pat,
+  Stmt,
+  TypeExpr,
+  bytebuf_push,
+  expr_child_at,
+  expr_children_pop,
+  expr_children_push,
+  expr_children_top,
+  leb128_encode_u32,
+  merged_offset_line_col
 }
 
 import @vibe/core {
-  array_empty
+  array_empty, struct MutSet
 }
 
 import @vibe/compiler/codegen/wasm_emit {
@@ -48,6 +58,146 @@ export fn first_offset(e: Expr) -> Int {
     EReturn(inner) => first_offset(inner),
     _ => -1
   }
+}
+
+/// #3126: may `divisor` be zero at run time? `false` only for a literal that
+/// is not: `x / 16`, `x % -3`. That is the one shape needing no guard at all,
+/// and the common one in a hot loop (`i % 2`, `n / 10`).
+export fn int_divisor_may_be_zero(divisor: Expr) -> Bool {
+  match divisor {
+    EInt(n) => n == 0,
+    EUnaryOp(op, EInt(n)) => op != "-" || n == 0,
+    _ => true
+  }
+}
+
+/// #3126: is `e` a `Double` by its own syntax alone? A `Double` literal, its
+/// negation, `Int::to_double` / `Int::to_float` / `Float::to_double`, an
+/// arithmetic operator with such an operand, or an `if` with such a branch.
+/// Operands of an arithmetic operator share one type, so a `/` or `%` with an
+/// operand this answers `true` for is a `Double` division and never traps.
+/// Only ever `true` for a `Double`: anything it cannot read says `false`,
+/// which keeps the site (an unused helper, never a missing one).
+fn expr_is_syntactic_double(e: Expr) -> Bool {
+  match e {
+    EFloat(_) => true,
+    EUnaryOp(op, x) => op == "-" && expr_is_syntactic_double(x),
+    EBinOp(op, l, r, _) => (op == "+" || op == "-" || op == "*" || op == "/" || op == "%") && (expr_is_syntactic_double(l) || expr_is_syntactic_double(r)),
+    ECall(EIdent(cn, _), _, _) => cn == "Int::to_double" || cn == "Int::to_float" || cn == "Float::to_double",
+    EIf(_, a, b) => expr_is_syntactic_double(a) || expr_is_syntactic_double(b),
+    _ => false
+  }
+}
+
+/// #3126: where an `Int` `/` or `%` by zero reports itself --
+/// `(path, line, col)` of the operator (of the divisor for `x /= y`, which
+/// carries no operator position), or `("", 0, 0)` when the offset cannot be
+/// placed in a source file. The string-pool pass and codegen both ask through
+/// here, so the string codegen looks up is the one the pool seeded.
+export fn int_div_site(off: Int) -> (String, Int, Int) {
+  if off < 0 {
+    ("", 0, 0)
+  } else {
+    merged_offset_line_col(off)
+  }
+}
+
+/// #3126: `int_div_site` as one `path:line:col` string, or "" -- the form
+/// the gc lane embeds whole, since it has no integer printer to assemble one.
+export fn int_div_site_text(off: Int) -> String {
+  let (path, line, col) = int_div_site(off)
+  if String::length(path) == 0 {
+    ""
+  } else {
+    String::concat(path, String::concat(":", String::concat(__to_string(line), String::concat(":", __to_string(col)))))
+  }
+}
+
+/// #3126: the source offset an `Int` division trap reports for `e`, or -1
+/// when `e` is not a `/` / `%` whose divisor may be zero.
+fn int_div_site_off(e: Expr) -> Int {
+  match e {
+    EBinOp(op, lhs, rhs, off) => if (op == "/" || op == "%") && int_divisor_may_be_zero(rhs) && !expr_is_syntactic_double(lhs) && !expr_is_syntactic_double(rhs) {
+      if off >= 0 {
+        off
+      } else {
+        0 - 2
+      }
+    } else {
+      0 - 1
+    },
+    EAssignOp(_, op, value, _) => if (op == "/" || op == "%") && int_divisor_may_be_zero(value) && !expr_is_syntactic_double(value) {
+      let off = first_offset(value)
+      if off >= 0 {
+        off
+      } else {
+        0 - 2
+      }
+    } else {
+      0 - 1
+    },
+    _ => 0 - 1
+  }
+}
+
+/// #3126: collect the division-by-zero trap sites of `stmts`. Appends each
+/// placeable site's string to `out` once (`seen` dedupes) -- its source PATH,
+/// or with `whole` its full `path:line:col` -- and answers whether the
+/// program has any guarded `/` or `%` at all, placeable or not, which is
+/// what decides whether the abort helper is emitted.
+///
+/// The linear lane seeds only paths and passes line and column as an integer,
+/// so the string pool (which the cross-compile body cache fingerprints) moves
+/// when a file gains its first division rather than on every edit that shifts
+/// a line.
+///
+/// Syntactic: the operand types are not known here, so a `Double` `/` is
+/// counted too unless an operand says `Double` by its own syntax
+/// (`expr_is_syntactic_double`: `x / 10000.0`, `Int::to_double(n) / d`).
+/// What it cannot read over-approximates only an unused string and helper.
+export fn collect_int_div_sites(stmts: Array[Stmt], out: Array[String], seen: MutSet[String], whole: Bool) -> Bool {
+  let found = [false]
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, expr) => collect_int_div_sites_expr(expr, out, seen, whole, found),
+      SLetMut(_, _, expr) => collect_int_div_sites_expr(expr, out, seen, whole, found),
+      SExpr(expr) => collect_int_div_sites_expr(expr, out, seen, whole, found),
+      STest(_, expr) => collect_int_div_sites_expr(expr, out, seen, whole, found),
+      SBench(_, expr) => collect_int_div_sites_expr(expr, out, seen, whole, found),
+      _ => ()
+    }
+    i = i + 1
+  }
+  Array::get(found, 0)
+}
+
+fn collect_int_div_sites_expr(e: Expr, out: Array[String], seen: MutSet[String], whole: Bool, found: Array[Bool]) -> Unit {
+  let off = int_div_site_off(e)
+  if off != 0 - 1 {
+    Array::set(found, 0, true)
+    let loc = if whole {
+      int_div_site_text(off)
+    } else {
+      let (path, _, _) = int_div_site(off)
+      path
+    }
+    if String::length(loc) > 0 && MutSet::insert(seen, loc) {
+      Array::push(out, loc)
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+  let mark = expr_children_push(e)
+  let top = expr_children_top()
+  let mut k = mark
+  while k < top {
+    collect_int_div_sites_expr(expr_child_at(k), out, seen, whole, found)
+    k = k + 1
+  }
+  expr_children_pop(mark)
 }
 
 /// Interior-line breakpoints: convert a 0-based source char-offset to a 1-based
