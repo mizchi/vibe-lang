@@ -704,14 +704,14 @@ echo "[compiler-gate] MutList / MutBytes builtin aliases ok on shadow"
 # wasm-gc (whose native-array shortcuts used to answer a program's own direct
 # `Array::length` call with the builtin).
 if ! VIBE_RC=shadow VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
-    bash scripts/vibe_test.sh fixtures/builtin_shadow_internal_lowering_test.vibe \
+    bash scripts/vibe_test.sh fixtures/builtin_shadow_internal_lowering_test.vibe fixtures/builtin_shadow_parser_sugar_test.vibe \
     >"$ROOT_DIR/_build/_gate_builtin_shadow_lowering.log" 2>&1; then
   echo "[compiler-gate] FAIL: a compiler-internal call by a builtin's name reached the program's same-named function under VIBE_RC=shadow (#3132):" >&2
   tail -20 "$ROOT_DIR/_build/_gate_builtin_shadow_lowering.log" >&2
   exit 1
 fi
 if ! VIBE_TEST_BACKEND=gc VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
-    bash scripts/vibe_test.sh fixtures/mut_alias_shadowed_builtin_test.vibe fixtures/builtin_shadow_internal_lowering_test.vibe \
+    bash scripts/vibe_test.sh fixtures/mut_alias_shadowed_builtin_test.vibe fixtures/builtin_shadow_internal_lowering_test.vibe fixtures/builtin_shadow_parser_sugar_test.vibe \
     >"$ROOT_DIR/_build/_gate_builtin_shadow_lowering.log" 2>&1; then
   echo "[compiler-gate] FAIL: on wasm-gc a builtin and a same-named program function were confused (#3129 / #3132):" >&2
   tail -20 "$ROOT_DIR/_build/_gate_builtin_shadow_lowering.log" >&2
@@ -719,6 +719,29 @@ if ! VIBE_TEST_BACKEND=gc VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMP
 fi
 rm -f "$ROOT_DIR/_build/_gate_builtin_shadow_lowering.log"
 echo "[compiler-gate] builtin-named internal calls ok on shadow and wasm-gc"
+# #3132 review: `--entry` naming the program's own function spelled like a
+# builtin (renamed aside to `StringBuilder::new$user`) still resolves, and the
+# module exports it under the name the program wrote -- on linear and wasm-gc.
+bedir="_build/_gate_builtin_shadow_entry"
+rm -rf "$bedir"; mkdir -p "$bedir"
+for be_lane in linear gc; do
+  rm -f "$bedir/e.wasm" "$bedir/e.wasm.diag"
+  case "$be_lane" in
+    linear) env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" "fixtures/builtin_shadow_entry.vibe" "$bedir/e.wasm" 'StringBuilder::new' >/dev/null 2>&1 || true ;;
+    gc) env VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" "fixtures/builtin_shadow_entry.vibe" "$bedir/e.wasm" 'StringBuilder::new' >/dev/null 2>&1 || true ;;
+  esac
+  if [ ! -s "$bedir/e.wasm" ]; then
+    echo "[compiler-gate] FAIL: --entry StringBuilder::new naming the program's own function did not build on the $be_lane lane (#3132 review):" >&2
+    cat "$bedir/e.wasm.diag" >&2 2>/dev/null || true
+    exit 1
+  fi
+  if ! node -e 'const m=new WebAssembly.Module(require("fs").readFileSync(process.argv[1]));process.exit(WebAssembly.Module.exports(m).some(e=>e.name===process.argv[2])?0:1)' "$bedir/e.wasm" 'StringBuilder::new'; then
+    echo "[compiler-gate] FAIL: the $be_lane module does not export the entry as StringBuilder::new (#3132 review)" >&2
+    exit 1
+  fi
+done
+rm -rf "$bedir"
+echo "[compiler-gate] builtin-named --entry ok: resolves and exports its source name (linear + gc)"
 
 # 40f0. #2837: `Array::truncate` changes the array's LENGTH, not the lifetime
 #       of an element someone already took out of it. That is the ownership

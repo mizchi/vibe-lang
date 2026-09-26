@@ -8,6 +8,7 @@ import @vibe/compiler/core {
   apply_top_level_fn_alias_renames,
   bsearch_leftmost,
   builtin_registry,
+  builtin_shadow_entry_name,
   builtin_shadow_source_name,
   bytebuf_length,
   bytebuf_new,
@@ -8873,7 +8874,13 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
 }
 
 /// #2828 rung 2: the grant-carrying arity. See the delegate below.
-export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], linked_imports: Array[(String, String, Int, Int)], library_mode: Bool, enable_rc: Bool, coverage: Bool, debug_trace: Bool, debug_break: Bool, rc_shadow: Bool, enable_late_dce: Bool, prov: DbgProv, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache, slice_lo: Int, slice_hi: Int, checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int], checker_bool_render_offsets: Array[Int], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], split: ModuleSplit, render: (Stmt) -> String, grants: Array[(String, String)]) -> Bytes with Exception {
+export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], entry_name_in: String, srcs: Array[(String, String)], linked_imports: Array[(String, String, Int, Int)], library_mode: Bool, enable_rc: Bool, coverage: Bool, debug_trace: Bool, debug_break: Bool, rc_shadow: Bool, enable_late_dce: Bool, prov: DbgProv, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache, slice_lo: Int, slice_hi: Int, checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int], checker_bool_render_offsets: Array[Int], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], split: ModuleSplit, render: (Stmt) -> String, grants: Array[(String, String)]) -> Bytes with Exception {
+  // #3132 review: `--entry StringBuilder::new` can name the program's own
+  // function, which the rename moves to `StringBuilder::new$user`. Rename
+  // first (idempotent, the prelude repeats it) so every lookup and DCE root
+  // below sees one spelling; the export keeps the source one.
+  rename_builtin_shadow_defs(stmts)
+  let entry_name = builtin_shadow_entry_name(stmts, entry_name_in)
   // #1536(c)/#1511(b): the whole effect-lowering prefix lives in
   // effect_lowering_prelude (shared verbatim with `vibe check`); a first
   // error there is exactly the throw each pass used to raise inline here.
@@ -9622,7 +9629,7 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
   // now. Library mode passes a synthetic entry name it never calls, so it is
   // exempt.
   if entry_user_idx < 0 && !library_mode && entry_name != "__no_entry__" {
-    throw("entry `\{entry_name}` not found: no exported function named `\{entry_name}` (use __no_entry__ to build a test runner)")
+    throw("entry `\{entry_name_in}` not found: no exported function named `\{entry_name_in}` (use __no_entry__ to build a test runner)")
   }
   // #2402: the empty string is seeded at pool slot 0, BEFORE the source
   // strings. It is the one compiler-materialised string that user bodies
@@ -14593,8 +14600,8 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
     Array::push(all_export_names, "_start")
     Array::push(all_export_indices, start_func_idx)
   }
-  if !library_mode && entry_func_idx >= 0 && !array_contains_str(all_export_names, entry_name) {
-    Array::push(all_export_names, entry_name)
+  if !library_mode && entry_func_idx >= 0 && !array_contains_str(all_export_names, entry_name_in) {
+    Array::push(all_export_names, entry_name_in)
     Array::push(all_export_indices, entry_func_idx)
   }
   let mut exi = 0
@@ -14603,7 +14610,7 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
     // the compiler calls (`Array::length` -> `Array::length$user`) is still
     // exported under the name the program wrote.
     let ename = builtin_shadow_source_name(Array::get(export_fn_names, exi))
-    let skip_export = library_mode && ename == entry_name
+    let skip_export = library_mode && ename == entry_name_in
     if !skip_export && !array_contains_str(all_export_names, ename) {
       Array::push(all_export_names, ename)
       Array::push(all_export_indices, Array::get(export_fn_user_indices, exi) + func_offset)

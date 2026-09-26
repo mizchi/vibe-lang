@@ -3992,7 +3992,14 @@ export fn apply_top_level_fn_alias_renames(stmts: Array[Stmt], renames: Array[(S
 /// the compiler deliberately honours (#2379), and `String::equals`, which the
 /// prelude defines as source (#2483). None of these names is defined anywhere
 /// under `lib/`.
+///
+/// `__index` / `__rec_field` are here too (#3132 review): the parser spells
+/// `a[i]` and a record pattern's field reads with them, and both are in the
+/// borrowing-builtin table, so a program's own `fn __index` used to capture
+/// the sugar -- `xs[2]` answered the program's function.
 let builtin_shadow_rename_names: Array[String] = [
+  "__index",
+  "__rec_field",
   "Array::concat",
   "Array::get",
   "Array::length",
@@ -4069,6 +4076,39 @@ export fn builtin_shadow_rename_of(name: String) -> String {
 /// compilation; what leaves it -- a wasm export of a library that defines
 /// `export fn Array::length` -- keeps the name the program wrote (#3132
 /// review), so an importer finds `Array::length`, not `Array::length$user`.
+/// The name the compilation knows the ENTRY by (#3132 review). `vibe build
+/// --entry StringBuilder::new` names the program's own function, which the
+/// rename moves to `StringBuilder::new$user`; every internal lookup and DCE
+/// root has to use that spelling while the export keeps the source one
+/// (`builtin_shadow_source_name`). Answers the same before or after the
+/// rename has run, since the lanes differ in where they run it.
+export fn builtin_shadow_entry_name(stmts: Array[Stmt], entry_name: String) -> String {
+  if !is_builtin_shadow_rename_name(entry_name) {
+    entry_name
+  } else {
+    let renamed = builtin_shadow_rename_of(entry_name)
+    let mut found = false
+    let mut i = 0
+    while !found && i < Array::length(stmts) {
+      let name = match Array::get(stmts, i) {
+        SLet(_, _, n, _, _) => n,
+        SFnDecl(_, n, _, _, _) => n,
+        _ => ""
+      }
+      if name == entry_name || name == renamed {
+        found = true
+      } else {
+        i = i + 1
+      }
+    }
+    if found {
+      renamed
+    } else {
+      entry_name
+    }
+  }
+}
+
 export fn builtin_shadow_source_name(name: String) -> String {
   let suffix = "$user"
   let n = String::length(name)

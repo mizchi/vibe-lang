@@ -6,6 +6,7 @@ import @vibe/compiler/core {
   Stmt,
   TypeExpr,
   builtin_registry,
+  builtin_shadow_entry_name,
   bytebuf_length,
   bytebuf_new,
   bytebuf_push,
@@ -1267,11 +1268,15 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, generat
   } }
 }
 
-fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, generated_test_artifact: Bool, gc_to_string_is_wrapper: Bool, direct_abi_generic_names: Array[String], gc_float_ret_fn_names: Array[String], gc_float_call_offsets: Array[Int], gc_int_render_offsets: Array[Int], gc_bool_render_offsets: Array[Int]) -> Bytes with Exception {
+fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String, generated_test_artifact: Bool, gc_to_string_is_wrapper: Bool, direct_abi_generic_names: Array[String], gc_float_ret_fn_names: Array[String], gc_float_call_offsets: Array[Int], gc_int_render_offsets: Array[Int], gc_bool_render_offsets: Array[Int]) -> Bytes with Exception {
   // #3132: a program's own `Array::length` / `Map::keys` / ... moves aside
   // before this lane's passes and lookups use the builtin names (see
   // rename_builtin_shadow_defs). Idempotent after the desugar ran it.
   rename_builtin_shadow_defs(stmts)
+  // #3132 review: `--entry StringBuilder::new` can name the program's own
+  // function, now spelled `StringBuilder::new$user`. Lookups use that
+  // spelling; the export keeps the source one.
+  let entry_name = builtin_shadow_entry_name(stmts, entry_name_in)
   // #805: inline-wasm fns are linear-backend only — reject before any work.
   gc_reject_inline_wasm(stmts)
   // #2652: the Double runtime prelude (codegen/common_base/double_runtime.vibe),
@@ -1736,7 +1741,7 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, generated
     ei = ei + 1
   }
   if entry_user_idx < 0 {
-    throw(String::concat("entry function not found: ", entry_name))
+    throw(String::concat("entry function not found: ", entry_name_in))
   }
   // Share one scope-aware scan across conditional bodies and host imports.
   let used_builtins = collect_used_builtin_names(stmts, fn_names_list)
@@ -3198,7 +3203,7 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, generated
   bytebuf_push(export_content, 0)
   leb128_encode_u32(export_content, start_func_idx)
   if export_entry_too {
-    emit_name(export_content, entry_name)
+    emit_name(export_content, entry_name_in)
     bytebuf_push(export_content, 0)
     leb128_encode_u32(export_content, entry_func_idx)
   } else {
