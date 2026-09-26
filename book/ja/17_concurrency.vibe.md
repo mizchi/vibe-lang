@@ -9,23 +9,22 @@ vibe でスレッドを spawn することはありません。`TaskGroup` を�
 より長生きしません。すべてがスコープに収まっていて、それが残りを検査可能に
 しています。
 
-パッケージは `@vibe/concurrent`。import は `VIBE_UNSTABLE=1` を付けて
-ビルドしないと拒否され、メッセージはそのフラグを名指しします。下の例は
-そのフラグを付けて実行したものです。
+パッケージは `@vibe/concurrent` で、stable です: タスクグループ、タスク
+ハンドル、容量付きチャネル、`Parallel::map`、そしてコンパイラの `Send` と
+リージョンの検査は opt-in なしで使えます。裏のスケジューラは協調的かつ決定的
+(タスクは待つまで走る) ですが、モデルはそれとは独立に決まっています —
+同じプログラムを後で並列 backend に載せても意味は変わりません。
 
-**この章は本書で唯一の unstable な面です。** ここに出てくるものはすべて
-ADR-0068 で、状態はまだ `proposed` です — `Nursery`、`Task`、
-`Sender`/`Receiver`、`TaskGroup::run` / `spawn` / `spawn_suspend`、および
-コンパイラの `Send` 判定。SemVer の約束の外側にあり、Minor リリースの中で
-変わりえます ([stable surface](../../docs/user/reference/stable-surface.md) §6)。決めて
-あることは組み立てるに足りますが、決まっていないのは `Send`/region の検査と、
-どの backend が動かすかです (現行のスケジューラは cooperative
-run-to-completion のプロトタイプ)。
+一部はまだ experimental です: 中断可能なタスクのレーン
+(`TaskGroup::spawn_suspend`、`pump_all`、`sleep_wait`、`send_wait` /
+`recv_wait`) は `@vibe/concurrent/experimental` にあり、このパッケージの
+import は `VIBE_UNSTABLE=1` を付けてビルドしないと拒否されます。SemVer の
+約束の外側にあり、Minor リリースの中で変わりえます
+([stable surface](../../docs/user/reference/stable-surface.md) §6)。
 
-`Async` effect 自体はこのバケツに入りません。ADR-0012 は accepted で、row 上の
+`Async` effect 自体も stable です。ADR-0012 は accepted で、row 上の
 `with Async` は他の effect と同じだけ安定しています — `StdinStream::next` の
-ように出荷済み builtin の署名にも現れます。不安定なのはその上に建つ並行
-モデルであって、語彙ではありません。
+ように出荷済み builtin の署名にも現れます。
 
 ## spawn して join する
 
@@ -58,8 +57,7 @@ answer = 42
 row が `Exception[TaskError]` を運びます。`main` から外すとコンパイラが
 直すべき編集をそのまま教えます — `` hint: add 'allows Console +
 Exception[TaskError]' to 'main' `` (上で書いた素の `Exception` はこれを
-カバーします)。この hint が出るのは `VIBE_UNSTABLE=1` のあとです。
-フラグが無いとその手前で止まります。
+カバーします)。
 
 ## spawn を越えられるもの
 
@@ -103,17 +101,21 @@ closure が検査されるので、その中では引数をそのまま spawn �
 
 ## 中断とブロック
 
-待つ操作にはそれぞれ2種類あり、違いは「兄弟タスクが走れるか」です。
+上のブロックする操作は、終わるまで呼び出したタスクをスタックに載せたままに
+します。experimental パッケージは待つ操作それぞれにもう1種類を足し、違いは
+「兄弟タスクが走れるか」です。
 
 | インスタンスをブロックする | タスクを中断する |
 |---|---|
 | `sleep` | `sleep_wait` |
 | `send` / `recv` | `send_wait` / `recv_wait` |
 
-`TaskGroup` の中では `_wait` の形を選ぶこと。ブロックする方は呼び出し元だけ
-でなく全体を止めます。
+`_wait` の形は `TaskGroup::spawn_suspend` で始めたタスクの中で使い、どれも
+`@vibe/concurrent/experimental` から import します (なのでビルドには
+`VIBE_UNSTABLE=1` が要ります)。ブロックする方は呼び出し元だけでなく全体を
+止めます。
 
-中断はこのパッケージの `Async` エフェクトが運び、`Suspend(Int) -> Int` と
+中断はそのパッケージの `Async` エフェクトが運び、`Suspend(Int) -> Int` と
 宣言されています。他と同じライブラリのエフェクトであってキーワードではなく、
 row にも同じように現れます。
 

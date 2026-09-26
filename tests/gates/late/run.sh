@@ -9,7 +9,7 @@ GATES_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
 source "$GATES_LIB"
 gate_resolve_stage2
 
-# ADR-0068 (#2248): `@vibe/concurrent` needs `VIBE_UNSTABLE=1` to compile at
+# ADR-0068 (#2248): `@vibe/concurrent/experimental` needs `VIBE_UNSTABLE=1` to compile at
 # all, and a dozen fixtures in this lane exercise that surface deliberately
 # (region generativity, spawnable capture, the async boundary, the TaskGroup
 # sugar). Granted lane-wide rather than per call site: the boundary exists for
@@ -6540,7 +6540,7 @@ echo "[compiler-gate] 108/108 the ADR-0068 concurrency surface is opt-in, in che
 uwdir="_build/_gate_unstable_warn"
 rm -rf "$uwdir"; mkdir -p "$uwdir"
 cat > "$uwdir/uses.vibe" <<'UWEOF'
-import @vibe/concurrent { TaskGroup }
+import @vibe/concurrent/experimental { TaskGroup }
 
 fn main() -> Int allows Exception {
   TaskGroup::run((n) -> {
@@ -6572,11 +6572,11 @@ uw_build() { # <src> <out> [extra env assignments...]
 # Captured into a variable, not piped: this gate runs under `set -o pipefail`,
 # and `uw_check` exits 1 on the rejection it is asserting, so `uw_check | grep`
 # fails even when grep MATCHES. Measured -- the first version reported "vibe
-# check accepted @vibe/concurrent" while the rejection it was looking for was
+# check accepted @vibe/concurrent/experimental" while the rejection it was looking for was
 # printed one line above it in the same log.
 uw_uses_out="$(uw_check "$uwdir/uses.vibe" || true)"
 if ! printf '%s\n' "$uw_uses_out" | grep -qF 'VIBE_UNSTABLE=1'; then
-  echo "[compiler-gate] FAIL: vibe check accepted @vibe/concurrent with no opt-in (#2248)" >&2
+  echo "[compiler-gate] FAIL: vibe check accepted @vibe/concurrent/experimental with no opt-in (#2248)" >&2
   printf '%s\n' "$uw_uses_out" >&2
   exit 1
 fi
@@ -6587,7 +6587,7 @@ if ! VIBE_UNSTABLE=1 VIBE_RUNNER="$ROOT_DIR/scripts/viberun_node.sh" VIBE_CLI_WA
 fi
 uw_plain_out="$(uw_check "$uwdir/plain.vibe" || true)"
 if printf '%s\n' "$uw_plain_out" | grep -qF 'VIBE_UNSTABLE=1'; then
-  echo "[compiler-gate] FAIL: a file not importing @vibe/concurrent was rejected anyway (#2248)" >&2
+  echo "[compiler-gate] FAIL: a file not importing @vibe/concurrent/experimental was rejected anyway (#2248)" >&2
   printf '%s\n' "$uw_plain_out" >&2
   exit 1
 fi
@@ -6595,7 +6595,7 @@ fi
 # build: the same three, through the FS-compile lane.
 uw_build "$uwdir/uses.vibe" "$uwdir/uses.wasm"
 if [ -s "$uwdir/uses.wasm" ]; then
-  echo "[compiler-gate] FAIL: vibe build accepted @vibe/concurrent with no opt-in -- the build accepts what the check rejects (#2248)" >&2
+  echo "[compiler-gate] FAIL: vibe build accepted @vibe/concurrent/experimental with no opt-in -- the build accepts what the check rejects (#2248)" >&2
   exit 1
 fi
 if ! grep -qF 'VIBE_UNSTABLE=1' "$uwdir/uses.wasm.diag" 2>/dev/null; then
@@ -6611,8 +6611,54 @@ if [ ! -s "$uwdir/uses_optin.wasm" ]; then
 fi
 uw_build "$uwdir/plain.vibe" "$uwdir/plain.wasm"
 if [ ! -s "$uwdir/plain.wasm" ]; then
-  echo "[compiler-gate] FAIL: a file not importing @vibe/concurrent failed to build (#2248)" >&2
+  echo "[compiler-gate] FAIL: a file not importing @vibe/concurrent/experimental failed to build (#2248)" >&2
   cat "$uwdir/plain.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+
+# The stable core needs no opt-in: `@vibe/concurrent` re-exports the task
+# group, channel and `Parallel::map` subset of the experimental package, and
+# both check and build take it with the variable cleared. It must not carry the
+# rest: importing the TYPE `TaskGroup` from it does not bring
+# `TaskGroup::spawn_suspend` along (a type publishes its constructors, not
+# every function sharing its prefix).
+cat > "$uwdir/stable.vibe" <<'UWEOF'
+import @vibe/concurrent { TaskGroup::run, TaskGroup::spawn, TaskHandle::join }
+
+fn main() -> Int allows Exception {
+  TaskGroup::run((g) -> {
+    let t = TaskGroup::spawn(g, () -> { 7 })
+    TaskHandle::join(t)
+  })
+}
+UWEOF
+cat > "$uwdir/stable_leak.vibe" <<'UWEOF'
+import @vibe/concurrent { TaskGroup::run, struct TaskGroup }
+
+fn main() -> Int allows Exception {
+  TaskGroup::run((g) -> {
+    let _t = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception { 7 })
+    0
+  })
+}
+UWEOF
+uw_stable_out="$(uw_check "$uwdir/stable.vibe" || true)"
+if [ -n "$uw_stable_out" ]; then
+  echo "[compiler-gate] FAIL: vibe check rejected the stable @vibe/concurrent with no opt-in" >&2
+  printf '%s\n' "$uw_stable_out" >&2
+  exit 1
+fi
+uw_build "$uwdir/stable.vibe" "$uwdir/stable.wasm"
+if [ ! -s "$uwdir/stable.wasm" ]; then
+  echo "[compiler-gate] FAIL: the stable @vibe/concurrent did not build with no opt-in" >&2
+  cat "$uwdir/stable.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+uw_leak_out="$(VIBE_UNSTABLE=1 VIBE_RUNNER="$ROOT_DIR/scripts/viberun_node.sh" VIBE_CLI_WASM="$stage2_wasm" \
+  VIBE_PREOPEN_DIR="$ROOT_DIR" bash "$ROOT_DIR/runtime/vibe" check "$uwdir/stable_leak.vibe" 2>&1 || true)"
+if ! printf '%s\n' "$uw_leak_out" | grep -qF 'TaskGroup::spawn_suspend'; then
+  echo "[compiler-gate] FAIL: importing TaskGroup from the stable @vibe/concurrent exposed TaskGroup::spawn_suspend" >&2
+  printf '%s\n' "$uw_leak_out" >&2
   exit 1
 fi
 
@@ -6622,8 +6668,8 @@ fi
 # package name. Both spellings are valid source the lexer accepts, so both were
 # a silent bypass; the gate now reads the PARSED import instead. Written with
 # printf rather than a heredoc so the tab survives being read back.
-printf 'import\t@vibe/concurrent { TaskGroup }\n\nfn main() -> Int allows Exception {\n  TaskGroup::run((n) -> { 0 })\n}\n' > "$uwdir/tab.vibe"
-printf 'import  @vibe/concurrent { TaskGroup }\n\nfn main() -> Int allows Exception {\n  TaskGroup::run((n) -> { 0 })\n}\n' > "$uwdir/spaces.vibe"
+printf 'import\t@vibe/concurrent/experimental { TaskGroup }\n\nfn main() -> Int allows Exception {\n  TaskGroup::run((n) -> { 0 })\n}\n' > "$uwdir/tab.vibe"
+printf 'import  @vibe/concurrent/experimental { TaskGroup }\n\nfn main() -> Int allows Exception {\n  TaskGroup::run((n) -> { 0 })\n}\n' > "$uwdir/spaces.vibe"
 for uw_odd in tab spaces; do
   uw_odd_out="$(uw_check "$uwdir/$uw_odd.vibe" || true)"
   if ! printf '%s\n' "$uw_odd_out" | grep -qF 'VIBE_UNSTABLE=1'; then
@@ -6639,14 +6685,14 @@ for uw_odd in tab spaces; do
 done
 
 # The reported line must be the OFFENDING import, not the first line that
-# mentions the package. `import @vibe/core { .. } // @vibe/concurrent` is a
+# mentions the package. `import @vibe/core { .. } // @vibe/concurrent/experimental` is a
 # stable import carrying the name in a comment; naming it told the reader to
 # delete a line that was not the problem, which is worse than no line at all
 # (#2277 review). The offending import is on line 3 here.
 cat > "$uwdir/comment.vibe" <<'UWEOF'
-import @vibe/core { array_empty } // @vibe/concurrent
+import @vibe/core { array_empty } // @vibe/concurrent/experimental
 
-import @vibe/concurrent { TaskGroup }
+import @vibe/concurrent/experimental { TaskGroup }
 
 fn main() -> Int allows Exception {
   TaskGroup::run((n) -> { 0 })
@@ -6670,9 +6716,9 @@ fi
 # asserted is WHICH diagnostic comes out. A pin error means the gate never
 # spoke.
 cat > "$uwdir/pinned.vibe" <<'UWEOF'
-require @vibe/concurrent 0.0.1 = #pkg:sha1:0123456789abcdef0123456789abcdef01234567
+require @vibe/concurrent/experimental 0.0.1 = #pkg:sha1:0123456789abcdef0123456789abcdef01234567
 
-import @vibe/concurrent { TaskGroup }
+import @vibe/concurrent/experimental { TaskGroup }
 
 fn main() -> Int allows Exception {
   TaskGroup::run((n) -> { 0 })
@@ -6680,7 +6726,7 @@ fn main() -> Int allows Exception {
 UWEOF
 uw_build "$uwdir/pinned.vibe" "$uwdir/pinned.wasm"
 if [ -s "$uwdir/pinned.wasm" ]; then
-  echo "[compiler-gate] FAIL: a pinned-require entry built against @vibe/concurrent with no opt-in (#2277)" >&2
+  echo "[compiler-gate] FAIL: a pinned-require entry built against @vibe/concurrent/experimental with no opt-in (#2277)" >&2
   exit 1
 fi
 if ! grep -qF 'VIBE_UNSTABLE=1' "$uwdir/pinned.wasm.diag" 2>/dev/null; then
@@ -6689,12 +6735,12 @@ if ! grep -qF 'VIBE_UNSTABLE=1' "$uwdir/pinned.wasm.diag" 2>/dev/null; then
   exit 1
 fi
 
-# The path may be on the NEXT line. `import\n  @vibe/concurrent { .. }` is valid
+# The path may be on the NEXT line. `import\n  @vibe/concurrent/experimental { .. }` is valid
 # source; a same-line search missed it and fell back to line 1, naming an
 # unrelated declaration. The location comes from the lexer now, so this and the
 # comment case above are the same rule rather than two patches (#2277 review).
 # The import here starts on line 5.
-printf 'fn helper() -> Int {\n  1\n}\n\nimport\n  @vibe/concurrent { TaskGroup }\n\nfn main() -> Int allows Exception {\n  TaskGroup::run((n) -> { 0 })\n}\n' > "$uwdir/multiline.vibe"
+printf 'fn helper() -> Int {\n  1\n}\n\nimport\n  @vibe/concurrent/experimental { TaskGroup }\n\nfn main() -> Int allows Exception {\n  TaskGroup::run((n) -> { 0 })\n}\n' > "$uwdir/multiline.vibe"
 uw_build "$uwdir/multiline.vibe" "$uwdir/multiline.wasm"
 if ! grep -qF 'line 5:' "$uwdir/multiline.wasm.diag" 2>/dev/null; then
   echo "[compiler-gate] FAIL: a multiline import declaration got the wrong line (#2277)" >&2
@@ -6703,12 +6749,12 @@ if ! grep -qF 'line 5:' "$uwdir/multiline.wasm.diag" 2>/dev/null; then
 fi
 
 # The BUFFER lane must agree too. `vibe check --single-file` (VIBE_DIAGNOSTICS)
-# does not resolve imports, so an UNUSED `import @vibe/concurrent` analyzed
+# does not resolve imports, so an UNUSED `import @vibe/concurrent/experimental` analyzed
 # clean there while both other verbs rejected the same file -- an editor showing
 # nothing is the third answer to the same question (#2277 review). Unused on
 # purpose: that is the shape that slipped through.
 cat > "$uwdir/buffer.vibe" <<'UWEOF'
-import @vibe/concurrent { TaskGroup }
+import @vibe/concurrent/experimental { TaskGroup }
 
 fn main() -> Int {
   1
@@ -6746,7 +6792,7 @@ fi
 # column 1, so the editor put the cursor at character 0 while the text form
 # named the real column (#2277 review). The import is indented so the two
 # answers can differ at all.
-printf '  import @vibe/concurrent { TaskGroup }\n\nfn main() -> Int {\n  1\n}\n' > "$uwdir/indented.vibe"
+printf '  import @vibe/concurrent/experimental { TaskGroup }\n\nfn main() -> Int {\n  1\n}\n' > "$uwdir/indented.vibe"
 rm -f "$uwdir/indented.out" "$uwdir/indented.json"
 env -u VIBE_UNSTABLE VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_DIAGNOSTICS=1 \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
@@ -6775,7 +6821,7 @@ fi
 # is the four-parameter String one `validate_serve_handler` requires; the
 # control below proves the file is otherwise servable.
 cat > "$uwdir/serve.vibe" <<'UWEOF'
-import @vibe/concurrent { TaskGroup }
+import @vibe/concurrent/experimental { TaskGroup }
 
 export fn handler(method: String, url: String, headers: String, body: String) -> String {
   "ok"
@@ -6809,7 +6855,7 @@ fi
 # about this gate, and it is the kind of fact that changes without anyone
 # revisiting the gate (#2277 review).
 cat > "$uwdir/reexport.vibe" <<'UWEOF'
-export @vibe/concurrent { TaskGroup }
+export @vibe/concurrent/experimental { TaskGroup }
 
 fn main() -> Int {
   1
@@ -6843,7 +6889,7 @@ fi
 # answered `1 passed` (#2277 review). The import is unused on purpose -- that is
 # the shape this lane accepts.
 cat > "$uwdir/bare.vibe" <<'UWEOF'
-import @vibe/concurrent { TaskGroup }
+import @vibe/concurrent/experimental { TaskGroup }
 
 test "unused unstable import" {
   assert_true(1 + 1 == 2)
@@ -6888,9 +6934,9 @@ fi
 # FIRST declaration's coordinates -- and the second one then names a line whose
 # text the reader would find nothing wrong with (#2277 review).
 cat > "$uwdir/twice.vibe" <<'UWEOF'
-import @vibe/concurrent { TaskGroup }
+import @vibe/concurrent/experimental { TaskGroup }
 
-import @vibe/concurrent { Nursery }
+import @vibe/concurrent/experimental { Nursery }
 
 fn main() -> Int {
   1
@@ -6919,7 +6965,7 @@ fi
 # entry -- otherwise the reader is sent to a file with nothing wrong in it.
 mkdir -p "$uwdir/sib"
 cat > "$uwdir/sib/worker.vibe" <<'UWEOF'
-import @vibe/concurrent {
+import @vibe/concurrent/experimental {
   TaskGroup
 }
 
@@ -6990,7 +7036,7 @@ fi
 # opt-in. A gate must win over the diagnostics that are downstream of it.
 mkdir -p "$uwdir/srv"
 cat > "$uwdir/srv/dep.vibe" <<'UWEOF'
-import @vibe/concurrent {
+import @vibe/concurrent/experimental {
   TaskGroup
 }
 
@@ -7726,12 +7772,12 @@ deps = {}
 
 generated_hash =
 
-import @vibe/concurrent { TaskGroup }
+import @vibe/concurrent/experimental { TaskGroup }
 
 fn work() -> Int
 IHEOF
 cat > "$ihdir/pkg/impl.vibe" <<'IHEOF'
-import @vibe/concurrent { TaskGroup }
+import @vibe/concurrent/experimental { TaskGroup }
 
 export fn work() -> Int {
   7
@@ -7791,7 +7837,7 @@ deps = {}
 
 generated_hash =
 
-import @vibe/concurrent { TaskGroup }
+import @vibe/concurrent/experimental { TaskGroup }
 
 fn a() -> Int
 fn b() -> Int
@@ -7847,7 +7893,7 @@ echo "[compiler-gate] inherited and physical unstable imports are each reported,
 # text and its `--json` form -- but the JSON form only reports it because the
 # ADAPTER splices the verdict in, so 108 says nothing about the live server.
 # Measured before this landed: publishDiagnostics on a buffer whose only
-# content is `import @vibe/concurrent` delivered the unused-import warning and
+# content is `import @vibe/concurrent/experimental` delivered the unused-import warning and
 # no opt-in error at all, while the two check forms reported both.
 #
 # Both directions, because a fix that always appends the diagnostic would pass
@@ -7862,7 +7908,7 @@ def frame(obj):
     b = json.dumps(obj).encode("utf-8")
     return f"Content-Length: {len(b)}\r\n\r\n".encode("ascii") + b
 
-src = 'import @vibe/concurrent { TaskGroup }\n\nexport let main = () -> Int { 0 }\n'
+src = 'import @vibe/concurrent/experimental { TaskGroup }\n\nexport let main = () -> Int { 0 }\n'
 msgs = [
     frame({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
     frame({"jsonrpc": "2.0", "method": "initialized", "params": {}}),
@@ -7957,7 +8003,7 @@ fi
 #   - an editor DOES open `index.vpkg`. With an empty path the scan parses the
 #     contract with the statement grammar, the header fails, the scan returns
 #     `None`, and no opt-in error is reported for a contract that imports
-#     `@vibe/concurrent`;
+#     `@vibe/concurrent/experimental`;
 #   - a buffer may open with a `require ... = #pkg:sha1:` head. The base lane
 #     blanks that before parsing (#2227); the scan reparsed the RAW source,
 #     where the directive is a parse error -- `None` again.
@@ -7982,14 +8028,14 @@ VPKG = (
     "\n"
     "generated_hash =\n"
     "\n"
-    "import @vibe/concurrent { TaskGroup }\n"
+    "import @vibe/concurrent/experimental { TaskGroup }\n"
     "\n"
     "fn implemented(x: Int) -> Int\n"
 )
 PIN = (
     "require @gate/dep 1.0.0 = #pkg:sha1:0000000000000000000000000000000000000000\n"
     "\n"
-    "import @vibe/concurrent { TaskGroup }\n"
+    "import @vibe/concurrent/experimental { TaskGroup }\n"
     "\n"
     "export let main = () -> Int { 0 }\n"
 )
@@ -8439,7 +8485,7 @@ fi
 # buffer, which could not parse a `.vpkg` header and so returned nothing. That
 # was invisible while the base set was answering `expected { but got eof` about
 # the same file -- removing the false error would have left a contract that
-# imports `@vibe/concurrent` reporting NOTHING AT ALL, which is strictly worse
+# imports `@vibe/concurrent/experimental` reporting NOTHING AT ALL, which is strictly worse
 # than the wrong parse error this section removes (#2314 review). Measured on
 # the pre-fix compiler: the LSP reported the opt-in for this contract and this
 # lane did not.
@@ -8452,7 +8498,7 @@ deps = {}
 
 generated_hash =
 
-import @vibe/concurrent { TaskGroup }
+import @vibe/concurrent/experimental { TaskGroup }
 
 fn implemented(x: Int) -> Int
 VPBUFEOF

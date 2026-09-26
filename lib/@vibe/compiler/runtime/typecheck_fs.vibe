@@ -668,18 +668,52 @@ fn type_returns_name(ty: Type, type_name: String) -> Bool {
 /// explicitly publishes it. This predicate is deliberately used solely while
 /// constructing that published surface; import validation below never falls
 /// back to builtin, registry, or effect-name recognition.
-fn is_selected_type_companion(name: String, ty: Type, type_surface: Array[String]) -> Bool {
+///
+/// A type in an export list carries its own constructors, not every function
+/// that shares its prefix or returns it: a QUALIFIED name travels with the type
+/// only when it is one of the type's enum variants. `T::method` and a
+/// `U::make() -> T` are published by listing them. Without this, a facade that
+/// re-exports a subset of a package -- `@vibe/concurrent` over
+/// `@vibe/concurrent/experimental` -- published the rest too: listing
+/// `TaskGroup` / `TaskHandle` carried `TaskGroup::spawn_suspend` (by prefix)
+/// and `TaskGroup::adopt` (it returns `TaskHandle`) past a contract that
+/// declares neither. An unqualified name keeps the older return-type rule.
+fn is_selected_type_companion(name: String, ty: Type, type_surface: Array[String], all_defs: Array[TypeDef]) -> Bool {
+  let qualified = String::index_of(name, "::") >= 0
   let mut i = 0
   let mut selected = false
   while i < Array::length(type_surface) && !selected {
     let type_name = Array::get(type_surface, i)
-    if name == type_name || String::starts_with(name, String::concat(type_name, "::")) || type_returns_name(ty, type_name) {
+    let own = String::concat(type_name, "::")
+    if name == type_name || (String::starts_with(name, own) && is_enum_variant_of(all_defs, type_name, String::substring(name, String::length(own), String::length(name)))) || (!qualified && type_returns_name(ty, type_name)) {
       selected = true
     } else {
       i = i + 1
     }
   }
   selected
+}
+
+fn is_enum_variant_of(defs: Array[TypeDef], type_name: String, variant: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(defs) && !found {
+    match Array::get(defs, i) {
+      TDEnum(n, _, variants) => if n == type_name {
+        let mut k = 0
+        while k < Array::length(variants) && !found {
+          let (vn, _) = Array::get(variants, k)
+          if vn == variant {
+            found = true
+          }
+          k = k + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
 }
 
 /// Companions bound alongside an imported type `T`: (a) constructors and
@@ -4641,7 +4675,7 @@ fn restrict_env_to_export_surface_with_defs(value_surface: Array[String], trait_
     EnvEmpty => EnvEmpty,
     EnvBind(name, binding, rest) => {
       let restricted = restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs)
-      if bsearch_leftmost(value_surface, name) >= 0 || is_selected_type_companion(name, binding.ty, type_surface) {
+      if bsearch_leftmost(value_surface, name) >= 0 || is_selected_type_companion(name, binding.ty, type_surface, all_defs) {
         EnvBind(name, binding, restricted)
       } else {
         restricted
@@ -4710,7 +4744,7 @@ fn restrict_env_to_export_surface_with_defs(value_surface: Array[String], trait_
       let mut i = 0
       while i < Array::length(bindings) {
         let (name, binding) = Array::get(bindings, i)
-        if bsearch_leftmost(value_surface, name) >= 0 || is_selected_type_companion(name, binding.ty, type_surface) {
+        if bsearch_leftmost(value_surface, name) >= 0 || is_selected_type_companion(name, binding.ty, type_surface, all_defs) {
           Array::push(kept, (name, binding))
         } else {
           ()

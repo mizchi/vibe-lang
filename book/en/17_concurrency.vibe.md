@@ -9,23 +9,23 @@ into it, and join the results — and the group does not outlive the call
 that opened it. Everything is scoped, which is what makes the rest
 checkable.
 
-The package is `@vibe/concurrent`. Importing it is refused unless the
-build is run with `VIBE_UNSTABLE=1`. The message names that flag. The
-examples below were run with it set.
+The package is `@vibe/concurrent`, and it is stable: task groups, task
+handles, bounded channels, `Parallel::map`, and the compiler's `Send` and
+region checks need no opt-in. The scheduler behind them is cooperative and
+deterministic — a task runs until it waits — and the model is fixed
+independently of that: moving the same programs onto a parallel backend
+later does not change what they mean.
 
-**This chapter is the one unstable surface in the book.** Everything here is
-ADR-0068, which is still `proposed`: `Nursery`, `Task`, `Sender`/`Receiver`,
-`TaskGroup::run` / `spawn` / `spawn_suspend`, and the compiler's `Send` rule.
-It is outside the SemVer promise and can change within a Minor release — see
-[the stable surface](../../docs/user/reference/stable-surface.md) §6. What it decides is
-settled enough to build on; what is not settled is the `Send`/region checking
-and which backend runs it (today's scheduler is a cooperative
-run-to-completion prototype).
+One part is still experimental: the suspendable-task lane
+(`TaskGroup::spawn_suspend`, `pump_all`, `sleep_wait`, `send_wait` /
+`recv_wait`) lives in `@vibe/concurrent/experimental`, and importing that
+package is refused unless the build is run with `VIBE_UNSTABLE=1`. It is
+outside the SemVer promise and can change within a Minor release — see
+[the stable surface](../../docs/user/reference/stable-surface.md) §6.
 
-The `Async` effect itself is NOT in that bucket. ADR-0012 is accepted, and
+The `Async` effect itself is stable too. ADR-0012 is accepted, and
 `with Async` on a row is as stable as any other effect — it appears in shipped
-builtin signatures like `StdinStream::next`. The unstable part is the
-concurrency model built on top of it, not the vocabulary.
+builtin signatures like `StdinStream::next`.
 
 ## Spawning and joining
 
@@ -59,8 +59,7 @@ and `join` rethrows that failure as a `TaskError`, so `join`'s own row
 carries `Exception[TaskError]`. Leave it off `main` and the compiler
 tells you the exact edit — `` hint: add 'allows Console +
 Exception[TaskError]' to 'main' `` (the plain `Exception` written above
-covers it). That hint is the one you get after `VIBE_UNSTABLE=1`.
-Without the flag you never reach it.
+covers it).
 
 ## What may cross a spawn
 
@@ -105,18 +104,20 @@ parameter can be spawned.
 
 ## Suspending versus blocking
 
-Two flavours of every waiting operation, and the difference is whether
-siblings get to run:
+The blocking operations above keep the task that calls them on the stack
+until they finish. The experimental package adds a second flavour of every
+waiting operation, and the difference is whether siblings get to run:
 
 | blocks the instance | suspends the task |
 |---|---|
 | `sleep` | `sleep_wait` |
 | `send` / `recv` | `send_wait` / `recv_wait` |
 
-Reach for the `_wait` forms inside a `TaskGroup`; the blocking ones stop
-everything, not just the caller.
+The `_wait` forms run inside a task started with `TaskGroup::spawn_suspend`,
+all from `@vibe/concurrent/experimental` (so the build needs
+`VIBE_UNSTABLE=1`); the blocking ones stop everything, not just the caller.
 
-Suspension is carried by an `Async` effect on this package, declared as
+Suspension is carried by an `Async` effect on that package, declared as
 `Suspend(Int) -> Int`. It is a library effect like any other — not a
 keyword, and it shows up in rows the same way.
 

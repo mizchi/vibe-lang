@@ -351,12 +351,11 @@ removed in #594; both are covered by piping into `vibe shell`.)
 | Flag | Description |
 |------|-------------|
 | `--syntax vibe` | Select parser mode |
-| `--unstable-async` | Enable async runtime features (experimental) |
-| `--unstable-threads` | Enable thread runtime features (experimental) |
 
 ## Environment Variables
 
 | Variable | Description |
 |----------|-------------|
 | `VIBE_TEST_JOBS` | Default parallelism for `test` (max 16) |
+| `VIBE_UNSTABLE` | `1` allows importing `@vibe/concurrent/experimental` (the suspendable-task lane); without it `check` and `build` refuse the import |
 | `VIBE_BUILD_DIR` | Overrides `<root>/.vibe/build`, where every artifact lands; the launcher derives `VIBE_BUILD_CACHE_DIR=$VIBE_BUILD_DIR/cache` unless that is already set, so the compiler cache moves with it (#2675) |

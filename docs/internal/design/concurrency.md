@@ -849,7 +849,7 @@ choose する fresh var を返す `instantiate` しかなく、型に scope タ�
   `CtEnum("TaskError")` に解決される — `CtNamed` だと決め打っていた
   一箇所のバグで露呈)ため撤回し、リテラル一致に戻した。alias/rename/
   wrapper 経由のすり抜けは this slice の既知のギャップとして
-  `lib/@vibe/concurrent/index.vpkg` の `r` コメントに明記した。
+  `lib/@vibe/concurrent/experimental/index.vpkg` の `r` コメントに明記した。
 ### Implementation note: the `Spawnable[r]` capture check (#1081 step 3, second half)
 
 The worry recorded above -- that `n`'s region is not yet unified with a
