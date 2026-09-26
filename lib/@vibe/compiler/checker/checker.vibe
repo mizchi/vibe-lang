@@ -7244,6 +7244,26 @@ fn let_rhs_is_alias(val: Expr) -> Bool {
   }
 }
 
+/// The closure literal a local `let` binds, seen through the parser's
+/// ascription wrapper for an annotated binding (`ascription_lambda_ann`).
+fn let_rhs_closure_literal(val: Expr) -> Option[Expr] {
+  match val {
+    EFn(_, _, _, _, _, _) => Some(val),
+    ECall(callee, args, _) => if Array::length(args) == 1 {
+      match ascription_lambda_ann(callee) {
+        Some(_) => match Array::get(args, 0) {
+          EFn(_, _, _, _, _, _) => Some(Array::get(args, 0)),
+          _ => None
+        },
+        None => None
+      }
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
 /// #844: recognize the EXACT synthetic call shape `parser_expr_dispatch.vibe`'s
 /// `ascribe_wrap` builds for a LOCAL `let x: T = val` --
 /// `((__asc: T) -> __asc)(val)` -- and return its annotation `T`. `"__asc"` is
@@ -9281,8 +9301,11 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         // #3152: record what a local closure captured, read in the scope it
         // was written in, so a later `TaskGroup::spawn(n, name)` -- or a
         // spawned body that calls `name` -- is checked like the literal.
-        match val {
-          EFn(_, _, fparams, _, _, fbody) => {
+        // An annotated `let f: T = () -> ..` is the parser's ascription call
+        // around the literal (#3156 review); unwrap it the way
+        // `let_rhs_is_alias` does.
+        match let_rhs_closure_literal(val) {
+          Some(EFn(_, _, fparams, _, _, fbody)) => {
             cenv = env_bind(cenv, spawn_caps_marker(name), CtTuple(closure_capture_facts(def_env, fbody, fparams)))
           },
           _ => ()
