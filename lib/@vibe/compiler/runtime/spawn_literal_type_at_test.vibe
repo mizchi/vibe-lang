@@ -1,0 +1,35 @@
+// #3150: `vibe type-at` inside a closure literal handed to a task group.
+// type-at checks the one file, so `@vibe/concurrent` is not resolved and
+// `TaskGroup::run` / `TaskGroup::spawn_suspend` are unknown names there. The
+// checker's dedicated run and spawn branches returned without checking their
+// arguments in that case, so no name in a task body had a type: `x` below
+// answered "no type is known" while the same body in a named function
+// answered `Int`. The arguments are now checked like the generic call path
+// checks an unresolved callee's arguments.
+
+import ./type_at.vibe {
+  type_at_source
+}
+
+fn spawn_suspend_src() -> String {
+  "import @vibe/concurrent {\n  TaskGroup, TaskHandle\n}\n\nlet run: () -> Int with Async + Exception = () -> {\n  TaskGroup::run((g) -> {\n    let t = TaskGroup::spawn_suspend(g, () -> Int with Async {\n      let s = host_stream_named(\"left\")\n      let x = host_stream_next(s)\n      x + 40\n    })\n    TaskGroup::pump_all(g)\n    TaskHandle::join(t)\n  })\n}\n"
+}
+
+fn spawn_src() -> String {
+  "import @vibe/concurrent {\n  TaskGroup, TaskHandle\n}\n\nlet run: () -> Int with Exception = () -> {\n  TaskGroup::run((g) -> {\n    let t = TaskGroup::spawn(g, () -> {\n      let label = \"n\"\n      String::length(label) + 40\n    })\n    TaskGroup::pump_all(g)\n    TaskHandle::join(t)\n  })\n}\n"
+}
+
+test "#3150: names in a spawn_suspend literal have their types" {
+  let src = spawn_suspend_src()
+  // `x` in `x + 40`, the read's binder, and the stream it reads.
+  inspect(type_at_source(src, 10, 7), content = "Int")
+  inspect(type_at_source(src, 9, 11), content = "Int")
+  inspect(type_at_source(src, 9, 32), content = "HostStream")
+  inspect(type_at_source(src, 8, 11), content = "HostStream")
+}
+
+test "#3150: names in a spawn literal have their types" {
+  let src = spawn_src()
+  inspect(type_at_source(src, 9, 22), content = "String")
+  inspect(type_at_source(src, 8, 11), content = "String")
+}

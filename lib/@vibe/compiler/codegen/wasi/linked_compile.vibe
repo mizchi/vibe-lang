@@ -9368,6 +9368,18 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
   } else {
     ()
   }
+  // #3150 / #3151: whether the entry boundary settles host STREAM reads is a
+  // fact about what the prelude injected, so it is read here, BEFORE the
+  // reachability prune below. `lc_host_hooks_install` used to ask it after the
+  // prune, as "is `__hs_next` still defined" -- but a read that only happens
+  // on a CPS spine (a spawned closure literal, an entry lowered to steps
+  // because it spawns suspendable tasks, every `HostStream::next`) calls the
+  // step clone, never `__hs_next` itself, so the prune removed it. The hooks
+  // then kept the library's "no host waitables" stubs, a task's stream read
+  // parked as a poller, and the pump resumed it with 0 without reading the
+  // stream: `let x = host_stream_next(s); x + 40` answered 40 (#3150), and a
+  // task draining through `HostStream::next` hit the deadlock trap (#3151).
+  let lc_stream_hooks_wanted = lc_program_defines_top_level(stmts, "__entry_settle") && lc_program_defines_top_level(stmts, "__hs_next")
   // #1666: prune what the PIPELINE generated, not just what the source wrote.
   //
   // `dce_stmts` already runs once, in `compile_file_fs_mode`'s "mvp" mode --
@@ -10008,8 +10020,9 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
   // by every compile.
   // #1537: the program is linked here, @vibe/concurrent included, so this is
   // where its host-waitable hooks can get the adapter's bodies -- when the
-  // entry boundary settles host futures (it injected `__entry_settle`).
-  lc_host_hooks_install(stmts, lc_program_defines_top_level(stmts, "__entry_settle") && lc_stmts_call_host_future(stmts), lc_program_defines_top_level(stmts, "__entry_settle") && lc_program_defines_top_level(stmts, "__hs_next"))
+  // entry boundary settles host futures (it injected `__entry_settle`). The
+  // stream half was decided before the prune (`lc_stream_hooks_wanted`).
+  lc_host_hooks_install(stmts, lc_program_defines_top_level(stmts, "__entry_settle") && lc_stmts_call_host_future(stmts), lc_stream_hooks_wanted)
   let used_builtin_names = collect_used_builtin_names(stmts, fn_names_list)
   let need_array_capacity = Map::has_key(used_builtin_names, "Array::with_capacity")
   let need_bytes_capacity = Map::has_key(used_builtin_names, "Bytes::with_capacity")

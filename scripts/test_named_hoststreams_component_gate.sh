@@ -618,4 +618,29 @@ fi
   || { echo "named hoststreams component gate FAILED: stream_cancel_many expected 60, got: $(cat "$SCM_LOG")" >&2; exit 1; }
 echo "[named-hoststreams-component-gate] stream_cancel_many: 60 (1100 cancelled stream reads released)"
 
+# fixtures/async_spawn_host_futures/stream_read_arith.vibe (#3150): spawned
+# closure literals call `host_stream_next` themselves and compute with the
+# byte. Their reads call only the step clone of `__hs_next`, so the prune
+# removed `__hs_next` and the stream hooks were never installed: every read
+# parked as a poller, resumed with 0, and the program answered 40000. The
+# composition must also import the group-wide stream arm the hooks use.
+SRA_OUT="$OUT_DIR/spawn_stream_read_arith.component.wasm"
+rm -f "$SRA_OUT" "$SRA_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/stream_read_arith.vibe "$SRA_OUT" run >/dev/null 2>&1 || true
+[ -s "$SRA_OUT" ] || { echo "named hoststreams component gate FAILED: fixtures/async_spawn_host_futures/stream_read_arith.vibe did not compile: $(cat "$SRA_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+wasm-tools print "$SRA_OUT" >"$SRA_OUT.wat" 2>/dev/null || true
+grep -q '"host_stream_arm"' "$SRA_OUT.wat" \
+  || { echo "named hoststreams component gate FAILED: stream_read_arith composed without the host_stream_arm hook import (#3150)" >&2; exit 1; }
+SRA_LOG="$OUT_DIR/spawn_stream_read_arith.log"
+if ! VIBE_ASYNC_STREAMS="left=2|3|4@50,right=7|3@50" run_bounded 60 "$RUNNER" "$SRA_OUT" >"$SRA_LOG" 2>&1; then
+  echo "named hoststreams component gate FAILED: stream_read_arith did not exit 0" >&2
+  cat "$SRA_LOG" >&2
+  exit 1
+fi
+[ "$(cat "$SRA_LOG")" = "42067" ] \
+  || { echo "named hoststreams component gate FAILED: stream_read_arith expected 42067 (2 + 40, 7 * 10 - 3), got: $(cat "$SRA_LOG") (40000 = the reads resumed with 0, #3150)" >&2; exit 1; }
+echo "[named-hoststreams-component-gate] stream_read_arith: 42067 (reads in spawned literals deliver their bytes)"
+
 echo "named hoststreams component gate OK"
