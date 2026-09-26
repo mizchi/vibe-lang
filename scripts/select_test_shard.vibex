@@ -39,7 +39,45 @@ fn require_int(name: String, raw: String) -> Int with Stderr + Process {
   }
 }
 
-fn normalize_path(file: String, root: String) -> String {
+/// An absolute path with `.` and `..` segments and repeated slashes folded,
+/// as `path.resolve` did in the Node original. A relative path is returned
+/// unchanged. Without this `--root sub/..` resolved to `/repo/sub/..`, which
+/// is not a prefix of `/repo/a_test.vibe`, so the file kept an absolute key
+/// and silently took the default weight (#3167 review).
+fn canonical_abs(path: String) -> String {
+  if !String::starts_with(path, "/") {
+    path
+  } else {
+    let parts = String::split(path, "/")
+    let kept: Array[String] = []
+    let mut i = 0
+    while i < Array::length(parts) {
+      let seg = Array::get(parts, i)
+      if seg == "" || seg == "." {
+        ()
+      } else if seg == ".." {
+        if Array::length(kept) > 0 {
+          Array::truncate(kept, Array::length(kept) - 1)
+        } else {
+          ()
+        }
+      } else {
+        Array::push(kept, seg)
+      }
+      i = i + 1
+    }
+    let mut out = ""
+    let mut k = 0
+    while k < Array::length(kept) {
+      out = out + "/" + Array::get(kept, k)
+      k = k + 1
+    }
+    if out == "" { "/" } else { out }
+  }
+}
+
+fn normalize_path(raw_file: String, root: String) -> String {
+  let file = canonical_abs(raw_file)
   let prefix = if String::ends_with(root, "/") { root } else { root + "/" }
   let rel = if root != "" && String::starts_with(file, prefix) {
     String::substring(file, String::length(prefix), String::length(file))
@@ -56,15 +94,63 @@ fn normalize_path(file: String, root: String) -> String {
 /// default -- round-robin wearing a weighted name. `--root .` (the documented
 /// spelling) needed the same resolution to match an absolute path at all.
 fn resolve_root(opt: String, cwd: String) -> String {
-  if opt == "" || opt == "." || opt == "./" {
-    cwd
+  if opt == "" {
+    canonical_abs(cwd)
   } else if String::starts_with(opt, "/") {
-    opt
-  } else if String::starts_with(opt, "./") {
-    cwd + "/" + String::substring(opt, 2, String::length(opt))
+    canonical_abs(opt)
   } else {
-    cwd + "/" + opt
+    canonical_abs(cwd + "/" + opt)
   }
+}
+
+/// Every token before `--` must be one of this tool's options. The lookups
+/// (`option`, `flag`) each ask for one name and ignore the rest, so a typo
+/// such as `--weigths w.json` used to leave weighting silently OFF; the Node
+/// original rejected unknown arguments (#3167 review). Returns the first
+/// offending token, or "" when the command line is well formed.
+fn first_unknown_arg(args: Array[String]) -> String {
+  let valued = ["--index", "--total", "--root", "--weights"]
+  let mut bad = ""
+  let mut i = 0
+  while i < Array::length(args) && bad == "" {
+    let a = Array::get(args, i)
+    if a == "--" {
+      i = Array::length(args)
+    } else if a == "--self-test" {
+      i = i + 1
+    } else if edp_contains(valued, a) {
+      if i + 1 < Array::length(args) {
+        i = i + 2
+      } else {
+        bad = a + " (missing value)"
+      }
+    } else if String::contains(a, "=") && edp_contains(valued, String::substring(a, 0, String::index_of(a, "="))) {
+      i = i + 1
+    } else {
+      bad = a
+    }
+  }
+  bad
+}
+
+fn edp_contains(xs: Array[String], x: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(xs) && !found {
+    if Array::get(xs, i) == x { found = true } else { () }
+    i = i + 1
+  }
+  found
+}
+
+fn process_args() -> Array[String] with Env {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Env::args_len() {
+    Array::push(out, Env::args_get(i))
+    i = i + 1
+  }
+  out
 }
 
 fn weight_num(v: Json) -> Double {
@@ -310,6 +396,18 @@ fn self_test() -> Unit with Fs + Console + Stderr + Process {
   expect(resolve_root(".", root) == root, "--root . is the working directory")
   expect(resolve_root("sub", root) == root + "/sub", "a relative --root resolves against the working directory")
   expect(resolve_root("/abs", root) == "/abs", "an absolute --root is kept")
+  expect(resolve_root("sub/..", root) == root, "dot segments in --root are folded")
+  expect(resolve_root("./a/./b/../c/", root) == root + "/a/c", "./, . and .. fold like path.resolve")
+  expect(
+    normalize_path(root + "/x/../lib/y_test.vibe", resolve_root("sub/..", root)) == "lib/y_test.vibe",
+    "a file and a root with dot segments still meet on a relative key"
+  )
+  // Unknown arguments are refused instead of silently switching weighting off.
+  expect(first_unknown_arg(["--index", "0", "--total", "2", "--weights", "w.json", "--", "a.vibe"]) == "", "a well-formed line is accepted")
+  expect(first_unknown_arg(["--index=0", "--total=2", "--root=.", "--", "--weigths"]) == "", "= forms are accepted; tokens after -- are files")
+  expect(first_unknown_arg(["--index", "0", "--weigths", "w.json"]) == "--weigths", "a misspelled option is named")
+  expect(first_unknown_arg(["--index", "0", "stray"]) == "stray", "a stray positional before -- is refused")
+  expect(first_unknown_arg(["--index"]) == "--index (missing value)", "an option with no value is refused")
   expect(
     normalize_path(root + "/lib/x_test.vibe", resolve_root("", root)) == "lib/x_test.vibe",
     "an absolute file under the default root gets a relative key"
@@ -352,6 +450,12 @@ fn main() -> Unit allows Env + Fs + Console + Stderr + Process {
   if flag("--self-test") {
     self_test()
   } else {
+    let unknown = first_unknown_arg(process_args())
+    if unknown != "" {
+      die("select-test-shard: unknown argument: " + unknown + " (expected --index N --total N [--root DIR] [--weights FILE] -- FILES...)")
+    } else {
+      ()
+    }
     let index = require_int("--index", option("--index"))
     let total = require_int("--total", option("--total"))
     let root = resolve_root(option("--root"), Fs::getcwd())
