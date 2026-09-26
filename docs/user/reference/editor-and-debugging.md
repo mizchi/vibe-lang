@@ -518,7 +518,11 @@ Here `main` is declared on line 1, but the division that actually trapped is
 on line 4 — the `frame:` line (not `  at `, to avoid colliding with the
 launcher's separate declaration-line annotator) gives the precise location.
 This fires whenever the module carries a non-empty linemap, including a
-plain `vibe run` / production compile. Missing or stripped mapping data
+plain `vibe run` / production compile. (An `Int` `/` or `%` by zero no
+longer reaches the engine's `integer divide by zero`: since #3126 it prints
+``Int `/` by zero at <path>:<line>:<col>`` itself, on linear and on gc, and
+then traps with `unreachable`. The frame annotation above is what every other
+trap still relies on.) Missing or stripped mapping data
 degrades to the wasm frame and never invents a source location.
 
 **Known scope limit**: linemap entries are recorded only for TOP-LEVEL

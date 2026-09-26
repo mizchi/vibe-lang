@@ -8,6 +8,9 @@ CHECK="$ROOT_DIR/scripts/check_gate_self_tests.sh"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/vibe_gate_selftests.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
+# Every case below picks its own shard; one inherited from the caller (a CI
+# shard running this companion) would make the scratch suite skip companions.
+unset VIBE_GATE_SELF_TESTS_SHARD
 mkdir -p "$WORK/scripts"
 fail() { echo "[gate-self-tests-test] FAIL: $1" >&2; exit 1; }
 # Bookkeeping cases run with execution OFF (the scratch stubs would only prove
@@ -210,6 +213,77 @@ printf '#!/usr/bin/env bash\nscratch="$(mktemp -d)"; echo x > "$scratch/f"; rm -
 run_exec || { cat "$WORK/out" >&2; fail "a companion that works in a temp dir was rejected on a tree that was already dirty"; }
 echo "  ok  a tree dirty BEFORE the suite, left as it was, passes"
 restore_scratch
+
+
+# --- Sharding: the shards PARTITION the companions. Each companion appends its
+# name to a log outside the tree; across shards 0/3, 1/3 and 2/3 every one must
+# appear exactly once. A shard rule that skipped one (or ran one twice) would
+# otherwise pass every shard -- a companion gone dark behind green checks.
+restore_scratch
+SHARD_LOG="$(mktemp "${TMPDIR:-/tmp}/vibe_gate_shardlog.XXXXXX")"
+for n in a b c d e f g; do
+  printf '#!/usr/bin/env bash\n' > "$WORK/scripts/check_s$n.sh"
+  printf '#!/usr/bin/env bash\necho s%s >> "%s"\n' "$n" "$SHARD_LOG" > "$WORK/scripts/check_s${n}_test.sh"
+done
+printf '#!/usr/bin/env bash\nexit 0\n' > "$WORK/scripts/check_thing_test.sh"
+for i in 0 1 2; do
+  VIBE_GATE_SELF_TESTS_SHARD="$i/3" run_exec || { cat "$WORK/out" >&2; rm -f "$SHARD_LOG"; fail "shard $i/3 failed on passing companions"; }
+  grep -q "shard $i/3" "$WORK/out" || { cat "$WORK/out" >&2; rm -f "$SHARD_LOG"; fail "shard $i/3 did not report which shard it ran"; }
+done
+got="$(sort "$SHARD_LOG" | tr '\n' ' ')"
+[ "$got" = "sa sb sc sd se sf sg " ] || fail "shards 0..2/3 did not run each companion exactly once: $got"
+echo "  ok  shards 0/3, 1/3, 2/3 run every companion exactly once between them"
+
+# PINS: a companion listed in gate_self_test_shards.txt runs in its slot's
+# shard, and the partition stays exact around it.
+: > "$SHARD_LOG"
+printf 'check_sa_test.sh 2\ncheck_sb_test.sh 2   # a trailing comment\n' > "$WORK/scripts/gate_self_test_shards.txt"
+for i in 0 1 2; do
+  VIBE_GATE_SELF_TESTS_SHARD="$i/3" run_exec || { cat "$WORK/out" >&2; rm -f "$SHARD_LOG"; fail "shard $i/3 failed with pins"; }
+  sed "s/\$/@$i/" "$SHARD_LOG" >> "$SHARD_LOG.all"; : > "$SHARD_LOG"
+done
+got="$(sort "$SHARD_LOG.all" | tr '\n' ' ')"
+rm -f "$SHARD_LOG.all"
+case "$got" in *"sa@2 sb@2 "*) ;; *) rm -f "$SHARD_LOG"; fail "pinned companions did not run in their slot's shard: $got" ;; esac
+[ "$(printf '%s\n' $got | sed 's/@.*//' | sort | tr '\n' ' ')" = "sa sb sc sd se sf sg " ] \
+  || { rm -f "$SHARD_LOG"; fail "with pins, shards did not run each companion exactly once: $got"; }
+echo "  ok  a pinned companion runs in its slot's shard, and the partition stays exact"
+
+# A pin naming no companion is stale: it would otherwise sit there balancing
+# nothing while the companion it meant runs wherever round-robin put it.
+printf 'check_gone_test.sh 1\n' > "$WORK/scripts/gate_self_test_shards.txt"
+if VIBE_GATE_SELF_TESTS_SHARD="0/3" run_exec; then rm -f "$SHARD_LOG"; fail "a stale pin was accepted"; fi
+grep -q "check_gone_test.sh(no-such-companion)" "$WORK/out" || { cat "$WORK/out" >&2; rm -f "$SHARD_LOG"; fail "the stale pin was not named"; }
+rm -f "$WORK/scripts/gate_self_test_shards.txt"
+echo "  ok  a pin naming no companion is rejected"
+rm -f "$SHARD_LOG"
+
+# ...and a shard can still FAIL: a failing companion is rejected by the shard
+# that owns it, so sharding did not turn execution off.
+printf '#!/usr/bin/env bash\nexit 1\n' > "$WORK/scripts/check_sa_test.sh"
+failed_in=0
+for i in 0 1 2; do
+  VIBE_GATE_SELF_TESTS_SHARD="$i/3" run_exec || failed_in=$((failed_in + 1))
+done
+[ "$failed_in" -eq 1 ] || fail "a failing companion was rejected by $failed_in shards, not exactly one"
+echo "  ok  a failing companion fails exactly the shard that owns it"
+
+# A malformed shard is refused, not read as some other subset.
+for bad in 3/3 x 1/ /3 1/2/3 0/0; do
+  if VIBE_GATE_SELF_TESTS_SHARD="$bad" run_exec; then fail "shard '$bad' was accepted"; fi
+  grep -q "is not I/N" "$WORK/out" || { cat "$WORK/out" >&2; fail "shard '$bad' was refused without saying why"; }
+done
+echo "  ok  a malformed shard is refused"
+
+rm -f "$WORK"/scripts/check_s?.sh "$WORK"/scripts/check_s?_test.sh
+# The shard is the driver's input only. A companion that runs a scratch copy of
+# the driver -- this file is one -- would inherit I/N and skip its own scratch
+# companions, passing cases it should fail (#3171, shard 1/3).
+printf '#!/usr/bin/env bash\n[ -z "${VIBE_GATE_SELF_TESTS_SHARD+x}" ] || { echo "inherited shard: $VIBE_GATE_SELF_TESTS_SHARD" >&2; exit 1; }\n' \
+  > "$WORK/scripts/check_thing_test.sh"
+VIBE_GATE_SELF_TESTS_SHARD="0/1" run_exec || { cat "$WORK/out" >&2; fail "a companion inherited the driver's shard"; }
+printf '#!/usr/bin/env bash\nexit 0\n' > "$WORK/scripts/check_thing_test.sh"
+echo "  ok  a companion does not inherit the driver's shard"
 
 
 echo "[gate-self-tests-test] ok"

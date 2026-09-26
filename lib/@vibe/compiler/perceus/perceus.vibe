@@ -451,36 +451,30 @@ fn pctx_cache_matches(ctx: PCtx, borrow_ret_names: Array[String], borrow_param_f
   same_str_table(ctx.pctx_names, borrow_ret_names) && same_str_table(ctx.borrow_param_user, borrow_param_fns) && same_int_table(ctx.borrow_param_mask, borrow_param_masks) && same_str_table(ctx.view_ret_user, view_ret_fns)
 }
 
-/// Clear the per-plan working state of a cached PCtx. Fresh empty arrays (not
-/// truncates): assignment drops the previous plan's arrays and their elements.
+/// Clear the per-plan working state of a cached PCtx. The Int / Bool tables
+/// are truncated so their buffers are reused: they hold no pointers, and one
+/// plan is built per function and per lambda, so re-growing them from empty
+/// each time cost ~9 MB of the self-compile heap on the bump lane, which never
+/// frees an outgrown buffer. The two tables holding pointers (`mark_names`,
+/// `actions`) get fresh empty arrays instead: assignment drops the previous
+/// plan's array and its elements, and `actions` is handed out as the plan.
 fn pctx_reset(ctx: PCtx) -> Int {
   ctx.next_id = 0
   ctx.seq_id = 0
-  let uses0: Array[Int] = []
-  ctx.uses = uses0
-  let borrows0: Array[Int] = []
-  ctx.borrows = borrows0
-  let scalar0: Array[Bool] = []
-  ctx.scalar = scalar0
-  let remaining0: Array[Int] = []
-  ctx.remaining = remaining0
-  let view0: Array[Bool] = []
-  ctx.view_call_let = view0
-  let vsrc0: Array[Int] = []
-  ctx.view_src = vsrc0
+  Array::truncate(ctx.uses, 0)
+  Array::truncate(ctx.borrows, 0)
+  Array::truncate(ctx.scalar, 0)
+  Array::truncate(ctx.remaining, 0)
+  Array::truncate(ctx.view_call_let, 0)
+  Array::truncate(ctx.view_src, 0)
   ctx.move_use_id = 0 - 1
   ctx.move_hit = false
-  let bview0: Array[Bool] = []
-  ctx.borrowed_view = bview0
-  let bval0: Array[Bool] = []
-  ctx.branch_value = bval0
+  Array::truncate(ctx.borrowed_view, 0)
+  Array::truncate(ctx.branch_value, 0)
   ctx.loop_floor = 0
-  let flags0: Array[Int] = []
-  ctx.decl_flags = flags0
-  let mids0: Array[Int] = []
-  ctx.mark_ids = mids0
-  let moffs0: Array[Int] = []
-  ctx.mark_offs = moffs0
+  Array::truncate(ctx.decl_flags, 0)
+  Array::truncate(ctx.mark_ids, 0)
+  Array::truncate(ctx.mark_offs, 0)
   let mnames0: Array[String] = []
   ctx.mark_names = mnames0
   let actions0: Array[PerceusAction] = []
@@ -1006,9 +1000,15 @@ fn next_seq_name(ctx: PCtx) -> String {
 /// counts as a borrow -- a projection off the name, `EDot(x, "")` -- so the
 /// binding keeps its scope-end drop. It is PLAN-ONLY: codegen compiles the
 /// original tree, where the same leaf is a plain read. Only the spine is
-/// walked (let bodies, sequence tails, if branches, match arms); a `for` is
-/// rewritten only as the head itself, the one position codegen compiles in the
-/// no-collect form.
+/// walked (let bodies, sequence tails, if branches, match arms, and -- #3162 --
+/// a `handle`'s body and each handler arm, whose values are the handle's
+/// value: compile_expr_tail6 branches both out of the handle's block, so the
+/// ESeq drop discards whichever one ran); a `for` is rewritten only as the
+/// head itself, the one position codegen compiles in the no-collect form.
+///
+/// A `while` BODY is discarded the same way wherever the loop stands
+/// (compile_expr_tail3 drops it after each iteration), so the EWhile arms of
+/// pc_emit / pc_count walk it through `pe_discarded_spine` too (#3162).
 fn pe_discarded_head(e: Expr) -> Expr {
   match e {
     EForIn(n, ix, it, b) => EForIn(n, ix, it, pe_discarded_spine(b)),
@@ -1026,18 +1026,21 @@ fn pe_discarded_spine(e: Expr) -> Expr {
     EAssign(n, v, b) => EAssign(n, v, pe_discarded_spine(b)),
     EAssignOp(n, op, v, b) => EAssignOp(n, op, v, pe_discarded_spine(b)),
     EIf(c, t, f) => EIf(c, pe_discarded_spine(t), pe_discarded_spine(f)),
-    EMatch(sc, arms) => {
-      let arms2: Array[(Pat, Expr)] = []
-      let mut i = 0
-      while i < Array::length(arms) {
-        let (p, ab) = Array::get(arms, i)
-        Array::push(arms2, (p, pe_discarded_spine(ab)))
-        i = i + 1
-      }
-      EMatch(sc, arms2)
-    },
+    EMatch(sc, arms) => EMatch(sc, pe_discarded_arms(arms)),
+    EHandle(hb, arms) => EHandle(pe_discarded_spine(hb), pe_discarded_arms(arms)),
     _ => e
   }
+}
+
+fn pe_discarded_arms(arms: Array[(Pat, Expr)]) -> Array[(Pat, Expr)] {
+  let arms2: Array[(Pat, Expr)] = []
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (p, ab) = Array::get(arms, i)
+    Array::push(arms2, (p, pe_discarded_spine(ab)))
+    i = i + 1
+  }
+  arms2
 }
 
 fn fn_param_names(params: Array[(String, Option[TypeExpr])]) -> Array[String] {
@@ -2934,7 +2937,8 @@ fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
       let saved_floor = ctx.loop_floor
       ctx.loop_floor = ctx.next_id
       pc_emit(ctx, scope, cond)
-      pc_emit(ctx, scope, body)
+      // #3162: each iteration's body value is dropped unreleased.
+      pc_emit(ctx, scope, pe_discarded_spine(body))
       ctx.loop_floor = saved_floor
       0
     },
@@ -3417,7 +3421,7 @@ fn pc_count(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
     },
     EWhile(cond, body) => {
       pc_count(ctx, scope, cond)
-      pc_count(ctx, scope, body)
+      pc_count(ctx, scope, pe_discarded_spine(body))
     },
     EReturn(e) => pc_count(ctx, scope, e),
     ESpread(e) => pc_count(ctx, scope, e),

@@ -969,6 +969,15 @@ send_check_reject "err_type_ord_marker_bound_double.vibe" 'is a marker trait (de
 # prelude's `Ord` from their own program, so "give it a method" is not advice a
 # reader can act on here.
 send_check_reject "err_type_ord_marker_bound_double.vibe" 'Compare at the concrete type' "orddouble3"
+# #3158 review: `Add` is a marker too, and `[T: Add]`'s `+` lowers to
+# `__generic_add` -- string join or a raw integer add. At `Double` that answered
+# `add=0` for `1.5 + 2.25` on the linear lane; at a user struct it would add two
+# pointers. Refused at both, with the edit named.
+send_check_reject "err_type_add_marker_bound_double.vibe" 'no impl `Add` for `Double`' "adddouble"
+send_check_reject "err_type_add_marker_bound_double.vibe" 'adds the raw representation, not the value' "adddouble2"
+send_check_reject "err_type_add_marker_bound_double.vibe" 'Add at the concrete type' "adddouble3"
+send_check_reject "err_type_add_marker_bound_struct.vibe" 'no impl `Add` for `Pt`' "addmarker"
+send_check_reject "err_type_add_marker_bound_struct.vibe" 'adds the raw representation, not the value' "addmarker2"
 # #2640: `@vibe/core` declares its collections BODYLESS in its contract
 # (`type MutMap[K, V]`, `type MutSet[T]`), so a consumer sees them as
 # `CtNamed` -- indistinguishable, in the type representation, from a rigid
@@ -2178,6 +2187,7 @@ for spawn_route in \
   "err_spawnable_opaque_param:no impl \`Spawnable\` for closure \`work\`: its captures cannot be seen here" \
   "err_spawnable_parallel_map_capture:no impl \`Spawnable\` for \`Array[Int]\`" \
   "err_region_escape_run_rename:region escapes its nursery scope" \
+  "err_region_escape_run_local_alias:region escapes its nursery scope" \
   "err_region_escape_run_value:\`TaskGroup::run\` cannot be used as a value here"; do
   spawn_fx="${spawn_route%%:*}"
   spawn_needle="${spawn_route#*:}"
@@ -2299,6 +2309,22 @@ if [ ! -s "$spawnabledir/pos_not_runner.wasm" ]; then
 fi
 if ! spawnable_not_runner_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$spawnabledir/pos_not_runner.wasm" 2>&1)"; then
   echo "[compiler-gate] FAIL: region_ok_not_a_runner.vibe got '$spawnable_not_runner_out' (want 15)" >&2
+  exit 1
+fi
+# #3155: a local `let` alias of `TaskGroup::run` (and of a row-polymorphic
+# function) is callable -- it used to be refused with "unresolved effect row
+# { e }" -- while its escape check stays (err_region_escape_run_local_alias
+# above). 48, pinned by the fixture's `inspect` block.
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/region_ok_run_local_alias.vibe "$spawnabledir/pos_run_alias.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ ! -s "$spawnabledir/pos_run_alias.wasm" ]; then
+  echo "[compiler-gate] FAIL: region_ok_run_local_alias.vibe did not compile -- a local alias of TaskGroup::run must be callable (#3155)" >&2
+  cat "$spawnabledir/pos_run_alias.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+if ! spawnable_run_alias_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$spawnabledir/pos_run_alias.wasm" 2>&1)"; then
+  echo "[compiler-gate] FAIL: region_ok_run_local_alias.vibe got '$spawnable_run_alias_out' (want 48)" >&2
   exit 1
 fi
 rm -rf "$spawnabledir"

@@ -6576,7 +6576,17 @@ fn dtd_mask_shadowed_params(var_types: Array[(String, String)], ps: Array[(Strin
 }
 
 fn bind_let_env(var_types: Array[(String, String)], name: String, val: Expr, inferred: Option[String], struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
-  let out = clone_var_types(var_types)
+  bind_let_env_into(clone_var_types(var_types), name, val, inferred, struct_sets, fn_returns)
+}
+
+/// `bind_let_env` without the copy: appends the binding's entries to `out`
+/// itself. `rewrite_expr`'s `let` arms use it on the environment they were
+/// handed and truncate back to the saved length once the body is rewritten.
+/// Every entry is an append and lookups read the LAST match, so the body sees
+/// exactly what a copy would have shown it, and the caller sees its own
+/// environment again afterwards. Copying instead made a function's `let`s
+/// quadratic in the environment's length (~28 MB of the self-compile heap).
+fn bind_let_env_into(out: Array[(String, String)], name: String, val: Expr, inferred: Option[String], struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
   match inferred {
     Some(tname) => Array::push(out, (name, tname)),
     None => ()
@@ -9697,13 +9707,20 @@ fn local_show_shim_bound(name: String) -> Bool {
   let mut i = Array::length(dtd_local_show_shims)
   let mut found = false
   let mut is_shim = false
+  // Built once, not per entry (the concat allocates and this scan runs for
+  // every interpolated name), and not at all when there is nothing to scan.
+  let mask = if i == 0 {
+    ""
+  } else {
+    local_show_shim_mask(name)
+  }
   while i > 0 && !found {
     i = i - 1
     let e = Array::get(dtd_local_show_shims, i)
     if e == name {
       found = true
       is_shim = true
-    } else if e == local_show_shim_mask(name) {
+    } else if e == mask {
       found = true
       is_shim = false
     } else {
@@ -11845,10 +11862,11 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
       } else {
         anon_or_infer(val, struct_sets, var_types, fn_returns)
       }
+      let mark = Array::length(var_types)
       let body_vars2 = if Array::get(dtd_constructor_tracking, 0) && inferred == None && constructor_binding_has_evidence(var_types, name) {
         bind_let_env(constructor_rewrite_var_types(var_types, name, inferred), name, val, None, struct_sets, fn_returns)
       } else {
-        bind_let_env(var_types, name, val, inferred, struct_sets, fn_returns)
+        bind_let_env_into(var_types, name, val, inferred, struct_sets, fn_returns)
       }
       // #2157: an unannotated `let xs = []` reads its element type off the
       // pushes in its own body, so it compares like the annotated form.
@@ -11857,6 +11875,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
       local_show_shim_enter(name, val)
       let new_body = rewrite_expr(body, body_gens, traits, struct_sets, dict_binds, body_vars, fn_returns)
       local_show_shim_pop()
+      Array::truncate(var_types, mark)
       ELet(name, new_val, new_body, soff)
     },
     ELetRec(name, val, body) => {
@@ -11893,16 +11912,18 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
       } else {
         anon_or_infer(val, struct_sets, var_types, fn_returns)
       }
+      let mark = Array::length(var_types)
       let body_vars2 = if Array::get(dtd_constructor_tracking, 0) && inferred == None && constructor_binding_has_evidence(var_types, name) {
         bind_let_env(constructor_rewrite_var_types(var_types, name, inferred), name, val, None, struct_sets, fn_returns)
       } else {
-        bind_let_env(var_types, name, val, inferred, struct_sets, fn_returns)
+        bind_let_env_into(var_types, name, val, inferred, struct_sets, fn_returns)
       }
       let body_vars3 = empty_array_shape_from_body(body_vars2, name, body, struct_sets, fn_returns)
       let body_vars = dtd_interp_bind_lamret(extend_local_fn_return(body_vars3, name, val), name, val)
       local_show_shim_enter(name, val)
       let new_body = rewrite_expr(body, body_gens, traits, struct_sets, dict_binds, body_vars, fn_returns)
       local_show_shim_pop()
+      Array::truncate(var_types, mark)
       ELetMut(name, new_val, new_body, soff)
     },
     EAssign(name, val, cont) => {

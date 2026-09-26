@@ -1,0 +1,30 @@
+// #3155: a local `let` alias of `TaskGroup::run` -- and an alias of that
+// alias -- is callable, and each call is checked as `TaskGroup::run` (the
+// escape through the same alias is err_region_escape_run_local_alias.vibe).
+// Before the fix every call through the alias was refused with "entry point
+// 'main' has unresolved effect row { e }": the alias carried the runner's row
+// variable `e` uninstantiated. `apply` is the same shape without a region.
+// 42 + 1 + 5 = 48.
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+fn apply[T](f: () -> T with e) -> T with e {
+  f()
+}
+
+export let main = () -> Int with Exception {
+  let nursery = TaskGroup::run
+  let again = nursery
+  let a = nursery((g) -> {
+    let h = TaskGroup::spawn(g, () -> 40)
+    TaskHandle::join(h) + 2
+  })
+  let b = again((g) -> TaskHandle::join(TaskGroup::spawn(g, () -> 1)))
+  let ap = apply
+  a + b + ap(() -> 5)
+}
+
+test "region ok run local alias" allows Exception {
+  inspect(main(), "48")
+}

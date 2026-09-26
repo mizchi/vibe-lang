@@ -218,9 +218,8 @@ fi
 # the wall clock is what shows the two imports were in flight together.
 RUNNER="${VIBE_WIT_ASYNC_IMPORT_GATE_RUNNER:-$ROOT/runtime/viberun/target/release/viberun}"
 if [ "$RUNNER" = "$ROOT/runtime/viberun/target/release/viberun" ]; then
-  if [ ! -x "$RUNNER" ] || find "$ROOT/runtime/viberun/src" "$ROOT/runtime/viberun/Cargo.toml" \
-      "$ROOT/runtime/viberun/Cargo.lock" -newer "$RUNNER" -print -quit 2>/dev/null | grep -q .; then
-    (cd "$ROOT/runtime/viberun" && cargo build --release >/dev/null 2>&1) || {
+  if [ ! -x "$RUNNER" ] || ! bash "$ROOT/scripts/ensure_viberun.sh" --check >/dev/null 2>&1; then
+    bash "$ROOT/scripts/ensure_viberun.sh" >/dev/null 2>&1 || {
       echo "WIT async import gate FAILED: could not build runtime/viberun" >&2
       exit 1
     }

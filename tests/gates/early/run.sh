@@ -2611,6 +2611,102 @@ done
 rm -rf "$mgdir"
 echo "[compiler-gate] Map::get missing-key trap ok (linear and gc)"
 
+# #3126: an `Int` `/` or `%` whose divisor is zero names the operation and the
+# operator's `path:line:col` before it traps, on both lanes. It used to trap
+# with the engine's bare `divide by zero` and no position at all -- the linear
+# lane's frame annotation pointed at the enclosing statement's line, gc at
+# nothing. Each fixture prints a line first, so a build or run that dies before
+# the division cannot satisfy the row, and the division still TRAPS: this adds
+# a message, not a checked operator. The mixed fixture also divides Doubles:
+# the site pass skips a `/` whose operand is a Double by its own syntax, and
+# must still place the Int division beside them.
+echo "[compiler-gate] Int / and % by zero name the operation and path:line:col (#3126)"
+dzdir="_build/_gate_div_zero"
+rm -rf "$dzdir"; mkdir -p "$dzdir"
+for dz_case in "int_div_zero_trap|/|7|5" "int_rem_zero_trap|%|7|5" "int_div_assign_zero_trap|/|7|8" "int_div_zero_vibe_comment_trap|/|7|5" "int_div_zero_mixed_double_trap|/|14|5"; do
+  IFS='|' read -r dz_name dz_op dz_line dz_col <<<"$dz_case"
+  dz_src="fixtures/$dz_name.vibe"
+  dz_want="Int \`$dz_op\` by zero at $dz_src:$dz_line:$dz_col"
+  for dz_backend in linear gc; do
+    dz_wasm="$dzdir/${dz_name}_$dz_backend.wasm"
+    if [ "$dz_backend" = gc ]; then
+      VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+        bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+        "$dz_src" "$dz_wasm" main >/dev/null 2>&1 || true
+    else
+      VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+        bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+        "$dz_src" "$dz_wasm" main >/dev/null 2>&1 || true
+    fi
+    if [ ! -s "$dz_wasm" ]; then
+      echo "[compiler-gate] FAIL: $dz_src did not compile on $dz_backend (#3126)" >&2
+      cat "$dz_wasm.diag" >&2 2>/dev/null; exit 1
+    fi
+    dz_status=0
+    dz_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_RUNNER_EXIT_WITH_RESULT=1 bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$dz_wasm" 2>&1)" || dz_status=$?
+    if ! printf '%s\n' "$dz_out" | grep -qF 'before'; then
+      echo "[compiler-gate] FAIL: $dz_src died before the division on $dz_backend (#3126): $dz_out" >&2
+      exit 1
+    fi
+    if [ "$dz_status" -eq 0 ] || printf '%s\n' "$dz_out" | grep -qF 'after'; then
+      echo "[compiler-gate] FAIL: a zero divisor answered instead of trapping on $dz_backend (#3126): $dz_out" >&2
+      exit 1
+    fi
+    if ! printf '%s\n' "$dz_out" | grep -qxF "$dz_want"; then
+      echo "[compiler-gate] FAIL: $dz_src did not report '$dz_want' on $dz_backend (#3126): $dz_out" >&2
+      exit 1
+    fi
+  done
+done
+rm -rf "$dzdir"
+echo "[compiler-gate] Int division-by-zero trap message ok (/, %, /=; linear and gc)"
+
+# #3126 + #3158: on wasm-gc the division-by-zero abort and the erased-generic
+# `__generic_rel_diff` / `__generic_add` pair are conditionally pushed builtin
+# bodies, both after the optional integer renderer, and their indices are
+# POSITIONAL. With both present, an index that does not count the other's body
+# calls the wrong function (or fails validation). The fixture has both, plus
+# the capacity allocator ahead of them: its `before` line must carry the right
+# generic answers, and the division must still report its location and trap.
+echo "[compiler-gate] Int / by zero and erased-generic + / < in one program (#3126 / #3158)"
+dgdir="_build/_gate_div_zero_generic"
+rm -rf "$dgdir"; mkdir -p "$dgdir"
+dg_src="fixtures/int_div_zero_generic_dispatch_trap.vibe"
+dg_before="before add=42 neg=-2 cat=abcd lt=true gt=false lts=false"
+dg_want="Int \`/\` by zero at $dg_src:31:5"
+for dg_backend in linear gc; do
+  dg_wasm="$dgdir/int_div_zero_generic_dispatch_trap_$dg_backend.wasm"
+  if [ "$dg_backend" = gc ]; then
+    VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+      bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+      "$dg_src" "$dg_wasm" main >/dev/null 2>&1 || true
+  else
+    VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+      bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+      "$dg_src" "$dg_wasm" main >/dev/null 2>&1 || true
+  fi
+  if [ ! -s "$dg_wasm" ]; then
+    echo "[compiler-gate] FAIL: $dg_src did not compile on $dg_backend (#3126 / #3158)" >&2
+    cat "$dg_wasm.diag" >&2 2>/dev/null; exit 1
+  fi
+  dg_status=0
+  dg_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_RUNNER_EXIT_WITH_RESULT=1 bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$dg_wasm" 2>&1)" || dg_status=$?
+  if ! printf '%s\n' "$dg_out" | grep -qxF "$dg_before"; then
+    echo "[compiler-gate] FAIL: $dg_src generic answers wrong on $dg_backend, want '$dg_before' (#3158): $dg_out" >&2
+    exit 1
+  fi
+  if [ "$dg_status" -eq 0 ] || printf '%s\n' "$dg_out" | grep -qF 'after'; then
+    echo "[compiler-gate] FAIL: a zero divisor answered instead of trapping on $dg_backend (#3126): $dg_out" >&2
+    exit 1
+  fi
+  if ! printf '%s\n' "$dg_out" | grep -qxF "$dg_want"; then
+    echo "[compiler-gate] FAIL: $dg_src did not report '$dg_want' on $dg_backend (#3126): $dg_out" >&2
+    exit 1
+  fi
+done
+rm -rf "$dgdir"
+echo "[compiler-gate] Int / by zero beside erased-generic dispatch ok (linear and gc)"
+
 # #2737: a witness dispatch on a bound declared by a LAMBDA binder is refused,
 # with a message that names the edit. The checks, the measurements behind them,
 # and the red test that proves they can fail live in the gate script and its

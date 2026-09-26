@@ -1,0 +1,53 @@
+// #3158: the erased-generic `[T: Add]` / `[T: Ord]` dispatch (#973) on EVERY
+// lane. desugar_trait_dicts rewrites `a + b` / `a < b` on a bare erased
+// formal to `__generic_add` / `__generic_rel_diff`, and the wasm-gc lane runs
+// that pass too but registered neither builtin, so this file did not compile
+// there ("reached code generation unresolved"). The gate runs it with
+// `VIBE_TEST_BACKEND=gc`; the unit runner runs it on linear. The asymmetric
+// `<` rows and the String concatenation pin argument order, which a
+// commutative Int `+` cannot.
+trait Add
+
+impl Add for Int
+
+impl Add for String
+
+fn add2[T: Add](a: T, b: T) -> T {
+  a + b
+}
+
+fn lt2[T: Ord](a: T, b: T) -> Bool {
+  a < b
+}
+
+fn ge2[T: Ord](a: T, b: T) -> Bool {
+  a >= b
+}
+
+fn opaque(x: Int) -> Int {
+  x + 0
+}
+
+test "[T: Add] adds Int and concatenates String" {
+  inspect(add2(opaque(40), opaque(2)), "42")
+  inspect(add2(opaque(0), opaque(0)), "0")
+  inspect(add2(opaque(0) - 5, opaque(3)), "-2")
+  inspect(add2("ab", "cd"), "abcd")
+  inspect(add2("", "x"), "x")
+}
+
+test "[T: Add] wraps at the 63-bit boundary like monomorphic +" {
+  let max = opaque((2305843009213693951<<1)|1)
+  inspect(add2(max, opaque(1)) == 0 - max - 1, "true")
+}
+
+test "[T: Ord] compares Int by value and String by content" {
+  inspect(lt2(opaque(1), opaque(2)), "true")
+  inspect(lt2(opaque(2), opaque(1)), "false")
+  inspect(lt2(opaque(0) - 3, opaque(1)), "true")
+  inspect(ge2(opaque(2), opaque(2)), "true")
+  inspect(lt2("apple", "banana"), "true")
+  inspect(lt2("banana", "apple"), "false")
+  inspect(lt2("bbb", "aaa"), "false")
+  inspect(ge2("m", "m"), "true")
+}

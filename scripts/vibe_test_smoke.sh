@@ -498,6 +498,9 @@ Array::get: index 10 out of bounds for length 3 and then some
 Array::get: index 10 out of bounds for length 3
 Bytes::set: index -1 out of bounds for length 0
 String::byte_at: index 5 out of bounds for length 3
+Int `/` by zero at fixtures/x.vibe:7:5
+Int `%` by zero
+Int `/` by zero at fixtures/x.vibe:7:5 and then some
 [crash debug] heap_ptr=500 (0x1f4), memory_size=4194304 (64 pages) / unreachable
 RuntimeError: unreachable
     at __test_bad (wasm://wasm/00000000:wasm-function[3]:0x42)
@@ -515,6 +518,22 @@ EOF
   fi
   if ! printf '%s\n' "$out" | grep -qF "String::byte_at: index 5 out of bounds for length 3"; then
     echo "[vibe-test-smoke] FAIL: String::byte_at OOB message lost from the condensed report (#2199)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+  # #3126: the division-by-zero line, with and without a location.
+  if ! printf '%s\n' "$out" | grep -qxF "       Int \`/\` by zero at fixtures/x.vibe:7:5"; then
+    echo "[vibe-test-smoke] FAIL: Int division-by-zero message lost from the condensed report (#3126)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+  if ! printf '%s\n' "$out" | grep -qxF "       Int \`%\` by zero"; then
+    echo "[vibe-test-smoke] FAIL: unplaced Int remainder-by-zero message lost from the condensed report (#3126)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+  if printf '%s\n' "$out" | grep -qF "7:5 and then some"; then
+    echo "[vibe-test-smoke] FAIL: a division-by-zero lookalike with trailing text was promoted (#3126)" >&2
     printf '%s\n' "$out" >&2
     exit 1
   fi

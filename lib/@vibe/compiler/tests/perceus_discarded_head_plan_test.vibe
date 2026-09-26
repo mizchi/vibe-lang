@@ -48,3 +48,34 @@ test "a collecting for still moves its body value into the result" {
   let src = program("let run: (Array[Int]) -> Int = (ns) -> {\n  let d = A([1])\n  let r = for x in ns {\n    d\n  }\n  Array::length(r)\n}")
   assert(!String::contains(plan_of(src), "run d drop"))
 }
+
+// #3162: a `handle` at the head of a sequence is discarded the same way --
+// its handled body and each handler arm are the handle's value -- and so is
+// every iteration's `while` body.
+
+test "a heap binding as a discarded handled body keeps its drop" {
+  let src = program("let run: (Array[Int]) -> Int = (ns) -> {\n  let d = A([1])\n  handle {\n    d\n  } with {\n    Exception::Throw(_) => A([2])\n  }\n  Array::length(ns)\n}")
+  let plan = plan_of(src)
+  assert(String::contains(plan, "run d drop 1"))
+  assert(!String::contains(plan, "run d dup"))
+}
+
+test "a heap binding as a discarded handler arm keeps its drop" {
+  let src = program("let run: (Array[Int]) -> Int = (ns) -> {\n  let d = A([1])\n  handle {\n    A([2])\n  } with {\n    Exception::Throw(_) => d\n  }\n  Array::length(ns)\n}")
+  let plan = plan_of(src)
+  assert(String::contains(plan, "run d drop 1"))
+  assert(!String::contains(plan, "run d dup"))
+}
+
+test "a heap binding as a while body keeps its drop" {
+  let src = program("let run: (Array[Int]) -> Int = (ns) -> {\n  let d = A([1])\n  let mut k = 0\n  while k < 2 {\n    k = k + 1\n    d\n  }\n  Array::length(ns)\n}")
+  let plan = plan_of(src)
+  assert(String::contains(plan, "run d drop 1"))
+  assert(!String::contains(plan, "run d dup"))
+}
+
+test "a handle whose value is bound still moves its body value" {
+  // Only the discarded position changed: `r` owns what the handle returns.
+  let src = program("let run: (Array[Int]) -> Int = (ns) -> {\n  let d = A([1])\n  let r = handle {\n    d\n  } with {\n    Exception::Throw(_) => A([2])\n  }\n  Array::length(ns)\n}")
+  assert(!String::contains(plan_of(src), "run d drop"))
+}

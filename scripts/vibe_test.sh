@@ -428,6 +428,12 @@ vt_fail_detail() {
     # ordinary program output from masquerading as a runtime diagnostic.
     # Deliberately NOT marked __blk: it is not part of an assert diagnostic,
     # so it must still break assert-abort adjacency like any other output.
+    # #3126: the same for an Int `/` or `%` by zero, which prints the
+    # operation and, when the compile could place it, `path:line:col`.
+    $0 ~ /^Int `[\/%]` by zero( at .+:[0-9]+:[0-9]+)?$/ {
+      ndiag++
+      diags[ndiag] = "       " $0
+    }
     $0 ~ /^(Array::get|Array::set|Bytes::get|Bytes::set|String::byte_at): index -?[0-9]+ out of bounds for length [0-9]+$/ {
       ndiag++
       diags[ndiag] = "       " $0

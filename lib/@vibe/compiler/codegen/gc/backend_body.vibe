@@ -17,13 +17,14 @@ import @vibe/compiler/core {
   expr_children,
   leb128_encode_s64,
   leb128_encode_u32,
+  merged_offset_space_reset,
   rename_builtin_shadow_defs,
   rewrite_top_level_fn_alias_refs,
   verify_lane_builtins
 }
 
 import @vibe/core {
-  array_empty
+  array_empty, struct MutSet
 }
 
 import @vibe/compiler/codegen/common_analysis {
@@ -80,7 +81,7 @@ import @vibe/compiler/codegen/common_base {
 }
 
 import @vibe/compiler/codegen/common_extractors {
-  array_contains_str, emit_assignop_op, emit_memory_copy, find_catchall_idx
+  array_contains_str, collect_int_div_sites, emit_assignop_op, emit_memory_copy, find_catchall_idx
 }
 
 import @vibe/compiler/codegen/wasm_emit {
@@ -177,6 +178,9 @@ import @vibe/compiler/codegen/wasm_emit {
 import @vibe/compiler/codegen/builtin_bodies {
   array_capacity_error_message,
   bytes_capacity_error_message,
+  div_zero_at_fragment,
+  div_zero_div_message,
+  div_zero_rem_message,
   gen_arr_push_body,
   gen_arr_with_capacity_body,
   gen_array_value_copy_body,
@@ -197,7 +201,10 @@ import @vibe/compiler/codegen/builtin_bodies {
   gen_bytes_slice_body,
   gen_bytes_to_array_body,
   gen_bytes_with_capacity_body,
+  gen_div_zero_abort_body,
   gen_eq_body,
+  gen_generic_add_body,
+  gen_generic_rel_diff_body,
   gen_int_clz_body,
   gen_int_ctz_body,
   gen_int_popcount_body,
@@ -775,6 +782,27 @@ fn gc_expr_needs_to_string_int(expr: Expr) -> Bool {
 ///
 /// Modules with no such argument (six of the nine `bench/exec` samples) carry
 /// no helper and are byte-identical to before.
+/// #3126: the raw `(ptr << 32) | len` constant of a string the pool seeded
+/// (the division-by-zero fragments); 0 if it is absent, which the abort body
+/// reads as "no text" rather than a pointer.
+fn gc_str_fat(strs: Array[String], offsets: Array[Int], lengths: Array[Int], s: String) -> Int {
+  let mut found = 0 - 1
+  let mut i = 0
+  while i < Array::length(strs) {
+    if String::equals(Array::get(strs, i), s) {
+      found = i
+      i = Array::length(strs)
+    } else {
+      i = i + 1
+    }
+  }
+  if found < 0 {
+    0
+  } else {
+    (Array::get(offsets, found)<<32)|Array::get(lengths, found)
+  }
+}
+
 fn gc_stmts_need_to_string_int(stmts: Array[Stmt]) -> Bool {
   let mut i = 0
   let mut found = false
@@ -1237,6 +1265,13 @@ export fn gc_float_returning_names_pre_erasure(stmts: Array[Stmt]) -> Array[Stri
 /// them spell a program's own `Array::length` the same way.
 export fn gc_rename_builtin_shadow_defs(stmts: Array[Stmt]) -> Unit {
   rename_builtin_shadow_defs(stmts)
+}
+
+/// #3126 review: the gc source driver compiles ONE source, so no file's
+/// offsets are recorded; clear what a previous FS compile in this process
+/// left, or a division-by-zero site would be placed in that program's file.
+export fn gc_merged_offset_space_reset() -> Unit {
+  merged_offset_space_reset()
 }
 
 /// Top-level function declaration identities before lambda hoisting.
@@ -1771,6 +1806,35 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String, genera
   }
   let capacity_error_slot = Array::length(str_strs)
   Array::push(str_strs, bytes_capacity_error_message())
+  // #3126: the division-by-zero line's fragments and each site's whole
+  // `path:line:col` (this lane has no integer printer to assemble one), only
+  // when the program has a guarded `/` or `%`. `collect_strings_stmts`
+  // dedupes its own output; these are checked against it.
+  let div_sites: Array[String] = []
+  let need_div_zero_abort = collect_int_div_sites(stmts, div_sites, MutSet::new_string(), true)
+  if need_div_zero_abort {
+    let div_strs = [
+      div_zero_div_message(),
+      div_zero_rem_message(),
+      div_zero_at_fragment()
+    ]
+    let mut __dsi = 0
+    while __dsi < Array::length(div_sites) {
+      Array::push(div_strs, Array::get(div_sites, __dsi))
+      __dsi = __dsi + 1
+    }
+    let mut __dpi = 0
+    while __dpi < Array::length(div_strs) {
+      if !array_contains_str(str_strs, Array::get(div_strs, __dpi)) {
+        Array::push(str_strs, Array::get(div_strs, __dpi))
+      } else {
+        ()
+      }
+      __dpi = __dpi + 1
+    }
+  } else {
+    ()
+  }
   let num_strings = Array::length(str_strs)
   let data_base = 64
   let str_offsets = array_empty()
@@ -1868,10 +1932,27 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String, genera
   } else {
     0
   }
-  let num_generated = if need_region_arena {
-    gc_unconditional_body_count + capacity_extra + ts_int_extra + 2
+  // #3126: the division-by-zero abort, pushed only when the program has a
+  // guarded `/` or `%` -- after the integer renderer, before the arena pair.
+  let div_zero_extra = if need_div_zero_abort {
+    1
   } else {
-    gc_unconditional_body_count + capacity_extra + ts_int_extra
+    0
+  }
+  // #3158: the erased-generic `[T: Add]` / `[T: Ord]` dispatch pair, pushed
+  // only when desugar_trait_dicts emitted a call to either (the gc lane runs
+  // that pass too). Conditional for the same size reason as the renderer.
+  // Pushed after the #3126 abort body, so its indices add `div_zero_extra`.
+  let need_generic_dispatch = Map::has_key(used_builtins, "__generic_add") || Map::has_key(used_builtins, "__generic_rel_diff")
+  let generic_extra = if need_generic_dispatch {
+    2
+  } else {
+    0
+  }
+  let num_generated = if need_region_arena {
+    gc_unconditional_body_count + capacity_extra + ts_int_extra + div_zero_extra + generic_extra + 2
+  } else {
+    gc_unconditional_body_count + capacity_extra + ts_int_extra + div_zero_extra + generic_extra
   }
   // #538: host imports (module "vibe", tagged-i64 ABI -- the same raw ABI the
   // linear backend and the node host runner speak). Gated as a GROUP: pure
@@ -1916,6 +1997,11 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String, genera
     hbo + gc_unconditional_body_count + capacity_extra + 1
   } else {
     -1
+  }
+  let div_zero_abort_idx = if need_div_zero_abort {
+    hbo + gc_unconditional_body_count + capacity_extra + ts_int_extra + 1
+  } else {
+    0 - 1
   }
   let region_arr_new_idx = if need_region_arena {
     hbo + num_generated - 1
@@ -1976,6 +2062,10 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String, genera
         "Array::truncate" => 40,
         "Array::push_all" => 41,
         "str_lex_diff" => 42,
+        // #3158: pushed after the optional renderer and the optional #3126
+        // abort body (see need_generic_dispatch).
+        "__generic_rel_diff" => gc_unconditional_body_count + capacity_extra + ts_int_extra + div_zero_extra + 1,
+        "__generic_add" => gc_unconditional_body_count + capacity_extra + ts_int_extra + div_zero_extra + 2,
         "eq" => 29,
         "not" => 6,
         "String::join" => 35,
@@ -2429,6 +2519,26 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String, genera
   } else {
     ()
   }
+  // #3126: `div_zero_abort_idx` above encodes this position. `print_str` is
+  // body 2 (`hbo + 2`, as the capacity allocator above passes it).
+  if need_div_zero_abort {
+    push_gc_builtin(gen_div_zero_abort_body(hbo + 2, 0 - 1, gc_str_fat(str_strs, str_offsets, str_lengths, div_zero_div_message()), gc_str_fat(str_strs, str_offsets, str_lengths, div_zero_rem_message()), gc_str_fat(str_strs, str_offsets, str_lengths, div_zero_at_fragment()), 0, gc_str_fat(str_strs, str_offsets, str_lengths, "\n")), 0, 0, 7)
+  } else {
+    ()
+  }
+  // #3158: the linear lane's erased-generic dispatch bodies, shared verbatim:
+  // gc strings are the same packed (offset<<32)|len and gc ints are untagged
+  // (enable_rc=false keeps the #1877 wrap renormalization in `+`). Their
+  // callees are str_lex_diff (body 42) and String::concat (body 5); type 4 is
+  // (i64, i64) -> i64 and neither body needs a local beyond its params.
+  // Pushed after the #3126 abort body; the match arms above add
+  // `div_zero_extra` for exactly that reason.
+  if need_generic_dispatch {
+    push_gc_builtin(gen_generic_rel_diff_body(false, hbo + 42), 0, 0, 4)
+    push_gc_builtin(gen_generic_add_body(false, hbo + 5), 0, 0, 4)
+  } else {
+    ()
+  }
   // ADR-0090 (#1262) tier 2: the arena allocators, appended LAST and only
   // when the module has a region -- `num_generated` above counts them the
   // same way, so ordinals 0..48 (every `hbo + N` reference above) are
@@ -2616,6 +2726,7 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String, genera
             gc_bool_locals: gc_bool_slots_f,
             gc_int_locals: gc_int_slots_f,
             gc_to_string_int_func_idx: to_string_int_idx,
+            gc_div_zero_abort_func_idx: div_zero_abort_idx,
             gc_native_array_locals: direct_param_slots_f,
             gc_native_array_local_types: array_empty(),
             gc_native_array_type_idx: gc_native_array_type_idx,
@@ -2743,6 +2854,7 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String, genera
       gc_bool_locals: array_empty(),
       gc_int_locals: array_empty(),
       gc_to_string_int_func_idx: to_string_int_idx,
+      gc_div_zero_abort_func_idx: div_zero_abort_idx,
       gc_native_array_locals: array_empty(),
       gc_native_array_local_types: array_empty(),
       // Module-level initializers compile into `_start`, which is registered
