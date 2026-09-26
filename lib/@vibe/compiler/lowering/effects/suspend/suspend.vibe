@@ -1087,10 +1087,14 @@ fn scps_scope_from_params(params: Array[(String, Option[TypeExpr])], eff: String
 fn scps_named_call_ok(name: String, sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), scope: Array[(String, Int)]) -> Bool {
   let (eff, _, needing, _, _) = sctx
   let kind = scps_local_class(scope, name)
-  if kind >= 0 {
-    kind == 1 || kind == 2
-  } else if String::starts_with(name, "__scps_") || String::starts_with(name, "__Scps") {
+  // This pass's own names come first: a local it synthesized (the `let rec`
+  // of an abortive handle's step wrapper, #1537, and its continuation binder)
+  // is a step function, and an enclosing site re-walking already-split code
+  // meets it bound as an ordinary local.
+  if String::starts_with(name, "__scps_") || String::starts_with(name, "__Scps") {
     true
+  } else if kind >= 0 {
+    kind == 1 || kind == 2
   } else if idp_is_pure_builtin_call(name) || scps_is_safe_mut_builtin(name) || scps_is_ctor_name(ctx, name) || edp_str_array_contains(needing, name) {
     true
   } else {
@@ -1144,7 +1148,30 @@ fn scps_abortive_handle_ok(hb: Expr, harms: Array[(Pat, Expr)], sctx: (String, A
     }
     i = i + 1
   }
-  ok && !scps_inert_taint_arms(harms, eff, needing, array_empty_str(), ctx) && scps_calls_ok(hb, sctx, ctx, scope)
+  ok && !scps_inert_taint_arms(scps_arms_unwrap_done(harms, eff), eff, needing, array_empty_str(), ctx) && scps_calls_ok(hb, sctx, ctx, scope)
+}
+
+/// The arms of an abortive handle this pass already split carry their value
+/// in `Done(..)` (scps_split_handle). An enclosing site re-walking that code
+/// judges the value itself: the constructor is this pass's own.
+fn scps_arms_unwrap_done(harms: Array[(Pat, Expr)], eff: String) -> Array[(Pat, Expr)] {
+  let dn = scps_done_name(eff)
+  let out = scps_empty_arms()
+  let mut i = 0
+  while i < Array::length(harms) {
+    let (p, ex) = Array::get(harms, i)
+    let inner = match ex {
+      ECall(EIdent(nm, _), vargs, _) => if nm == dn && Array::length(vargs) == 1 {
+        Array::get(vargs, 0)
+      } else {
+        ex
+      },
+      _ => ex
+    }
+    Array::push(out, (p, inner))
+    i = i + 1
+  }
+  out
 }
 
 /// #1537: the step of an abortive nested handle (scps_abortive_handle_ok).
