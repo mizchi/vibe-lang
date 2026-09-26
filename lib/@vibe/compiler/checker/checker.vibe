@@ -52,6 +52,7 @@ import @vibe/compiler/core {
   TypeEnv,
   TypeExpr,
   apply_type_constructor,
+  array_receiver_reads,
   builtin_value_form_arity,
   canonical_builtin_name,
   collect_tvars,
@@ -114,12 +115,14 @@ import @vibe/compiler/core {
   type_implements_trait,
   type_name_has_iterator_impl,
   type_to_string,
+  typed_lowering_arg_offset,
   unify
 }
 
 import @vibe/ast {
   impl_encode_name,
   impl_method_owner_head,
+  index_site_offset,
   trait_ref_args,
   trait_ref_from_key,
   trait_ref_key,
@@ -158,7 +161,7 @@ import ./checker_resolve.vibe {
 }
 
 import ./checker_spawnable.vibe {
-  check_spawnable_captures, closure_bare_callee_names, closure_free_names
+  check_spawnable_captures, closure_bare_callee_names, closure_capture_facts, closure_free_names, spawn_caps_marker, spawn_safe_marker
 }
 
 import ./checker_effects.vibe {
@@ -1832,13 +1835,51 @@ fn builtin_ident_is_value(name: String, t: Type) -> Bool {
 ///
 /// A row with no variables (`String::concat`) instantiates to itself, so this
 /// is a no-op for every concrete builtin.
+/// #3149: a branch typed `Option[?a]` with the payload still a VARIABLE
+/// (a `None`) takes the payload of a sibling branch typed `Option[..]`. The
+/// branch-agreement checks for `if` / `match` are ground-gated (a `match`
+/// only cross-checks arms at all when its first arm is a scalar), so without
+/// this `match f { true => None, false => Some(xs) }` kept the `None` arm's
+/// open payload and the value's real type was lost. Refinement only: a
+/// failed unification leaves the substitution as it was and reports nothing.
+fn refine_open_option_branch(result: Type, other: Type, s: Subst) -> Subst {
+  let open_payload = match subst_apply(s, result) {
+    CtOption(inner) => match inner {
+      CtVar(_) => true,
+      _ => false
+    },
+    _ => false
+  }
+  let other_option = match subst_apply(s, other) {
+    CtOption(_) => true,
+    _ => false
+  }
+  if open_payload && other_option {
+    match unify(result, other, s) {
+      Some(s2) => s2,
+      None => s
+    }
+  } else {
+    s
+  }
+}
+
 fn builtin_ident_value_type(name: String, erased: Type, c: Int) -> (Type, Int) {
   match registry_builtin_scheme(canonical_builtin_name(name)) {
     Some(scheme) => {
       let (ty, c1, _bounds) = instantiate(scheme, c)
       (ty, c1)
     },
-    None => (erased, c)
+    // #3149: `None` is `Option[?a]` with a fresh `?a` per occurrence, not
+    // `Option[unknown]`: the unknown absorbed every unification, so a `match`
+    // or `if` whose first branch was `None` typed as `Option[unknown]` and
+    // lost the other branch's type (`Array::length(callee_effs)` in
+    // checker_effects.vibe reached its Array reader with no type).
+    None => if name == "None" {
+      (CtOption(CtVar(c)), c + 1)
+    } else {
+      (erased, c)
+    }
   }
 }
 
@@ -3494,7 +3535,53 @@ let eq_group_next: Array[Int] = [0]
 /// turn. Reset with the other per-run tables.
 let deferred_field_reads: Array[(Int, String, Int, Int, String, Int)] = []
 
+/// #3149: the generic formals whose scheme the body constrained (bound to a
+/// concrete head, so the declaration's scheme substitutes them) AND whose
+/// every caller is known to have been checked against that scheme: a
+/// non-exported top-level declaration no earlier statement of its list
+/// references. A caller written ABOVE the declaration was checked against the
+/// hoisted signature, which knows nothing of the body; an exported one may be
+/// called through a contract that says the same. For these formals the
+/// #3145 / #3148 build-time refusal is redundant -- a Map argument is already
+/// a type error at the call -- and is not filed. Reset per run.
+let scheme_constrained_formals: Array[Int] = []
+
+/// #3149: the formals each generic `EFn` substituted into its scheme, pending
+/// until the enclosing top-level declaration decides whether they count as
+/// constrained (`efn_head_bound_commit`).
+let efn_substituted_formals: Array[Int] = []
+
+export fn efn_head_bound_mark() -> Int {
+  Array::length(efn_substituted_formals)
+}
+
+/// Commit (or drop) the formals the declaration's value substituted since
+/// `mark`. `callers_checked` is the declaration-level answer described at
+/// `scheme_constrained_formals`.
+export fn efn_head_bound_commit(mark: Int, callers_checked: Bool) -> Unit {
+  if callers_checked {
+    let mut i = mark
+    while i < Array::length(efn_substituted_formals) {
+      Array::push(scheme_constrained_formals, Array::get(efn_substituted_formals, i))
+      i = i + 1
+    }
+  } else {
+    ()
+  }
+  if mark <= Array::length(efn_substituted_formals) {
+    Array::truncate(efn_substituted_formals, mark)
+  } else {
+    ()
+  }
+}
+
+export fn scheme_formal_constrained(vid: Int) -> Bool {
+  int_array_has(scheme_constrained_formals, vid)
+}
+
 export fn reset_eq_formal_vars() -> Unit {
+  Array::truncate(scheme_constrained_formals, 0)
+  Array::truncate(efn_substituted_formals, 0)
   Array::truncate(eq_formal_vars, 0)
   Array::truncate(eq_formal_arity, 0)
   Array::truncate(eq_formal_group, 0)
@@ -4579,6 +4666,70 @@ fn is_bytestream_named_type(t: Type) -> Bool {
   }
 }
 
+/// #3149: a generic formal's binding (already zonked) whose HEAD is a
+/// concrete constructor -- `Array[?e]`, `Option[?e]`, a tuple, a declared or
+/// builtin nominal `N[..]` -- even though some argument is still open. The
+/// scheme substitutes such a formal rather than leaving it quantified. A
+/// variable head, a compiler-internal `#ctor.` / `#hktformal.` spelling, a
+/// function type, or anything containing one keeps the old answer.
+fn scheme_formal_head_bound(t: Type) -> Bool {
+  match t {
+    CtArray(e) => !scheme_type_mentions_internal(e),
+    CtOption(e) => !scheme_type_mentions_internal(e),
+    CtTuple(items) => {
+      let mut ok = true
+      for it in items {
+        if scheme_type_mentions_internal(it) {
+          ok = false
+        } else {
+          ()
+        }
+      }
+      ok
+    },
+    CtNamed(n, args) => !String::starts_with(n, "#") && Array::length(args) > 0 && !scheme_type_mentions_internal(t),
+    _ => false
+  }
+}
+
+fn scheme_type_mentions_internal(t: Type) -> Bool {
+  match t {
+    CtNamed(n, args) => if String::starts_with(n, "#") {
+      true
+    } else {
+      let mut hit = false
+      for a in args {
+        if scheme_type_mentions_internal(a) {
+          hit = true
+        } else {
+          ()
+        }
+      }
+      hit
+    },
+    CtArray(e) => scheme_type_mentions_internal(e),
+    CtOption(e) => scheme_type_mentions_internal(e),
+    CtTuple(items) => {
+      let mut hit = false
+      for it in items {
+        if scheme_type_mentions_internal(it) {
+          hit = true
+        } else {
+          ()
+        }
+      }
+      hit
+    },
+    CtFn(_, _, _) => true,
+    CtForAll(_, _, _) => true,
+    CtApplied(_, _) => true,
+    CtConstructor(_, _) => true,
+    CtUnknown => true,
+    CtRecord(_) => true,
+    _ => false
+  }
+}
+
 /// True when every declared field type of a struct is ground (the struct is not
 /// generic). `S::{ ... }` for such a struct can safely be typed `CtStruct(S)`.
 /// #3112: a monomorphic struct whose only non-ground field types are the
@@ -4600,17 +4751,78 @@ fn struct_fields_ground_builtin_named(dfields: Array[(String, Type)]) -> Bool {
   ok
 }
 
-fn struct_fields_ground(dfields: Array[(String, Type)]) -> Bool {
+///
+/// #3138: a NOMINAL field type (`StringMap[V]`, a declared struct or enum, any
+/// compiler-owned container) is ground when its name is a known type and its
+/// arguments are ground. `type_is_ground` answers false for every `CtNamed`,
+/// because a bare unknown name is also how a rigid type parameter reads; here
+/// the declarations are at hand, so the two can be told apart. Before this, a
+/// struct with one such field typed its literal as CtUnknown, and every use of
+/// the value was unchecked (`let s: String = Holder::{ tbl: m }` was clean).
+///
+/// `tparams` are the struct's own formals. A formal reads as a bare
+/// `CtNamed`, so one spelled like a declared type (`struct Box[T]` beside an
+/// imported `struct T`) is NOT that type: without this exclusion `Box::{ value:
+/// 42 }` was typed `CtStruct(Box)`, its instantiation was dropped, and
+/// `b.value` read as the imported `T` -- `let t: T = b.value` checked clean.
+fn struct_fields_ground(dfields: Array[(String, Type)], defs: Array[TypeDef], tparams: Array[String]) -> Bool {
   let mut ok = true
   let mut i = 0
   while i < Array::length(dfields) {
     let (_, ft) = Array::get(dfields, i)
-    if !type_is_ground(ft) {
+    if !struct_field_type_ground(ft, defs, tparams) {
       ok = false
     }
     i = i + 1
   }
   ok
+}
+
+fn struct_field_type_ground(t: Type, defs: Array[TypeDef], tparams: Array[String]) -> Bool {
+  match t {
+    CtNamed(n, args) => {
+      let known = if formals_source_arity(tparams, n) >= 0 {
+        false
+      } else {
+        match compiler_owned_type_arity(n) {
+          Some(arity) => arity == Array::length(args),
+          None => match find_typedef(defs, n) {
+            Some(TDStruct(_, _, _, tps)) => Array::length(tps) == Array::length(args),
+            Some(TDEnum(_, tps, _)) => Array::length(tps) == Array::length(args),
+            _ => false
+          }
+        }
+      }
+      let mut ok = known
+      let mut i = 0
+      while ok && i < Array::length(args) {
+        ok = struct_field_type_ground(Array::get(args, i), defs, tparams)
+        i = i + 1
+      }
+      ok
+    },
+    CtTuple(items) => {
+      let mut ok = true
+      let mut i = 0
+      while ok && i < Array::length(items) {
+        ok = struct_field_type_ground(Array::get(items, i), defs, tparams)
+        i = i + 1
+      }
+      ok
+    },
+    CtArray(e) => struct_field_type_ground(e, defs, tparams),
+    CtOption(e) => struct_field_type_ground(e, defs, tparams),
+    CtFn(ps, r, _) => {
+      let mut ok = struct_field_type_ground(r, defs, tparams)
+      let mut i = 0
+      while ok && i < Array::length(ps) {
+        ok = struct_field_type_ground(Array::get(ps, i), defs, tparams)
+        i = i + 1
+      }
+      ok
+    },
+    _ => type_is_ground(t)
+  }
 }
 
 /// #2147 review (round 2): the row entries that are effect VARIABLES -- the
@@ -6054,6 +6266,137 @@ let handle_local_lambdas_cell: Array[(String, Int, Expr)] = []
 /// that calls itself is walked once.
 let handle_lambda_expanding_cell: Array[String] = []
 
+/// #3125 / #3152: the `Spawnable` capture check needs the closure at the call,
+/// so it is keyed on the callee's TYPE, not its spelling. A function whose
+/// FIRST parameter is a `TaskGroup[r, e]` and whose LAST parameter is a
+/// closure is taken to run that closure in the group, and its closure
+/// argument is checked at every call: `TaskGroup::spawn`,
+/// `TaskGroup::spawn_suspend` and `Parallel::map` are the library's three, and
+/// a `let` alias, a renamed import, or a user wrapper with that shape answers
+/// the same way. Inside such a function the closure parameter is trusted
+/// (`spawn_safe_marker`), because every call site was checked. A function of
+/// this shape that runs its closure locally is checked anyway -- a
+/// conservative refusal, never a silent pass.
+fn param_types_are_spawn_shaped(params: Array[Type]) -> Bool {
+  let n = Array::length(params)
+  if n < 2 {
+    false
+  } else {
+    let group_ok = match Array::get(params, 0) {
+      CtNamed(gn, gargs) => gn == "TaskGroup" && Array::length(gargs) == 2,
+      _ => false
+    }
+    let closure_ok = match Array::get(params, n - 1) {
+      CtFn(_, _, _) => true,
+      _ => false
+    }
+    group_ok && closure_ok
+  }
+}
+
+fn type_is_spawn_shaped(t: Type) -> Bool {
+  match t {
+    CtForAll(_, _, body) => type_is_spawn_shaped(body),
+    CtFn(params, _, _) => param_types_are_spawn_shaped(params),
+    _ => false
+  }
+}
+
+/// #3153: `TaskGroup::run`'s region-escape check, keyed on the callee's type
+/// like the spawn check: a function taking exactly one closure whose one
+/// parameter is a `TaskGroup[r, e]` (`((TaskGroup[r, e]) -> T) -> T`) is a
+/// nursery runner -- the only way to produce a `TaskGroup` is to be handed one
+/// by `TaskGroup::run` -- so a `let` alias, a renamed import, or a wrapper of
+/// that shape mints a fresh region per call exactly like the declaration.
+fn type_is_run_shaped(t: Type) -> Bool {
+  match t {
+    CtForAll(_, _, body) => type_is_run_shaped(body),
+    CtFn(params, _, _) => if Array::length(params) != 1 {
+      false
+    } else {
+      match Array::get(params, 0) {
+        CtFn(body_params, _, _) => if Array::length(body_params) != 1 {
+          false
+        } else {
+          match Array::get(body_params, 0) {
+            CtNamed(gn, gargs) => gn == "TaskGroup" && Array::length(gargs) == 2,
+            _ => false
+          }
+        },
+        _ => false
+      }
+    },
+    _ => false
+  }
+}
+
+/// Whether the name a call names resolves to a spawn-shaped function (see
+/// `param_types_are_spawn_shaped`).
+fn callee_is_spawn_shaped(env: TypeEnv, s: Subst, name: String) -> Bool {
+  match env_lookup(env, name) {
+    Some(t) => type_is_spawn_shaped_under(s, t),
+    None => false
+  }
+}
+
+/// Whether the name a call names resolves to a run-shaped function (see
+/// `type_is_run_shaped`).
+fn callee_is_run_shaped(env: TypeEnv, s: Subst, name: String) -> Bool {
+  match env_lookup(env, name) {
+    Some(t) => type_is_run_shaped(resolve_bare_var(s, t)),
+    None => false
+  }
+}
+
+/// `type_is_spawn_shaped` after the running substitution, applied only when
+/// the binding's type is still a bare variable -- the one shape the raw type
+/// cannot answer for, and the rare one, so ordinary lookups stay cheap.
+fn type_is_spawn_shaped_under(s: Subst, t: Type) -> Bool {
+  type_is_spawn_shaped(resolve_bare_var(s, t))
+}
+
+fn resolve_bare_var(s: Subst, t: Type) -> Type {
+  match t {
+    CtVar(_) => subst_apply(s, t),
+    _ => t
+  }
+}
+
+/// Run the `Spawnable` capture check for one spawn-shaped call: `group_ty` is
+/// the type of its `TaskGroup` argument and `closure` its closure argument.
+fn report_spawnable_violations(env: TypeEnv, s: Subst, defs: Array[TypeDef], group_ty: Type, closure: Expr, errors: Array[String], name: String, callee_off: Int) -> Unit {
+  match subst_apply(s, group_ty) {
+    CtNamed(tg_name, tg_args) => if tg_name == "TaskGroup" && Array::length(tg_args) == 2 {
+      let violations = check_spawnable_captures(env, s, defs, closure, Array::get(tg_args, 0), unsent_open_formal_vars(s))
+      let mut vi = 0
+      while vi < Array::length(violations) {
+        Array::push(errors, String::concat(Array::get(violations, vi), off_marker_len(callee_off, String::length(name))))
+        vi = vi + 1
+      }
+    } else {
+      ()
+    },
+    _ => ()
+  }
+}
+
+/// Whether a value of type `t` must not be handed on (#3125, #3153): the
+/// spawn check and the run check both run at a call, so a spawn- or
+/// run-shaped function reaching anything but a call or a local `let` would be
+/// applied where neither can see its closure.
+fn type_is_call_checked(s: Subst, t: Type) -> Bool {
+  let r = resolve_bare_var(s, t)
+  type_is_spawn_shaped(r) || type_is_run_shaped(r)
+}
+
+/// #3125: set while the right-hand side of a local `let` is a bare name, and
+/// read (then cleared) by that name's `EIdent` check. A spawn-shaped value
+/// may be bound to a new name there, because calls through that name are
+/// checked by type; everywhere else (an argument, a field, a return value,
+/// an `if` branch) the value would reach a call the checker cannot see, so
+/// it is refused.
+let spawn_value_let_rhs_cell: Array[Bool] = []
+
 /// Record `value` under `name` when it is a lambda or names a function
 /// (`let f = get_int`, #3022 review); returns the depth to truncate back to
 /// when the binding's scope ends.
@@ -6612,10 +6955,10 @@ fn resolve_record_struct_name(defs: Array[TypeDef], actual: Array[(String, Type)
   let mut di = 0
   while di < Array::length(defs) {
     match Array::get(defs, di) {
-      TDStruct(sname, dfields, _, _) => if struct_field_names_match(dfields, actual) {
+      TDStruct(sname, dfields, _, stps) => if struct_field_names_match(dfields, actual) {
         matchct = matchct + 1
         out = Some(sname)
-        ground = struct_fields_ground(dfields)
+        ground = struct_fields_ground(dfields, defs, stps)
       },
       _ => ()
     }
@@ -6963,6 +7306,51 @@ fn call_result_with_provenance(ret: Type, param_tys: Array[Type], arg_tys: Array
       resolve_param_provenance(resolved_ret, resolved_params, resolved_args)
     },
     _ => resolved_ret
+  }
+}
+
+/// #3125: is a local `let`'s value an ALIAS -- a bare name, or a bare name
+/// under an annotation? An annotated `let sp: (..) -> .. = TaskGroup::spawn`
+/// reaches the checker as the parser's ascription call
+/// `((__asc: T) -> __asc)(TaskGroup::spawn)` (`ascription_lambda_ann`), and
+/// the ascription only fixes the type the new name carries, so it is the
+/// same alias as the unannotated spelling (#3156 review: it was refused,
+/// contradicting the diagnostic's own advice to bind it with a `let`).
+fn let_rhs_is_alias(val: Expr) -> Bool {
+  match val {
+    EIdent(_, _) => true,
+    ECall(callee, args, _) => if Array::length(args) == 1 {
+      match ascription_lambda_ann(callee) {
+        Some(_) => match Array::get(args, 0) {
+          EIdent(_, _) => true,
+          _ => false
+        },
+        None => false
+      }
+    } else {
+      false
+    },
+    _ => false
+  }
+}
+
+/// The closure literal a local `let` binds, seen through the parser's
+/// ascription wrapper for an annotated binding (`ascription_lambda_ann`).
+fn let_rhs_closure_literal(val: Expr) -> Option[Expr] {
+  match val {
+    EFn(_, _, _, _, _, _) => Some(val),
+    ECall(callee, args, _) => if Array::length(args) == 1 {
+      match ascription_lambda_ann(callee) {
+        Some(_) => match Array::get(args, 0) {
+          EFn(_, _, _, _, _, _) => Some(Array::get(args, 0)),
+          _ => None
+        },
+        None => None
+      }
+    } else {
+      None
+    },
+    _ => None
   }
 }
 
@@ -8960,6 +9348,164 @@ fn record_string_binop_operands(capture: Option[TypedOccurrenceRoleLaneCapture],
   }
 }
 
+/// #3133: record the receiver type of one `xs[k]` (`__index`) under its `[`
+/// offset, as kind 4 on the binop capture arrays (two identical rows, because
+/// every reader of those arrays walks them in pairs). Entries-only captures
+/// only, like the binop rows above. A receiver whose head is already an
+/// Array, String or Bytes is skipped: a resolved head never changes under a
+/// later substitution, and such an index is array indexing whatever else the
+/// checker learns -- so the per-module capture carries a row only where the
+/// answer is still open.
+fn record_index_receiver(capture: Option[TypedOccurrenceRoleLaneCapture], bracket_off: Int, recv_ty: Type, resolved: Type, s: Subst) -> Unit {
+  record_receiver_kind(capture, bracket_off, recv_ty, resolved, 4, s)
+}
+
+/// #3156 review: the enclosing declaration's type formal that `t` reaches by
+/// following its variable chain (`t` itself, or a variable the substitution
+/// bound to one), or -1. Stops at the first non-variable, so a receiver whose
+/// raw type is already a concrete head never counts.
+fn receiver_formal_var(t: Type, s: Subst) -> Int {
+  let mut cur = t
+  let mut out = 0 - 1
+  let mut steps = 0
+  let mut done = false
+  while !done && steps < 64 {
+    match cur {
+      CtVar(v) => if eq_formal_row_of(v) >= 0 {
+        out = v
+        done = true
+      } else {
+        match subst_lookup(s, v) {
+          Some(next) => {
+            cur = next
+          },
+          None => {
+            done = true
+          }
+        }
+      },
+      _ => {
+        done = true
+      }
+    }
+    steps = steps + 1
+  }
+  out
+}
+
+/// #3145: `kind` 4 is an index read or write (#3133 / #3139); kind 5 is a
+/// builtin `Array::*` reader, whose extraction does not count a bare
+/// `CtUnknown` as open (see `index_receiver_rows_from_capture`).
+///
+/// #3156 review: a head the substitution settled is not settled for every
+/// CALLER when the receiver is an enclosing declaration's type formal. The
+/// body may have unified the formal with an Array (`require_array(x); x[0]`
+/// in `fn f[T](x: T)`), and that local binding reaches a caller only through
+/// the declaration's scheme (#3149) -- not a caller checked against the
+/// hoisted signature, nor one reaching an exported declaration through its
+/// contract. Such a site is filed as the formal itself, under the formal
+/// kinds (6, or 8 for a `for` iterand), so the extraction refuses it unless
+/// `scheme_formal_constrained` says every caller saw the constraint.
+fn record_receiver_kind(capture: Option[TypedOccurrenceRoleLaneCapture], bracket_off: Int, recv_ty: Type, resolved: Type, kind: Int, s: Subst) -> Unit {
+  match capture {
+    Some(c) => if !c.provenance_enabled && bracket_off >= 0 {
+      let settled = match resolved {
+        CtArray(_) => true,
+        CtString => true,
+        CtBytes => true,
+        _ => false
+      }
+      let settled_formal = if settled {
+        receiver_formal_var(recv_ty, s)
+      } else {
+        0 - 1
+      }
+      let row_kind = if settled_formal < 0 {
+        kind
+      } else if kind == 7 || kind == 8 {
+        8
+      } else {
+        6
+      }
+      let row_ty = if settled_formal >= 0 {
+        CtVar(settled_formal)
+      } else {
+        recv_ty
+      }
+      if !settled || settled_formal >= 0 {
+        Array::push(c.binop_offsets, bracket_off)
+        Array::push(c.binop_kinds, row_kind)
+        Array::push(c.binop_types, row_ty)
+        Array::push(c.binop_offsets, bracket_off)
+        Array::push(c.binop_kinds, row_kind)
+        Array::push(c.binop_types, row_ty)
+      } else {
+        ()
+      }
+    } else {
+      ()
+    },
+    None => ()
+  }
+}
+
+/// #3145: the same filing for an argument a builtin `Array::*` operation reads
+/// as an Array's backing store (`array_receiver_reads`), keyed by the callee's
+/// own offset. The trait-dictionary pass refuses the call when the argument's
+/// type never resolves, since on a Map it would read or write positionally.
+///
+/// `formal` says the argument is, at this site, a declared type parameter of
+/// an enclosing binder. The direct fast path then binds it to `Array[_]`
+/// (#3006) -- and that binding does not reach the binder's callers, so the
+/// final substitution would answer "an Array" for a `T` a caller instantiates
+/// with a Map (measured: `fn f[T](c: T) -> Int { Array::length(c) }` applied
+/// to a one-entry map compiled and answered 0). Such a site is filed as kind
+/// 6, which the extraction reads as open whatever the substitution says.
+fn record_array_receiver(capture: Option[TypedOccurrenceRoleLaneCapture], name: String, callee_off: Int, arg_ty: Type, s: Subst, formal: Bool) -> Unit {
+  if callee_off >= 0 && array_receiver_reads(name) {
+    // A formal is filed as its own variable, which the extraction looks up
+    // in `scheme_constrained_formals`.
+    record_receiver_kind(capture, callee_off, if formal {
+      subst_apply(s, arg_ty)
+    } else {
+      arg_ty
+    }, subst_apply(s, arg_ty), if formal {
+      6
+    } else {
+      5
+    }, s)
+  } else {
+    ()
+  }
+}
+
+/// #3145 review: the key a two-array reader (`Array::concat`,
+/// `Array::push_all`) files its SECOND operand under -- one byte into the
+/// callee's name, where no other expression can start -- so the refusal can
+/// name the operand that is actually unresolved.
+fn array_reader_second_key(callee_off: Int) -> Int {
+  if callee_off >= 0 {
+    callee_off + 1
+  } else {
+    0 - 1
+  }
+}
+
+/// #3145: the special `Array::*` arms' version of what the direct fast path
+/// does for its Array argument: file it (`record_array_receiver`, noting a
+/// declared formal), then bind a type VARIABLE to `Array[_]` (#3006), so an
+/// unannotated lambda parameter used only through these arms is an Array to
+/// its callers -- a Map argument is then a type error at the call -- rather
+/// than an open type the pass has to refuse.
+fn bind_array_arg(capture: Option[TypedOccurrenceRoleLaneCapture], name: String, callee_off: Int, arg_ty: Type, s: Subst, c: Int) -> (Subst, Int) {
+  let formal = match subst_apply(s, arg_ty) {
+    CtVar(fv) => eq_formal_row_of(fv) >= 0,
+    _ => false
+  }
+  record_array_receiver(capture, name, callee_off, arg_ty, s, formal)
+  bind_builtin_arg_var(subst_apply(s, arg_ty), 9, s, c)
+}
+
 fn tab_identifier_ty(tytab: Array[(Int, Type)], ident_off: Int, ty: Type, capture: Option[TypedOccurrenceRoleLaneCapture], lane: String) -> Unit {
   append_legacy_typed_occurrence(tytab, ident_off, ty, capture, "Identifier", lane)
 }
@@ -9023,7 +9569,16 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
       },
       ELet(name, val, body, let_off) => {
         let err_before = Array::length(errors)
+        // #3125: a bare name bound by `let` may alias a spawn-shaped function;
+        // calls through the new name are checked by type, so this one value
+        // position is not refused (see `spawn_value_let_rhs_cell`).
+        if let_rhs_is_alias(val) {
+          Array::push(spawn_value_let_rhs_cell, true)
+        } else {
+          ()
+        }
         let (vt, ns, nc) = ce(val, cenv, defs, s1, c1, errors, tytab, capture, lane)
+        Array::truncate(spawn_value_let_rhs_cell, 0)
         attach_unlocated_decl_name_marker(errors, err_before, name)
         // #938 value restriction: a builder is a MUTABLE container, so its
         // element var must stay un-quantified — generalizing
@@ -9049,8 +9604,21 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         record_local_let_type(let_off, gen, lane)
         let aliases_outer = spine_region_active && expression_aliases_outer_binding(val, cenv)
         note_local_generic_binding(val, gen, cenv)
+        let def_env = cenv
         cenv = env_bind(cenv, name, gen)
         cenv = bind_function_dependency_contracts(cenv, name, val)
+        // #3152: record what a local closure captured, read in the scope it
+        // was written in, so a later `TaskGroup::spawn(n, name)` -- or a
+        // spawned body that calls `name` -- is checked like the literal.
+        // An annotated `let f: T = () -> ..` is the parser's ascription call
+        // around the literal (#3156 review); unwrap it the way
+        // `let_rhs_is_alias` does.
+        match let_rhs_closure_literal(val) {
+          Some(EFn(_, _, fparams, _, _, fbody)) => {
+            cenv = env_bind(cenv, spawn_caps_marker(name), CtTuple(closure_capture_facts(def_env, fbody, fparams)))
+          },
+          _ => ()
+        }
         if aliases_outer {
           cenv = env_bind(cenv, String::concat("__region_outer_alias__", name), CtUnit)
         } else {
@@ -10820,6 +11388,23 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       (CtUnknown, s, c)
     } else match env_lookup(env, railway_ident_lookup_name(name)) {
       Some(t) => {
+        let let_rhs = Array::length(spawn_value_let_rhs_cell) != 0
+        Array::truncate(spawn_value_let_rhs_cell, 0)
+        if !let_rhs && type_is_call_checked(s, t) {
+          // #3125 / #3153: a spawn- or run-shaped function reaching anything
+          // but a call or a `let` would be applied where its check cannot see
+          // the closure (`apply2(TaskGroup::spawn, n, () -> xs)` ran a
+          // capture of a plain `Array`). Refuse it here instead.
+          let is_run = type_is_run_shaped(resolve_bare_var(s, t))
+          let reason = if is_run {
+            "` cannot be used as a value here: the check that keeps a task group inside its `TaskGroup::run` body runs where it is called, so the body it is applied to would go unchecked -- call it directly (`TaskGroup::run((g) -> ...)`) or bind it with a local `let` and call that name"
+          } else {
+            "` cannot be used as a value here: the `Spawnable` capture check runs where it is called, so the closure it is applied to would go unchecked -- call it directly (`TaskGroup::spawn(n, () -> ...)`) or bind it with a local `let` and call that name"
+          }
+          Array::push(errors, String::concat(String::concat(String::concat("`", name), reason), off_marker_len(ident_off, String::length(name))))
+        } else {
+          ()
+        }
         let (ti, c1, new_bounds) = instantiate(t, c)
         let nblen = Array::length(new_bounds)
         let mut s1 = s
@@ -10947,6 +11532,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       // unchecked — `if c { 1 } else { "x" }` was accepted). A `CtUnit` branch
       // is tolerated: `if c { stmt }` desugars to an `else ()` whose value is
       // discarded, and a statement-position `if` need not have matching arms.
+      let s3 = refine_open_option_branch(tt, et, refine_open_option_branch(et, tt, s3))
       let rtt = subst_apply(s3, tt)
       let ret = subst_apply(s3, et)
       // When one branch yields Unit (an else-less `if`, whose missing else is
@@ -11353,6 +11939,24 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           let (obj_ty, s1, c1) = check_expr_capture(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
           let (idx_ty, s2, c2) = check_expr_capture(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
           let resolved_obj = subst_apply(s2, obj_ty)
+          // #3133: the trait-dictionary pass lowers `m[k]` on a Map to
+          // `Map::get`, and it asks THIS type, not the receiver's spelling.
+          let bracket_off = index_site_offset(callee_off)
+          record_index_receiver(capture, bracket_off, obj_ty, resolved_obj, s2)
+          // A Map receiver indexes by its String key and yields the value slot,
+          // exactly as `Map::get` does below (#983).
+          let map_value = match resolved_obj {
+            CtNamed(mn, margs) => if mn == "Map" && Array::length(margs) == 2 {
+              Some(Array::get(margs, 1))
+            } else {
+              None
+            },
+            _ => None
+          }
+          let s3 = match map_value {
+            Some(_) => check_assignable(CtString, subst_apply(s2, idx_ty), s2, errors, "a Map index must be a String key", bracket_off),
+            None => s2
+          }
           let not_indexable = match resolved_obj {
             CtInt => true,
             CtDouble => true,
@@ -11370,7 +11974,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               CtBytes => true,
               _ => false
             }
-            let resolved_idx = subst_apply(s2, idx_ty)
+            let resolved_idx = subst_apply(s3, idx_ty)
             if indexable && match resolved_idx {
               CtInt => false,
               _ => type_is_ground(resolved_idx)
@@ -11380,13 +11984,16 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               ()
             }
           }
-          let result = match resolved_obj {
-            CtArray(elem) => elem,
-            CtString => CtInt,
-            CtBytes => CtInt,
-            _ => CtUnknown
+          let result = match map_value {
+            Some(v) => subst_apply(s3, v),
+            None => match resolved_obj {
+              CtArray(elem) => elem,
+              CtString => CtInt,
+              CtBytes => CtInt,
+              _ => CtUnknown
+            }
           }
-          (tab_call_ty(tytab, call_off, result, capture, lane), s2, c2)
+          (tab_call_ty(tytab, call_off, result, capture, lane), s3, c2)
         } else if name == "__rec_field" && Array::length(args) == 2 {
           // #2452: `r.field` on an anonymous-record BINDING never reaches the
           // `EDot` arm below -- the desugar rewrites it to
@@ -11987,6 +12594,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           // gated).
           let (obj_ty, s1, c1) = check_expr_capture(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
           check_builtin_arg_head(name, 0, subst_apply(s1, obj_ty), errors, callee_off)
+          let (s1, c1) = bind_array_arg(capture, name, callee_off, obj_ty, s1, c1)
           let (val_ty, s2, c2) = check_expr_capture(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
           let s3 = match subst_apply(s2, obj_ty) {
             CtArray(elem) => check_assignable(subst_apply(s2, elem), subst_apply(s2, val_ty), s2, errors, "Array::push value type mismatch", tail_expr_off(Array::get(args, 1))),
@@ -11999,11 +12607,32 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           let (obj_ty, s1, c1) = check_expr_capture(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
           let (set_idx_ty, s2, c2) = check_expr_capture(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
           let (val_ty, s3, c3) = check_expr_capture(Array::get(args, 2), env, defs, s2, c2, errors, tytab, capture, lane)
+          // #3139: file the receiver like an index read's (#3133), so the
+          // trait-dictionary pass can refuse a write whose receiver is never
+          // resolved -- on a Map it would write the backing store
+          // positionally. The key is the callee's own offset for a written
+          // `Array::set(..)`, or the `[` an index write (`xs[i] = v`) carries.
+          let set_site = if callee_off >= 0 {
+            callee_off
+          } else {
+            index_site_offset(callee_off)
+          }
+          record_index_receiver(capture, set_site, obj_ty, subst_apply(s3, obj_ty), s3)
           // #826: same head checks as Array::get (this branch also bypasses the
           // direct fast path).
           let as_recv_head = head_kind(subst_apply(s3, obj_ty))
           if as_recv_head != 0 && as_recv_head != 9 {
-            Array::push(errors, String::concat("argument type mismatch for Array::set: receiver type ", String::concat(type_to_string(subst_apply(s3, obj_ty)), off_marker_len(callee_off, String::length(name)))))
+            // #3133: `m[k] = v` parses to `Array::set(m, k, v)`; on a Map the
+            // edit is the functional update, so say so.
+            let map_hint = match subst_apply(s3, obj_ty) {
+              CtNamed(mn, _) => if mn == "Map" {
+                " -- a Map is not updated in place (`m[k] = v` is Array-only): bind the result of `Map::set(m, k, v)` instead"
+              } else {
+                ""
+              },
+              _ => ""
+            }
+            Array::push(errors, String::concat("argument type mismatch for Array::set: receiver type ", String::concat(type_to_string(subst_apply(s3, obj_ty)), String::concat(map_hint, off_marker_len(callee_off, String::length(name))))))
           } else if is_bytestream_named_type(subst_apply(s3, obj_ty)) {
             Array::push(errors, String::concat("argument type mismatch for Array::set: receiver type ", String::concat(type_to_string(subst_apply(s3, obj_ty)), String::concat(" is a ByteStream, not an Array", off_marker_len(callee_off, String::length(name))))))
           } else {
@@ -12028,6 +12657,8 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           // as Array::concat.
           let (a_ty, s1, c1) = check_expr_capture(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
           let (b_ty, s2, c2) = check_expr_capture(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
+          let (s2, c2) = bind_array_arg(capture, name, callee_off, a_ty, s2, c2)
+          let (s2, c2) = bind_array_arg(capture, name, array_reader_second_key(callee_off), b_ty, s2, c2)
           let s3 = check_two_array_elems(subst_apply(s2, a_ty), subst_apply(s2, b_ty), s2, errors, "Array::push_all element type mismatch")
           (tab_call_ty(tytab, call_off, CtUnit, capture, lane), s3, c2)
         } else if name == "Array::get" && Array::length(args) == 2 {
@@ -12041,6 +12672,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           // head checks never ran — `Array::get("str", 0)` trapped at runtime
           // and `Array::get(a, "x")` returned silent garbage. Same ground-gated
           // discipline as builtin_first_arg_head (0 = tolerate).
+          let (s2, c2) = bind_array_arg(capture, name, callee_off, obj_ty, s2, c2)
           let ag_recv_head = head_kind(subst_apply(s2, obj_ty))
           if ag_recv_head != 0 && ag_recv_head != 9 {
             Array::push(errors, String::concat("argument type mismatch for Array::get: receiver type ", String::concat(type_to_string(subst_apply(s2, obj_ty)), off_marker_len(callee_off, String::length(name)))))
@@ -12064,6 +12696,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           // Returns an array of the same element type (was CtUnknown).
           let (obj_ty, s1, c1) = check_expr_capture(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
           check_builtin_arg_head(name, 0, subst_apply(s1, obj_ty), errors, callee_off)
+          let (s1, c1) = bind_array_arg(capture, name, callee_off, obj_ty, s1, c1)
           let result = match subst_apply(s1, obj_ty) {
             CtArray(elem) => CtArray(elem),
             _ => CtUnknown
@@ -12078,6 +12711,8 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           let (a_ty, s1, c1) = check_expr_capture(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
           check_builtin_arg_head(name, 0, subst_apply(s1, a_ty), errors, callee_off)
           let (b_ty, s2, c2) = check_expr_capture(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
+          let (s2, c2) = bind_array_arg(capture, name, callee_off, a_ty, s2, c2)
+          let (s2, c2) = bind_array_arg(capture, name, array_reader_second_key(callee_off), b_ty, s2, c2)
           let a_app = subst_apply(s2, a_ty)
           let b_app = subst_apply(s2, b_ty)
           let s3 = check_two_array_elems(a_app, b_app, s2, errors, "Array::concat element type mismatch")
@@ -12096,6 +12731,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           // `CtArray(elem)` from a concrete receiver.
           let (obj_ty, s1, c1) = check_expr_capture(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
           check_builtin_arg_head(name, 0, subst_apply(s1, obj_ty), errors, callee_off)
+          let (s1, c1) = bind_array_arg(capture, name, callee_off, obj_ty, s1, c1)
           let (_, s2, c2) = check_expr_capture(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
           let (_, s3, c3) = check_expr_capture(Array::get(args, 2), env, defs, s2, c2, errors, tytab, capture, lane)
           let result = match subst_apply(s3, obj_ty) {
@@ -12112,6 +12748,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           // String, x) -> ...)` slipped through). Ground-gated.
           let (recv_ty, s1, c1) = check_expr_capture(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
           check_builtin_arg_head(name, 0, subst_apply(s1, recv_ty), errors, callee_off)
+          let (s1, c1) = bind_array_arg(capture, name, callee_off, recv_ty, s1, c1)
           let (init_ty, s2, c2) = check_expr_capture(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
           let (fn_ty, s3, c3) = check_expr_capture(Array::get(args, 2), env, defs, s2, c2, errors, tytab, capture, lane)
           check_builtin_arg_head(name, 2, subst_apply(s3, fn_ty), errors, callee_off)
@@ -12137,6 +12774,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           // (CtVar) stays tolerant.
           let (recv_ty, s1, c1) = check_expr_capture(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
           check_builtin_arg_head(name, 0, subst_apply(s1, recv_ty), errors, callee_off)
+          let (s1, c1) = bind_array_arg(capture, name, callee_off, recv_ty, s1, c1)
           let (fn_ty, s2, c2) = check_expr_capture(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
           check_builtin_arg_head(name, 1, subst_apply(s2, fn_ty), errors, callee_off)
           let s3 = check_hof_param_vs_elem(subst_apply(s2, recv_ty), subst_apply(s2, fn_ty), 0, s2, errors, "Array::map function parameter type mismatch")
@@ -12145,28 +12783,27 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             _ => CtUnknown
           }
           (tab_call_ty(tytab, call_off, result, capture, lane), s3, c2)
-        } else if name == "TaskGroup::run" && Array::length(args) == 1 {
+        } else if Array::length(args) == 1 && (name == "TaskGroup::run" || callee_is_run_shaped(env, s, name)) {
           // #1081 step 3: `TaskGroup::run` mints a fresh generative region.
           // There is no general rank-2/`Region`-bound mechanism in this
-          // checker (see docs/internal/design/concurrency.md's dated 実装ノート) — this
-          // qualified name is special-cased exactly like `resume`/`perform`/
-          // `Some` above, matched by its LITERAL spelling. (Codex review, PR
-          // #1135, P1: an attempted fix that matched by the callee's
-          // structural shape instead — so a first-class alias like `let run
-          // = TaskGroup::run; run(...)` would also get this treatment — was
-          // tried and reverted: it false-matched unrelated single-argument
-          // calls elsewhere in the compiler's own source, regressing 20
-          // unit-test files with runtime traps. The alias/import-rename/
-          // higher-order-wrapper bypass this literal-name match cannot close
-          // is therefore a documented, accepted gap for this slice — see
-          // docs/internal/design/concurrency.md's dated 実装ノート.) The scheme's `r` type
+          // checker (see docs/internal/design/concurrency.md's dated 実装ノート).
+          // #3153: the branch is selected by the callee's TYPE
+          // (`type_is_run_shaped`: one closure argument whose one parameter
+          // is a `TaskGroup[r, e]`), so a `let` alias, a renamed import and
+          // a wrapper of that shape get the same fresh region; the
+          // function taken as any other value is refused where it is taken.
+          // A structural match was tried once before and reverted (PR #1135
+          // review) because it matched any single-closure call and
+          // regressed 20 unit tests; this shape requires the closure's
+          // parameter to be a `TaskGroup`, which only a runner is handed.
+          // The scheme's `r` type
           // parameter is instantiated to a fresh RIGID skolem (a `CtNamed`
           // name no parsed source can ever spell — the lexer rejects `#` in
           // identifiers) instead of an ordinary unifiable `CtVar`, so nothing
           // outside this call can be coerced into it by accident; only a
           // real escape reaches it, which the two checks below catch by
           // scanning fully-zonked types for the skolem's name.
-          match env_lookup(env, "TaskGroup::run") {
+          match env_lookup(env, name) {
             Some(scheme) => {
               let (ti, c1, new_bounds) = instantiate(scheme, c)
               let mut s0 = s
@@ -12231,7 +12868,14 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                             }
                           }
                         },
-                        _ => (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), s0, c1)
+                        // #3153: a runner whose region is already fixed (a
+                        // monomorphic binding used twice) cannot mint a fresh
+                        // one, so its escape check cannot run. Say so rather
+                        // than answer Unknown in silence.
+                        _ => {
+                          Array::push(errors, String::concat(String::concat(String::concat("`", name), "` cannot run a new task group here: its group type is already fixed by an earlier use -- call `TaskGroup::run` directly, or bind it with a local `let` at each use"), off_marker_len(callee_off, String::length(name))))
+                          (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), s0, c1)
+                        }
                       }
                     } else {
                       (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), s0, c1)
@@ -12372,12 +13016,17 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           }
           let (rt, s2, c2) = future_builtin_type(name, arg_tys, args, s1, c1, errors, callee_off)
           (tab_call_ty(tytab, call_off, rt, capture, lane), s2, c2)
-        } else if (name == "TaskGroup::spawn" || name == "TaskGroup::spawn_suspend") && Array::length(args) == 2 {
-          // #1081 step 3 Phase B: `Spawnable[r]` capture check. Like
-          // `TaskGroup::run` above, there is no general `Spawnable`
-          // trait/bound in this checker -- these two qualified names are
-          // special-cased by literal spelling (same alias/rename bypass
-          // caveat as TaskGroup::run, documented in docs/internal/design/concurrency.md).
+        } else if Array::length(args) == 2 && (name == "TaskGroup::spawn" || name == "TaskGroup::spawn_suspend" || callee_is_spawn_shaped(env, s, name)) {
+          // #1081 step 3 Phase B: `Spawnable[r]` capture check. There is no
+          // general `Spawnable` trait/bound in this checker, so the check is
+          // attached to the call. #3125: it used to be selected by the
+          // literal spelling of these two names, so `let sp =
+          // TaskGroup::spawn; sp(n, () -> xs)` ran a capture the literal
+          // spelling refuses. It is now selected by the callee's TYPE
+          // (`callee_is_spawn_shaped`), which covers a `let` alias, a renamed
+          // import and a wrapper with spawn's signature; the one route a
+          // call cannot see -- the function handed on as a value -- is
+          // refused where the value is taken (`EIdent` arm).
           // This branch does exactly the SAME instantiate + check-args +
           // unify work the generic call-checking fallback below would (so
           // ordinary type errors on `n`/`f` are unaffected), then additionally
@@ -12403,19 +13052,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                   let (a1_ty, s2, c3) = check_expr_capture(Array::get(args, 1), env, defs, s1, c2, errors, tytab, capture, lane)
                   let arg_tys = [a0_ty, a1_ty]
                   let s3 = unify_call_args(param_tys, arg_tys, args, s2, errors, name, callee_off)
-                  match subst_apply(s3, a0_ty) {
-                    CtNamed(tg_name, tg_args) => if tg_name == "TaskGroup" && Array::length(tg_args) == 2 {
-                      let violations = check_spawnable_captures(env, s3, defs, Array::get(args, 1), Array::get(tg_args, 0), unsent_open_formal_vars(s3))
-                      let mut vi = 0
-                      while vi < Array::length(violations) {
-                        Array::push(errors, String::concat(Array::get(violations, vi), off_marker_len(callee_off, String::length(name))))
-                        vi = vi + 1
-                      }
-                    } else {
-                      ()
-                    },
-                    _ => ()
-                  }
+                  report_spawnable_violations(env, s3, defs, a0_ty, Array::get(args, 1), errors, name, callee_off)
                   (tab_call_ty(tytab, call_off, subst_apply(s3, ret_ty), capture, lane), s3, c3)
                 },
                 _ => (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), s0, c1)
@@ -12492,6 +13129,17 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                 // String::length(x) }` stayed fully generic and `g(41)` read an
                 // Int as a string (`82`). Bind it to what the builtin reads, the
                 // way a user function's parameter would.
+                // #3145: file an Array reader's receiver before the binding
+                // below, so a formal it cannot bind stays open in the row.
+                if ai == 0 {
+                  let formal_recv = match subst_apply(ns, at) {
+                    CtVar(fv) => array_receiver_reads(name) && eq_formal_row_of(fv) >= 0,
+                    _ => false
+                  }
+                  record_array_receiver(capture, name, callee_off, at, ns, formal_recv)
+                } else {
+                  ()
+                }
                 let want_any = if ai == 0 {
                   want_head
                 } else {
@@ -12650,7 +13298,14 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                         Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(name, String::concat(": expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))))), off_marker_len(callee_off, String::length(name))))
                       }
                       let s3 = unify_call_args(call_param_tys, arg_tys, args, s2, errors, name, callee_off)
-                      check_spawn_shaped_call(env, s3, defs, call_param_tys, Array::get(ret_box, 0), args, errors, off_marker_len(callee_off, String::length(name)))
+                      // #3152: a spawn-shaped callee of another arity
+                      // (`Parallel::map(n, xs, f)`) keeps this general typing
+                      // path and gets the same capture check on its closure.
+                      if alen3 == plen2 && alen3 >= 2 && param_types_are_spawn_shaped(call_param_tys) {
+                        report_spawnable_violations(env, s3, defs, Array::get(arg_tys, 0), Array::get(args, alen3 - 1), errors, name, callee_off)
+                      } else {
+                        ()
+                      }
                       let call_ret = call_result_with_provenance(Array::get(ret_box, 0), call_param_tys, arg_tys, s3)
                       (tab_call_ty(tytab, call_off, call_ret, capture, lane), s3, c2)
                     },
@@ -13310,6 +13965,11 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           } else if !result_anchored {
             ()
           } else {
+            if arm_tail_all_return(body) {
+              ()
+            } else {
+              si = refine_open_option_branch(result_ty, arm_ty, si)
+            }
             if check_arms {
               // Tolerate a `CtUnit` arm (statement-position match); rely on
               // check_assignable's ground/ground gate otherwise. Also tolerate a
@@ -13949,7 +14609,35 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       // `__await_iter(s)` marker to unwrap here -- the iterable is checked
       // directly, and whether the loop awaits each step is decided from the
       // iterand's type in the dict-passing desugar.
-      let (it, s1, c1) = check_expr_capture(iterable, env, defs, s, c, errors, tytab, capture, lane)
+      let (it, s1a, c1a) = check_expr_capture(iterable, env, defs, s, c, errors, tytab, capture, lane)
+      // #3148: file the iterand for the trait-dictionary pass, which lowers a
+      // Map iterand to its keys and refuses one whose type never resolves --
+      // the loop reads its value as an Array, so a Map (or a value that may
+      // be one) iterated zero times. Keyed like a render argument, by the
+      // iterand's own offset. A type VARIABLE iterand is bound to `Array[_]`,
+      // the way an Array builtin binds its argument (#3006 / #3145): an
+      // unannotated lambda parameter used as an iterand is then an Array to
+      // its callers, and a Map argument is a type error at the call. A
+      // declared type parameter is bound too, and since #3149 the binding
+      // reaches the declaration's scheme; it is filed as kind 8, which is
+      // refused unless every caller was checked against that scheme
+      // (`scheme_formal_constrained`).
+      let forin_formal = match subst_apply(s1a, it) {
+        CtVar(fv) => eq_formal_row_of(fv) >= 0,
+        _ => false
+      }
+      // A formal the body already bound to an Array is filed from its raw
+      // type, whose variable chain still names it (#3156 review).
+      record_receiver_kind(capture, typed_lowering_arg_offset(iterable), if forin_formal {
+        subst_apply(s1a, it)
+      } else {
+        it
+      }, subst_apply(s1a, it), if forin_formal {
+        8
+      } else {
+        7
+      }, s1a)
+      let (s1, c1) = bind_builtin_arg_var(subst_apply(s1a, it), 9, s1a, c1a)
       // Element type bound by `for x in it`:
       //   - `Array[T]`                       -> T
       //   - a parameterized iterator type
@@ -13980,7 +14668,15 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       //  1 = residual collection (Array/String/builtin eager containers)
       //  0 = positively non-collecting iterator lowering
       // -1 = classification unavailable
-      let collection_class = match it_resolved {
+      // #3149: a declared type parameter is classified from its type BEFORE
+      // the Array binding above -- that binding constrains callers, it is not
+      // evidence about what the loop lowers to inside the generic body.
+      let class_ty = if forin_formal {
+        subst_apply(s1a, it)
+      } else {
+        it_resolved
+      }
+      let collection_class = match class_ty {
         CtArray(_) => 1,
         CtString => 1,
         CtNamed(nm, _) => if nm == "Map" || nm == "ByteStream" {
@@ -14028,7 +14724,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         // is different — builtins such as `String::split` surface as a
         // fresh var when their return is not yet in the env, and the
         // compiler itself iterates those in statement position.
-        let rigid_param = match it_resolved {
+        let rigid_param = match class_ty {
           CtNamed(nm, args) => Array::length(args) == 0 && nm != "HostStream" && match find_typedef(defs, nm) {
             None => true,
             Some(_) => false
@@ -14414,6 +15110,22 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         c1 = marked_nc
         pi = pi + 1
       }
+      // #3152: inside a spawn-shaped function, its closure parameter is
+      // checked at every call site (the call branch keys on this same
+      // shape), so a spawned closure may capture or pass it on.
+      if plen >= 2 && param_types_are_spawn_shaped(param_types) {
+        let (last_raw, _) = Array::get(params, plen - 1)
+        let last_len = String::length(last_raw)
+        let last_name = if last_len > 0 {
+          let lc = String::char_code_at(last_raw, last_len - 1)
+          if lc == '~' || lc == '?' {
+            last_raw[0: last_len - 1]
+          } else last_raw
+        } else last_raw
+        fn_env = env_bind(fn_env, spawn_safe_marker(last_name), CtUnit)
+      } else {
+        ()
+      }
       // Bind the function's annotated return type under a sentinel so an
       // explicit `return e` inside the body can be checked against it (the body
       // value is checked below, but `return` short-circuits and was otherwise
@@ -14599,7 +15311,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         // a nullary `#ctor.Array` / `#hktformal.F` / unbound vars. HKT
         // constructor params are rigid in the body and simply unbound in s3.
         let still_free = match subst_lookup(s3, kid) {
-          Some(t) => !type_fully_concrete(t),
+          Some(t) => !type_fully_concrete(t) && !scheme_formal_head_bound(subst_apply(s3, t)),
           None => true
         }
         if still_free {
@@ -14608,6 +15320,58 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           ()
         }
         ki0 = ki0 + 1
+      }
+      // #3149: a formal the body bound to a CONCRETE HEAD whose arguments are
+      // still open (`T := Array[?e]`, the binding an Array builtin makes,
+      // #3006) is substituted into the scheme like a fully concrete one, so a
+      // caller passing a Map is a type error at the call. The variables left
+      // inside it are quantified with the formals -- each call gets its own
+      // element -- except those still reachable from the environment, which
+      // belong to something else (#2459's rule).
+      let head_bound_vars = array_empty()
+      if tplen > 0 {
+        let mut hbi = 0
+        while hbi < tplen {
+          let hid = Array::get(tparam_ids, hbi)
+          if int_array_has(keep_ids, hid) {
+            ()
+          } else {
+            match subst_lookup(s3, hid) {
+              Some(t) => {
+                let tvs = collect_tvars(subst_apply(s3, t))
+                let mut tvi = 0
+                while tvi < Array::length(tvs) {
+                  let tv = Array::get(tvs, tvi)
+                  if int_array_has(head_bound_vars, tv) || int_array_has(tparam_ids, tv) {
+                    ()
+                  } else {
+                    Array::push(head_bound_vars, tv)
+                  }
+                  tvi = tvi + 1
+                }
+              },
+              None => ()
+            }
+          }
+          hbi = hbi + 1
+        }
+      } else {
+        ()
+      }
+      let head_bound_env = if Array::length(head_bound_vars) == 0 {
+        array_empty()
+      } else {
+        env_reachable_tvars(expr, env, s3, None)
+      }
+      let mut sfi = 0
+      while sfi < tplen {
+        let sfid = Array::get(tparam_ids, sfi)
+        if int_array_has(keep_ids, sfid) {
+          ()
+        } else {
+          Array::push(efn_substituted_formals, sfid)
+        }
+        sfi = sfi + 1
       }
       let inferred_ret = subst_apply_except(s3, final_ret, keep_ids)
       let scheme_ret_raw = match ret_ty {
@@ -14645,7 +15409,27 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           }
           vbi = vbi + 1
         }
-        (CtForAll(tparam_ids, var_bounds, subst_apply_except(s3, fn_ty, keep_ids)), s3, c2)
+        // #3149: the head-bound formals' own variables, quantified after the
+        // formals (so a positional reading of the first `tplen` ids is kept).
+        let scheme_ids = array_empty()
+        for tid in tparam_ids {
+          Array::push(scheme_ids, tid)
+        }
+        for hv in head_bound_vars {
+          if int_array_has(head_bound_env, hv) {
+            ()
+          } else {
+            Array::push(scheme_ids, hv)
+            Array::push(keep_ids, hv)
+            let hbl = subst_bounds_for(s3, hv)
+            if Array::length(hbl) != 0 {
+              Array::push(var_bounds, (hv, hbl))
+            } else {
+              ()
+            }
+          }
+        }
+        (CtForAll(scheme_ids, var_bounds, subst_apply_except(s3, fn_ty, keep_ids)), s3, c2)
       }
     },
     EBreak(opt) => {
@@ -14848,7 +15632,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               // every downstream use of the value unchecked). A non-ground
               // struct WITHOUT declared params (unresolved field type names)
               // keeps the old CtUnknown tolerance.
-              if struct_fields_ground(dfields) || (tplen == 0 && struct_fields_ground_builtin_named(dfields)) {
+              if struct_fields_ground(dfields, defs, s_tparams) || (tplen == 0 && struct_fields_ground_builtin_named(dfields)) {
                 (CtStruct(rn), s1, c2)
               } else if tplen > 0 {
                 let inst_targs = for ta in fresh_targs {

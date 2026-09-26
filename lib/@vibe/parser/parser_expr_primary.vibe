@@ -5,7 +5,7 @@ import ./parser_source_span.vibe {
 }
 
 import @vibe/ast {
-  Expr, Pat, Stmt, TypeExpr, builtin_ref, trait_ref_key
+  Expr, Pat, Stmt, TypeExpr, builtin_ref, index_site_key, index_site_offset, trait_ref_key
 }
 
 import ./intern.vibe {
@@ -67,6 +67,26 @@ fn map_located_off(off: Int, f: (Int) -> Int) -> Int {
   }
 }
 
+/// #3133 review: an identifier's slot may carry an index site KEY (the `[`
+/// of `xs[k]`, encoded below `builtin_ref_offset()` by `index_site_key`)
+/// rather than a location. The key names a source offset all the same, and the
+/// typed-lowering rows it is looked up in are rebased with every other offset
+/// -- so it is decoded, mapped, and re-encoded here. Passing it through
+/// unchanged left two files' indexes at the same file-local offset on ONE key
+/// after the merge gave the files disjoint bases (and an interpolation
+/// fragment's index on its fragment-local offset), and the checker's verdict
+/// for one receiver lowered the other: a Map read positionally, or an Array
+/// read through `Map::get`. `builtin_ref_offset()` itself (-2) and the
+/// synthetic -1 carry no location and pass through.
+fn map_ident_off(off: Int, f: (Int) -> Int) -> Int {
+  let bracket = index_site_offset(off)
+  if bracket >= 0 {
+    index_site_key(map_located_off(bracket, f))
+  } else {
+    map_located_off(off, f)
+  }
+}
+
 fn map_expr_offsets(expr: Expr, f: (Int) -> Int, context: Option[ParserBinderContext]) -> Expr {
   {
     match expr {
@@ -76,7 +96,7 @@ fn map_expr_offsets(expr: Expr, f: (Int) -> Int, context: Option[ParserBinderCon
       EString(s, off) => EString(s, map_located_off(off, f)),
       EBool(_) => expr,
       EUnit => expr,
-      EIdent(name, off) => EIdent(name, map_located_off(off, f)),
+      EIdent(name, off) => EIdent(name, map_ident_off(off, f)),
       ETuple(items) => ETuple(map_exprs(items, f, context)),
       EArray(items) => EArray(map_exprs(items, f, context)),
       ERecord(rn, fields, targs) => ERecord(rn, map_named_exprs(fields, f, context), targs),

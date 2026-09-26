@@ -1,0 +1,38 @@
+// #3152: the closure values the `Spawnable` check CAN see keep compiling and
+// running: a closure bound by a local `let`, a local closure called inside the
+// spawned body, a top-level function passed by name, a wrapper with spawn's
+// shape (its callers are checked, so its closure parameter is trusted), and
+// `Parallel::map`, whose own spawn now goes through that same rule -- all
+// capturing only `Send` values. 249 = 41 + 41 + 7 + 40 + 120.
+// Negative pins: err_spawnable_let_closure.vibe,
+// err_spawnable_called_closure.vibe, err_spawnable_opaque_param.vibe,
+// err_spawnable_parallel_map_capture.vibe.
+import @vibe/concurrent {
+  Parallel, TaskGroup, TaskHandle
+}
+
+fn seven() -> Int {
+  7
+}
+
+fn my_spawn[rg, e, T: Send](n: TaskGroup[rg, e], f: () -> T with Exception + e) -> TaskHandle[rg, e, T] {
+  TaskGroup::spawn(n, f)
+}
+
+export let main = () -> Int with Exception {
+  let k = 40
+  TaskGroup::run((n) -> {
+    let g = () -> k + 1
+    let cb = () -> k
+    let a = TaskHandle::join(TaskGroup::spawn(n, g))
+    let b = TaskHandle::join(TaskGroup::spawn(n, () -> cb() + 1))
+    let c = TaskHandle::join(TaskGroup::spawn(n, seven))
+    let d = TaskHandle::join(my_spawn(n, () -> k))
+    let m = Parallel::map(n, [1, 2, 3], (x) -> x * k)
+    a + b + c + d + Array::get(m, 2)
+  })
+}
+
+test "region ok spawnable closure values" allows Exception {
+  inspect(main(), "249")
+}

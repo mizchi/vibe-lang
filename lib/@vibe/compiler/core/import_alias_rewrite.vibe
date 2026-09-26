@@ -5,11 +5,11 @@ import ./ast.vibe {
 }
 
 import @vibe/core {
-  array_empty, struct MutMap, struct MutSet
+  array_empty, eq_string, hash_string, struct MutMap, struct MutSet
 }
 
 import @vibe/ast {
-  builtin_ref_offset, impl_method_owner, trait_ref_from_key, trait_ref_key, type_param_name
+  impl_method_owner, is_builtin_ref_offset, trait_ref_from_key, trait_ref_key, type_param_name
 }
 
 import ./module_graph_path.vibe {
@@ -931,8 +931,14 @@ fn aliasidx_rebuild(am: AliasIdx, entries: Array[(String, String)]) -> AliasIdx 
 }
 
 fn aliasidx_build_mode(entries: Array[(String, String)], user_refs_only: Bool) -> AliasIdx {
-  let idx: MutMap[String, String] = MutMap::new_string()
-  let shadow_keys = MutSet::new_string()
+  // Presized for the entries (load factor 0.7): these indexes are rebuilt for
+  // every file of a merge, and growing from the default capacity by doubling
+  // left each outgrown table behind on the bump heap (~11 MB of rehash).
+  // Lookups only -- no caller iterates either table, so capacity cannot
+  // change an answer.
+  let n = Array::length(entries)
+  let idx: MutMap[String, String] = MutMap::with_capacity_string(n * 10 / 7 + 1)
+  let shadow_keys: MutSet[String] = MutSet::with_capacity(hash_string, eq_string, n * 10 / 7 + 1)
   let mut i = 0
   while i < Array::length(entries) {
     let (alias, original) = Array::get(entries, i)
@@ -1326,7 +1332,7 @@ fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
   } else {
     match expr {
       EIdent(name, off) => if am.user_refs_only {
-        if off == builtin_ref_offset() {
+        if is_builtin_ref_offset(off) {
           expr
         } else {
           match aliasidx_get(am, name) {
@@ -2302,6 +2308,46 @@ export fn namespace_rename_original(name: String) -> String {
     i = i + 1
   }
   found
+}
+
+/// `path`'s merge rename as a function: `name` maps to
+/// `namespace_private_name(path, name)` exactly when that mangled spelling is
+/// recorded as a rename of `name` itself
+/// (`namespace_rename_original(mangled) == name`), and to itself otherwise.
+///
+/// A caller mapping many names through one file's renames used to build the
+/// mangled string and scan the whole table for EVERY name, renamed or not
+/// (the typed-`==` row union, ~21 MB of the self-compile heap). This walks
+/// the table once per path; each call after that is one set lookup, and only
+/// a name that IS renamed allocates. Last-wins like
+/// `namespace_rename_original`: the table is walked from the end and only a
+/// mangled spelling's LAST entry counts.
+export fn namespace_private_renamer_for_path(path: String) -> (String) -> String {
+  let renamed = MutSet::new_string()
+  let n = Array::length(namespace_rename_originals)
+  let suffix = if n > 0 {
+    String::concat("_dep_", sanitize_namespace_path(path))
+  } else {
+    ""
+  }
+  let suffix_len = String::length(suffix)
+  let seen = MutSet::new_string()
+  let mut i = n - 1
+  while i >= 0 {
+    let (mangled, original) = Array::get(namespace_rename_originals, i)
+    if !MutSet::has(seen, mangled) {
+      MutSet::add(seen, mangled)
+      if String::length(mangled) == String::length(original) + suffix_len && String::ends_with(mangled, suffix) && String::starts_with(mangled, original) {
+        MutSet::add(renamed, original)
+      }
+    }
+    i = i - 1
+  }
+  (name: String) -> if MutSet::has(renamed, name) {
+    String::concat(name, suffix)
+  } else {
+    name
+  }
 }
 
 fn namespace_private_name_with_suffix(namespace_suffix: String, name: String) -> String {

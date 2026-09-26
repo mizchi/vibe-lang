@@ -1,0 +1,83 @@
+// #3148: `for` over a Map iterates its keys. The checker has always bound the
+// loop variable to the Map's key type, but every lowering read the iterand as
+// an Array, so a Map -- even a `StringMap[Int]`-annotated one -- ran zero
+// times with no diagnostic. The loop is now the loop over `Map::keys(m)`.
+// The other iterables keep their lowering (rows at the end). An iterand whose
+// type never resolves is refused: err_for_in_open_iterand_refused.vibe.
+
+struct Holder {
+  tbl: StringMap[Int]
+}
+
+fn make_map() -> StringMap[Int] {
+  Map::set(Map::set(Map::new(), "a", 1), "b", 2)
+}
+
+fn sum_values(m: StringMap[Int]) -> Int {
+  let mut t = 0
+  for k in m {
+    t = t + Map::get(m, k)
+  }
+  t
+}
+
+test "for over an annotated map visits every key" {
+  let m: StringMap[Int] = make_map()
+  let mut n = 0
+  for k in m {
+    n = n + String::length(k)
+  }
+  inspect(n, content = "2")
+  inspect(sum_values(m), content = "3")
+}
+
+test "for over a map from a function, a field, and in value position" {
+  let mut n = 0
+  for k in make_map() {
+    n = n + 1
+  }
+  inspect(n, content = "2")
+  let h = Holder::{ tbl: make_map() }
+  let mut t = 0
+  for k in h.tbl {
+    t = t + Map::get(h.tbl, k)
+  }
+  inspect(t, content = "3")
+  let lens = for k in make_map() {
+    String::length(k)
+  }
+  inspect(Array::length(lens), content = "2")
+}
+
+test "for over a map with an index" {
+  let mut last = 0 - 1
+  for i, k in make_map() {
+    last = i
+  }
+  inspect(last, content = "1")
+}
+
+test "arrays, strings and generic arrays keep their loops" {
+  let mut t = 0
+  for x in [1, 2, 3] {
+    t = t + x
+  }
+  inspect(t, content = "6")
+  let ys = for i, x in [10, 20] {
+    i + x
+  }
+  inspect(Array::length(ys), content = "2")
+  let mut s = 0
+  for c in "ab" {
+    s = s + c
+  }
+  inspect(s, content = "195")
+  let total = (xs: Array[Int]) -> Int {
+    let mut acc = 0
+    for x in xs {
+      acc = acc + x
+    }
+    acc
+  }
+  inspect(total([7, 8]), content = "15")
+}

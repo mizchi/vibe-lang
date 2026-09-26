@@ -22,7 +22,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/core {
-  array_empty
+  array_empty, struct MutSet
 }
 
 import @vibe/compiler/perceus {
@@ -278,7 +278,28 @@ fn strip_param_label_marker(n: String) -> String {
 export fn cl_own_return_stmts(stmts: Array[Stmt]) -> Array[String] {
   let valued = array_empty()
   let _ = ca_walk_stmts_valued(stmts, valued)
-  let valued_names = sorted_names_of(valued)
+  // `valued` is every value-position identifier OCCURRENCE in the program;
+  // the only question asked of it is whether a top-level function's name is
+  // among them. Sorting it for a binary search cost ~9 MB of the self-compile
+  // heap; a set of those names, marked while scanning once, answers the same.
+  let fn_names = MutSet::new_string()
+  let mut fi = 0
+  while fi < Array::length(stmts) {
+    match Array::get(stmts, fi) {
+      SLet(_, _, n, _, EFn(_, _, _, _, _, _)) => MutSet::add(fn_names, n),
+      _ => ()
+    }
+    fi = fi + 1
+  }
+  let valued_fns = MutSet::new_string()
+  let mut vi = 0
+  while vi < Array::length(valued) {
+    let vn = Array::get(valued, vi)
+    if MutSet::has(fn_names, vn) {
+      MutSet::add(valued_fns, vn)
+    }
+    vi = vi + 1
+  }
   let borrowed = sorted_names_of(compute_borrow_returning_names(stmts))
   let mixed = array_empty()
   for name in compute_may_return_view_fns(stmts) {
@@ -292,7 +313,7 @@ export fn cl_own_return_stmts(stmts: Array[Stmt]) -> Array[String] {
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       SLet(ex, is_rec, n, ty, EFn(tps, bounds, ps, ret, eff, body)) => {
-        if bsearch_leftmost(valued_names, n) >= 0 || bsearch_leftmost(candidates, n) >= 0 {
+        if MutSet::has(valued_fns, n) || bsearch_leftmost(candidates, n) >= 0 {
           Array::push(owned, n)
           Array::set(stmts, i, SLet(ex, is_rec, n, ty, EFn(tps, bounds, ps, ret, eff, cl_own_return(body))))
         }

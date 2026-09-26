@@ -1,7 +1,7 @@
 //# Imports
 
 import ./checker_trait.vibe {
-  register_builtin_traits, register_builtin_traits_for, type_send_ok
+  bound_entails_send, register_builtin_traits, register_builtin_traits_for, type_send_ok
 }
 
 import @vibe/core {
@@ -15,11 +15,12 @@ import @vibe/compiler/checker/diagnostics {
 import ./checker_effects.vibe {
   check_async_effects_stmts,
   check_mutability_stmts,
-  check_perform_effects_stmts_env_published,
+  check_perform_effects_stmts_env_published_sigs,
   check_stdin_provider_direct_calls_stmts,
   effect_error_to_string,
   effect_shadow_key,
-  env_row_labels,
+  env_fn_sigs,
+  env_row_labels_from,
   row_text_labels,
   set_call_formal_bindings,
   set_call_formal_marked_bindings,
@@ -35,6 +36,10 @@ import ./checker_pattern.vibe {
 
 import ./builtins.vibe {
   lookup_builtin
+}
+
+import ./checker_spawnable.vibe {
+  closure_bare_callee_names, closure_free_names
 }
 
 import @vibe/compiler/core {
@@ -66,6 +71,7 @@ import @vibe/compiler/core {
   exception_row_resolved,
   expr_child_at,
   expr_children,
+  expr_children_into,
   expr_children_pop,
   expr_children_push,
   expr_children_top,
@@ -99,6 +105,10 @@ import @vibe/compiler/core {
   type_constructor_name,
   type_implements_trait,
   type_to_string,
+  typed_forin_row_head,
+  typed_index_map_verdict,
+  typed_index_open_verdict,
+  typed_index_row_head,
   typed_lowering_arg_offset,
   typed_lowering_float_key,
   typed_render_refuse_key,
@@ -118,6 +128,8 @@ import ./checker.vibe {
   check_expr_capture,
   collect_formal_applications_by,
   constructor_dependency_row,
+  efn_head_bound_commit,
+  efn_head_bound_mark,
   fn_return_env_name,
   formal_application_error,
   interp_is_shim_body,
@@ -146,6 +158,7 @@ import ./checker.vibe {
   resolve_deferred_field_reads,
   resolve_impl_self_field_reads,
   resolve_trait_bound_self_reference,
+  scheme_formal_constrained,
   set_generic_fn_decls,
   throw_kind_of_type,
   throw_payload_site_types,
@@ -2381,6 +2394,131 @@ fn check_import_kinds(stmts: Array[Stmt], initial_env: TypeEnv, errors: Array[St
   }
 }
 
+fn int_array_has_id(items: Array[Int], wanted: Int) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(items) && !hit {
+    hit = Array::get(items, i) == wanted
+    i = i + 1
+  }
+  hit
+}
+
+/// One past the largest FREE type-variable id in `t` (quantified ids are
+/// skipped), or `acc` when that is larger.
+fn type_free_tvar_ceiling(t: Type, bound: Array[Int], acc: Int) -> Int {
+  match t {
+    CtVar(id) => if id + 1 > acc && !int_array_has_id(bound, id) {
+      id + 1
+    } else {
+      acc
+    },
+    CtFn(params, ret, _) => {
+      let mut out = acc
+      for p in params {
+        out = type_free_tvar_ceiling(p, bound, out)
+      }
+      type_free_tvar_ceiling(ret, bound, out)
+    },
+    CtArray(elem) => type_free_tvar_ceiling(elem, bound, acc),
+    CtOption(elem) => type_free_tvar_ceiling(elem, bound, acc),
+    CtTuple(elems) => {
+      let mut out = acc
+      for e in elems {
+        out = type_free_tvar_ceiling(e, bound, out)
+      }
+      out
+    },
+    CtRecord(fields) => {
+      let mut out = acc
+      for f in fields {
+        let (_, ft) = f
+        out = type_free_tvar_ceiling(ft, bound, out)
+      }
+      out
+    },
+    CtNamed(_, args) => {
+      let mut out = acc
+      for a in args {
+        out = type_free_tvar_ceiling(a, bound, out)
+      }
+      out
+    },
+    CtApplied(head, args) => {
+      let mut out = type_free_tvar_ceiling(head, bound, acc)
+      for a in args {
+        out = type_free_tvar_ceiling(a, bound, out)
+      }
+      out
+    },
+    CtForAll(ids, _, body) => {
+      let inner = array_empty()
+      for b in bound {
+        Array::push(inner, b)
+      }
+      for id in ids {
+        Array::push(inner, id)
+      }
+      type_free_tvar_ceiling(body, inner, acc)
+    },
+    _ => acc
+  }
+}
+
+/// #3149: the first type-variable id the importing module may hand out. An
+/// imported VALUE binding can carry a free variable from the exporting
+/// module's counter (`export let no_tb = array_empty()` publishes
+/// `Array[?t4]`: a non-function `let` is not generalized). Such an id is not
+/// renamed by `instantiate`, so when the importer's own counter reaches it the
+/// two unrelated variables are one -- measured, `take(no_tb, None)` bound the
+/// `None`'s payload to `no_tb`'s element type and reported a mismatch on a
+/// correct call. Starting the importer's counter above every free id it can
+/// see makes its fresh variables fresh. Walks the authoritative chain only
+/// (an `EnvCached` node's arrays mirror it, see `env_cache`).
+fn env_free_tvar_ceiling(env: TypeEnv) -> Int {
+  let no_bound = array_empty()
+  let mut out = 0
+  let mut cur = env
+  let mut done = false
+  while !done {
+    match cur {
+      EnvEmpty => {
+        done = true
+      },
+      EnvBind(_, binding, rest) => {
+        out = type_free_tvar_ceiling(binding.ty, no_bound, out)
+        cur = rest
+      },
+      EnvTraitDef(_, _, _, _, rest, _, _) => {
+        cur = rest
+      },
+      EnvTraitImpl(_, _, rest) => {
+        cur = rest
+      },
+      EnvMutCell(_, _, rest) => {
+        cur = rest
+      },
+      EnvTraitImplGen(_, _, _, _, rest) => {
+        cur = rest
+      },
+      EnvTypeDefs(_, _, rest) => {
+        cur = rest
+      },
+      EnvFlat(bindings) => {
+        for entry in bindings {
+          let (_, binding) = entry
+          out = type_free_tvar_ceiling(binding.ty, no_bound, out)
+        }
+        done = true
+      },
+      EnvCached(_, _, rest) => {
+        cur = rest
+      }
+    }
+  }
+  out
+}
+
 fn seed_imported_type_defs(stmts: Array[Stmt], initial_env: TypeEnv, defs: Array[TypeDef], type_def_binders: Array[Array[Int]]) -> (Int, Int) {
   let imported = env_type_defs(initial_env)
   // `find_typedef` is first-match-wins. Local declarations are checked after
@@ -3150,11 +3288,96 @@ fn hoisted_fn_scheme(value: Expr, defs: Array[TypeDef], c: Int) -> (Type, Int) {
 }
 
 /// The type to pre-bind for a hoisted `SLet`: its annotation when it has one,
-/// otherwise a `fn`'s own signature (#2318), otherwise unknown.
+/// otherwise a `fn`'s own signature (#2318), otherwise the HEAD its value
+/// spells, otherwise unknown.
+///
+/// #3139: an unannotated top-level array literal (`let tbl = [5, 6]`) or
+/// builtin map literal (`Map::new()` / `Map::from_pairs(..)`, an `EMap`) hoists as
+/// `Array[?]` / `StringMap[?]` -- the container head, element left unknown
+/// exactly as before. A reference placed ABOVE the declaration used to see
+/// `CtUnknown`, so the index lowering (#3133 / #3139) could not tell the
+/// array from a map there and refused the site; the compiler's own flat
+/// source reads `__exn_kind_cell` that way. The head is what the literal
+/// syntactically IS, so it can only be right; the element stays as permissive
+/// as the old `CtUnknown`.
+/// #3149: the names of this list's GENERIC value declarations that an earlier
+/// statement mentions (any free name or bare callee, shadowing ignored -- a
+/// false hit only keeps the conservative answer).
+fn string_array_has(items: Array[String], wanted: String) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(items) && !hit {
+    hit = Array::get(items, i) == wanted
+    i = i + 1
+  }
+  hit
+}
+
+fn generic_forward_referenced_names(stmts: Array[Stmt], idx: Int) -> Array[String] {
+  let generic_names = array_empty()
+  let mut gi = idx
+  while gi < Array::length(stmts) {
+    match Array::get(stmts, gi) {
+      SLet(_, _, gname, _, EFn(gtps, _, _, _, _, _)) => if Array::length(gtps) > 0 {
+        Array::push(generic_names, gname)
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    gi = gi + 1
+  }
+  let out = array_empty()
+  if Array::length(generic_names) == 0 {
+    out
+  } else {
+    let seen = MutMap::new_string()
+    let mut si = idx
+    while si < Array::length(stmts) {
+      let stmt = Array::get(stmts, si)
+      match stmt {
+        SLet(_, _, sname, _, _) => if string_array_has(generic_names, sname) && MutMap::has(seen, sname) {
+          Array::push(out, sname)
+        } else {
+          ()
+        },
+        _ => ()
+      }
+      let body = match stmt {
+        SLet(_, _, _, _, v) => Some(v),
+        SLetMut(_, _, v) => Some(v),
+        SLetPat(_, v) => Some(v),
+        STest(_, b) => Some(b),
+        SBench(_, b) => Some(b),
+        SExpr(e) => Some(e),
+        _ => None
+      }
+      match body {
+        Some(b) => {
+          for n in closure_free_names(b, array_empty()) {
+            MutMap::set(seen, n, 1)
+          }
+          for n in closure_bare_callee_names(b) {
+            MutMap::set(seen, n, 1)
+          }
+        },
+        None => ()
+      }
+      si = si + 1
+    }
+    out
+  }
+}
+
 fn hoisted_value_type(annotation: Option[TypeExpr], value: Expr, defs: Array[TypeDef], c: Int) -> (Type, Int) {
   match annotation {
     Some(type_expr) => (resolve_type_expr(type_expr, defs), c),
-    None => hoisted_fn_scheme(value, defs, c)
+    None => match value {
+      EArray(_) => (CtArray(CtUnknown), c),
+      // The parser builds `Map::new()` and `Map::from_pairs([..])` as `EMap`.
+      EMap(_) => (CtNamed("Map", [CtString, CtUnknown]), c),
+      _ => hoisted_fn_scheme(value, defs, c)
+    }
   }
 }
 
@@ -3315,6 +3538,11 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
   resource_decl_errors(stmts, idx, errors)
   // #1464: same shape -- duplicate value declarations need the WHOLE list.
   duplicate_value_decl_errors(stmts, idx, errors)
+  // #3149: the generic declarations some EARLIER statement of this list
+  // already references. Such a caller was checked against the hoisted
+  // signature, which knows nothing the body adds, so those declarations'
+  // formals never count as constrained (see `scheme_constrained_formals`).
+  let generic_forward_used = generic_forward_referenced_names(stmts, idx)
   // #942 (Codex P2 on #969): if any top-level declaration in this statement
   // list binds the name `resume` (fn/let — fn decls are lowered to SLet
   // before the checker — let-pattern, extern let, or an import), codegen's
@@ -3457,11 +3685,17 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
           EFn(_, _, _, _, _, _) => CtBool,
           _ => CtUnit
         })
+        let head_bound_mark = efn_head_bound_mark()
         let (vt, ns0, nc) = if is_rec {
           check_expr_capture(val, env_bind(val_env, name, CtUnknown), defs, s, c, errors, tytab, role_lane_capture, "Primary")
         } else {
           check_expr_capture(val, val_env, defs, s, c, errors, tytab, role_lane_capture, "Primary")
         }
+        // #3149: an exported declaration may be called through a contract,
+        // and a forward-referenced one was called against its hoisted
+        // signature; only the rest has every caller checked against the
+        // scheme its body produced.
+        efn_head_bound_commit(head_bound_mark, !exported && !string_array_has(generic_forward_used, name))
         attach_unlocated_decl_name_marker(errors, err_before, name)
         // The value must be assignable to a declared annotation (previously
         // unchecked — `let x: Int = "s"` was accepted).
@@ -4618,6 +4852,12 @@ fn check_program_bounds(env: TypeEnv, s: Subst, defs: Array[TypeDef], errors: Ar
           }
           if resolved_bound != "" && not(sat) {
             Array::push(errors, String::concat("no impl `", String::concat(trait_reference_display(resolved_bound), String::concat("` for `", String::concat(type_to_string(resolved), String::concat("`", unsatisfied_bound_hint(env, resolved_bound, resolved)))))))
+          } else if resolved_bound != "" && resolved_bound != "Send" && bound_entails_send(env, resolved_bound) && not(type_send_ok(env, s, defs, resolved)) {
+            // #3156 review: a bound that EXTENDS `Send` (`trait Work: Send`)
+            // counts as Send inside the generic body (`type_send_ok`), so
+            // its instantiation must be Send too -- an impl of `Work` alone
+            // does not make a type Send, since `Send` has no user impls.
+            Array::push(errors, String::concat("no impl `Send` for `", String::concat(type_to_string(resolved), String::concat("`: `", String::concat(trait_reference_display(resolved_bound), "` extends `Send`, so a type used at it must be Send -- pass a Send value (no `Array`, `Bytes`, closure or `mut` field)")))))
           }
           bi = bi + 1
         }
@@ -5301,7 +5541,7 @@ fn row_names_reserved_mut(row: String) -> Bool {
 /// same for `E::op` where `E` is declared and has no operation `op`, or `E` is
 /// a builtin provider with no such builtin. Checked on top-level declarations'
 /// rows (their own and their function-typed parameters') and on handler arms.
-fn collect_unknown_effect_label_errors(stmts: Array[Stmt], env: TypeEnv, es_names: Array[String], ed_names: Array[String], ed_ops: Array[Array[String]], errors: Array[String]) -> Unit {
+fn collect_unknown_effect_label_errors(stmts: Array[Stmt], env_sigs: (Array[String], Array[Array[String]], Array[Array[Array[String]]]), es_names: Array[String], ed_names: Array[String], ed_ops: Array[Array[String]], errors: Array[String]) -> Unit {
   let local_names = array_empty()
   let type_names = array_empty()
   let mut ln = 0
@@ -5316,7 +5556,7 @@ fn collect_unknown_effect_label_errors(stmts: Array[Stmt], env: TypeEnv, es_name
     }
     ln = ln + 1
   }
-  let env_labels = env_row_labels(env, local_names)
+  let env_labels = env_row_labels_from(env_sigs, local_names)
   // A package contract's effect and effectset names reach its sibling
   // implementation files through the loader's in-band carrier
   // (`contract_effect_names_line`); the declarations themselves stay in the
@@ -5773,12 +6013,9 @@ fn unknown_effect_arm_in_expr(expr: Expr, es_names: Array[String], ed_names: Arr
       },
       _ => ()
     }
-    let kids = expr_children(e)
-    let mut ki = 0
-    while ki < Array::length(kids) {
-      Array::push(stack, Array::get(kids, ki))
-      ki = ki + 1
-    }
+    // Straight onto the work stack, in the order `expr_children` lists them,
+    // without a child array per node.
+    expr_children_into(e, stack)
   }
   out
 }
@@ -5864,10 +6101,13 @@ fn collect_async_effect_errors(stmts: Array[Stmt], env: TypeEnv, defs: Array[Typ
       let known_ed = Array::slice(perform_ed_names, 0, Array::length(perform_ed_names))
       let known_ed_ops = Array::slice(perform_ed_ops, 0, Array::length(perform_ed_ops))
       es_append_imported_tables(defs, known_es, known_es_members, known_ed, known_ed_ops)
-      collect_unknown_effect_label_errors(stmts, env, known_es, known_ed, known_ed_ops, frozen_errors)
+      // One walk of the env's function rows serves both the label check and
+      // the perform pass's two tables (env_fn_sigs).
+      let env_sigs = env_fn_sigs(env)
+      collect_unknown_effect_label_errors(stmts, env_sigs, known_es, known_ed, known_ed_ops, frozen_errors)
       let expanded_stmts = es_expand_stmts_effect_rows(stmts, perform_es_names, perform_es_members_list)
       let perform_errs = if Array::length(frozen_errors) == 0 {
-        check_perform_effects_stmts_env_published(expanded_stmts, env)
+        check_perform_effects_stmts_env_published_sigs(expanded_stmts, env, env_sigs)
       } else {
         array_empty()
       }
@@ -8991,6 +9231,244 @@ fn eq_binop_type_keys_from_capture(checked: CheckedProgram, capture: TypedOccurr
   (out_offs, out_keys)
 }
 
+//# #3133: index receiver rows
+
+/// #3133: the checker's verdict on one index receiver, against the final
+/// substitution: `typed_index_map_verdict()` for a Map (directly or through a
+/// type alias), `typed_index_open_verdict()` for a type that is still a
+/// variable -- an unresolved inference variable or an erased type parameter,
+/// either of which may be a Map at run time -- and "" for anything else, which
+/// is array indexing whatever it turns out to be. Follows the variable chain
+/// only (the `subst_resolves_to_double` cost contract): the head decides.
+fn index_receiver_verdict(checked: CheckedProgram, ty: Type, unknown_is_open: Bool) -> String {
+  let mut cur = ty
+  let seen: Array[Int] = []
+  let mut verdict = typed_index_open_verdict()
+  let mut done = false
+  let mut alias_depth = 0
+  while !done {
+    match cur {
+      CtVar(vid) => if index_receiver_seen(seen, vid) {
+        done = true
+      } else {
+        Array::push(seen, vid)
+        match subst_lookup(checked.final_subst, vid) {
+          Some(next) => {
+            cur = next
+          },
+          None => {
+            done = true
+          }
+        }
+      },
+      CtUnknown => {
+        if !unknown_is_open {
+          verdict = ""
+        } else {
+          ()
+        }
+        done = true
+      },
+      CtForAll(_, _, _) => {
+        done = true
+      },
+      CtApplied(head, _) => match head {
+        CtNamed(hn, _) => if hn == "Map" || hn == "StringMap" {
+          verdict = typed_index_map_verdict()
+          done = true
+        } else {
+          verdict = ""
+          done = true
+        },
+        _ => {
+          done = true
+        }
+      },
+      CtNamed(n, _) => if n == "Map" || n == "StringMap" {
+        verdict = typed_index_map_verdict()
+        done = true
+      } else if String::starts_with(n, "#hktformal.") {
+        done = true
+      } else {
+        // A type alias names its body; anything else is a declared nominal,
+        // which is not a Map.
+        match index_receiver_alias_body(checked.type_defs, n) {
+          Some(body) => if alias_depth < 16 {
+            alias_depth = alias_depth + 1
+            cur = body
+          } else {
+            done = true
+          },
+          None => {
+            verdict = ""
+            done = true
+          }
+        }
+      },
+      _ => {
+        verdict = ""
+        done = true
+      }
+    }
+  }
+  verdict
+}
+
+fn index_receiver_seen(seen: Array[Int], vid: Int) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(seen) && !hit {
+    hit = Array::get(seen, i) == vid
+    i = i + 1
+  }
+  hit
+}
+
+fn index_receiver_names_have(names: Array[String], name: String) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(names) && !hit {
+    hit = Array::get(names, i) == name
+    i = i + 1
+  }
+  hit
+}
+
+fn index_receiver_alias_body(defs: Array[TypeDef], name: String) -> Option[Type] {
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(defs) {
+    match Array::get(defs, i) {
+      TDAlias(an, params, body) => if an == name {
+        // An alias whose body is one of its own parameters says nothing
+        // about the head: stay open.
+        found = match body {
+          CtNamed(bn, bargs) => if Array::length(bargs) == 0 && index_receiver_names_have(params, bn) {
+            Some(CtUnknown)
+          } else {
+            Some(body)
+          },
+          _ => Some(body)
+        }
+        i = Array::length(defs)
+      } else {
+        i = i + 1
+      },
+      _ => {
+        i = i + 1
+      }
+    }
+  }
+  found
+}
+
+/// #3133: the index rows for the typed-`==` channel -- `(bracket offset,
+/// impl_target_key(#index[<verdict>]))` for every recorded index receiver
+/// whose verdict is Map or open. A receiver the checker typed as anything
+/// else files nothing: the index is array indexing and the pass leaves it.
+/// An offset claimed by checks that disagree (one shared generic body seen at
+/// two types) is OPEN, because the body is lowered once and cannot be both.
+/// Rows are kept sorted by offset; the capture visits sites in source order,
+/// so the insertion is an append in the common case.
+fn index_receiver_rows_from_capture(checked: CheckedProgram, capture: TypedOccurrenceRoleLaneCapture) -> (Array[Int], Array[String]) {
+  receiver_rows_from_capture(checked, capture, false)
+}
+
+/// #3148: the same extraction for the `for` iterand rows (kind 7), under
+/// `typed_forin_row_head()`. A bare `CtUnknown` iterand is not open, as for
+/// an Array reader (#3145).
+fn forin_receiver_rows_from_capture(checked: CheckedProgram, capture: TypedOccurrenceRoleLaneCapture) -> (Array[Int], Array[String]) {
+  receiver_rows_from_capture(checked, capture, true)
+}
+
+fn receiver_rows_from_capture(checked: CheckedProgram, capture: TypedOccurrenceRoleLaneCapture, forin: Bool) -> (Array[Int], Array[String]) {
+  let offs: Array[Int] = []
+  let verdicts: Array[String] = []
+  let n = Array::length(capture.binop_offsets)
+  let mut i = 0
+  while i + 1 < n {
+    let kind = Array::get(capture.binop_kinds, i)
+    let wanted = if forin {
+      kind == 7 || kind == 8
+    } else {
+      kind == 4 || kind == 5 || kind == 6
+    }
+    if wanted {
+      let off = Array::get(capture.binop_offsets, i)
+      // #3145: a builtin Array reader (kind 5) is refused only for a type
+      // VARIABLE -- an erased formal, or a generalised lambda's parameter.
+      // A bare `CtUnknown` there is the checker declining to type an
+      // expression it could (a `None` match arm, an untyped builtin result),
+      // not a value that can be anything at run time; the self-build meets
+      // one in `checker_effects.vibe` (`Array::length(callee_effs)`).
+      // Kind 6 is a declared formal the fast path bound (`record_array_receiver`);
+      // kind 8 is a declared formal used as a `for` iterand (#3148).
+      // #3149: unless the formal's scheme already constrains every caller.
+      let v = if kind == 6 || kind == 8 {
+        match Array::get(capture.binop_types, i) {
+          CtVar(fv) => if scheme_formal_constrained(fv) {
+            ""
+          } else {
+            typed_index_open_verdict()
+          },
+          _ => typed_index_open_verdict()
+        }
+      } else {
+        index_receiver_verdict(checked, Array::get(capture.binop_types, i), kind == 4)
+      }
+      let mut lo = 0
+      let mut hi = Array::length(offs)
+      while lo < hi {
+        let mid = (lo + hi) / 2
+        if Array::get(offs, mid) < off {
+          lo = mid + 1
+        } else {
+          hi = mid
+        }
+      }
+      if lo < Array::length(offs) && Array::get(offs, lo) == off {
+        if Array::get(verdicts, lo) != v {
+          Array::set(verdicts, lo, typed_index_open_verdict())
+        } else {
+          ()
+        }
+      } else {
+        Array::push(offs, off)
+        Array::push(verdicts, v)
+        let mut j = Array::length(offs) - 1
+        while j > lo {
+          Array::set(offs, j, Array::get(offs, j - 1))
+          Array::set(verdicts, j, Array::get(verdicts, j - 1))
+          j = j - 1
+        }
+        Array::set(offs, lo, off)
+        Array::set(verdicts, lo, v)
+      }
+    } else {
+      ()
+    }
+    i = i + 2
+  }
+  let out_offs: Array[Int] = []
+  let out_keys: Array[String] = []
+  let mut k = 0
+  while k < Array::length(offs) {
+    let v = Array::get(verdicts, k)
+    if String::length(v) > 0 {
+      Array::push(out_offs, Array::get(offs, k))
+      Array::push(out_keys, impl_target_key(TyApp(if forin {
+        typed_forin_row_head()
+      } else {
+        typed_index_row_head()
+      }, [TyName(v)])))
+    } else {
+      ()
+    }
+    k = k + 1
+  }
+  (out_offs, out_keys)
+}
+
 //# #2424: Int render/equality argument offsets
 
 /// #2424: does `ty` resolve to `Int` under `s`, WITHOUT building the
@@ -9664,14 +10142,21 @@ fn irc_render_arg_offsets_quad(checked: CheckedProgram, want_a: Int, want_b: Int
   if n == 0 {
     ([], [], [], [], [])
   } else {
-    let seen_any: Array[Int] = []
-    let all_a: Array[Int] = []
-    let all_b: Array[Int] = []
-    let all_c: Array[Int] = []
+    // Presized: filled from empty, each table regrew by doubling and left
+    // its outgrown buffers on the bump heap.
+    let seen_any: Array[Int] = Array::with_capacity(n)
+    let all_a: Array[Int] = Array::with_capacity(n)
+    let all_b: Array[Int] = Array::with_capacity(n)
+    let all_c: Array[Int] = Array::with_capacity(n)
     // #3066: per candidate, the render-row key its occurrences agree on, and
     // 0 = no occurrence yet / 1 = agreeing / 2 = poisoned.
-    let row_keys: Array[String] = []
-    let row_state: Array[Int] = []
+    let rows_n = if want_rows {
+      n
+    } else {
+      0
+    }
+    let row_keys: Array[String] = Array::with_capacity(rows_n)
+    let row_state: Array[Int] = Array::with_capacity(rows_n)
     let mut k = 0
     while k < n {
       if want_rows {
@@ -10064,7 +10549,13 @@ fn check_program_double_call_result_observation_impl(stmts: Array[Stmt]) -> Opti
       let (eq_only_offs, eq_only_keys) = eq_binop_type_keys_from_capture(checked, capture)
       // #3066: the render rows ride the same channel.
       let (row_offs, row_keys) = checked_render_rows(checked)
-      let (eq_offs, eq_keys) = append_render_rows(eq_only_offs, eq_only_keys, row_offs, row_keys)
+      let (eq_render_offs, eq_render_keys) = append_render_rows(eq_only_offs, eq_only_keys, row_offs, row_keys)
+      // #3133: the index-receiver rows ride the same channel.
+      let (index_offs, index_keys) = index_receiver_rows_from_capture(checked, capture)
+      let (eq_index_offs, eq_index_keys) = append_render_rows(eq_render_offs, eq_render_keys, index_offs, index_keys)
+      // #3148: and the `for` iterand rows.
+      let (forin_offs, forin_keys) = forin_receiver_rows_from_capture(checked, capture)
+      let (eq_offs, eq_keys) = append_render_rows(eq_index_offs, eq_index_keys, forin_offs, forin_keys)
       // #2424: the Double table is the union of the call results above and
       // the render/`eq` ARGUMENTS the checker typed Double (tag 4 on the
       // modular channel) -- see union_double_render_arg_offsets.
@@ -10231,7 +10722,13 @@ fn typed_lowering_located_observation_impl(stmts: Array[Stmt], initial_env: Type
       // the same located-channel refusal as the tables above.
       let (eq_only_offs, eq_only_keys) = eq_binop_type_keys_from_capture(checked, capture)
       // #3066: the render rows from the walk above, on the same channel.
-      let (eq_offs, eq_keys) = append_render_rows(eq_only_offs, eq_only_keys, row_offs, row_keys)
+      let (eq_render_offs, eq_render_keys) = append_render_rows(eq_only_offs, eq_only_keys, row_offs, row_keys)
+      // #3133: the index-receiver rows ride the same channel.
+      let (index_offs, index_keys) = index_receiver_rows_from_capture(checked, capture)
+      let (eq_index_offs, eq_index_keys) = append_render_rows(eq_render_offs, eq_render_keys, index_offs, index_keys)
+      // #3148: and the `for` iterand rows.
+      let (forin_offs, forin_keys) = forin_receiver_rows_from_capture(checked, capture)
+      let (eq_offs, eq_keys) = append_render_rows(eq_index_offs, eq_index_keys, forin_offs, forin_keys)
       (checked, Some(enc), eq_offs, eq_keys)
     }
   }
@@ -10365,7 +10862,14 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
       // `seed_next_c` is the first type-variable id seeding did NOT consume;
       // checking has to start there or a parameterized imported enum's formals
       // would be handed out a second time.
-      let (local_defs_start, seed_next_c) = seed_imported_type_defs(stmts, initial_env, empty_defs, type_def_binders)
+      let (local_defs_start, seed_defs_next_c) = seed_imported_type_defs(stmts, initial_env, empty_defs, type_def_binders)
+      // #3149: and above every free variable an imported value carries.
+      let imported_free_ceiling = env_free_tvar_ceiling(initial_env)
+      let seed_next_c = if imported_free_ceiling > seed_defs_next_c {
+        imported_free_ceiling
+      } else {
+        seed_defs_next_c
+      }
       let cached_env = env_cache(initial_env)
       let seeded_raw_env = if trait_defined(cached_env, "Eq") {
         cached_env

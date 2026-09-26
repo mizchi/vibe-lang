@@ -1,0 +1,26 @@
+// #3125 / #3156 review: an ANNOTATED local alias of `TaskGroup::spawn` is the
+// same alias as the unannotated one (region_ok_spawnable_alias.vibe): the
+// annotation reaches the checker as the parser's ascription call around the
+// bare name, and it used to be refused as "cannot be used as a value here",
+// contradicting that diagnostic's own advice to bind it with a `let`. Its
+// calls are still Send-checked (err_spawnable_annotated_alias_capture.vibe).
+// The group's region and row are named by the enclosing function's formals,
+// which is how a local annotation spells them.
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+fn go[rg, e](n: TaskGroup[rg, e], k: Int) -> Int with Exception {
+  let sp: (TaskGroup[rg, e], () -> Int) -> TaskHandle[rg, e, Int] = TaskGroup::spawn
+  let a = sp(n, () -> k + 1)
+  let b = sp(n, () -> 2)
+  TaskHandle::join(a) + TaskHandle::join(b)
+}
+
+export let main = () -> Int with Exception {
+  TaskGroup::run((n) -> go(n, 40))
+}
+
+test "region ok spawnable annotated alias" allows Exception {
+  inspect(main(), "43")
+}

@@ -106,8 +106,7 @@ import @vibe/compiler/core {
   is_contract_ext,
   is_exception_effect_name,
   lookup_registry_builtin,
-  namespace_private_name,
-  namespace_rename_original,
+  namespace_private_renamer_for_path,
   normalize_path,
   resolution_env_seed,
   resolve_builtin,
@@ -456,24 +455,16 @@ export fn union_module_typed_lowering_with_clones(flat_paths: Array[String], fla
 /// (#2205): a name is rewritten to `namespace_private_name(path, name)`
 /// exactly when that mangled spelling is recorded as a rename of this name,
 /// so an exported (unrenamed) type, a builtin head, and the entry file's
-/// own types all pass through unchanged.
-fn eq_key_rename_name(path: String, name: String) -> String {
-  let candidate = namespace_private_name(path, name)
-  if namespace_rename_original(candidate) == name {
-    candidate
-  } else {
-    name
-  }
-}
-
-fn eq_key_rename_ty(path: String, te: TypeExpr) -> TypeExpr {
+/// own types all pass through unchanged. `rename` is
+/// `namespace_private_renamer_for_path(path)`, built once per file.
+fn eq_key_rename_ty(rename: (String) -> String, te: TypeExpr) -> TypeExpr {
   match te {
-    TyName(n) => TyName(eq_key_rename_name(path, n)),
-    TyApp(n, args) => TyApp(eq_key_rename_name(path, n), for a in args {
-      eq_key_rename_ty(path, a)
+    TyName(n) => TyName(rename(n)),
+    TyApp(n, args) => TyApp(rename(n), for a in args {
+      eq_key_rename_ty(rename, a)
     }),
     TyTuple(items) => TyTuple(for a in items {
-      eq_key_rename_ty(path, a)
+      eq_key_rename_ty(rename, a)
     }),
     _ => te
   }
@@ -495,14 +486,14 @@ export fn union_module_typed_eq_rows(flat_paths: Array[String], flat_bases: Arra
   while i < Array::length(flat_paths) {
     match module_typed_eq_rows_for_path(Array::get(flat_paths, i)) {
       Some((eq_offs, eq_keys)) => {
-        let path = Array::get(flat_paths, i)
+        let rename = namespace_private_renamer_for_path(Array::get(flat_paths, i))
         let base = Array::get(flat_bases, i)
         let mut j = 0
         while j < Array::length(eq_offs) {
           match impl_target_from_key(Array::get(eq_keys, j)) {
             Some(te) => {
               Array::push(out_offs, Array::get(eq_offs, j) + base)
-              Array::push(out_keys, impl_target_key(eq_key_rename_ty(path, te)))
+              Array::push(out_keys, impl_target_key(eq_key_rename_ty(rename, te)))
             },
             None => ()
           }

@@ -1,0 +1,29 @@
+// A closure passed by name to a spawn-shaped function may name a labeled
+// (`x~`) or optional (`x?`) parameter after an outer binding that is not
+// `Send`. The parameter shadows it, so nothing is captured and the closure
+// stays legal. Its capture facts used to record the raw spelling `x~` as
+// bound, while the body reads `x`, so the outer `Array` counted as a capture.
+// The same holds for a lambda NESTED inside the closure (`h` below).
+// (2 + 3 + 4) + (2 + 4 + 6) = 21.
+import @vibe/concurrent {
+  Parallel, TaskGroup
+}
+
+export let main = () -> Int with Exception {
+  let x = [0]
+  let _ = Array::length(x)
+  TaskGroup::run((n) -> {
+    let f = (x~: Int) -> x + 1
+    let g = (y: Int) -> {
+      let h = (x~: Int) -> x + y
+      h(x=y)
+    }
+    let m = Parallel::map(n, [1, 2, 3], f)
+    let m2 = Parallel::map(n, [1, 2, 3], g)
+    Array::get(m, 0) + Array::get(m, 1) + Array::get(m, 2) + Array::get(m2, 0) + Array::get(m2, 1) + Array::get(m2, 2)
+  })
+}
+
+test "region ok spawnable labeled param" allows Exception {
+  inspect(main(), "21")
+}

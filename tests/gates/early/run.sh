@@ -2431,6 +2431,60 @@ ur_refused fixtures/err_interp_unrenderable_slice_field_refused.vibe 'cannot int
 # #3075: a function value, bare or inside a container, has no text form.
 ur_refused fixtures/err_interp_function_payload_refused.vibe 'cannot interpolate a function value' 'interpolate what it returns' linear 'fixtures/err_interp_function_payload_refused.vibe: line 6:14'
 ur_refused fixtures/err_interp_function_value_refused.vibe 'cannot interpolate a function value' 'interpolate what it returns' linear 'fixtures/err_interp_function_value_refused.vibe: line 5:14'
+# #3133: an index whose receiver the checker never typed may be a Map at run
+# time; array indexing on a Map reads its backing store positionally, so the
+# build refuses it and names the site (its `[`). The green side -- every Map
+# spelling lowering to `Map::get`, and arrays still indexing -- is
+# fixtures/map_index_test.vibe in the unit lane. (The ur_ helper's FAIL text
+# names #2987; the assertion is the message, the edit and the site.)
+ur_refused fixtures/err_map_index_open_receiver_refused.vibe 'cannot tell whether this index reads a Map or an Array' 'annotate it' linear 'fixtures/err_map_index_open_receiver_refused.vibe: line 9:4'
+ur_refused fixtures/err_map_index_open_receiver_refused.vibe 'cannot tell whether this index reads a Map or an Array' 'annotate it' gc 'fixtures/err_map_index_open_receiver_refused.vibe: line 9:4'
+# #3139: the WRITE side -- `xs[i] = v` (sited at its `[`) and a written
+# `Array::set(..)` (sited at its name) on a receiver the checker never typed.
+ur_refused fixtures/err_index_write_open_receiver_refused.vibe 'cannot tell whether this index write targets an Array' 'Map::set(m, k, v)' linear 'fixtures/err_index_write_open_receiver_refused.vibe: line 10:6'
+ur_refused fixtures/err_index_write_open_receiver_refused.vibe 'cannot tell whether this index write targets an Array' 'Map::set(m, k, v)' gc 'fixtures/err_index_write_open_receiver_refused.vibe: line 10:6'
+ur_refused fixtures/err_array_set_open_receiver_refused.vibe 'cannot tell whether this index write targets an Array' 'annotate it' linear 'fixtures/err_array_set_open_receiver_refused.vibe: line 7:3'
+ur_refused fixtures/err_array_set_open_receiver_refused.vibe 'cannot tell whether this index write targets an Array' 'annotate it' gc 'fixtures/err_array_set_open_receiver_refused.vibe: line 7:3'
+# #3145: the builtin `Array::*` readers (`array_receiver_reads`) on an erased
+# formal -- `Array::get` (a special checker arm) and `Array::length` (the
+# direct fast path, which binds the formal in the body without the binding
+# reaching callers; it answered 0 for a one-entry map). An unannotated lambda
+# parameter is now bound to `Array[_]` instead, so a Map argument is a type
+# error at the call (fixtures/typecheck/array_reader_lambda_param_binds_reject).
+# #3149: since the declaration's scheme carries that binding, a caller BELOW
+# the declaration is a type error too (array_reader_formal_scheme_reject); the
+# refusal remains for what the scheme cannot reach -- a caller ABOVE the
+# declaration, checked against its hoisted signature, as in these fixtures,
+# and an exported declaration, callable through its contract.
+ur_refused fixtures/err_array_get_open_receiver_refused.vibe 'cannot tell whether this call reads an Array: `Array::get`' 'annotate it' linear 'fixtures/err_array_get_open_receiver_refused.vibe: line 16:3'
+ur_refused fixtures/err_array_get_open_receiver_refused.vibe 'cannot tell whether this call reads an Array: `Array::get`' 'annotate it' gc 'fixtures/err_array_get_open_receiver_refused.vibe: line 16:3'
+ur_refused fixtures/err_array_length_formal_refused.vibe 'cannot tell whether this call reads an Array: `Array::length`' 'annotate it' linear 'fixtures/err_array_length_formal_refused.vibe: line 14:3'
+# #3145 review: a two-array reader refuses naming the operand that is
+# actually unresolved -- here the second, `ys`, not the resolved `xs`.
+ur_refused fixtures/err_array_concat_second_formal_refused.vibe 'treats `ys` as an Array' 'annotate it' linear 'fixtures/err_array_concat_second_formal_refused.vibe: line 15:3'
+ur_refused fixtures/err_array_concat_second_formal_refused.vibe 'treats `ys` as an Array' 'annotate it' gc 'fixtures/err_array_concat_second_formal_refused.vibe: line 15:3'
+# #3133 review: an unannotated lambda parameter shadowing an outer Map binding
+# of the same name is not a Map by spelling; its index is refused as open.
+ur_refused fixtures/err_map_index_shadowed_param_refused.vibe 'cannot tell whether this index reads a Map or an Array' 'annotate it' linear 'fixtures/err_map_index_shadowed_param_refused.vibe: line 10:21'
+ur_refused fixtures/err_map_index_shadowed_param_refused.vibe 'cannot tell whether this index reads a Map or an Array' 'annotate it' gc 'fixtures/err_map_index_shadowed_param_refused.vibe: line 10:21'
+# #3148: a `for` over an iterand whose type never resolves (an erased formal
+# holding a map ran zero times). The green side -- a Map iterates its keys,
+# Arrays and Strings keep their loops -- is fixtures/for_in_map_keys_test.vibe.
+ur_refused fixtures/err_for_in_open_iterand_refused.vibe 'cannot tell whether this `for` iterates an Array or a Map' 'Map::keys(m)' linear 'fixtures/err_for_in_open_iterand_refused.vibe: line 15:12'
+ur_refused fixtures/err_for_in_open_iterand_refused.vibe 'cannot tell whether this `for` iterates an Array or a Map' 'Map::keys(m)' gc 'fixtures/err_for_in_open_iterand_refused.vibe: line 15:12'
+ur_refused fixtures/err_array_length_formal_refused.vibe 'cannot tell whether this call reads an Array: `Array::length`' 'annotate it' gc 'fixtures/err_array_length_formal_refused.vibe: line 14:3'
+# #3156 review: a formal the body has ALREADY unified with an Array (through
+# an ordinary function) is a settled Array to the substitution, but not to a
+# caller the scheme cannot reach -- one above the declaration, or one through
+# an exported declaration's contract. An index or a `for` on it read a Map's
+# backing store by position; the site is refused as the formal it is. Declared
+# first, the call is a type error instead
+# (fixtures/typecheck/index_formal_bound_array_scheme_reject).
+ur_refused fixtures/err_index_formal_bound_array_refused.vibe 'cannot tell whether this index reads a Map or an Array' 'annotate it' linear 'fixtures/err_index_formal_bound_array_refused.vibe: line 22:4'
+ur_refused fixtures/err_index_formal_bound_array_refused.vibe 'cannot tell whether this index reads a Map or an Array' 'annotate it' gc 'fixtures/err_index_formal_bound_array_refused.vibe: line 22:4'
+ur_refused fixtures/err_index_formal_bound_array_exported_refused.vibe 'cannot tell whether this index reads a Map or an Array' 'annotate it' linear 'fixtures/err_index_formal_bound_array_exported_refused.vibe: line 13:4'
+ur_refused fixtures/err_for_in_formal_bound_array_refused.vibe 'cannot tell whether this `for` iterates an Array or a Map' 'Map::keys(m)' linear 'fixtures/err_for_in_formal_bound_array_refused.vibe: line 19:13'
+ur_refused fixtures/err_for_in_formal_bound_array_refused.vibe 'cannot tell whether this `for` iterates an Array or a Map' 'Map::keys(m)' gc 'fixtures/err_for_in_formal_bound_array_refused.vibe: line 19:13'
 # #3074: a generic enum whose instantiation cannot be recovered would render
 # its payload through the erased formal (`GA(1)` for `GA(true)`).
 ur_refused fixtures/err_interp_generic_enum_unknown_refused.vibe 'its type arguments are not known here' 'bind it with a type annotation' linear 'fixtures/err_interp_generic_enum_unknown_refused.vibe: line 12:4'

@@ -69,6 +69,65 @@ export fn typed_render_row_head() -> String {
   "#render"
 }
 
+/// #3133: the head that marks a typed-`==` channel row as an INDEX row -- the
+/// checker's verdict on the receiver of one `xs[k]` (`__index`), keyed by the
+/// `[` offset the parser puts on the `__index` callee. The verdict is a bare
+/// `TyName` argument, `typed_index_map_verdict()` or
+/// `typed_index_open_verdict()`; a receiver the checker typed as an Array,
+/// String or Bytes (or any other type that is not a Map) files no row. Rides
+/// the typed-`==` channel for the reason the render rows do, under a head no
+/// identifier can spell for the reason theirs is.
+export fn typed_index_row_head() -> String {
+  "#index"
+}
+
+/// #3145: the builtin `Array::*` operations that treat an argument as an
+/// Array's backing store, and so answer wrongly (or corrupt it) when handed a
+/// Map at run time. Every one of them is audited as positional:
+///
+/// - `length` reads the header's element count, which a Map's store does not
+///   hold as its entry count (measured: 0 for a one-entry map);
+/// - `get` reads a slot by position (out of bounds, or another slot's bytes);
+/// - `set` / `push` / `push_all` / `truncate` write the store or its length;
+/// - `slice` / `concat` / `reverse` / `filter` / `map` / `fold` / `any` /
+///   `all` / `find` walk slots 0..length, so each sees the header answer
+///   above (measured: every one answered as if the map were empty).
+///
+/// The checker binds an unannotated lambda parameter used here to `Array[_]`
+/// (#3006, and #3145 for the special arms that skipped it), so a Map argument
+/// is a type error at its call. What stays open is a declared type parameter
+/// -- its binding in the body does not reach its callers -- and such a site
+/// is refused, the way an index is (#3133 / #3139). A bare `CtUnknown` (an
+/// expression the checker declined to type) is not refused here. `Array::with_capacity` takes no
+/// receiver, and the library-defined helpers (`Array::contains`, ...) declare
+/// `Array[T]` parameters that bind an open argument at the call, so neither is
+/// listed. `concat` / `push_all` read their SECOND argument positionally too.
+export fn array_receiver_reads(name: String) -> Bool {
+  name == "Array::length" || name == "Array::get" || name == "Array::set" || name == "Array::push" || name == "Array::push_all" || name == "Array::slice" || name == "Array::concat" || name == "Array::reverse" || name == "Array::truncate" || name == "Array::any" || name == "Array::all" || name == "Array::find" || name == "Array::filter" || name == "Array::map" || name == "Array::fold"
+}
+
+/// #3148: the head that marks a typed-`==` channel row as a FOR-LOOP row --
+/// the checker's verdict (`typed_index_map_verdict()` /
+/// `typed_index_open_verdict()`) on the iterand of one `for x in e`, keyed by
+/// `typed_lowering_arg_offset(e)`. Kept apart from the index rows because an
+/// iterand's key is an identifier or callee offset, which an Array reader's
+/// row (#3145) can share.
+export fn typed_forin_row_head() -> String {
+  "#forin"
+}
+
+/// #3133: the receiver is a Map -- the index is `Map::get`.
+export fn typed_index_map_verdict() -> String {
+  "#map"
+}
+
+/// #3133: the receiver's type was not resolved (an inference variable, an
+/// erased type parameter, or checks of one shared body that disagree), so it
+/// may be a Map at run time and the index cannot be lowered either way.
+export fn typed_index_open_verdict() -> String {
+  "#open"
+}
+
 /// #2987 / #3068: the message a codegen lane throws when it refuses a render
 /// argument filed under `typed_render_refuse_key`. Shared so the linear and gc
 /// lanes refuse one program with one sentence: a lane that printed an address
@@ -186,6 +245,28 @@ export fn expr_child_at(i: Int) -> Expr {
 /// Release every slot from `mark` up.
 export fn expr_children_pop(mark: Int) -> Unit {
   Array::truncate(expr_child_scratch, mark)
+}
+
+/// Does any node of `expr` -- itself included, then every descendant
+/// `expr_children` reaches -- satisfy `pred`? Allocation-free apart from
+/// the scratch stack, so a rewrite pass can ask it first and leave a
+/// statement with nothing to rewrite untouched instead of rebuilding every
+/// node of it to arrive at an equal tree.
+export fn expr_any_node(expr: Expr, pred: (Expr) -> Bool) -> Bool {
+  if pred(expr) {
+    true
+  } else {
+    let mark = expr_children_push(expr)
+    let top = expr_children_top()
+    let mut i = mark
+    let mut found = false
+    while !found && i < top {
+      found = expr_any_node(expr_child_at(i), pred)
+      i = i + 1
+    }
+    expr_children_pop(mark)
+    found
+  }
 }
 
 /// Append `expr`'s immediate children to `out`, in the order

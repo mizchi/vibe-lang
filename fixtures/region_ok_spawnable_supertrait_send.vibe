@@ -1,0 +1,34 @@
+// #3152 / #3156 review: a formal whose bound EXTENDS `Send` counts as Send
+// inside its body, like a formal bound `[T: Send]` directly. `trait Work:
+// Send` makes the spawned closure's capture of `x: T` legal; it used to be
+// refused (`no impl Spawnable for ?t: capture x is neither Send ...`) because
+// only a bound spelled `Send` was counted. Every instantiation is checked
+// Send at its call site (err_type_send_supertrait_bound.vibe).
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+trait Work: Send {
+  weight(Self) -> Int
+}
+
+impl Work for Int {
+  weight(self: Int) -> Int {
+    self
+  }
+}
+
+fn run_one[T: Work](x: T) -> Int with Exception {
+  TaskGroup::run((n) -> {
+    let h = TaskGroup::spawn(n, () -> Work::weight(x))
+    TaskHandle::join(h)
+  })
+}
+
+export let main = () -> Int with Exception {
+  run_one(41) + 1
+}
+
+test "region ok spawnable supertrait send" allows Exception {
+  inspect(main(), "42")
+}

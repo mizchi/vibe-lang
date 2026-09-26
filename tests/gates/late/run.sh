@@ -933,6 +933,10 @@ send_check_reject() {
   fi
 }
 send_check_reject "err_type_send_array_bound.vibe" 'no impl `Send` for `Array[Int]`' "arr"
+# #3156 review: a bound that EXTENDS `Send` (`trait Work: Send`) is Send in
+# its body, so an instantiation that is not Send is refused at the call even
+# when the program declares `impl Work for Array[Int]`.
+send_check_reject "err_type_send_supertrait_bound.vibe" 'no impl `Send` for `Array[Int]`: `Work` extends `Send`' "super"
 send_check_reject "err_type_send_mut_struct_bound.vibe" 'no impl `Send` for `Counter`' "mut"
 send_check_reject "err_type_send_closure_bound.vibe" 'no impl `Send` for `' "clos"
 send_check_reject "err_type_send_user_impl.vibe" '`Send` is a compiler-judged structural marker' "impl"
@@ -2002,9 +2006,9 @@ rm -rf "$depsdir"
 echo "[compiler-gate] deps missing-for-imports scan (#1145 follow-up 2) ok"
 
 # 61/61. #1081 step 3 Phase B: `Spawnable[r]` capture check for
-# `TaskGroup::spawn`/`TaskGroup::spawn_suspend`. Like `TaskGroup::run`
-# above, hardcoded by literal qualified name (same alias/rename bypass
-# caveat, see checker.vibe/docs/internal/design/concurrency.md). A captured free variable
+# `TaskGroup::spawn`/`TaskGroup::spawn_suspend`, and (#3125) any callee with
+# their type -- a `let` alias, a renamed import, a same-signature wrapper;
+# the alias rows live in fixtures/typecheck (spawn_*). A captured free variable
 # must be structurally `Send`, or a `TaskGroup`/`TaskHandle`/`Sender`/
 # `Receiver` endpoint tagged with THIS spawn call's own region. Positive: a
 # same-region `Sender` capture through `Channel::bounded` keeps compiling
@@ -2152,6 +2156,133 @@ fi
 if ! grep -qE 'line [0-9]+:[0-9]+-[0-9]+' "$spawnabledir/neg_letmut_outer.wasm.diag" 2>/dev/null; then
   echo "[compiler-gate] FAIL: err_spawnable_capture_letmut_outer_scope.vibe diagnostic lost its located line:col-col source range" >&2
   cat "$spawnabledir/neg_letmut_outer.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+# #3125: the check follows the callee's TYPE, not its spelling. A local alias
+# and a renamed import of `TaskGroup::spawn` get the same diagnostic as the
+# literal call (err_spawnable_capture_array.vibe above), and the function
+# handed on as a value is refused with the edit that fixes it.
+# #3152: a closure passed by NAME is checked too -- a local `let` closure by
+# its recorded captures, a local closure called inside the body as a capture,
+# `Parallel::map`'s closure at its call site, and a closure parameter whose
+# captures cannot be seen is refused. #3153: `TaskGroup::run`'s escape check
+# follows the callee's type the same way. Each of these compiled and ran
+# before its fix.
+for spawn_route in \
+  "err_spawnable_alias_capture:no impl \`Spawnable\` for \`Array[Int]\`" \
+  "err_spawnable_annotated_alias_capture:no impl \`Spawnable\` for \`Array[Int]\`" \
+  "err_spawnable_rename_import_capture:no impl \`Spawnable\` for \`Array[Int]\`" \
+  "err_spawnable_value_passed:\`TaskGroup::spawn\` cannot be used as a value here" \
+  "err_spawnable_let_closure:no impl \`Spawnable\` for \`Array[Int]\`" \
+  "err_spawnable_called_closure:no impl \`Spawnable\` for \`Array[Int]\`" \
+  "err_spawnable_opaque_param:no impl \`Spawnable\` for closure \`work\`: its captures cannot be seen here" \
+  "err_spawnable_parallel_map_capture:no impl \`Spawnable\` for \`Array[Int]\`" \
+  "err_region_escape_run_rename:region escapes its nursery scope" \
+  "err_region_escape_run_value:\`TaskGroup::run\` cannot be used as a value here"; do
+  spawn_fx="${spawn_route%%:*}"
+  spawn_needle="${spawn_route#*:}"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "fixtures/$spawn_fx.vibe" "$spawnabledir/$spawn_fx.wasm" main >/dev/null 2>&1 || true
+  if [ -s "$spawnabledir/$spawn_fx.wasm" ]; then
+    echo "[compiler-gate] FAIL: $spawn_fx.vibe compiled successfully -- must be rejected (#3125)" >&2
+    exit 1
+  fi
+  if ! grep -qF "$spawn_needle" "$spawnabledir/$spawn_fx.wasm.diag" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: $spawn_fx.vibe did not produce the expected diagnostic (#3125)" >&2
+    cat "$spawnabledir/$spawn_fx.wasm.diag" >&2 2>/dev/null || true
+    exit 1
+  fi
+done
+# #3125 positive side: an alias whose closures capture only `Send` values
+# keeps compiling and running (82 = 41 + 1 + 40, pinned by the fixture's
+# `inspect` block).
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/region_ok_spawnable_alias.vibe "$spawnabledir/pos_alias.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ ! -s "$spawnabledir/pos_alias.wasm" ]; then
+  echo "[compiler-gate] FAIL: region_ok_spawnable_alias.vibe did not compile -- a Send-only spawn alias must stay legal (#3125)" >&2
+  cat "$spawnabledir/pos_alias.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+if ! spawnable_alias_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$spawnabledir/pos_alias.wasm" 2>&1)"; then
+  echo "[compiler-gate] FAIL: region_ok_spawnable_alias.vibe got '$spawnable_alias_out' (want 82)" >&2
+  exit 1
+fi
+# #3156 review: an ANNOTATED alias is the same alias -- its ascription wraps
+# the bare name, and it used to be refused as a value; its calls stay
+# Send-checked (err_spawnable_annotated_alias_capture above). 43 = 41 + 2,
+# pinned by the fixture's `inspect` block.
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/region_ok_spawnable_annotated_alias.vibe "$spawnabledir/pos_annotated_alias.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ ! -s "$spawnabledir/pos_annotated_alias.wasm" ]; then
+  echo "[compiler-gate] FAIL: region_ok_spawnable_annotated_alias.vibe did not compile -- an annotated Send-only spawn alias must stay legal (#3125)" >&2
+  cat "$spawnabledir/pos_annotated_alias.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+if ! spawnable_annotated_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$spawnabledir/pos_annotated_alias.wasm" 2>&1)"; then
+  echo "[compiler-gate] FAIL: region_ok_spawnable_annotated_alias.vibe got '$spawnable_annotated_out' (want 43)" >&2
+  exit 1
+fi
+# #3152 positive side: the closure values the check can see -- a local `let`
+# closure, a local closure called in the body, a top-level function by name,
+# a spawn-shaped wrapper, and `Parallel::map` -- keep compiling and running
+# (249, pinned by the fixture's `inspect` block).
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/region_ok_spawnable_closure_values.vibe "$spawnabledir/pos_values.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ ! -s "$spawnabledir/pos_values.wasm" ]; then
+  echo "[compiler-gate] FAIL: region_ok_spawnable_closure_values.vibe did not compile -- a Send-only closure value must stay legal (#3152)" >&2
+  cat "$spawnabledir/pos_values.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+if ! spawnable_values_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$spawnabledir/pos_values.wasm" 2>&1)"; then
+  echo "[compiler-gate] FAIL: region_ok_spawnable_closure_values.vibe got '$spawnable_values_out' (want 249)" >&2
+  exit 1
+fi
+# #3152 review: a labeled / optional parameter of a closure passed by name
+# shadows an outer non-Send binding of the same bare name, in the closure and
+# in a lambda nested inside it; it is not a capture (21, pinned by the
+# fixture's `inspect` block).
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/region_ok_spawnable_labeled_param.vibe "$spawnabledir/pos_labeled.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ ! -s "$spawnabledir/pos_labeled.wasm" ]; then
+  echo "[compiler-gate] FAIL: region_ok_spawnable_labeled_param.vibe did not compile -- a labeled parameter was counted as a capture (#3152)" >&2
+  cat "$spawnabledir/pos_labeled.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+if ! spawnable_labeled_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$spawnabledir/pos_labeled.wasm" 2>&1)"; then
+  echo "[compiler-gate] FAIL: region_ok_spawnable_labeled_param.vibe got '$spawnable_labeled_out' (want 21)" >&2
+  exit 1
+fi
+# #3156 review: a formal bound by a trait that EXTENDS `Send` is Send inside
+# its body, like `[T: Send]` (42, pinned by the fixture's `inspect` block).
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/region_ok_spawnable_supertrait_send.vibe "$spawnabledir/pos_supertrait.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ ! -s "$spawnabledir/pos_supertrait.wasm" ]; then
+  echo "[compiler-gate] FAIL: region_ok_spawnable_supertrait_send.vibe did not compile -- a bound extending Send must count as Send (#3152)" >&2
+  cat "$spawnabledir/pos_supertrait.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+if ! spawnable_supertrait_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$spawnabledir/pos_supertrait.wasm" 2>&1)"; then
+  echo "[compiler-gate] FAIL: region_ok_spawnable_supertrait_send.vibe got '$spawnable_supertrait_out' (want 42)" >&2
+  exit 1
+fi
+# #3152 review: an annotated local closure (`let f: () -> Int = () -> ..`)
+# records its captures through the parser's ascription wrapper (41).
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/region_ok_spawnable_annotated_closure.vibe "$spawnabledir/pos_ann_closure.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ ! -s "$spawnabledir/pos_ann_closure.wasm" ]; then
+  echo "[compiler-gate] FAIL: region_ok_spawnable_annotated_closure.vibe did not compile -- an annotated let closure lost its capture facts (#3152)" >&2
+  cat "$spawnabledir/pos_ann_closure.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+if ! spawnable_ann_closure_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$spawnabledir/pos_ann_closure.wasm" 2>&1)"; then
+  echo "[compiler-gate] FAIL: region_ok_spawnable_annotated_closure.vibe got '$spawnable_ann_closure_out' (want 41)" >&2
   exit 1
 fi
 rm -rf "$spawnabledir"
