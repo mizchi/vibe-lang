@@ -289,10 +289,23 @@ if [ -z "$shard_n" ] || [ "$shard_n" -lt 1 ] || [ "$shard_i" -ge "$shard_n" ]; t
   exit 1
 fi
 
+# PINNED SLOTS. Round-robin by index alone put the two heaviest companions in
+# one shard ([333, 277, 682]s locally): five companions are ~80% of the suite.
+# scripts/gate_self_test_shards.txt pins those to a slot (`name slot`, measured
+# cost in its comments); every unlisted companion is dealt round-robin. A slot
+# is reduced mod N like an index, so any N is still an exact partition. An
+# entry naming no companion is stale and fails below, like a stale exemption.
+SHARD_PINS="scripts/gate_self_test_shards.txt"
+pins=""
+[ -f "$SHARD_PINS" ] && pins="$(grep -v '^\s*#' "$SHARD_PINS" | grep -v '^\s*$' || true)"
+pin_slot() { printf '%s\n' "$pins" | awk -v n="$1" '$1 == n { print $2; exit }'; }
+
 failed_tests=""
 repaired=""
 ran=0
 k=-1
+seen_pins=""
+rr=-1
 if [ "${VIBE_GATE_SELF_TESTS_RUN:-1}" = "1" ]; then
   # The snapshot needs a git work tree. Without one it cannot tell a clean run
   # from a dirty one, and saying nothing would be reporting "unchecked" as
@@ -320,10 +333,16 @@ if [ "${VIBE_GATE_SELF_TESTS_RUN:-1}" = "1" ]; then
       *.test.mjs) [ -f "${t%.test.mjs}.mjs" ] || [ -f "${t%.test.mjs}.sh" ] || continue ;;
       *) [ -f "${t%_test.sh}.sh" ] || [ -f "${t%_test.sh}.mjs" ] || continue ;;
     esac
-    k=$((k + 1))
-    [ $((k % shard_n)) -eq "$shard_i" ] || continue
-    ran=$((ran + 1))
     base="${t#scripts/}"
+    k=$((k + 1))
+    slot="$(pin_slot "$base")"
+    if [ -n "$slot" ]; then
+      seen_pins="$seen_pins $base"
+    else
+      rr=$((rr + 1)); slot="$rr"
+    fi
+    [ $((slot % shard_n)) -eq "$shard_i" ] || continue
+    ran=$((ran + 1))
     if printf '%s\n' "$failing_allowed" | grep -qxF "$base"; then
       # A known-failing exemption is still RUN, because the interesting case is
       # that it starts passing: skipping it outright means a repaired test (or
@@ -352,7 +371,24 @@ if [ "${VIBE_GATE_SELF_TESTS_RUN:-1}" = "1" ]; then
   fi
 fi
 
+stale_pins=""
+if [ "${VIBE_GATE_SELF_TESTS_RUN:-1}" = "1" ]; then
+  while read -r name slot _; do
+    [ -n "$name" ] || continue
+    case "$slot" in ''|*[!0-9]*) stale_pins="$stale_pins $name(slot-not-a-number)"; continue ;; esac
+    printf ' %s \n' "$seen_pins " | grep -qF " $name " || stale_pins="$stale_pins $name(no-such-companion)"
+  done <<EOF4
+$pins
+EOF4
+fi
+
 rc=0
+if [ -n "$stale_pins" ]; then
+  echo "[gate-self-tests] FAIL: stale entries in $SHARD_PINS:" >&2
+  for n in $stale_pins; do echo "  $n" >&2; done
+  echo "  Each line is '<companion> <slot>' for a companion discovery finds." >&2
+  rc=1
+fi
 if [ -n "$dirtied" ]; then
   echo "[gate-self-tests] FAIL: gate self-tests that left the working tree changed (#2899):" >&2
   for t in $dirtied; do echo "  $t" >&2; done

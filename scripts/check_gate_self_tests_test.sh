@@ -231,9 +231,32 @@ for i in 0 1 2; do
   grep -q "shard $i/3" "$WORK/out" || { cat "$WORK/out" >&2; rm -f "$SHARD_LOG"; fail "shard $i/3 did not report which shard it ran"; }
 done
 got="$(sort "$SHARD_LOG" | tr '\n' ' ')"
-rm -f "$SHARD_LOG"
 [ "$got" = "sa sb sc sd se sf sg " ] || fail "shards 0..2/3 did not run each companion exactly once: $got"
 echo "  ok  shards 0/3, 1/3, 2/3 run every companion exactly once between them"
+
+# PINS: a companion listed in gate_self_test_shards.txt runs in its slot's
+# shard, and the partition stays exact around it.
+: > "$SHARD_LOG"
+printf 'check_sa_test.sh 2\ncheck_sb_test.sh 2   # a trailing comment\n' > "$WORK/scripts/gate_self_test_shards.txt"
+for i in 0 1 2; do
+  VIBE_GATE_SELF_TESTS_SHARD="$i/3" run_exec || { cat "$WORK/out" >&2; rm -f "$SHARD_LOG"; fail "shard $i/3 failed with pins"; }
+  sed "s/\$/@$i/" "$SHARD_LOG" >> "$SHARD_LOG.all"; : > "$SHARD_LOG"
+done
+got="$(sort "$SHARD_LOG.all" | tr '\n' ' ')"
+rm -f "$SHARD_LOG.all"
+case "$got" in *"sa@2 sb@2 "*) ;; *) rm -f "$SHARD_LOG"; fail "pinned companions did not run in their slot's shard: $got" ;; esac
+[ "$(printf '%s\n' $got | sed 's/@.*//' | sort | tr '\n' ' ')" = "sa sb sc sd se sf sg " ] \
+  || { rm -f "$SHARD_LOG"; fail "with pins, shards did not run each companion exactly once: $got"; }
+echo "  ok  a pinned companion runs in its slot's shard, and the partition stays exact"
+
+# A pin naming no companion is stale: it would otherwise sit there balancing
+# nothing while the companion it meant runs wherever round-robin put it.
+printf 'check_gone_test.sh 1\n' > "$WORK/scripts/gate_self_test_shards.txt"
+if VIBE_GATE_SELF_TESTS_SHARD="0/3" run_exec; then rm -f "$SHARD_LOG"; fail "a stale pin was accepted"; fi
+grep -q "check_gone_test.sh(no-such-companion)" "$WORK/out" || { cat "$WORK/out" >&2; rm -f "$SHARD_LOG"; fail "the stale pin was not named"; }
+rm -f "$WORK/scripts/gate_self_test_shards.txt"
+echo "  ok  a pin naming no companion is rejected"
+rm -f "$SHARD_LOG"
 
 # ...and a shard can still FAIL: a failing companion is rejected by the shard
 # that owns it, so sharding did not turn execution off.

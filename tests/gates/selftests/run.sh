@@ -45,7 +45,11 @@ gate_resolve_stage2
 # check_gate_self_tests.sh partitions the discovered companions by index; the
 # named suites below are partitioned by the slot each is given, so every one of
 # them runs in exactly one shard. Slots are assigned by measured cost, not by
-# position -- see the per-line timestamps of that run.
+# position, and together with scripts/gate_self_test_shards.txt (which pins
+# the heavy companions): slot 0 carries the 493s compile-only-lanes companion
+# and only cheap suites here; slot 1 gets checked-module parity and capability
+# preflight (~80s on run 36248052145); slot 2 gets checked-module cost and
+# run_bounded (~190s).
 shard="${COMPILER_GATE_SELFTESTS_SHARD:-0/1}"
 shard_i=""; shard_n=""
 case "$shard" in
@@ -96,7 +100,7 @@ if in_shard 0; then bash "$ROOT_DIR/scripts/resolve_stage2_test.sh"; fi
 # through (#2958). Its shell watchdog only runs where GNU timeout is absent --
 # never in CI by accident -- so the companion forces it and holds it to
 # timeout(1)'s contract, with a mutant per property. No compiler; ~35s.
-if in_shard 1; then bash "$ROOT_DIR/scripts/run_bounded_test.sh"; fi
+if in_shard 2; then bash "$ROOT_DIR/scripts/run_bounded_test.sh"; fi
 # The host half of the capability contract (#2825 step 1,
 # docs/internal/design/capability-host-contract.md). Same glob reason again -- and this one is
 # a case where the gate that already exists could not see the property:
@@ -118,7 +122,7 @@ if in_shard 0; then bash "$ROOT_DIR/scripts/host_capability_withhold_test.sh"; f
 # does export VIBE_STAGE2_WASM, but a gate that reads an ambient variable is
 # one environment change away from answering about a different compiler, which
 # is #2252's lesson and cost this gate a CI cycle already.
-if in_shard 0; then
+if in_shard 1; then
   CAPABILITY_PREFLIGHT_STAGE2="$stage2_wasm" bash "$ROOT_DIR/scripts/check_capability_preflight.sh"
   CAPABILITY_PREFLIGHT_STAGE2="$stage2_wasm" bash "$ROOT_DIR/scripts/check_capability_preflight_test.sh"
 fi
