@@ -2661,6 +2661,52 @@ done
 rm -rf "$dzdir"
 echo "[compiler-gate] Int division-by-zero trap message ok (/, %, /=; linear and gc)"
 
+# #3126 + #3158: on wasm-gc the division-by-zero abort and the erased-generic
+# `__generic_rel_diff` / `__generic_add` pair are conditionally pushed builtin
+# bodies, both after the optional integer renderer, and their indices are
+# POSITIONAL. With both present, an index that does not count the other's body
+# calls the wrong function (or fails validation). The fixture has both, plus
+# the capacity allocator ahead of them: its `before` line must carry the right
+# generic answers, and the division must still report its location and trap.
+echo "[compiler-gate] Int / by zero and erased-generic + / < in one program (#3126 / #3158)"
+dgdir="_build/_gate_div_zero_generic"
+rm -rf "$dgdir"; mkdir -p "$dgdir"
+dg_src="fixtures/int_div_zero_generic_dispatch_trap.vibe"
+dg_before="before add=42 neg=-2 cat=abcd lt=true gt=false lts=false"
+dg_want="Int \`/\` by zero at $dg_src:31:5"
+for dg_backend in linear gc; do
+  dg_wasm="$dgdir/int_div_zero_generic_dispatch_trap_$dg_backend.wasm"
+  if [ "$dg_backend" = gc ]; then
+    VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+      bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+      "$dg_src" "$dg_wasm" main >/dev/null 2>&1 || true
+  else
+    VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+      bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+      "$dg_src" "$dg_wasm" main >/dev/null 2>&1 || true
+  fi
+  if [ ! -s "$dg_wasm" ]; then
+    echo "[compiler-gate] FAIL: $dg_src did not compile on $dg_backend (#3126 / #3158)" >&2
+    cat "$dg_wasm.diag" >&2 2>/dev/null; exit 1
+  fi
+  dg_status=0
+  dg_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_RUNNER_EXIT_WITH_RESULT=1 bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$dg_wasm" 2>&1)" || dg_status=$?
+  if ! printf '%s\n' "$dg_out" | grep -qxF "$dg_before"; then
+    echo "[compiler-gate] FAIL: $dg_src generic answers wrong on $dg_backend, want '$dg_before' (#3158): $dg_out" >&2
+    exit 1
+  fi
+  if [ "$dg_status" -eq 0 ] || printf '%s\n' "$dg_out" | grep -qF 'after'; then
+    echo "[compiler-gate] FAIL: a zero divisor answered instead of trapping on $dg_backend (#3126): $dg_out" >&2
+    exit 1
+  fi
+  if ! printf '%s\n' "$dg_out" | grep -qxF "$dg_want"; then
+    echo "[compiler-gate] FAIL: $dg_src did not report '$dg_want' on $dg_backend (#3126): $dg_out" >&2
+    exit 1
+  fi
+done
+rm -rf "$dgdir"
+echo "[compiler-gate] Int / by zero beside erased-generic dispatch ok (linear and gc)"
+
 # #2737: a witness dispatch on a bound declared by a LAMBDA binder is refused,
 # with a message that names the edit. The checks, the measurements behind them,
 # and the red test that proves they can fail live in the gate script and its
