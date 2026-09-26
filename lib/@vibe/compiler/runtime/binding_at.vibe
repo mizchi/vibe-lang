@@ -38,7 +38,7 @@
 // interpolation): both mis-codegen to NUL here.
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt
+  Expr, Pat, Stmt, let_rec_value_anchor
 }
 
 import @vibe/core {
@@ -142,6 +142,8 @@ fn bind_find_ident_token(tokens: Array[Token], starts: Array[Int], name: String,
 ///   floor       — boxed monotonically-advancing scan floor for binder recovery
 ///   tokens      — lexer tokens (comments/string contents excluded as binders)
 ///   starts      — token source offsets, parallel to tokens
+///   let_recs    — one `(binder offset, value anchor)` per `let rec` walked,
+///                 the binder offset -1 when it could not be recovered (#3106)
 ///
 /// Binding ids are NOT a separate counter: each binder's canonical id is its
 /// recovered source offset + 1 (unique per binder, and >= 1 so it never collides
@@ -152,7 +154,8 @@ struct BindState {
   scope_ids: Array[Int];
   floor: Array[Int];
   tokens: Array[Token];
-  starts: Array[Int]
+  starts: Array[Int];
+  let_recs: Array[(Int, Int)]
 }
 
 /// A fresh single-cell mutable Int array holding `v` (a poor-man's mutable box).
@@ -171,7 +174,8 @@ fn bind_new_state(tokens: Array[Token], starts: Array[Int]) -> BindState {
     scope_ids: array_empty(),
     floor: bind_box_int(0),
     tokens: tokens,
-    starts: starts
+    starts: starts,
+    let_recs: array_empty()
   }
 }
 
@@ -344,8 +348,10 @@ fn bind_pats_names(sub: Array[Pat], out: Array[String]) -> Unit {
 /// floor restored), so this only LOOKS at where `e` starts in the source.
 fn bind_expr_first_off(st: BindState, e: Expr) -> Int {
   let hit_mark = Array::length(st.hits)
+  let let_rec_mark = Array::length(st.let_recs)
   let floor0 = Array::get(st.floor, 0)
   bind_walk_expr(st, e)
+  Array::truncate(st.let_recs, let_rec_mark)
   let mut best = -1
   let mut i = hit_mark
   while i < Array::length(st.hits) {
@@ -583,7 +589,12 @@ fn bind_walk_expr(st: BindState, expr: Expr) -> Unit {
     ELetRec(name, v, b) => {
       // recursive let: name is in scope for both v and b.
       let mark = Array::length(st.scope_names)
-      bind_introduce(st, name)
+      let id = bind_recover_binder(st, name)
+      // #3106: which value this binder introduces, by the key the checker
+      // files a `let rec`'s type under. Kept for an unrecovered binder too
+      // (id 0 -> -1), so a key two bindings share is seen as shared.
+      Array::push(st.let_recs, (id - 1, let_rec_value_anchor(v)))
+      bind_push_binder(st, name, id)
       bind_walk_expr(st, v)
       bind_walk_expr(st, b)
       bind_pop_scope(st, mark)
@@ -969,4 +980,46 @@ export fn local_binder_sites(source: String) -> Array[(String, Int)] {
     }
     out
   } with { Exception::Throw(_) => array_empty() }
+}
+
+/// #3106: the key the checker files a local `let rec`'s type under
+/// (`let_rec_value_anchor` of its value), for the `let rec` whose binder this
+/// walk recovers at byte `boff`. -1 when `boff` is no `let rec`'s binder, when
+/// the value carries no offset, or when another `let rec` shares the key: the
+/// checker's row there could then be either binding's, and `vibe type-at`
+/// prints nothing rather than the other binding's type.
+export fn let_rec_anchor_at(source: String, boff: Int) -> Int {
+  handle {
+    let (tokens, starts, _ends) = lex_with_offsets(source)
+    let stmts = parse_program_located(tokens, starts, source)
+    let st = bind_new_state(tokens, starts)
+    bind_walk_stmts(st, stmts)
+    let mut anchor = -1
+    let mut i = 0
+    while i < Array::length(st.let_recs) {
+      let (b, a) = Array::get(st.let_recs, i)
+      if boff >= 0 && b == boff {
+        anchor = a
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    let mut shared = false
+    let mut j = 0
+    while anchor >= 0 && j < Array::length(st.let_recs) {
+      let (b, a) = Array::get(st.let_recs, j)
+      if a == anchor && b != boff {
+        shared = true
+      } else {
+        ()
+      }
+      j = j + 1
+    }
+    if shared {
+      -1
+    } else {
+      anchor
+    }
+  } with { Exception::Throw(_) => -1 }
 }

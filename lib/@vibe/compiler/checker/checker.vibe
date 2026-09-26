@@ -94,6 +94,7 @@ import @vibe/compiler/core {
   is_exception_throw_handler_name,
   is_exception_throw_operation,
   is_hkt_app,
+  let_rec_value_anchor,
   refine_trait_bounds_from_receiver,
   registry_builtin_arity,
   registry_builtin_param_type,
@@ -3444,8 +3445,15 @@ export fn throw_payload_site_types() -> Array[(String, Type)] {
 let local_let_type_rows: Array[(Int, Type)] = []
 let local_let_type_recording: Array[Bool] = [false]
 
+/// #3106: the same for a local `let rec`, keyed by `let_rec_value_anchor` of
+/// its value. `ELetRec` carries no offset, so its binding is known by the
+/// smallest offset inside its value instead; a separate table, because that
+/// offset can be an inner `let` keyword's, which keys a row of the one above.
+let local_let_rec_type_rows: Array[(Int, Type)] = []
+
 export fn local_let_types_begin() -> Unit {
   Array::truncate(local_let_type_rows, 0)
+  Array::truncate(local_let_rec_type_rows, 0)
   Array::set(local_let_type_recording, 0, true)
 }
 
@@ -3461,6 +3469,25 @@ export fn local_let_types() -> Array[(Int, Type)] {
 fn record_local_let_type(let_off: Int, ty: Type, lane: String) -> Unit {
   if let_off >= 0 && lane == "Primary" && Array::get(local_let_type_recording, 0) {
     Array::push(local_let_type_rows, (let_off, ty))
+  } else {
+    ()
+  }
+}
+
+/// The `let rec` rows the last `check_program_type_table` recorded (#3106).
+export fn local_let_rec_types() -> Array[(Int, Type)] {
+  local_let_rec_type_rows
+}
+
+fn record_local_let_rec_type(value: Expr, ty: Type, lane: String) -> Unit {
+  // The anchor walks the whole value, so it is taken only while recording.
+  if lane == "Primary" && Array::get(local_let_type_recording, 0) {
+    let anchor = let_rec_value_anchor(value)
+    if anchor >= 0 {
+      Array::push(local_let_rec_type_rows, (anchor, ty))
+    } else {
+      ()
+    }
   } else {
     ()
   }
@@ -9722,6 +9749,9 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         let gen = let_generalize(val, subst_apply(s2, tv), cenv, defs, s2, Some(name))
         // #2848: see the ELet arm.
         refuse_generalized_field_reads(gen, s2, errors)
+        // #3106: hover on a `let rec` called only as a callee, as #3050 does
+        // for `let` -- keyed by its value, since `ELetRec` has no offset.
+        record_local_let_rec_type(val, gen, lane)
         note_local_generic_binding(val, gen, cenv)
         cenv = env_bind(cenv, name, gen)
         cenv = bind_function_dependency_contracts(cenv, name, val)

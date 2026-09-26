@@ -269,6 +269,53 @@ export fn expr_any_node(expr: Expr, pred: (Expr) -> Bool) -> Bool {
   }
 }
 
+/// #3106: the key a local `let rec` binding is known by -- the smallest source
+/// offset any node of its VALUE carries, or -1 when the value carries none.
+///
+/// `ELetRec` has no offset slot (an `ELet` carries its `let` keyword's), and
+/// widening the constructor is an AST ABI change, so the checker files a
+/// `let rec`'s type under this key and `vibe type-at` finds the binding
+/// through it. Both sides call this one function on the same node, so they
+/// cannot disagree about the key. The value of a `let rec` NESTED in this one
+/// is skipped (its continuation is not): that value is the inner binding's
+/// key, and an outer `let rec` whose value opens with an inner one would
+/// otherwise share it. Should two bindings still share a key, the query
+/// refuses it rather than answer for the wrong binding.
+export fn let_rec_value_anchor(value: Expr) -> Int {
+  let stack = Array::slice([value], 0, 1)
+  let mut first = -1
+  while Array::length(stack) > 0 {
+    let n = Array::length(stack)
+    let expr = Array::get(stack, n - 1)
+    Array::truncate(stack, n - 1)
+    let (a, b) = match expr {
+      EIdent(_, x) => (x, -1),
+      EString(_, x) => (x, -1),
+      ELet(_, _, _, x) => (x, -1),
+      ELetMut(_, _, _, x) => (x, -1),
+      ECall(_, _, x) => (x, -1),
+      EBinOp(_, _, _, x) => (x, -1),
+      EDot(_, _, x, y) => (x, y),
+      _ => (-1, -1)
+    }
+    if a >= 0 && (first < 0 || a < first) {
+      first = a
+    } else {
+      ()
+    }
+    if b >= 0 && (first < 0 || b < first) {
+      first = b
+    } else {
+      ()
+    }
+    match expr {
+      ELetRec(_, _, body) => Array::push(stack, body),
+      _ => expr_children_into(expr, stack)
+    }
+  }
+  first
+}
+
 /// Append `expr`'s immediate children to `out`, in the order
 /// `expr_children` lists them.
 export fn expr_children_into(expr: Expr, out: Array[Expr]) -> Unit {
