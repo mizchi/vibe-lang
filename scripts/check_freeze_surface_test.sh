@@ -88,13 +88,13 @@ doc '- **String**: `length`
 
 ### 3.1 Concurrency (`@vibe/concurrent`)
 
-- the types `TaskGroup[rg, e]`, `TaskError`'
+- the types `Sender[s, e, T]`, `TaskError`'
 expect 0 "a package subsection type its contract declares"
 doc '- **String**: `length`
 
 ### 3.1 Concurrency (`@vibe/concurrent`)
 
-- the types `TaskGroup[rg, e]`, `TaskStep[T]`'
+- the types `Sender[s, e, T]`, `TaskStep[T]`'
 expect 1 "a package subsection type its contract does not declare" "@vibe/concurrent:TaskStep"
 
 # 2b. #2275's case, re-founded by #2433. A real receiver with a NO-SUCH member
