@@ -502,7 +502,7 @@ Run a fixture directly with `vibe test`, and update its expected value with
 - Compile-rejection fixtures remain classified by verdict and message in
   `fixtures/typecheck/expected.tsv`.
 
-`scripts/check_fixture_snapshots.mjs` rejects `__DATA__` tails and `.diag`
+`scripts/check_fixture_snapshots.vibex` rejects `__DATA__` tails and `.diag`
 expectation files under `fixtures/`; `scripts/check_fixture_execution.sh`
 checks that test fixtures have an execution lane. Compiler-produced
 `<output>.diag` files are still an internal diagnostic transport, not stored

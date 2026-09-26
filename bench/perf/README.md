@@ -289,7 +289,7 @@ source function/branch counted once, #1556) with a percentage-point trend vs
 the previous measurement. The numbers come
 from ci.yml's `coverage-suite` job, which is **main-only** (it re-runs the
 whole test battery instrumented — too expensive per PR): after the ratchet
-gate it extracts a compact snapshot (`scripts/coverage_bench_snapshot.mjs`)
+gate it extracts a compact snapshot (`scripts/coverage_bench_snapshot.vibex`)
 and appends it to the `bench-data` branch (`coverage_latest.json` +
 `data/coverage.jsonl`, same retry pattern as the perf snapshot). The perf
 workflow fetches `coverage_latest.json` alongside the perf baseline and

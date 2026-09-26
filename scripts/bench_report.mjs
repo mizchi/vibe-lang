@@ -48,7 +48,7 @@ const readJsonMaybe = (p) => {
   try { return JSON.parse(readFileSync(p, "utf8")); } catch { return null; }
 };
 const base = readJsonMaybe(basePath);
-// Coverage snapshot from the bench-data branch (scripts/coverage_bench_snapshot.mjs,
+// Coverage snapshot from the bench-data branch (scripts/coverage_bench_snapshot.vibex,
 // appended by ci.yml's main-only coverage-suite job). Optional; absent until
 // the first main run lands one.
 const cov = readJsonMaybe(covPath);

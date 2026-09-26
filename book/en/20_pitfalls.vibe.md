@@ -18,44 +18,34 @@ can already see through — a top-level `fn`, a binding that aliases one,
 or a closure declared **inside** the handled body.
 
 So a call through a local binding or a parameter is fine when its type
-carries the row; being a local binding is not itself the problem. What
-fails is a **rowless closure declared outside** the handled body: nothing
-tells the handle what that call performs. Give it the row, or move its
-`let` inside the body — the diagnostic names both repairs. The full
-measured table is in [docs/user/reference/cheatsheet.md](../../docs/user/reference/cheatsheet.md).
+carries the row; being a local binding is not itself the problem. A
+**rowless closure declared outside** is also fine when its body is only
+pure computation — the handle still sees the arguments. What fails is a
+call with no visible body: an immediately-applied closure, or a lambda
+whose body performs or calls something this pass cannot name. The
+diagnostic names the edit and does not cite an ADR. The full measured
+table is in [docs/user/reference/cheatsheet.md](../../docs/user/reference/cheatsheet.md).
 
 ```vibe skip
-// skip: eligibility rejection — the point is the diagnostic, not a run
+// skip: eligibility rejection — the callee is an expression, not a name
 effect Ask {
   Get() -> Int
 }
 
-fn main allows Exception {
-  let bump = (x: Int) -> Int {
-    x + 1
+fn ask() -> Int with Ask {
+  perform Ask::Get()
+}
+
+fn main() -> Int {
+  handle { ((n: Int) -> Int { n })(ask()) } with {
+    Ask::Get() => resume(0)
   }
-  let n = handle {
-    bump(perform Ask::Get())
-  } with Ask {
-    Get() => resume(0)
-  }
-  ()
 }
 ```
 
 ```
-handle of effect 'Ask' cannot be compiled here: this handle cannot see what
-one call in its body performs (here: the call to 'bump'). Make that call
-visible -- declare 'bump' as a top-level `fn`, give the binding or parameter
-it arrives through an effect row (`with Ask`), or move its `let` inside the
-handled body. Moving the `handle` into the function that performs works too.
-(ADR-0076 evidence-passing migration.)
+handle of effect 'Ask' cannot be compiled here: the handled body calls through an expression rather than a name, and this handle cannot see what that call performs. Give the callee a name it can see -- a top-level `fn`, or a `let` bound to the closure literal inside the handled body -- or move the `handle` into the function that performs.
 ```
-
-Note that `bump` carries **no** effect row. Giving its literal
-`with Ask` is one of the four repairs the message lists, so that version
-compiles — which is the point: the row on the binding is what makes the
-perform visible. Lifting `bump` to a top-level `fn` works too.
 
 ## `Int` width follows the tag bit
 
@@ -88,7 +78,7 @@ A bare expression at the top level is rejected (ADR-0069). Put it in
 ```
 
 ```
-top-level expressions are not allowed; move it into fn main (ADR-0069)
+top-level expressions are not allowed; move it into fn main
 ```
 
 ## `test` / `bench` take a string or nothing

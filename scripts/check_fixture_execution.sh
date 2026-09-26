@@ -73,7 +73,7 @@ esac
 TEST_BLOCK_RE='^[[:space:]]*test([[:space:]]+"|[[:space:]]*\{|[[:space:]]+allows[[:space:]])'
 
 # --- the accounted-for sets -------------------------------------------------
-node scripts/check_fixture_snapshots.mjs
+bash scripts/vibe_run.sh scripts/check_fixture_snapshots.vibex
 unit_list="$(bash scripts/unit_test_runner.sh --list)"
 
 exceptions=""

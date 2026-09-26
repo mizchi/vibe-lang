@@ -528,6 +528,7 @@ export fn evidence_dict_pass(stmts: Array[Stmt], entry_name: String) -> Array[St
   let vhe_inert_arr = edp_pure_fn_names(vhe_fn_defs)
   edp_append_free_host_inert_names(stmts, vhe_inert_arr)
   edp_append_ctor_inert_names(stmts, vhe_inert_arr)
+  edp_append_visible_pure_lambda_names(stmts, vhe_inert_arr)
   // #2386: indexed AFTER the append, which is the last writer. Everything
   // downstream asks membership per call node and never reads the order, so
   // the array form ends here.
@@ -635,6 +636,7 @@ export fn evidence_dict_pass(stmts: Array[Stmt], entry_name: String) -> Array[St
         let li_inert_arr = edp_pure_fn_names(li_fn_defs)
         edp_append_free_host_inert_names(stmts, li_inert_arr)
         edp_append_ctor_inert_names(stmts, li_inert_arr)
+        edp_append_visible_pure_lambda_names(stmts, li_inert_arr)
         let li_fn_names = edp_name_set(li_fn_names_arr)
         let li_inert = edp_name_set(li_inert_arr)
         let (culprit_opaque, culprit_raw, culprit_off) = edp_live_handle_opaque_info(stmts, keep, bad, li_inert, li_fn_names)
@@ -675,11 +677,9 @@ export fn evidence_dict_pass(stmts: Array[Stmt], entry_name: String) -> Array[St
           ds_head = String::concat(ds_head, " again -- that re-perform escapes '")
           ds_head = String::concat(ds_head, ds_nm)
           // #2137: the trailing "the replay engine that used to accept this
-          // shape was removed" is gone from all four branches. It names a pass
-          // that no longer exists in the tree, so it cannot be acted on and
-          // cannot be looked up -- the ADR reference is the design record a
-          // curious reader wants, and it stays.
-          ds_head = String::concat(ds_head, "' into this handle's body, where this handle cannot see it. Move that perform out of the handler arm (compute the value before the `handle`), or wrap the arm's perform in its own `handle`. (ADR-0076 evidence-passing migration.)")
+          // shape was removed" is gone from all four branches. #3118 also
+          // dropped the `(ADR-0076 ...)` tail. The edit is the whole message.
+          ds_head = String::concat(ds_head, "' into this handle's body, where this handle cannot see it. Move that perform out of the handler arm (compute the value before the `handle`), or wrap the arm's perform in its own `handle`.")
           let ds_marked = if ds_off >= 0 {
             String::concat(ds_head, String::concat(" [@off=", String::concat(__to_string(ds_off), String::concat(":", String::concat(__to_string(ds_off + String::length(ds_nm)), "]")))))
           } else {
@@ -706,12 +706,12 @@ export fn evidence_dict_pass(stmts: Array[Stmt], entry_name: String) -> Array[St
             let mut m = String::concat(lead, "this handle cannot see what one call in its body performs (here: the call to '")
             m = String::concat(m, String::concat(culprit, "'). Make that call visible -- declare '"))
             m = String::concat(m, String::concat(culprit, "' as a top-level `fn`, give the binding or parameter it arrives through an effect row (`with "))
-            String::concat(m, String::concat(bad, "`), or move its `let` inside the handled body. Moving the `handle` into the function that performs works too. (ADR-0076 evidence-passing migration.)"))
+            String::concat(m, String::concat(bad, "`), or move its `let` inside the handled body. Moving the `handle` into the function that performs works too."))
           } else if culprit_opaque {
             // The callee is not a bare name: an immediately-applied closure
             // literal, a call through a field, an element, a tuple slot.
             // There is nothing to name, so say what shape to change.
-            String::concat(lead, "the handled body calls through an expression rather than a name, and this handle cannot see what that call performs. Give the callee a name it can see -- a top-level `fn`, or a `let` bound to the closure literal inside the handled body -- or move the `handle` into the function that performs. (ADR-0076 evidence-passing migration.)")
+            String::concat(lead, "the handled body calls through an expression rather than a name, and this handle cannot see what that call performs. Give the callee a name it can see -- a top-level `fn`, or a `let` bound to the closure literal inside the handled body -- or move the `handle` into the function that performs.")
           } else {
             // Every call in the handled body is one this pass CAN see through,
             // so the shape that defeats the migration is deeper: typically a
@@ -729,7 +729,7 @@ export fn evidence_dict_pass(stmts: Array[Stmt], entry_name: String) -> Array[St
             if String::length(culprit) > 0 {
               m = String::concat(m, String::concat(" Start from the handled body's first call (here: the call to '", String::concat(culprit, "').")))
             }
-            String::concat(m, " (ADR-0076 evidence-passing migration.)")
+            m
           }
           let marked = if culprit_off >= 0 {
             if String::length(culprit) > 0 {
@@ -2722,6 +2722,7 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
   let plan_base_inert = edp_pure_fn_names(fn_defs)
   edp_append_free_host_inert_names(stmts, plan_base_inert)
   edp_append_ctor_inert_names(stmts, plan_base_inert)
+  edp_append_visible_pure_lambda_names(stmts, plan_base_inert)
   let mut ei = 0
   while ei < Array::length(effect_defs) {
     let (ename, ops) = Array::get(effect_defs, ei)
@@ -2934,6 +2935,7 @@ fn edp_any_handle_owner_cp(stmts: Array[Stmt], ename: String, needing: Array[Str
   let pure_fns = edp_pure_fn_names(fn_defs)
   edp_append_free_host_inert_names(stmts, pure_fns)
   edp_append_ctor_inert_names(stmts, pure_fns)
+  edp_append_visible_pure_lambda_names(stmts, pure_fns)
   edp_append_self_discharging_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
   edp_append_perform_free_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
   edp_append_effect_irrelevant_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
@@ -3797,6 +3799,136 @@ fn edp_append_ctor_inert_names(stmts: Array[Stmt], pure_fns: Array[String]) -> U
   }
 }
 
+/// #3124: a `let` whose value is a rowless lambda literal is as visible as a
+/// pure top-level `fn`. `let bump = (x: Int) -> Int { x + 1 }` used to make
+/// `handle { bump(ask_once()) }` opaque, even though `bump` performs nothing
+/// and the perform is the argument, written inside the handle.
+///
+/// Only a body this pass can already see through joins the inert set: a pure
+/// builtin, a name already inert, or another lambda added on an earlier pass
+/// of the fixpoint. A call to `perform`, to a parameter, or to a function
+/// with a row stays out, so that lambda is still an opaque callee. A declared
+/// effect row on the lambda itself stays out too. Two lambdas that share a
+/// spelling are inert only when every one of those bodies is: the first pure
+/// `side` must not cover a later `side` whose body performs.
+fn edp_lambda_row_absent(eff: Option[String]) -> Bool {
+  match eff {
+    None => true,
+    Some(row) => row == ""
+  }
+}
+
+fn edp_note_lambda_candidate(name: String, val: Expr, names: Array[String], bodies: Array[Expr]) -> Unit {
+  match val {
+    EFn(_, _, _, _, eff, lbody) => if edp_lambda_row_absent(eff) {
+      Array::push(names, name)
+      Array::push(bodies, lbody)
+    } else {
+      ()
+    },
+    _ => ()
+  }
+}
+
+fn edp_collect_lambda_candidates_expr(expr: Expr, names: Array[String], bodies: Array[Expr]) -> Unit {
+  match expr {
+    ELet(name, val, body, _) => {
+      edp_note_lambda_candidate(name, val, names, bodies)
+      edp_collect_lambda_candidates_expr(val, names, bodies)
+      edp_collect_lambda_candidates_expr(body, names, bodies)
+    },
+    _ => {
+      let kids = expr_children(expr)
+      let mut i = 0
+      while i < Array::length(kids) {
+        edp_collect_lambda_candidates_expr(Array::get(kids, i), names, bodies)
+        i = i + 1
+      }
+    }
+  }
+}
+
+fn edp_exprs_visible_pure(es: Array[Expr], pure_fns: Array[String]) -> Bool {
+  let mut i = 0
+  let mut ok = true
+  while i < Array::length(es) && ok {
+    if edp_expr_visible_pure(Array::get(es, i), pure_fns) {
+      ()
+    } else {
+      ok = false
+    }
+    i = i + 1
+  }
+  ok
+}
+
+fn edp_expr_visible_pure(expr: Expr, pure_fns: Array[String]) -> Bool {
+  match expr {
+    ECall(callee, args, _) => match callee {
+      EIdent(nm, _) => if nm == "perform" {
+        false
+      } else if edp_is_pure_builtin_call(nm) || edp_str_array_contains(pure_fns, nm) {
+        edp_exprs_visible_pure(args, pure_fns)
+      } else {
+        false
+      },
+      _ => false
+    },
+    _ => edp_exprs_visible_pure(expr_children(expr), pure_fns)
+  }
+}
+
+fn edp_name_bodies_all_pure(name: String, names: Array[String], bodies: Array[Expr], pure_fns: Array[String]) -> Bool {
+  let mut i = 0
+  let mut ok = true
+  while i < Array::length(names) {
+    if Array::get(names, i) == name && !edp_expr_visible_pure(Array::get(bodies, i), pure_fns) {
+      ok = false
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ok
+}
+
+fn edp_append_visible_pure_lambda_names(stmts: Array[Stmt], pure_fns: Array[String]) -> Unit {
+  let names = empty_str_array()
+  let bodies: Array[Expr] = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, nm, _, expr) => {
+        edp_note_lambda_candidate(nm, expr, names, bodies)
+        edp_collect_lambda_candidates_expr(expr, names, bodies)
+      },
+      SLetMut(_, _, expr) => edp_collect_lambda_candidates_expr(expr, names, bodies),
+      SExpr(expr) => edp_collect_lambda_candidates_expr(expr, names, bodies),
+      STest(_, expr) => edp_collect_lambda_candidates_expr(expr, names, bodies),
+      SBench(_, expr) => edp_collect_lambda_candidates_expr(expr, names, bodies),
+      _ => ()
+    }
+    i = i + 1
+  }
+  let mut grew = true
+  while grew {
+    grew = false
+    let mut j = 0
+    while j < Array::length(names) {
+      let nm = Array::get(names, j)
+      if edp_str_array_contains(pure_fns, nm) {
+        ()
+      } else if edp_name_bodies_all_pure(nm, names, bodies, pure_fns) {
+        Array::push(pure_fns, nm)
+        grew = true
+      } else {
+        ()
+      }
+      j = j + 1
+    }
+  }
+}
+
 fn edp_collect_host_raw_callees(expr: Expr, out: Array[String]) -> Unit {
   match expr {
     ECall(callee, args, _) => {
@@ -4291,6 +4423,7 @@ fn edp_all_sites_eligible(stmts: Array[Stmt], ename: String, needing: Array[Stri
     let pure_fns = edp_pure_fn_names(fn_defs)
     edp_append_free_host_inert_names(stmts, pure_fns)
     edp_append_ctor_inert_names(stmts, pure_fns)
+    edp_append_visible_pure_lambda_names(stmts, pure_fns)
     edp_append_self_discharging_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
     edp_append_perform_free_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
     edp_append_effect_irrelevant_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
@@ -6149,6 +6282,7 @@ fn edp_apply_migration(stmts: Array[Stmt], ename: String, ops: Array[(String, Ar
   let pure_fns = edp_pure_fn_names(fn_defs)
   edp_append_free_host_inert_names(stmts, pure_fns)
   edp_append_ctor_inert_names(stmts, pure_fns)
+  edp_append_visible_pure_lambda_names(stmts, pure_fns)
   edp_append_self_discharging_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
   edp_append_perform_free_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
   edp_append_effect_irrelevant_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)

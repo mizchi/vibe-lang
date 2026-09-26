@@ -1,0 +1,199 @@
+// Pull each playground preset's vibe source out of the TypeScript template
+// literal in playground/src/main.ts. The page embeds the programs, so no vibe
+// tool sees them until this writes one file per preset.
+//
+//   bash scripts/vibe_run.sh scripts/extract_playground_presets.vibex -- <main.ts> <workdir>
+//   bash scripts/vibe_run.sh scripts/extract_playground_presets.vibex -- --self-test
+
+import @vibe/builtin { String::index_of_from }
+import @vibex/argparse { arg, flag }
+import @vibex/tasks { die, expect }
+
+fn byte_at(s: String, i: Int) -> Int {
+  String::char_code_at(s, i)
+}
+
+fn is_ws(c: Int) -> Bool {
+  c == 32 || c == 9 || c == 10 || c == 13
+}
+
+fn is_slug_char(c: Int) -> Bool {
+  (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 95
+}
+
+fn skip_ws(text: String, i: Int) -> Int {
+  let n = String::length(text)
+  let mut j = i
+  while j < n && is_ws(byte_at(text, j)) {
+    j = j + 1
+  }
+  j
+}
+
+fn starts_at(text: String, i: Int, lit: String) -> Bool {
+  let n = String::length(text)
+  let m = String::length(lit)
+  if i + m > n {
+    false
+  } else {
+    let mut k = 0
+    let mut ok = true
+    while ok && k < m {
+      if byte_at(text, i + k) != byte_at(lit, k) {
+        ok = false
+      } else {
+        k = k + 1
+      }
+    }
+    ok
+  }
+}
+
+fn pad2(n: Int) -> String {
+  if n < 10 {
+    "0" + __to_string(n)
+  } else {
+    __to_string(n)
+  }
+}
+
+fn slug(pid: String) -> String {
+  let n = String::length(pid)
+  let mut out = ""
+  let mut i = 0
+  while i < n {
+    let c = byte_at(pid, i)
+    if is_slug_char(c) {
+      out = out + String::from_char_code(c)
+    } else {
+      out = out + "_"
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Returns "" on success. On failure returns the message and writes nothing
+/// further. Manifest lines go to stdout, one `<path>\t<id>` per preset.
+fn extract(text: String, work: String) -> String with Fs + Console {
+  let n = String::length(text)
+  let mut i = 0
+  let mut found = 0
+  let mut err = ""
+  while err == "" && i >= 0 {
+    let hit = String::index_of_from(text, "id:", i)
+    if hit < 0 {
+      i = -1
+    } else {
+      let mut p = skip_ws(text, hit + 3)
+      let mut consumed = false
+      if p < n && byte_at(text, p) == 34 {
+        let close = String::index_of_from(text, "\"", p + 1)
+        if close < 0 {
+          err = "[playground-presets] unterminated id string"
+        } else {
+          let pid = String::substring(text, p + 1, close)
+          p = skip_ws(text, close + 1)
+          if p < n && byte_at(text, p) == 44 && starts_at(text, skip_ws(text, p + 1), "source:") {
+            p = skip_ws(text, skip_ws(text, p + 1) + 7)
+            if p < n && byte_at(text, p) == 96 {
+              let buf = StringBuilder::new()
+              let mut j = p + 1
+              let mut closed = false
+              while !closed && j < n {
+                let c = byte_at(text, j)
+                if c == 92 && j + 1 < n {
+                  StringBuilder::push(buf, String::substring(text, j, j + 2))
+                  j = j + 2
+                } else if c == 96 {
+                  closed = true
+                } else {
+                  StringBuilder::push(buf, String::from_char_code(c))
+                  j = j + 1
+                }
+              }
+              if !closed {
+                err = "[playground-presets] unterminated template literal for preset '" + pid + "'"
+              } else {
+                let body = StringBuilder::freeze(buf)
+                if String::contains(body, "${") {
+                  err = "[playground-presets] preset '" + pid + "' interpolates TypeScript (${...}); this extractor emits source verbatim and cannot resolve it"
+                } else {
+                  found = found + 1
+                  let path = work + "/preset_" + pad2(found) + "_" + slug(pid) + ".vibe"
+                  Fs::write_file(path, body + "\n")
+                  println(path + "\t" + pid)
+                  i = j + 1
+                  consumed = true
+                }
+              }
+            } else {
+              ()
+            }
+          } else {
+            ()
+          }
+        }
+      } else {
+        ()
+      }
+      if err == "" && !consumed {
+        i = hit + 3
+      } else {
+        ()
+      }
+    }
+  }
+  if err == "" && found == 0 {
+    "[playground-presets] no presets matched -- did the PRESETS shape change?"
+  } else {
+    err
+  }
+}
+
+fn self_test() -> Unit with Fs + Console + Stderr + Process {
+  let base = "_build/playground-preset-selftest"
+  if Fs::exists(base) {
+    Fs::remove_tree(base)
+  } else {
+    ()
+  }
+  let ok_dir = base + "/ok"
+  Fs::mkdir_p(ok_dir)
+  let tick = String::from_char_code(92) + String::from_char_code(96)
+  let ok_src = "const PRESETS = [\n  { id: \"one\", source: `let x = 1\n" + tick + "tick" + tick + "\n` },\n  { id: \"two-b\", source: `fn main() { 2 }\n` },\n]\n"
+  let err = extract(ok_src, ok_dir)
+  expect(err == "", "happy path failed: " + err)
+  let first = Fs::read_file(ok_dir + "/preset_01_one.vibe")
+  let second = Fs::read_file(ok_dir + "/preset_02_two_b.vibe")
+  expect(String::contains(first, tick + "tick" + tick), "escaped backtick was unescaped or truncated: " + first)
+  expect(String::starts_with(second, "fn main() { 2 }"), "second preset mismatch: " + second)
+  let bad = extract("const PRESETS = [{ id: \"z\", source: `hello " + String::from_char_code(36) + "{name}` }]\n", base + "/bad")
+  expect(String::contains(bad, "interpolates"), "interpolation was accepted: " + bad)
+  Fs::mkdir_p(base + "/empty")
+  let none = extract("const PRESETS = []\n", base + "/empty")
+  expect(String::contains(none, "no presets matched"), "empty input was accepted: " + none)
+  if Fs::exists(base) {
+    Fs::remove_tree(base)
+  } else {
+    ()
+  }
+  println("playground-presets: ok")
+}
+
+fn main() -> Unit allows Env + Fs + Console + Stderr + Process {
+  if flag("--self-test") {
+    self_test()
+  } else if Env::args_len() != 2 {
+    die("usage: extract_playground_presets.vibex <main.ts> <workdir>")
+  } else {
+    let src = arg(0)
+    let work = arg(1)
+    let err = extract(Fs::read_file(src), work)
+    if err != "" {
+      die(err)
+    } else {
+      ()
+    }
+  }
+}
