@@ -3906,6 +3906,106 @@ fn edp_lambda_visible_pure(lam: Expr, pure_fns: Array[String]) -> Bool {
 /// Every spelling bound anywhere in `expr`: let / let rec / let mut names,
 /// lambda parameters, match and handler arm patterns, loop and for-in
 /// variables. Over-collecting only makes the purity check refuse more.
+/// The candidate spellings that ONLY candidate lambdas bind, anywhere in the
+/// program. The inert set is keyed by spelling and consulted at every call
+/// site with no notion of scope, so admitting a pure `let side = ..` made
+/// EVERY `side(..)` inert -- including a call through an unrelated closure
+/// PARAMETER named `side` inside a handle elsewhere, whose callback could
+/// perform the handled effect and then reach the wrong handler (#3167
+/// review). Rather than track binding identity through every consumer of the
+/// set, a spelling is admitted only when no other binder shares it: every
+/// parameter, `let`, pattern, loop variable and top-level definition of that
+/// spelling must itself be a candidate lambda. Counted per spelling, over
+/// candidate spellings only.
+fn edp_lambda_only_spellings(stmts: Array[Stmt], cand_names: Array[String]) -> MutSet[String] {
+  let cand: MutMap[String, Int] = MutMap::new_string()
+  let mut i = 0
+  while i < Array::length(cand_names) {
+    let nm = Array::get(cand_names, i)
+    let prev = match MutMap::get(cand, nm) {
+      Some(c) => c,
+      None => 0
+    }
+    MutMap::set(cand, nm, prev + 1)
+    i = i + 1
+  }
+  let bound: MutMap[String, Int] = MutMap::new_string()
+  edp_count_stmt_binders(stmts, cand, bound)
+  let out: MutSet[String] = MutSet::with_capacity(hash_string, eq_string, Array::length(cand_names) * 10 / 7 + 1)
+  let mut j = 0
+  while j < Array::length(cand_names) {
+    let nm = Array::get(cand_names, j)
+    let c = match MutMap::get(cand, nm) {
+      Some(v) => v,
+      None => 0
+    }
+    let b = match MutMap::get(bound, nm) {
+      Some(v) => v,
+      None => 0
+    }
+    if b == c {
+      MutSet::add(out, nm)
+    } else {
+      ()
+    }
+    j = j + 1
+  }
+  out
+}
+
+/// Tally, for candidate spellings only, every binder in `stmts`: top-level
+/// definitions, and everything edp_collect_binders finds inside each body.
+/// One scratch buffer is reused per statement, so the whole-program walk
+/// allocates a single array rather than one per statement.
+fn edp_count_stmt_binders(stmts: Array[Stmt], cand: MutMap[String, Int], bound: MutMap[String, Int]) -> Unit {
+  let scratch = empty_str_array()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    Array::truncate(scratch, 0)
+    match Array::get(stmts, i) {
+      SLet(_, _, nm, _, expr) => {
+        Array::push(scratch, nm)
+        edp_collect_binders(expr, scratch)
+      },
+      SLetMut(nm, _, expr) => {
+        Array::push(scratch, nm)
+        edp_collect_binders(expr, scratch)
+      },
+      SExternLet(nm, _) => Array::push(scratch, nm),
+      SLetPat(pat, expr) => {
+        edp_collect_pat_binders(pat, scratch)
+        edp_collect_binders(expr, scratch)
+      },
+      SExpr(expr) => edp_collect_binders(expr, scratch),
+      STest(_, expr) => edp_collect_binders(expr, scratch),
+      SBench(_, expr) => edp_collect_binders(expr, scratch),
+      SExample(_, expr) => edp_collect_binders(expr, scratch),
+      SFnDecl(_, nm, expr, _, _) => {
+        Array::push(scratch, nm)
+        edp_collect_binders(expr, scratch)
+      },
+      SModule(_, _, inner) => edp_count_stmt_binders(inner, cand, bound),
+      _ => ()
+    }
+    let mut k = 0
+    while k < Array::length(scratch) {
+      let nm = Array::get(scratch, k)
+      match MutMap::get(cand, nm) {
+        Some(_) => {
+          let prev = match MutMap::get(bound, nm) {
+            Some(c) => c,
+            None => 0
+          }
+          MutMap::set(bound, nm, prev + 1)
+        },
+        None => ()
+      }
+      k = k + 1
+    }
+    i = i + 1
+  }
+}
+
 fn edp_collect_binders(expr: Expr, out: Array[String]) -> Unit {
   match expr {
     ELet(n, _, _, _) => Array::push(out, n),
@@ -4016,13 +4116,14 @@ fn edp_append_visible_pure_lambda_names(stmts: Array[Stmt], pure_fns: Array[Stri
     }
     i = i + 1
   }
+  let sole = edp_lambda_only_spellings(stmts, names)
   let mut grew = true
   while grew {
     grew = false
     let mut j = 0
     while j < Array::length(names) {
       let nm = Array::get(names, j)
-      if edp_str_array_contains(pure_fns, nm) {
+      if edp_str_array_contains(pure_fns, nm) || !MutSet::has(sole, nm) {
         ()
       } else if edp_name_bodies_all_pure(nm, names, bodies, pure_fns) {
         Array::push(pure_fns, nm)

@@ -167,6 +167,22 @@ test "#3124: a let inside the lambda that shadows a pure fn is not read as that 
   assert(!compiles_linear(program("fn side(n: Int) -> Int {\n  n\n}\n\n\{body}")))
 }
 
+test "#3124: a pure local lambda does not make an unrelated parameter of its spelling inert" {
+  // The inert set is keyed by spelling and read at every call site. A pure
+  // `let side` in the test admitted the spelling, so `through`'s closure
+  // PARAMETER `side` became inert inside its handle, and the callback's
+  // perform reached the OUTER handler: the program compiled and answered 50,
+  // not 85. Without the unrelated `let side` it is refused -- and must be
+  // refused with it too.
+  let through = "fn through(side: (Int) -> Int) -> Int {\n  handle {\n    side(1) + ask_once()\n  } with {\n    Ask::Get() => resume(42)\n  }\n}\n\n"
+  let call = "  let r = handle {\n    through((n: Int) -> Int {\n      perform Ask::Get() + n\n    })\n  } with {\n    Ask::Get() => resume(7)\n  }\n"
+  let with_local = program("\{through}test \"t\" {\n  let side = (n: Int) -> Int {\n    n\n  }\n\{call}  assert_eq(r + side(0), 85)\n}\n")
+  let without_local = program("\{through}test \"t\" {\n\{call}  assert_eq(r, 85)\n}\n")
+  assert(!compiles_linear(without_local))
+  assert(!compiles_linear(with_local))
+  assert(String::contains(reject_message(with_local), "the call to 'side'"))
+}
+
 test "#3124: two pure lambdas may share a spelling" {
   let src = program("test \"t\" {\n  let side = (n: Int) -> Int {\n    n\n  }\n  let side = (n: Int) -> Int {\n    n\n  }\n  let r = handle {\n    side(ask_once())\n  } with {\n    Ask::Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
   assert(compiles_both(src))
