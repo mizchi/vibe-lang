@@ -786,7 +786,11 @@ suspendable task の第一スライスを実装した:
   interleave** (run-to-completion では不可能だった形 — log が厳密交互)、
   wake 値の suspension point への配達、parked task の cancel (継続 drop
   = RC 解放、ADR-0076 の保証)、suspend しない body の同期 settle。
-  parked のまま group close → deadlock trap (join と同じ規則)。
+  A group whose body returns with a child still parked joins it at close
+  (#3160): close pumps the group under `pump_all`'s rules -- host futures,
+  stream reads, timers and sleeps settle -- until every child is terminal.
+  Only a genuine deadlock (a wait nothing in the group can produce) still
+  traps, with a message, as `join` and `pump_all` do.
 
 cancel は parked 状態でも観測されるようになった (mid-run cancel 観測の
 第一歩)。fail-fast と adopted task の統合 (parked sibling の自動

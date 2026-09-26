@@ -687,6 +687,57 @@ test "join on a parked task dispatches a queued producer" {
   assert_eq(out, 43)
 }
 
+/// #3160: a group whose body returns with children still parked joins them at
+/// close -- it pumps the group rather than trapping as a deadlock. The inner
+/// body returns at once; its sleeping child resolves `f` only once close runs
+/// it, and a task of the outer group awaits `f`. Had close dropped the child
+/// instead, the outer join would be a real deadlock and trap.
+test "a group closes by pumping the children its body left parked" {
+  let out = TaskGroup::run((outer) -> {
+    let f = Future::pending()
+    let inner = TaskGroup::run((g) -> {
+      let _ = TaskGroup::spawn_suspend(g, () -> Int with Async {
+        sleep(5)
+        Future::resolve(f, 40)
+        1
+      })
+      2
+    })
+    let h = TaskGroup::spawn_suspend(outer, () -> Int with Async {
+      await(f)
+    })
+    inner + TaskHandle::join(h)
+  })
+  assert_eq(out, 42)
+}
+
+/// #3160: a queued run-to-completion child that resolves a future a parked
+/// sibling awaits, with no join at all -- close dispatches the producer, then
+/// pumps the parked sibling to its end.
+test "a group closes by running a queued producer before pumping its waiter" {
+  let out = TaskGroup::run((outer) -> {
+    let done = Future::pending()
+    let inner = TaskGroup::run((g) -> {
+      let f = Future::pending()
+      let _ = TaskGroup::spawn_suspend(g, () -> Int with Async {
+        let v = await(f)
+        Future::resolve(done, v + 2)
+        v
+      })
+      let _ = TaskGroup::spawn(g, () -> Int {
+        Future::resolve(f, 40)
+        1
+      })
+      0
+    })
+    let h = TaskGroup::spawn_suspend(outer, () -> Int with Async {
+      await(done)
+    })
+    inner + TaskHandle::join(h)
+  })
+  assert_eq(out, 42)
+}
+
 /// Same scheduler hole, channel spelling: a consumer polling recv_wait on
 /// a producer that sleeps between sends must not trap as deadlock -- the
 /// forced settle wakes the producer.

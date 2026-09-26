@@ -670,6 +670,46 @@ JP_MS=$(( ( $(date +%s%N) - JP_START ) / 1000000 ))
   || { echo "named hostfutures component gate FAILED: join_parked took ${JP_MS}ms -- the cancelled 5s sleeper held the run" >&2; exit 1; }
 echo "[named-hostfutures-component-gate] join_parked: 7 in ${JP_MS}ms (join pumped the parked task)"
 
+# close_parked (#3160): the group body returns while a suspendable child is
+# still parked on a host future, with no pump_all or join. Close joins the
+# child -- it pumps the group until the future lands -- where it used to trap
+# as a deadlock. The child resolves the future the entry reads afterwards, so
+# 42 (2 + 40) means close ran it to its end rather than dropping it.
+CP_OUT="$OUT_DIR/spawn_close_parked.component.wasm"
+rm -f "$CP_OUT" "$CP_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/close_parked.vibe "$CP_OUT" run >/dev/null 2>&1 || true
+[ -s "$CP_OUT" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/close_parked.vibe did not compile: $(cat "$CP_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+CP_LOG="$OUT_DIR/spawn_close_parked.log"
+if ! VIBE_ASYNC_FUTURES="slow=40:$LONG_MS" run_bounded 60 "$RUNNER" "$CP_OUT" >"$CP_LOG" 2>&1; then
+  echo "named hostfutures component gate FAILED: close_parked did not exit 0 -- close trapped on a child the pump could wake" >&2
+  cat "$CP_LOG" >&2
+  exit 1
+fi
+[ "$(cat "$CP_LOG")" = "42" ] \
+  || { echo "named hostfutures component gate FAILED: close_parked expected 42 (2 + 40), got: $(cat "$CP_LOG")" >&2; exit 1; }
+echo "[named-hostfutures-component-gate] close_parked: 42 (close joined the child parked on a host future)"
+
+# close_deadlock (#3160): the side that must still trap. The body leaves a
+# child awaiting a future no task resolves; close pumps, finds nothing that can
+# wake it, and traps with a message rather than returning the body's value
+# with a live child.
+CD_OUT="$OUT_DIR/spawn_close_deadlock.component.wasm"
+rm -f "$CD_OUT" "$CD_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/close_deadlock.vibe "$CD_OUT" run >/dev/null 2>&1 || true
+[ -s "$CD_OUT" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/close_deadlock.vibe did not compile: $(cat "$CD_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+CD_LOG="$OUT_DIR/spawn_close_deadlock.log"
+if VIBE_ASYNC_FUTURES="slow=40:1" run_bounded 60 "$RUNNER" "$CD_OUT" >"$CD_LOG" 2>&1; then
+  echo "named hostfutures component gate FAILED: close_deadlock exited 0 (answered $(cat "$CD_LOG")) -- a child nothing can wake was dropped at close" >&2
+  exit 1
+fi
+grep -qF "deadlock in TaskGroup::run" "$CD_LOG" \
+  || { echo "named hostfutures component gate FAILED: close_deadlock failed without the deadlock message: $(cat "$CD_LOG")" >&2; exit 1; }
+echo "[named-hostfutures-component-gate] close_deadlock: traps naming the deadlock"
+
 # catch_in_entry: an Async entry that spawns suspendable tasks catches
 # exceptions around code that cannot suspend (one passes a local into a
 # String parameter). Such an entry's boundary is suspend-class, and it used to
