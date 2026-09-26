@@ -4141,9 +4141,27 @@ export fn builtin_shadow_source_name(name: String) -> String {
 /// lanes parse whole programs without them (#3132 review), so a program's
 /// call can carry -1 too. scripts/review_lint.vibex refuses a bare listed
 /// `EIdent` outside codegen, which runs after every rename point.
-/// Idempotent: once renamed, no definition carries a listed name. Must run on
-/// the WHOLE program; a module partition cannot see a definition in another
-/// module.
+///
+/// Re-runnable, and deliberately so (#3144 round 4): a definition already
+/// renamed still puts its SOURCE spelling in the table, so a later run renames
+/// the references a pass wrote SINCE by computing a name rather than spelling
+/// a literal. The trait-dictionary desugar builds a witness field as
+/// `<Type>::<method>`, which for `impl Measured for String { length(..) }` is
+/// `String::length`, the impl's own binding; left alone it reached the
+/// builtin, and `measure("abc")` through `[T: Measured]` answered 3 instead
+/// of the impl's 42. So one sentence holds for every pass: a reference means
+/// the program's definition unless it was written with `builtin_ref`. With no
+/// listed definition a run is one top-level scan and changes nothing.
+///
+/// An `export { Array::length }` block is renamed with its definition. Every
+/// consumer of an export block matches its entries against declaration names
+/// (the split prelude's interface filter, the GC lane's direct-ABI "is this
+/// public" test, DCE roots), so an entry left in the source spelling named a
+/// declaration that no longer existed. What leaves the compilation keeps the
+/// source spelling through `builtin_shadow_source_name`.
+///
+/// Must run on the WHOLE program; a module partition cannot see a definition
+/// in another module.
 export fn rename_builtin_shadow_defs(stmts: Array[Stmt]) -> Unit {
   let renames = empty_aliases()
   let mut i = 0
@@ -4153,8 +4171,9 @@ export fn rename_builtin_shadow_defs(stmts: Array[Stmt]) -> Unit {
       SFnDecl(_, n, _, _, _) => n,
       _ => ""
     }
-    if name != "" && is_builtin_shadow_rename_name(name) {
-      Array::push(renames, (name, builtin_shadow_rename_of(name)))
+    let source = builtin_shadow_source_name(name)
+    if name != "" && is_builtin_shadow_rename_name(source) && !builtin_shadow_rename_listed(renames, source) {
+      Array::push(renames, (source, builtin_shadow_rename_of(source)))
     } else {
       ()
     }
@@ -4188,11 +4207,32 @@ export fn rename_builtin_shadow_defs(stmts: Array[Stmt]) -> Unit {
         SBench(name, body) => Array::set(stmts, si, SBench(name, rewrite_alias_expr_ix(body, am))),
         SExpr(body) => Array::set(stmts, si, SExpr(rewrite_alias_expr_ix(body, am))),
         SLetPat(pat, body) => Array::set(stmts, si, SLetPat(pat, rewrite_alias_expr_ix(body, am))),
+        SExport(items) => Array::set(stmts, si, SExport(for item in items {
+          if builtin_shadow_rename_listed(renames, item) {
+            builtin_shadow_rename_of(item)
+          } else {
+            item
+          }
+        })),
         _ => ()
       }
       si = si + 1
     }
   }
+}
+
+fn builtin_shadow_rename_listed(renames: Array[(String, String)], name: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(renames) {
+    let (source, _) = Array::get(renames, i)
+    if source == name {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
 }
 
 /// Like append_import_alias_rewritten_non_import_stmts_skipping, but with

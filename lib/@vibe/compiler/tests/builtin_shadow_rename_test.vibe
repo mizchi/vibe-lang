@@ -68,3 +68,36 @@ test "#3132: Map::iter_get keeps its source definition's name (#2379)" {
   rename_builtin_shadow_defs(stmts)
   assert_eq(let_name(Array::get(stmts, 0)), "Map::iter_get")
 }
+
+fn export_items(s: Stmt) -> String {
+  match s {
+    SExport(items) => String::join(items, ","),
+    _ => ""
+  }
+}
+
+test "#3144: an export block names the renamed definition" {
+  let def = one_param_fn("Array::length", "xs", EInt(77))
+  let other = one_param_fn("helper", "xs", EInt(1))
+  let stmts = [def, other, SExport(["Array::length", "helper"])]
+  rename_builtin_shadow_defs(stmts)
+  assert_eq(export_items(Array::get(stmts, 2)), "Array::length$user,helper")
+}
+
+test "#3144: a second run renames a reference written after the first" {
+  let def = one_param_fn("String::length", "s", EInt(42))
+  let stmts = [def]
+  rename_builtin_shadow_defs(stmts)
+  // What a later pass writes by COMPUTING the name (a trait witness field),
+  // beside one it spells as the builtin.
+  Array::push(stmts, one_param_fn("witness", "s", ECall(EIdent("String::length", -1), [
+    EIdent("s", -1)
+  ], -1)))
+  Array::push(stmts, one_param_fn("lowered", "s", ECall(builtin_ref("String::length"), [
+    EIdent("s", -1)
+  ], -1)))
+  rename_builtin_shadow_defs(stmts)
+  assert_eq(let_name(Array::get(stmts, 0)), "String::length$user")
+  assert_eq(callee_of_body(Array::get(stmts, 1)), "String::length$user")
+  assert_eq(callee_of_body(Array::get(stmts, 2)), "String::length")
+}

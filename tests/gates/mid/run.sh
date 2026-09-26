@@ -742,6 +742,50 @@ for be_lane in linear gc; do
 done
 rm -rf "$bedir"
 echo "[compiler-gate] builtin-named --entry ok: resolves and exports its source name (linear + gc)"
+# #3144 round 4: tables keyed by a definition's NAME must agree with the
+# rename. A trait impl method binds `<Type>::<method>` (`impl Measured for
+# String { length(..) }` defines `String::length`), and the witness / dot-call
+# lookups that compute that name missed the moved definition: the witness
+# answered the builtin's 3 and `s.length()` trapped. On all three lanes.
+if ! VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+    bash scripts/vibe_test.sh fixtures/builtin_shadow_trait_impl_test.vibe \
+    >"$ROOT_DIR/_build/_gate_builtin_shadow_trait_impl.log" 2>&1 \
+  || ! VIBE_RC=shadow VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+    bash scripts/vibe_test.sh fixtures/builtin_shadow_trait_impl_test.vibe \
+    >>"$ROOT_DIR/_build/_gate_builtin_shadow_trait_impl.log" 2>&1 \
+  || ! VIBE_TEST_BACKEND=gc VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+    bash scripts/vibe_test.sh fixtures/builtin_shadow_trait_impl_test.vibe \
+    >>"$ROOT_DIR/_build/_gate_builtin_shadow_trait_impl.log" 2>&1; then
+  echo "[compiler-gate] FAIL: a trait impl method bound at a builtin's name was not reached through its witness or a dot-call (#3144):" >&2
+  tail -20 "$ROOT_DIR/_build/_gate_builtin_shadow_trait_impl.log" >&2
+  exit 1
+fi
+rm -f "$ROOT_DIR/_build/_gate_builtin_shadow_trait_impl.log"
+echo "[compiler-gate] builtin-named trait impl method dispatch ok (linear + shadow + gc)"
+# wasm-gc's native Array-reference ABI reads two name tables against the
+# renamed declarations: the pre-erasure GENERIC names (a generic signature is
+# excluded) and the `export { .. }` block (a public one is excluded). Either
+# one in the source spelling admitted a program's own `Array::length` --
+# measured as one native `array.new_default` literal where the same program
+# under any other name emits none. Count them: 0.
+gadir="_build/_gate_builtin_shadow_gc_abi"
+rm -rf "$gadir"; mkdir -p "$gadir"
+for ga_fx in fixtures/builtin_shadow_gc_direct_abi_generic_test.vibe fixtures/builtin_shadow_gc_direct_abi_export_test.vibe; do
+  ga_out="$gadir/$(basename "$ga_fx" .vibe).wasm"
+  env VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" "$ga_fx" "$ga_out" __no_entry__ >/dev/null 2>&1 || true
+  if [ ! -s "$ga_out" ]; then
+    echo "[compiler-gate] FAIL: $ga_fx did not build on wasm-gc (#3144):" >&2
+    cat "$ga_out.diag" >&2 2>/dev/null || true
+    exit 1
+  fi
+  ga_native=$(node -e 'const b=require("fs").readFileSync(process.argv[1]);let n=0;for(let i=0;i+2<b.length;i++){if(b[i]===0xfb&&b[i+1]===0x07&&b[i+2]===0x0c)n++}console.log(n)' "$ga_out")
+  if [ "$ga_native" != "0" ]; then
+    echo "[compiler-gate] FAIL: $ga_fx put a program's own Array::length on the gc native Array-reference ABI ($ga_native native literal(s), expected 0) (#3144)" >&2
+    exit 1
+  fi
+done
+rm -rf "$gadir"
+echo "[compiler-gate] builtin-named gc direct-ABI tables ok (generic + export block)"
 
 # 40f0. #2837: `Array::truncate` changes the array's LENGTH, not the lifetime
 #       of an element someone already took out of it. That is the ownership

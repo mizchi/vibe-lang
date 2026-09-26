@@ -34,6 +34,7 @@ import @vibe/compiler/core {
   builtin_iterator_namespace_from_marker,
   builtin_iterator_namespace_markers,
   builtin_iterator_serialized_boundary_markers,
+  builtin_shadow_rename_of,
   builtin_value_form_arity,
   canonical_builtin_name,
   compiler_owned_type_arity,
@@ -4095,7 +4096,7 @@ fn build_concrete_dict_for_target(actual_target: TypeExpr, trait_name: String, t
       let mut failed = false
       while mi < Array::length(mnames) {
         let m = Array::get(mnames, mi)
-        let plain_qm = String::concat(cname, String::concat("::", m))
+        let plain_qm = dtd_program_fn_name(fn_returns, String::concat(cname, String::concat("::", m)))
         let specialized_qm = impl_specialized_method_binding_name(cname, trait_name, impl_target_key(actual_target), m)
         let qm = if specialized_qm != "" && fn_exists(fn_returns, specialized_qm) {
           specialized_qm
@@ -4359,7 +4360,7 @@ fn infer_constructor_arg_type_name(arg: Expr, gens: Array[DictGen], struct_sets:
     ECall(EDot(obj, method, _, _), args, _) => {
       let resolved = match infer_arg_type_name(obj, struct_sets, var_types, fn_returns) {
         Some(receiver) => {
-          let qualified = String::concat(receiver, String::concat("::", method))
+          let qualified = dtd_program_fn_name(fn_returns, String::concat(receiver, String::concat("::", method)))
           if !struct_set_member(struct_sets, receiver, method) && fn_exists(fn_returns, qualified) {
             Some(qualified)
           } else {
@@ -7874,6 +7875,28 @@ fn fn_returns_find(fn_returns: Array[(String, String)], fname: String) -> Int {
 
 fn fn_exists(fn_returns: Array[(String, String)], fname: String) -> Bool {
   fn_returns_find(fn_returns, fname) >= 0
+}
+
+/// #3144 round 4: the program's definition for a name this pass COMPUTED as
+/// `<Type>::<method>` (a trait witness field, a dot-call receiver's method).
+/// An impl method binds that name, and when it is one of the builtin names the
+/// compiler moves a program's definition away from (`String::length` ->
+/// `String::length$user`, see rename_builtin_shadow_defs) the table holds the
+/// moved spelling, so a lookup by the computed one missed it: the witness fell
+/// back to the builtin (`measure("abc")` answered 3, not the impl's 42) and
+/// `"abc".length()` compiled as a field read that trapped. Answers the moved
+/// spelling when that is what the program defines, else `qual` unchanged.
+fn dtd_program_fn_name(fn_returns: Array[(String, String)], qual: String) -> String {
+  if fn_exists(fn_returns, qual) {
+    qual
+  } else {
+    let moved = builtin_shadow_rename_of(qual)
+    if fn_exists(fn_returns, moved) {
+      moved
+    } else {
+      qual
+    }
+  }
 }
 
 /// #1350 (Codex P1): the recorded return-type head for a FUNCTION-typed
@@ -11431,7 +11454,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
                 Some(_) => None,
                 None => match recv_tn {
                   Some(tn) => {
-                    let qual = String::concat(tn, String::concat("::", m))
+                    let qual = dtd_program_fn_name(fn_returns, String::concat(tn, String::concat("::", m)))
                     let is_field = struct_set_member(struct_sets, tn, m)
                     if !is_field && fn_exists(fn_returns, qual) {
                       Some(qual)
@@ -23543,6 +23566,12 @@ export fn desugar_trait_dicts_with_typed_eq(stmts: Array[Stmt], typed_eq_offsets
   // that boundary (#2642 review, Codex P2).
   eq_deferred_reset()
   dtd_run(stmts, typed_eq_offsets, typed_eq_keys)
+  // #3144 round 4: a witness field is named by COMPUTING `<Type>::<method>`,
+  // which for an impl method at a listed name (`impl Measured for String {
+  // length(..) }`) is the source spelling of a definition renamed above.
+  // This run points those references at the definition; the builtin calls
+  // this pass wrote carry `builtin_ref` and stay on the builtin.
+  rename_builtin_shadow_defs(stmts)
   // The lane is over: clear the merge rename table so a later compilation in
   // this process cannot see stale entries (#2205, moved here in #2647 round 6).
   namespace_rename_originals_reset()
@@ -23592,6 +23621,10 @@ export fn desugar_trait_dicts_module_with_facts(own: Array[Stmt], ctx: Array[Stm
   Array::set(dtd_own_growth, 0, 0)
   Array::set(dlh_module_tag, 0, module_tag)
   dtd_run(stmts, typed_eq_offsets, typed_eq_keys)
+  // #3144 round 4: as in the whole-program entry. The module's own
+  // definitions and its context's are both in `stmts`, so a witness naming
+  // either is pointed at the renamed definition.
+  rename_builtin_shadow_defs(stmts)
   let own_n = Array::length(own)
   let own_end = own_n + Array::get(dtd_own_growth, 0)
   let mut wi = 0

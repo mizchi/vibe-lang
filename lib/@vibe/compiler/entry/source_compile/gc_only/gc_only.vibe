@@ -28,6 +28,7 @@ import @vibe/compiler/codegen/gc {
   gc_add_hoisted_float_returning_names,
   gc_direct_abi_pre_erasure_generic_names,
   gc_float_returning_names_pre_erasure,
+  gc_rename_builtin_shadow_defs,
   gc_to_string_resolves_to_show_wrapper,
   gc_top_level_function_names
 }
@@ -391,6 +392,17 @@ fn compile_stmts_gc_only_impl(stmts: Array[Stmt], entry_name: String, merged_off
   } else {
     ()
   }
+  // #3144 round 4: move a program's own `Array::length` / `Map::keys` / ...
+  // aside HERE, right after the source-level check and export validation (the
+  // two things that must see the program's spelling), and before the first
+  // name-keyed table below. `direct_abi_generic_names` and
+  // `gc_float_ret_fn_names` are collected from declaration names and read back
+  // in codegen against the renamed ones; collected before the rename (inside
+  // the desugar), a generic `fn Array::length[T](..)` read as monomorphic and
+  // was admitted to the native Array-reference ABI, which excludes generic
+  // signatures. The desugar and the backend repeat it (re-runnable, see
+  // rename_builtin_shadow_defs).
+  gc_rename_builtin_shadow_defs(stmts)
   // #1015: MUST run before strip_generic_type_params below -- that pass
   // unconditionally zeroes every top-level generic fn's type_params/bounds
   // (erasure, not specific to `to_string`), so checking the Show-bounded

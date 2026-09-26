@@ -4781,7 +4781,7 @@ export fn effect_lowering_prelude_split_grants(stmts: Array[Stmt], entry_name: S
   // partition sees an imported helper only through its interface -- split, the
   // entry would get no arm for a perform in the helper and the program would
   // die unhandled exactly as before the provider existed (Codex on #3059).
-  if module_split_usable(split, Array::length(stmts)) && !lc_exported_fn_without_return_annotation(stmts) && !program_performs_host_operation(stmts) {
+  let errs = if module_split_usable(split, Array::length(stmts)) && !lc_exported_fn_without_return_annotation(stmts) && !program_performs_host_operation(stmts) {
     // WHOLE-PROGRAM, and first, exactly as `effect_lowering_prelude` runs it:
     // the check is interprocedural, and it short-circuits the entire prelude
     // when it fires. Running it per module instead REJECTS VALID CODE -- a
@@ -4799,6 +4799,13 @@ export fn effect_lowering_prelude_split_grants(stmts: Array[Stmt], entry_name: S
   } else {
     effect_lowering_prelude_grants(stmts, entry_name, linked_imports, iw_names, iw_wats, checker_eq_offsets, checker_eq_type_keys, grants)
   }
+  // #3144 round 4: WHOLE-PROGRAM again, after every pass. A pass that computes
+  // a definition's name (a trait witness field is `<Type>::<method>`) writes
+  // the source spelling of a renamed definition; this run points it at the
+  // definition. Compiler-written builtin references carry `builtin_ref` and
+  // are left alone. One top-level scan when nothing is renamed.
+  rename_builtin_shadow_defs(stmts)
+  errs
 }
 
 /// Pre-#2828-rung-2 arity: no launcher grants, so every optional capability
@@ -5042,6 +5049,9 @@ export fn effect_lowering_prelude_grants(stmts: Array[Stmt], entry_name: String,
   } else {
     ()
   }
+  // #3144 round 4: the passes above may write a renamed definition's source
+  // spelling by computing it (see rename_builtin_shadow_defs).
+  rename_builtin_shadow_defs(stmts)
   errs
 }
 
