@@ -984,6 +984,61 @@ done
 rm -rf "$dldir"
 echo "[compiler-gate] Double-literal alias guard ok (6333 on bump/rc/shadow/gc)"
 
+# 40f0f. #3137: a `for` at the head of a sequence drops each body value
+#        without releasing it, but the plan counted a bare name on the body's
+#        result spine as an owning use, so `let d = A(..); for x in ns { d }`
+#        leaked `d` whole on every call (and so did a bare `d` statement).
+#        Unfixed, the bounded fixture grew __heap_ptr by 448,084 B over its
+#        2000 calls (224,084 B at 1000); fixed, 196 B. The answer is checked on
+#        bump, rc, shadow and gc; the shadow lane traps on the drop of a freed
+#        block. rc_forin_discard_body_test.vibe then checks, on rc and shadow,
+#        that every value the plan stopped consuming is still alive after the
+#        loop.
+echo "[compiler-gate] 40f0f/40 discarded for body releases its heap binding (#3137)"
+fddir="_build/_gate_rc_forin_discard"
+rm -rf "$fddir"; mkdir -p "$fddir"
+for fd_lane in bump rc shadow gc; do
+  rm -f "$fddir/fd.wasm" "$fddir/fd.wasm.diag"
+  case "$fd_lane" in
+    bump) env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_forin_discard_bounded_test.vibe" "$fddir/fd.wasm" main >/dev/null 2>&1 || true ;;
+    rc) env VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_forin_discard_bounded_test.vibe" "$fddir/fd.wasm" main >/dev/null 2>&1 || true ;;
+    shadow) env VIBE_RC=shadow VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_forin_discard_bounded_test.vibe" "$fddir/fd.wasm" main >/dev/null 2>&1 || true ;;
+    gc) env VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_forin_discard_bounded_test.vibe" "$fddir/fd.wasm" main >/dev/null 2>&1 || true ;;
+  esac
+  if [ ! -s "$fddir/fd.wasm" ]; then
+    echo "[compiler-gate] FAIL: rc_forin_discard_bounded fixture did not compile on the $fd_lane lane (#3137)" >&2
+    cat "$fddir/fd.wasm.diag" >&2 2>/dev/null || true
+    exit 1
+  fi
+  fd_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$fddir/fd.wasm" 2>&1 | tail -1)"
+  if [ "$fd_out" != "2001000" ]; then
+    echo "[compiler-gate] FAIL: rc_forin_discard_bounded got '$fd_out' on the $fd_lane lane (want 2001000). A trap means a discarded for body released a binding it never owned (#3137)." >&2
+    exit 1
+  fi
+  if [ "$fd_lane" = rc ]; then
+    fd_json="$(node scripts/measure_heap.mjs "$fddir/fd.wasm" main 2>/dev/null)"
+    fd_used="$(printf '%s' "$fd_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+    if [ -z "$fd_used" ]; then
+      echo "[compiler-gate] FAIL: could not measure rc_forin_discard_bounded heap ($fd_json)" >&2; exit 1
+    fi
+    if [ "$fd_used" -ge 20000 ]; then
+      echo "[compiler-gate] FAIL: rc_forin_discard_bounded heap_used=$fd_used >= 20000 (#3137 regressed: a name the discarded for body reads is counted as consumed again, so its binding loses its drop; unfixed, this fixture measured 448,084 B)" >&2; exit 1
+    fi
+  fi
+done
+rm -rf "$fddir"
+for fd_lane in 1 shadow; do
+  if ! VIBE_RC="$fd_lane" VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+      bash scripts/vibe_test.sh fixtures/rc_forin_discard_body_test.vibe \
+      >"$ROOT_DIR/_build/_gate_rc_forin_discard_body.log" 2>&1; then
+    echo "[compiler-gate] FAIL: fixtures/rc_forin_discard_body_test.vibe failed with VIBE_RC=$fd_lane (#3137). A trap or a churn string means a value a discarded for body reads was released while still in use:" >&2
+    tail -20 "$ROOT_DIR/_build/_gate_rc_forin_discard_body.log" >&2
+    exit 1
+  fi
+done
+rm -f "$ROOT_DIR/_build/_gate_rc_forin_discard_body.log"
+echo "[compiler-gate] discarded for body guard ok (2001000 on bump/rc/shadow/gc, rc heap_used=$fd_used B; body shapes ok on rc + shadow)"
+
 # 40f1a. #2427: the shadow table must not overlap the heap it describes.
 #        40f above proves the marks catch a real dup/drop-of-freed; this
 #        proves they are marks at all. The table sat at a FIXED 256 MiB while

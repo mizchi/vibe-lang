@@ -981,6 +981,53 @@ fn next_seq_name(ctx: PCtx) -> String {
   nm
 }
 
+/// #3137: the head of a sequence is DISCARDED. Codegen evaluates it and drops
+/// the value off the stack without releasing it (compile_expr_tail's ESeq
+/// arm), and a `for` in that position compiles in the no-collect form, which
+/// drops each BODY value the same way (`forin_is_discarded_seq_head`). A bare
+/// name on the result spine of such a value is therefore read in place, never
+/// consumed -- but the planner counted it as an owning use, so the binding's
+/// reference went to a release that never happens: `let d = A(..); for x in
+/// ns { d }; next` leaked `d` whole on every call, and so did a bare `d;`.
+///
+/// This rewrites exactly those leaves into the shape the planner already
+/// counts as a borrow -- a projection off the name, `EDot(x, "")` -- so the
+/// binding keeps its scope-end drop. It is PLAN-ONLY: codegen compiles the
+/// original tree, where the same leaf is a plain read. Only the spine is
+/// walked (let bodies, sequence tails, if branches, match arms); a `for` is
+/// rewritten only as the head itself, the one position codegen compiles in the
+/// no-collect form.
+fn pe_discarded_head(e: Expr) -> Expr {
+  match e {
+    EForIn(n, ix, it, b) => EForIn(n, ix, it, pe_discarded_spine(b)),
+    _ => pe_discarded_spine(e)
+  }
+}
+
+fn pe_discarded_spine(e: Expr) -> Expr {
+  match e {
+    EIdent(_, off) => EDot(e, "", off, 0 - 1),
+    ELet(n, v, b, off) => ELet(n, v, pe_discarded_spine(b), off),
+    ELetMut(n, v, b, off) => ELetMut(n, v, pe_discarded_spine(b), off),
+    ELetRec(n, v, b) => ELetRec(n, v, pe_discarded_spine(b)),
+    ESeq(a, b) => ESeq(a, pe_discarded_spine(b)),
+    EAssign(n, v, b) => EAssign(n, v, pe_discarded_spine(b)),
+    EAssignOp(n, op, v, b) => EAssignOp(n, op, v, pe_discarded_spine(b)),
+    EIf(c, t, f) => EIf(c, pe_discarded_spine(t), pe_discarded_spine(f)),
+    EMatch(sc, arms) => {
+      let arms2: Array[(Pat, Expr)] = []
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, ab) = Array::get(arms, i)
+        Array::push(arms2, (p, pe_discarded_spine(ab)))
+        i = i + 1
+      }
+      EMatch(sc, arms2)
+    },
+    _ => e
+  }
+}
+
 fn fn_param_names(params: Array[(String, Option[TypeExpr])]) -> Array[String] {
   let out: Array[String] = []
   let mut i = 0
@@ -2750,7 +2797,7 @@ fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
       pc_emit(ctx, scope, body)
     },
     ESeq(a, b) => {
-      pc_emit(ctx, scope, a)
+      pc_emit(ctx, scope, pe_discarded_head(a))
       let nm = next_seq_name(ctx)
       let id = pe_declare(ctx, nm)
       pc_emit(ctx, scope, b)
@@ -3276,7 +3323,7 @@ fn pc_count(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
       pc_count(ctx, scope, body)
     },
     ESeq(a, b) => {
-      pc_count(ctx, scope, a)
+      pc_count(ctx, scope, pe_discarded_head(a))
       let nm = next_seq_name(ctx)
       let sq_id = pc_declare(ctx, nm, is_scalar_expr(ctx, scope, a))
       // ADR-0092 per-use pairing: a DISCARDED view-call result gets a seq-temp

@@ -1,0 +1,50 @@
+//# Imports
+
+// #3137: the head of a sequence is discarded without a release, and a `for`
+// there compiles in the no-collect form, which drops each body value the same
+// way. A bare name on the result spine of either is therefore a borrow, not
+// an owning use: the binding keeps its scope-end drop. Counting it as owning
+// handed the reference to a release that never happened. The runtime half is
+// fixtures/rc_forin_discard_body_test.vibe and
+// fixtures/rc_forin_discard_bounded_test.vibe (mid gate 40f0f).
+
+import @vibe/compiler/runtime {
+  rc_plan_source
+}
+
+//# Functions
+
+fn plan_of(source: String) -> String with Exception {
+  rc_plan_source(source, "")
+}
+
+let prologue = "enum D {\n  A(Array[Int])\n}\n"
+
+let epilogue = "\nlet main: () -> Int = () -> {\n  run([1, 2])\n}"
+
+fn program(body: String) -> String {
+  String::concat(prologue, String::concat(body, epilogue))
+}
+
+test "a heap binding as a discarded for body keeps its drop" {
+  let src = program("let run: (Array[Int]) -> Int = (ns) -> {\n  let d = A([1])\n  for x in ns {\n    d\n  }\n  Array::length(ns)\n}")
+  assert(String::contains(plan_of(src), "run d drop 1"))
+}
+
+test "branch tails of a discarded for body keep their drops" {
+  let src = program("let run: (Array[Int]) -> Int = (ns) -> {\n  let d = A([1])\n  let e = A([2])\n  for x in ns {\n    if x == 1 {\n      d\n    } else {\n      e\n    }\n  }\n  Array::length(ns)\n}")
+  let plan = plan_of(src)
+  assert(String::contains(plan, "run d drop 1"))
+  assert(String::contains(plan, "run e drop 1"))
+}
+
+test "a bare name at the head of a sequence keeps its drop" {
+  let src = program("let run: (Array[Int]) -> Int = (ns) -> {\n  let d = A([1])\n  d\n  Array::length(ns)\n}")
+  assert(String::contains(plan_of(src), "run d drop 1"))
+}
+
+test "a collecting for still moves its body value into the result" {
+  // Only the discarded form changed: the collected array owns its items.
+  let src = program("let run: (Array[Int]) -> Int = (ns) -> {\n  let d = A([1])\n  let r = for x in ns {\n    d\n  }\n  Array::length(r)\n}")
+  assert(!String::contains(plan_of(src), "run d drop"))
+}
