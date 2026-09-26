@@ -152,7 +152,10 @@ fn array_empty_kind_scope() -> Array[(String, Int)] {
 ///     ineligible -- the variable could be instantiated to E via a closure
 ///     argument this pass cannot see;
 ///   - no nested handle, and no closure containing a handled-op perform or
-///     needing call.
+///     needing call -- except an ABORTIVE handle (#1537: arms of another
+///     effect that never mention `resume`, like an `Exception::Throw` catch),
+///     which is split with its body and re-installed around every resumed
+///     continuation (scps_split_handle).
 /// Arm BODIES are unrestricted (under the driver they are plain code).
 ///
 /// Runs from compile_wasi_module_linked_impl (linear backend) BEFORE
@@ -1042,7 +1045,32 @@ fn scps_scope_bind_params(scope: Array[(String, Int)], params: Array[(String, Op
 fn scps_scope_bind_pat(scope: Array[(String, Int)], p: Pat) -> Array[(String, Int)] {
   let names = array_empty_str()
   scps_pat_collect_binds(p, names)
-  scps_scope_bind_names(scope, names, 0)
+  let bound = scps_scope_bind_names(scope, names, 0)
+  // #1537: an arm on this pass's own yield constructor binds its
+  // continuation last, and that binder is a step function (the rewrap of an
+  // abortive handle calls it). A source program cannot name `__ScpsY_`
+  // constructors, so nothing else is classified this way.
+  match p {
+    PCtor(q, sub) => if String::starts_with(q, "__ScpsY_") && Array::length(sub) > 0 {
+      match Array::get(sub, Array::length(sub) - 1) {
+        PBind(k) => scps_scope_bind(bound, k, 2),
+        _ => bound
+      }
+    } else {
+      bound
+    },
+    _ => bound
+  }
+}
+
+/// #1537: a `let rec` bound to a step literal is a step local, as a `let` is
+/// (the step wrapper of an abortive handle is one).
+fn scps_letrec_kind(v: Expr, eff: String) -> Int {
+  if scps_literal_is_step_for(v, eff) {
+    2
+  } else {
+    0
+  }
 }
 
 fn scps_scope_from_visible(visible: Array[(String, String)], eff: String, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> Array[(String, Int)] {
@@ -1087,14 +1115,10 @@ fn scps_scope_from_params(params: Array[(String, Option[TypeExpr])], eff: String
 fn scps_named_call_ok(name: String, sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), scope: Array[(String, Int)]) -> Bool {
   let (eff, _, needing, _, _) = sctx
   let kind = scps_local_class(scope, name)
-  // This pass's own names come first: a local it synthesized (the `let rec`
-  // of an abortive handle's step wrapper, #1537, and its continuation binder)
-  // is a step function, and an enclosing site re-walking already-split code
-  // meets it bound as an ordinary local.
-  if String::starts_with(name, "__scps_") || String::starts_with(name, "__Scps") {
-    true
-  } else if kind >= 0 {
+  if kind >= 0 {
     kind == 1 || kind == 2
+  } else if String::starts_with(name, "__scps_") || String::starts_with(name, "__Scps") {
+    true
   } else if idp_is_pure_builtin_call(name) || scps_is_safe_mut_builtin(name) || scps_is_ctor_name(ctx, name) || edp_str_array_contains(needing, name) {
     true
   } else {
@@ -1291,7 +1315,7 @@ fn scps_calls_ok(e: Expr, sctx: (String, Array[String], Array[String], Int, Arra
     },
     ELetMut(nm, v, b, _) => scps_calls_ok(v, sctx, ctx, scope) && scps_calls_ok(b, sctx, ctx, scps_scope_bind(scope, nm, 0)),
     ELetRec(nm, v, b) => {
-      let ext = scps_scope_bind(scope, nm, 0)
+      let ext = scps_scope_bind(scope, nm, scps_letrec_kind(v, eff))
       scps_calls_ok(v, sctx, ctx, ext) && scps_calls_ok(b, sctx, ctx, ext)
     },
     ESeq(a, b) => scps_calls_ok(a, sctx, ctx, scope) && scps_calls_ok(b, sctx, ctx, scope),
@@ -1432,7 +1456,7 @@ fn scps_first_bad_call_info(e: Expr, sctx: (String, Array[String], Array[String]
       }
     },
     ELetRec(nm, v, b) => {
-      let ext = scps_scope_bind(scope, nm, 0)
+      let ext = scps_scope_bind(scope, nm, scps_letrec_kind(v, eff))
       scps_first_bad_call_info_pair(v, b, sctx, ctx, ext)
     },
     ESeq(a, b) => scps_first_bad_call_info_pair(a, b, sctx, ctx, scope),

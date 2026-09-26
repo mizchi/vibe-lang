@@ -692,20 +692,50 @@ fi
   || { echo "named hostfutures component gate FAILED: catch_in_entry expected 42, got: $(cat "$CI_LOG")" >&2; exit 1; }
 echo "[named-hostfutures-component-gate] catch_in_entry: 42 (a handle beside spawned tasks in an Async entry)"
 
-# catch_async_body_refused: the same handle around a callee whose row carries
-# Async stays refused -- the suspend split does not cut through a handle.
-CR_OUT="$OUT_DIR/spawn_catch_async_body_refused.component.wasm"
+# catch_async_body: the same handle around a callee whose row carries Async,
+# which throws after its tasks' await. The handle is split with its body and
+# re-installed around every resumed continuation, so the throw is caught: 42.
+# It was refused before (#1537).
+CR_OUT="$OUT_DIR/spawn_catch_async_body.component.wasm"
 rm -f "$CR_OUT" "$CR_OUT.diag"
 VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
   bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
-  "$COMPILER" fixtures/async_spawn_host_futures/catch_async_body_refused.vibe "$CR_OUT" run >/dev/null 2>&1 || true
-if [ -s "$CR_OUT" ]; then
-  echo "named hostfutures component gate FAILED: catch_async_body_refused compiled -- a handle around an Async callee must be refused" >&2
+  "$COMPILER" fixtures/async_spawn_host_futures/catch_async_body.vibe "$CR_OUT" run >/dev/null 2>&1 || true
+[ -s "$CR_OUT" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/catch_async_body.vibe did not compile: $(cat "$CR_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+CR_LOG="$OUT_DIR/spawn_catch_async_body.log"
+if ! VIBE_ASYNC_FUTURES="fast=1:100" run_bounded 60 "$RUNNER" "$CR_OUT" >"$CR_LOG" 2>&1; then
+  echo "named hostfutures component gate FAILED: catch_async_body did not exit 0" >&2
+  cat "$CR_LOG" >&2
   exit 1
 fi
-grep -qF "cannot see through" "$CR_OUT.diag" 2>/dev/null \
-  || { echo "named hostfutures component gate FAILED: catch_async_body_refused gave an unexpected diagnostic: $(cat "$CR_OUT.diag" 2>/dev/null)" >&2; exit 1; }
-echo "[named-hostfutures-component-gate] catch_async_body_refused: refused (the handled body reaches Async)"
+[ "$(cat "$CR_LOG")" = "42" ] \
+  || { echo "named hostfutures component gate FAILED: catch_async_body expected 42, got: $(cat "$CR_LOG")" >&2; exit 1; }
+echo "[named-hostfutures-component-gate] catch_async_body: 42 (a throw after an await, caught by the entry's handle)"
+
+# catch_across_await: handles around awaits in three spawned tasks and in the
+# entry -- a throw before the first await, one after two awaits, and one in a
+# callee after its await are each caught by their own arms while the tasks
+# interleave. 10 + 20 + 10 + 2 = 42, in about the entry's await plus two more
+# (the tasks overlap), not the sum of all four.
+CA_OUT="$OUT_DIR/spawn_catch_across_await.component.wasm"
+rm -f "$CA_OUT" "$CA_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/catch_across_await.vibe "$CA_OUT" run >/dev/null 2>&1 || true
+[ -s "$CA_OUT" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/catch_across_await.vibe did not compile: $(cat "$CA_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+CA_LOG="$OUT_DIR/spawn_catch_across_await.log"
+CA_START=$(date +%s%N)
+if ! VIBE_ASYNC_FUTURES="fast=1:300" run_bounded 60 "$RUNNER" "$CA_OUT" >"$CA_LOG" 2>&1; then
+  echo "named hostfutures component gate FAILED: catch_across_await did not exit 0" >&2
+  cat "$CA_LOG" >&2
+  exit 1
+fi
+CA_MS=$(( ( $(date +%s%N) - CA_START ) / 1000000 ))
+[ "$(cat "$CA_LOG")" = "42" ] \
+  || { echo "named hostfutures component gate FAILED: catch_across_await expected 42, got: $(cat "$CA_LOG")" >&2; exit 1; }
+[ "$CA_MS" -lt 1150 ] \
+  || { echo "named hostfutures component gate FAILED: catch_across_await took ${CA_MS}ms -- the tasks did not overlap" >&2; exit 1; }
+echo "[named-hostfutures-component-gate] catch_across_await: 42 in ${CA_MS}ms (throws before, between and after awaits, caught in place)"
 
 # timer_release_many: 1100 groups each close with their timer still armed
 # (the 10s sleeper it covered was cancelled); each cancels the timer's
