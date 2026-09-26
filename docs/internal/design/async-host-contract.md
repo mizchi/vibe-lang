@@ -340,7 +340,18 @@ override silently contradicting a module that says `raw` is the hazard #2903's
   by the next call, so the getter of an argument response waits in a set of
   its own until the subtask leaves STARTING. A host function starts at once;
   a provider component plugged in with `wac` may not, which the service world
-  measures. More than 512 calls in flight trap.
+  measures.
+
+  A future the program drops unawaited keeps its slot, and the program cannot
+  see the drop, so the guest reclaims slots itself. The boundary injection
+  records each WIT future cell under its slot (`__ws_track`), `__aw_pay`
+  marks the cell it waits on (`__ws_claim`), and a call that leaves every
+  slot taken cancels the oldest cell nobody is awaiting and poisons it
+  (state 9). Awaiting a poisoned cell traps rather than reading the call that
+  reused its slot. Only when all 512 slots are awaited does the next call
+  trap. `fixtures/wit_future_import/drop_many.vibe`,
+  `fixtures/wit_response_import/drop_many.vibe` and
+  `fixtures/wit_future_import/reclaimed_await_trap.vibe` pin both sides.
   The composer still declares the `future` types and their canon pairs (now
   unused), so no index moves; the subtask pair is appended last
   (`[subtask-drop-wit]`, `[subtask-cancel-wit]`).
