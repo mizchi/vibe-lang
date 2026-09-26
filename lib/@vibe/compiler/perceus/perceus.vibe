@@ -1006,9 +1006,15 @@ fn next_seq_name(ctx: PCtx) -> String {
 /// counts as a borrow -- a projection off the name, `EDot(x, "")` -- so the
 /// binding keeps its scope-end drop. It is PLAN-ONLY: codegen compiles the
 /// original tree, where the same leaf is a plain read. Only the spine is
-/// walked (let bodies, sequence tails, if branches, match arms); a `for` is
-/// rewritten only as the head itself, the one position codegen compiles in the
-/// no-collect form.
+/// walked (let bodies, sequence tails, if branches, match arms, and -- #3162 --
+/// a `handle`'s body and each handler arm, whose values are the handle's
+/// value: compile_expr_tail6 branches both out of the handle's block, so the
+/// ESeq drop discards whichever one ran); a `for` is rewritten only as the
+/// head itself, the one position codegen compiles in the no-collect form.
+///
+/// A `while` BODY is discarded the same way wherever the loop stands
+/// (compile_expr_tail3 drops it after each iteration), so the EWhile arms of
+/// pc_emit / pc_count walk it through `pe_discarded_spine` too (#3162).
 fn pe_discarded_head(e: Expr) -> Expr {
   match e {
     EForIn(n, ix, it, b) => EForIn(n, ix, it, pe_discarded_spine(b)),
@@ -1026,18 +1032,21 @@ fn pe_discarded_spine(e: Expr) -> Expr {
     EAssign(n, v, b) => EAssign(n, v, pe_discarded_spine(b)),
     EAssignOp(n, op, v, b) => EAssignOp(n, op, v, pe_discarded_spine(b)),
     EIf(c, t, f) => EIf(c, pe_discarded_spine(t), pe_discarded_spine(f)),
-    EMatch(sc, arms) => {
-      let arms2: Array[(Pat, Expr)] = []
-      let mut i = 0
-      while i < Array::length(arms) {
-        let (p, ab) = Array::get(arms, i)
-        Array::push(arms2, (p, pe_discarded_spine(ab)))
-        i = i + 1
-      }
-      EMatch(sc, arms2)
-    },
+    EMatch(sc, arms) => EMatch(sc, pe_discarded_arms(arms)),
+    EHandle(hb, arms) => EHandle(pe_discarded_spine(hb), pe_discarded_arms(arms)),
     _ => e
   }
+}
+
+fn pe_discarded_arms(arms: Array[(Pat, Expr)]) -> Array[(Pat, Expr)] {
+  let arms2: Array[(Pat, Expr)] = []
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (p, ab) = Array::get(arms, i)
+    Array::push(arms2, (p, pe_discarded_spine(ab)))
+    i = i + 1
+  }
+  arms2
 }
 
 fn fn_param_names(params: Array[(String, Option[TypeExpr])]) -> Array[String] {
@@ -2934,7 +2943,8 @@ fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
       let saved_floor = ctx.loop_floor
       ctx.loop_floor = ctx.next_id
       pc_emit(ctx, scope, cond)
-      pc_emit(ctx, scope, body)
+      // #3162: each iteration's body value is dropped unreleased.
+      pc_emit(ctx, scope, pe_discarded_spine(body))
       ctx.loop_floor = saved_floor
       0
     },
@@ -3417,7 +3427,7 @@ fn pc_count(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
     },
     EWhile(cond, body) => {
       pc_count(ctx, scope, cond)
-      pc_count(ctx, scope, body)
+      pc_count(ctx, scope, pe_discarded_spine(body))
     },
     EReturn(e) => pc_count(ctx, scope, e),
     ESpread(e) => pc_count(ctx, scope, e),
