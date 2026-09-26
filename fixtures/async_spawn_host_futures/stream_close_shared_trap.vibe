@@ -1,0 +1,32 @@
+// #2066 (Codex on #3091): a helper hands out a READER and a CLOSER over one
+// HostStream; the spawn capture check sees only function-typed bindings. One
+// task reads a byte from the stream, then a second task closes it: two tasks
+// used one stream, and the program answered 2 with no error. Closing now
+// claims the stream for the closing task like a read does, so the second
+// task's close traps. Executed by
+// scripts/test_named_hoststreams_component_gate.sh, which expects the trap.
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+fn pair(s: HostStream) -> (() -> Int with Async, () -> Int with Async) {
+  let reader = () -> Int with Async {
+    let a = host_stream_next(s)
+    a
+  }
+  let closer = () -> Int with Async {
+    host_stream_close(s)
+    0
+  }
+  (reader, closer)
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  let (r, c) = pair(host_stream_named("left"))
+  TaskGroup::run((g) -> {
+    let rd = TaskGroup::spawn_suspend(g, r)
+    let got = TaskHandle::join(rd)
+    let cl = TaskGroup::spawn_suspend(g, c)
+    got + TaskHandle::join(cl)
+  })
+}

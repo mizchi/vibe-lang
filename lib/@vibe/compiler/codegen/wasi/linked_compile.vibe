@@ -3481,11 +3481,18 @@ fn lc_host_cancel_body(payload: Expr, hf_machinery: Bool, hs_machinery: Bool) ->
 /// merged program -- the library's export under its module suffix
 /// (lc_is_hook_name).
 fn lc_aw_note_available(stmts: Array[Stmt], linked_imports: Array[(String, String, Int, Int)]) -> String {
+  lc_concurrent_hook_name(stmts, linked_imports, "__aw_note")
+}
+
+/// The name @vibe/concurrent's hook `base` has in this program, or "": a
+/// linked import, a local definition, or -- in a merged program -- the
+/// library's export under its module suffix (lc_is_hook_name).
+fn lc_concurrent_hook_name(stmts: Array[Stmt], linked_imports: Array[(String, String, Int, Int)], base: String) -> String {
   let mut found = ""
   let mut li = 0
   while li < Array::length(linked_imports) {
     let (_, lname, _, _) = Array::get(linked_imports, li)
-    if lname == "__aw_note" {
+    if lname == base {
       found = lname
     } else {
       ()
@@ -3495,7 +3502,7 @@ fn lc_aw_note_available(stmts: Array[Stmt], linked_imports: Array[(String, Strin
   let mut si = 0
   while si < Array::length(stmts) {
     match Array::get(stmts, si) {
-      SLet(_, _, nm, _, _) => if nm == "__aw_note" || lc_is_hook_name(nm, "__aw_note") {
+      SLet(_, _, nm, _, _) => if nm == base || lc_is_hook_name(nm, base) {
         found = nm
       } else {
         ()
@@ -4288,18 +4295,19 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
       hsn_s,
       EIdent("__hsn_v", -1)
     ], -1), -1)
-    // #2066 (Codex on #3091): a stream has ONE reader. Note the cell before
-    // the read parks, so @vibe/concurrent can stamp the reading task into it
-    // and refuse a second task -- a closure a helper returned carries the
-    // stream past the spawn check.
-    let hsn_note = lc_aw_note_available(stmts, array_empty())
-    let hsn_guarded = if hsn_note != "" {
-      ELet("__hsn_n", ECall(EIdent(hsn_note, -1), [hsn_s], -1), hsn_read, -1)
+    // #2066 (Codex on #3091): a stream has ONE owner. Every read -- including
+    // one that finds the stream already closed and answers end of stream
+    // without parking -- first claims the cell for the running task, so a
+    // second task reaching it through a closure a helper returned traps
+    // instead of splitting its bytes or reading a sibling's close as EOF.
+    let hsn_claim = lc_concurrent_hook_name(stmts, array_empty(), "__conc_stream_claim")
+    let hsn_open = EIf(EBinOp("==", hsn_state, EInt(3), -1), hsn_read, EBinOp("-", EInt(0), EInt(1), -1))
+    let hsn_body = if hsn_claim != "" {
+      ELet("__hsn_c", ECall(EIdent(hsn_claim, -1), [hsn_s], -1), hsn_open, -1)
       // review-lint: allow-fixed-synthetic-name (the injected __hs_next's own scope)
     } else {
-      hsn_read
+      hsn_open
     }
-    let hsn_body = EIf(EBinOp("==", hsn_state, EInt(3), -1), hsn_guarded, EBinOp("-", EInt(0), EInt(1), -1))
     let hsn_params: Array[(String, Option[TypeExpr])] = [("__hsn_s", None)]
     Array::push(stmts, SLet(false, false, lc_fixed_synthetic_name("__hs_next", "review-lint: allow-fixed-synthetic-name"), None, EFn(lc_fresh_string_array(), array_empty(), hsn_params, Some(TyName("Int")), Some("Async"), hsn_body)))
     // #1955: public source protocol. Authority remains in the Async row and
@@ -4364,7 +4372,19 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
     let hsc_hnd = ECall(EIdent("Array::get", -1), [hsc_s, EInt(1)], -1)
     let hsc_drop = ECall(EIdent("vibe_hs_close_raw", -1), [hsc_hnd], -1)
     let hsc_mark = ECall(EIdent("Array::set", -1), [hsc_s, EInt(0), EInt(0)], -1)
-    let hsc_body = EIf(EBinOp("==", hsc_state, EInt(3), -1), ELet("__hsc_r", hsc_drop, hsc_mark, -1), EUnit)
+    let hsc_close = ELet("__hsc_r", hsc_drop, hsc_mark, -1)
+    // review-lint: allow-fixed-synthetic-name
+    // #2066 (Codex on #3091): closing is a use of the stream too. The running
+    // task claims the cell first, so a closer handed out beside a reader
+    // cannot drop another task's stream under it.
+    let hsc_claim = lc_concurrent_hook_name(stmts, array_empty(), "__conc_stream_claim")
+    let hsc_guarded = if hsc_claim != "" {
+      ELet("__hsc_c", ECall(EIdent(hsc_claim, -1), [hsc_s], -1), hsc_close, -1)
+      // review-lint: allow-fixed-synthetic-name (the injected __hs_close's own scope)
+    } else {
+      hsc_close
+    }
+    let hsc_body = EIf(EBinOp("==", hsc_state, EInt(3), -1), hsc_guarded, EUnit)
     // review-lint: allow-fixed-synthetic-name
     let hsc_params: Array[(String, Option[TypeExpr])] = [("__hsc_s", None)]
     // Injected ONLY when the source actually closes. `__hs_close`'s body is

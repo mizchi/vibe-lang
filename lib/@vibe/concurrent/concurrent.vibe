@@ -1205,7 +1205,7 @@ export fn TaskGroup::spawn_suspend[rg, e, T: Send](n: TaskGroup[rg, e], f: () ->
         TaskHandle::park_kind(h, resume, false, 0)
         h.cell.host_wait = r
         conc_host_register_parked(h.cell)
-        conc_host_note_park(r, h.cell.serial)
+        conc_host_record_cell(r)
       } else {
         TaskHandle::park_kind(h, resume, r >= 1, 0)
       }
@@ -1768,8 +1768,9 @@ export fn __aw_note(f: Array[Int]) -> Int {
   0
 }
 
-/// #2066 (Codex on #3091): a host stream cell read by a task is stamped
-/// with that task's serial (slot 2), and a read by any other task traps.
+/// #2066 (Codex on #3091): a host stream cell used by a task -- read or
+/// closed, through `__conc_stream_claim` -- is stamped with that task's
+/// serial (slot 2), and a use by any other task traps.
 /// The capture check refuses sharing a stream it can see; a closure a helper
 /// returned hides it, and two readers of one stream would split or duplicate
 /// its bytes. Keyed by the CELL, so a stream handle reused by a later stream
@@ -1786,18 +1787,18 @@ fn conc_host_claim_stream(f: Array[Int], serial: Int) -> Unit {
   }
 }
 
-fn conc_host_note_park(payload: Int, serial: Int) -> Unit {
-  if Array::length(conc_aw_noted) > 0 {
-    let f = Array::get(conc_aw_noted, 0)
-    if Array::get(f, 0) == 3 && Array::get(f, 1) + 2048 == payload {
-      Array::truncate(conc_aw_noted, 0)
-      conc_host_claim_stream(f, serial)
-    } else {
-      conc_host_record_cell(payload)
-    }
+/// #2066 (Codex on #3091): a stream operation that does not park -- a close
+/// -- claims the cell for the running task directly. A reader and a closer
+/// handed out by one helper would otherwise let another task drop the stream
+/// under its reader, which then saw a silent end of stream.
+export fn __conc_stream_claim(f: Array[Int]) -> Int {
+  let depth = Array::length(conc_running_stack)
+  if depth > 0 {
+    conc_host_claim_stream(f, Array::get(conc_running_stack, depth - 1).serial)
   } else {
     ()
   }
+  0
 }
 
 fn conc_host_record_cell(payload: Int) -> Unit {
