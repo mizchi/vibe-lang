@@ -969,6 +969,15 @@ send_check_reject "err_type_ord_marker_bound_double.vibe" 'is a marker trait (de
 # prelude's `Ord` from their own program, so "give it a method" is not advice a
 # reader can act on here.
 send_check_reject "err_type_ord_marker_bound_double.vibe" 'Compare at the concrete type' "orddouble3"
+# #3158 review: `Add` is a marker too, and `[T: Add]`'s `+` lowers to
+# `__generic_add` -- string join or a raw integer add. At `Double` that answered
+# `add=0` for `1.5 + 2.25` on the linear lane; at a user struct it would add two
+# pointers. Refused at both, with the edit named.
+send_check_reject "err_type_add_marker_bound_double.vibe" 'no impl `Add` for `Double`' "adddouble"
+send_check_reject "err_type_add_marker_bound_double.vibe" 'adds the raw representation, not the value' "adddouble2"
+send_check_reject "err_type_add_marker_bound_double.vibe" 'Add at the concrete type' "adddouble3"
+send_check_reject "err_type_add_marker_bound_struct.vibe" 'no impl `Add` for `Pt`' "addmarker"
+send_check_reject "err_type_add_marker_bound_struct.vibe" 'adds the raw representation, not the value' "addmarker2"
 # #2640: `@vibe/core` declares its collections BODYLESS in its contract
 # (`type MutMap[K, V]`, `type MutSet[T]`), so a consumer sees them as
 # `CtNamed` -- indistinguishable, in the type representation, from a rigid
