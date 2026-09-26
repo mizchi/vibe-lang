@@ -1,0 +1,77 @@
+// #3177: a binder a match arm introduces is the binding for that arm's body,
+// the way a `let`, a parameter or a `for` variable is
+// (fixtures/await_shadowed_binding_test.vibe). The async-effect walk did not
+// bind match-arm patterns, so a match-bound `await` called inside a lambda
+// with no effect row read as the builtin and was refused with "effectful call
+// outside effectful context: await". None of these functions performs
+// `Async`, so none of them declares it.
+
+fn picked() -> Option[(Future[Int]) -> String] {
+  Some((f: Future[Int]) -> "hello")
+}
+
+fn in_row_free_lambda() -> Int {
+  match picked() {
+    Some(await) => {
+      let later = () -> await(Future::ready(5))
+      String::length(later())
+    },
+    None => 0
+  }
+}
+
+fn in_arm_body() -> Int {
+  match picked() {
+    Some(await) => String::length(await(Future::ready(5))),
+    None => 0
+  }
+}
+
+fn in_nested_pattern() -> Int {
+  match (1, picked()) {
+    (n, Some(await)) => {
+      let later = () -> await(Future::ready(5))
+      n + String::length(later())
+    },
+    _ => 0
+  }
+}
+
+// A match inside a row-free lambda: the arm's binder is still the binding.
+fn inside_lambda() -> Int {
+  let run = () -> match picked() {
+    Some(await) => String::length(await(Future::ready(5))),
+    None => 0
+  }
+  run()
+}
+
+// The state names of a `loop (..)` are bound in its body the same way.
+fn in_loop_state() -> Int {
+  loop (await = (f: Future[Int]) -> "hello", n = 0) {
+    if n > 0 {
+      break n
+    }
+    continue(await, String::length(await(Future::ready(5))))
+  }
+}
+
+test "a match-bound await inside a row-free lambda is the binding" {
+  inspect(in_row_free_lambda(), content = "5")
+}
+
+test "a match-bound await in the arm body is the binding" {
+  inspect(in_arm_body(), content = "5")
+}
+
+test "a nested pattern binder named await is the binding" {
+  inspect(in_nested_pattern(), content = "6")
+}
+
+test "a match inside a row-free lambda binds its arm's await" {
+  inspect(inside_lambda(), content = "5")
+}
+
+test "a loop state named await is the binding" {
+  inspect(in_loop_state(), content = "5")
+}

@@ -1401,25 +1401,69 @@ fn afe_bind_value(locals: AfeLocals, name: String, val: Expr, env: TypeEnv) -> A
   afe_bind_shapes(with_fn, name, val, env)
 }
 
+/// The scope a match arm's body is read in. #3177: every pattern binder masks
+/// the outer scope, and the binders whose head the scrutinee reveals carry it.
 fn afe_match_arm_locals(scrut: Expr, pat: Pat, env: TypeEnv, locals: AfeLocals) -> AfeLocals {
+  afe_match_arm_locals_onto(scrut, pat, env, locals, afe_mask_pat_binders(locals, pat))
+}
+
+/// `afe_match_arm_locals` with the scope the scrutinee is read in (`outer`)
+/// kept apart from the one the binders are added to (`acc`), so a binder can
+/// shadow the very name its scrutinee reads (`match it { Some(it) => .. }`).
+fn afe_match_arm_locals_onto(scrut: Expr, pat: Pat, env: TypeEnv, outer: AfeLocals, acc: AfeLocals) -> AfeLocals {
   match pat {
-    PBind(name) => afe_bind_local(locals, name, afe_expr_head_name(scrut, env, locals)),
+    PBind(name) => afe_bind_local(acc, name, afe_expr_head_name(scrut, env, outer)),
     PCtor(cn, sub) => match scrut {
       ECall(EIdent(name, _), args, _) => if name == cn || String::ends_with(name, String::concat("::", cn)) {
-        let mut acc = locals
+        let mut cur = acc
         let mut i = 0
         while i < Array::length(sub) && i < Array::length(args) {
-          acc = afe_match_arm_locals(Array::get(args, i), Array::get(sub, i), env, acc)
+          cur = afe_match_arm_locals_onto(Array::get(args, i), Array::get(sub, i), env, outer, cur)
           i = i + 1
         }
-        acc
+        cur
       } else {
-        locals
+        acc
       },
-      _ => locals
+      _ => acc
+    },
+    _ => acc
+  }
+}
+
+/// #3177: every name `pat` binds, as a binding of no known head, so it hides
+/// an outer binding of the same name. A match or handler arm binds its
+/// pattern's names whether or not their heads can be resolved -- a name the
+/// walk does not see bound reads the OUTER binding (or the builtin: a
+/// match-bound `await` called in a row-free lambda demanded `Async`).
+fn afe_mask_pat_binders(locals: AfeLocals, pat: Pat) -> AfeLocals {
+  match pat {
+    PBind(name) => afe_bind_local(locals, name, None),
+    PCtor(_, sub) => afe_mask_pats_binders(locals, sub),
+    PTuple(items) => afe_mask_pats_binders(locals, items),
+    POr(a, b) => afe_mask_pat_binders(afe_mask_pat_binders(locals, a), b),
+    PStruct(_, fields) => {
+      let mut cur = locals
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fp) = Array::get(fields, i)
+        cur = afe_mask_pat_binders(cur, fp)
+        i = i + 1
+      }
+      cur
     },
     _ => locals
   }
+}
+
+fn afe_mask_pats_binders(locals: AfeLocals, pats: Array[Pat]) -> AfeLocals {
+  let mut cur = locals
+  let mut i = 0
+  while i < Array::length(pats) {
+    cur = afe_mask_pat_binders(cur, Array::get(pats, i))
+    i = i + 1
+  }
+  cur
 }
 
 fn afe_tuple_elem_head(obj: Expr, field: String, env: TypeEnv, locals: AfeLocals) -> Option[String] {
@@ -1904,10 +1948,13 @@ fn afe_perform_payload_head(body: Expr, op: String, payload_index: Int, env: Typ
   }
 }
 
+/// The scope a handler arm's body is read in: every pattern binder masks the
+/// outer scope (#3177), and an operation argument bound by name carries the
+/// head of what the body performs in that position.
 fn afe_handler_arm_locals(body: Expr, pat: Pat, env: TypeEnv, locals: AfeLocals) -> AfeLocals {
   match pat {
     PCtor(cn, sub) => {
-      let mut arm_locals = locals
+      let mut arm_locals = afe_mask_pat_binders(locals, pat)
       let mut i = 0
       while i < Array::length(sub) {
         match Array::get(sub, i) {
@@ -1920,7 +1967,7 @@ fn afe_handler_arm_locals(body: Expr, pat: Pat, env: TypeEnv, locals: AfeLocals)
       }
       arm_locals
     },
-    _ => locals
+    _ => afe_mask_pat_binders(locals, pat)
   }
 }
 
@@ -2268,14 +2315,43 @@ fn check_async_effects_expr_lo_into(expr: Expr, env: TypeEnv, in_async: Bool, lo
       let mut ai = 0
       while ai < Array::length(arms) {
         let (pat, arm_body) = Array::get(arms, ai)
+        // Resolving a binder's head walks the handled body for its performs,
+        // so it is paid only where a `for` could read one. The binders are
+        // bound either way (#3177): an arm's `await` is its own binder.
         let arm_locals = if afe_contains_for(arm_body) {
           afe_handler_arm_locals(body, pat, env, locals)
         } else {
-          locals
+          afe_mask_pat_binders(locals, pat)
         }
         check_async_effects_expr_lo_into(arm_body, env, in_async, arm_locals, out)
         ai = ai + 1
       }
+    },
+    // #3177: a match arm binds its pattern's names for its own body, like a
+    // `let`, a parameter or a `for` variable. Walked as a generic node, the
+    // arm body saw the outer scope, so a match-bound `await` called in a
+    // row-free lambda read as the builtin and demanded `Async`.
+    EMatch(scrut, arms) => {
+      check_async_effects_expr_lo_into(scrut, env, in_async, locals, out)
+      let mut mi = 0
+      while mi < Array::length(arms) {
+        let (pat, arm_body) = Array::get(arms, mi)
+        check_async_effects_expr_lo_into(arm_body, env, in_async, afe_match_arm_locals(scrut, pat, env, locals), out)
+        mi = mi + 1
+      }
+    },
+    // #3177: the state names of `loop (h = f) { .. }` are bound in its body;
+    // their initial values are read in the enclosing scope.
+    ELoop(states, body) => {
+      let mut body_locals = locals
+      let mut li = 0
+      while li < Array::length(states) {
+        let (sname, sval) = Array::get(states, li)
+        check_async_effects_expr_lo_into(sval, env, in_async, locals, out)
+        body_locals = afe_bind_local(body_locals, sname, None)
+        li = li + 1
+      }
+      check_async_effects_expr_lo_into(body, env, in_async, body_locals, out)
     },
     // ELet/ELetMut are non-recursive: the value is resolved in the OUTER scope,
     // and only the body sees the new binding. ELetRec's value may reference
