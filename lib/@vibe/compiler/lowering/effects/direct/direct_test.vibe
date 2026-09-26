@@ -1,5 +1,9 @@
+import @vibe/ast {
+  Expr, Stmt
+}
+
 import @vibe/compiler/lowering/effects/direct {
-  idp_is_pure_builtin_call, idp_pure_builtin_names
+  idp_is_pure_builtin_call, idp_note_program_decls, idp_pure_builtin_names
 }
 
 // #2500 removed the row that exercised `inline_direct_performs` here (a
@@ -8,9 +12,35 @@ import @vibe/compiler/lowering/effects/direct {
 // answer. What is left in this package is the builtin classification the
 // other lowerings read.
 
+fn fn_named(name: String) -> Stmt {
+  SLet(false, false, name, None, EFn([], [], [("x", None)], None, Some("Log"), EIdent("x", -1)))
+}
+
 test "a caller cannot mutate the builtin classification memo" {
   let names = idp_pure_builtin_names()
   Array::set(names, 0, "user_function")
   inspect(idp_is_pure_builtin_call("user_function"), content = "false")
   inspect(idp_is_pure_builtin_call("String::equals"), content = "true")
+}
+
+// #3176: a call of a spelling the program declares reaches the program's
+// function, so it is no longer the audited builtin -- and only that spelling.
+test "a spelling the program declares is not a pure builtin call" {
+  let none: Array[Stmt] = []
+  idp_note_program_decls([
+    fn_named("Future::ready"),
+    fn_named("string_char_at"),
+    fn_named("helper")
+  ])
+  inspect(idp_is_pure_builtin_call("Future::ready"), content = "false")
+  inspect(idp_is_pure_builtin_call("string_char_at"), content = "false")
+  inspect(idp_is_pure_builtin_call("Future::pending"), content = "true")
+  inspect(idp_is_pure_builtin_call("Int::to_string"), content = "true")
+  // A module member is a declaration too.
+  idp_note_program_decls([SModule(false, "m", [fn_named("Int::to_string")])])
+  inspect(idp_is_pure_builtin_call("Int::to_string"), content = "false")
+  // Each note replaces the previous program's: nothing leaks into the next.
+  inspect(idp_is_pure_builtin_call("Future::ready"), content = "true")
+  idp_note_program_decls(none)
+  inspect(idp_is_pure_builtin_call("Int::to_string"), content = "true")
 }

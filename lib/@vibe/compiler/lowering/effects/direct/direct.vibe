@@ -1,5 +1,5 @@
 import @vibe/compiler/core {
-  Expr, Pat, canonical_builtin_name, is_exception_throw_handler_name, registry_pure_builtin_names
+  Expr, Pat, Stmt, canonical_builtin_name, is_exception_throw_handler_name, registry_pure_builtin_names
 }
 
 /// Builtin call classification for the effect lowerings.
@@ -92,28 +92,105 @@ export fn idp_is_host_stream_named_raw(nm: String) -> Bool {
 // rebuild the table (and scan it without early exit) on every probe.
 let idp_pure_builtin_names_table: Array[String] = idp_pure_builtin_names()
 
+/// #3176: the table's spellings the program being lowered declares at top
+/// level, written by `idp_note_program_decls` at the entry of each pass that
+/// reads `idp_is_pure_builtin_call`.
+///
+/// A program may declare its own `fn Future::ready`, `fn Int::to_string` or
+/// `fn string_char_at`, and a call of that spelling then reaches the
+/// program's function, whatever its row says -- not the builtin the table
+/// audited. The predicate answered from the spelling alone, so the suspend
+/// and evidence lowerings took such a function for one that cannot perform:
+/// measured on main at 05f044574, a row-variable `fn Future::ready(n: Int, g:
+/// (Int) -> Int with e) -> Int with e` handed a literal that performs `Ask`
+/// answered 389 instead of 111 under a handler that stores `resume`, and
+/// trapped with `null function or function signature mismatch` under a
+/// tail-resumptive one, where the same function spelled `relay` is refused
+/// at compile time. A name the program declares is judged as the program's
+/// function, by its declared row, like any other.
+///
+/// Names the builtin-shadow rename moves (`Map::size` -> `Map::size$user`,
+/// see `rename_builtin_shadow_defs`) never land here: that pass runs first,
+/// and the builtin spelling then means the builtin again.
+let idp_program_decls: Array[String] = []
+
+/// Is `nm` on the audited table, by its own spelling or its canonical one?
+fn idp_on_pure_table(nm: String) -> Bool {
+  // #3136: a legacy alias (`String::from_byte` for `from_char_code`,
+  // `String::byte_at` for `char_code_at`) is the same builtin, so it is
+  // judged by its canonical name. The table lists canonical names only;
+  // matching the spelling alone refused a handle around `from_byte` and
+  // compiled an `Async` serve handler calling it to `unreachable`.
+  let cn = canonical_builtin_name(nm)
+  let names = idp_pure_builtin_names_table
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(names) && !found {
+    if Array::get(names, i) == nm || Array::get(names, i) == cn {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// #3176: does the program being lowered declare a top-level binding that a
+/// call spelled `nm` reaches instead of the builtin?
+fn idp_program_declares(nm: String) -> Bool {
+  let cn = canonical_builtin_name(nm)
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(idp_program_decls) && !found {
+    let d = Array::get(idp_program_decls, i)
+    if d == nm || d == cn {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// #3176: record which of the table's spellings `stmts` declares at top
+/// level (a function, a value, an extern, a module member). Replaces what the
+/// previous program recorded, so call it at the entry of every pass that asks
+/// `idp_is_pure_builtin_call` about this program.
+export fn idp_note_program_decls(stmts: Array[Stmt]) -> Unit {
+  Array::truncate(idp_program_decls, 0)
+  idp_note_program_decls_into(stmts)
+}
+
+fn idp_note_program_decls_into(stmts: Array[Stmt]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, _) => idp_note_program_decl(name),
+      SLetMut(name, _, _) => idp_note_program_decl(name),
+      SFnDecl(_, name, _, _, _) => idp_note_program_decl(name),
+      SExternLet(name, _) => idp_note_program_decl(name),
+      SModule(_, _, inner) => idp_note_program_decls_into(inner),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn idp_note_program_decl(name: String) -> Unit {
+  if idp_on_pure_table(name) && !idp_program_declares(name) {
+    Array::push(idp_program_decls, name)
+  } else {
+    ()
+  }
+}
+
 export fn idp_is_pure_builtin_call(nm: String) -> Bool {
   if idp_is_host_future_named_raw(nm) || idp_is_host_stream_named_raw(nm) {
     true
   } else {
-    // #3136: a legacy alias (`String::from_byte` for `from_char_code`,
-    // `String::byte_at` for `char_code_at`) is the same builtin, so it is
-    // judged by its canonical name. The table lists canonical names only;
-    // matching the spelling alone refused a handle around `from_byte` and
-    // compiled an `Async` serve handler calling it to `unreachable`.
-    let cn = canonical_builtin_name(nm)
-    let names = idp_pure_builtin_names_table
-    let mut i = 0
-    let mut found = false
-    while i < Array::length(names) && !found {
-      if Array::get(names, i) == nm || Array::get(names, i) == cn {
-        found = true
-      } else {
-        ()
-      }
-      i = i + 1
-    }
-    found
+    idp_on_pure_table(nm) && !idp_program_declares(nm)
   }
 }
 

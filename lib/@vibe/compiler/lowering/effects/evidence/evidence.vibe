@@ -19,7 +19,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/lowering/effects/direct {
-  idp_is_pure_builtin_call, idp_pure_builtin_names
+  idp_is_pure_builtin_call, idp_note_program_decls, idp_pure_builtin_names
 }
 
 import @vibe/compiler/lowering/effects/queries {
@@ -465,6 +465,9 @@ fn emf_performed_expr(expr: Expr, out: Array[String]) -> Unit {
 
 export fn evidence_dict_pass(stmts: Array[Stmt], entry_name: String) -> Array[String] {
   let errs = empty_str_array()
+  // #3176: a call spelled like an audited pure builtin reaches the program's
+  // own function when the program declares one; judge it by that row.
+  idp_note_program_decls(stmts)
   let effect_defs = edp_collect_effect_defs(stmts)
   // ADR-0076 追記34 V2 step 1: vacuous-handle elimination. An effect with
   // ZERO performs anywhere in the program has provably-dead handler arms
@@ -3243,6 +3246,10 @@ fn empty_str_array() -> Array[String] {
 /// agreement test (#1979). Called from tests/pure_builtin_name_agreement_
 /// test.vibe.
 export fn verify_pure_builtin_name_agreement() -> Unit with Exception {
+  // The question is about the table, not about a program: forget whatever
+  // program was lowered last (#3176, `idp_note_program_decls`).
+  let no_program: Array[Stmt] = []
+  idp_note_program_decls(no_program)
   let names = idp_pure_builtin_names()
   if Array::length(names) == 0 {
     throw("pure-builtin allowlist is empty: idp_pure_builtin_names() has no entries, so every agreement check below is vacuous")

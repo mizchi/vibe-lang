@@ -2524,6 +2524,13 @@ ur_refused fixtures/err_ordering_derive_imported_foreign_type_refused.vibe 'but 
 # operation beside it could disagree with what an importer was checked against.
 ur_refused fixtures/err_ordering_exact_shape_hand_written_refused.vibe 'is spelled exactly like the prelude' 'remove it and derive it, or rename the type'
 ur_refused fixtures/err_ordering_exact_shape_derive_and_hand_refused.vibe 'is spelled exactly like the prelude' 'remove it and derive it, or rename the type'
+# #3176: a program's own row-variable function spelled like an audited pure
+# builtin (`Future::ready`) is refused exactly as the same function spelled
+# `relay` is. It used to be taken for the builtin: the suspend-class program
+# answered 389 instead of 111, the evidence one trapped at run time. The
+# concrete-row answers are fixtures/pure_builtin_spelling_user_fn_test.vibe.
+ur_refused fixtures/err_pure_builtin_spelling_rowvar_suspend_refused.vibe 'a handler arm captures `resume` as a value' "(here: the call to 'Future::ready')"
+ur_refused fixtures/err_pure_builtin_spelling_rowvar_evidence_refused.vibe 'the pass cannot see through `Future::ready`, whose declared row has a row variable' 'give it a concrete row'
 # #2994: `vibe check` reports the handle-eligibility refusal AT the handled
 # body's first call; it used to carry no position at all.
 hi_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
