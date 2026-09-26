@@ -31,6 +31,7 @@ import @vibe/compiler/core {
   TypeEnv,
   TypeExpr,
   __to_string,
+  array_receiver_reads,
   builtin_iterator_namespace_from_marker,
   builtin_iterator_namespace_markers,
   builtin_iterator_serialized_boundary_markers,
@@ -1595,6 +1596,26 @@ fn dtd_index_refuse(recv: Expr, off: Int, write: Bool) -> Unit {
   }
 }
 
+/// #3145: the refusal for a builtin `Array::*` reader (`array_receiver_reads`)
+/// whose Array argument the checker never resolved.
+fn dtd_array_reader_refuse(name: String, recv: Expr, off: Int) -> Unit {
+  let what = match recv {
+    EIdent(n, _) => String::concat("`", String::concat(n, "`")),
+    EDot(_, f, _, _) => String::concat("field `", String::concat(f, "`")),
+    _ => "its argument"
+  }
+  let msg = String::concat("cannot tell whether this call reads an Array: `", String::concat(name, String::concat("` treats ", String::concat(what, String::concat(" as an Array, but its type is not known here -- annotate it (`xs: Array[T]`); for a Map use the `Map::` operations (#3145)", if off >= 0 {
+    String::concat(" [@off=", String::concat(__to_string(off), "]"))
+  } else {
+    ""
+  })))))
+  if !str_array_contains(dtd_index_refusals, msg) {
+    Array::push(dtd_index_refusals, msg)
+  } else {
+    ()
+  }
+}
+
 fn index_refusals_report() -> Unit with Exception {
   if Array::length(dtd_index_refusals) == 0 {
     ()
@@ -1658,6 +1679,15 @@ fn map_index_rewrite(callee: Expr, args: Array[Expr], rwargs: Array[Expr], struc
       }
       if dtd_typed_index_verdict_for(set_site) == typed_index_open_verdict() {
         dtd_index_refuse(Array::get(args, 0), set_site, true)
+      } else {
+        ()
+      }
+      None
+    } else if typed && site_key >= 0 && array_receiver_reads(nm) && Array::length(args) >= 1 {
+      // #3145: every other builtin that reads an argument as an Array's
+      // backing store (see `array_receiver_reads`), keyed by its own name.
+      if dtd_typed_index_verdict_for(site_key) == typed_index_open_verdict() {
+        dtd_array_reader_refuse(nm, Array::get(args, 0), site_key)
       } else {
         ()
       }

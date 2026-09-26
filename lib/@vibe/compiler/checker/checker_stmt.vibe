@@ -9016,7 +9016,7 @@ fn eq_binop_type_keys_from_capture(checked: CheckedProgram, capture: TypedOccurr
 /// either of which may be a Map at run time -- and "" for anything else, which
 /// is array indexing whatever it turns out to be. Follows the variable chain
 /// only (the `subst_resolves_to_double` cost contract): the head decides.
-fn index_receiver_verdict(checked: CheckedProgram, ty: Type) -> String {
+fn index_receiver_verdict(checked: CheckedProgram, ty: Type, unknown_is_open: Bool) -> String {
   let mut cur = ty
   let seen: Array[Int] = []
   let mut verdict = typed_index_open_verdict()
@@ -9038,6 +9038,11 @@ fn index_receiver_verdict(checked: CheckedProgram, ty: Type) -> String {
         }
       },
       CtUnknown => {
+        if !unknown_is_open {
+          verdict = ""
+        } else {
+          ()
+        }
         done = true
       },
       CtForAll(_, _, _) => {
@@ -9147,9 +9152,21 @@ fn index_receiver_rows_from_capture(checked: CheckedProgram, capture: TypedOccur
   let n = Array::length(capture.binop_offsets)
   let mut i = 0
   while i + 1 < n {
-    if Array::get(capture.binop_kinds, i) == 4 {
+    let kind = Array::get(capture.binop_kinds, i)
+    if kind == 4 || kind == 5 || kind == 6 {
       let off = Array::get(capture.binop_offsets, i)
-      let v = index_receiver_verdict(checked, Array::get(capture.binop_types, i))
+      // #3145: a builtin Array reader (kind 5) is refused only for a type
+      // VARIABLE -- an erased formal, or a generalised lambda's parameter.
+      // A bare `CtUnknown` there is the checker declining to type an
+      // expression it could (a `None` match arm, an untyped builtin result),
+      // not a value that can be anything at run time; the self-build meets
+      // one in `checker_effects.vibe` (`Array::length(callee_effs)`).
+      // Kind 6 is a declared formal the fast path bound (`record_array_receiver`).
+      let v = if kind == 6 {
+        typed_index_open_verdict()
+      } else {
+        index_receiver_verdict(checked, Array::get(capture.binop_types, i), kind == 4)
+      }
       let mut lo = 0
       let mut hi = Array::length(offs)
       while lo < hi {

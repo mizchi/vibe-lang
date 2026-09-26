@@ -81,6 +81,31 @@ export fn typed_index_row_head() -> String {
   "#index"
 }
 
+/// #3145: the builtin `Array::*` operations that treat an argument as an
+/// Array's backing store, and so answer wrongly (or corrupt it) when handed a
+/// Map at run time. Every one of them is audited as positional:
+///
+/// - `length` reads the header's element count, which a Map's store does not
+///   hold as its entry count (measured: 0 for a one-entry map);
+/// - `get` reads a slot by position (out of bounds, or another slot's bytes);
+/// - `set` / `push` / `push_all` / `truncate` write the store or its length;
+/// - `slice` / `concat` / `reverse` / `filter` / `map` / `fold` / `any` /
+///   `all` / `find` walk slots 0..length, so each sees the header answer
+///   above (measured: every one answered as if the map were empty).
+///
+/// The checker binds an unannotated lambda parameter used here to `Array[_]`
+/// (#3006, and #3145 for the special arms that skipped it), so a Map argument
+/// is a type error at its call. What stays open is a declared type parameter
+/// -- its binding in the body does not reach its callers -- and such a site
+/// is refused, the way an index is (#3133 / #3139). A bare `CtUnknown` (an
+/// expression the checker declined to type) is not refused here. `Array::with_capacity` takes no
+/// receiver, and the library-defined helpers (`Array::contains`, ...) declare
+/// `Array[T]` parameters that bind an open argument at the call, so neither is
+/// listed. `concat` / `push_all` read their SECOND argument positionally too.
+export fn array_receiver_reads(name: String) -> Bool {
+  name == "Array::length" || name == "Array::get" || name == "Array::set" || name == "Array::push" || name == "Array::push_all" || name == "Array::slice" || name == "Array::concat" || name == "Array::reverse" || name == "Array::truncate" || name == "Array::any" || name == "Array::all" || name == "Array::find" || name == "Array::filter" || name == "Array::map" || name == "Array::fold"
+}
+
 /// #3133: the receiver is a Map -- the index is `Map::get`.
 export fn typed_index_map_verdict() -> String {
   "#map"
