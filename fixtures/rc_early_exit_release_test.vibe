@@ -566,3 +566,38 @@ test "a let mut reassigned in a loop and returned from it" {
 test "a let mut in a loop body left by break" {
   inspect(mut_brk_in_loop([0, 1, 2, 3]), content = "mj0mj1;mk0;churn0")
 }
+
+// #3181 review: a `let mut` initialized from a struct literal is owned like
+// one initialized from a constructor, so an early exit releases it -- and
+// what the exit hands out must still be alive.
+fn mut_record_ret(c: Bool) -> D {
+  let mut r = R::{ d: A(fresh("rr", 1)) }
+  if c {
+    return r.d
+  }
+  r = R::{ d: A(fresh("rr", 2)) }
+  r.d
+}
+
+fn mut_record_other(c: Bool) -> D {
+  let other = A(fresh("ro", 1))
+  let mut r = R::{ d: A(fresh("ro", 2)) }
+  if c {
+    return other
+  }
+  r.d
+}
+
+test "a let mut struct literal and an early return of its field" {
+  let a = mut_record_ret(true)
+  let x = churn()
+  let b = mut_record_ret(false)
+  inspect(String::join([hold(a), x, hold(b)], ";"), content = "rr1;churn0;rr2")
+}
+
+test "a let mut struct literal released by an early return of another binding" {
+  let a = mut_record_other(true)
+  let x = churn()
+  let b = mut_record_other(false)
+  inspect(String::join([hold(a), x, hold(b)], ";"), content = "ro1;churn0;ro2")
+}

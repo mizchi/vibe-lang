@@ -7805,6 +7805,10 @@ fn rc_exit_operand_ok(e: Expr, local_names: Array[String], ctx: CompileCtx, keep
     EBinOp(op, _, _, _) => op == "+" || op == "-" || op == "*" || op == "/" || op == "%" || op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>" || op == "<" || op == ">" || op == "<=" || op == ">=" || op == "==" || op == "!=" || op == "&&" || op == "||",
     ETuple(items) => rc_exit_operands_ok(items, local_names, ctx, keep),
     EArray(items) => rc_exit_operands_ok(items, local_names, ctx, keep),
+    // A struct literal is a fresh allocation like a tuple or an array: owned
+    // when every field value is (#3181 review -- `let mut r = R::{ .. }` left
+    // by an early exit had a plan drop but no stack entry, and leaked).
+    ERecord(_, fields, _) => rc_exit_record_fields_ok(fields, local_names, ctx, keep),
     EIf(_, t, f) => rc_exit_operand_ok(t, local_names, ctx, keep) && rc_exit_operand_ok(f, local_names, ctx, keep),
     EDot(_, _, _, _) => {
       let root = proj_root_ident(e)
@@ -7834,6 +7838,17 @@ fn rc_exit_operand_ok(e: Expr, local_names: Array[String], ctx: CompileCtx, keep
     },
     _ => false
   }
+}
+
+fn rc_exit_record_fields_ok(fields: Array[(String, Expr)], local_names: Array[String], ctx: CompileCtx, keep: Array[String]) -> Bool with Exception {
+  let mut ok = true
+  let mut i = 0
+  while ok && i < Array::length(fields) {
+    let (_, v) = Array::get(fields, i)
+    ok = rc_exit_operand_ok(v, local_names, ctx, keep)
+    i = i + 1
+  }
+  ok
 }
 
 fn rc_exit_operands_ok(items: Array[Expr], local_names: Array[String], ctx: CompileCtx, keep: Array[String]) -> Bool with Exception {
