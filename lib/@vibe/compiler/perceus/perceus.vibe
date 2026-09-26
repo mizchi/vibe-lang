@@ -77,7 +77,18 @@ export enum PerceusActionKind {
   // struct `x` may release the value the field held before the store (see
   // `plan_setfield_release`). The bump and wasm-gc lanes ignore it, so they
   // keep today's non-releasing store.
-  PaFieldRelease
+  PaFieldRelease;
+  // #3141 early-exit release. An early `return` / `break` / `continue` /
+  // `throw` transfers control past the scope-end drops of every scope it
+  // leaves. The plan numbers the exits in walk order. `PaExitSite` is one
+  // exit: `use_offset` its ordinal, `binding_id` its kind (`pe_exit_*`),
+  // `extra` its operand's fingerprint (`perceus_exit_fingerprint`) and `name`
+  // the innermost enclosing `let` -- codegen checks all four against the exit
+  // it is compiling before it trusts any row of that exit. `PaExitDrop(x)`
+  // asks exit `use_offset` to release binding `x` `extra` times: the
+  // references `x` still holds there. The bump and wasm-gc lanes ignore both.
+  PaExitSite;
+  PaExitDrop
 }
 
 // PerceusAction is defined transparently in this package's contract
@@ -177,6 +188,24 @@ struct PCtx {
   mut mark_ids: Array[Int];
   mut mark_offs: Array[Int];
   mut mark_names: Array[String];
+  // #3141: per binding id, how many of the references the binding holds the
+  // walk has consumed so far -- one per owning occurrence (a dup'd one
+  // consumes its dup, the last one the initial reference) and one per
+  // transfer into a `let` alias. Merged by MAX over branches, so at an exit
+  // it bounds what any path reaching that exit consumed.
+  mut cons: Array[Int];
+  // #3141: the next exit ordinal; the first binding id declared inside the
+  // innermost enclosing `handle` body (what a `throw` there leaves); the
+  // enclosing `let` names, innermost last; and each exit's candidate rows
+  // (aligned), resolved into `PaExitDrop` once the dup budget is known.
+  mut exit_ord: Int;
+  mut handle_floor: Int;
+  mut let_stack: Array[String];
+  mut exit_ids: Array[Int];
+  mut exit_ords: Array[Int];
+  mut exit_rems: Array[Int];
+  mut exit_cons: Array[Int];
+  mut exit_names: Array[String];
   mut actions: Array[PerceusAction]
 }
 
@@ -240,6 +269,15 @@ let pf_split = 2
 let pf_mark_bad = 4
 
 let pf_used_after = 8
+
+// #3141 early-exit release. PF_EXIT_OWNER marks the declaration forms codegen
+// keeps a release-stack entry for -- a `let`, a `let mut` and a parameter --
+// so only they get a `PaExitDrop` row; a pattern binder, a `for` element or a
+// sequencing temp gets none, and still shadows an outer binding of its name.
+// PF_MUT_ASSIGNED marks a `let mut` whose body assigns it.
+let pf_exit_owner = 16
+
+let pf_mut_assigned = 32
 
 fn pe_flag_or(ctx: PCtx, id: Int, bit: Int) -> Unit {
   if id >= 0 && id < Array::length(ctx.decl_flags) {
@@ -335,6 +373,8 @@ fn pe_use(ctx: PCtx, scope: PScope, name: String, use_offset: Int) -> Int {
     // x, ..)` moves (see pe_self_reassign_moves) unless the binding is a
     // scalar, itself a view, or a view of it is still live.
     let move_here = ctx.move_use_id == id && !Array::get(ctx.scalar, id) && !Array::get(ctx.view_call_let, id) && !pe_has_live_view_of(ctx, id)
+    // #3141: an owning occurrence consumes one reference the binding holds.
+    pe_cons_bump(ctx, id)
     if move_here {
       ctx.move_hit = true
       ctx.move_use_id = 0 - 1
@@ -391,6 +431,15 @@ fn pctx_new(borrow_ret_names: Array[String], borrow_param_fns: Array[String], bo
     mark_ids: [],
     mark_offs: [],
     mark_names: [],
+    cons: [],
+    exit_ord: 0,
+    handle_floor: 0,
+    let_stack: [],
+    exit_ids: [],
+    exit_ords: [],
+    exit_rems: [],
+    exit_cons: [],
+    exit_names: [],
     actions: [],
   }
 }
@@ -477,6 +526,17 @@ fn pctx_reset(ctx: PCtx) -> Int {
   Array::truncate(ctx.mark_offs, 0)
   let mnames0: Array[String] = []
   ctx.mark_names = mnames0
+  Array::truncate(ctx.cons, 0)
+  ctx.exit_ord = 0
+  ctx.handle_floor = 0
+  let lets0: Array[String] = []
+  ctx.let_stack = lets0
+  Array::truncate(ctx.exit_ids, 0)
+  Array::truncate(ctx.exit_ords, 0)
+  Array::truncate(ctx.exit_rems, 0)
+  Array::truncate(ctx.exit_cons, 0)
+  let enames0: Array[String] = []
+  ctx.exit_names = enames0
   let actions0: Array[PerceusAction] = []
   ctx.actions = actions0
   0
@@ -573,6 +633,20 @@ export fn pa_is_trunc_release(a: PerceusAction) -> Bool {
 export fn pa_is_view_pin(a: PerceusAction) -> Bool {
   match a.kind {
     PaViewPin => true,
+    _ => false
+  }
+}
+
+export fn pa_is_exit_site(a: PerceusAction) -> Bool {
+  match a.kind {
+    PaExitSite => true,
+    _ => false
+  }
+}
+
+export fn pa_is_exit_drop(a: PerceusAction) -> Bool {
+  match a.kind {
+    PaExitDrop => true,
     _ => false
   }
 }
@@ -893,6 +967,7 @@ fn pe_declare(ctx: PCtx, _name: String) -> Int {
   }
   Array::push(ctx.remaining, init)
   Array::push(ctx.decl_flags, 0)
+  Array::push(ctx.cons, 0)
   ctx.next_id = id + 1
   id
 }
@@ -926,6 +1001,310 @@ fn pe_scope_end(ctx: PCtx, id: Int, name: String) -> Int {
     Array::set(ctx.remaining, id, 0)
   }
   0
+}
+
+// #3141 early-exit release: the exit kinds a `PaExitSite` row carries in
+// `binding_id`. Codegen passes the same numbers for the exit it compiles.
+let pe_exit_return = 0
+
+let pe_exit_break = 1
+
+let pe_exit_continue = 2
+
+let pe_exit_throw = 3
+
+fn pe_cons_bump(ctx: PCtx, id: Int) -> Unit {
+  if id >= 0 && id < Array::length(ctx.cons) {
+    Array::set(ctx.cons, id, Array::get(ctx.cons, id) + 1)
+  } else {
+    ()
+  }
+}
+
+/// #3141: the branch bookkeeping for `cons`, on a stack of its own so it
+/// cannot interleave with `pc_scratch`'s. A frame at `mark` is `[n, the
+/// snapshot (n slots), the running max (n slots)]`; only the prefix of ids
+/// declared before the branch matters, as for `remaining`.
+let pe_cons_scratch: Array[Int] = []
+
+fn pe_cons_begin(ctx: PCtx) -> Int {
+  let mark = Array::length(pe_cons_scratch)
+  let n = Array::length(ctx.cons)
+  Array::push(pe_cons_scratch, n)
+  let mut i = 0
+  while i < n {
+    Array::push(pe_cons_scratch, Array::get(ctx.cons, i))
+    i = i + 1
+  }
+  let mut j = 0
+  while j < n {
+    Array::push(pe_cons_scratch, Array::get(ctx.cons, j))
+    j = j + 1
+  }
+  mark
+}
+
+/// One branch is walked: fold its counts into the running max and restore
+/// the snapshot for the next branch.
+fn pe_cons_arm(ctx: PCtx, mark: Int) -> Unit {
+  let n = Array::get(pe_cons_scratch, mark)
+  let mut i = 0
+  while i < n {
+    let at = mark + 1 + n + i
+    let c = Array::get(ctx.cons, i)
+    if c > Array::get(pe_cons_scratch, at) {
+      Array::set(pe_cons_scratch, at, c)
+    } else {
+      ()
+    }
+    Array::set(ctx.cons, i, Array::get(pe_cons_scratch, mark + 1 + i))
+    i = i + 1
+  }
+}
+
+/// Every branch is walked: leave the max, pop the frame.
+fn pe_cons_end(ctx: PCtx, mark: Int) -> Unit {
+  let n = Array::get(pe_cons_scratch, mark)
+  let mut i = 0
+  while i < n {
+    Array::set(ctx.cons, i, Array::get(pe_cons_scratch, mark + 1 + n + i))
+    i = i + 1
+  }
+  Array::truncate(pe_cons_scratch, mark)
+}
+
+/// #3141: the fingerprint of an exit's operand that codegen recomputes to
+/// check it is compiling the exit a `PaExitSite` row numbers: the first
+/// source offset a pre-order walk meets, or -1. Both sides read the same
+/// tree, so an exit keeps its value. What it cannot tell apart is two exits
+/// of one kind, in one `let` scope, with equal fingerprints (two bare
+/// `break`s, say): a numbering slip between exactly those goes unnoticed.
+export fn perceus_exit_fingerprint(e: Expr) -> Int {
+  let own = match e {
+    EIdent(_, off) => off,
+    EString(_, off) => off,
+    ECall(_, _, off) => off,
+    EBinOp(_, _, _, off) => off,
+    EDot(_, _, off, _) => off,
+    ELet(_, _, _, off) => off,
+    ELetMut(_, _, _, off) => off,
+    _ => 0 - 1
+  }
+  if own >= 0 {
+    own
+  } else {
+    let mark = expr_children_push(e)
+    let end = expr_children_top()
+    let mut i = mark
+    let mut found = 0 - 1
+    while i < end && found < 0 {
+      found = perceus_exit_fingerprint(expr_child_at(i))
+      i = i + 1
+    }
+    expr_children_pop(mark)
+    found
+  }
+}
+
+/// #3141: does `e` assign `name` anywhere (`name = ..` or `name op= ..`)?
+/// Syntactic and blind to shadowing, so an inner binding of the same name
+/// answers yes too -- the direction that withholds rows (`pf_mut_assigned`).
+fn pe_assigns(e: Expr, name: String) -> Bool {
+  let own = match e {
+    EAssign(n, _, _) => n == name,
+    EAssignOp(n, _, _, _) => n == name,
+    _ => false
+  }
+  if own {
+    true
+  } else {
+    let mark = expr_children_push(e)
+    let end = expr_children_top()
+    let mut i = mark
+    let mut found = false
+    while i < end && !found {
+      found = pe_assigns(expr_child_at(i), name)
+      i = i + 1
+    }
+    expr_children_pop(mark)
+    found
+  }
+}
+
+/// #3141: the payload of `perform Exception::Throw(x)` -- `x`, or `EUnit`
+/// for a payload-less throw -- when `callee(args)` is one; codegen lowers
+/// exactly this shape to a wasm `throw` (compile_call's `perform` arm).
+fn pe_throw_payload(scope: PScope, callee: Expr, args: Array[Expr]) -> Option[Expr] {
+  let is_perform = match callee {
+    EIdent(f, _) => f == "perform" && !ps_has(scope, "perform"),
+    _ => false
+  }
+  if is_perform && Array::length(args) > 0 {
+    let op = Array::get(args, 0)
+    let head = match op {
+      EIdent(n, _) => n,
+      ECall(op_callee, _, _) => match op_callee {
+        EIdent(n, _) => n,
+        _ => ""
+      },
+      _ => ""
+    }
+    if is_exception_throw_operation(head) {
+      match op {
+        ECall(_, op_args, _) => if Array::length(op_args) > 0 {
+          Some(Array::get(op_args, 0))
+        } else {
+          Some(EUnit)
+        },
+        _ => Some(EUnit)
+      }
+    } else {
+      None
+    }
+  } else {
+    None
+  }
+}
+
+/// #3141: record an exit. Every binding in scope declared at or after
+/// `floor` (0: the whole function; a loop's or a `handle` body's first id
+/// otherwise) that still holds a reference becomes a candidate row, resolved
+/// by `pe_emit_exit_rows` once the dup budget is known. Only the declaration
+/// forms codegen keeps a release-stack entry for are candidates
+/// (`pf_exit_owner`). A name shadowed further out is skipped, whatever
+/// shadows it: codegen addresses bindings by name, so a row for an inner
+/// pattern binder or `for` element would be applied to the outer binding.
+fn pe_exit(ctx: PCtx, scope: PScope, kind: Int, floor: Int, operand: Expr) -> Unit {
+  let ord = ctx.exit_ord
+  ctx.exit_ord = ord + 1
+  let nl = Array::length(ctx.let_stack)
+  let inner = if nl > 0 {
+    Array::get(ctx.let_stack, nl - 1)
+  } else {
+    ""
+  }
+  Array::push(ctx.actions, PerceusAction::{
+    kind: PaExitSite,
+    name: inner,
+    binding_id: kind,
+    use_offset: ord,
+    extra: perceus_exit_fingerprint(operand)
+  })
+  let seen: Array[String] = []
+  let mut cur = scope
+  let mut walking = true
+  while walking {
+    match cur {
+      PsBind(n, id, rest) => {
+        if !name_in(seen, n) {
+          Array::push(seen, n)
+          if id >= floor && id < Array::length(ctx.remaining) && pe_flag_has(ctx, id, pf_exit_owner) && Array::get(ctx.remaining, id) > 0 && !Array::get(ctx.scalar, id) && !Array::get(ctx.view_call_let, id) {
+            Array::push(ctx.exit_ids, id)
+            Array::push(ctx.exit_ords, ord)
+            Array::push(ctx.exit_rems, Array::get(ctx.remaining, id))
+            Array::push(ctx.exit_cons, Array::get(ctx.cons, id))
+            Array::push(ctx.exit_names, n)
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+        cur = rest
+      },
+      PsNil => walking = false
+    }
+  }
+}
+
+/// #3141: resolve the exits' candidate rows. At an exit a binding holds its
+/// initial reference plus every dup the plan budgeted (codegen realizes them
+/// all at the declaration), minus what the paths reaching the exit consumed
+/// -- at least `1 + dups - cons`, `cons` being the max over those paths. It
+/// also holds no more than `remaining` of them that the rest of the body
+/// would consume or drop. The smaller of the two is released; a binding
+/// with none left gets no row.
+///
+/// A `let mut` holds the same count for the value its slot holds NOW: every
+/// store gives the slot one reference plus the whole dup budget again
+/// (compile_expr_tail's ELetMut / EAssign lowering), and `cons` counts the
+/// consumes since the declaration, so it can only overstate what the paths
+/// since the last store took. The exception is a budget that a store does
+/// not re-apply -- the self-reusing tuple store leaves the slot one
+/// reference -- so an assigned `let mut` with a dup budget gets no row, and
+/// the leak it had before. With no budget every store leaves exactly one.
+fn pe_emit_exit_rows(ctx: PCtx) -> Unit {
+  if Array::length(ctx.exit_ids) > 0 {
+    let dups = zeros(ctx.next_id)
+    let mut ai = 0
+    while ai < Array::length(ctx.actions) {
+      let a = Array::get(ctx.actions, ai)
+      if pa_is_dup(a) && a.binding_id >= 0 && a.binding_id < Array::length(dups) {
+        Array::set(dups, a.binding_id, Array::get(dups, a.binding_id) + 1)
+      } else {
+        ()
+      }
+      ai = ai + 1
+    }
+    let mut ei = 0
+    while ei < Array::length(ctx.exit_ids) {
+      let id = Array::get(ctx.exit_ids, ei)
+      let held = if id >= Array::length(dups) {
+        0
+      } else if Array::get(dups, id) > 0 && pe_flag_has(ctx, id, pf_mut_assigned) {
+        0
+      } else {
+        1 + Array::get(dups, id) - Array::get(ctx.exit_cons, ei)
+      }
+      let rem = Array::get(ctx.exit_rems, ei)
+      let count = if held < rem {
+        held
+      } else {
+        rem
+      }
+      if count > 0 {
+        Array::push(ctx.actions, PerceusAction::{
+          kind: PaExitDrop,
+          name: Array::get(ctx.exit_names, ei),
+          binding_id: id,
+          use_offset: Array::get(ctx.exit_ords, ei),
+          extra: count
+        })
+      } else {
+        ()
+      }
+      ei = ei + 1
+    }
+  } else {
+    ()
+  }
+}
+
+/// #3141: copy a plan's exit rows out in the form codegen reads: one `names`
+/// entry and four `info` ints per row -- `[0, ordinal, kind, fingerprint]`
+/// for a `PaExitSite` (its name the innermost `let`) and `[1, ordinal, count,
+/// 0]` for a `PaExitDrop` (its name the binding).
+export fn perceus_exit_rows(plan: Array[PerceusAction], names: Array[String], info: Array[Int]) -> Unit {
+  let mut i = 0
+  while i < Array::length(plan) {
+    let a = Array::get(plan, i)
+    if pa_is_exit_site(a) {
+      Array::push(names, a.name)
+      Array::push(info, 0)
+      Array::push(info, a.use_offset)
+      Array::push(info, a.binding_id)
+      Array::push(info, a.extra)
+    } else if pa_is_exit_drop(a) {
+      Array::push(names, a.name)
+      Array::push(info, 1)
+      Array::push(info, a.use_offset)
+      Array::push(info, a.extra)
+      Array::push(info, 0)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
 }
 
 /// #1915 mechanism 3 (see the EIf arm of pc_emit): both branches are the
@@ -2663,6 +3042,13 @@ fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
         }
         i = i + 1
       }
+      // #3141: `throw(x)` is `perform Exception::Throw(x)`, which codegen
+      // lowers to a wasm `throw` right after its payload.
+      let thrown = pe_throw_payload(scope, callee, args)
+      match thrown {
+        Some(payload) => pe_exit(ctx, scope, pe_exit_throw, ctx.handle_floor, payload),
+        None => ()
+      }
       0
     },
     EDot(obj, _field, _, _) => match obj {
@@ -2741,7 +3127,16 @@ fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
             // #2389: with no dup emitted above this occurrence TRANSFERS the
             // source's initial reference, exactly as pe_use's last owning use
             // does -- same condition, negated.
-            pe_note_initial_ref_spent(ctx, sid, src, src_off, rem == 1 && !src_last_view && !src_keeps && !Array::get(ctx.scalar, sid))
+            let alias_transfers = rem == 1 && !src_last_view && !src_keeps && !Array::get(ctx.scalar, sid)
+            pe_note_initial_ref_spent(ctx, sid, src, src_off, alias_transfers)
+            // #3141: a transfer hands the alias the source's reference; a
+            // dup'd alias takes a reference of its own and leaves the
+            // source's untouched.
+            if alias_transfers {
+              pe_cons_bump(ctx, sid)
+            } else {
+              ()
+            }
             if rem > 1 || (rem == 1 && !(src_keeps && !Array::get(ctx.scalar, sid))) {
               Array::set(ctx.remaining, sid, rem - 1)
             } else {
@@ -2755,6 +3150,7 @@ fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
         _ => pc_emit(ctx, scope, value)
       }
       let id = pe_declare(ctx, name)
+      pe_flag_or(ctx, id, pf_exit_owner)
       // #2389: a plain `let` is the one declaration form whose local still
       // holds the same value at scope end that a consume moved out of.
       if !Array::get(ctx.scalar, id) && !Array::get(ctx.view_call_let, id) {
@@ -2765,12 +3161,20 @@ fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
       if elide_dead_alias {
         Array::set(ctx.remaining, id, 0)
       }
+      Array::push(ctx.let_stack, name)
       pc_emit(ctx, PsBind(name, id, scope), body)
+      Array::truncate(ctx.let_stack, Array::length(ctx.let_stack) - 1)
       pe_scope_end(ctx, id, name)
     },
     ELetMut(name, value, body, _) => {
       pc_emit(ctx, scope, value)
       let id = pe_declare(ctx, name)
+      pe_flag_or(ctx, id, pf_exit_owner)
+      if pe_assigns(body, name) {
+        pe_flag_or(ctx, id, pf_mut_assigned)
+      } else {
+        ()
+      }
       pc_emit(ctx, PsBind(name, id, scope), body)
       pe_scope_end(ctx, id, name)
     },
@@ -2801,6 +3205,15 @@ fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
       ctx.move_use_id = 0 - 1
       if ctx.move_hit {
         Array::set(ctx.remaining, mid, Array::get(ctx.remaining, mid) + 1)
+        // #3141: and the reference the move spent is replaced by the one the
+        // binding now holds for the result, so it no longer counts as
+        // consumed at a later exit. The occurrence bumped it in `pe_use`, so
+        // this never takes it below what the value walk found.
+        if Array::get(ctx.cons, mid) > 0 {
+          Array::set(ctx.cons, mid, Array::get(ctx.cons, mid) - 1)
+        } else {
+          ()
+        }
       } else {
         ()
       }
@@ -2880,7 +3293,9 @@ fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
       } else {
         let n = Array::length(ctx.remaining)
         let snap = pc_snap(ctx.remaining)
+        let cmark = pe_cons_begin(ctx)
         pc_emit(ctx, scope, then_e)
+        pe_cons_arm(ctx, cmark)
         // #1100 alloc cut: swap the prefix instead of taking a SECOND copy —
         // one pass both restores `remaining` to the pre-branch values (what
         // restore_prefix did) and captures the then-branch's values into
@@ -2896,6 +3311,8 @@ fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
           sw = sw + 1
         }
         pc_emit(ctx, scope, else_e)
+        pe_cons_arm(ctx, cmark)
+        pe_cons_end(ctx, cmark)
         // #705: leave the MIN remaining over both branches. A binding consumed in
         // one branch (e.g. a param threaded into a ctor in the `then`) but not the
         // other was previously left at the `else` branch's (higher) remaining, so
@@ -2942,14 +3359,29 @@ fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
       ctx.loop_floor = saved_floor
       0
     },
-    EReturn(e) => pc_emit(ctx, scope, e),
+    EReturn(e) => {
+      pc_emit(ctx, scope, e)
+      pe_exit(ctx, scope, pe_exit_return, 0, e)
+      0
+    },
     ESpread(e) => pc_emit(ctx, scope, e),
     ELabeledArg(_l, _n, e) => pc_emit(ctx, scope, e),
-    EBreak(opt) => match opt {
-      Some(e) => pc_emit(ctx, scope, e),
-      None => 0
-    }
-    ,
+    EBreak(opt) => {
+      match opt {
+        Some(e) => {
+          pc_emit(ctx, scope, e)
+          pe_exit(ctx, scope, pe_exit_break, ctx.loop_floor, e)
+        },
+        None => pe_exit(ctx, scope, pe_exit_break, ctx.loop_floor, EUnit)
+      }
+      0
+    },
+    // #3141: codegen compiles no `continue` payload (the parameterized loop
+    // is lowered before this plan), so neither does the plan.
+    EContinue(_) => {
+      pe_exit(ctx, scope, pe_exit_continue, ctx.loop_floor, EUnit)
+      0
+    },
     EFn(_tp, _tb, params, _ret, _eff, fbody) => {
       let caps = collect_free_vars(fbody, fn_param_names(params), [])
       let mut i = 0
@@ -3102,6 +3534,7 @@ fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
         }
         let ccount = Array::length(pc_scratch) - cmark
         let cmax = pc_snap_zeros(ccount)
+        let consmark = pe_cons_begin(ctx)
         let mut a = 0
         while a < Array::length(arms) {
           let arm = Array::get(arms, a)
@@ -3143,8 +3576,10 @@ fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
             }
             cj = cj + 1
           }
+          pe_cons_arm(ctx, consmark)
           a = a + 1
         }
+        pe_cons_end(ctx, consmark)
         let mut ck = 0
         while ck < ccount {
           let cid = Array::get(pc_scratch, cmark + ck)
@@ -3163,7 +3598,16 @@ fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
     EHandle(hbody, arms) => {
       let n = Array::length(ctx.remaining)
       let snap = pc_snap(ctx.remaining)
+      // #3141: a `throw` in the body leaves exactly the bindings the body
+      // declares; the handler arms run outside it.
+      let saved_handle_floor = ctx.handle_floor
+      ctx.handle_floor = ctx.next_id
       pc_emit(ctx, scope, hbody)
+      ctx.handle_floor = saved_handle_floor
+      // An arm runs after SOME prefix of the body, so it starts from what the
+      // whole body consumed: `cons` must bound every path, and `remaining`
+      // (restored to the pre-body counts below) does not.
+      let consmark = pe_cons_begin(ctx)
       let minrem = pc_snap(ctx.remaining)
       let mut a = 0
       while a < Array::length(arms) {
@@ -3196,8 +3640,10 @@ fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
           }
           mi = mi + 1
         }
+        pe_cons_arm(ctx, consmark)
         a = a + 1
       }
+      pe_cons_end(ctx, consmark)
       pc_snap_restore(ctx.remaining, minrem, n)
       Array::truncate(pc_scratch, snap)
       0
@@ -3652,6 +4098,7 @@ export fn build_perceus_plan(body: Expr) -> Array[PerceusAction] {
   ctx.next_id = 0
   ctx.seq_id = 0
   pc_emit(ctx, empty, body)
+  pe_emit_exit_rows(ctx)
   ctx.actions
 }
 
@@ -5683,6 +6130,7 @@ fn build_perceus_plan_in_ctx(ctx: PCtx, params: Array[(String, Option[TypeExpr])
   while pj < Array::length(params) {
     let (pname, _) = Array::get(params, pj)
     let id = pe_declare(ctx, pname)
+    pe_flag_or(ctx, id, pf_exit_owner)
     scope2 = PsBind(pname, id, scope2)
     Array::push(param_ids, id)
     pj = pj + 1
@@ -5711,6 +6159,10 @@ fn build_perceus_plan_in_ctx(ctx: PCtx, params: Array[(String, Option[TypeExpr])
   // same reason -- they are neither drops nor dups, so every consumer that
   // reads `out_param_drop_start` skips them.
   pe_emit_path_release(ctx)
+  // #3141: the early-exit release rows, after the same suffix for the same
+  // reason. The dup budget they read is the whole plan's, so they come after
+  // every dup row.
+  pe_emit_exit_rows(ctx)
   // #2837: the truncate-release rows, after the same suffix -- neither drops
   // nor dups, so every consumer reading `out_param_drop_start` skips them.
   plan_truncate_release(body, ctx.actions)

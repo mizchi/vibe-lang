@@ -1,0 +1,140 @@
+//# Imports
+
+// #3141: an early `return` / `break` / `continue` / `throw` leaves scopes
+// whose scope-end drops it jumps past. The plan numbers the exits
+// (`exit_site:ORD:KIND`, named by the innermost enclosing `let`) and says how
+// many references each binding the exit leaves still holds there
+// (`exit_drop:ORD:COUNT`); codegen releases exactly those. The runtime halves
+// are fixtures/rc_early_exit_bounded_test.vibe (tests/gates/mid/run.sh,
+// 40f0h) and fixtures/rc_early_exit_release_test.vibe.
+
+import @vibe/compiler/runtime {
+  rc_plan_source
+}
+
+//# Functions
+
+fn plan_of(source: String) -> String with Exception {
+  rc_plan_source(source, "run")
+}
+
+let prologue = "enum D {\n  A(Array[Int])\n}\n\nfn keep(d: D) -> D {\n  d\n}\n\n"
+
+let epilogue = "\nlet main: () -> Int = () -> {\n  run(1)\n}"
+
+fn program(body: String) -> String {
+  String::concat(prologue, String::concat(body, epilogue))
+}
+
+test "a return releases a binding the early path never consumed" {
+  let plan = plan_of(program("let run: (Int) -> Int = (n) -> {\n  let d = A([n])\n  if n > 0 {\n    return 1\n  }\n  let e = keep(d)\n  0\n}"))
+  assert(String::contains(plan, "run d exit_site:0:0 1"))
+  assert(String::contains(plan, "run d exit_drop:0:1 1"))
+}
+
+test "a return releases the references kept for later uses" {
+  // `d` is dup'd once for its two owning uses after the guard; the early path
+  // holds both references.
+  let plan = plan_of(program("let run: (Int) -> Int = (n) -> {\n  let d = A([n])\n  if n > 0 {\n    return 1\n  }\n  let e = keep(d)\n  let f = keep(d)\n  0\n}"))
+  assert(String::contains(plan, "run d exit_drop:0:2 1"))
+}
+
+test "a returned binding is not released, the one beside it is" {
+  let plan = plan_of(program("let run: (Int) -> D = (n) -> {\n  let d = A([n])\n  let e = A([n])\n  if n > 0 {\n    return d\n  }\n  e\n}"))
+  assert(!String::contains(plan, "run d exit_drop"))
+  assert(String::contains(plan, "run e exit_drop:0:1 1"))
+}
+
+test "a returned binding with a later use keeps the returned reference" {
+  // The return takes the dup; the reference kept for `keep(d)` is released.
+  let plan = plan_of(program("let run: (Int) -> D = (n) -> {\n  let d = A([n])\n  if n > 0 {\n    return d\n  }\n  keep(d)\n}"))
+  assert(String::contains(plan, "run d exit_drop:0:1 1"))
+}
+
+test "a break leaves the loop body only" {
+  let plan = plan_of(program("let run: (Int) -> Int = (n) -> {\n  let outer = A([n])\n  let mut i = 0\n  while i < 3 {\n    let d = A([i])\n    if i == 1 {\n      break\n    }\n    i = i + 1\n  }\n  let e = keep(outer)\n  0\n}"))
+  assert(String::contains(plan, "run d exit_site:0:1 1"))
+  assert(String::contains(plan, "run d exit_drop:0:1 1"))
+  assert(!String::contains(plan, "run outer exit_drop"))
+}
+
+test "a continue leaves the loop body only" {
+  let plan = plan_of(program("let run: (Int) -> Int = (n) -> {\n  let outer = A([n])\n  let mut i = 0\n  while i < 3 {\n    i = i + 1\n    let d = A([i])\n    if i == 1 {\n      continue\n    }\n    let e = keep(d)\n  }\n  let f = keep(outer)\n  0\n}"))
+  assert(String::contains(plan, "run d exit_site:0:2 1"))
+  assert(String::contains(plan, "run d exit_drop:0:1 1"))
+  assert(!String::contains(plan, "run outer exit_drop"))
+}
+
+test "a throw inside a handle leaves the handle body only" {
+  let plan = plan_of(program("let run: (Int) -> Int = (n) -> {\n  let outer = A([n])\n  let r = handle {\n    let d = A([n])\n    if n > 0 {\n      throw(\"x\")\n    }\n    let e = keep(d)\n    0\n  } with {\n    Exception::Throw(_) => 1\n  }\n  let f = keep(outer)\n  r\n}"))
+  // `throw(x)` binds its payload first (`__exn_payload0`), so that is the
+  // innermost `let` the site names.
+  assert(String::contains(plan, "run __exn_payload0 exit_site:0:3 1"))
+  assert(String::contains(plan, "run d exit_drop:0:1 1"))
+  assert(!String::contains(plan, "run outer exit_drop"))
+}
+
+test "a throw with no handle leaves the whole function" {
+  let plan = plan_of(program("let run: (Int) -> Int with Exception = (n) -> {\n  let d = A([n])\n  if n > 0 {\n    throw(\"x\")\n  }\n  let e = keep(d)\n  0\n}"))
+  assert(String::contains(plan, "run d exit_drop:0:1 1"))
+}
+
+test "a binding consumed on the way to the exit is not released" {
+  let plan = plan_of(program("let run: (Int) -> Int = (n) -> {\n  let d = A([n])\n  let e = keep(d)\n  if n > 0 {\n    return 1\n  }\n  0\n}"))
+  assert(!String::contains(plan, "run d exit_drop"))
+  assert(String::contains(plan, "run e exit_drop:0:1 1"))
+}
+
+test "a binding consumed on one branch before the exit is not released" {
+  // The consuming branch may be the path that reaches the exit.
+  let plan = plan_of(program("let run: (Int) -> Int = (n) -> {\n  let d = A([n])\n  if n > 5 {\n    let e = keep(d)\n    0\n  } else {\n    0\n  }\n  if n > 0 {\n    return 1\n  }\n  0\n}"))
+  assert(!String::contains(plan, "exit_drop"))
+}
+
+test "exits are numbered in walk order" {
+  let plan = plan_of(program("let run: (Int) -> Int = (n) -> {\n  let d = A([n])\n  if n > 1 {\n    return 1\n  }\n  let e = A([n])\n  if n > 0 {\n    return 2\n  }\n  let f = keep(d)\n  let g = keep(e)\n  0\n}"))
+  assert(String::contains(plan, "run d exit_site:0:0 1"))
+  assert(String::contains(plan, "run e exit_site:1:0 1"))
+  assert(String::contains(plan, "run d exit_drop:0:1 1"))
+  assert(String::contains(plan, "run d exit_drop:1:1 1"))
+  assert(String::contains(plan, "run e exit_drop:1:1 1"))
+}
+
+test "a pattern binder or a for element gets no row" {
+  // Codegen releases only a `let`, a `let mut` or a parameter, and addresses
+  // a row by NAME: a row for a binder could only be applied to an owned
+  // binding the binder shadows.
+  let arm = plan_of(program("let run: (Int) -> Int = (n) -> {\n  let e = A([n])\n  match e {\n    A(xs) => if n > 0 {\n      return 1\n    } else {\n      ()\n    }\n  }\n  0\n}"))
+  assert(String::contains(arm, "run e exit_drop:0:1 1"))
+  assert(!String::contains(arm, "run xs exit_drop"))
+  let elem = plan_of(program("let run: (Int) -> Int = (n) -> {\n  for x in [A([n])] {\n    if n > 0 {\n      return 1\n    }\n  }\n  0\n}"))
+  assert(String::contains(elem, "exit_site:0:0"))
+  assert(!String::contains(elem, "run x exit_drop"))
+}
+
+test "an unassigned let mut is released like a let" {
+  let plan = plan_of(program("let run: (Int) -> Int = (n) -> {\n  let mut d = A([n])\n  if n > 0 {\n    return 1\n  }\n  let e = keep(d)\n  let f = keep(d)\n  0\n}"))
+  assert(String::contains(plan, "run d exit_drop:0:2 1"))
+}
+
+test "a let mut with no dup budget is released once, stored before the exit or after" {
+  // Every store leaves the slot exactly one reference to what it stored.
+  let before = plan_of(program("let run: (Int) -> Int = (n) -> {\n  let mut d = A([n])\n  d = A([n])\n  if n > 0 {\n    return 1\n  }\n  let e = keep(d)\n  0\n}"))
+  assert(String::contains(before, "run d exit_drop:0:1 1"))
+  let after = plan_of(program("let run: (Int) -> Int = (n) -> {\n  let mut d = A([n])\n  if n > 0 {\n    return 1\n  }\n  d = A([n])\n  let e = keep(d)\n  0\n}"))
+  assert(String::contains(after, "run d exit_drop:0:1 1"))
+}
+
+test "a stored let mut with a dup budget is not released" {
+  // A store re-applies the dup budget -- except the self-reusing tuple
+  // store -- so what the slot holds at the exit is not known.
+  let plan = plan_of(program("let run: (Int) -> Int = (n) -> {\n  let mut d = A([n])\n  d = A([n])\n  if n > 0 {\n    return 1\n  }\n  let e = keep(d)\n  let f = keep(d)\n  0\n}"))
+  assert(String::contains(plan, "exit_site:0:0"))
+  assert(!String::contains(plan, "run d exit_drop"))
+}
+
+test "a let mut a call moves out of and back into is released once" {
+  // `d = keep(d)` spends the slot's reference and stores the result's.
+  let plan = plan_of(program("let run: (Int) -> Int = (n) -> {\n  let mut d = A([n])\n  let mut i = 0\n  while i < 3 {\n    d = keep(d)\n    i = i + 1\n  }\n  if n > 0 {\n    return 1\n  }\n  0\n}"))
+  assert(String::contains(plan, "run d exit_drop:0:1 1"))
+}
