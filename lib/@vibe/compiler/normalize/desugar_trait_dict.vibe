@@ -7585,10 +7585,30 @@ fn expand_seed_constructor_alias(ty: TypeExpr, tparams: Array[String], fuel: Int
 /// made at use time against the in-scope dict bindings. Both kinds are tracked;
 /// `tparams` prevents a same-spelled formal from expanding through a global alias.
 fn seed_var_types(params: Array[(String, Option[TypeExpr])], tparams: Array[String], base: Array[(String, String)]) -> Array[(String, String)] {
+  // A parameter shadows every outer binding of its name. An unannotated one
+  // records nothing below, so the outer entry used to stay visible: a lambda
+  // parameter `m` shadowing an outer `m: StringMap[Int]` had its `m[0]`
+  // rewritten to `Map::get` by the spelling (#3133 review). Drop the outer
+  // entries -- the plain name and the keys derived from it -- first.
+  let shadowed = array_empty()
+  for param in params {
+    let (raw_pname, _) = param
+    let pname = strip_label_tilde(raw_pname)
+    Array::push(shadowed, pname)
+    Array::push(shadowed, shape_key(pname))
+    Array::push(shadowed, eq_shape_key(pname))
+    Array::push(shadowed, constructor_head_key(pname))
+    Array::push(shadowed, dtd_interp_lamret_key(pname))
+  }
   let out = array_empty()
   let mut b = 0
   while b < Array::length(base) {
-    Array::push(out, Array::get(base, b))
+    let (bn, _) = Array::get(base, b)
+    if !str_array_contains(shadowed, bn) {
+      Array::push(out, Array::get(base, b))
+    } else {
+      ()
+    }
     b = b + 1
   }
   let mut i = 0
