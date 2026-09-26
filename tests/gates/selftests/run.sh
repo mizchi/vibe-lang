@@ -60,7 +60,8 @@ fi
 # reduced mod N, so any N is a complete partition.
 in_shard() { [ $(($1 % shard_n)) -eq "$shard_i" ]; }
 
-echo "[compiler-gate] selftests (shard $shard_i/$shard_n): gate self-tests, serially"
+echo "[compiler-gate] selftests: every gate self-test, serially"
+echo "  shard $shard_i/$shard_n"
 VIBE_GATE_SELF_TESTS_SHARD="$shard_i/$shard_n" bash "$ROOT_DIR/scripts/check_gate_self_tests.sh"
 if in_shard 0; then bash "$ROOT_DIR/scripts/check_gate_self_tests_test.sh"; fi
 # The gate LIBRARY's own helpers. check_gate_self_tests.sh discovers companions
