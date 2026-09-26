@@ -189,10 +189,14 @@ EOF
 # each need their own tree, and then they would no longer be testing this one.
 # One companion, run the way its spelling requires. `node --test` is how
 # Taskfile.pkl already runs the `.test.mjs` ones.
+# The shard is THIS driver's input, never a companion's: a companion that runs
+# a scratch copy of this driver (check_gate_self_tests_test.sh does) would
+# otherwise inherit I/N and silently skip its own scratch companions -- which
+# is how shard 1/3 once reported "a FAILING companion was accepted" (#3171).
 run_companion() {
   case "$1" in
-    *.test.mjs) node --test "$1" ;;
-    *) bash "$1" ;;
+    *.test.mjs) env -u VIBE_GATE_SELF_TESTS_SHARD node --test "$1" ;;
+    *) env -u VIBE_GATE_SELF_TESTS_SHARD bash "$1" ;;
   esac
 }
 

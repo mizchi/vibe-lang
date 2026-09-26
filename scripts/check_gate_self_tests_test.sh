@@ -8,6 +8,9 @@ CHECK="$ROOT_DIR/scripts/check_gate_self_tests.sh"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/vibe_gate_selftests.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
+# Every case below picks its own shard; one inherited from the caller (a CI
+# shard running this companion) would make the scratch suite skip companions.
+unset VIBE_GATE_SELF_TESTS_SHARD
 mkdir -p "$WORK/scripts"
 fail() { echo "[gate-self-tests-test] FAIL: $1" >&2; exit 1; }
 # Bookkeeping cases run with execution OFF (the scratch stubs would only prove
@@ -248,6 +251,16 @@ for bad in 3/3 x 1/ /3 1/2/3 0/0; do
   grep -q "is not I/N" "$WORK/out" || { cat "$WORK/out" >&2; fail "shard '$bad' was refused without saying why"; }
 done
 echo "  ok  a malformed shard is refused"
+
 rm -f "$WORK"/scripts/check_s?.sh "$WORK"/scripts/check_s?_test.sh
+# The shard is the driver's input only. A companion that runs a scratch copy of
+# the driver -- this file is one -- would inherit I/N and skip its own scratch
+# companions, passing cases it should fail (#3171, shard 1/3).
+printf '#!/usr/bin/env bash\n[ -z "${VIBE_GATE_SELF_TESTS_SHARD+x}" ] || { echo "inherited shard: $VIBE_GATE_SELF_TESTS_SHARD" >&2; exit 1; }\n' \
+  > "$WORK/scripts/check_thing_test.sh"
+VIBE_GATE_SELF_TESTS_SHARD="0/1" run_exec || { cat "$WORK/out" >&2; fail "a companion inherited the driver's shard"; }
+printf '#!/usr/bin/env bash\nexit 0\n' > "$WORK/scripts/check_thing_test.sh"
+echo "  ok  a companion does not inherit the driver's shard"
+
 
 echo "[gate-self-tests-test] ok"
