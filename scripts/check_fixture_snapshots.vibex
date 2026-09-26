@@ -49,7 +49,10 @@ fn collect(root: String) -> Array[String] with Fs {
       i = i + 1
     }
   } else {
-    ()
+    // A root that is not a directory was not scanned, and an unscanned corpus
+    // is not a clean one. The Node original failed here (readdirSync threw);
+    // returning no failures certified a deleted or mis-mounted tree as clean.
+    Array::push(failures, root + ": not a directory, so no fixture was checked; run from the repository root")
   }
   sort_str(failures)
 }
@@ -153,6 +156,14 @@ fn self_test() -> Unit with Fs + Console + Stderr + Process {
   expect_hit(root, "fixtures/warnings/clean.diag")
   Fs::remove(empty)
   expect_clean(root, "after removing diag files")
+  // An absent root fails closed instead of reading as an empty, clean tree.
+  let absent = collect(base + "/no-such-fixtures")
+  if Array::length(absent) != 1 || !String::contains(joined(absent), "not a directory") {
+    eprintln("fixture-snapshots: a missing root must fail, got: " + joined(absent))
+    exit(1)
+  } else {
+    ()
+  }
   remove_if(base)
   println("fixture snapshot guard: ok")
 }

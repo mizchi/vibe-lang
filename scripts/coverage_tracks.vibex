@@ -29,10 +29,27 @@ struct Track {
   min_rate: Double
 }
 
-fn env_double(name: String, fallback: Double) -> Double with Env {
-  match Double::parse(Env::get(name)) {
+/// A floor from the environment: unset or blank means the default, and
+/// anything else must parse. A typo such as `40,03` used to fall back to the
+/// default -- for the self-compile floor that is 0.0, so a ratchet someone
+/// set was silently switched off. The Python original raised on it.
+fn parse_floor(raw: String, fallback: Double) -> Option[Double] {
+  let text = String::trim(raw)
+  if text == "" {
+    Some(fallback)
+  } else {
+    Double::parse(text)
+  }
+}
+
+fn env_double(name: String, fallback: Double) -> Double with Env + Stderr + Process {
+  let raw = Env::get(name)
+  match parse_floor(raw, fallback) {
     Some(v) => v,
-    None => fallback
+    None => {
+      die("[coverage-tracks] " + name + "='" + raw + "' is not a number; unset it for the default")
+      fallback
+    }
   }
 }
 
@@ -89,21 +106,29 @@ fn format_rate(d: Double) -> String {
   if neg { "-" + body } else { body }
 }
 
-fn round_hundredths(d: Double) -> Double {
-  let neg = d < 0.0
-  let abs = if neg { 0.0 - d } else { d }
-  let scaled = Double::to_int(abs * 100.0 + 0.5)
-  let rounded = Int::to_double(scaled) / 100.0
-  if neg { 0.0 - rounded } else { rounded }
-}
-
+/// hit/total as a percentage rounded to hundredths, half to even -- Python's
+/// `round(x, 2)`, which the replaced script used. Computed on the integers:
+/// the percentage in hundredths is hit*10000/total exactly, so a tie is a
+/// remainder of exactly half the divisor and needs no reasoning about how a
+/// Double represents 3.125. Adding 0.5 instead rounded 1/32 up to 3.13, and a
+/// 3.13 floor then passed a rate Python reported as 3.12.
 fn pct(hit: Int, total: Int) -> Double {
-  if total == 0 {
+  if total <= 0 {
     0.0
   } else {
-    // The printed rate is already rounded to hundredths. Compare that same
-    // value to the floor, or a 40.029 that prints as 40.03 fails a 40.03 floor.
-    round_hundredths(Int::to_double(hit) / Int::to_double(total) * 100.0)
+    // The printed rate is this rounded value, and so is the one compared to
+    // the floor, or a 40.029 that prints as 40.03 fails a 40.03 floor.
+    let num = hit * 10000
+    let q = num / total
+    let twice_r = (num - q * total) * 2
+    let hundredths = if twice_r > total {
+      q + 1
+    } else if twice_r == total && q % 2 == 1 {
+      q + 1
+    } else {
+      q
+    }
+    Int::to_double(hundredths) / 100.0
   }
 }
 
@@ -251,6 +276,15 @@ fn self_test() -> Unit with Fs + Console + Stderr + Process {
   expect(Array::get(only, 0).name == "self-compile", "the one track is self-compile")
   expect(format_rate(Array::get(only, 0).rate) == "40.03", "10703/26738 is 40.03, got " + format_rate(Array::get(only, 0).rate))
   expect(!rate_below(Array::get(only, 0).rate, 40.03), "the printed 40.03 meets a 40.03 floor")
+  // Ties go to even, as Python's round(x, 2) does: 1/32 is exactly 3.125.
+  expect(format_rate(pct(1, 32)) == "3.12", "1/32 rounds half to even (3.12), got " + format_rate(pct(1, 32)))
+  expect(rate_below(pct(1, 32), 3.13), "3.12 must miss a 3.13 floor")
+  expect(format_rate(pct(3, 32)) == "9.38", "3/32 is 9.375, which rounds to even 9.38, got " + format_rate(pct(3, 32)))
+  expect(format_rate(pct(0, 0)) == "0.0", "an empty corpus is 0.0")
+  // A floor that is set must parse; unset or blank is the default.
+  expect(parse_floor("", 57.0) == Some(57.0), "blank floor is the default")
+  expect(parse_floor(" 40.03 ", 0.0) == Some(40.03), "a padded floor parses")
+  expect(parse_floor("40,03", 0.0) == None, "a malformed floor is refused, not replaced by the default")
   expect(format_rate(57.88) == "57.88", "57.88")
   expect(format_rate(57.0) == "57.0", "57.0")
   expect(format_rate(0.0) == "0.0", "0.0")

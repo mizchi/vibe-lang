@@ -49,6 +49,24 @@ fn normalize_path(file: String, root: String) -> String {
   String::replace_all(rel, "\\", "/")
 }
 
+/// The directory keys are made relative to. The Node original resolved
+/// `--root` against the working directory and defaulted it to the working
+/// directory itself; without that, an absolute file list keeps absolute keys,
+/// no key in the weights file matches, and every file silently weighs the
+/// default -- round-robin wearing a weighted name. `--root .` (the documented
+/// spelling) needed the same resolution to match an absolute path at all.
+fn resolve_root(opt: String, cwd: String) -> String {
+  if opt == "" || opt == "." || opt == "./" {
+    cwd
+  } else if String::starts_with(opt, "/") {
+    opt
+  } else if String::starts_with(opt, "./") {
+    cwd + "/" + String::substring(opt, 2, String::length(opt))
+  } else {
+    cwd + "/" + opt
+  }
+}
+
 fn weight_num(v: Json) -> Double {
   let parsed = match Json::type_of(v) {
     "number" => Some(Json::number(v)),
@@ -279,6 +297,16 @@ fn self_test() -> Unit with Fs + Console + Stderr + Process {
     normalize_path(root + "/lib/@vibe/compiler/a_test.vibe", root) == "lib/@vibe/compiler/a_test.vibe",
     "absolute path stays relative"
   )
+  // No --root, or `--root .`, means the working directory, so an absolute
+  // file list still yields the relative keys the weights file uses.
+  expect(resolve_root("", root) == root, "an omitted --root is the working directory")
+  expect(resolve_root(".", root) == root, "--root . is the working directory")
+  expect(resolve_root("sub", root) == root + "/sub", "a relative --root resolves against the working directory")
+  expect(resolve_root("/abs", root) == "/abs", "an absolute --root is kept")
+  expect(
+    normalize_path(root + "/lib/x_test.vibe", resolve_root("", root)) == "lib/x_test.vibe",
+    "an absolute file under the default root gets a relative key"
+  )
   let files = ["a_test.vibe", "b_test.vibe", "c_test.vibe", "d_test.vibe", "e_test.vibe"]
   let keys = ["a_test.vibe", "b_test.vibe", "c_test.vibe", "d_test.vibe", "e_test.vibe"]
   let values = [1.0, 10.0, 9.0, 1.0, 1.0]
@@ -313,7 +341,7 @@ fn main() -> Unit allows Env + Fs + Console + Stderr + Process {
   } else {
     let index = require_int("--index", option("--index"))
     let total = require_int("--total", option("--total"))
-    let root = option("--root")
+    let root = resolve_root(option("--root"), Fs::getcwd())
     let weights = option("--weights")
     let keys = load_weight_keys(weights)
     let chosen = select_shard(after_dash(), index, total, root, keys, load_weight_values(weights, keys))
