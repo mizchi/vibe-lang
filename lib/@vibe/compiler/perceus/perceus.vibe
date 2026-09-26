@@ -72,7 +72,12 @@ export enum PerceusActionKind {
   // wasm-gc lanes ignore both kinds, so they keep today's non-releasing
   // truncate.
   PaTruncRelease;
-  PaViewPin
+  PaViewPin;
+  // #3140: `PaFieldRelease(x)`: a field assignment `x.f = v` on the local
+  // struct `x` may release the value the field held before the store (see
+  // `plan_setfield_release`). The bump and wasm-gc lanes ignore it, so they
+  // keep today's non-releasing store.
+  PaFieldRelease
 }
 
 // PerceusAction is defined transparently in this package's contract
@@ -574,6 +579,13 @@ export fn pa_is_trunc_release(a: PerceusAction) -> Bool {
 export fn pa_is_view_pin(a: PerceusAction) -> Bool {
   match a.kind {
     PaViewPin => true,
+    _ => false
+  }
+}
+
+export fn pa_is_field_release(a: PerceusAction) -> Bool {
+  match a.kind {
+    PaFieldRelease => true,
     _ => false
   }
 }
@@ -4876,6 +4888,624 @@ export fn perceus_truncate_rows(plan: Array[PerceusAction], accept_root: Bool, r
   }
 }
 
+//# #3140: releasing what a field assignment overwrites
+
+// `x.f = v` lowers to `__set_field(x, "f", v)`, which stores `v` over the
+// field and, on its own, releases nothing: the value the field held stays
+// counted by nobody, so a loop that reassigns a field leaks every value it
+// replaces. Releasing it in every store is wrong by itself, for the reason
+// #2837 gives for truncate: reading into the field's value -- an element
+// `Array::get(x.f, i)`, a `for` over `x.f`, a match on it -- hands out
+// UNCOUNTED views whose only owner is the struct, so a view read before the
+// store and used after it would be freed under its reader (measured: with the
+// checks below disabled, such an element read the next allocation's value) --
+// and a caller can hold such a view of the very struct it passed in.
+//
+// So release is decided per STRUCT, here, and only where it is proven safe:
+//
+//   1. the struct is a local `let x = <struct literal>`, so no caller or
+//      global can hold a view into it;
+//   2. every mention of `x` is the object of a projection `x.f`, the receiver
+//      of a field assignment, or the function's own result, outside any
+//      lambda -- `x` escapes only by being returned, and every view of its
+//      fields is produced in this body;
+//   3. every field assignment of `x` sits in STATEMENT position (reached only
+//      through let bodies, sequences, if branches, match arms and while or
+//      for bodies), so no temporary is live across it -- only bindings are;
+//   4. no binding that may hold a view derived from `x` (transitively)
+//      encloses a field assignment of `x`, and no assignment, `return`,
+//      `break`, `continue` or lambda carries such a view;
+//   5. the assigned value is not itself an unowned view of `x`: a bare
+//      projection or a borrow-returning call is retained by the store
+//      (codegen's `cc_retain_stored_arg`), and anything else must provably
+//      not be a view of `x`.
+//
+// Anything else keeps today's non-releasing store: a bounded leak, never a
+// use-after-free. A parameter receiver is exactly such a case (rule 1).
+//
+// Rows: one `PaFieldRelease(x)` per approved struct. Codegen releases the old
+// field value at every field assignment whose receiver is an approved name.
+
+/// The receiver name of a `__set_field(x, "f", v)` call, or "" when `e` is not
+/// one on a plain name.
+fn sf_receiver(e: Expr) -> String {
+  match e {
+    ECall(callee, args, _) => match callee {
+      EIdent(f, _) => if f == "__set_field" && Array::length(args) == 3 {
+        match Array::get(args, 0) {
+          EIdent(x, _) => x,
+          _ => ""
+        }
+      } else {
+        ""
+      },
+      _ => ""
+    },
+    _ => ""
+  }
+}
+
+fn sf_collect_receivers(e: Expr, out: Array[String]) -> Unit {
+  let r = sf_receiver(e)
+  if r != "" && !array_contains_str_pctx(out, r) {
+    Array::push(out, r)
+  } else {
+    ()
+  }
+  let mark = expr_children_push(e)
+  let end = expr_children_top()
+  let mut i = mark
+  while i < end {
+    sf_collect_receivers(expr_child_at(i), out)
+    i = i + 1
+  }
+  expr_children_pop(mark)
+}
+
+/// Rule 1: a struct literal, possibly behind the parser's ascription wrapper
+/// (see tr_fresh_array_value).
+fn sf_fresh_struct_value(e: Expr) -> Bool {
+  match e {
+    ERecord(_, _, _) => true,
+    ECall(callee, args, _) => match callee {
+      EFn(_, _, params, _, _, body) => Array::length(params) == 1 && Array::length(args) == 1 && (Array::get(params, 0)).0 == "__asc" && tr_is_ident(body, "__asc") && sf_fresh_struct_value(Array::get(args, 0)),
+      _ => false
+    },
+    _ => false
+  }
+}
+
+/// Every name bound anywhere in `e`. A call through one of them calls a local
+/// value, whose result this analysis cannot classify.
+fn sf_collect_binders(e: Expr, out: Array[String]) -> Unit {
+  match e {
+    ELet(n, _, _, _) => Array::push(out, n),
+    ELetMut(n, _, _, _) => Array::push(out, n),
+    ELetRec(n, _, _) => Array::push(out, n),
+    EForIn(n, ix, _, _) => {
+      Array::push(out, n)
+      match ix {
+        Some(i) => Array::push(out, i),
+        None => ()
+      }
+    },
+    EMatch(_, arms) => {
+      let mut i = 0
+      while i < Array::length(arms) {
+        let _ = pat_names((Array::get(arms, i)).0, out)
+        i = i + 1
+      }
+    },
+    EHandle(_, arms) => {
+      let mut i = 0
+      while i < Array::length(arms) {
+        let _ = pat_names((Array::get(arms, i)).0, out)
+        i = i + 1
+      }
+    },
+    ELoop(params, _) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        Array::push(out, (Array::get(params, i)).0)
+        i = i + 1
+      }
+    },
+    EFn(_, _, params, _, _, _) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        Array::push(out, (Array::get(params, i)).0)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+  let mark = expr_children_push(e)
+  let end = expr_children_top()
+  let mut i = mark
+  while i < end {
+    sf_collect_binders(expr_child_at(i), out)
+    i = i + 1
+  }
+  expr_children_pop(mark)
+}
+
+/// Rule 2: every mention of `x` is a projection object, a field-assignment
+/// receiver, or (`tail`) the function's result.
+fn sf_mentions_ok(e: Expr, x: String, tail: Bool) -> Bool {
+  match e {
+    EIdent(n, _) => n != x || tail,
+    EDot(obj, _, _, _) => match obj {
+      EIdent(_, _) => true,
+      _ => sf_mentions_ok(obj, x, false)
+    },
+    ECall(callee, args, _) => if sf_receiver(e) == x {
+      sf_mentions_ok(Array::get(args, 2), x, false)
+    } else {
+      // A method-call spelling `x.m(..)` hands `x` itself to the method.
+      let callee_ok = match callee {
+        EDot(obj, _, _, _) => !tr_is_ident(obj, x) && sf_mentions_ok(obj, x, false),
+        _ => sf_mentions_ok(callee, x, false)
+      }
+      let mut ok = callee_ok
+      let mut i = 0
+      while ok && i < Array::length(args) {
+        ok = sf_mentions_ok(Array::get(args, i), x, false)
+        i = i + 1
+      }
+      ok
+    },
+    EFn(_, _, _, _, _, body) => !tr_mentions(body, [x]),
+    ELet(_, v, b, _) => sf_mentions_ok(v, x, false) && sf_mentions_ok(b, x, tail),
+    ELetMut(_, v, b, _) => sf_mentions_ok(v, x, false) && sf_mentions_ok(b, x, tail),
+    ELetRec(_, v, b) => sf_mentions_ok(v, x, false) && sf_mentions_ok(b, x, tail),
+    ESeq(a, b) => sf_mentions_ok(a, x, false) && sf_mentions_ok(b, x, tail),
+    EAssign(n, v, b) => n != x && sf_mentions_ok(v, x, false) && sf_mentions_ok(b, x, tail),
+    EAssignOp(n, _, v, b) => n != x && sf_mentions_ok(v, x, false) && sf_mentions_ok(b, x, tail),
+    EIf(c, t, f) => sf_mentions_ok(c, x, false) && sf_mentions_ok(t, x, tail) && sf_mentions_ok(f, x, tail),
+    EMatch(sc, arms) => {
+      let mut ok = sf_mentions_ok(sc, x, false)
+      let mut i = 0
+      while ok && i < Array::length(arms) {
+        ok = sf_mentions_ok((Array::get(arms, i)).1, x, tail)
+        i = i + 1
+      }
+      ok
+    },
+    _ => {
+      let mark = expr_children_push(e)
+      let end = expr_children_top()
+      let mut ok = true
+      let mut i = mark
+      while ok && i < end {
+        ok = sf_mentions_ok(expr_child_at(i), x, false)
+        i = i + 1
+      }
+      expr_children_pop(mark)
+      ok
+    }
+  }
+}
+
+/// An operator whose result is a fresh Int / Bool / Double / String, never a
+/// pointer into an operand.
+fn sf_op_fresh(op: String) -> Bool {
+  op == "+" || op == "-" || op == "*" || op == "/" || op == "%" || op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">=" || op == "&&" || op == "||" || op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>"
+}
+
+/// May the value `e` hold an UNCOUNTED view into `x` or into a binding derived
+/// from it (`d`)? Only shapes whose result is known to be owned or scalar
+/// answer no; anything else that mentions `d` answers yes.
+fn sf_may_view(ctx: PCtx, binders: Array[String], e: Expr, d: Array[String]) -> Bool {
+  if !tr_mentions(e, d) {
+    false
+  } else {
+    match e {
+      ECall(callee, args, _) => match callee {
+        EIdent(f, _) => if f == "__set_field" {
+          false
+        } else if array_contains_str_pctx(binders, f) || is_borrow_ret_fname(ctx, f) || bsearch_leftmost(ctx.view_ret_user, f) >= 0 {
+          true
+        } else {
+          // An owned result. An argument it may keep (a constructor field, a
+          // pushed element) is retained by the call when it is a bare name or
+          // projection; any other shape that views `d` is refused.
+          let mut v = false
+          let mut i = 0
+          while !v && i < Array::length(args) {
+            let a = Array::get(args, i)
+            v = match a {
+              EIdent(_, _) => false,
+              EDot(obj, _, _, _) => match obj {
+                EIdent(_, _) => false,
+                _ => sf_may_view(ctx, binders, a, d)
+              },
+              _ => sf_may_view(ctx, binders, a, d)
+            }
+            i = i + 1
+          }
+          v
+        },
+        _ => true
+      },
+      EBinOp(op, _, _, _) => !sf_op_fresh(op),
+      EUnaryOp(op, _) => !(op == "!" || op == "~" || op == "-"),
+      _ => true
+    }
+  }
+}
+
+/// Rule 5: the value a field assignment of `x` stores.
+fn sf_value_ok(ctx: PCtx, binders: Array[String], v: Expr, d: Array[String]) -> Bool {
+  match v {
+    EDot(obj, _, _, _) => match obj {
+      EIdent(_, _) => true,
+      _ => !sf_may_view(ctx, binders, v, d)
+    },
+    ECall(callee, _, _) => match callee {
+      EIdent(f, _) => if !array_contains_str_pctx(binders, f) && is_borrow_ret_fname(ctx, f) {
+        true
+      } else {
+        !sf_may_view(ctx, binders, v, d)
+      },
+      _ => !sf_may_view(ctx, binders, v, d)
+    },
+    _ => !sf_may_view(ctx, binders, v, d)
+  }
+}
+
+/// Rule 4, the derivation half: grow `d` (seeded with the struct) by every
+/// binder whose value may view a derived name, in one preorder pass. Returns
+/// false on a carrier rule 4 forbids.
+fn sf_derive(ctx: PCtx, binders: Array[String], e: Expr, d: Array[String]) -> Bool {
+  match e {
+    ELet(n, v, b, _) => {
+      if sf_may_view(ctx, binders, v, d) {
+        tr_add(d, n)
+      } else {
+        ()
+      }
+      sf_derive(ctx, binders, v, d) && sf_derive(ctx, binders, b, d)
+    },
+    ELetMut(n, v, b, _) => {
+      if sf_may_view(ctx, binders, v, d) {
+        tr_add(d, n)
+      } else {
+        ()
+      }
+      sf_derive(ctx, binders, v, d) && sf_derive(ctx, binders, b, d)
+    },
+    ELetRec(n, v, b) => {
+      if sf_may_view(ctx, binders, v, d) {
+        tr_add(d, n)
+      } else {
+        ()
+      }
+      sf_derive(ctx, binders, v, d) && sf_derive(ctx, binders, b, d)
+    },
+    EForIn(n, ix, it, body) => {
+      if sf_may_view(ctx, binders, it, d) {
+        tr_add(d, n)
+        match ix {
+          Some(i) => tr_add(d, i),
+          None => ()
+        }
+      } else {
+        ()
+      }
+      sf_derive(ctx, binders, it, d) && sf_derive(ctx, binders, body, d)
+    },
+    EMatch(sc, arms) => {
+      let from_d = sf_may_view(ctx, binders, sc, d)
+      let mut ok = sf_derive(ctx, binders, sc, d)
+      let mut i = 0
+      while ok && i < Array::length(arms) {
+        let (p, body) = Array::get(arms, i)
+        if from_d {
+          tr_add_pat(d, p)
+        } else {
+          ()
+        }
+        ok = sf_derive(ctx, binders, body, d)
+        i = i + 1
+      }
+      ok
+    },
+    EHandle(hb, arms) => {
+      let from_d = sf_may_view(ctx, binders, hb, d)
+      let mut ok = sf_derive(ctx, binders, hb, d)
+      let mut i = 0
+      while ok && i < Array::length(arms) {
+        let (p, body) = Array::get(arms, i)
+        if from_d {
+          tr_add_pat(d, p)
+        } else {
+          ()
+        }
+        ok = sf_derive(ctx, binders, body, d)
+        i = i + 1
+      }
+      ok
+    },
+    ELoop(params, body) => {
+      let mut ok = true
+      let mut i = 0
+      while ok && i < Array::length(params) {
+        let (pn, pv) = Array::get(params, i)
+        if sf_may_view(ctx, binders, pv, d) {
+          tr_add(d, pn)
+        } else {
+          ()
+        }
+        ok = sf_derive(ctx, binders, pv, d)
+        i = i + 1
+      }
+      ok && sf_derive(ctx, binders, body, d)
+    },
+    EAssign(_, v, b) => !sf_may_view(ctx, binders, v, d) && sf_derive(ctx, binders, v, d) && sf_derive(ctx, binders, b, d),
+    EAssignOp(_, _, v, b) => !sf_may_view(ctx, binders, v, d) && sf_derive(ctx, binders, v, d) && sf_derive(ctx, binders, b, d),
+    EReturn(v) => !sf_may_view(ctx, binders, v, d),
+    EBreak(ov) => match ov {
+      Some(v) => !sf_may_view(ctx, binders, v, d),
+      None => true
+    },
+    EContinue(vs) => {
+      let mut ok = true
+      let mut i = 0
+      while ok && i < Array::length(vs) {
+        ok = !sf_may_view(ctx, binders, Array::get(vs, i), d)
+        i = i + 1
+      }
+      ok
+    },
+    EFn(_, _, _, _, _, body) => !tr_mentions(body, d),
+    _ => {
+      let mark = expr_children_push(e)
+      let end = expr_children_top()
+      let mut ok = true
+      let mut i = mark
+      while ok && i < end {
+        ok = sf_derive(ctx, binders, expr_child_at(i), d)
+        i = i + 1
+      }
+      expr_children_pop(mark)
+      ok
+    }
+  }
+}
+
+struct SfWalk {
+  x: String;
+  d: Array[String];
+  binders: Array[String];
+  // The binders enclosing the walk's position, innermost last: name, kind
+  // (1 let, 2 let mut, 3 let rec, 4 a for / match arm binder) and whether the
+  // value is a struct literal.
+  bn: Array[String];
+  bk: Array[Int];
+  bf: Array[Bool];
+  mut ok: Bool
+}
+
+fn sf_push(w: SfWalk, n: String, k: Int, fresh: Bool) -> Unit {
+  Array::push(w.bn, n)
+  Array::push(w.bk, k)
+  Array::push(w.bf, fresh)
+}
+
+fn sf_pop(w: SfWalk, mark: Int) -> Unit {
+  Array::truncate(w.bn, mark)
+  Array::truncate(w.bk, mark)
+  Array::truncate(w.bf, mark)
+}
+
+fn sf_push_pat(w: SfWalk, p: Pat) -> Unit {
+  let names: Array[String] = []
+  let _ = pat_names(p, names)
+  let mut i = 0
+  while i < Array::length(names) {
+    sf_push(w, Array::get(names, i), 4, false)
+    i = i + 1
+  }
+}
+
+/// Rules 1, 3, 4 and 5 at one field assignment of the walk's struct.
+fn sf_site(ctx: PCtx, w: SfWalk, value: Expr, stmt: Bool) -> Unit {
+  if !stmt || !sf_value_ok(ctx, w.binders, value, w.d) {
+    w.ok = false
+  } else {
+    let mut found = false
+    let mut i = Array::length(w.bn) - 1
+    while w.ok && i >= 0 {
+      let n = Array::get(w.bn, i)
+      if n == w.x {
+        if !found {
+          found = true
+          if Array::get(w.bk, i) != 1 || !Array::get(w.bf, i) {
+            w.ok = false
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+      } else if array_contains_str_pctx(w.d, n) {
+        w.ok = false
+      } else {
+        ()
+      }
+      i = i - 1
+    }
+    if !found {
+      w.ok = false
+    } else {
+      ()
+    }
+  }
+}
+
+/// `stmt`: every node from the root to here is a let body, a sequence
+/// element, an if branch, a match arm or a loop body.
+fn sf_walk(ctx: PCtx, w: SfWalk, e: Expr, stmt: Bool) -> Unit {
+  if !w.ok {
+    ()
+  } else {
+    match e {
+      ELet(n, v, b, _) => {
+        sf_walk(ctx, w, v, false)
+        let mark = Array::length(w.bn)
+        sf_push(w, n, 1, sf_fresh_struct_value(v))
+        sf_walk(ctx, w, b, stmt)
+        sf_pop(w, mark)
+      },
+      ELetMut(n, v, b, _) => {
+        sf_walk(ctx, w, v, false)
+        let mark = Array::length(w.bn)
+        sf_push(w, n, 2, false)
+        sf_walk(ctx, w, b, stmt)
+        sf_pop(w, mark)
+      },
+      ELetRec(n, v, b) => {
+        let mark = Array::length(w.bn)
+        sf_push(w, n, 3, false)
+        sf_walk(ctx, w, v, false)
+        sf_walk(ctx, w, b, stmt)
+        sf_pop(w, mark)
+      },
+      ESeq(a, b) => {
+        sf_walk(ctx, w, a, stmt)
+        sf_walk(ctx, w, b, stmt)
+      },
+      EIf(c, t, f) => {
+        sf_walk(ctx, w, c, false)
+        sf_walk(ctx, w, t, stmt)
+        sf_walk(ctx, w, f, stmt)
+      },
+      EMatch(sc, arms) => {
+        // A scrutinee that may view `x` is a temporary live across its arms.
+        let arm_stmt = stmt && !sf_may_view(ctx, w.binders, sc, w.d)
+        sf_walk(ctx, w, sc, false)
+        let mut i = 0
+        while i < Array::length(arms) {
+          let (p, body) = Array::get(arms, i)
+          let mark = Array::length(w.bn)
+          sf_push_pat(w, p)
+          sf_walk(ctx, w, body, arm_stmt)
+          sf_pop(w, mark)
+          i = i + 1
+        }
+      },
+      EWhile(c, body) => {
+        sf_walk(ctx, w, c, false)
+        sf_walk(ctx, w, body, stmt)
+      },
+      EForIn(n, ix, it, body) => {
+        sf_walk(ctx, w, it, false)
+        let mark = Array::length(w.bn)
+        sf_push(w, n, 4, false)
+        match ix {
+          Some(i) => sf_push(w, i, 4, false),
+          None => ()
+        }
+        // The iterated array is a temporary live across the body.
+        sf_walk(ctx, w, body, stmt && !sf_may_view(ctx, w.binders, it, w.d))
+        sf_pop(w, mark)
+      },
+      EAssign(_, v, b) => {
+        sf_walk(ctx, w, v, false)
+        sf_walk(ctx, w, b, stmt)
+      },
+      EAssignOp(_, _, v, b) => {
+        sf_walk(ctx, w, v, false)
+        sf_walk(ctx, w, b, stmt)
+      },
+      ECall(callee, args, _) => {
+        if sf_receiver(e) == w.x {
+          sf_site(ctx, w, Array::get(args, 2), stmt)
+        } else {
+          ()
+        }
+        sf_walk(ctx, w, callee, false)
+        let mut i = 0
+        while i < Array::length(args) {
+          sf_walk(ctx, w, Array::get(args, i), false)
+          i = i + 1
+        }
+      },
+      _ => {
+        let mark = expr_children_push(e)
+        let end = expr_children_top()
+        let mut i = mark
+        while i < end {
+          sf_walk(ctx, w, expr_child_at(i), false)
+          i = i + 1
+        }
+        expr_children_pop(mark)
+      }
+    }
+  }
+}
+
+/// #3140: append the field-release rows for `body` (see the section comment
+/// above). Most bodies assign no field, and pay one walk.
+fn plan_setfield_release(ctx: PCtx, params: Array[(String, Option[TypeExpr])], body: Expr, actions: Array[PerceusAction]) -> Unit {
+  let receivers: Array[String] = []
+  sf_collect_receivers(body, receivers)
+  if Array::length(receivers) > 0 {
+    let binders: Array[String] = []
+    let mut pi = 0
+    while pi < Array::length(params) {
+      Array::push(binders, (Array::get(params, pi)).0)
+      pi = pi + 1
+    }
+    sf_collect_binders(body, binders)
+    let mut ri = 0
+    while ri < Array::length(receivers) {
+      let x = Array::get(receivers, ri)
+      if sf_mentions_ok(body, x, true) {
+        let d: Array[String] = [x]
+        if sf_derive(ctx, binders, body, d) {
+          let w = SfWalk::{
+            x: x,
+            d: d,
+            binders: binders,
+            bn: [],
+            bk: [],
+            bf: [],
+            ok: true
+          }
+          sf_walk(ctx, w, body, true)
+          if w.ok {
+            pr_push_reuse(actions, PaFieldRelease, x, 0)
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      ri = ri + 1
+    }
+  } else {
+    ()
+  }
+}
+
+/// #3140: the structs whose field assignments may release the old value.
+export fn perceus_field_release_rows(plan: Array[PerceusAction], out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(plan) {
+    let a = Array::get(plan, i)
+    if pa_is_field_release(a) {
+      Array::push(out, a.name)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
 fn tr_type_is_immediate(t: TypeExpr) -> Bool {
   match t {
     TyName(n) => n == "Int" || n == "Bool" || n == "Unit",
@@ -5080,6 +5710,8 @@ fn build_perceus_plan_in_ctx(ctx: PCtx, params: Array[(String, Option[TypeExpr])
   // #2837: the truncate-release rows, after the same suffix -- neither drops
   // nor dups, so every consumer reading `out_param_drop_start` skips them.
   plan_truncate_release(body, ctx.actions)
+  // #3140: the field-release rows, after the same suffix for the same reason.
+  plan_setfield_release(ctx, params, body, ctx.actions)
   // An owned copy, NOT ctx.actions itself: the cached PCtx keeps (and later
   // resets) its own actions array, while callers hold the returned plan
   // across subsequent plan builds.

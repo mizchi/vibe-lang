@@ -1039,6 +1039,63 @@ done
 rm -f "$ROOT_DIR/_build/_gate_rc_forin_discard_body.log"
 echo "[compiler-gate] discarded for body guard ok (2001000 on bump/rc/shadow/gc, rc heap_used=$fd_used B; body shapes ok on rc + shadow)"
 
+# 40f0g. #3140: `x.f = v` leaked the struct (the plan counted the receiver as
+#        an owning use and planned a reference nothing released) and never
+#        released the value it overwrote. The receiver is borrowed now, and the
+#        store releases the old value where the plan proves no view of it is
+#        still read (`plan_setfield_release`). Unfixed, the bounded fixture
+#        grew __heap_ptr by 2,383,996 B over its 2000 rounds (1,191,996 B at
+#        1000); fixed, 308 B. The answer is checked on bump, rc, shadow and gc;
+#        the shadow lane traps on the drop of a freed block.
+#        rc_set_field_release_test.vibe then checks, on rc and shadow, both the
+#        stores that release and the ones that must not: a view of the old
+#        value read before the store, one the caller holds, an iteration over
+#        the field, a match on it, a captured or aliased struct.
+echo "[compiler-gate] 40f0g/40 a field assignment releases the value it overwrites (#3140)"
+sfdir="_build/_gate_rc_set_field"
+rm -rf "$sfdir"; mkdir -p "$sfdir"
+for sf_lane in bump rc shadow gc; do
+  rm -f "$sfdir/sf.wasm" "$sfdir/sf.wasm.diag"
+  case "$sf_lane" in
+    bump) env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_set_field_bounded_test.vibe" "$sfdir/sf.wasm" main >/dev/null 2>&1 || true ;;
+    rc) env VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_set_field_bounded_test.vibe" "$sfdir/sf.wasm" main >/dev/null 2>&1 || true ;;
+    shadow) env VIBE_RC=shadow VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_set_field_bounded_test.vibe" "$sfdir/sf.wasm" main >/dev/null 2>&1 || true ;;
+    gc) env VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_set_field_bounded_test.vibe" "$sfdir/sf.wasm" main >/dev/null 2>&1 || true ;;
+  esac
+  if [ ! -s "$sfdir/sf.wasm" ]; then
+    echo "[compiler-gate] FAIL: rc_set_field_bounded fixture did not compile on the $sf_lane lane (#3140)" >&2
+    cat "$sfdir/sf.wasm.diag" >&2 2>/dev/null || true
+    exit 1
+  fi
+  sf_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$sfdir/sf.wasm" 2>&1 | tail -1)"
+  if [ "$sf_out" != "2019000" ]; then
+    echo "[compiler-gate] FAIL: rc_set_field_bounded got '$sf_out' on the $sf_lane lane (want 2019000). A trap means a field assignment released a value something still held (#3140)." >&2
+    exit 1
+  fi
+  if [ "$sf_lane" = rc ]; then
+    sf_json="$(node scripts/measure_heap.mjs "$sfdir/sf.wasm" main 2>/dev/null)"
+    sf_used="$(printf '%s' "$sf_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+    if [ -z "$sf_used" ]; then
+      echo "[compiler-gate] FAIL: could not measure rc_set_field_bounded heap ($sf_json)" >&2; exit 1
+    fi
+    if [ "$sf_used" -ge 20000 ]; then
+      echo "[compiler-gate] FAIL: rc_set_field_bounded heap_used=$sf_used >= 20000 (#3140 regressed: a field assignment consumes its receiver again, or no longer releases the value it overwrites; unfixed, this fixture measured 2,383,996 B)" >&2; exit 1
+    fi
+  fi
+done
+rm -rf "$sfdir"
+for sf_lane in 1 shadow; do
+  if ! VIBE_RC="$sf_lane" VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+      bash scripts/vibe_test.sh fixtures/rc_set_field_release_test.vibe \
+      >"$ROOT_DIR/_build/_gate_rc_set_field_release.log" 2>&1; then
+    echo "[compiler-gate] FAIL: fixtures/rc_set_field_release_test.vibe failed with VIBE_RC=$sf_lane (#3140). A trap or a churn string means a field assignment released a value a view still reads:" >&2
+    tail -20 "$ROOT_DIR/_build/_gate_rc_set_field_release.log" >&2
+    exit 1
+  fi
+done
+rm -f "$ROOT_DIR/_build/_gate_rc_set_field_release.log"
+echo "[compiler-gate] field assignment release guard ok (2019000 on bump/rc/shadow/gc, rc heap_used=$sf_used B; release/decline shapes ok on rc + shadow)"
+
 # 40f1a. #2427: the shadow table must not overlap the heap it describes.
 #        40f above proves the marks catch a real dup/drop-of-freed; this
 #        proves they are marks at all. The table sat at a FIXED 256 MiB while

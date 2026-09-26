@@ -1,0 +1,264 @@
+// #3140: a field assignment `x.f = v` releases the value it overwrites, but
+// only where the Perceus plan proves no view of that value is still read
+// (`plan_setfield_release` in perceus/perceus.vibe): `x` is a local struct
+// literal that never escapes except as the function's result, every store is
+// a statement, and no binding that may view `x` is live across one.
+//
+// This file pins both sides. The RELEASED shapes (a loop reassigning a field,
+// a struct returned after its stores, a value stored over itself, a value
+// built from the one it replaces, a scalar read of the old value) must still
+// answer with the value last stored. The DECLINED shapes must answer with the
+// value they read before the store: an element view of the old value (an
+// `Array::get` result holds no reference of its own), an iteration over the
+// field being replaced, a view the CALLER holds while a helper replaces the
+// field, a copy of the field bound before the store, a match arm replacing its
+// own scrutinee, a captured struct, an aliased struct, and a branch that
+// stores the old value back.
+//
+// Each declined shape reads after allocating blocks of the old value's size,
+// so a premature release reads the churn instead. Measured on a compiler
+// with the plan's view checks disabled (every local struct literal
+// approved): the element-view test answered 9391 instead of 1191, and an
+// iteration over the replaced rows read the churn's rows as well. The
+// bounded-heap half is fixtures/rc_set_field_bounded_test.vibe
+// (tests/gates/mid/run.sh, 40f0g).
+
+struct Cell {
+  mut v: String
+}
+
+struct Bag {
+  mut items: Array[String]
+}
+
+struct Grid {
+  mut rows: Array[Array[Int]]
+}
+
+enum Slot {
+  Full(String);
+  Empty
+}
+
+struct Holder {
+  mut slot: Slot
+}
+
+fn fresh(s: String, i: Int) -> String {
+  String::concat(s, __to_string(i))
+}
+
+fn loop_reassign(n: Int) -> String {
+  let c = Cell::{ v: fresh("s", 0) }
+  let mut i = 0
+  while i < n {
+    c.v = fresh("x", i)
+    i = i + 1
+  }
+  let churn = fresh("churn", 1)
+  String::concat(c.v, churn)
+}
+
+fn build(i: Int) -> Cell {
+  let c = Cell::{ v: fresh("s", i) }
+  c.v = fresh("b", i)
+  c
+}
+
+fn returned(i: Int) -> String {
+  let c = build(i)
+  let churn = fresh("churn", 2)
+  String::concat(c.v, churn)
+}
+
+fn self_store() -> String {
+  let c = Cell::{ v: fresh("q", 1) }
+  c.v = c.v
+  c.v = c.v
+  let churn = fresh("churn", 3)
+  String::concat(c.v, churn)
+}
+
+fn grow(n: Int) -> String {
+  let c = Cell::{ v: fresh("g", 0) }
+  let mut i = 0
+  while i < n {
+    c.v = String::concat(c.v, "+")
+    i = i + 1
+  }
+  let churn = fresh("churn", 4)
+  String::concat(c.v, churn)
+}
+
+fn scalar_read() -> String {
+  let c = Cell::{ v: fresh("sc", 1) }
+  let n = String::length(c.v)
+  c.v = fresh("sc", 22)
+  let churn = fresh("churn", 5)
+  String::concat(String::concat(__to_string(n), c.v), churn)
+}
+
+fn saved_view() -> String {
+  let c = Cell::{ v: fresh("old", 1) }
+  let saved = c.v
+  c.v = fresh("new", 2)
+  let churn = fresh("churn", 6)
+  String::concat(String::concat(saved, c.v), churn)
+}
+
+fn replace(c: Cell, s: String) -> Unit {
+  c.v = s
+}
+
+fn caller_view() -> String {
+  let c = Cell::{ v: fresh("keep", 1) }
+  let a = c.v
+  replace(c, fresh("other", 2))
+  let churn = fresh("churn", 7)
+  String::concat(String::concat(a, c.v), churn)
+}
+
+fn element_view() -> Int {
+  let g = Grid::{ rows: [[11, 12], [13, 14]] }
+  let e = Array::get(g.rows, 0)
+  g.rows = [[21, 22]]
+  let churn = [[91, 92], [93, 94]]
+  let churn2 = [95, 96]
+  Array::get(e, 0) * 100 + Array::get(Array::get(churn, 0), 0) + Array::get(churn2, 0) - 95
+}
+
+fn iterate_rows() -> Int {
+  let g = Grid::{ rows: [[11, 12], [13, 14]] }
+  let mut acc = 0
+  for r in g.rows {
+    g.rows = [[21, 22]]
+    let churn = [[91, 92], [93, 94]]
+    let churn2 = [95, 96]
+    acc = acc * 100 + Array::get(r, 0) + Array::get(Array::get(churn, 0), 0) + Array::get(churn2, 0) - 186
+  }
+  acc * 100 + Array::get(Array::get(g.rows, 0), 0)
+}
+
+fn replace_rows(g: Grid) -> Unit {
+  g.rows = [[21, 22]]
+}
+
+fn caller_element_view() -> Int {
+  let g = Grid::{ rows: [[11, 12], [13, 14]] }
+  let e = Array::get(g.rows, 0)
+  replace_rows(g)
+  let churn = [[91, 92], [93, 94]]
+  Array::get(e, 0) * 100 + Array::get(Array::get(churn, 0), 0)
+}
+
+fn iterate_and_replace() -> String {
+  let b = Bag::{ items: [fresh("i", 1), fresh("i", 2)] }
+  let mut acc = ""
+  for s in b.items {
+    b.items = [fresh("n", 3)]
+    let churn = fresh("churn", 8)
+    acc = String::concat(acc, s)
+  }
+  String::concat(acc, Array::get(b.items, 0))
+}
+
+fn match_replace() -> String {
+  let h = Holder::{ slot: Full(fresh("m", 1)) }
+  match h.slot {
+    Full(s) => {
+      h.slot = Empty
+      let churn = fresh("churn", 9)
+      String::concat(s, churn)
+    },
+    Empty => "none"
+  }
+}
+
+fn captured() -> String {
+  let c = Cell::{ v: fresh("cap", 1) }
+  let get = () -> c.v
+  let before = get()
+  c.v = fresh("cap", 2)
+  let churn = fresh("churn", 10)
+  String::concat(String::concat(before, get()), churn)
+}
+
+fn aliased() -> String {
+  let c = Cell::{ v: fresh("al", 1) }
+  let d = c
+  let saved = d.v
+  c.v = fresh("al", 2)
+  let churn = fresh("churn", 11)
+  String::concat(String::concat(saved, d.v), churn)
+}
+
+fn branch_back(keep: Bool) -> String {
+  let c = Cell::{ v: fresh("bb", 1) }
+  c.v = if keep {
+    c.v
+  } else {
+    fresh("bb", 2)
+  }
+  let churn = fresh("churn", 12)
+  String::concat(c.v, churn)
+}
+
+test "a loop reassigning a local struct's field keeps the last value" {
+  inspect(loop_reassign(5), content = "x4churn1")
+}
+
+test "a struct returned after its field store keeps the stored value" {
+  inspect(returned(7), content = "b7churn2")
+}
+
+test "a field stored over itself stays alive" {
+  inspect(self_store(), content = "q1churn3")
+}
+
+test "a field value built from the one it replaces" {
+  inspect(grow(3), content = "g0+++churn4")
+}
+
+test "a scalar read of the old value before the store" {
+  inspect(scalar_read(), content = "3sc22churn5")
+}
+
+test "the old value bound before the store survives it" {
+  inspect(saved_view(), content = "old1new2churn6")
+}
+
+test "a binding the caller holds survives a helper replacing the field" {
+  inspect(caller_view(), content = "keep1other2churn7")
+}
+
+test "an element view of the old value survives the store" {
+  inspect(element_view(), content = "1191")
+}
+
+test "iterating a field of arrays while replacing it keeps the iterated rows" {
+  inspect(iterate_rows(), content = "111321")
+}
+
+test "an element view the caller holds survives a helper replacing the field" {
+  inspect(caller_element_view(), content = "1191")
+}
+
+test "iterating a field while replacing it keeps the iterated items" {
+  inspect(iterate_and_replace(), content = "i1i2n3")
+}
+
+test "a match arm replacing its own scrutinee keeps the bound payload" {
+  inspect(match_replace(), content = "m1churn9")
+}
+
+test "a captured struct's field survives a store" {
+  inspect(captured(), content = "cap1cap2churn10")
+}
+
+test "an aliased struct's field binding survives a store" {
+  inspect(aliased(), content = "al1al2churn11")
+}
+
+test "a branch storing the old value back keeps it" {
+  inspect(String::concat(branch_back(true), branch_back(false)), content = "bb1churn12bb2churn12")
+}

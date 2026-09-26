@@ -1,0 +1,48 @@
+// #3140: field assignments keep the RC heap frontier bounded.
+//
+// `x.f = v` used to leak twice over: the Perceus plan counted the receiver as
+// an owning use and gave it a reference nothing released, so a struct that
+// had a field assigned leaked; and the store never released the value it
+// overwrote. Before the fix this fixture grew `__heap_ptr` by 2,383,996 B
+// over its 2000 rounds, linearly (1,191,996 B at 1000); with it, 308 B. The
+// gate compiles it under VIBE_RC=1 and bounds the growth
+// (tests/gates/mid/run.sh, 40f0g); the same gate checks the answer on the
+// bump, rc, shadow and gc lanes, and the shadow lane traps on the drop of a
+// freed block. Which stores may release, and that a view read before a store
+// survives it, is pinned by fixtures/rc_set_field_release_test.vibe.
+//
+// Each round reassigns a field ten times in a loop and builds a struct whose
+// field a helper overwrites before returning it. `main` sums, per round, the
+// last element of each final field: 9 + (i + 1), so 2000 * 10 + 1999 * 2000 / 2
+// = 2019000.
+
+struct Cell {
+  mut v: Array[Int]
+}
+
+fn build(i: Int) -> Cell {
+  let c = Cell::{ v: [i, i] }
+  c.v = [i, i + 1]
+  c
+}
+
+fn round(i: Int) -> Int {
+  let c = Cell::{ v: [i] }
+  let mut k = 0
+  while k < 10 {
+    c.v = [i, k]
+    k = k + 1
+  }
+  let b = build(i)
+  Array::get(c.v, 1) + Array::get(b.v, 1)
+}
+
+export fn main() -> Int {
+  let mut i = 0
+  let mut acc = 0
+  while i < 2000 {
+    acc = acc + round(i)
+    i = i + 1
+  }
+  acc
+}

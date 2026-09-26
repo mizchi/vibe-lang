@@ -1,0 +1,82 @@
+//# Imports
+
+// #3140: a field assignment `x.f = v` borrows its receiver, and releases the
+// value it overwrites only where the planner can prove no view of that value
+// is still read (`field_release`). Everything else keeps the non-releasing
+// store, which leaks but never frees a value something still reads. The
+// runtime half is fixtures/rc_set_field_release_test.vibe and
+// fixtures/rc_set_field_bounded_test.vibe (mid gate 40f0g).
+
+import @vibe/compiler/runtime {
+  rc_plan_source
+}
+
+//# Functions
+
+fn plan_of(source: String) -> String with Exception {
+  rc_plan_source(source, "")
+}
+
+let prologue = "struct Cell {\n  mut v: Array[Int]\n}\n"
+
+let epilogue = "\nlet main: () -> Int = () -> {\n  run()\n}"
+
+fn program(body: String) -> String {
+  String::concat(prologue, String::concat(body, epilogue))
+}
+
+test "the receiver of a field assignment is borrowed, not consumed" {
+  // Counting it as an owning use planned a reference for it (a `dup`) that
+  // nothing released: the struct leaked.
+  let src = program("let run: () -> Int = () -> {\n  let c = Cell::{ v: [1] }\n  c.v = [2]\n  Array::length(c.v)\n}")
+  let plan = plan_of(src)
+  assert(!String::contains(plan, "run c dup"))
+  assert(String::contains(plan, "run c drop 1"))
+}
+
+test "a loop reassigning a local struct's field releases" {
+  let src = program("let run: () -> Int = () -> {\n  let c = Cell::{ v: [0] }\n  let mut i = 0\n  while i < 3 {\n    c.v = [i]\n    i = i + 1\n  }\n  Array::get(c.v, 0)\n}")
+  assert(String::contains(plan_of(src), "run c field_release 1"))
+}
+
+test "a struct returned after its stores releases" {
+  let src = program("let make: () -> Cell = () -> {\n  let c = Cell::{ v: [0] }\n  c.v = [1]\n  c\n}\nlet run: () -> Int = () -> Array::length((make()).v)")
+  assert(String::contains(plan_of(src), "make c field_release 1"))
+}
+
+test "a view of the field live across the store is declined" {
+  let src = program("let run: () -> Int = () -> {\n  let c = Cell::{ v: [1] }\n  let saved = c.v\n  c.v = [2]\n  Array::get(saved, 0)\n}")
+  assert(!String::contains(plan_of(src), "field_release"))
+}
+
+test "a parameter receiver is declined" {
+  // The caller may hold a view of the very field being replaced.
+  let src = program("let replace: (Cell) -> Unit = (c) -> {\n  c.v = [2]\n}\nlet run: () -> Int = () -> {\n  let c = Cell::{ v: [1] }\n  let a = c.v\n  replace(c)\n  Array::get(a, 0)\n}")
+  assert(!String::contains(plan_of(src), "field_release"))
+}
+
+test "a struct a lambda captures is declined" {
+  let src = program("let run: () -> Int = () -> {\n  let c = Cell::{ v: [1] }\n  let f = () -> Array::length(c.v)\n  c.v = [2]\n  f()\n}")
+  assert(!String::contains(plan_of(src), "field_release"))
+}
+
+test "an aliased struct is declined" {
+  let src = program("let run: () -> Int = () -> {\n  let c = Cell::{ v: [1] }\n  let d = c\n  let saved = d.v\n  c.v = [2]\n  Array::get(saved, 0)\n}")
+  assert(!String::contains(plan_of(src), "field_release"))
+}
+
+test "a store inside an argument is declined" {
+  // A temporary read before it in the same call may still be live.
+  let src = program("let pair: (Array[Int], Int) -> Int = (a, n) -> Array::get(a, 0) + n\nlet run: () -> Int = () -> {\n  let c = Cell::{ v: [1] }\n  pair(c.v, if true {\n    c.v = [2]\n    1\n  } else {\n    0\n  })\n}")
+  assert(!String::contains(plan_of(src), "field_release"))
+}
+
+test "a stored branch that may be the old value is declined" {
+  let src = program("let run: (Bool) -> Int = (k) -> {\n  let c = Cell::{ v: [1] }\n  c.v = if k {\n    c.v\n  } else {\n    [2]\n  }\n  Array::get(c.v, 0)\n}\nlet run2: () -> Int = () -> run(true)")
+  assert(!String::contains(plan_of(src), "field_release"))
+}
+
+test "iterating the field being replaced is declined" {
+  let src = program("let run: () -> Int = () -> {\n  let c = Cell::{ v: [1, 2] }\n  let mut n = 0\n  for x in c.v {\n    c.v = [x]\n    n = n + x\n  }\n  n\n}")
+  assert(!String::contains(plan_of(src), "field_release"))
+}
