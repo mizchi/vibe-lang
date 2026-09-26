@@ -3,7 +3,7 @@ import @vibe/ast {
 }
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr, builtin_shadow_source_name, expr_children, lookup_registry_builtin, registry_safe_mut_builtin_names
+  Expr, Pat, Stmt, TypeExpr, builtin_shadow_source_name, expr_children, is_runtime_scheduled_effect, lookup_registry_builtin, registry_safe_mut_builtin_names
 }
 
 import @vibe/core {
@@ -21,6 +21,7 @@ import @vibe/compiler/lowering/effects/evidence {
 import @vibe/compiler/lowering/effects/queries {
   EdpReadQuery,
   edp_argcond_note_binders,
+  edp_is_identity_ascription,
   edp_is_program_binder,
   edp_row_is_exactly,
   edp_rq_arms,
@@ -703,7 +704,12 @@ fn scps_callee_first_order(ctx: (Array[Stmt], Array[(String, Array[(String, Arra
 /// receiving anything other than an inert literal -- a name, a call result, a
 /// field access. Those are the shapes whose row this pass cannot read, which
 /// is the same line `resolve_row_var_instantiation` draws on the checker side.
-fn scps_callee_fn_args_inert(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), name: String, args: Array[Expr], eff: String, needing: Array[String]) -> Bool {
+///
+/// #3161: the literal is judged in the call site's `scope`, so it may capture
+/// a name bound there to plain data or to an inert literal
+/// (`scps_is_inert_literal_in`) -- the `TaskGroup::spawn` child that reads a
+/// count bound before its `TaskGroup::run`.
+fn scps_callee_fn_args_inert(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), name: String, args: Array[Expr], eff: String, needing: Array[String], scope: Array[(String, Int)]) -> Bool {
   let (stmts, _, _, _, _, _) = ctx
   let mut found = false
   let mut ok = false
@@ -718,7 +724,7 @@ fn scps_callee_fn_args_inert(ctx: (Array[Stmt], Array[(String, Array[(String, Ar
           let (_, pty) = Array::get(params, pi)
           match pty {
             Some(t) => if scps_ty_has_fn(t) {
-              if pi < Array::length(args) && scps_is_inert_literal(Array::get(args, pi), eff, needing, ctx) {
+              if pi < Array::length(args) && scps_is_inert_literal_in(Array::get(args, pi), eff, needing, ctx, scope) {
                 ()
               } else {
                 all = false
@@ -758,7 +764,7 @@ fn scps_named_call_with_args_ok(name: String, args: Array[Expr], sctx: (String, 
       false
     } else {
       let (is_fn, row) = scps_fn_row_of(ctx, name)
-      is_fn && !scps_row_contains(ctx, row, eff) && scps_row_has_var(row) && scps_callee_fn_args_inert(ctx, name, args, eff, needing)
+      is_fn && !scps_row_contains(ctx, row, eff) && scps_row_has_var(row) && scps_callee_fn_args_inert(ctx, name, args, eff, needing, scope)
     }
   }
 }
@@ -970,6 +976,111 @@ fn scps_is_inert_literal(v: Expr, eff: String, needing: Array[String], ctx: (Arr
   }
 }
 
+/// #3161: `scps_is_inert_literal` judged where the literal is written. A name
+/// it captures is otherwise of unknown provenance -- it might alias a closure
+/// the prepass step-compiled -- so any capture used to taint it. A capture the
+/// enclosing `scope` classifies as plain data (`scps_kind_data`) or as an inert
+/// literal (kind 1) cannot be such a closure, so it is trusted like a name the
+/// literal binds itself.
+fn scps_is_inert_literal_in(v: Expr, eff: String, needing: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), scope: Array[(String, Int)]) -> Bool {
+  match v {
+    EFn(_, _, vparams, _, vef, vb) => {
+      let row_ok = match vef {
+        Some(row) => !scps_row_contains(ctx, row, eff) && !scps_row_has_var(row),
+        None => true
+      }
+      row_ok && !scps_literal_is_own_step_for(v, eff) && !scps_inert_taint(vb, eff, needing, scps_locals_with_params(scps_safe_captures(scope), vparams), ctx)
+    },
+    _ => false
+  }
+}
+
+/// #3161: the names `scope` makes safe to capture -- whose currently visible
+/// binder is plain data or an inert literal. A later binder of another kind
+/// shadows an earlier safe one, so only each name's LAST binder counts.
+fn scps_safe_captures(scope: Array[(String, Int)]) -> Array[String] {
+  let seen = array_empty_str()
+  let out = array_empty_str()
+  let mut i = Array::length(scope) - 1
+  while i >= 0 {
+    let (nm, kind) = Array::get(scope, i)
+    if edp_str_array_contains(seen, nm) {
+      ()
+    } else {
+      Array::push(seen, nm)
+      if kind == 1 || kind == scps_kind_data() {
+        Array::push(out, nm)
+      } else {
+        ()
+      }
+    }
+    i = i - 1
+  }
+  out
+}
+
+/// #3161: the eligibility-scope class of a binder whose value is plain data --
+/// it cannot hold a closure, so capturing it smuggles nothing. The prepass
+/// keeps its own scopes, where 3 and up name an aliased top-level function
+/// (`scps_prepass_alias_class`); the two kinds of scope never meet. Calling a
+/// name of this class is refused like any opaque local (`scps_named_call_ok`
+/// admits only 1 and 2), which is moot: the checker has refused the call.
+fn scps_kind_data() -> Int {
+  3
+}
+
+/// #3161: is `v` plain data by its own syntax -- a scalar or string literal, a
+/// NON-EMPTY array or a tuple of such values, a value ascribed a plain-data
+/// type (`let n: Int = f()`, which reaches this pass as the identity
+/// ascription), or a name `scope` already classifies as data? An empty array
+/// literal is not: its element type comes from later pushes, which may be
+/// closures.
+fn scps_value_is_data(v: Expr, scope: Array[(String, Int)]) -> Bool {
+  match v {
+    EInt(_) => true,
+    EFloat(_) => true,
+    EString(_, _) => true,
+    EBool(_) => true,
+    EUnit => true,
+    EStringInterp(_) => true,
+    EUnaryOp(_, a) => scps_value_is_data(a, scope),
+    ETuple(items) => scps_values_are_data(items, scope),
+    EArray(items) => Array::length(items) > 0 && scps_values_are_data(items, scope),
+    EIdent(nm, _) => scps_local_class(scope, nm) == scps_kind_data(),
+    ECall(EFn(_, _, aparams, _, _, abody), args, _) => Array::length(args) == 1 && edp_is_identity_ascription(aparams, abody) && match Array::get(aparams, 0).1 {
+      Some(t) => scps_ty_is_plain_data(t),
+      None => false
+    },
+    _ => false
+  }
+}
+
+fn scps_values_are_data(vs: Array[Expr], scope: Array[(String, Int)]) -> Bool {
+  let mut ok = true
+  let mut i = 0
+  while ok && i < Array::length(vs) {
+    ok = scps_value_is_data(Array::get(vs, i), scope)
+    i = i + 1
+  }
+  ok
+}
+
+/// The eligibility class of `let nm = v` in `scope`: an inert literal (1), a
+/// step literal (2), plain data (`scps_kind_data`), or opaque (0). Both
+/// eligibility walks -- scps_calls_ok and the culprit walk -- bind through
+/// this, so they cannot disagree about a binder.
+fn scps_let_kind(v: Expr, eff: String, needing: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), scope: Array[(String, Int)]) -> Int {
+  if scps_is_inert_literal_in(v, eff, needing, ctx, scope) {
+    1
+  } else if scps_literal_is_step_for(v, eff) {
+    2
+  } else if scps_value_is_data(v, scope) {
+    scps_kind_data()
+  } else {
+    0
+  }
+}
+
 /// Spine names bound to such literals, for the capture-side gate.
 fn scps_inert_local_literals(e: Expr, eff: String, needing: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), out: Array[String]) -> Unit {
   match e {
@@ -1102,10 +1213,17 @@ fn scps_scope_from_params(params: Array[(String, Option[TypeExpr])], eff: String
   while i < Array::length(params) {
     let (nm, ty) = Array::get(params, i)
     let row = scps_ty_row(ty)
+    // #3161: a parameter declared plain data (`n: Int`) holds no closure.
+    let plain = match ty {
+      Some(t) => scps_ty_is_plain_data(t),
+      None => false
+    }
     let kind = if edp_str_array_contains(inert_generated, nm) {
       1
     } else if row != "" && scps_row_contains(ctx, row, eff) {
       2
+    } else if plain {
+      scps_kind_data()
     } else {
       0
     }
@@ -1307,18 +1425,17 @@ fn scps_calls_ok(e: Expr, sctx: (String, Array[String], Array[String], Int, Arra
       } else {
         false
       },
+      // #3161: a type ascription -- how an annotated `let x: T = v` reaches
+      // this pass, `((__asc: T) -> __asc)(v)` -- runs nothing but its
+      // argument, so only the argument is judged. It was refused as a call
+      // through a closure, so no annotated `let` could sit in a suspending
+      // body.
+      EFn(_, _, aparams, _, _, abody) => Array::length(args) == 1 && edp_is_identity_ascription(aparams, abody) && scps_calls_ok(Array::get(args, 0), sctx, ctx, scope),
       _ => false
     },
     ELet(nm, v, b, _) => {
       let vok = scps_calls_ok(v, sctx, ctx, scope)
-      let kind = if scps_is_inert_literal(v, eff, needing, ctx) {
-        1
-      } else if scps_literal_is_step_for(v, eff) {
-        2
-      } else {
-        0
-      }
-      vok && scps_calls_ok(b, sctx, ctx, scps_scope_bind(scope, nm, kind))
+      vok && scps_calls_ok(b, sctx, ctx, scps_scope_bind(scope, nm, scps_let_kind(v, eff, needing, ctx, scope)))
     },
     ELetMut(nm, v, b, _) => scps_calls_ok(v, sctx, ctx, scope) && scps_calls_ok(b, sctx, ctx, scps_scope_bind(scope, nm, 0)),
     ELetRec(nm, v, b) => {
@@ -1415,7 +1532,9 @@ fn scps_fields_calls_ok(fields: Array[(String, Expr)], sctx: (String, Array[Stri
 }
 
 /// --- #1536 / #1514 parity: name the call scps_calls_ok rejected. This walk
-/// shares both scps_named_call_ok and the exact lexical stack transitions.
+/// shares both scps_named_call_with_args_ok and the exact lexical stack
+/// transitions (scps_let_kind), so it names the call scps_calls_ok refused and
+/// not an earlier one that call admitted on its arguments (#3161).
 fn scps_first_bad_call_info(e: Expr, sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), scope: Array[(String, Int)]) -> (Bool, String, Int) {
   let (eff, _, needing, _, _) = sctx
   match e {
@@ -1429,12 +1548,18 @@ fn scps_first_bad_call_info(e: Expr, sctx: (String, Array[String], Array[String]
           },
           _ => (true, nm, scps_pick_off(ioff, off))
         }
-      } else if scps_named_call_ok(nm, sctx, ctx, scope) {
+      } else if scps_named_call_with_args_ok(nm, args, sctx, ctx, scope) {
         scps_first_bad_call_info_exprs(args, sctx, ctx, scope)
       } else {
+        Array::set(scps_culprit_capture, 0, scps_args_opaque_capture(nm, args, eff, needing, ctx, scope))
         (true, nm, scps_pick_off(ioff, off))
       },
       EDot(_, field, _, fdoff) => (true, field, fdoff),
+      EFn(_, _, aparams, _, _, abody) => if Array::length(args) == 1 && edp_is_identity_ascription(aparams, abody) {
+        scps_first_bad_call_info(Array::get(args, 0), sctx, ctx, scope)
+      } else {
+        (true, "", off)
+      },
       _ => (true, "", off)
     },
     ELet(nm, v, b, _) => {
@@ -1443,14 +1568,7 @@ fn scps_first_bad_call_info(e: Expr, sctx: (String, Array[String], Array[String]
       if found {
         first
       } else {
-        let kind = if scps_is_inert_literal(v, eff, needing, ctx) {
-          1
-        } else if scps_literal_is_step_for(v, eff) {
-          2
-        } else {
-          0
-        }
-        scps_first_bad_call_info(b, sctx, ctx, scps_scope_bind(scope, nm, kind))
+        scps_first_bad_call_info(b, sctx, ctx, scps_scope_bind(scope, nm, scps_let_kind(v, eff, needing, ctx, scope)))
       }
     },
     ELetMut(nm, v, b, _) => {
@@ -1605,15 +1723,31 @@ fn scps_first_bad_call_info_fields(fields: Array[(String, Expr)], sctx: (String,
   (found, nm, off)
 }
 
-/// Render the two culprit fragments for a suspend-lowering ineligibility error.
-fn scps_culprit_parts(e: Expr, sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), scope: Array[(String, Int)]) -> (String, String) {
+/// #3161: the name the refused call's closure argument captures, written by
+/// the culprit walk (scps_first_bad_call_info) and read and cleared by
+/// scps_culprit_parts; "" when the refusal has another cause.
+let scps_culprit_capture: Array[String] = [""]
+
+/// Render the culprit fragments for a suspend-lowering ineligibility error:
+/// the leading edit (#3161: a captured name to give a plain-data type, or ""),
+/// the `(here: ..)` clause, and the location marker.
+fn scps_culprit_parts(e: Expr, sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), scope: Array[(String, Int)]) -> (String, String, String) {
+  Array::set(scps_culprit_capture, 0, "")
   let (found, raw_nm, off) = scps_first_bad_call_info(e, sctx, ctx, scope)
   // #3185: name what the program wrote, not the internal `NAME$user` its own
   // definition of a builtin-called name runs under; the span marker below
   // is verified against that source spelling.
   let nm = builtin_shadow_source_name(raw_nm)
+  let cap = Array::get(scps_culprit_capture, 0)
+  Array::set(scps_culprit_capture, 0, "")
+  let lead = if found && String::length(nm) > 0 && String::length(cap) > 0 {
+    let head = String::concat(String::concat("the closure passed to `", nm), String::concat("` captures `", String::concat(cap, "`, which may hold a closure that suspends: bind it inside that closure instead, or, if it is plain data, give its binding a type (`let ")))
+    String::concat(head, String::concat(cap, ": Int = ..`, or `String`, `Array[Int]`, ..) -- "))
+  } else {
+    ""
+  }
   if !found {
-    ("", "")
+    ("", "", "")
   } else {
     let clause = if String::length(nm) > 0 {
       String::concat(" (here: the call to '", String::concat(nm, "')"))
@@ -1629,7 +1763,113 @@ fn scps_culprit_parts(e: Expr, sctx: (String, Array[String], Array[String], Int,
     } else {
       ""
     }
-    (clause, marker)
+    (lead, clause, marker)
+  }
+}
+
+/// #3161: why `name(args)` was refused, when the reason is a capture: `name`
+/// is a top-level function whose row is a variable, and a closure literal
+/// handed to it captures a name the scope cannot show to be plain data (the
+/// first such name). "" for every other refusal, so the diagnostic does not
+/// suggest an edit that would not fix it.
+fn scps_args_opaque_capture(name: String, args: Array[Expr], eff: String, needing: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), scope: Array[(String, Int)]) -> String {
+  let (is_fn, row) = scps_fn_row_of(ctx, name)
+  if scps_local_class(scope, name) >= 0 || !is_fn || scps_row_contains(ctx, row, eff) || !scps_row_has_var(row) {
+    ""
+  } else {
+    let mut out = ""
+    let mut i = 0
+    while out == "" && i < Array::length(args) {
+      let a = Array::get(args, i)
+      match a {
+        EFn(_, _, ps, _, _, b) => if scps_is_inert_literal_in(a, eff, needing, ctx, scope) {
+          ()
+        } else {
+          out = scps_first_opaque_capture(b, scps_locals_with_params(scps_safe_captures(scope), ps), ctx)
+        },
+        _ => ()
+      }
+      i = i + 1
+    }
+    out
+  }
+}
+
+/// The first name `e` reads as a VALUE that neither `locals` nor `e`'s own
+/// binders bind and that is not a constructor -- a capture, in the sense
+/// `scps_inert_taint` refuses. A callee name is not one: calls are judged on
+/// their own.
+fn scps_first_opaque_capture(e: Expr, locals: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> String {
+  match e {
+    EIdent(nm, _) => if edp_str_array_contains(locals, nm) || scps_is_ctor_name(ctx, nm) {
+      ""
+    } else {
+      nm
+    },
+    ECall(EIdent(_, _), args, _) => scps_first_opaque_capture_all(args, locals, ctx),
+    ELet(nm, v, b, _) => scps_first_nonempty(scps_first_opaque_capture(v, locals, ctx), scps_first_opaque_capture(b, scps_locals_with(locals, nm), ctx)),
+    ELetMut(nm, v, b, _) => scps_first_nonempty(scps_first_opaque_capture(v, locals, ctx), scps_first_opaque_capture(b, scps_locals_with(locals, nm), ctx)),
+    ELetRec(nm, v, b) => {
+      let ext = scps_locals_with(locals, nm)
+      scps_first_nonempty(scps_first_opaque_capture(v, ext, ctx), scps_first_opaque_capture(b, ext, ctx))
+    },
+    EFn(_, _, ps, _, _, b) => scps_first_opaque_capture(b, scps_locals_with_params(locals, ps), ctx),
+    EForIn(nm, idx, it, b) => {
+      let ext = scps_locals_with(locals, nm)
+      let ext2 = match idx {
+        Some(inm) => scps_locals_with(ext, inm),
+        None => ext
+      }
+      scps_first_nonempty(scps_first_opaque_capture(it, locals, ctx), scps_first_opaque_capture(b, ext2, ctx))
+    },
+    ELoop(pairs, b) => {
+      let mut out = ""
+      let mut ext = locals
+      let mut i = 0
+      while i < Array::length(pairs) {
+        let (nm, v) = Array::get(pairs, i)
+        out = scps_first_nonempty(out, scps_first_opaque_capture(v, locals, ctx))
+        ext = scps_locals_with(ext, nm)
+        i = i + 1
+      }
+      scps_first_nonempty(out, scps_first_opaque_capture(b, ext, ctx))
+    },
+    EMatch(s, arms) => scps_first_nonempty(scps_first_opaque_capture(s, locals, ctx), scps_first_opaque_capture_arms(arms, locals, ctx)),
+    EHandle(b, arms) => scps_first_nonempty(scps_first_opaque_capture(b, locals, ctx), scps_first_opaque_capture_arms(arms, locals, ctx)),
+    EAssign(_, v, b) => scps_first_nonempty(scps_first_opaque_capture(v, locals, ctx), scps_first_opaque_capture(b, locals, ctx)),
+    EAssignOp(_, _, v, b) => scps_first_nonempty(scps_first_opaque_capture(v, locals, ctx), scps_first_opaque_capture(b, locals, ctx)),
+    _ => scps_first_opaque_capture_all(expr_children(e), locals, ctx)
+  }
+}
+
+fn scps_first_opaque_capture_all(es: Array[Expr], locals: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> String {
+  let mut out = ""
+  let mut i = 0
+  while out == "" && i < Array::length(es) {
+    out = scps_first_opaque_capture(Array::get(es, i), locals, ctx)
+    i = i + 1
+  }
+  out
+}
+
+fn scps_first_opaque_capture_arms(arms: Array[(Pat, Expr)], locals: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> String {
+  let mut out = ""
+  let mut i = 0
+  while out == "" && i < Array::length(arms) {
+    let (p, ex) = Array::get(arms, i)
+    let bound = Array::slice(locals, 0, Array::length(locals))
+    scps_pat_collect_binds(p, bound)
+    out = scps_first_opaque_capture(ex, bound, ctx)
+    i = i + 1
+  }
+  out
+}
+
+fn scps_first_nonempty(a: String, b: String) -> String {
+  if a != "" {
+    a
+  } else {
+    b
   }
 }
 
@@ -4110,8 +4350,8 @@ fn scps_transform_handle(body: Expr, arms: Array[(Pat, Expr)], ik: String, ctx: 
       // #1536 / #1514 parity: name the offending call and carry its offset
       // as the ` [@off=N:M]` marker the located lanes resolve (and every
       // lane strips), same contract as the handle-side culprit marker.
-      let (culprit_clause, culprit_marker) = scps_culprit_parts(body, sctx, ctx, call_scope)
-      let mut scps_msg = "a handler arm captures `resume` as a value (suspend class, ADR-0076 Phase 3a/3b), but the handle body calls something this suspend lowering cannot see through (a local closure, a method-style callee, a nested handle, or a function whose declared row has a row variable)"
+      let (culprit_lead, culprit_clause, culprit_marker) = scps_culprit_parts(body, sctx, ctx, call_scope)
+      let mut scps_msg = String::concat(culprit_lead, "a handler arm captures `resume` as a value (suspend class, ADR-0076 Phase 3a/3b), but the handle body calls something this suspend lowering cannot see through (a local closure, a method-style callee, a nested handle, or a function whose declared row has a row variable)")
       scps_msg = String::concat(scps_msg, culprit_clause)
       scps_msg = String::concat(scps_msg, " -- only `perform`, pure builtins, constructors, provably effect-free functions, and functions whose concrete row carries the handled effect may be called in the handled body (#817)")
       scps_msg = String::concat(scps_msg, culprit_marker)
@@ -4734,6 +4974,12 @@ fn scps_inert_taint(e: Expr, eff: String, needing: Array[String], locals: Array[
         } else {
           true
         }
+      },
+      // #3161: a type ascription (`let x: T = v`) runs only its argument.
+      EFn(_, _, aparams, _, _, abody) => if Array::length(args) == 1 && edp_is_identity_ascription(aparams, abody) {
+        scps_inert_taint(Array::get(args, 0), eff, needing, locals, ctx)
+      } else {
+        true
       },
       _ => true
     },
@@ -5406,8 +5652,8 @@ fn scps_emit_clone(eff: String, fname: String, ctx: (Array[Stmt], Array[(String,
           // body. The offset indexes the module that defines `fname`, which
           // may not be the entry file -- verify_culprit_off_marker degrades
           // a basis mismatch to the unlocated message.
-          let (culprit_clause, culprit_marker) = scps_culprit_parts(fbody2, sctx, ctx, call_scope)
-          let mut scps_msg = String::concat(String::concat(String::concat("function `", fname), String::concat("` (whose row carries ", eff)), ") is called from a suspend-class handle body, but its own body calls something the suspend lowering cannot see through (a local closure, a method-style callee, a nested handle, or a row-variable callee)")
+          let (culprit_lead, culprit_clause, culprit_marker) = scps_culprit_parts(fbody2, sctx, ctx, call_scope)
+          let mut scps_msg = String::concat(culprit_lead, String::concat(String::concat(String::concat("function `", fname), String::concat("` (whose row carries ", eff)), ") is called from a suspend-class handle body, but its own body calls something the suspend lowering cannot see through (a local closure, a method-style callee, a nested handle, or a row-variable callee)"))
           scps_msg = String::concat(scps_msg, culprit_clause)
           scps_msg = String::concat(scps_msg, " (#817, ADR-0076 Phase 3b)")
           scps_msg = String::concat(scps_msg, culprit_marker)
@@ -6282,8 +6528,8 @@ fn scps_split_literal(tps: Array[String], tbs: Array[(String, Array[String])], p
   let call_scope = scps_scope_from_params(params, eff, array_empty_str(), ctx)
   if !scps_calls_ok(b, sctx, ctx, call_scope) {
     // #1536 / #1514 parity: name the offending call in the literal's body.
-    let (culprit_clause, culprit_marker) = scps_culprit_parts(b, sctx, ctx, call_scope)
-    let mut scps_msg = String::concat(String::concat("a closure literal whose row carries ", eff), " (suspend class, ADR-0076 追記31 Vertical B) calls something the suspend lowering cannot see through (a local closure, a method-style callee, a nested handle, or a row-variable callee)")
+    let (culprit_lead, culprit_clause, culprit_marker) = scps_culprit_parts(b, sctx, ctx, call_scope)
+    let mut scps_msg = String::concat(culprit_lead, String::concat(String::concat("a closure literal whose row carries ", eff), " (suspend class, ADR-0076 追記31 Vertical B) calls something the suspend lowering cannot see through (a local closure, a method-style callee, a nested handle, or a row-variable callee)"))
     scps_msg = String::concat(scps_msg, culprit_clause)
     scps_msg = String::concat(scps_msg, " (#817)")
     scps_msg = String::concat(scps_msg, culprit_marker)
@@ -6549,7 +6795,17 @@ fn scps_guard_untriggered(e: Expr, guard_effs: Array[String], errs: Array[String
           PCtor(q, _) => {
             let ci = String::index_of(q, "::")
             if ci > 0 && edp_str_array_contains(guard_effs, String::substring(q, 0, ci)) {
-              Array::push(errs, String::concat(String::concat("effect ", String::substring(q, 0, ci)), " has step-compiled closure values (a literal or argument was CPS-lowered for it), but this handle for it does not capture `resume` as a value -- mixing the step convention with tail-resumptive/replay handling of the same effect is not supported; split the effect or make every handler suspend-class (ADR-0076 追記31 Vertical B)"))
+              // #3161: lead with the edit. A top-level function keeps both
+              // conventions (the suspend lowering clones it and leaves the
+              // original for this handler); a closure literal gets only one.
+              let ge = String::substring(q, 0, ci)
+              let edit = String::concat(String::concat(String::concat("a closure literal that performs `", ge), "` is called under a handler that resumes in place; declare it as a top-level `fn .. with "), String::concat(ge, "` instead, or make every handler of it store `resume`"))
+              let async_edit = if is_runtime_scheduled_effect(ge) {
+                " (for `Async`, run the closure in a `TaskGroup::spawn_suspend` task)"
+              } else {
+                ""
+              }
+              Array::push(errs, String::concat(String::concat(String::concat(edit, async_edit), String::concat(" -- effect ", ge)), " has step-compiled closure values (a literal or argument was CPS-lowered for it), but this handle for it does not capture `resume` as a value: mixing the step convention with tail-resumptive/replay handling of the same effect is not supported (ADR-0076 追記31 Vertical B)"))
             } else {
               ()
             }

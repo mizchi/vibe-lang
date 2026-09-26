@@ -1,0 +1,23 @@
+// #3161: the edit `step_closure_beside_group_refused.vibe`'s message names --
+// the Async closure declared as a top-level `fn` instead. The suspend lowering
+// clones a function for step callers and leaves the original for the entry's
+// boundary, so it runs beside a group of ordinary `spawn` children: 40 + 1 =
+// 41. Executed by scripts/test_named_hostfutures_component_gate.sh.
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+fn fetch() -> Int with Async {
+  await(host_future_named("slow"))
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  let x = fetch()
+  let y = TaskGroup::run((g) -> {
+    let a = TaskGroup::spawn(g, () -> Int {
+      1
+    })
+    TaskHandle::join(a)
+  })
+  x + y
+}

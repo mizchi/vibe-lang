@@ -890,4 +890,74 @@ fi
   || { echo "named hostfutures component gate FAILED: host_wait_release_thrown expected 1100, got: $(cat "$HT_LOG")" >&2; exit 1; }
 echo "[named-hostfutures-component-gate] host_wait_release_thrown: 1100 (each thrown group released its parked child's read)"
 
+# mixed_spawn (#3161): ordinary `spawn` children and a `spawn_suspend` child
+# in one group of an Async entry, the spawn children capturing values bound
+# before the group -- literals, a value with a written type, and (in a helper)
+# a parameter declared Int. It was refused at compile time. 127.
+MS_OUT="$OUT_DIR/spawn_mixed_spawn.component.wasm"
+rm -f "$MS_OUT" "$MS_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/mixed_spawn.vibe "$MS_OUT" run >/dev/null 2>&1 || true
+[ -s "$MS_OUT" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/mixed_spawn.vibe did not compile: $(cat "$MS_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+MS_LOG="$OUT_DIR/spawn_mixed_spawn.log"
+if ! VIBE_ASYNC_FUTURES="slow=40:1" run_bounded 60 "$RUNNER" "$MS_OUT" >"$MS_LOG" 2>&1; then
+  echo "named hostfutures component gate FAILED: mixed_spawn did not exit 0" >&2
+  cat "$MS_LOG" >&2
+  exit 1
+fi
+[ "$(cat "$MS_LOG")" = "127" ] \
+  || { echo "named hostfutures component gate FAILED: mixed_spawn expected 127, got: $(cat "$MS_LOG")" >&2; exit 1; }
+echo "[named-hostfutures-component-gate] mixed_spawn: 127 (spawn and spawn_suspend children in one group)"
+
+# mixed_spawn_capture_refused (#3161): a spawn child capturing a call result
+# with no written type stays refused -- the value might be a closure that
+# suspends -- and the message leads with the edit instead of naming only the
+# call to TaskGroup::run.
+MR_OUT="$OUT_DIR/spawn_mixed_spawn_capture_refused.component.wasm"
+rm -f "$MR_OUT" "$MR_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/mixed_spawn_capture_refused.vibe "$MR_OUT" run >/dev/null 2>&1 || true
+if [ -s "$MR_OUT" ]; then
+  echo "named hostfutures component gate FAILED: mixed_spawn_capture_refused compiled -- a capture of unknown type reached a plain-convention child" >&2
+  exit 1
+fi
+grep -qF 'captures `n`, which may hold a closure that suspends' "$MR_OUT.diag" 2>/dev/null \
+  && grep -qF 'give its binding a type (`let n: Int' "$MR_OUT.diag" 2>/dev/null \
+  || { echo "named hostfutures component gate FAILED: mixed_spawn_capture_refused gave an unexpected diagnostic: $(cat "$MR_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+echo "[named-hostfutures-component-gate] mixed_spawn_capture_refused: refused, naming the capture and the edit"
+
+# step_closure_beside_group_refused (#3161): an Async closure literal called in
+# the entry beside a group is compiled to the step convention, which the
+# entry's boundary cannot call; it stays refused, now leading with the edit.
+# step_fn_beside_group is that edit -- a top-level fn -- running: 41.
+SC_OUT="$OUT_DIR/spawn_step_closure_beside_group_refused.component.wasm"
+rm -f "$SC_OUT" "$SC_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/step_closure_beside_group_refused.vibe "$SC_OUT" run >/dev/null 2>&1 || true
+if [ -s "$SC_OUT" ]; then
+  echo "named hostfutures component gate FAILED: step_closure_beside_group_refused compiled" >&2
+  exit 1
+fi
+grep -qF 'declare it as a top-level `fn .. with Async` instead' "$SC_OUT.diag" 2>/dev/null \
+  || { echo "named hostfutures component gate FAILED: step_closure_beside_group_refused gave an unexpected diagnostic: $(cat "$SC_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+echo "[named-hostfutures-component-gate] step_closure_beside_group_refused: refused, leading with the edit"
+SF_OUT="$OUT_DIR/spawn_step_fn_beside_group.component.wasm"
+rm -f "$SF_OUT" "$SF_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/step_fn_beside_group.vibe "$SF_OUT" run >/dev/null 2>&1 || true
+[ -s "$SF_OUT" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/step_fn_beside_group.vibe did not compile: $(cat "$SF_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+SF_LOG="$OUT_DIR/spawn_step_fn_beside_group.log"
+if ! VIBE_ASYNC_FUTURES="slow=40:1" run_bounded 60 "$RUNNER" "$SF_OUT" >"$SF_LOG" 2>&1; then
+  echo "named hostfutures component gate FAILED: step_fn_beside_group did not exit 0" >&2
+  cat "$SF_LOG" >&2
+  exit 1
+fi
+[ "$(cat "$SF_LOG")" = "41" ] \
+  || { echo "named hostfutures component gate FAILED: step_fn_beside_group expected 41, got: $(cat "$SF_LOG")" >&2; exit 1; }
+echo "[named-hostfutures-component-gate] step_fn_beside_group: 41 (the edit the refusal names)"
+
 echo "named hostfutures component gate OK"

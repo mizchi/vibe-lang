@@ -1918,7 +1918,17 @@ loop becomes a recursive closure returning a step; bodies with `break` /
 `continue` work, `break` becoming the loop's exit continuation and `continue`
 the loop's own call; only a body containing `return` is still a compile error,
 because a closure cannot return from the function). A callee with a row
-variable (`with e`) and a perform inside a `for` form are compile errors. A
+variable (`with e`) and a perform inside a `for` form are compile errors --
+except a row-variable callee whose closure arguments are literals that provably
+cannot perform the effect, which is how an `Async` entry calls `TaskGroup::run`.
+Such a literal may capture a name bound outside it only when that name holds
+plain data: a scalar or string literal, a non-empty array or tuple of them, a
+value given a plain-data type (`let n: Int = f()`), or a parameter declared as
+one (#3161). So one group can hold ordinary `TaskGroup::spawn` children that
+read those values beside `TaskGroup::spawn_suspend` children; a capture of any
+other name is refused with a message naming it. An annotated `let`
+(`let v: Int = await(f)`) is accepted in a suspending body wherever the
+unannotated one is (it used to be refused as a call through a closure). A
 second call of the same continuation traps with a diagnostic on stderr.
 Post-processing is written through the value (`let k = resume  let r = k(v)
 r + 7`). When a call that cannot be seen through causes a rejection, the
