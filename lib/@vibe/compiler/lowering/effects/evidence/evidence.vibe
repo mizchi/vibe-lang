@@ -3832,21 +3832,156 @@ fn edp_note_lambda_candidate(name: String, val: Expr, names: Array[String], bodi
   }
 }
 
-fn edp_collect_lambda_candidates_expr(expr: Expr, names: Array[String], bodies: Array[Expr]) -> Unit {
+/// Collect candidate lambdas AND tally every binder spelling in the same
+/// walk (`bcount`), so the sole-binder check below costs no second pass over
+/// the program (a separate walk measured +2.4% self-compile allocation).
+fn edp_collect_lambda_candidates_expr(expr: Expr, names: Array[String], bodies: Array[Expr], bcount: MutMap[String, Int]) -> Unit {
+  edp_tally_node_binders(expr, bcount)
   match expr {
     ELet(name, val, body, _) => {
       edp_note_lambda_candidate(name, val, names, bodies)
-      edp_collect_lambda_candidates_expr(val, names, bodies)
-      edp_collect_lambda_candidates_expr(body, names, bodies)
+      edp_collect_lambda_candidates_expr(val, names, bodies, bcount)
+      edp_collect_lambda_candidates_expr(body, names, bodies, bcount)
     },
     _ => {
       let kids = expr_children(expr)
       let mut i = 0
       while i < Array::length(kids) {
-        edp_collect_lambda_candidates_expr(Array::get(kids, i), names, bodies)
+        edp_collect_lambda_candidates_expr(Array::get(kids, i), names, bodies, bcount)
         i = i + 1
       }
     }
+  }
+}
+
+fn edp_tally(bcount: MutMap[String, Int], nm: String) -> Unit {
+  let prev = match MutMap::get(bcount, nm) {
+    Some(c) => c,
+    None => 0
+  }
+  MutMap::set(bcount, nm, prev + 1)
+}
+
+/// The binders introduced AT this node (not below it): the same cases as
+/// edp_collect_binders, without its recursion.
+fn edp_tally_node_binders(expr: Expr, bcount: MutMap[String, Int]) -> Unit {
+  match expr {
+    ELet(n, _, _, _) => edp_tally(bcount, n),
+    ELetRec(n, _, _) => edp_tally(bcount, n),
+    ELetMut(n, _, _, _) => edp_tally(bcount, n),
+    EFn(_, _, params, _, _, _) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        let (pn, _) = Array::get(params, i)
+        edp_tally(bcount, pn)
+        i = i + 1
+      }
+    },
+    EMatch(_, arms) => edp_tally_arm_binders(arms, bcount),
+    EHandle(_, arms) => edp_tally_arm_binders(arms, bcount),
+    ELoop(binds, _) => {
+      let mut i = 0
+      while i < Array::length(binds) {
+        let (bn, _) = Array::get(binds, i)
+        edp_tally(bcount, bn)
+        i = i + 1
+      }
+    },
+    EForIn(n, idx, _, _) => {
+      edp_tally(bcount, n)
+      match idx {
+        Some(ix) => edp_tally(bcount, ix),
+        None => ()
+      }
+    },
+    _ => ()
+  }
+}
+
+fn edp_tally_arm_binders(arms: Array[(Pat, Expr)], bcount: MutMap[String, Int]) -> Unit {
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (pat, _) = Array::get(arms, i)
+    edp_tally_pat_binders(pat, bcount)
+    i = i + 1
+  }
+}
+
+fn edp_tally_pat_binders(pat: Pat, bcount: MutMap[String, Int]) -> Unit {
+  match pat {
+    PBind(n) => edp_tally(bcount, n),
+    PCtor(_, subs) => {
+      let mut i = 0
+      while i < Array::length(subs) {
+        edp_tally_pat_binders(Array::get(subs, i), bcount)
+        i = i + 1
+      }
+    },
+    PTuple(subs) => {
+      let mut i = 0
+      while i < Array::length(subs) {
+        edp_tally_pat_binders(Array::get(subs, i), bcount)
+        i = i + 1
+      }
+    },
+    POr(x, y) => {
+      edp_tally_pat_binders(x, bcount)
+      edp_tally_pat_binders(y, bcount)
+    },
+    PStruct(_, fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fp) = Array::get(fields, i)
+        edp_tally_pat_binders(fp, bcount)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+/// Binders of a statement the candidate walk does not enter. These kinds
+/// are rare, so the separate walker's cost stays off the common path, but a
+/// spelling bound only here must still count -- or it would be admitted.
+fn edp_tally_other_stmt_binders(stmt: Stmt, bcount: MutMap[String, Int]) -> Unit {
+  let scratch = empty_str_array()
+  match stmt {
+    SExternLet(nm, _) => Array::push(scratch, nm),
+    SLetPat(pat, expr) => {
+      edp_collect_pat_binders(pat, scratch)
+      edp_collect_binders(expr, scratch)
+    },
+    SExample(_, expr) => edp_collect_binders(expr, scratch),
+    SFnDecl(_, nm, expr, _, _) => {
+      Array::push(scratch, nm)
+      edp_collect_binders(expr, scratch)
+    },
+    SModule(_, _, inner) => {
+      let mut i = 0
+      while i < Array::length(inner) {
+        match Array::get(inner, i) {
+          SLet(_, _, nm, _, expr) => {
+            Array::push(scratch, nm)
+            edp_collect_binders(expr, scratch)
+          },
+          SLetMut(nm, _, expr) => {
+            Array::push(scratch, nm)
+            edp_collect_binders(expr, scratch)
+          },
+          SExpr(expr) => edp_collect_binders(expr, scratch),
+          STest(_, expr) => edp_collect_binders(expr, scratch),
+          SBench(_, expr) => edp_collect_binders(expr, scratch),
+          other => edp_tally_other_stmt_binders(other, bcount)
+        }
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+  let mut k = 0
+  while k < Array::length(scratch) {
+    edp_tally(bcount, Array::get(scratch, k))
+    k = k + 1
   }
 }
 
@@ -3915,22 +4050,16 @@ fn edp_lambda_visible_pure(lam: Expr, pure_fns: Array[String]) -> Bool {
 /// review). Rather than track binding identity through every consumer of the
 /// set, a spelling is admitted only when no other binder shares it: every
 /// parameter, `let`, pattern, loop variable and top-level definition of that
-/// spelling must itself be a candidate lambda. Counted per spelling, over
-/// candidate spellings only.
-fn edp_lambda_only_spellings(stmts: Array[Stmt], cand_names: Array[String]) -> MutSet[String] {
+/// spelling must itself be a candidate lambda. `bcount` is tallied during the
+/// candidate walk itself (edp_collect_lambda_candidates_expr), so this costs
+/// one map lookup per candidate rather than another pass over the program.
+fn edp_lambda_only_spellings(cand_names: Array[String], bcount: MutMap[String, Int]) -> MutSet[String] {
   let cand: MutMap[String, Int] = MutMap::new_string()
   let mut i = 0
   while i < Array::length(cand_names) {
-    let nm = Array::get(cand_names, i)
-    let prev = match MutMap::get(cand, nm) {
-      Some(c) => c,
-      None => 0
-    }
-    MutMap::set(cand, nm, prev + 1)
+    edp_tally(cand, Array::get(cand_names, i))
     i = i + 1
   }
-  let bound: MutMap[String, Int] = MutMap::new_string()
-  edp_count_stmt_binders(stmts, cand, bound)
   let out: MutSet[String] = MutSet::with_capacity(hash_string, eq_string, Array::length(cand_names) * 10 / 7 + 1)
   let mut j = 0
   while j < Array::length(cand_names) {
@@ -3939,7 +4068,7 @@ fn edp_lambda_only_spellings(stmts: Array[Stmt], cand_names: Array[String]) -> M
       Some(v) => v,
       None => 0
     }
-    let b = match MutMap::get(bound, nm) {
+    let b = match MutMap::get(bcount, nm) {
       Some(v) => v,
       None => 0
     }
@@ -3951,59 +4080,6 @@ fn edp_lambda_only_spellings(stmts: Array[Stmt], cand_names: Array[String]) -> M
     j = j + 1
   }
   out
-}
-
-/// Tally, for candidate spellings only, every binder in `stmts`: top-level
-/// definitions, and everything edp_collect_binders finds inside each body.
-/// One scratch buffer is reused per statement, so the whole-program walk
-/// allocates a single array rather than one per statement.
-fn edp_count_stmt_binders(stmts: Array[Stmt], cand: MutMap[String, Int], bound: MutMap[String, Int]) -> Unit {
-  let scratch = empty_str_array()
-  let mut i = 0
-  while i < Array::length(stmts) {
-    Array::truncate(scratch, 0)
-    match Array::get(stmts, i) {
-      SLet(_, _, nm, _, expr) => {
-        Array::push(scratch, nm)
-        edp_collect_binders(expr, scratch)
-      },
-      SLetMut(nm, _, expr) => {
-        Array::push(scratch, nm)
-        edp_collect_binders(expr, scratch)
-      },
-      SExternLet(nm, _) => Array::push(scratch, nm),
-      SLetPat(pat, expr) => {
-        edp_collect_pat_binders(pat, scratch)
-        edp_collect_binders(expr, scratch)
-      },
-      SExpr(expr) => edp_collect_binders(expr, scratch),
-      STest(_, expr) => edp_collect_binders(expr, scratch),
-      SBench(_, expr) => edp_collect_binders(expr, scratch),
-      SExample(_, expr) => edp_collect_binders(expr, scratch),
-      SFnDecl(_, nm, expr, _, _) => {
-        Array::push(scratch, nm)
-        edp_collect_binders(expr, scratch)
-      },
-      SModule(_, _, inner) => edp_count_stmt_binders(inner, cand, bound),
-      _ => ()
-    }
-    let mut k = 0
-    while k < Array::length(scratch) {
-      let nm = Array::get(scratch, k)
-      match MutMap::get(cand, nm) {
-        Some(_) => {
-          let prev = match MutMap::get(bound, nm) {
-            Some(c) => c,
-            None => 0
-          }
-          MutMap::set(bound, nm, prev + 1)
-        },
-        None => ()
-      }
-      k = k + 1
-    }
-    i = i + 1
-  }
 }
 
 fn edp_collect_binders(expr: Expr, out: Array[String]) -> Unit {
@@ -4101,22 +4177,27 @@ fn edp_name_bodies_all_pure(name: String, names: Array[String], bodies: Array[Ex
 fn edp_append_visible_pure_lambda_names(stmts: Array[Stmt], pure_fns: Array[String]) -> Unit {
   let names = empty_str_array()
   let bodies: Array[Expr] = []
+  let bcount: MutMap[String, Int] = MutMap::new_string()
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       SLet(_, _, nm, _, expr) => {
+        edp_tally(bcount, nm)
         edp_note_lambda_candidate(nm, expr, names, bodies)
-        edp_collect_lambda_candidates_expr(expr, names, bodies)
+        edp_collect_lambda_candidates_expr(expr, names, bodies, bcount)
       },
-      SLetMut(_, _, expr) => edp_collect_lambda_candidates_expr(expr, names, bodies),
-      SExpr(expr) => edp_collect_lambda_candidates_expr(expr, names, bodies),
-      STest(_, expr) => edp_collect_lambda_candidates_expr(expr, names, bodies),
-      SBench(_, expr) => edp_collect_lambda_candidates_expr(expr, names, bodies),
-      _ => ()
+      SLetMut(nm, _, expr) => {
+        edp_tally(bcount, nm)
+        edp_collect_lambda_candidates_expr(expr, names, bodies, bcount)
+      },
+      SExpr(expr) => edp_collect_lambda_candidates_expr(expr, names, bodies, bcount),
+      STest(_, expr) => edp_collect_lambda_candidates_expr(expr, names, bodies, bcount),
+      SBench(_, expr) => edp_collect_lambda_candidates_expr(expr, names, bodies, bcount),
+      other => edp_tally_other_stmt_binders(other, bcount)
     }
     i = i + 1
   }
-  let sole = edp_lambda_only_spellings(stmts, names)
+  let sole = edp_lambda_only_spellings(names, bcount)
   let mut grew = true
   while grew {
     grew = false
