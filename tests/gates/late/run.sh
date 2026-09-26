@@ -933,6 +933,10 @@ send_check_reject() {
   fi
 }
 send_check_reject "err_type_send_array_bound.vibe" 'no impl `Send` for `Array[Int]`' "arr"
+# #3156 review: a bound that EXTENDS `Send` (`trait Work: Send`) is Send in
+# its body, so an instantiation that is not Send is refused at the call even
+# when the program declares `impl Work for Array[Int]`.
+send_check_reject "err_type_send_supertrait_bound.vibe" 'no impl `Send` for `Array[Int]`: `Work` extends `Send`' "super"
 send_check_reject "err_type_send_mut_struct_bound.vibe" 'no impl `Send` for `Counter`' "mut"
 send_check_reject "err_type_send_closure_bound.vibe" 'no impl `Send` for `' "clos"
 send_check_reject "err_type_send_user_impl.vibe" '`Send` is a compiler-judged structural marker' "impl"
@@ -2227,6 +2231,20 @@ if [ ! -s "$spawnabledir/pos_labeled.wasm" ]; then
 fi
 if ! spawnable_labeled_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$spawnabledir/pos_labeled.wasm" 2>&1)"; then
   echo "[compiler-gate] FAIL: region_ok_spawnable_labeled_param.vibe got '$spawnable_labeled_out' (want 21)" >&2
+  exit 1
+fi
+# #3156 review: a formal bound by a trait that EXTENDS `Send` is Send inside
+# its body, like `[T: Send]` (42, pinned by the fixture's `inspect` block).
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/region_ok_spawnable_supertrait_send.vibe "$spawnabledir/pos_supertrait.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ ! -s "$spawnabledir/pos_supertrait.wasm" ]; then
+  echo "[compiler-gate] FAIL: region_ok_spawnable_supertrait_send.vibe did not compile -- a bound extending Send must count as Send (#3152)" >&2
+  cat "$spawnabledir/pos_supertrait.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+if ! spawnable_supertrait_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$spawnabledir/pos_supertrait.wasm" 2>&1)"; then
+  echo "[compiler-gate] FAIL: region_ok_spawnable_supertrait_send.vibe got '$spawnable_supertrait_out' (want 42)" >&2
   exit 1
 fi
 rm -rf "$spawnabledir"

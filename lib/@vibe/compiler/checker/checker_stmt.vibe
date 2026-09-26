@@ -1,7 +1,7 @@
 //# Imports
 
 import ./checker_trait.vibe {
-  register_builtin_traits, register_builtin_traits_for, type_send_ok
+  bound_entails_send, register_builtin_traits, register_builtin_traits_for, type_send_ok
 }
 
 import @vibe/core {
@@ -4849,6 +4849,12 @@ fn check_program_bounds(env: TypeEnv, s: Subst, defs: Array[TypeDef], errors: Ar
           }
           if resolved_bound != "" && not(sat) {
             Array::push(errors, String::concat("no impl `", String::concat(trait_reference_display(resolved_bound), String::concat("` for `", String::concat(type_to_string(resolved), String::concat("`", unsatisfied_bound_hint(env, resolved_bound, resolved)))))))
+          } else if resolved_bound != "" && resolved_bound != "Send" && bound_entails_send(env, resolved_bound) && not(type_send_ok(env, s, defs, resolved)) {
+            // #3156 review: a bound that EXTENDS `Send` (`trait Work: Send`)
+            // counts as Send inside the generic body (`type_send_ok`), so
+            // its instantiation must be Send too -- an impl of `Work` alone
+            // does not make a type Send, since `Send` has no user impls.
+            Array::push(errors, String::concat("no impl `Send` for `", String::concat(type_to_string(resolved), String::concat("`: `", String::concat(trait_reference_display(resolved_bound), "` extends `Send`, so a type used at it must be Send -- pass a Send value (no `Array`, `Bytes`, closure or `mut` field)")))))
           }
           bi = bi + 1
         }

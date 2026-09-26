@@ -17,8 +17,13 @@ import @vibe/compiler/core {
   subst_apply,
   subst_bounds_for,
   trait_defined,
+  trait_supers,
   type_implements_trait,
   type_to_string
+}
+
+import @vibe/ast {
+  trait_ref_name
 }
 
 import ./checker_resolve.vibe {
@@ -67,11 +72,40 @@ export fn type_send_ok(env: TypeEnv, s: Subst, defs: Array[TypeDef], ty: Type) -
   send_ok_rec(env, s, defs, ty, empty_strings())
 }
 
-fn send_bounds_have_send(bounds: Array[String]) -> Bool {
+/// Does `bound` entail `Send` -- by name, or through its declared supertraits
+/// (`trait Work: Send` makes `[T: Work]` Send)? `trait_supers` with a visited
+/// set, like `bound_entails_eq`, so a cyclic declaration terminates. Every
+/// instantiation of such a bound is checked Send at its call site
+/// (`check_program_bounds`), which is what lets the body count it.
+export fn bound_entails_send(env: TypeEnv, bound: String) -> Bool {
+  let pending: Array[String] = [trait_ref_name(bound)]
+  let seen: Array[String] = []
+  let mut found = false
+  while !found && Array::length(pending) > 0 {
+    let cur = Array::get(pending, Array::length(pending) - 1)
+    Array::truncate(pending, Array::length(pending) - 1)
+    if cur == "Send" {
+      found = true
+    } else if send_seen_has(seen, cur) {
+      ()
+    } else {
+      Array::push(seen, cur)
+      let supers = trait_supers(env, cur)
+      let mut i = 0
+      while i < Array::length(supers) {
+        Array::push(pending, trait_ref_name(Array::get(supers, i)))
+        i = i + 1
+      }
+    }
+  }
+  found
+}
+
+fn send_bounds_have_send(env: TypeEnv, bounds: Array[String]) -> Bool {
   let mut found = false
   let mut i = 0
-  while i < Array::length(bounds) {
-    if Array::get(bounds, i) == "Send" {
+  while i < Array::length(bounds) && !found {
+    if bound_entails_send(env, Array::get(bounds, i)) {
       found = true
     }
     i = i + 1
@@ -325,8 +359,10 @@ fn send_ok_rec(env: TypeEnv, s: Subst, defs: Array[TypeDef], ty: Type, seen: Arr
     },
     // #3152: a formal declared `[T: Send]` is Send inside its own body --
     // every instantiation was checked against the bound at its call site.
-    // `Parallel::map`'s spawned thunk captures its `x: T` this way.
-    CtVar(v) => send_bounds_have_send(subst_bounds_for(s, v)),
+    // `Parallel::map`'s spawned thunk captures its `x: T` this way. So is a
+    // formal whose bound EXTENDS `Send` (`[T: Work]` with `trait Work:
+    // Send`), whose instantiations are checked Send the same way.
+    CtVar(v) => send_bounds_have_send(env, subst_bounds_for(s, v)),
     CtConstructor(_, _) => false,
     CtApplied(_, _) => false,
     CtForAll(_, _, _) => false,
