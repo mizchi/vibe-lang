@@ -546,7 +546,7 @@ struct PreludeEnv {
   alias_renames: Array[(String, String)];
   calls_host_future: Bool;
   waiter_hooks: Bool;
-  aw_note: Bool;
+  aw_note: String;
   // #2647 Codex rounds 6-7: the two whole-program facts the TRAIT-DICT pass
   // reads and a partition cannot supply. See `ModuleTraitFacts`.
   trait_facts: ModuleTraitFacts
@@ -563,7 +563,7 @@ fn prelude_env_none() -> PreludeEnv {
     alias_renames: array_empty(),
     calls_host_future: false,
     waiter_hooks: false,
-    aw_note: false,
+    aw_note: "",
     trait_facts: module_trait_facts_none()
   }
 }
@@ -3476,15 +3476,17 @@ fn lc_host_cancel_body(payload: Expr, hf_machinery: Bool, hs_machinery: Bool) ->
   lc_host_hook_dispatch(payload, hf_machinery, hs_machinery, "vibe_hf_cancel_raw", "vibe_hs_cancel_raw")
 }
 
-/// #1537: the program can call @vibe/concurrent's `__aw_note` (a linked
-/// import or a definition in the merged program).
-fn lc_aw_note_available(stmts: Array[Stmt], linked_imports: Array[(String, String, Int, Int)]) -> Bool {
-  let mut found = false
+/// #1537: the name @vibe/concurrent's `__aw_note` has in this program, or ""
+/// when it cannot call it: a linked import, a local definition, or -- in a
+/// merged program -- the library's export under its module suffix
+/// (lc_is_hook_name).
+fn lc_aw_note_available(stmts: Array[Stmt], linked_imports: Array[(String, String, Int, Int)]) -> String {
+  let mut found = ""
   let mut li = 0
   while li < Array::length(linked_imports) {
     let (_, lname, _, _) = Array::get(linked_imports, li)
     if lname == "__aw_note" {
-      found = true
+      found = lname
     } else {
       ()
     }
@@ -3493,8 +3495,8 @@ fn lc_aw_note_available(stmts: Array[Stmt], linked_imports: Array[(String, Strin
   let mut si = 0
   while si < Array::length(stmts) {
     match Array::get(stmts, si) {
-      SLet(_, _, nm, _, _) => if nm == "__aw_note" {
-        found = true
+      SLet(_, _, nm, _, _) => if nm == "__aw_note" || lc_is_hook_name(nm, "__aw_note") {
+        found = nm
       } else {
         ()
       },

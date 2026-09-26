@@ -50,7 +50,7 @@ fn array_empty_str() -> Array[String] {
 /// `await(Future::ready(x))` collapses to `x` outright: the ready-future fast
 /// path the spec calls for, and it keeps the common case free of both the
 /// array and the loop.
-export fn await_poll_pass(stmts: Array[Stmt], host_future: Bool, waiter_hooks: Bool, cell_note: Bool) -> Unit {
+export fn await_poll_pass(stmts: Array[Stmt], host_future: Bool, waiter_hooks: Bool, cell_note: String) -> Unit {
   // A user-defined top-level `await` shadows the builtin; leave those calls
   // alone (compile_call applies the same rule via `prefer_bound_call`).
   //
@@ -71,9 +71,11 @@ export fn await_poll_pass(stmts: Array[Stmt], host_future: Bool, waiter_hooks: B
   // own payload protocol, and host-future programs are entry-boundary
   // driven (no in-guest scheduler to direct-wake).
   //
-  // `cell_note` (#1537): the program can call @vibe/concurrent's `__aw_note`.
-  // `__aw_pay` then hands it the cell it is about to park on, so a release of
-  // that read can poison the cell (see awp_pay_fn_def).
+  // `cell_note` (#1537): the name @vibe/concurrent's `__aw_note` has in this
+  // program ("" when it cannot call it; a merged program spells a dependency's
+  // export with its module suffix). `__aw_pay` hands it the cell it is about
+  // to park on, so a release of that read can poison the cell (see
+  // awp_pay_fn_def).
   if awp_program_defines_await(stmts) {
     ()
   } else {
@@ -197,7 +199,7 @@ fn awp_poll_fn_def(host_future: Bool, waiter_hooks: Bool) -> Stmt {
 /// waitable band (0 = yield, 1 = poll wait, negative = sleep debt; the +2
 /// keeps even handle 0/1 out of the low reasons). Anything else is the
 /// plain poll-wait retry.
-fn awp_pay_fn_def(cell_note: Bool) -> Stmt {
+fn awp_pay_fn_def(cell_note: String) -> Stmt {
   let f = EIdent("__awp_f", -1)
   let state = ECall(EIdent("Array::get", -1), [f, EInt(0)], -1)
   // `hnd`, not `handle` -- `handle` is the effect-handler keyword.
@@ -210,8 +212,8 @@ fn awp_pay_fn_def(cell_note: Bool) -> Stmt {
     EString("vibe: await on a host future whose read was cancelled", -1)
   ], -1), EInt(1))
   let checked = EIf(EBinOp("==", state, EInt(9), -1), poisoned, pay)
-  let body = if cell_note {
-    ELet("__awp_n", ECall(EIdent("__aw_note", -1), [f], -1), checked, -1)
+  let body = if cell_note != "" {
+    ELet("__awp_n", ECall(EIdent(cell_note, -1), [f], -1), checked, -1)
   } else {
     checked
   }
