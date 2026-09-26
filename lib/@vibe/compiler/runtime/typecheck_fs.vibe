@@ -708,7 +708,7 @@ fn is_selected_type_companion(name: String, binding: EnvValueBinding, type_surfa
       // (Codex on #3172).
       type_returns_name(binding.ty, type_name) && is_enum_variant_of(all_defs, type_name, name)
     } else {
-      String::length(member) > 0 && (is_enum_variant_of(all_defs, type_name, member) || contains_str(trait_methods, member))
+      String::length(member) > 0 && (is_enum_variant_of(all_defs, type_name, member) || contains_str(trait_methods, name) || is_derived_member_shape(member, binding.ty, type_name))
     }
     if keep {
       selected = true
@@ -719,10 +719,13 @@ fn is_selected_type_companion(name: String, binding: EnvValueBinding, type_surfa
   selected
 }
 
-/// Every trait method name the environment declares, plus the ones `derive`
-/// generates (`derive_name_is_known`: Eq, Ord, Show, Hash, Default).
+/// `Type::method` for every method of a trait the environment implements for a
+/// named type (`impl Tr for T`), so a re-exported `T` carries the methods of
+/// its own impls and not a same-named helper whose name merely matches some
+/// unrelated trait's method (Codex on #3172).
 fn env_trait_method_names(env: TypeEnv) -> Array[String] {
-  let out = ["equals", "compare", "to_string", "hash", "default"]
+  let traits = array_empty()
+  let impls = array_empty()
   let mut cur = env
   let mut going = true
   while going {
@@ -730,25 +733,106 @@ fn env_trait_method_names(env: TypeEnv) -> Array[String] {
       EnvEmpty => going = false,
       EnvBind(_, _, rest) => cur = rest,
       EnvMutCell(_, _, rest) => cur = rest,
-      EnvTraitDef(_, _, _, methods, rest, _, _) => {
-        let mut k = 0
-        while k < Array::length(methods) {
-          let (m, _, _) = Array::get(methods, k)
-          if !contains_str(out, m) {
-            Array::push(out, m)
-          }
-          k = k + 1
-        }
+      EnvTraitDef(tname, _, _, methods, rest, _, _) => {
+        Array::push(traits, (tname, methods))
         cur = rest
       },
-      EnvTraitImpl(_, _, rest) => cur = rest,
-      EnvTraitImplGen(_, _, _, _, rest) => cur = rest,
+      EnvTraitImpl(tname, target, rest) => {
+        Array::push(impls, (tname, type_head_name(target)))
+        cur = rest
+      },
+      EnvTraitImplGen(tname, _, _, target, rest) => {
+        Array::push(impls, (tname, type_head_name(target)))
+        cur = rest
+      },
       EnvTypeDefs(_, _, rest) => cur = rest,
       EnvFlat(_) => going = false,
       EnvCached(_, _, rest) => cur = rest
     }
   }
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(impls) {
+    let (tname, head) = Array::get(impls, i)
+    if String::length(head) > 0 {
+      let mut k = 0
+      while k < Array::length(traits) {
+        let (dname, methods) = Array::get(traits, k)
+        if dname == tname {
+          let mut m = 0
+          while m < Array::length(methods) {
+            let (mname, _, _) = Array::get(methods, m)
+            let full = String::concat(head, String::concat("::", mname))
+            if !contains_str(out, full) {
+              Array::push(out, full)
+            }
+            m = m + 1
+          }
+        }
+        k = k + 1
+      }
+    }
+    i = i + 1
+  }
   out
+}
+
+fn type_head_name(t: Type) -> String {
+  match t {
+    CtStruct(n) => n,
+    CtEnum(n) => n,
+    CtNamed(n, _) => n,
+    CtForAll(_, _, body) => type_head_name(body),
+    _ => ""
+  }
+}
+
+/// A method `derive` generates, recognized by its name AND its shape:
+/// `to_string: (T) -> String`, `equals: (T, T) -> Bool`,
+/// `compare: (T, T) -> Ordering`, `hash: (T) -> Int`, `default: () -> T`.
+/// `derive (Ord)` binds `T::compare` without registering an impl, so the impl
+/// table alone would drop it from a re-exported type.
+fn is_derived_member_shape(member: String, ty: Type, type_name: String) -> Bool {
+  match ty {
+    CtForAll(_, _, body) => is_derived_member_shape(member, body, type_name),
+    CtFn(params, ret, _) => {
+      let n = Array::length(params)
+      let all_self = {
+        let mut ok = true
+        let mut i = 0
+        while i < n {
+          if type_head_name(Array::get(params, i)) != type_name {
+            ok = false
+          }
+          i = i + 1
+        }
+        ok
+      }
+      if member == "to_string" {
+        n == 1 && all_self && (match ret {
+          CtString => true,
+          _ => false
+        })
+      } else if member == "equals" {
+        n == 2 && all_self && (match ret {
+          CtBool => true,
+          _ => false
+        })
+      } else if member == "compare" {
+        n == 2 && all_self && type_head_name(ret) == "Ordering"
+      } else if member == "hash" {
+        n == 1 && all_self && (match ret {
+          CtInt => true,
+          _ => false
+        })
+      } else if member == "default" {
+        n == 0 && type_head_name(ret) == type_name
+      } else {
+        false
+      }
+    },
+    _ => false
+  }
 }
 
 /// Is `variant` a constructor of the enum `type_name` names? A re-export under
