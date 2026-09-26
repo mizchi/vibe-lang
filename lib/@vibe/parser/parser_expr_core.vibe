@@ -5,7 +5,7 @@ import ./parser_source_span.vibe {
 }
 
 import @vibe/ast {
-  Expr, Pat, builtin_ref
+  Expr, Pat, index_ref
 }
 
 import ./parser_base.vibe {
@@ -88,6 +88,8 @@ fn callee_offset(callee: Expr) -> Int {
     } else {
       callee_offset(inner)
     },
+    // #3133: an index's `[` key belongs to the index alone.
+    ECall(EIdent("__index", _), _, _) => -1,
     ECall(inner, _, off) => if off >= 0 {
       off
     } else {
@@ -108,11 +110,17 @@ fn field_offset_at(starts: Array[Int], p: Int) -> Int {
   }
 }
 
-fn index_expr(cur_expr: Expr, idx: Expr) -> Expr {
+/// `xs[i]` is `__index(xs, i)`. The `[` offset rides the synthetic CALLEE as
+/// an `index_site_key` (#3133): it is the key the checker files the receiver's
+/// type under, so the trait-dictionary pass can tell a Map receiver from an
+/// Array one by type rather than by spelling. The key is below -1, so no
+/// location consumer reads it; the call node itself stays unlocated, and
+/// `callee_offset` does not read through it either.
+fn index_expr(cur_expr: Expr, idx: Expr, bracket_off: Int) -> Expr {
   let args = empty_exprs()
   Array::push(args, cur_expr)
   Array::push(args, idx)
-  ECall(builtin_ref("__index"), args, -1)
+  ECall(index_ref(bracket_off), args, -1)
 }
 
 /// `x |> f(a, _)` substitutes the piped value at each bare `_` placeholder
@@ -654,7 +662,7 @@ fn parse_postfix(tokens: Array[Token], starts: Array[Int], first: Int, pos: Int,
               TRBracket => idx_next + 1,
               _ => throw("expected ']'")
             }
-            parse_postfix(tokens, starts, first, close_pos, index_expr(expr, idx), parse_recur, context)
+            parse_postfix(tokens, starts, first, close_pos, index_expr(expr, idx, field_offset_at(starts, pos)), parse_recur, context)
           }
         }
       }
