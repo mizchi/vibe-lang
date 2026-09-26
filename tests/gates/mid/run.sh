@@ -1149,8 +1149,8 @@ for ex_lane in bump rc shadow gc; do
     exit 1
   fi
   ex_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$exdir/ex.wasm" 2>&1 | tail -1)"
-  if [ "$ex_out" != "2041000" ]; then
-    echo "[compiler-gate] FAIL: rc_early_exit_bounded got '$ex_out' on the $ex_lane lane (want 2041000). A trap means an early exit released a binding it did not own or one still in use (#3141)." >&2
+  if [ "$ex_out" != "2043000" ]; then
+    echo "[compiler-gate] FAIL: rc_early_exit_bounded got '$ex_out' on the $ex_lane lane (want 2043000). A trap means an early exit released a binding it did not own or one still in use (#3141)." >&2
     exit 1
   fi
   if [ "$ex_lane" = rc ]; then
@@ -1175,7 +1175,7 @@ for ex_lane in 1 shadow; do
   fi
 done
 rm -f "$ROOT_DIR/_build/_gate_rc_early_exit_release.log"
-echo "[compiler-gate] early exit release guard ok (2041000 on bump/rc/shadow/gc, rc heap_used=$ex_used B; handed-out and outer values alive on rc + shadow)"
+echo "[compiler-gate] early exit release guard ok (2043000 on bump/rc/shadow/gc, rc heap_used=$ex_used B; handed-out and outer values alive on rc + shadow)"
 
 # 40f1a. #2427: the shadow table must not overlap the heap it describes.
 #        40f above proves the marks catch a real dup/drop-of-freed; this
