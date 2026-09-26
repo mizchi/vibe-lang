@@ -2463,6 +2463,10 @@ ur_refused fixtures/err_array_length_formal_refused.vibe 'cannot tell whether th
 # actually unresolved -- here the second, `ys`, not the resolved `xs`.
 ur_refused fixtures/err_array_concat_second_formal_refused.vibe 'treats `ys` as an Array' 'annotate it' linear 'fixtures/err_array_concat_second_formal_refused.vibe: line 15:3'
 ur_refused fixtures/err_array_concat_second_formal_refused.vibe 'treats `ys` as an Array' 'annotate it' gc 'fixtures/err_array_concat_second_formal_refused.vibe: line 15:3'
+# #3133 review: an unannotated lambda parameter shadowing an outer Map binding
+# of the same name is not a Map by spelling; its index is refused as open.
+ur_refused fixtures/err_map_index_shadowed_param_refused.vibe 'cannot tell whether this index reads a Map or an Array' 'annotate it' linear 'fixtures/err_map_index_shadowed_param_refused.vibe: line 10:21'
+ur_refused fixtures/err_map_index_shadowed_param_refused.vibe 'cannot tell whether this index reads a Map or an Array' 'annotate it' gc 'fixtures/err_map_index_shadowed_param_refused.vibe: line 10:21'
 # #3148: a `for` over an iterand whose type never resolves (an erased formal
 # holding a map ran zero times). The green side -- a Map iterates its keys,
 # Arrays and Strings keep their loops -- is fixtures/for_in_map_keys_test.vibe.

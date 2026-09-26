@@ -2247,6 +2247,20 @@ if ! spawnable_supertrait_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_w
   echo "[compiler-gate] FAIL: region_ok_spawnable_supertrait_send.vibe got '$spawnable_supertrait_out' (want 42)" >&2
   exit 1
 fi
+# #3152 review: an annotated local closure (`let f: () -> Int = () -> ..`)
+# records its captures through the parser's ascription wrapper (41).
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/region_ok_spawnable_annotated_closure.vibe "$spawnabledir/pos_ann_closure.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ ! -s "$spawnabledir/pos_ann_closure.wasm" ]; then
+  echo "[compiler-gate] FAIL: region_ok_spawnable_annotated_closure.vibe did not compile -- an annotated let closure lost its capture facts (#3152)" >&2
+  cat "$spawnabledir/pos_ann_closure.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+if ! spawnable_ann_closure_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$spawnabledir/pos_ann_closure.wasm" 2>&1)"; then
+  echo "[compiler-gate] FAIL: region_ok_spawnable_annotated_closure.vibe got '$spawnable_ann_closure_out' (want 41)" >&2
+  exit 1
+fi
 rm -rf "$spawnabledir"
 echo "[compiler-gate] ADR-0068 Spawnable[r] capture check ok"
 
