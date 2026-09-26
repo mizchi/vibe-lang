@@ -3718,23 +3718,45 @@ fn throw_kind_lookup(name: String, want_result: Bool) -> String {
 /// `kind` is a real entry meaning "in scope, unresolvable" -- see the header
 /// comment for why that must shadow the module table rather than fall through
 /// to it.
-fn no_kind_binds() -> Array[(String, String)] {
-  array_empty()
+///
+/// A cons list rather than an `Array`: every binder used to copy the whole
+/// array to put itself in front, so a body's walk cost bytes quadratic in its
+/// binder count (~16 MB of the self-compile heap).
+enum TkEnv {
+  TkNil;
+  TkBind(String, String, TkEnv)
 }
 
-fn throw_kind_bind(binds: Array[(String, String)], name: String, kind: String) -> Array[(String, String)] {
-  let out = Array::slice([(name, kind)], 0, 1)
-  let mut i = 0
-  while i < Array::length(binds) {
-    Array::push(out, Array::get(binds, i))
-    i = i + 1
+fn no_kind_binds() -> TkEnv {
+  TkNil
+}
+
+/// The innermost binding of `name`, if any.
+fn tk_lookup(binds: TkEnv, name: String) -> Option[String] {
+  let mut cur = binds
+  let mut found = None
+  let mut looking = true
+  while looking {
+    match cur {
+      TkBind(n, kind, rest) => if n == name {
+        found = Some(kind)
+        looking = false
+      } else {
+        cur = rest
+      },
+      TkNil => looking = false
+    }
   }
-  out
+  found
+}
+
+fn throw_kind_bind(binds: TkEnv, name: String, kind: String) -> TkEnv {
+  TkBind(name, kind, binds)
 }
 
 /// Every name a pattern binds enters scope unresolvable: this pass is untyped,
 /// so it cannot tell what `Err(e)` destructures `e` to.
-fn throw_kind_bind_pat(binds: Array[(String, String)], pat: Pat) -> Array[(String, String)] {
+fn throw_kind_bind_pat(binds: TkEnv, pat: Pat) -> TkEnv {
   let names = no_str_labels()
   collect_pat_binds_into(pat, names)
   let mut cur = binds
@@ -3749,7 +3771,7 @@ fn throw_kind_bind_pat(binds: Array[(String, String)], pat: Pat) -> Array[(Strin
 /// A parameter's kind comes from its whole ANNOTATION (`e: IoError`,
 /// `xs: Array[Int]`). Un-annotated parameters bind unresolvable -- their type
 /// exists only in the inference substitution this pass does not carry.
-fn throw_kind_bind_params(binds: Array[(String, String)], params: Array[(String, Option[TypeExpr])]) -> Array[(String, String)] {
+fn throw_kind_bind_params(binds: TkEnv, params: Array[(String, Option[TypeExpr])]) -> TkEnv {
   let mut cur = binds
   let mut i = 0
   while i < Array::length(params) {
@@ -3817,7 +3839,7 @@ fn throw_kind_of_unlisted_callee(f: String) -> String {
 
 /// The exception kind of a `throw` payload expression, or "" when this pass
 /// cannot resolve it (see the header comment above for the exact coverage).
-fn throw_payload_kind(payload: Expr, binds: Array[(String, String)]) -> String {
+fn throw_payload_kind(payload: Expr, binds: TkEnv) -> String {
   match payload {
     EString(_, _) => "String",
     EStringInterp(_) => "String",
@@ -3827,10 +3849,7 @@ fn throw_payload_kind(payload: Expr, binds: Array[(String, String)]) -> String {
     // A struct literal names its own type. Anonymous records carry "" here and
     // stay gradual.
     ERecord(sname, _, _) => sname,
-    // afe_lookup_local is a plain first-match lookup over the same
-    // `Array[(String, String)]` shape; only its afe_ SPELLING is
-    // async-pass-specific.
-    EIdent(n, _) => match afe_lookup_local(binds, n) {
+    EIdent(n, _) => match tk_lookup(binds, n) {
       Some(k) => k,
       None => throw_kind_lookup(n, false)
     },
@@ -3863,7 +3882,7 @@ fn throw_payload_kind(payload: Expr, binds: Array[(String, String)]) -> String {
       // kind, never the kind of its RESULT, so the call is unresolvable -- and
       // it must not fall through to the module table, whose same-named
       // top-level function this local shadows.
-      EIdent(f, _) => match afe_lookup_local(binds, f) {
+      EIdent(f, _) => match tk_lookup(binds, f) {
         Some(_) => "",
         None => {
           let from_table = throw_kind_lookup(f, true)
@@ -4242,7 +4261,7 @@ fn throw_site_kind(off: Int, payload: Expr) -> String {
 /// The row label a `throw` requires: the typed `Exception[K]::Throw` when the
 /// payload's kind is resolvable, and the pinned erased `Exception::Throw`
 /// otherwise. Non-exception operations pass through untouched.
-fn throw_required_label(op_name: String, opargs: Array[Expr], binds: Array[(String, String)], call_off: Int) -> String {
+fn throw_required_label(op_name: String, opargs: Array[Expr], binds: TkEnv, call_off: Int) -> String {
   if is_exception_throw_operation(op_name) && Array::length(opargs) == 1 {
     let payload = Array::get(opargs, 0)
     // The checker's kind is the answer whenever it has one. #3029: a struct
@@ -5331,11 +5350,36 @@ let callee_sig_effs: Array[Array[String]] = array_empty()
 let callee_sig_param_effs: Array[Array[Array[String]]] = array_empty()
 
 fn set_callee_sigs(stmts: Array[Stmt], env: TypeEnv) -> Unit {
+  let loc_names = array_empty()
+  let loc_effs = array_empty()
+  let loc_peffs = no_param_effs()
+  build_perform_fn_effs(stmts, env, loc_names, loc_effs, loc_peffs)
+  set_callee_sigs_from(loc_names, loc_effs, loc_peffs, env_fn_sigs(env))
+}
+
+/// `set_callee_sigs` from tables the caller already built: this module's own
+/// bindings (`build_perform_fn_effs`) followed by every function binding of
+/// the env (`env_fn_sigs`). The effect pass needs both halves for its program
+/// table too, so it builds each once and hands them here.
+fn set_callee_sigs_from(loc_names: Array[String], loc_effs: Array[Array[String]], loc_peffs: Array[Array[Array[String]]], env_sigs: (Array[String], Array[Array[String]], Array[Array[Array[String]]])) -> Unit {
   Array::truncate(callee_sig_effs, 0)
   Array::truncate(callee_sig_param_effs, 0)
   let names = array_empty()
-  build_perform_fn_effs(stmts, env, names, callee_sig_effs, callee_sig_param_effs)
-  seed_env_fn_effs(env, names, callee_sig_effs, callee_sig_param_effs, true)
+  let mut i = 0
+  while i < Array::length(loc_names) {
+    Array::push(names, Array::get(loc_names, i))
+    Array::push(callee_sig_effs, Array::get(loc_effs, i))
+    Array::push(callee_sig_param_effs, Array::get(loc_peffs, i))
+    i = i + 1
+  }
+  let (env_names, env_effs, env_peffs) = env_sigs
+  let mut j = 0
+  while j < Array::length(env_names) {
+    Array::push(names, Array::get(env_names, j))
+    Array::push(callee_sig_effs, Array::get(env_effs, j))
+    Array::push(callee_sig_param_effs, Array::get(env_peffs, j))
+    j = j + 1
+  }
   Array::set(callee_sig_index, 0, program_fn_index(names))
 }
 
@@ -5860,7 +5904,7 @@ fn check_perform_effects_expr_tx_indexed(root: Expr, root_declared: Array[String
 /// so row-mismatch diagnostics can blame the caller's declaration in the fix-it
 /// hint. The name is constant per walk (lambdas are anonymous), so it rides as
 /// a plain parameter, not on the work stack.
-fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: Array[String], root_in_handle: Bool, fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], fn_param_effs: Array[Array[Array[String]]], root_ov_names: Array[String], root_ov_effs: Array[Array[String]], root_kinds: Array[(String, String)]) -> Array[EffectError] {
+fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: Array[String], root_in_handle: Bool, fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], fn_param_effs: Array[Array[Array[String]]], root_ov_names: Array[String], root_ov_effs: Array[Array[String]], root_kinds: TkEnv) -> Array[EffectError] {
   let errors = array_empty()
   let scope_depth = Array::length(row_formal_scope)
   Array::push(row_mismatch_roots, root_declared)
@@ -7161,10 +7205,25 @@ fn push_env_fn_eff(name: String, ty: Type, fn_names: Array[String], fn_effs: Arr
 /// function's row without importing the effect declaration itself, so these
 /// count as known when a row label is validated.
 export fn env_row_labels(env: TypeEnv, local_names: Array[String]) -> Array[String] {
+  env_row_labels_from(env_fn_sigs(env), local_names)
+}
+
+/// Every function binding of an env with its row and parameter rows, in env
+/// order (`seed_env_fn_effs` with `every_fn`). Walking the env parses every
+/// imported binding's row, and one module's effect pass needs the answer
+/// three times -- the callee-signature table, the program table (its
+/// non-empty rows), and the unknown-label check -- so it is built once per
+/// pass and threaded (`env_fn_sigs` / `*_from`).
+export fn env_fn_sigs(env: TypeEnv) -> (Array[String], Array[Array[String]], Array[Array[Array[String]]]) {
   let names = no_str_labels()
   let effs = array_empty()
-  let peffs = array_empty()
+  let peffs = no_param_effs()
   seed_env_fn_effs(env, names, effs, peffs, true)
+  (names, effs, peffs)
+}
+
+export fn env_row_labels_from(sigs: (Array[String], Array[Array[String]], Array[Array[Array[String]]]), local_names: Array[String]) -> Array[String] {
+  let (names, effs, peffs) = sigs
   let out = no_str_labels()
   let mut i = 0
   while i < Array::length(effs) {
@@ -7344,6 +7403,12 @@ export fn check_perform_effects_stmts_env(stmts: Array[Stmt], env: TypeEnv) -> A
 }
 
 export fn check_perform_effects_stmts_env_published(stmts: Array[Stmt], env: TypeEnv) -> Array[EffectError] {
+  check_perform_effects_stmts_env_published_sigs(stmts, env, env_fn_sigs(env))
+}
+
+/// `check_perform_effects_stmts_env_published` with `env_sigs` =
+/// `env_fn_sigs(env)` already built by the caller.
+export fn check_perform_effects_stmts_env_published_sigs(stmts: Array[Stmt], env: TypeEnv, env_sigs: (Array[String], Array[Array[String]], Array[Array[Array[String]]])) -> Array[EffectError] {
   // Build the call-graph effect map (parallel arrays) from every top-level
   // binding's declared row — locals first, then the env's (imported)
   // bindings (#812) — then run the per-stmt check WITH transitive
@@ -7358,9 +7423,23 @@ export fn check_perform_effects_stmts_env_published(stmts: Array[Stmt], env: Typ
   // the pre-#1485 exemption.
   let fn_param_effs = no_param_effs()
   build_perform_fn_effs(stmts, env, fn_names, fn_effs, fn_param_effs)
-  seed_env_fn_effs(env, fn_names, fn_effs, fn_param_effs, false)
+  // The callee-signature table is the same local rows plus EVERY env
+  // function; build it before the program table appends its env half.
+  set_callee_sigs_from(fn_names, fn_effs, fn_param_effs, env_sigs)
+  // The program table's env half is `seed_env_fn_effs` without `every_fn`:
+  // the env functions whose own row is non-empty (push_env_fn_eff).
+  let (env_names, env_effs, env_peffs) = env_sigs
+  let mut ei = 0
+  while ei < Array::length(env_names) {
+    let labels = Array::get(env_effs, ei)
+    if Array::length(labels) > 0 {
+      Array::push(fn_names, Array::get(env_names, ei))
+      Array::push(fn_effs, labels)
+      Array::push(fn_param_effs, Array::get(env_peffs, ei))
+    }
+    ei = ei + 1
+  }
   let fn_index = program_fn_index(fn_names)
-  set_callee_sigs(stmts, env)
   // #1451: struct FIELD rows, for closure literals stored into a field whose
   // declared type carries one (see build_struct_field_rows).
   build_struct_field_rows(stmts)

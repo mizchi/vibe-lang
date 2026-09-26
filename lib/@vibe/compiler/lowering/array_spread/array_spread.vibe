@@ -5,7 +5,7 @@ import @vibe/ast {
 }
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt
+  Expr, Pat, Stmt, expr_any_node
 }
 import @vibe/core {
   array_empty
@@ -163,8 +163,30 @@ export fn lower_array_spreads(stmts: Array[Stmt], end: Int) -> Unit {
   assert_true(end >= 0 && end <= Array::length(stmts))
   let mut i = 0
   while i < end {
-    Array::set(stmts, i, das_stmt(Array::get(stmts, i)))
+    let stmt = Array::get(stmts, i)
+    // Spreads are rare; a statement without one is left as it is rather
+    // than rebuilt node by node into an equal tree (~9 MB of the
+    // self-compile heap). `expr_any_node` reaches every node `das_expr` does.
+    if das_stmt_has_spread(stmt) {
+      Array::set(stmts, i, das_stmt(stmt))
+    }
     i = i + 1
+  }
+}
+
+fn das_stmt_has_spread(stmt: Stmt) -> Bool {
+  let is_spread = (e: Expr) -> match e {
+    ESpread(_) => true,
+    _ => false
+  }
+  match stmt {
+    SLet(_, _, _, _, body) => expr_any_node(body, is_spread),
+    SLetMut(_, _, body) => expr_any_node(body, is_spread),
+    STest(_, body) => expr_any_node(body, is_spread),
+    SBench(_, body) => expr_any_node(body, is_spread),
+    SExpr(e) => expr_any_node(e, is_spread),
+    SLetPat(_, e) => expr_any_node(e, is_spread),
+    _ => false
   }
 }
 

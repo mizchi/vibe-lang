@@ -39,6 +39,7 @@ import @vibe/compiler/core {
   canonical_builtin_name,
   compiler_owned_type_arity,
   exception_effect_kind,
+  expr_any_node,
   expr_child_at,
   expr_children,
   expr_children_pop,
@@ -4022,13 +4023,17 @@ fn dtd_expr_has_eq_bound(e: Expr) -> Bool {
   if direct {
     true
   } else {
-    let kids = expr_children(e)
-    let mut i = 0
+    // The shared scratch stack, not a fresh child array per node: this
+    // walk visits the whole program (~7 MB of `expr_children` arrays).
+    let mark = expr_children_push(e)
+    let top = expr_children_top()
+    let mut i = mark
     let mut found = false
-    while !found && i < Array::length(kids) {
-      found = dtd_expr_has_eq_bound(Array::get(kids, i))
+    while !found && i < top {
+      found = dtd_expr_has_eq_bound(expr_child_at(i))
       i = i + 1
     }
+    expr_children_pop(mark)
     found
   }
 }
@@ -19594,6 +19599,32 @@ fn dlh_hoist_stmt(stmt: Stmt, hoisted: Array[Stmt], ctr: Array[Int]) -> Stmt {
   }
 }
 
+/// Can `dlh_hoist_stmt` change `stmt` at all? Every rewrite it makes starts
+/// from a lambda NESTED in the declaration -- a `let` bound to one, an IIFE,
+/// a lambda literal passed as an argument -- so a declaration with none comes
+/// back as an equal tree. Asking first skips rebuilding it node by node
+/// (~9 MB of the self-compile heap). A top-level function's own `EFn` is not
+/// nested; only its body is searched.
+fn dlh_stmt_has_nested_lambda(stmt: Stmt) -> Bool {
+  let is_fn = (e: Expr) -> match e {
+    EFn(_, _, _, _, _, _) => true,
+    _ => false
+  }
+  let body_has = (body: Expr) -> match body {
+    EFn(_, _, _, _, _, fbody) => expr_any_node(fbody, is_fn),
+    _ => expr_any_node(body, is_fn)
+  }
+  match stmt {
+    SLet(_, _, _, _, body) => body_has(body),
+    SLetMut(_, _, body) => body_has(body),
+    STest(_, body) => body_has(body),
+    SBench(_, body) => body_has(body),
+    SExpr(e) => body_has(e),
+    SLetPat(_, e) => body_has(e),
+    _ => false
+  }
+}
+
 /// In-place hoisting of non-capturing effectful local lambdas across the program.
 ///
 /// #2388: the counter restarts at every top-level declaration and the hoisted
@@ -19610,7 +19641,10 @@ export fn desugar_hoist_local_lambdas(stmts: Array[Stmt]) -> Unit {
     Array::set(ctr, 0, 0)
     dlh_set_owner(Array::get(stmts, i), i)
     let before = Array::length(hoisted)
-    Array::set(stmts, i, dlh_hoist_stmt(Array::get(stmts, i), hoisted, ctr))
+    let stmt = Array::get(stmts, i)
+    if dlh_stmt_has_nested_lambda(stmt) {
+      Array::set(stmts, i, dlh_hoist_stmt(stmt, hoisted, ctr))
+    }
     let mut b = before
     while b < Array::length(hoisted) {
       Array::push(hoisted_owner, i)

@@ -33,6 +33,49 @@ export fn unstable_package_note(name: String) -> String {
 
 /// Whether a module's text could possibly carry such an import. Cheap and
 /// deliberately loose -- the caller confirms with a token scan.
+///
+/// A mention on a line whose first non-blank characters are `//` does not
+/// count: such a line is a comment or the inside of a multi-line string, and
+/// neither can hold an import. That is still an over-match everywhere else,
+/// so the token scan keeps the verdict. It matters because the compiler's own
+/// sources mention the package in comments -- about 2.4 MB of them -- and
+/// every candidate is lexed in full by the closure scan (~37 MB of the
+/// self-compile heap before this).
 export fn text_mentions_unstable_package(text: String) -> Bool {
-  String::index_of(text, unstable_package_name) >= 0
+  if String::index_of(text, unstable_package_name) < 0 {
+    false
+  } else {
+    let n = String::length(text)
+    let mut i = 0
+    let mut found = false
+    while !found && i < n {
+      // `i` is at a line start: skip its indentation, then the whole line if
+      // it is a `//` line, else look for the name up to the line's end.
+      while i < n && (String::byte_at(text, i) == ' ' || String::byte_at(text, i) == '\t') {
+        i = i + 1
+      }
+      let comment = i + 1 < n && String::byte_at(text, i) == '/' && String::byte_at(text, i + 1) == '/'
+      while i < n && String::byte_at(text, i) != '\n' {
+        if !comment && !found && unstable_name_at(text, i) {
+          found = true
+        }
+        i = i + 1
+      }
+      i = i + 1
+    }
+    found
+  }
+}
+
+fn unstable_name_at(text: String, at: Int) -> Bool {
+  let m = String::length(unstable_package_name)
+  if at + m > String::length(text) {
+    false
+  } else {
+    let mut k = 0
+    while k < m && String::byte_at(text, at + k) == String::byte_at(unstable_package_name, k) {
+      k = k + 1
+    }
+    k == m
+  }
 }

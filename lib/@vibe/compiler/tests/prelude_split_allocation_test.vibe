@@ -60,12 +60,16 @@ test "the production split does not run the oracle analysis suite" {
     row = row + 1
   }
   // Heap-frontier deltas include allocator reuse, not total allocation under
-  // RC. Owning mixed returns reduced both deltas (397836 -> 374068 whole,
-  // 589560 -> 562712 split), but reduced the denominator more. The same probe
-  // under bump uses 323676 / 520016 bytes. Allow 75% decomposition overhead
-  // across both modes. Supplying oracle observations to the production driver
-  // must still fail this guard; recheck that mutation when changing the bound.
-  inspect(split_bytes * 4 <= whole_bytes * 7, content = "true")
+  // RC. The bound is a RATIO, so it moves when the whole-program prelude gets
+  // cheaper even though the split's own overhead does not: the 2026-09-26
+  // allocation cuts took this probe from 272244 whole / 465200 split (1.71)
+  // to 226596 / 417592 (1.84) -- the split's excess over whole stayed ~191 KB
+  // -- and broke the previous 7/4 bound. The mutation this guards, handing the
+  // production driver oracle observations (`Some(prelude_observations_new())`
+  // in effect_lowering_prelude_split), measured 226596 / 700536 (3.09) on the
+  // same compiler, so 2x keeps a wide margin on both sides. Recheck that
+  // mutation when changing the bound.
+  inspect(split_bytes <= whole_bytes * 2, content = "true")
   let fallback = parse_program(lex(source()))
   let errors = effect_lowering_prelude_split(fallback, "__no_entry__", [], [], [
   ], [], [], module_split_none(), print_stmt)

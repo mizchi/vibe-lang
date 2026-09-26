@@ -317,9 +317,9 @@ fn pe_note_initial_ref_spent(ctx: PCtx, sid: Int, name: String, use_offset: Int,
   }
 }
 
-fn pe_use(ctx: PCtx, scope: Map[String, Int], name: String, use_offset: Int) -> Int {
-  if Map::has_key(scope, name) {
-    let id = Map::get(scope, name)
+fn pe_use(ctx: PCtx, scope: PScope, name: String, use_offset: Int) -> Int {
+  if ps_has(scope, name) {
+    let id = ps_get(scope, name)
     let rem = Array::get(ctx.remaining, id)
     // ADR-0092 per-use pairing: a view-call binding holds NO initial owned
     // reference (its value may be an unowned interior view), so its LAST
@@ -634,6 +634,44 @@ export fn pa_is_drop(a: PerceusAction) -> Bool {
   }
 }
 
+/// The planner's lexical scope: binding name -> binding id, innermost first.
+///
+/// This was a `Map[String, Int]`, but `Map` is an immutable association
+/// array whose `Map::set` copies every entry, and both walks (`pc_count`,
+/// `pc_emit`) extend the scope at every binder -- so planning a function cost
+/// bytes quadratic in its binder count, ~45 MB of the self-compile heap. A
+/// cons cell per binder answers the same lookups (latest binding of a name
+/// wins, as `Map::set` replacing an entry did) and extends in O(1); lookups
+/// were already a linear scan.
+enum PScope {
+  PsNil;
+  PsBind(String, Int, PScope)
+}
+
+fn ps_has(s: PScope, name: String) -> Bool {
+  ps_get(s, name) >= 0
+}
+
+/// The id bound to `name`, or -1 when it is not in scope. Ids are the
+/// planner's array indices, so they are never negative.
+fn ps_get(s: PScope, name: String) -> Int {
+  let mut cur = s
+  let mut found = 0 - 1
+  let mut looking = true
+  while looking {
+    match cur {
+      PsBind(n, id, rest) => if n == name {
+        found = id
+        looking = false
+      } else {
+        cur = rest
+      },
+      PsNil => looking = false
+    }
+  }
+  found
+}
+
 fn pc_declare(ctx: PCtx, _name: String, scalar: Bool) -> Int {
   let id = ctx.next_id
   Array::push(ctx.uses, 0)
@@ -683,10 +721,10 @@ fn pmvc_spine_leaf(e: Expr, binders: Array[String]) -> Expr {
 /// same scoping `pmvc_spine_leaf` gives `pctx_mark_view_call`. Erring toward
 /// "view" is the safe side: it can leak an alias's reference, never release
 /// one twice.
-fn pv_spine_is_view(ctx: PCtx, scope: Map[String, Int], e: Expr, binders: Array[String]) -> Bool {
+fn pv_spine_is_view(ctx: PCtx, scope: PScope, e: Expr, binders: Array[String]) -> Bool {
   match e {
-    ECall(EIdent(fname, _), _, _) => !array_contains_str_pctx(binders, fname) && !Map::has_key(scope, fname) && is_borrow_ret_fname(ctx, fname),
-    EIdent(x, _) => !array_contains_str_pctx(binders, x) && Map::has_key(scope, x) && Array::get(ctx.borrowed_view, Map::get(scope, x)),
+    ECall(EIdent(fname, _), _, _) => !array_contains_str_pctx(binders, fname) && !ps_has(scope, fname) && is_borrow_ret_fname(ctx, fname),
+    EIdent(x, _) => !array_contains_str_pctx(binders, x) && ps_has(scope, x) && Array::get(ctx.borrowed_view, ps_get(scope, x)),
     EDot(_, _, _, _) => true,
     EIf(_, t, el) => pv_spine_is_view(ctx, scope, t, binders) || pv_spine_is_view(ctx, scope, el, binders),
     EMatch(_, arms) => {
@@ -716,7 +754,7 @@ fn pv_spine_is_view(ctx: PCtx, scope: Map[String, Int], e: Expr, binders: Array[
   }
 }
 
-fn pv_spine_under_binder(ctx: PCtx, scope: Map[String, Int], n: String, b: Expr, binders: Array[String]) -> Bool {
+fn pv_spine_under_binder(ctx: PCtx, scope: PScope, n: String, b: Expr, binders: Array[String]) -> Bool {
   let mark = Array::length(binders)
   Array::push(binders, n)
   let r = pv_spine_is_view(ctx, scope, b, binders)
@@ -729,7 +767,7 @@ fn pv_spine_under_binder(ctx: PCtx, scope: Map[String, Int], n: String, b: Expr,
 /// (see PCtx.view_ret_user -- fresh-returning borrow-arg0 callees must
 /// keep their binding's scope-end drop or the result leaks). A local that
 /// shadows a view-ret name is an ordinary owned closure call (#875).
-fn pctx_mark_view_call(ctx: PCtx, scope: Map[String, Int], id: Int, value: Expr) -> Int {
+fn pctx_mark_view_call(ctx: PCtx, scope: PScope, id: Int, value: Expr) -> Int {
   // #2733: a straight-line WRAPPER -- a block, i.e. an `ELet` / `ESeq` chain
   // -- hands back whatever its spine ends in, but this matched the value's
   // TOP node only. A view call behind a block therefore set neither
@@ -746,7 +784,7 @@ fn pctx_mark_view_call(ctx: PCtx, scope: Map[String, Int], id: Int, value: Expr)
   match leaf {
     ECall(vc, args, _) => match vc {
       EIdent(vf, _) => {
-        if !array_contains_str_pctx(binders, vf) && !Map::has_key(scope, vf) && bsearch_leftmost(ctx.view_ret_user, vf) >= 0 {
+        if !array_contains_str_pctx(binders, vf) && !ps_has(scope, vf) && bsearch_leftmost(ctx.view_ret_user, vf) >= 0 {
           Array::set(ctx.view_call_let, id, true)
         } else {
           ()
@@ -756,10 +794,10 @@ fn pctx_mark_view_call(ctx: PCtx, scope: Map[String, Int], id: Int, value: Expr)
         // view set) views its first argument -- remember which binding, so
         // a self-reassignment of that binding does not move a value this
         // one still reads (pe_has_live_view_of).
-        if !array_contains_str_pctx(binders, vf) && !Map::has_key(scope, vf) && Array::length(args) > 0 && (is_borrow_ret_fname(ctx, vf) || bsearch_leftmost(ctx.view_ret_user, vf) >= 0) {
+        if !array_contains_str_pctx(binders, vf) && !ps_has(scope, vf) && Array::length(args) > 0 && (is_borrow_ret_fname(ctx, vf) || bsearch_leftmost(ctx.view_ret_user, vf) >= 0) {
           match Array::get(args, 0) {
-            EIdent(src, _) => if !array_contains_str_pctx(binders, src) && Map::has_key(scope, src) {
-              Array::set(ctx.view_src, id, Map::get(scope, src))
+            EIdent(src, _) => if !array_contains_str_pctx(binders, src) && ps_has(scope, src) {
+              Array::set(ctx.view_src, id, ps_get(scope, src))
             } else {
               ()
             },
@@ -772,8 +810,8 @@ fn pctx_mark_view_call(ctx: PCtx, scope: Map[String, Int], id: Int, value: Expr)
       _ => ()
     },
     EDot(obj, _, _, _) => match obj {
-      EIdent(src, _) => if !array_contains_str_pctx(binders, src) && Map::has_key(scope, src) {
-        Array::set(ctx.view_src, id, Map::get(scope, src))
+      EIdent(src, _) => if !array_contains_str_pctx(binders, src) && ps_has(scope, src) {
+        Array::set(ctx.view_src, id, ps_get(scope, src))
       } else {
         ()
       },
@@ -812,7 +850,7 @@ fn pe_has_live_view_of(ctx: PCtx, id: Int) -> Bool {
 /// right-hand side -- and a unique map reaches Map::set's in-place path.
 /// Mirrored by md_self_reassign_move_arg (codegen/common_analysis), which
 /// keeps the codegen's loop-carried dup off the same occurrence.
-fn pe_self_reassign_moves(ctx: PCtx, scope: Map[String, Int], name: String, value: Expr) -> Bool {
+fn pe_self_reassign_moves(ctx: PCtx, scope: PScope, name: String, value: Expr) -> Bool {
   match value {
     ECall(callee, args, _) => {
       let callee_is_name = match callee {
@@ -853,9 +891,9 @@ fn pe_declare(ctx: PCtx, _name: String) -> Int {
   id
 }
 
-fn pc_count_use(ctx: PCtx, scope: Map[String, Int], name: String) -> Int {
-  if Map::has_key(scope, name) {
-    let id = Map::get(scope, name)
+fn pc_count_use(ctx: PCtx, scope: PScope, name: String) -> Int {
+  if ps_has(scope, name) {
+    let id = ps_get(scope, name)
     Array::set(ctx.uses, id, Array::get(ctx.uses, id) + 1)
   }
   0
@@ -1642,23 +1680,69 @@ export fn compute_scalar_returning_names(stmts: Array[Stmt]) -> Array[String] {
 /// it inside a loop (#3134) took no reference of its own, so the alias's
 /// scope-end drop freed the box on the first iteration. The literals left
 /// here are exactly the ones codegen does not allocate: Int, Bool, Unit.
-fn is_scalar_expr(ctx: PCtx, scope: Map[String, Int], e: Expr) -> Bool {
+fn is_scalar_expr(ctx: PCtx, scope: PScope, e: Expr) -> Bool {
   match e {
     EInt(_) => true,
     EBool(_) => true,
     EUnit => true,
-    ECall(EIdent(fname, _), _, _) => fname == "Stdin::read_via_stream" || (!Map::has_key(scope, fname) && is_borrow_ret_fname(ctx, fname)),
+    ECall(EIdent(fname, _), _, _) => fname == "Stdin::read_via_stream" || (!ps_has(scope, fname) && is_borrow_ret_fname(ctx, fname)),
     _ => false
   }
 }
 
-fn pat_shadow_env(pat: Pat, env: Map[String, Bool]) -> Map[String, Bool] {
+/// The heap-inference walk's local environment: name -> "holds a heap
+/// value", innermost first. A `Map[String, Bool]` before, whose every
+/// `Map::set` copied the whole map (see `PScope`).
+enum PEnv {
+  PeNil;
+  PeBind(String, Bool, PEnv)
+}
+
+fn pe_has(env: PEnv, name: String) -> Bool {
+  let mut cur = env
+  let mut found = false
+  let mut looking = true
+  while looking {
+    match cur {
+      PeBind(n, _, rest) => if n == name {
+        found = true
+        looking = false
+      } else {
+        cur = rest
+      },
+      PeNil => looking = false
+    }
+  }
+  found
+}
+
+/// The innermost binding of `name`; false when unbound (callers ask
+/// `pe_has` first).
+fn pe_get(env: PEnv, name: String) -> Bool {
+  let mut cur = env
+  let mut found = false
+  let mut looking = true
+  while looking {
+    match cur {
+      PeBind(n, heap, rest) => if n == name {
+        found = heap
+        looking = false
+      } else {
+        cur = rest
+      },
+      PeNil => looking = false
+    }
+  }
+  found
+}
+
+fn pat_shadow_env(pat: Pat, env: PEnv) -> PEnv {
   let names: Array[String] = []
   pat_names(pat, names)
   let mut env2 = env
   let mut j = 0
   while j < Array::length(names) {
-    env2 = Map::set(env2, Array::get(names, j), false)
+    env2 = PeBind(Array::get(names, j), false, env2)
     j = j + 1
   }
   env2
@@ -1682,7 +1766,7 @@ fn is_heap_literal(e: Expr) -> Bool {
   }
 }
 
-fn is_heap_value(e: Expr, env: Map[String, Bool], hctx: HeapInferCtx) -> Bool {
+fn is_heap_value(e: Expr, env: PEnv, hctx: HeapInferCtx) -> Bool {
   if is_heap_literal(e) {
     true
   } else {
@@ -1690,7 +1774,7 @@ fn is_heap_value(e: Expr, env: Map[String, Bool], hctx: HeapInferCtx) -> Bool {
       ECall(callee, args, _) =>
       match callee {
         EIdent(c, _) =>
-        if Map::has_key(env, c) {
+        if pe_has(env, c) {
           false
         } else {
           (Array::length(args) > 0 && name_in(hctx.ctors, c)) ||
@@ -1703,13 +1787,13 @@ fn is_heap_value(e: Expr, env: Map[String, Bool], hctx: HeapInferCtx) -> Bool {
   }
 }
 
-fn arg_class(arg: Expr, env: Map[String, Bool], hctx: HeapInferCtx) -> Bool {
+fn arg_class(arg: Expr, env: PEnv, hctx: HeapInferCtx) -> Bool {
   if is_heap_value(arg, env, hctx) {
     true
   } else {
     match arg {
-      EIdent(n, _) => if Map::has_key(env, n) {
-        Map::get(env, n)
+      EIdent(n, _) => if pe_has(env, n) {
+        pe_get(env, n)
       } else {
         let slot = bsearch_leftmost(hctx.top_names, n)
         slot >= 0 && Array::get(hctx.top_heaps, slot)
@@ -1719,7 +1803,7 @@ fn arg_class(arg: Expr, env: Map[String, Bool], hctx: HeapInferCtx) -> Bool {
   }
 }
 
-fn analyze_calls(name: String, e_in: Expr, env_in: Map[String, Bool], calls: Array[Array[Bool]], esc: Array[Bool], hctx: HeapInferCtx) -> Int {
+fn analyze_calls(name: String, e_in: Expr, env_in: PEnv, calls: Array[Array[Bool]], esc: Array[Bool], hctx: HeapInferCtx) -> Int {
   // #556: iterate the let / seq / assign "spine" instead of recursing on its
   // tail, so a deeply-nested (flattened) expression — e.g. the whole compiler
   // compiled as a single unit under RC — no longer exhausts the wasm stack in
@@ -1767,19 +1851,19 @@ fn analyze_calls(name: String, e_in: Expr, env_in: Map[String, Bool], calls: Arr
       EDot(obj, _, _, _) => analyze_calls(name, obj, env, calls, esc, hctx),
       ELet(n, v, b, _) => {
         analyze_calls(name, v, env, calls, esc, hctx)
-        env = Map::set(env, n, is_heap_value(v, env, hctx))
+        env = PeBind(n, is_heap_value(v, env, hctx), env)
         e = b
         looping = true
       },
       ELetRec(n, v, b) => {
-        env = Map::set(env, n, false)
+        env = PeBind(n, false, env)
         analyze_calls(name, v, env, calls, esc, hctx)
         e = b
         looping = true
       },
       ELetMut(n, v, b, _) => {
         analyze_calls(name, v, env, calls, esc, hctx)
-        env = Map::set(env, n, false)
+        env = PeBind(n, false, env)
         e = b
         looping = true
       },
@@ -1811,9 +1895,9 @@ fn analyze_calls(name: String, e_in: Expr, env_in: Map[String, Bool], calls: Arr
       },
       EForIn(v0, ix, it, b) => {
         analyze_calls(name, it, env, calls, esc, hctx)
-        let env1 = Map::set(env, v0, false)
+        let env1 = PeBind(v0, false, env)
         let env2 = match ix {
-          Some(ixn) => Map::set(env1, ixn, false),
+          Some(ixn) => PeBind(ixn, false, env1),
           None => env1
         }
         analyze_calls(name, b, env2, calls, esc, hctx)
@@ -1830,7 +1914,7 @@ fn analyze_calls(name: String, e_in: Expr, env_in: Map[String, Bool], calls: Arr
         let mut pi = 0
         while pi < Array::length(params) {
           let (pn, _) = Array::get(params, pi)
-          env2 = Map::set(env2, pn, false)
+          env2 = PeBind(pn, false, env2)
           pi = pi + 1
         }
         analyze_calls(name, b, env2, calls, esc, hctx)
@@ -1878,7 +1962,7 @@ fn analyze_calls(name: String, e_in: Expr, env_in: Map[String, Bool], calls: Arr
         while i < Array::length(ps) {
           let (pn, iv) = Array::get(ps, i)
           analyze_calls(name, iv, env2, calls, esc, hctx)
-          env2 = Map::set(env2, pn, false)
+          env2 = PeBind(pn, false, env2)
           i = i + 1
         }
         analyze_calls(name, b, env2, calls, esc, hctx)
@@ -1938,9 +2022,9 @@ export fn pa_is_alias_dup(a: PerceusAction) -> Bool {
   }
 }
 
-fn pc_count_borrow(ctx: PCtx, scope: Map[String, Int], name: String) -> Int {
-  if Map::has_key(scope, name) {
-    let id = Map::get(scope, name)
+fn pc_count_borrow(ctx: PCtx, scope: PScope, name: String) -> Int {
+  if ps_has(scope, name) {
+    let id = ps_get(scope, name)
     Array::set(ctx.borrows, id, Array::get(ctx.borrows, id) + 1)
   }
   0
@@ -2144,7 +2228,7 @@ fn fill_lambda_params(name: String, efn: Expr, body: Expr, hctx: HeapInferCtx) -
     } else {
       let calls: Array[Array[Bool]] = []
       let esc = [false]
-      let env0: Map[String, Bool] = Map::new()
+      let env0: PEnv = PeNil
       analyze_calls(name, body, env0, calls, esc, hctx)
       fill_params_from_calls(efn, calls, esc)
     },
@@ -2215,7 +2299,7 @@ fn fill_top_lambda_params(name: String, efn: Expr, scope: Array[Expr], scope_ref
     } else {
       let calls: Array[Array[Bool]] = []
       let esc = [false]
-      let env0: Map[String, Bool] = Map::new()
+      let env0: PEnv = PeNil
       let mut si = 0
       while si < Array::length(scope) {
         // Only the statements that mention the lambda can hold a call to it
@@ -2297,7 +2381,7 @@ fn top_level_heap_env(stmts: Array[Stmt], hctx: HeapInferCtx) -> (Array[String],
   // lookup preserves the original last-binding-wins rule, including false.
   let names: Array[String] = []
   let heaps: Array[Bool] = []
-  let empty_env: Map[String, Bool] = Map::new()
+  let empty_env: PEnv = PeNil
   let mut i = Array::length(stmts)
   while i > 0 {
     i = i - 1
@@ -2477,9 +2561,9 @@ fn pe_bmask_has(mask: Int, i: Int) -> Bool {
 /// The borrowed-parameter mask for callee `f`, honoring lexical scope: a
 /// LOCAL binding that shadows a borrow-set name is an ordinary owned
 /// closure call (mirrors compile_call's #875 local_idx_hint guard).
-fn pe_borrow_mask(ctx: PCtx, scope: Map[String, Int], callee: Expr) -> Int {
+fn pe_borrow_mask(ctx: PCtx, scope: PScope, callee: Expr) -> Int {
   match callee {
-    EIdent(f, _) => if Map::has_key(scope, f) {
+    EIdent(f, _) => if ps_has(scope, f) {
       0
     } else {
       md_borrow_mask_of(f, ctx.borrow_param_user, ctx.borrow_param_mask)
@@ -2488,7 +2572,7 @@ fn pe_borrow_mask(ctx: PCtx, scope: Map[String, Int], callee: Expr) -> Int {
   }
 }
 
-export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
+fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
   match expr {
     EInt(_) => 0,
     EFloat(_) => 0,
@@ -2528,8 +2612,8 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
       let mut elide_dead_alias = false
       match value {
         EIdent(src, src_off) => {
-          if Map::has_key(scope, src) {
-            let sid = Map::get(scope, src)
+          if ps_has(scope, src) {
+            let sid = ps_get(scope, src)
             let rem = Array::get(ctx.remaining, sid)
             // ADR-0092 per-use pairing: mirror pe_use -- an alias of a
             // view-call binding must also dup at the source's LAST use
@@ -2619,18 +2703,18 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
       if elide_dead_alias {
         Array::set(ctx.remaining, id, 0)
       }
-      pc_emit(ctx, Map::set(scope, name, id), body)
+      pc_emit(ctx, PsBind(name, id, scope), body)
       pe_scope_end(ctx, id, name)
     },
     ELetMut(name, value, body, _) => {
       pc_emit(ctx, scope, value)
       let id = pe_declare(ctx, name)
-      pc_emit(ctx, Map::set(scope, name, id), body)
+      pc_emit(ctx, PsBind(name, id, scope), body)
       pe_scope_end(ctx, id, name)
     },
     ELetRec(name, value, body) => {
       let id = pe_declare(ctx, name)
-      let s2 = Map::set(scope, name, id)
+      let s2 = PsBind(name, id, scope)
       pc_emit(ctx, s2, value)
       pc_emit(ctx, s2, body)
       pe_scope_end(ctx, id, name)
@@ -2644,8 +2728,8 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
       // occurrence dupped instead (a live view) leaks the old value, as it
       // did before -- the lowering drops nothing for a self-referential
       // right-hand side.
-      let mid = if Map::has_key(scope, name) && pe_self_reassign_moves(ctx, scope, name, value) {
-        Map::get(scope, name)
+      let mid = if ps_has(scope, name) && pe_self_reassign_moves(ctx, scope, name, value) {
+        ps_get(scope, name)
       } else {
         0 - 1
       }
@@ -2819,11 +2903,11 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
       let saved_floor = ctx.loop_floor
       ctx.loop_floor = ctx.next_id
       let idv = pe_declare(ctx, value_name)
-      let s2 = Map::set(scope, value_name, idv)
+      let s2 = PsBind(value_name, idv, scope)
       let s3 = match index_opt {
         Some(idx) => {
           let idi = pe_declare(ctx, idx)
-          Map::set(s2, idx, idi)
+          PsBind(idx, idi, s2)
         },
         None => s2
       }
@@ -2846,7 +2930,7 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
         let p = Array::get(params, i)
         pc_emit(ctx, scope, p.1)
         let pid = pe_declare(ctx, p.0)
-        s = Map::set(s, p.0, pid)
+        s = PsBind(p.0, pid, s)
         Array::push(pids, pid)
         Array::push(pnames, p.0)
         i = i + 1
@@ -2879,7 +2963,7 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
         while k < Array::length(pnames) {
           let nm = Array::get(pnames, k)
           let pid = pe_declare(ctx, nm)
-          s = Map::set(s, nm, pid)
+          s = PsBind(nm, pid, s)
           Array::push(pids, pid)
           k = k + 1
         }
@@ -2908,7 +2992,7 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
           while k < Array::length(pnames) {
             let nm = Array::get(pnames, k)
             let pid = pe_declare(ctx, nm)
-            s = Map::set(s, nm, pid)
+            s = PsBind(nm, pid, s)
             Array::push(pids, pid)
             k = k + 1
           }
@@ -2967,7 +3051,7 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
           while k < Array::length(pnames) {
             let nm = Array::get(pnames, k)
             let pid = pe_declare(ctx, nm)
-            s = Map::set(s, nm, pid)
+            s = PsBind(nm, pid, s)
             Array::push(pids, pid)
             k = k + 1
           }
@@ -3030,7 +3114,7 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
         while k < Array::length(pnames) {
           let nm = Array::get(pnames, k)
           let pid = pe_declare(ctx, nm)
-          s = Map::set(s, nm, pid)
+          s = PsBind(nm, pid, s)
           Array::push(pids, pid)
           k = k + 1
         }
@@ -3059,7 +3143,7 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
   }
 }
 
-export fn pc_count(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
+fn pc_count(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
   match expr {
     EInt(_) => 0,
     EFloat(_) => 0,
@@ -3123,8 +3207,8 @@ export fn pc_count(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
       // here called `{ let i = 0; Array::get(xs, i) }` owned, so its alias
       // took a reference by transfer that codegen never gave the source.
       let borrowed_view = match value {
-        ECall(EIdent(fname, _), _, _) => !Map::has_key(scope, fname) && is_borrow_ret_fname(ctx, fname),
-        EIdent(src, _) => Map::has_key(scope, src) && Array::get(ctx.borrowed_view, Map::get(scope, src)),
+        ECall(EIdent(fname, _), _, _) => !ps_has(scope, fname) && is_borrow_ret_fname(ctx, fname),
+        EIdent(src, _) => ps_has(scope, src) && Array::get(ctx.borrowed_view, ps_get(scope, src)),
         ELet(_, _, _, _) => pv_spine_is_view(ctx, scope, value, array_empty()),
         ELetMut(_, _, _, _) => pv_spine_is_view(ctx, scope, value, array_empty()),
         ELetRec(_, _, _) => pv_spine_is_view(ctx, scope, value, array_empty()),
@@ -3145,7 +3229,7 @@ export fn pc_count(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
         ()
       }
       let _ = pctx_mark_view_call(ctx, scope, id, value)
-      pc_count(ctx, Map::set(scope, name, id), body)
+      pc_count(ctx, PsBind(name, id, scope), body)
     },
     ELetMut(name, value, body, _) => {
       pc_count(ctx, scope, value)
@@ -3175,11 +3259,11 @@ export fn pc_count(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
       } else {
         ()
       }
-      pc_count(ctx, Map::set(scope, name, id), body)
+      pc_count(ctx, PsBind(name, id, scope), body)
     },
     ELetRec(name, value, body) => {
       let id = pc_declare(ctx, name, false)
-      let s2 = Map::set(scope, name, id)
+      let s2 = PsBind(name, id, scope)
       pc_count(ctx, s2, value)
       pc_count(ctx, s2, body)
     },
@@ -3296,11 +3380,11 @@ export fn pc_count(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
     EForIn(value_name, index_opt, iterable, fbody) => {
       pc_count(ctx, scope, iterable)
       let idv = pc_declare(ctx, value_name, false)
-      let s2 = Map::set(scope, value_name, idv)
+      let s2 = PsBind(value_name, idv, scope)
       let s3 = match index_opt {
         Some(idx) => {
           let idi = pc_declare(ctx, idx, true)
-          Map::set(s2, idx, idi)
+          PsBind(idx, idi, s2)
         },
         None => s2
       }
@@ -3313,7 +3397,7 @@ export fn pc_count(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
         let p = Array::get(params, i)
         pc_count(ctx, scope, p.1)
         let pid = pc_declare(ctx, p.0, is_scalar_expr(ctx, scope, p.1))
-        s = Map::set(s, p.0, pid)
+        s = PsBind(p.0, pid, s)
         i = i + 1
       }
       pc_count(ctx, s, lbody)
@@ -3335,7 +3419,7 @@ export fn pc_count(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
         while k < Array::length(pnames) {
           let nm = Array::get(pnames, k)
           let pid = pc_declare(ctx, nm, false)
-          s = Map::set(s, nm, pid)
+          s = PsBind(nm, pid, s)
           k = k + 1
         }
         pc_count(ctx, s, arm.1)
@@ -3358,7 +3442,7 @@ export fn pc_count(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
           while k < Array::length(pnames) {
             let nm = Array::get(pnames, k)
             let pid = pc_declare(ctx, nm, false)
-            s = Map::set(s, nm, pid)
+            s = PsBind(nm, pid, s)
             k = k + 1
           }
           pc_count(ctx, s, arm.1)
@@ -3419,7 +3503,7 @@ export fn pc_count(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
         while k < Array::length(pnames) {
           let nm = Array::get(pnames, k)
           let pid = pc_declare(ctx, nm, false)
-          s = Map::set(s, nm, pid)
+          s = PsBind(nm, pid, s)
           k = k + 1
         }
         pc_count(ctx, s, arm.1)
@@ -3499,7 +3583,7 @@ export fn build_perceus_plan(body: Expr) -> Array[PerceusAction] {
   let no_masks: Array[Int] = []
   let ctx = pctx_new(sorted_names_of(borrow_ret_builtin_names()), [], no_masks, [
   ])
-  let empty: Map[String, Int] = Map::new()
+  let empty: PScope = PsNil
   pc_count(ctx, empty, body)
   pctx_apply_borrow_retention(ctx)
   ctx.next_id = 0
@@ -4900,25 +4984,25 @@ fn pe_emit_path_release(ctx: PCtx) -> Unit {
 }
 
 fn build_perceus_plan_in_ctx(ctx: PCtx, params: Array[(String, Option[TypeExpr])], body: Expr, out_param_drop_start: Array[Int]) -> Array[PerceusAction] {
-  let mut scope: Map[String, Int] = Map::new()
+  let mut scope: PScope = PsNil
   let mut pi = 0
   while pi < Array::length(params) {
     let (pname, ptype) = Array::get(params, pi)
     let id = pc_declare(ctx, pname, !param_is_heap_in_body(pname, ptype, body))
-    scope = Map::set(scope, pname, id)
+    scope = PsBind(pname, id, scope)
     pi = pi + 1
   }
   pc_count(ctx, scope, body)
   pctx_apply_borrow_retention(ctx)
   ctx.next_id = 0
   ctx.seq_id = 0
-  let mut scope2: Map[String, Int] = Map::new()
+  let mut scope2: PScope = PsNil
   let param_ids = array_empty()
   let mut pj = 0
   while pj < Array::length(params) {
     let (pname, _) = Array::get(params, pj)
     let id = pe_declare(ctx, pname)
-    scope2 = Map::set(scope2, pname, id)
+    scope2 = PsBind(pname, id, scope2)
     Array::push(param_ids, id)
     pj = pj + 1
   }

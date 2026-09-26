@@ -345,31 +345,32 @@ export fn gen_arr_new_body(enable_rc: Bool, rc_alloc_idx: Int) -> Bytes {
     emit_i64_const(b, 1)
     emit_i64_or(b)
   } else {
-    // Non-RC (bump) lane: [capacity@0][length@4][data_ptr@8] + an inline slot
-    // buffer at +12. The bump allocator never frees, so the inline buffer is
-    // paid for whether or not anything is ever pushed -- and `array_empty()`
-    // (`ArrayBuilder::freeze(ArrayBuilder::new())`, 1,953 call sites in the
-    // compiler source) lands here for every empty AST field.
+    // Non-RC (bump) lane: [capacity@0][length@4][data_ptr@8], 12 bytes, and
+    // NO inline slot buffer: capacity starts at 0 and the first push
+    // allocates a 2-slot buffer (emit_array_double_capacity). The bump
+    // allocator never frees, so an inline buffer is paid for whether or not
+    // anything is ever pushed -- and `array_empty()`
+    // (`ArrayBuilder::freeze(ArrayBuilder::new())`, ~2,000 call sites in the
+    // compiler source) lands here for every empty AST field. An array that
+    // does get pushed costs the same 28 bytes it did with a 2-slot inline
+    // buffer; one that stays empty costs 12 instead of 28.
     //
-    // Default capacity is 2, not 8: measured on the selfcompile KPI input
-    // (cold cache, docs/internal/reports/perf-snapshot-2026-08-07.md §3.1), 8 -> 4 -> 2 moves
-    // heap_ptr_bytes 1,167,101,072 -> 1,051,249,096 -> 1,005,293,432
-    // (-9.9%, -13.9%). Regrow is `newcap = cap * 2` and the bump lane leaks
-    // the old buffer, so a smaller default is only a win if most arrays stay
-    // short -- across a whole compile they do. They do NOT everywhere: the
-    // lexer's token arrays grow far past 8, and `lex_checker_vibe`'s
-    // bytes_per_op is byte-identical (2,198,112) at cap 2 and cap 8.
+    // History: capacity 8 -> 4 -> 2 moved the selfcompile KPI heap
+    // 1,167,101,072 -> 1,051,249,096 -> 1,005,293,432 (2026-08-07); 2 -> 0
+    // moved it 1,186,467,136 -> 1,147,857,376 (-3.3%, 2026-09-26), with the
+    // compiler's output byte-identical. `data_ptr` still points at +12, past
+    // the block; with capacity 0 nothing is ever stored through it.
     //
     // The RC branch above keeps capacity 8: its free list reuses blocks by
     // size class, so the same reasoning does not carry over unmeasured.
     emit_global_get(b, 0)
     emit_local_tee(b, 0)
-    emit_i32_const(b, 28)
+    emit_i32_const(b, 12)
     emit_i32_add(b)
     emit_global_set(b, 0)
     emit_heap_memory_grow_check(b)
     emit_local_get(b, 0)
-    emit_i32_const(b, 2)
+    emit_i32_const(b, 0)
     emit_i32_store(b, 2, 0)
     emit_local_get(b, 0)
     emit_i32_const(b, 0)
