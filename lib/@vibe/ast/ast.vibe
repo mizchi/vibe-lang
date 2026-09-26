@@ -128,6 +128,24 @@ export fn index_ref(bracket_off: Int) -> Expr {
   EIdent("__index", index_site_key(bracket_off))
 }
 
+/// #3139: the callee of the `Array::set` that an index WRITE (`xs[i] = v`)
+/// desugars to. It inherits the index's `[` key from the `__index` callee it
+/// replaces, so the checker files the write's receiver under the same site
+/// the read would have used. Like the read, it is a compiler-synthesized
+/// reference to the builtin (#3132): its offset is always
+/// `<= builtin_ref_offset()`.
+export fn index_write_callee(index_callee: Expr) -> Expr {
+  let key = match index_callee {
+    EIdent(_, k) => if is_builtin_ref_offset(k) {
+      k
+    } else {
+      builtin_ref_offset()
+    },
+    _ => builtin_ref_offset()
+  }
+  EIdent("Array::set", key)
+}
+
 export fn impl_target_key(target: TypeExpr) -> String {
   match target {
     TyName(name) => String::concat("N", String::concat(impl_encode_name(name), "Z")),

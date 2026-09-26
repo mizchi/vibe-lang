@@ -11797,6 +11797,17 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           let (obj_ty, s1, c1) = check_expr_capture(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
           let (set_idx_ty, s2, c2) = check_expr_capture(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
           let (val_ty, s3, c3) = check_expr_capture(Array::get(args, 2), env, defs, s2, c2, errors, tytab, capture, lane)
+          // #3139: file the receiver like an index read's (#3133), so the
+          // trait-dictionary pass can refuse a write whose receiver is never
+          // resolved -- on a Map it would write the backing store
+          // positionally. The key is the callee's own offset for a written
+          // `Array::set(..)`, or the `[` an index write (`xs[i] = v`) carries.
+          let set_site = if callee_off >= 0 {
+            callee_off
+          } else {
+            index_site_offset(callee_off)
+          }
+          record_index_receiver(capture, set_site, obj_ty, subst_apply(s3, obj_ty))
           // #826: same head checks as Array::get (this branch also bypasses the
           // direct fast path).
           let as_recv_head = head_kind(subst_apply(s3, obj_ty))

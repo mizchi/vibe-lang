@@ -139,3 +139,54 @@ test "array inside Option, nested arrays, strings" {
   let s = "abc"
   inspect(s[1], content = "98")
 }
+
+// #3139: a top-level binding read and written ABOVE its declaration. The hoist
+// used to type it as nothing, so the index lowering could not tell it from a
+// map and refused both sites; it now hoists the literal's container head.
+fn fwd_first() -> Int {
+  fwd_tbl[0]
+}
+
+fn fwd_bump() -> Unit {
+  fwd_tbl[1] = fwd_tbl[1] + 1
+}
+
+fn fwd_lookup() -> Int {
+  fwd_map["k"]
+}
+
+let fwd_tbl = [5, 6]
+
+let fwd_map = Map::from_pairs([("k", 9)])
+
+test "top-level array and map referenced above their declarations" {
+  inspect(fwd_first(), content = "5")
+  fwd_bump()
+  inspect(fwd_tbl[1], content = "7")
+  inspect(fwd_lookup(), content = "9")
+}
+
+// #3139: index WRITES over a typed Array keep working; only a receiver whose
+// type never resolves is refused (err_index_write_open_receiver_refused.vibe,
+// err_array_set_open_receiver_refused.vibe).
+test "array index write through typed receivers" {
+  let a = make_arr()
+  a[0] = 40
+  inspect(a[0], content = "40")
+  let h = ArrHolder::{ xs: make_arr() }
+  h.xs[2] = 60
+  inspect(h.xs[2], content = "60")
+  let o: Option[Array[Int]] = Some(make_arr())
+  match o {
+    Some(xs) => {
+      xs[1] = 50
+      inspect(xs[1], content = "50")
+    },
+    None => ()
+  }
+  let set_first = (xs: Array[Int], v: Int) -> {
+    Array::set(xs, 0, v)
+  }
+  set_first(a, 7)
+  inspect(a[0], content = "7")
+}

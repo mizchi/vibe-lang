@@ -2439,6 +2439,12 @@ ur_refused fixtures/err_interp_function_value_refused.vibe 'cannot interpolate a
 # names #2987; the assertion is the message, the edit and the site.)
 ur_refused fixtures/err_map_index_open_receiver_refused.vibe 'cannot tell whether this index reads a Map or an Array' 'annotate it' linear 'fixtures/err_map_index_open_receiver_refused.vibe: line 9:4'
 ur_refused fixtures/err_map_index_open_receiver_refused.vibe 'cannot tell whether this index reads a Map or an Array' 'annotate it' gc 'fixtures/err_map_index_open_receiver_refused.vibe: line 9:4'
+# #3139: the WRITE side -- `xs[i] = v` (sited at its `[`) and a written
+# `Array::set(..)` (sited at its name) on a receiver the checker never typed.
+ur_refused fixtures/err_index_write_open_receiver_refused.vibe 'cannot tell whether this index write targets an Array' 'Map::set(m, k, v)' linear 'fixtures/err_index_write_open_receiver_refused.vibe: line 10:6'
+ur_refused fixtures/err_index_write_open_receiver_refused.vibe 'cannot tell whether this index write targets an Array' 'Map::set(m, k, v)' gc 'fixtures/err_index_write_open_receiver_refused.vibe: line 10:6'
+ur_refused fixtures/err_array_set_open_receiver_refused.vibe 'cannot tell whether this index write targets an Array' 'annotate it' linear 'fixtures/err_array_set_open_receiver_refused.vibe: line 7:3'
+ur_refused fixtures/err_array_set_open_receiver_refused.vibe 'cannot tell whether this index write targets an Array' 'annotate it' gc 'fixtures/err_array_set_open_receiver_refused.vibe: line 7:3'
 # #3074: a generic enum whose instantiation cannot be recovered would render
 # its payload through the erased formal (`GA(1)` for `GA(true)`).
 ur_refused fixtures/err_interp_generic_enum_unknown_refused.vibe 'its type arguments are not known here' 'bind it with a type annotation' linear 'fixtures/err_interp_generic_enum_unknown_refused.vibe: line 12:4'

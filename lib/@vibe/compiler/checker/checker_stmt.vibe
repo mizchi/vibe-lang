@@ -3152,11 +3152,27 @@ fn hoisted_fn_scheme(value: Expr, defs: Array[TypeDef], c: Int) -> (Type, Int) {
 }
 
 /// The type to pre-bind for a hoisted `SLet`: its annotation when it has one,
-/// otherwise a `fn`'s own signature (#2318), otherwise unknown.
+/// otherwise a `fn`'s own signature (#2318), otherwise the HEAD its value
+/// spells, otherwise unknown.
+///
+/// #3139: an unannotated top-level array literal (`let tbl = [5, 6]`) or
+/// builtin map literal (`Map::new()` / `Map::from_pairs(..)`, an `EMap`) hoists as
+/// `Array[?]` / `StringMap[?]` -- the container head, element left unknown
+/// exactly as before. A reference placed ABOVE the declaration used to see
+/// `CtUnknown`, so the index lowering (#3133 / #3139) could not tell the
+/// array from a map there and refused the site; the compiler's own flat
+/// source reads `__exn_kind_cell` that way. The head is what the literal
+/// syntactically IS, so it can only be right; the element stays as permissive
+/// as the old `CtUnknown`.
 fn hoisted_value_type(annotation: Option[TypeExpr], value: Expr, defs: Array[TypeDef], c: Int) -> (Type, Int) {
   match annotation {
     Some(type_expr) => (resolve_type_expr(type_expr, defs), c),
-    None => hoisted_fn_scheme(value, defs, c)
+    None => match value {
+      EArray(_) => (CtArray(CtUnknown), c),
+      // The parser builds `Map::new()` and `Map::from_pairs([..])` as `EMap`.
+      EMap(_) => (CtNamed("Map", [CtString, CtUnknown]), c),
+      _ => hoisted_fn_scheme(value, defs, c)
+    }
   }
 }
 

@@ -1569,17 +1569,25 @@ fn dtd_typed_index_verdict_for(off: Int) -> String {
 /// #3133: record that the index at `off` cannot be lowered. The receiver may
 /// be a Map at run time, and array indexing on a Map reads its backing store
 /// positionally -- a wrong answer, not a trap -- so it is a build error.
-fn dtd_index_refuse(recv: Expr, off: Int) -> Unit {
+///
+/// #3139: `write` is an index WRITE (`xs[i] = v`, or `Array::set(xs, i, v)`
+/// written directly), which on a Map writes the backing store positionally.
+fn dtd_index_refuse(recv: Expr, off: Int, write: Bool) -> Unit {
   let what = match recv {
     EIdent(n, _) => String::concat("`", String::concat(n, "`")),
     EDot(_, f, _, _) => String::concat("field `", String::concat(f, "`")),
     _ => "the indexed value"
   }
-  let msg = String::concat("cannot tell whether this index reads a Map or an Array: the type of ", String::concat(what, String::concat(" is not known where it is indexed -- annotate it (`m: StringMap[V]` or `xs: Array[T]`), or call `Map::get(m, k)` / `Array::get(xs, i)` directly (#3133)", if off >= 0 {
+  let body = if write {
+    String::concat("cannot tell whether this index write targets an Array: the type of ", String::concat(what, " is not known where it is written -- annotate it (`xs: Array[T]`); a Map is not updated in place, so bind the result of `Map::set(m, k, v)` instead (#3139)"))
+  } else {
+    String::concat("cannot tell whether this index reads a Map or an Array: the type of ", String::concat(what, " is not known where it is indexed -- annotate it (`m: StringMap[V]` or `xs: Array[T]`), or call `Map::get(m, k)` / `Array::get(xs, i)` directly (#3133)"))
+  }
+  let msg = String::concat(body, if off >= 0 {
     String::concat(" [@off=", String::concat(__to_string(off), "]"))
   } else {
     ""
-  })))
+  })
   if !str_array_contains(dtd_index_refusals, msg) {
     Array::push(dtd_index_refusals, msg)
   } else {
@@ -1632,12 +1640,28 @@ fn map_index_rewrite(callee: Expr, args: Array[Expr], rwargs: Array[Expr], struc
         // with a nominal field was typed as nothing, so its fields read as
         // open; the checker types that literal now.)
         if verdict == typed_index_open_verdict() {
-          dtd_index_refuse(Array::get(args, 0), bracket_off)
+          dtd_index_refuse(Array::get(args, 0), bracket_off, false)
         } else {
           ()
         }
         None
       }
+    } else if nm == "Array::set" && Array::length(args) == 3 && typed {
+      // #3139: the write side. `xs[i] = v` is `Array::set(xs, i, v)` from the
+      // parser on, keyed by its `[`; a written `Array::set` is keyed by its
+      // own name. There is no Map lowering of a write -- `Map::set` returns a
+      // new map -- so an open receiver is refused and nothing is rewritten.
+      let set_site = if site_key >= 0 {
+        site_key
+      } else {
+        index_site_offset(site_key)
+      }
+      if dtd_typed_index_verdict_for(set_site) == typed_index_open_verdict() {
+        dtd_index_refuse(Array::get(args, 0), set_site, true)
+      } else {
+        ()
+      }
+      None
     } else {
       None
     },
