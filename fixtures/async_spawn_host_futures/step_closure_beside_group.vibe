@@ -1,0 +1,26 @@
+// #3161 / #3192: an Async entry calls an Async closure literal of its own
+// next to a `TaskGroup::run` of ordinary `spawn` children. Linking the group
+// links `TaskGroup::spawn_suspend`, whose handler stores `resume`, so the
+// literal is compiled to the step convention. The entry's boundary was
+// tail-resumptive here, because the program spawns no suspendable task, and a
+// tail-resumptive handler cannot call a step-compiled closure, so the program
+// was refused. The boundary now takes its suspend-class spelling whenever the
+// program step-compiles a closure, and the call is split like any other:
+// 40 + 1 = 41. Executed by scripts/test_named_hostfutures_component_gate.sh.
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  let fetch = () -> Int with Async {
+    await(host_future_named("slow"))
+  }
+  let x = fetch()
+  let y = TaskGroup::run((g) -> {
+    let a = TaskGroup::spawn(g, () -> Int {
+      1
+    })
+    TaskHandle::join(a)
+  })
+  x + y
+}

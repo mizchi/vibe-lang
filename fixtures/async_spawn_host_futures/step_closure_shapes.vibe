@@ -1,0 +1,94 @@
+// #3192: the other places an Async entry can call an Async closure of its
+// own beside a group of suspendable tasks. Measured one at a time before the
+// fix, each call compiled as a plain call and answered the step object, a
+// heap pointer: 1697 for `a`; 849 for `b`, `c` and the `let rec`; 852 through
+// `helper`; 854 for the closure in a closure; and a probe of the loop, the
+// match arm and the tail answered 29494381 where 801080 was right. `grouped`
+// only HOLDS a suspendable task and returns a plain value: called after a
+// suspension, it was bubbled as a step and trapped. This whole program
+// trapped. Each term carries its own offset, so a wrong one shows in the
+// total: 40 + 80 + 41 + 140 + 540 + 3040 + 20040 + 100040 + 1 + 10000040 +
+// 80000000 = 90124002. Executed by
+// scripts/test_named_hostfutures_component_gate.sh with `slow` answering 40.
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+// A top-level `fn .. with Async` that calls a closure literal of its own.
+fn helper() -> Int with Async {
+  let local = () -> Int with Async {
+    await(host_future_named("slow"))
+  }
+  local() + 3000
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  let fetch = () -> Int with Async {
+    await(host_future_named("slow"))
+  }
+  // Inside a block that is a `let` value: 80.
+  let a = {
+    let t = fetch()
+    t * 2
+  }
+  // A closure bound and called inside a block: 41.
+  let b = {
+    let inner = () -> Int with Async {
+      await(host_future_named("slow")) + 1
+    }
+    inner()
+  }
+  // In one branch of an `if`: 140.
+  let c = if a > 0 {
+    fetch() + 100
+  } else {
+    0
+  }
+  // As a statement whose value is dropped.
+  let _ = fetch()
+  // A closure that calls a closure it binds itself: 540.
+  let outer = () -> Int with Async {
+    let inner2 = () -> Int with Async {
+      await(host_future_named("slow"))
+    }
+    inner2() + 500
+  }
+  let d = outer()
+  // Through a top-level function: 3040.
+  let e = helper()
+  // A `let rec` binding: 20040.
+  let rec again: () -> Int with Async = () -> {
+    await(host_future_named("slow")) + 20000
+  }
+  let f = again()
+  // A closure that only holds a suspendable task: a plain call. 100040.
+  let grouped = () -> Int with Async + Exception {
+    TaskGroup::run((g) -> {
+      let h = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+        await(host_future_named("slow")) + 100000
+      })
+      TaskHandle::join(h)
+    })
+  }
+  let g = grouped()
+  let y = TaskGroup::run((grp) -> {
+    let h = TaskGroup::spawn_suspend(grp, () -> Int with Async + Exception {
+      1
+    })
+    TaskHandle::join(h)
+  })
+  // In a `while` body, twice: 80 * 1000000.
+  let mut i = 0
+  let mut acc = 0
+  while i < 2 {
+    acc = acc + fetch()
+    i = i + 1
+  }
+  // In a `match` arm: 10000040.
+  let m = match y {
+    1 => fetch() + 10000000,
+    _ => 0
+  }
+  // In the tail: 40.
+  fetch() + a + b + c + d + e + f + g + y + m + acc * 1000000
+}

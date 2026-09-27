@@ -928,36 +928,65 @@ grep -qF 'captures `n`, which may hold a closure that suspends' "$MR_OUT.diag" 2
   || { echo "named hostfutures component gate FAILED: mixed_spawn_capture_refused gave an unexpected diagnostic: $(cat "$MR_OUT.diag" 2>/dev/null)" >&2; exit 1; }
 echo "[named-hostfutures-component-gate] mixed_spawn_capture_refused: refused, naming the capture and the edit"
 
-# step_closure_beside_group_refused (#3161): an Async closure literal called in
-# the entry beside a group is compiled to the step convention, which the
-# entry's boundary cannot call; it stays refused, now leading with the edit.
-# step_fn_beside_group is that edit -- a top-level fn -- running: 41.
-SC_OUT="$OUT_DIR/spawn_step_closure_beside_group_refused.component.wasm"
-rm -f "$SC_OUT" "$SC_OUT.diag"
+# #3192 / #3161 rows: an Async entry calling an Async closure literal of its
+# own. Each compiles a fixture, runs it with `slow` answering 40, and compares
+# the answer. Before #3192 the literal was compiled to the step convention but
+# the entry's call to it was compiled as a plain call, so the entry answered
+# the step object -- a heap pointer -- and nothing failed.
+step_closure_row() {
+  local name="$1" want="$2" why="$3"
+  local out="$OUT_DIR/spawn_$name.component.wasm" log="$OUT_DIR/spawn_$name.log"
+  rm -f "$out" "$out.diag"
+  VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+    bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+    "$COMPILER" "fixtures/async_spawn_host_futures/$name.vibe" "$out" run >/dev/null 2>&1 || true
+  [ -s "$out" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/$name.vibe did not compile: $(cat "$out.diag" 2>/dev/null)" >&2; exit 1; }
+  if ! VIBE_ASYNC_FUTURES="slow=40:1" run_bounded 60 "$RUNNER" "$out" >"$log" 2>&1; then
+    echo "named hostfutures component gate FAILED: $name did not exit 0" >&2
+    cat "$log" >&2
+    exit 1
+  fi
+  [ "$(cat "$log")" = "$want" ] \
+    || { echo "named hostfutures component gate FAILED: $name expected $want, got: $(cat "$log")" >&2; exit 1; }
+  echo "[named-hostfutures-component-gate] $name: $want ($why)"
+}
+
+# fixtures/async_spawn_host_futures/step_closure_before_group.vibe and
+# fixtures/async_spawn_host_futures/step_closure_after_group.vibe: the entry
+# also spawns a suspendable task. They answered 849 and 1421.
+step_closure_row step_closure_before_group 41 "the entry's own call, before the group"
+step_closure_row step_closure_after_group 41 "the entry's own call, after the group"
+# fixtures/async_spawn_host_futures/step_closure_shapes.vibe: the call inside
+# a block, a branch, a statement, a `while` body, a `match` arm and the tail,
+# through a closure that binds its own, through a top-level fn, through a
+# `let rec`, and a closure that only holds a suspendable task (a plain call,
+# which a step name nested in it used to hide).
+step_closure_row step_closure_shapes 90124002 "each shape through its own offset"
+# fixtures/async_spawn_host_futures/step_closure_beside_group.vibe: the group
+# holds only ordinary `spawn` children, so no suspendable task makes the
+# entry's boundary suspend-class; the step-compiled literal now does. It was
+# refused. fixtures/async_spawn_host_futures/step_fn_beside_group.vibe declares
+# the closure as a top-level fn instead, which keeps the tail-resumptive
+# boundary.
+step_closure_row step_closure_beside_group 41 "a boundary that suspends because a closure does"
+step_closure_row step_fn_beside_group 41 "a top-level fn keeps the tail-resumptive boundary"
+
+# step_closure_in_group_refused (#3192): the call inside the body handed to
+# `TaskGroup::run`, which runs that body where it cannot suspend. It stays
+# refused, and the message names the closure and the edit instead of only the
+# call to TaskGroup::run.
+SG_OUT="$OUT_DIR/spawn_step_closure_in_group_refused.component.wasm"
+rm -f "$SG_OUT" "$SG_OUT.diag"
 VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
   bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
-  "$COMPILER" fixtures/async_spawn_host_futures/step_closure_beside_group_refused.vibe "$SC_OUT" run >/dev/null 2>&1 || true
-if [ -s "$SC_OUT" ]; then
-  echo "named hostfutures component gate FAILED: step_closure_beside_group_refused compiled" >&2
+  "$COMPILER" fixtures/async_spawn_host_futures/step_closure_in_group_refused.vibe "$SG_OUT" run >/dev/null 2>&1 || true
+if [ -s "$SG_OUT" ]; then
+  echo "named hostfutures component gate FAILED: step_closure_in_group_refused compiled -- a step-compiled closure reached a body TaskGroup::run runs without suspending" >&2
   exit 1
 fi
-grep -qF 'declare it as a top-level `fn .. with Async` instead' "$SC_OUT.diag" 2>/dev/null \
-  || { echo "named hostfutures component gate FAILED: step_closure_beside_group_refused gave an unexpected diagnostic: $(cat "$SC_OUT.diag" 2>/dev/null)" >&2; exit 1; }
-echo "[named-hostfutures-component-gate] step_closure_beside_group_refused: refused, leading with the edit"
-SF_OUT="$OUT_DIR/spawn_step_fn_beside_group.component.wasm"
-rm -f "$SF_OUT" "$SF_OUT.diag"
-VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
-  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
-  "$COMPILER" fixtures/async_spawn_host_futures/step_fn_beside_group.vibe "$SF_OUT" run >/dev/null 2>&1 || true
-[ -s "$SF_OUT" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/step_fn_beside_group.vibe did not compile: $(cat "$SF_OUT.diag" 2>/dev/null)" >&2; exit 1; }
-SF_LOG="$OUT_DIR/spawn_step_fn_beside_group.log"
-if ! VIBE_ASYNC_FUTURES="slow=40:1" run_bounded 60 "$RUNNER" "$SF_OUT" >"$SF_LOG" 2>&1; then
-  echo "named hostfutures component gate FAILED: step_fn_beside_group did not exit 0" >&2
-  cat "$SF_LOG" >&2
-  exit 1
-fi
-[ "$(cat "$SF_LOG")" = "41" ] \
-  || { echo "named hostfutures component gate FAILED: step_fn_beside_group expected 41, got: $(cat "$SF_LOG")" >&2; exit 1; }
-echo "[named-hostfutures-component-gate] step_fn_beside_group: 41 (the edit the refusal names)"
+grep -qF 'the closure passed to `TaskGroup::run` calls `fetch`, a closure that suspends' "$SG_OUT.diag" 2>/dev/null \
+  && grep -qF 'call `fetch` before or after `TaskGroup::run` instead' "$SG_OUT.diag" 2>/dev/null \
+  || { echo "named hostfutures component gate FAILED: step_closure_in_group_refused gave an unexpected diagnostic: $(cat "$SG_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+echo "[named-hostfutures-component-gate] step_closure_in_group_refused: refused, naming the closure and the edit"
 
 echo "named hostfutures component gate OK"

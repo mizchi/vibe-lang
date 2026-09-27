@@ -318,6 +318,7 @@ import @vibe/compiler/codegen/common_base {
   str_table_index_of,
   str_table_new,
   suspend_cps_pass,
+  suspend_prepass_splits,
   ty_head_names_formal,
   unique_name_flags,
   wrap_entry_exception_boundary,
@@ -4786,6 +4787,14 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
   } else {
     ()
   }
+  // #3192: the boundary takes the suspend-class spelling whenever the program
+  // step-compiles a closure for `Async`, not only when it spawns suspendable
+  // tasks: an `Async` closure literal the entry calls beside a
+  // `TaskGroup::run` is compiled to the step convention, which the
+  // tail-resumptive spelling cannot call, so the convention guard refused
+  // exactly these programs. A program whose only `Async` handler would be
+  // this boundary step-compiles nothing, so it keeps the tail-resumptive one.
+  let step_boundary = has_spawn_suspend || (entry_has_async && (sleep_machinery || hf_machinery || hs_machinery) && suspend_prepass_splits(stmts, "Async"))
   if entry_has_async && (sleep_machinery || hf_machinery || hs_machinery) {
     let req = EIdent("__entry_slp_req", -1)
     // ADR-0089 D2 (#1218): the boundary is tail-resumptive -- nothing
@@ -4856,7 +4865,7 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
       ]
       Array::push(stmts, SLet(false, false, lc_fixed_synthetic_name("__entry_settle", "review-lint: allow-fixed-synthetic-name"), None, EFn(lc_fresh_string_array(), array_empty(), settle_params, Some(TyName("Int")), None, settle_body)))
       let settled = ECall(EIdent("__entry_settle", -1), [req], -1)
-      if has_spawn_suspend {
+      if step_boundary {
         // #1537: the suspend-class spelling, as in the sleep-only arm
         // below -- bind `resume` first, so this handler takes the step
         // convention the spawned tasks use.
@@ -4872,7 +4881,7 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
       let settle = EIf(EBinOp("<", req, EInt(0), -1), ECall(EIdent("sleep_blocking", -1), [
         EBinOp("-", EInt(0), req, -1)
       ], -1), ECall(EIdent("assert", -1), [EBinOp("<", req, EInt(1), -1)], -1))
-      if has_spawn_suspend {
+      if step_boundary {
         // #2065 wall 2: suspend-class spelling -- see the guard above.
         ESeq(settle, ELet(lc_fixed_synthetic_name("__entry_k", "review-lint: allow-fixed-synthetic-name"), EIdent("resume", -1), ECall(EIdent("__entry_k", -1), [
           EInt(0)
@@ -4904,7 +4913,7 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
           // `TaskGroup::spawn_suspend` already uses -- the abortive
           // Exception handle outside, the CPS-lowered Async handle inside --
           // so a throw from the body still reaches the boundary diagnostic.
-          let wrapped = if has_spawn_suspend {
+          let wrapped = if step_boundary {
             match with_cells {
               EHandle(inner, earms) => if lc_is_exception_boundary_arms(earms) {
                 EHandle(EHandle(inner, async_arms), earms)

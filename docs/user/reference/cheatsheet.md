@@ -1943,9 +1943,21 @@ with E {...} }`, so the handle site can live in a library
 (`TaskGroup::spawn_suspend` has this shape). A suspending closure literal
 **needs an explicit row annotation**: `() -> Int with E { ... }` (an
 unannotated lambda's effects are inherited from the enclosing row, #761). A
+suspending closure literal bound by `let` or `let rec` can be called directly
+on the suspending spine -- in a block, a branch or a statement, from a
+suspending closure literal that binds it itself, or inside a top-level
+`fn .. with E` -- and the call suspends (#3192: such a call used to compile as
+a plain call and answer the continuation object, a heap pointer). A call to it
+from inside a closure handed to a row-variable callee is a compile error that
+names it -- `TaskGroup::run` runs its body where it cannot suspend, so call the
+closure before or after the group, or run it in a `TaskGroup::spawn_suspend`
+task -- and so is a call from another closure literal that only captures it.
+An `Async` entry gets the resume-as-value spelling of its boundary handler
+whenever the program step-compiles a closure, so the entry can call its own
+suspending closure beside a group of plain `TaskGroup::spawn` children. A
 program that step-compiles a closure while the same effect is mixed between a
-"resume-as-value handler" and a "tail-resumptive handler" is a compile error
-(the convention-consistency guard).
+"resume-as-value handler" and a "tail-resumptive handler" of its own is a
+compile error (the convention-consistency guard).
 
 The `k` convention, which binds one trailing parameter beyond the operation's
 declared arity (`Emit(v, k) => v + k(0)`, a non-tail continuation), **was a
