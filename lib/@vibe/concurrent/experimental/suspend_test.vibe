@@ -711,6 +711,37 @@ test "a group closes by pumping the children its body left parked" {
   assert_eq(out, 42)
 }
 
+/// Children still joined at normal close must be able to use their group's
+/// channel. The receiver parks first; the sender resumes after a sleep.
+test "close join keeps a channel open for its remaining children" {
+  let out = TaskGroup::run((outer) -> {
+    let delivered = Future::pending()
+    let inner = TaskGroup::run((g) -> {
+      let (tx, rx) = Channel::bounded(g, 0)
+      let _receiver = TaskGroup::spawn_suspend(g, () -> Int with Async {
+        let got = Receiver::recv_wait(rx)
+        match got {
+          Some(v) => Future::resolve(delivered, v),
+          None => Future::resolve(delivered, -1)
+        }
+        1
+      })
+      let _sender = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+        sleep(5)
+        Sender::send_wait(tx, 40)
+        Sender::release(tx)
+        1
+      })
+      2
+    })
+    let h = TaskGroup::spawn_suspend(outer, () -> Int with Async {
+      await(delivered)
+    })
+    inner + TaskHandle::join(h)
+  })
+  assert_eq(out, 42)
+}
+
 /// #3160: a queued run-to-completion child that resolves a future a parked
 /// sibling awaits, with no join at all -- close dispatches the producer, then
 /// pumps the parked sibling to its end.
