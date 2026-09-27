@@ -1430,9 +1430,10 @@ rm -rf "$lrdir"
 echo "[compiler-gate] 40f0i/42 remaining loop reference reclamation (#3219)"
 rl_dir="_build/_gate_rc_remaining_loops"
 rm -rf "$rl_dir"; mkdir -p "$rl_dir"
-for rl_case in mut_restore_loop for_collect_named_array; do
+for rl_case in mut_restore_loop mut_shadowed_use for_collect_named_array; do
   case "$rl_case" in
     mut_restore_loop) rl_want=8002000 ;;
+    mut_shadowed_use) rl_want=6001000 ;;
     for_collect_named_array) rl_want=4000000 ;;
   esac
   for rl_lane in bump rc shadow gc; do
