@@ -1,0 +1,29 @@
+// #3182: a top-level function handed on AS A VALUE inside the body given to
+// `TaskGroup::run`, in an Async entry that spawns a suspendable task. The
+// entry's boundary must prove that body never suspends, and a value it cannot
+// follow is refused. The message used to call `inc` a captured binding and
+// suggest `let inc: Int = ..`, which cannot apply to a function; it now names
+// the edit that compiles: `twice((x) -> inc(x), 0)` answers 43. Refused by
+// scripts/test_named_hostfutures_component_gate.sh.
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+fn twice(f: (Int) -> Int, x: Int) -> Int {
+  f(f(x))
+}
+
+fn inc(x: Int) -> Int {
+  x + 1
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  TaskGroup::run((g) -> {
+    let a = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      await(host_future_named("slow")) + 1
+    })
+    let k = twice(inc, 0)
+    TaskGroup::pump_all(g)
+    TaskHandle::join(a) + k
+  })
+}

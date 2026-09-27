@@ -970,6 +970,12 @@ step_closure_row step_closure_shapes 90124002 "each shape through its own offset
 # boundary.
 step_closure_row step_closure_beside_group 41 "a boundary that suspends because a closure does"
 step_closure_row step_fn_beside_group 41 "a top-level fn keeps the tail-resumptive boundary"
+# fixtures/async_spawn_host_futures/spawn_suspend_alias.vibe (#3182):
+# `TaskGroup::spawn_suspend` through a local alias bound inside the group body,
+# one bound before `TaskGroup::run`, and an alias of an alias. Each was refused
+# (the convention guard, or a "capture" of the function) where the direct call
+# compiles.
+step_closure_row spawn_suspend_alias 178 "spawn_suspend called through local aliases"
 
 # step_closure_in_group_refused (#3192): the call inside the body handed to
 # `TaskGroup::run`, which runs that body where it cannot suspend. It stays
@@ -988,5 +994,23 @@ grep -qF 'the closure passed to `TaskGroup::run` calls `fetch`, a closure that s
   && grep -qF 'call `fetch` before or after `TaskGroup::run` instead' "$SG_OUT.diag" 2>/dev/null \
   || { echo "named hostfutures component gate FAILED: step_closure_in_group_refused gave an unexpected diagnostic: $(cat "$SG_OUT.diag" 2>/dev/null)" >&2; exit 1; }
 echo "[named-hostfutures-component-gate] step_closure_in_group_refused: refused, naming the closure and the edit"
+
+# fn_value_in_group_refused (#3182): a top-level function passed as a value in
+# the body handed to `TaskGroup::run`. Still refused; the message used to
+# suggest annotating it as a binding (`let inc: Int = ..`), and now names the
+# closure-literal edit that compiles.
+FV_OUT="$OUT_DIR/spawn_fn_value_in_group_refused.component.wasm"
+rm -f "$FV_OUT" "$FV_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/fn_value_in_group_refused.vibe "$FV_OUT" run >/dev/null 2>&1 || true
+if [ -s "$FV_OUT" ]; then
+  echo "named hostfutures component gate FAILED: fn_value_in_group_refused compiled -- a function value the boundary cannot follow reached TaskGroup::run" >&2
+  exit 1
+fi
+grep -qF 'the closure passed to `TaskGroup::run` passes the function `inc` as a value' "$FV_OUT.diag" 2>/dev/null \
+  && grep -qF 'pass a closure literal that calls it instead (`(..) -> inc(..)`)' "$FV_OUT.diag" 2>/dev/null \
+  || { echo "named hostfutures component gate FAILED: fn_value_in_group_refused gave an unexpected diagnostic: $(cat "$FV_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+echo "[named-hostfutures-component-gate] fn_value_in_group_refused: refused, naming the closure-literal edit"
 
 echo "named hostfutures component gate OK"

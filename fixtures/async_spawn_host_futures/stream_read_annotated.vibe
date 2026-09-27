@@ -1,0 +1,34 @@
+// #3183: an annotated `let x: Int = host_stream_next(s)` in a suspendable
+// task. The annotation reaches the suspend lowering as the identity
+// ascription `((__asc: Int) -> __asc)(host_stream_next(s))`, which it judged
+// a call through a closure, so the annotated read was refused where the
+// unannotated one compiled -- both in the task literal and in a named function
+// the task calls. An annotation must never change whether a program compiles.
+// Left task: 1 * 100 + 2; right task, through `first_two`: 3 * 100 + 4.
+// 102 * 10000 + 304 = 1020304. Executed by
+// scripts/test_named_hoststreams_component_gate.sh.
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+fn first_two(s: HostStream) -> Int with Async {
+  let x: Int = host_stream_next(s)
+  let y: Int = host_stream_next(s)
+  x * 100 + y
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  TaskGroup::run((g) -> {
+    let a = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      let s = host_stream_named("left")
+      let x: Int = host_stream_next(s)
+      let y: Int = host_stream_next(s)
+      x * 100 + y
+    })
+    let b = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      first_two(host_stream_named("right"))
+    })
+    TaskGroup::pump_all(g)
+    TaskHandle::join(a) * 10000 + TaskHandle::join(b)
+  })
+}

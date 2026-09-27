@@ -1,0 +1,30 @@
+// #3182: `TaskGroup::spawn_suspend` called through a local alias, in an Async
+// entry whose children await a host future. The alias was refused where the
+// direct call compiles: bound inside the group body, the entry's convention
+// guard fired ("effect Async has step-compiled closure values ..."); bound
+// before `TaskGroup::run`, the group body "captured" it. The alias now lowers
+// as the function it names, and a second alias of the first is followed too.
+// (40 + 1) + (40 - 3) + 100 = 178. Executed by
+// scripts/test_named_hostfutures_component_gate.sh.
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  let outer = TaskGroup::spawn_suspend
+  TaskGroup::run((g) -> {
+    let sp = TaskGroup::spawn_suspend
+    let a = sp(g, () -> Int with Async + Exception {
+      await(host_future_named("slow")) + 1
+    })
+    let b = outer(g, () -> Int with Async + Exception {
+      await(host_future_named("slow")) - 3
+    })
+    let again = sp
+    let c = again(g, () -> Int with Async + Exception {
+      100
+    })
+    TaskGroup::pump_all(g)
+    TaskHandle::join(a) + TaskHandle::join(b) + TaskHandle::join(c)
+  })
+}

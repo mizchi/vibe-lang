@@ -199,6 +199,11 @@ export fn suspend_cps_pass(stmts: Array[Stmt]) -> Array[String] {
     let ctor_names = scps_collect_ctor_names(stmts)
     // Locally bound names, for `scps_inert_taint`'s callee test.
     edp_argcond_note_binders(stmts)
+    // #3182: a local alias of a top-level function is lowered as the
+    // function. The binders are noted again because the dropped aliases
+    // bound names.
+    scps_inline_fn_aliases_stmts(stmts, fn_defs)
+    edp_argcond_note_binders(stmts)
     let ctx = (stmts, effect_defs, fn_defs, es_names, es_members_list, ctor_names)
     let st = (scps_ctr_box(), array_empty_str(), array_empty_str(), array_empty_str(), array_empty_str(), scps_empty_stmts(), errs)
     // closure-CPS (追記31 Vertical B) phase 1: the CPS-mode effect set.
@@ -316,13 +321,159 @@ export fn suspend_prepass_splits(stmts: Array[Stmt], eff: String) -> Bool {
     let es_names = array_empty()
     let es_members_list = array_empty()
     edp_es_collect_into(copy, es_names, es_members_list)
+    let fn_defs = edp_collect_fn_defs(copy)
     edp_argcond_note_binders(copy)
-    let ctx = (copy, edp_collect_effect_defs(copy), edp_collect_fn_defs(copy), es_names, es_members_list, scps_collect_ctor_names(copy))
+    // #3182: the same alias substitution suspend_cps_pass makes, so this
+    // answer is about the program that pass will lower.
+    scps_inline_fn_aliases_stmts(copy, fn_defs)
+    edp_argcond_note_binders(copy)
+    let ctx = (copy, edp_collect_effect_defs(copy), fn_defs, es_names, es_members_list, scps_collect_ctor_names(copy))
     let st = (scps_ctr_box(), array_empty_str(), array_empty_str(), array_empty_str(), array_empty_str(), scps_empty_stmts(), array_empty_str())
     let split_effs = array_empty_str()
     scps_prepass_stmts(copy, [scps_ecfg_for(ctx, eff)], ctx, st, split_effs)
     edp_str_array_contains(split_effs, eff)
   }
+}
+
+/// #3182: lower a local alias of a top-level function as the function itself.
+///
+/// `let sp = TaskGroup::spawn_suspend` followed by `sp(g, () -> .. { .. })` is
+/// the direct call spelled through a name, but every walk of this pass judges
+/// a call by its callee, and to them a local name is a closure they cannot see
+/// through. So the alias was refused where the direct call compiles: the
+/// closure handed to `TaskGroup::run` "captured" the function, or, with a
+/// tail-resumptive entry boundary, the convention guard fired. Rather than
+/// teach each walk -- eligibility, culprit, inertness, split, prepass, clone --
+/// what an alias is, the alias is substituted before any of them runs, so they
+/// all see the call they already handle.
+///
+/// Nothing can tell the two spellings apart. The binding is immutable, its
+/// value is a top-level function (reading the name has no effect, and the
+/// function never changes), and the target is substituted only when no local
+/// binder anywhere in the program spells it, so every substituted occurrence
+/// still resolves to that function. The rename stops at a binder of the alias
+/// itself (`scps_rename_ident`). An ascribed alias (`let sp: T = f`) is the
+/// same alias. The `let` is dropped once nothing reads it.
+fn scps_inline_fn_aliases_stmts(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> Unit {
+  let fn_names = array_empty_str()
+  let mut fi = 0
+  while fi < Array::length(fn_defs) {
+    let (_, _, _, fnm, _, _) = Array::get(fn_defs, fi)
+    Array::push(fn_names, fnm)
+    fi = fi + 1
+  }
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(exported, is_rec, name, ty, expr) => Array::set(stmts, i, SLet(exported, is_rec, name, ty, scps_inline_fn_aliases(expr, fn_names))),
+      SLetMut(name, ty, expr) => Array::set(stmts, i, SLetMut(name, ty, scps_inline_fn_aliases(expr, fn_names))),
+      SExpr(expr) => Array::set(stmts, i, SExpr(scps_inline_fn_aliases(expr, fn_names))),
+      STest(tn, expr) => Array::set(stmts, i, STest(tn, scps_inline_fn_aliases(expr, fn_names))),
+      SBench(bn, expr) => Array::set(stmts, i, SBench(bn, scps_inline_fn_aliases(expr, fn_names))),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+/// The top-level function `v` names when `let x = v` is an alias of it, or
+/// "". `fn_names` are the program's top-level functions; a target some local
+/// binder also spells is not trusted, since that binder may be what the name
+/// resolves to where it is read.
+fn scps_fn_alias_target(v: Expr, fn_names: Array[String]) -> String {
+  match v {
+    EIdent(t, _) => if edp_str_array_contains(fn_names, t) && !edp_is_program_binder(t) {
+      t
+    } else {
+      ""
+    },
+    ECall(EFn(_, _, aparams, _, _, abody), args, _) => if Array::length(args) == 1 && edp_is_identity_ascription(aparams, abody) {
+      scps_fn_alias_target(Array::get(args, 0), fn_names)
+    } else {
+      ""
+    },
+    _ => ""
+  }
+}
+
+fn scps_inline_fn_aliases(e: Expr, fn_names: Array[String]) -> Expr {
+  match e {
+    ELet(x, v, b, off) => {
+      let v2 = scps_inline_fn_aliases(v, fn_names)
+      let target = scps_fn_alias_target(v2, fn_names)
+      if target != "" && target != x {
+        let b2 = scps_inline_fn_aliases(scps_rename_ident(b, x, target), fn_names)
+        if scps_refs_name(b2, x) {
+          ELet(x, v2, b2, off)
+        } else {
+          b2
+        }
+      } else {
+        ELet(x, v2, scps_inline_fn_aliases(b, fn_names), off)
+      }
+    },
+    ELetMut(x, v, b, off) => ELetMut(x, scps_inline_fn_aliases(v, fn_names), scps_inline_fn_aliases(b, fn_names), off),
+    ELetRec(x, v, b) => ELetRec(x, scps_inline_fn_aliases(v, fn_names), scps_inline_fn_aliases(b, fn_names)),
+    EFn(tps, tbs, params, ret, eff, b) => EFn(tps, tbs, params, ret, eff, scps_inline_fn_aliases(b, fn_names)),
+    ECall(callee, args, off) => ECall(scps_inline_fn_aliases(callee, fn_names), scps_inline_fn_aliases_exprs(args, fn_names), off),
+    ESeq(a, b) => ESeq(scps_inline_fn_aliases(a, fn_names), scps_inline_fn_aliases(b, fn_names)),
+    EIf(c, t, el) => EIf(scps_inline_fn_aliases(c, fn_names), scps_inline_fn_aliases(t, fn_names), scps_inline_fn_aliases(el, fn_names)),
+    EMatch(s, arms) => EMatch(scps_inline_fn_aliases(s, fn_names), scps_inline_fn_aliases_arms(arms, fn_names)),
+    EHandle(b, arms) => EHandle(scps_inline_fn_aliases(b, fn_names), scps_inline_fn_aliases_arms(arms, fn_names)),
+    EWhile(c, b) => EWhile(scps_inline_fn_aliases(c, fn_names), scps_inline_fn_aliases(b, fn_names)),
+    EForIn(x, idx, it, b) => EForIn(x, idx, scps_inline_fn_aliases(it, fn_names), scps_inline_fn_aliases(b, fn_names)),
+    ELoop(pairs, b) => ELoop(scps_inline_fn_aliases_pairs(pairs, fn_names), scps_inline_fn_aliases(b, fn_names)),
+    EAssign(x, v, b) => EAssign(x, scps_inline_fn_aliases(v, fn_names), scps_inline_fn_aliases(b, fn_names)),
+    EAssignOp(x, op, v, b) => EAssignOp(x, op, scps_inline_fn_aliases(v, fn_names), scps_inline_fn_aliases(b, fn_names)),
+    EBinOp(op, l, r, boff) => EBinOp(op, scps_inline_fn_aliases(l, fn_names), scps_inline_fn_aliases(r, fn_names), boff),
+    EUnaryOp(op, a) => EUnaryOp(op, scps_inline_fn_aliases(a, fn_names)),
+    EDot(o, f, off, foff) => EDot(scps_inline_fn_aliases(o, fn_names), f, off, foff),
+    ELabeledArg(l, m, v) => ELabeledArg(l, m, scps_inline_fn_aliases(v, fn_names)),
+    EReturn(a) => EReturn(scps_inline_fn_aliases(a, fn_names)),
+    EBreak(opt) => match opt {
+      Some(a) => EBreak(Some(scps_inline_fn_aliases(a, fn_names))),
+      None => e
+    },
+    EContinue(args) => EContinue(scps_inline_fn_aliases_exprs(args, fn_names)),
+    ETuple(items) => ETuple(scps_inline_fn_aliases_exprs(items, fn_names)),
+    EArray(items) => EArray(scps_inline_fn_aliases_exprs(items, fn_names)),
+    ERecord(rn, fields, targs) => ERecord(rn, scps_inline_fn_aliases_pairs(fields, fn_names), targs),
+    EMap(fields) => EMap(scps_inline_fn_aliases_pairs(fields, fn_names)),
+    ESpread(a) => ESpread(scps_inline_fn_aliases(a, fn_names)),
+    _ => e
+  }
+}
+
+fn scps_inline_fn_aliases_exprs(es: Array[Expr], fn_names: Array[String]) -> Array[Expr] {
+  let out = array_empty_expr()
+  let mut i = 0
+  while i < Array::length(es) {
+    Array::push(out, scps_inline_fn_aliases(Array::get(es, i), fn_names))
+    i = i + 1
+  }
+  out
+}
+
+fn scps_inline_fn_aliases_pairs(pairs: Array[(String, Expr)], fn_names: Array[String]) -> Array[(String, Expr)] {
+  let out = scps_empty_pairs()
+  let mut i = 0
+  while i < Array::length(pairs) {
+    let (nm, v) = Array::get(pairs, i)
+    Array::push(out, (nm, scps_inline_fn_aliases(v, fn_names)))
+    i = i + 1
+  }
+  out
+}
+
+fn scps_inline_fn_aliases_arms(arms: Array[(Pat, Expr)], fn_names: Array[String]) -> Array[(Pat, Expr)] {
+  let out = scps_empty_arms()
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (p, ex) = Array::get(arms, i)
+    Array::push(out, (p, scps_inline_fn_aliases(ex, fn_names)))
+    i = i + 1
+  }
+  out
 }
 
 /// Drop the ORIGINAL of a function the suspend lowering cloned
@@ -2046,6 +2197,12 @@ fn scps_culprit_parts(e: Expr, sctx: (String, Array[String], Array[String], Int,
       ""
     }
     String::concat(String::concat(head, String::concat(step_call, String::concat("` before or after `", String::concat(nm, "` instead")))), String::concat(async_edit, " -- "))
+  } else if found && String::length(nm) > 0 && String::length(cap) > 0 && scps_local_class(scope, cap) < 0 && scps_fn_def_index(ctx, cap) >= 0 {
+    // #3182: `cap` is a top-level function taken as a value, not a binding
+    // the program could annotate, so the edit above would not apply. A
+    // closure literal that calls it by name is judged like any other call.
+    let head = String::concat(String::concat("the closure passed to `", nm), String::concat("` passes the function `", String::concat(cap, "` as a value, which the compiler cannot follow to prove that closure never suspends: pass a closure literal that calls it instead (`(..) -> ")))
+    String::concat(head, String::concat(cap, "(..)`) -- "))
   } else if found && String::length(nm) > 0 && String::length(cap) > 0 {
     let head = String::concat(String::concat("the closure passed to `", nm), String::concat("` captures `", String::concat(cap, "`, which may hold a closure that suspends: bind it inside that closure instead, or, if it is plain data, give its binding a type (`let ")))
     String::concat(head, String::concat(cap, ": Int = ..`, or `String`, `Array[Int]`, ..) -- "))
