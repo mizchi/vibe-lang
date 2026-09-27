@@ -1,0 +1,57 @@
+// #3176: a program's own top-level function spelled like an audited pure
+// builtin (`Future::ready`, `Int::to_string`, `string_char_at`) is the
+// function the program declares, and the effect lowerings judge it by its
+// declared row. These carry a concrete row naming the handled effect, so the
+// handler sees every perform they make -- under a tail-resumptive handler and
+// under one that stores `resume` (suspend class). The row-variable shape that
+// used to answer wrong is refused at build time instead
+// (err_pure_builtin_spelling_rowvar_{suspend,evidence}_refused.vibe).
+
+effect Ask {
+  Get(Int) -> Int
+}
+
+fn Future::ready(x: Int) -> Int with Ask {
+  perform Ask::Get(x) + 100
+}
+
+fn Int::to_string(x: Int) -> String with Ask {
+  let n = perform Ask::Get(x)
+  "n=\{n}"
+}
+
+fn string_char_at(s: String, i: Int) -> Int with Ask {
+  perform Ask::Get(String::length(s) + i)
+}
+
+let tail_resumptive = () -> Int {
+  handle {
+    let a = 1 + Future::ready(5)
+    let b = String::length(Int::to_string(7))
+    a * 100 + b * 10 + string_char_at("ab", 1)
+  } with {
+    Ask::Get(n) => resume(n * 2)
+  }
+}
+
+let stores_resume = () -> Int {
+  handle {
+    let a = 1 + Future::ready(5)
+    let b = String::length(Int::to_string(7))
+    a * 100 + b * 10 + string_char_at("ab", 1)
+  } with {
+    Ask::Get(n) => {
+      let k = resume
+      k(n * 2)
+    }
+  }
+}
+
+test "a user Future::ready performs under a tail-resumptive handler" {
+  // a = 1 + (10 + 100), b = length("n=14") = 4, string_char_at = (2 + 1) * 2
+  inspect(tail_resumptive(), "11146")
+}
+
+test "a user Future::ready performs under a handler that stores resume" {
+  inspect(stores_resume(), "11146")
+}

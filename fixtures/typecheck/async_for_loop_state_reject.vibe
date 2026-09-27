@@ -1,0 +1,39 @@
+// #3198 review (Codex): a `loop` state initialised from an async iterator
+// must keep that iterator's head in the loop body, so a `for` over the state
+// still demands `Async` from a row-free function (the desugar inserts the
+// builtin `await` after the checker). The effect walk's `ELoop` arm used to
+// bind each state name with no head. Measured, this program was refused on
+// both stages, in every check lane: the state reaches the walk as a `let mut`
+// here. The arm now keeps the head as well, and this row pins the refusal.
+trait AIter[T] {
+  next(Self) -> Future[Option[(T, Self)]]
+}
+
+struct Countdown {
+  n: Int
+}
+
+impl AIter for Countdown {
+  next(self) -> Future[Option[(Int, Countdown)]] {
+    Future::ready(if self.n > 0 {
+      Some((self.n, Countdown::{ n: self.n - 1 }))
+    } else {
+      None
+    })
+  }
+}
+
+fn total(it: Countdown) -> Int {
+  let mut acc = 0
+  loop (cur = it) {
+    for x in cur {
+      acc = acc + x
+    }
+    break
+  }
+  acc
+}
+
+fn main() -> Int {
+  total(Countdown::{ n: 3 })
+}

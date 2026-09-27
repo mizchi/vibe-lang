@@ -1,0 +1,34 @@
+// #3176: a program's own `Future::ready` whose row is a VARIABLE, handed a
+// literal that performs `Ask`, under a handler that stores `resume`. The
+// suspend lowering took the call for the audited pure builtin of that
+// spelling, so it never saw the perform the argument makes: measured on main
+// at 05f044574 the program compiled, `_start` answered 389 instead of 111 and
+// exited 0 (the same body inside a `test` block answered 413).
+// Spelled `relay`, the same function is refused at build time, and so is this
+// one now -- the lowering cannot see through a row-variable callee, and the
+// message names the call.
+
+effect Ask {
+  Get(Int) -> Int
+}
+
+fn Future::ready(n: Int, g: (Int) -> Int with e) -> Int with e {
+  g(n) + 100
+}
+
+let run = () -> Int {
+  let base = 0
+  handle {
+    let a = 1 + Future::ready(5, (y: Int) -> Int with Ask { perform Ask::Get(y) + base })
+    a
+  } with {
+    Ask::Get(n) => {
+      let k = resume
+      k(n * 2)
+    }
+  }
+}
+
+let _start = () -> Int {
+  run()
+}

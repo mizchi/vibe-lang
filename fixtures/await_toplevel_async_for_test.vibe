@@ -1,0 +1,32 @@
+// #3198 review (Codex): with a program's own top-level `await`, the await
+// lowering left the whole program alone -- including the `await` the async
+// `for` desugar synthesizes, which is the builtin's. The generated call then
+// reached the program's `await`. The program's calls keep its function; the
+// generated one polls `Countdown::next`.
+struct Countdown {
+  n: Int
+}
+
+fn Countdown::next(c: Countdown) -> Future[Option[(Int, Countdown)]] {
+  if c.n <= 0 {
+    Future::ready(None)
+  } else {
+    Future::ready(Some((c.n, Countdown::{ n: c.n - 1 })))
+  }
+}
+
+fn await(f: Future[Int]) -> Int {
+  2000
+}
+
+fn sum_down() -> Int with Async {
+  let mut acc = await(Future::ready(0))
+  for x in Countdown::{ n: 4 } {
+    acc = acc + x
+  }
+  acc
+}
+
+test "an async for polls the builtin await beside a top-level await" {
+  inspect(sum_down(), content = "2010")
+}

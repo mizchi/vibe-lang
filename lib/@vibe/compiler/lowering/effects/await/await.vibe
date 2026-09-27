@@ -1,5 +1,5 @@
 import @vibe/ast {
-  builtin_ref
+  builtin_ref, is_builtin_ref_offset
 }
 
 import @vibe/compiler/core {
@@ -57,6 +57,14 @@ fn array_empty_str() -> Array[String] {
 export fn await_poll_pass(stmts: Array[Stmt], host_future: Bool, waiter_hooks: Bool, cell_note: String) -> Unit {
   // A user-defined top-level `await` shadows the builtin; leave those calls
   // alone (compile_call applies the same rule via `prefer_bound_call`).
+  // #3163: so does a LOCAL one -- a parameter, a `let`, a lambda parameter, a
+  // loop or pattern binder named `await` -- and a user-defined top-level
+  // `Future::ready` is not the builtin whose payload the fast path reads.
+  // Both used to be decided by spelling alone, so a function handed in as
+  // `await` was replaced by the builtin (`let s: String = await(..)` read the
+  // future's Int as a String) and `await(Future::ready(5))` answered 5 past a
+  // user `Future::ready` that resolves to something else. The walk carries
+  // which of the two names are shadowed (`sh`, see `awp_bind`).
   //
   // `host_future` (ADR-0089 step 4, #1218): the caller's "program calls
   // host_future_get" key -- selects the waitable-aware __aw_poll form (see
@@ -80,27 +88,41 @@ export fn await_poll_pass(stmts: Array[Stmt], host_future: Bool, waiter_hooks: B
   // export with its module suffix). `__aw_pay` hands it the cell it is about
   // to park on, so a release of that read can poison the cell (see
   // awp_pay_fn_def).
-  if awp_program_defines_await(stmts) {
-    ()
-  } else {
+  //
+  // #3198 review: a program's own top-level `await` no longer skips the pass.
+  // It shadows every `await` the program WROTE (the `await` bit starts set),
+  // but an `await` the compiler synthesized -- the async `for` desugar's
+  // `await(C::next(..))` -- is `builtin_ref("await")` and always means the
+  // builtin, whatever the program binds under that name.
+  {
     let ctr = [0]
+    let await_sh = if awp_program_defines_await(stmts) {
+      awp_await_bound_bit()
+    } else {
+      0
+    }
+    let sh = if awp_program_defines(stmts, "Future::ready") {
+      await_sh|awp_ready_shadowed_bit()
+    } else {
+      await_sh
+    }
     let mut i = 0
     while i < Array::length(stmts) {
       match Array::get(stmts, i) {
         SLet(ex, isrec, nm, ty, expr) => {
-          Array::set(stmts, i, SLet(ex, isrec, nm, ty, awp_tail(expr, ctr)))
+          Array::set(stmts, i, SLet(ex, isrec, nm, ty, awp_tail(expr, ctr, sh)))
         },
         SLetMut(nm, ty, expr) => {
-          Array::set(stmts, i, SLetMut(nm, ty, awp_tail(expr, ctr)))
+          Array::set(stmts, i, SLetMut(nm, ty, awp_tail(expr, ctr, sh)))
         },
         SExpr(expr) => {
-          Array::set(stmts, i, SExpr(awp_tail(expr, ctr)))
+          Array::set(stmts, i, SExpr(awp_tail(expr, ctr, sh)))
         },
         STest(nm, expr) => {
-          Array::set(stmts, i, STest(nm, awp_tail(expr, ctr)))
+          Array::set(stmts, i, STest(nm, awp_tail(expr, ctr, sh)))
         },
         SBench(nm, expr) => {
-          Array::set(stmts, i, SBench(nm, awp_tail(expr, ctr)))
+          Array::set(stmts, i, SBench(nm, awp_tail(expr, ctr, sh)))
         },
         _ => ()
       }
@@ -249,11 +271,15 @@ fn awp_settle_fn_def() -> Stmt {
 }
 
 fn awp_program_defines_await(stmts: Array[Stmt]) -> Bool {
+  awp_program_defines(stmts, "await")
+}
+
+fn awp_program_defines(stmts: Array[Stmt], name: String) -> Bool {
   let mut found = false
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SLet(_, _, nm, _, _) => if nm == "await" {
+      SLet(_, _, nm, _, _) => if nm == name {
         found = true
       } else {
         ()
@@ -281,16 +307,20 @@ fn awp_program_defines_await(stmts: Array[Stmt]) -> Bool {
 /// A branch, a loop body, a closure body, or a nested spine is left to its
 /// OWN spine rewrite (awp_rewrite), so an await under a condition never
 /// escapes ahead of it.
-fn awp_lift(e: Expr, ctr: Array[Int], binds: Array[(String, Expr, String)]) -> Expr {
+fn awp_lift(e: Expr, ctr: Array[Int], binds: Array[(String, Expr, String)], sh: Int) -> Expr {
   match e {
     ECall(callee, args, off) => {
       let callee_nm = match callee {
         EIdent(cn, _) => cn,
         _ => ""
       }
-      if callee_nm == "await" && Array::length(args) == 1 {
-        let inner = awp_lift(Array::get(args, 0), ctr, binds)
-        match awp_ready_payload(inner) {
+      let synthesized = match callee {
+        EIdent(_, coff) => is_builtin_ref_offset(coff),
+        _ => false
+      }
+      if callee_nm == "await" && Array::length(args) == 1 && (synthesized || !awp_await_bound(sh)) {
+        let inner = awp_lift(Array::get(args, 0), ctr, binds, sh)
+        match awp_ready_payload(inner, sh) {
           Some(payload) => payload,
           None => {
             let n = Array::get(ctr, 0)
@@ -303,38 +333,38 @@ fn awp_lift(e: Expr, ctr: Array[Int], binds: Array[(String, Expr, String)]) -> E
         }
       } else {
         let new_callee = if callee_nm == "" {
-          awp_lift(callee, ctr, binds)
+          awp_lift(callee, ctr, binds, sh)
         } else {
           callee
         }
-        ECall(new_callee, awp_lift_exprs(args, ctr, binds), off)
+        ECall(new_callee, awp_lift_exprs(args, ctr, binds, sh), off)
       }
     },
-    EBinOp(op, l, r, boff) => EBinOp(op, awp_lift(l, ctr, binds), awp_lift(r, ctr, binds), boff),
-    EUnaryOp(op, x) => EUnaryOp(op, awp_lift(x, ctr, binds)),
-    EDot(o, f, o1, o2) => EDot(awp_lift(o, ctr, binds), f, o1, o2),
-    ELabeledArg(l, n, v) => ELabeledArg(l, n, awp_lift(v, ctr, binds)),
-    ETuple(items) => ETuple(awp_lift_exprs(items, ctr, binds)),
-    EArray(items) => EArray(awp_lift_exprs(items, ctr, binds)),
-    ESpread(x) => ESpread(awp_lift(x, ctr, binds)),
-    ERecord(n, fields, tas) => ERecord(n, awp_lift_pairs(fields, ctr, binds), tas),
-    EMap(fields) => EMap(awp_lift_pairs(fields, ctr, binds)),
+    EBinOp(op, l, r, boff) => EBinOp(op, awp_lift(l, ctr, binds, sh), awp_lift(r, ctr, binds, sh), boff),
+    EUnaryOp(op, x) => EUnaryOp(op, awp_lift(x, ctr, binds, sh)),
+    EDot(o, f, o1, o2) => EDot(awp_lift(o, ctr, binds, sh), f, o1, o2),
+    ELabeledArg(l, n, v) => ELabeledArg(l, n, awp_lift(v, ctr, binds, sh)),
+    ETuple(items) => ETuple(awp_lift_exprs(items, ctr, binds, sh)),
+    EArray(items) => EArray(awp_lift_exprs(items, ctr, binds, sh)),
+    ESpread(x) => ESpread(awp_lift(x, ctr, binds, sh)),
+    ERecord(n, fields, tas) => ERecord(n, awp_lift_pairs(fields, ctr, binds, sh), tas),
+    EMap(fields) => EMap(awp_lift_pairs(fields, ctr, binds, sh)),
     // Everything else is either conditional, a loop, a closure, or a spine of
     // its own: hand it to awp_rewrite so its awaits are hoisted THERE.
-    _ => awp_rewrite(e, ctr)
+    _ => awp_rewrite(e, ctr, sh)
   }
 }
 
-fn awp_lift_exprs(es: Array[Expr], ctr: Array[Int], binds: Array[(String, Expr, String)]) -> Array[Expr] {
+fn awp_lift_exprs(es: Array[Expr], ctr: Array[Int], binds: Array[(String, Expr, String)], sh: Int) -> Array[Expr] {
   for x in es {
-    awp_lift(x, ctr, binds)
+    awp_lift(x, ctr, binds, sh)
   }
 }
 
-fn awp_lift_pairs(pairs: Array[(String, Expr)], ctr: Array[Int], binds: Array[(String, Expr, String)]) -> Array[(String, Expr)] {
+fn awp_lift_pairs(pairs: Array[(String, Expr)], ctr: Array[Int], binds: Array[(String, Expr, String)], sh: Int) -> Array[(String, Expr)] {
   for p in pairs {
     let (n, v) = p
-    (n, awp_lift(v, ctr, binds))
+    (n, awp_lift(v, ctr, binds, sh))
   }
 }
 
@@ -376,18 +406,18 @@ fn awp_wrap(binds: Array[(String, Expr, String)], inner: Expr) -> Expr {
 
 /// Rewrite an expression in a SPINE position, hoisting the awaits of its
 /// unconditional sub-expression in front of it.
-fn awp_spine(e: Expr, ctr: Array[Int], rebuild_is_tail: Bool) -> Expr {
+fn awp_spine(e: Expr, ctr: Array[Int], rebuild_is_tail: Bool, sh: Int) -> Expr {
   let _ = rebuild_is_tail
   let binds = array_empty()
-  let lifted = awp_lift(e, ctr, binds)
+  let lifted = awp_lift(e, ctr, binds, sh)
   awp_wrap(binds, lifted)
 }
 
 /// `Future::ready(x)` awaited immediately is just `x` -- no array, no loop.
-fn awp_ready_payload(fut: Expr) -> Option[Expr] {
+fn awp_ready_payload(fut: Expr, sh: Int) -> Option[Expr] {
   match fut {
     ECall(callee, args, _) => match callee {
-      EIdent(nm, _) => if nm == "Future::ready" && Array::length(args) == 1 {
+      EIdent(nm, _) => if nm == "Future::ready" && Array::length(args) == 1 && !awp_ready_user_defined(sh) {
         Some(Array::get(args, 0))
       } else {
         None
@@ -403,71 +433,78 @@ fn awp_ready_payload(fut: Expr) -> Option[Expr] {
 /// Anything that is NOT a spine node is returned untouched -- awp_tail is the
 /// entry that lifts a bare tail expression, and keeping the two fallbacks
 /// disjoint is what makes the mutual recursion terminate.
-fn awp_rewrite(e: Expr, ctr: Array[Int]) -> Expr {
+fn awp_rewrite(e: Expr, ctr: Array[Int], sh: Int) -> Expr {
   match e {
     ELet(n, v, b, off) => {
       let binds = array_empty()
-      let v2 = awp_lift(v, ctr, binds)
-      awp_wrap(binds, ELet(n, v2, awp_tail(b, ctr), off))
+      let v2 = awp_lift(v, ctr, binds, sh)
+      awp_wrap(binds, ELet(n, v2, awp_tail(b, ctr, awp_bind(sh, n)), off))
     },
     ELetMut(n, v, b, off) => {
       let binds = array_empty()
-      let v2 = awp_lift(v, ctr, binds)
-      awp_wrap(binds, ELetMut(n, v2, awp_tail(b, ctr), off))
+      let v2 = awp_lift(v, ctr, binds, sh)
+      awp_wrap(binds, ELetMut(n, v2, awp_tail(b, ctr, awp_bind(sh, n)), off))
     },
-    ELetRec(n, v, b) => ELetRec(n, awp_tail(v, ctr), awp_tail(b, ctr)),
+    ELetRec(n, v, b) => {
+      let inner = awp_bind(sh, n)
+      ELetRec(n, awp_tail(v, ctr, inner), awp_tail(b, ctr, inner))
+    },
     ESeq(a, b) => {
       let binds = array_empty()
-      let a2 = awp_lift(a, ctr, binds)
-      awp_wrap(binds, ESeq(a2, awp_tail(b, ctr)))
+      let a2 = awp_lift(a, ctr, binds, sh)
+      awp_wrap(binds, ESeq(a2, awp_tail(b, ctr, sh)))
     },
     EAssign(n, v, c) => {
       let binds = array_empty()
-      let v2 = awp_lift(v, ctr, binds)
-      awp_wrap(binds, EAssign(n, v2, awp_tail(c, ctr)))
+      let v2 = awp_lift(v, ctr, binds, sh)
+      awp_wrap(binds, EAssign(n, v2, awp_tail(c, ctr, sh)))
     },
     EAssignOp(n, op, v, c) => {
       let binds = array_empty()
-      let v2 = awp_lift(v, ctr, binds)
-      awp_wrap(binds, EAssignOp(n, op, v2, awp_tail(c, ctr)))
+      let v2 = awp_lift(v, ctr, binds, sh)
+      awp_wrap(binds, EAssignOp(n, op, v2, awp_tail(c, ctr, sh)))
     },
     EIf(c, t, el) => {
       let binds = array_empty()
-      let c2 = awp_lift(c, ctr, binds)
-      awp_wrap(binds, EIf(c2, awp_tail(t, ctr), awp_tail(el, ctr)))
+      let c2 = awp_lift(c, ctr, binds, sh)
+      awp_wrap(binds, EIf(c2, awp_tail(t, ctr, sh), awp_tail(el, ctr, sh)))
     },
     EMatch(sc, arms) => {
       let binds = array_empty()
-      let sc2 = awp_lift(sc, ctr, binds)
-      awp_wrap(binds, EMatch(sc2, awp_rewrite_arms(arms, ctr)))
+      let sc2 = awp_lift(sc, ctr, binds, sh)
+      awp_wrap(binds, EMatch(sc2, awp_rewrite_arms(arms, ctr, sh)))
     },
     // A loop condition is re-evaluated every iteration, so nothing can be
     // hoisted out of it; both parts get their own spine instead.
-    EWhile(c, b) => EWhile(awp_tail(c, ctr), awp_tail(b, ctr)),
+    EWhile(c, b) => EWhile(awp_tail(c, ctr, sh), awp_tail(b, ctr, sh)),
     EForIn(n, idx, it, b) => {
       let binds = array_empty()
-      let it2 = awp_lift(it, ctr, binds)
-      awp_wrap(binds, EForIn(n, idx, it2, awp_tail(b, ctr)))
+      let it2 = awp_lift(it, ctr, binds, sh)
+      let body_sh = match idx {
+        Some(ix) => awp_bind(awp_bind(sh, n), ix),
+        None => awp_bind(sh, n)
+      }
+      awp_wrap(binds, EForIn(n, idx, it2, awp_tail(b, ctr, body_sh)))
     },
-    ELoop(pairs, b) => ELoop(awp_rewrite_pairs(pairs, ctr), awp_tail(b, ctr)),
-    EFn(tps, tbs, params, ret, eff, b) => EFn(tps, tbs, params, ret, eff, awp_tail(b, ctr)),
-    EHandle(b, arms) => EHandle(awp_tail(b, ctr), awp_rewrite_arms(arms, ctr)),
+    ELoop(pairs, b) => ELoop(awp_rewrite_pairs(pairs, ctr, sh), awp_tail(b, ctr, awp_bind_pairs(sh, pairs))),
+    EFn(tps, tbs, params, ret, eff, b) => EFn(tps, tbs, params, ret, eff, awp_tail(b, ctr, awp_bind_params(sh, params))),
+    EHandle(b, arms) => EHandle(awp_tail(b, ctr, sh), awp_rewrite_arms(arms, ctr, sh)),
     EReturn(x) => {
       let binds = array_empty()
-      let x2 = awp_lift(x, ctr, binds)
+      let x2 = awp_lift(x, ctr, binds, sh)
       awp_wrap(binds, EReturn(x2))
     },
     EBreak(opt) => match opt {
       Some(x) => {
         let binds = array_empty()
-        let x2 = awp_lift(x, ctr, binds)
+        let x2 = awp_lift(x, ctr, binds, sh)
         awp_wrap(binds, EBreak(Some(x2)))
       },
       None => e
     },
     EContinue(args) => {
       let binds = array_empty()
-      let args2 = awp_lift_exprs(args, ctr, binds)
+      let args2 = awp_lift_exprs(args, ctr, binds, sh)
       awp_wrap(binds, EContinue(args2))
     },
     _ => e
@@ -476,38 +513,137 @@ fn awp_rewrite(e: Expr, ctr: Array[Int]) -> Expr {
 
 /// A TAIL (or statement) position: a spine node recurses structurally, and
 /// anything else is a value whose awaits are hoisted in front of it.
-fn awp_tail(e: Expr, ctr: Array[Int]) -> Expr {
+fn awp_tail(e: Expr, ctr: Array[Int], sh: Int) -> Expr {
   match e {
-    ELet(_, _, _, _) => awp_rewrite(e, ctr),
-    ELetMut(_, _, _, _) => awp_rewrite(e, ctr),
-    ELetRec(_, _, _) => awp_rewrite(e, ctr),
-    ESeq(_, _) => awp_rewrite(e, ctr),
-    EAssign(_, _, _) => awp_rewrite(e, ctr),
-    EAssignOp(_, _, _, _) => awp_rewrite(e, ctr),
-    EIf(_, _, _) => awp_rewrite(e, ctr),
-    EMatch(_, _) => awp_rewrite(e, ctr),
-    EWhile(_, _) => awp_rewrite(e, ctr),
-    EForIn(_, _, _, _) => awp_rewrite(e, ctr),
-    ELoop(_, _) => awp_rewrite(e, ctr),
-    EFn(_, _, _, _, _, _) => awp_rewrite(e, ctr),
-    EHandle(_, _) => awp_rewrite(e, ctr),
-    EReturn(_) => awp_rewrite(e, ctr),
-    EBreak(_) => awp_rewrite(e, ctr),
-    EContinue(_) => awp_rewrite(e, ctr),
-    _ => awp_spine(e, ctr, true)
+    ELet(_, _, _, _) => awp_rewrite(e, ctr, sh),
+    ELetMut(_, _, _, _) => awp_rewrite(e, ctr, sh),
+    ELetRec(_, _, _) => awp_rewrite(e, ctr, sh),
+    ESeq(_, _) => awp_rewrite(e, ctr, sh),
+    EAssign(_, _, _) => awp_rewrite(e, ctr, sh),
+    EAssignOp(_, _, _, _) => awp_rewrite(e, ctr, sh),
+    EIf(_, _, _) => awp_rewrite(e, ctr, sh),
+    EMatch(_, _) => awp_rewrite(e, ctr, sh),
+    EWhile(_, _) => awp_rewrite(e, ctr, sh),
+    EForIn(_, _, _, _) => awp_rewrite(e, ctr, sh),
+    ELoop(_, _) => awp_rewrite(e, ctr, sh),
+    EFn(_, _, _, _, _, _) => awp_rewrite(e, ctr, sh),
+    EHandle(_, _) => awp_rewrite(e, ctr, sh),
+    EReturn(_) => awp_rewrite(e, ctr, sh),
+    EBreak(_) => awp_rewrite(e, ctr, sh),
+    EContinue(_) => awp_rewrite(e, ctr, sh),
+    _ => awp_spine(e, ctr, true, sh)
   }
 }
 
-fn awp_rewrite_pairs(pairs: Array[(String, Expr)], ctr: Array[Int]) -> Array[(String, Expr)] {
+fn awp_rewrite_pairs(pairs: Array[(String, Expr)], ctr: Array[Int], sh: Int) -> Array[(String, Expr)] {
   for p in pairs {
     let (n, v) = p
-    (n, awp_tail(v, ctr))
+    (n, awp_tail(v, ctr, sh))
   }
 }
 
-fn awp_rewrite_arms(arms: Array[(Pat, Expr)], ctr: Array[Int]) -> Array[(Pat, Expr)] {
+fn awp_rewrite_arms(arms: Array[(Pat, Expr)], ctr: Array[Int], sh: Int) -> Array[(Pat, Expr)] {
   for a in arms {
     let (p, ex) = a
-    (p, awp_tail(ex, ctr))
+    (p, awp_tail(ex, ctr, awp_bind_pat(sh, p)))
   }
+}
+
+//# Which builtin spellings are shadowed where the walk stands (#3163)
+
+/// Bit of `sh`: a binder named `await` is in scope, so `await(..)` calls that
+/// binding and is not the builtin.
+fn awp_await_bound_bit() -> Int {
+  1
+}
+
+/// Bit of `sh`: the program declares its own top-level `Future::ready`, so
+/// `await(Future::ready(x))` is not the ready-future fast path.
+fn awp_ready_shadowed_bit() -> Int {
+  2
+}
+
+fn awp_await_bound(sh: Int) -> Bool {
+  (sh&awp_await_bound_bit()) != 0
+}
+
+fn awp_ready_user_defined(sh: Int) -> Bool {
+  (sh&awp_ready_shadowed_bit()) != 0
+}
+
+/// `sh` inside the scope of a binder named `name`.
+fn awp_bind(sh: Int, name: String) -> Int {
+  if name == "await" {
+    sh|awp_await_bound_bit()
+  } else {
+    sh
+  }
+}
+
+fn awp_bind_params(sh: Int, params: Array[(String, Option[TypeExpr])]) -> Int {
+  let mut out = sh
+  let mut i = 0
+  while i < Array::length(params) {
+    let (n, _) = Array::get(params, i)
+    out = awp_bind(out, n)
+    i = i + 1
+  }
+  out
+}
+
+fn awp_bind_pairs(sh: Int, pairs: Array[(String, Expr)]) -> Int {
+  let mut out = sh
+  let mut i = 0
+  while i < Array::length(pairs) {
+    let (n, _) = Array::get(pairs, i)
+    out = awp_bind(out, n)
+    i = i + 1
+  }
+  out
+}
+
+fn awp_bind_pat(sh: Int, p: Pat) -> Int {
+  if awp_pat_binds_await(p) {
+    sh|awp_await_bound_bit()
+  } else {
+    sh
+  }
+}
+
+fn awp_pat_binds_await(p: Pat) -> Bool {
+  match p {
+    PBind(n) => n == "await",
+    PCtor(_, subs) => awp_pats_bind_await(subs),
+    PTuple(subs) => awp_pats_bind_await(subs),
+    POr(l, r) => awp_pat_binds_await(l) || awp_pat_binds_await(r),
+    PStruct(_, fields) => {
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fp) = Array::get(fields, i)
+        if awp_pat_binds_await(fp) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+fn awp_pats_bind_await(ps: Array[Pat]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(ps) {
+    if awp_pat_binds_await(Array::get(ps, i)) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
 }
