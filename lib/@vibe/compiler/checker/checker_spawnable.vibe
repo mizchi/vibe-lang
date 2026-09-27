@@ -845,6 +845,12 @@ fn sp_judge_facts(env: TypeEnv, s: Subst, defs: Array[TypeDef], facts: Array[Typ
             Array::push(out, String::concat("capture `", String::concat(vname, "` is a future whose value type is a type parameter with no `Send` bound; it may be instantiated at a host response, whose body only one task may read: add `Send` to that type parameter's bounds, or start the future inside the spawned task")))
           } else if sp_is_stream_owning_future(s, defs, resolved, formals) {
             Array::push(out, String::concat("capture `", String::concat(vname, "` is a future whose value owns a host stream (a response body), which only one task may read: start the request inside the spawned task and await it there, rather than sharing the future")))
+          } else if sp_owns_host_stream(s, defs, resolved, 0, []) {
+            // #3151: a host stream opened outside the task and captured by
+            // it. The generic "neither Send nor a same-nursery endpoint" did
+            // not say what to write instead; the stream has one reader, so
+            // the edit is to open it where it is read.
+            Array::push(out, String::concat("no impl `Spawnable` for `", String::concat(type_to_string(resolved), String::concat("`: capture `", String::concat(vname, "` holds a host stream, which only one task may read or close -- open the stream inside the spawned task (call `host_stream_named` there, or start the request there for a response body) instead of capturing it")))))
           } else {
             Array::push(out, String::concat("no impl `Spawnable` for `", String::concat(type_to_string(resolved), String::concat("`: capture `", String::concat(vname, "` is neither Send nor a same-nursery endpoint")))))
           }

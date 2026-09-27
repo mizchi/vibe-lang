@@ -1,0 +1,39 @@
+// #3189 review (Codex, round 4): the stream_folded_spawn shape, plus a
+// reachable SOURCE function named `__hs_fin`, the name of the finisher the
+// compiler injects for every host-stream read. The prune removes generated
+// definitions by name, so it kept the injected finisher alive through the
+// program's call to its own one. "Did a read survive" then answered yes after
+// the real read was folded away, and the build was refused with
+// "host_stream_cancel without a host stream". The checker now reserves the
+// `__hs_` prefix for top-level definitions, so the build is refused at the
+// binder instead, and the message leads with the rename.
+// Executed by scripts/test_named_hoststreams_component_gate.sh.
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+fn __hs_fin(s: Array[Int], v: Int) -> Int {
+  Array::length(s) + v
+}
+
+fn start(g: TaskGroup, read: Bool) -> TaskHandle[Int] {
+  if read {
+    TaskGroup::spawn_suspend(g, () -> Int with Async {
+      let s = host_stream_named("left")
+      host_stream_next(s)
+    })
+  } else {
+    TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      await(host_future_named("fast")) + 41
+    })
+  }
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  let z = __hs_fin([], 0)
+  TaskGroup::run((g) -> {
+    let t = start(g, false)
+    TaskGroup::pump_all(g)
+    TaskHandle::join(t)
+  }) + z
+}

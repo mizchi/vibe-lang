@@ -12908,25 +12908,37 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                         // than answer Unknown in silence.
                         _ => {
                           Array::push(errors, String::concat(String::concat(String::concat("`", name), "` cannot run a new task group here: its group type is already fixed by an earlier use -- call `TaskGroup::run` directly, or bind it with a local `let` at each use"), off_marker_len(callee_off, String::length(name))))
-                          (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), s0, c1)
+                          let (sa, ca) = check_unmatched_call_args(args, env, defs, s0, c1, errors, tytab, capture, lane)
+                          (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), sa, ca)
                         }
                       }
                     } else {
-                      (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), s0, c1)
+                      let (sa, ca) = check_unmatched_call_args(args, env, defs, s0, c1, errors, tytab, capture, lane)
+                      (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), sa, ca)
                     },
-                    _ => (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), s0, c1)
+                    _ => {
+                      let (sa, ca) = check_unmatched_call_args(args, env, defs, s0, c1, errors, tytab, capture, lane)
+                      (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), sa, ca)
+                    }
                   },
-                  _ => (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), s0, c1)
+                  _ => {
+                    let (sa, ca) = check_unmatched_call_args(args, env, defs, s0, c1, errors, tytab, capture, lane)
+                    (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), sa, ca)
+                  }
                 },
-                _ => (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), s0, c1)
+                _ => {
+                  let (sa, ca) = check_unmatched_call_args(args, env, defs, s0, c1, errors, tytab, capture, lane)
+                  (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), sa, ca)
+                }
               }
             },
             // Reachable: the outer condition only matches the literal name
             // `"TaskGroup::run"`, not that it actually resolves in `env`
             // (e.g. the package isn't imported here at all).
             None => {
-              Array::push(errors, String::concat(String::concat("unknown name: ", name), builtin_no_lowering_hint(name)))
-              (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), s, c)
+              Array::push(errors, String::concat(String::concat(String::concat("unknown name: ", name), builtin_no_lowering_hint(name)), off_marker_len(callee_off, String::length(name))))
+              let (sa, ca) = check_unmatched_call_args(args, env, defs, s, c, errors, tytab, capture, lane)
+              (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), sa, ca)
             }
           }
         } else if name == "__region_run" && Array::length(args) == 1 {
@@ -13089,12 +13101,16 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                   report_spawnable_violations(env, s3, defs, a0_ty, Array::get(args, 1), errors, name, callee_off)
                   (tab_call_ty(tytab, call_off, subst_apply(s3, ret_ty), capture, lane), s3, c3)
                 },
-                _ => (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), s0, c1)
+                _ => {
+                  let (sa, ca) = check_unmatched_call_args(args, env, defs, s0, c1, errors, tytab, capture, lane)
+                  (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), sa, ca)
+                }
               }
             },
             None => {
-              Array::push(errors, String::concat(String::concat("unknown name: ", name), builtin_no_lowering_hint(name)))
-              (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), s, c)
+              Array::push(errors, String::concat(String::concat(String::concat("unknown name: ", name), builtin_no_lowering_hint(name)), off_marker_len(callee_off, String::length(name))))
+              let (sa, ca) = check_unmatched_call_args(args, env, defs, s, c, errors, tytab, capture, lane)
+              (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), sa, ca)
             }
           }
         } else {
@@ -15965,6 +15981,28 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
   // through check_expr_capture.
   reset_eq_formal_vars()
   check_expr_capture_impl(expr, env, defs, s, c, errors, tytab, None, "Primary", false)
+}
+
+/// #3150: the arguments of a spawn- or run-shaped call that the dedicated
+/// branch could not check against a signature -- the callee does not resolve
+/// (`vibe type-at` and `vibe check --single-file` see no imports, so
+/// `TaskGroup::run` is unknown there) or its type is not the shape the branch
+/// expects. Those arms used to return without looking at the arguments at
+/// all, so nothing inside the closure literal was typed: `vibe type-at`
+/// answered "no type is known" for every name in a task body, and an error in
+/// that body was never reported. The generic call path checks the arguments of
+/// an unresolved callee one by one, and so does this.
+fn check_unmatched_call_args(args: Array[Expr], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture], lane: String) -> (Subst, Int) {
+  let mut s1 = s
+  let mut c1 = c
+  let mut i = 0
+  while i < Array::length(args) {
+    let (_, ns, nc) = check_expr_capture(Array::get(args, i), env, defs, s1, c1, errors, tytab, capture, lane)
+    s1 = ns
+    c1 = nc
+    i = i + 1
+  }
+  (s1, c1)
 }
 
 fn map_literal_ground(t: Type) -> Bool {

@@ -1,0 +1,31 @@
+// #3151: a host stream opened by the entry and captured by the ONE task that
+// reads it. A `HostStream` has one reader and is not `Send`, so the spawn
+// check refuses the capture at compile time, and the message names the edit:
+// open the stream inside the task. Compiled and refused by
+// scripts/test_named_hoststreams_component_gate.sh.
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+fn drain(s: HostStream) -> Int with Async {
+  let mut total = 0
+  let mut going = true
+  while going {
+    match HostStream::next(s) {
+      Some(b) => total = total + b,
+      None => going = false
+    }
+  }
+  total
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  let s = host_stream_named("left")
+  TaskGroup::run((g) -> {
+    let a = TaskGroup::spawn_suspend(g, () -> Int with Async {
+      drain(s)
+    })
+    TaskGroup::pump_all(g)
+    TaskHandle::join(a)
+  })
+}

@@ -1,0 +1,44 @@
+// #3189 review (Codex, round 2): the stream_folded_spawn shape, plus a
+// reachable SOURCE function whose name happens to be spelled like a
+// generated step clone of the stream read (`__scps_cps_<E>___hs_next`). The
+// surviving-read check used to classify top-level names by spelling alone,
+// so this name kept the stream hooks armed after the real read was folded
+// away, and the build was refused ("host_stream_cancel without a host
+// stream"). A name the program wrote itself is never a generated read path:
+// the program composes with no host-stream import and answers
+// 1 + 41 + 0 = 42.
+//
+// The helper is called from `run`'s own body rather than inside the task
+// group's closure. The suspend lowering treats a reference into the
+// `__scps_` namespace inside a closure literal as tainted and refuses the
+// program, conservatively, which is a different question from this one.
+// Executed by scripts/test_named_hoststreams_component_gate.sh.
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+fn __scps_cps_Async_helper___hs_next(n: Int) -> Int {
+  n - n
+}
+
+fn start(g: TaskGroup, read: Bool) -> TaskHandle[Int] {
+  if read {
+    TaskGroup::spawn_suspend(g, () -> Int with Async {
+      let s = host_stream_named("left")
+      host_stream_next(s)
+    })
+  } else {
+    TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      await(host_future_named("fast")) + 41
+    })
+  }
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  let z = __scps_cps_Async_helper___hs_next(7)
+  TaskGroup::run((g) -> {
+    let t = start(g, false)
+    TaskGroup::pump_all(g)
+    TaskHandle::join(t)
+  }) + z
+}

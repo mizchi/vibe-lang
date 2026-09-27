@@ -1,0 +1,43 @@
+// #3189 review (Codex): the program's only host-stream read is in a helper
+// nothing reachable calls. `read_first` is bound on the arm of `start` that
+// the program's one call decides against with a constant `false`. Once
+// `fold_const_bool_params` removes that arm, and the helper with it, the
+// reachability prune removes the read path it used: the injected
+// `__hs_next_option` behind the `HostStream::next` spelling, and its step
+// clone. The prelude runs before both and saw the read. The entry boundary's leftover stream band alone
+// imported `host_stream_read`; once the scheduler hooks' stream half was
+// decided before the prune as well, the hooks armed, waited on and cancelled
+// host waitables in a program that has none, adding `host_stream_arm`,
+// `host_stream_cancel`, `host_future_wait_any`, `host_sleep_arm` and
+// `host_sleep_cancel`. No host provides those to a plain module, so it could
+// not be instantiated. With no host waitable left it is a plain module with no
+// host import at all, and it answers 42.
+// Executed by scripts/test_named_hoststreams_component_gate.sh.
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+
+fn start(g: TaskGroup, read: Bool) -> TaskHandle[Int] {
+  if read {
+    let read_first = () -> Int with Async {
+      let s = host_stream_named("left")
+      match HostStream::next(s) {
+        Some(b) => b,
+        None => 0
+      }
+    }
+    TaskGroup::spawn_suspend(g, read_first)
+  } else {
+    TaskGroup::spawn_suspend(g, () -> Int with Async {
+      42
+    })
+  }
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  TaskGroup::run((g) -> {
+    let t = start(g, false)
+    TaskGroup::pump_all(g)
+    TaskHandle::join(t)
+  })
+}
