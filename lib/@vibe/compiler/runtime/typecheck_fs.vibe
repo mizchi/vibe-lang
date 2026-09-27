@@ -670,23 +670,23 @@ fn type_returns_name(ty: Type, type_name: String) -> Bool {
 /// constructing that published surface; import validation below never falls
 /// back to builtin, registry, or effect-name recognition.
 ///
-/// A type the module brought in from ANOTHER module (a re-export; the binding's
-/// origin names that module) carries its constructors and its trait methods --
-/// `to_string`, `compare`, whatever `derive` or an `impl` supplied -- but not
-/// every function that shares its prefix or returns it: those are published by
-/// listing them. Without this, a facade re-exporting a subset of a package --
-/// `@vibe/concurrent` over `@vibe/concurrent/experimental` -- published the
-/// rest too: listing `TaskGroup` / `TaskHandle` carried
-/// `TaskGroup::spawn_suspend` (by prefix) and `TaskGroup::adopt` (it returns
-/// `TaskHandle`) past a contract that declares neither. A type declared in
-/// this module keeps the older rule, which is how its derived methods, never
-/// written in an export list, reach an importer. An unqualified foreign name
-/// travels only as a bare constructor of the type.
-fn is_selected_type_companion(name: String, binding: EnvValueBinding, type_surface: Array[String], all_defs: Array[TypeDef], trait_methods: Array[String]) -> Bool {
-  let foreign = match binding.origin {
+/// In a package contract (`strict`, see `checked_module_public_env_for_path`),
+/// a type brought in from ANOTHER module (a re-export; the binding's origin
+/// names that module) carries its constructors, its derived methods and the
+/// methods of its impls -- not every function that shares its prefix or
+/// returns it: those are published by declaring them. Without this, a contract
+/// re-exporting a subset of a package -- `@vibe/concurrent` over
+/// `@vibe/concurrent/experimental` -- published the rest too: listing
+/// `TaskGroup` / `TaskHandle` carried `TaskGroup::spawn_suspend` (by prefix)
+/// and `TaskGroup::adopt` (it returns `TaskHandle`) past a contract that
+/// declares neither. Every other module, and a type declared in the
+/// publishing module, keeps the older rule, which is how derived methods that
+/// no export list names reach an importer.
+fn is_selected_type_companion(name: String, binding: EnvValueBinding, type_surface: Array[String], all_defs: Array[TypeDef], trait_methods: Array[String], strict: Bool) -> Bool {
+  let foreign = strict && (match binding.origin {
     BindingOriginUnavailable => false,
     _ => true
-  }
+  })
   let qualified = String::index_of(name, "::") >= 0
   let mut i = 0
   let mut selected = false
@@ -4869,12 +4869,12 @@ fn interface_public_type_names(stmts: Array[Stmt], checked_env: TypeEnv) -> Arra
 /// Trait definitions and implementations are published only for the selected
 /// trait surface. EnvCached wrappers are rebuilt from the restricted chain
 /// (their arrays are acceleration state, same rule as the serializer's).
-fn restrict_env_to_export_surface_with_defs(value_surface: Array[String], trait_surface: Array[String], type_surface: Array[String], env: TypeEnv, all_defs: Array[TypeDef], trait_methods: Array[String]) -> TypeEnv {
+fn restrict_env_to_export_surface_with_defs(value_surface: Array[String], trait_surface: Array[String], type_surface: Array[String], env: TypeEnv, all_defs: Array[TypeDef], trait_methods: Array[String], strict: Bool) -> TypeEnv {
   match env {
     EnvEmpty => EnvEmpty,
     EnvBind(name, binding, rest) => {
-      let restricted = restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs, trait_methods)
-      if bsearch_leftmost(value_surface, name) >= 0 || is_selected_type_companion(name, binding, type_surface, all_defs, trait_methods) {
+      let restricted = restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs, trait_methods, strict)
+      if bsearch_leftmost(value_surface, name) >= 0 || is_selected_type_companion(name, binding, type_surface, all_defs, trait_methods, strict) {
         EnvBind(name, binding, restricted)
       } else {
         restricted
@@ -4883,9 +4883,9 @@ fn restrict_env_to_export_surface_with_defs(value_surface: Array[String], trait_
     // #1262: `let mut` escape markers are function-local, so a module's export
     // surface never carries one. Drop it with its scope rather than inventing
     // a rule for publishing mutability across a boundary.
-    EnvMutCell(_, _, rest) => restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs, trait_methods),
+    EnvMutCell(_, _, rest) => restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs, trait_methods, strict),
     EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens) => {
-      let restricted = restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs, trait_methods)
+      let restricted = restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs, trait_methods, strict)
       if bsearch_leftmost(trait_surface, name) >= 0 {
         EnvTraitDef(name, supers, is_auto, methods, restricted, params, method_gens)
       } else {
@@ -4893,7 +4893,7 @@ fn restrict_env_to_export_surface_with_defs(value_surface: Array[String], trait_
       }
     },
     EnvTraitImpl(name, target, rest) => {
-      let restricted = restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs, trait_methods)
+      let restricted = restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs, trait_methods, strict)
       if bsearch_leftmost(trait_surface, trait_ref_name(name)) >= 0 {
         EnvTraitImpl(name, target, restricted)
       } else {
@@ -4901,7 +4901,7 @@ fn restrict_env_to_export_surface_with_defs(value_surface: Array[String], trait_
       }
     },
     EnvTraitImplGen(name, params, bounds, target, rest) => {
-      let restricted = restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs, trait_methods)
+      let restricted = restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs, trait_methods, strict)
       if bsearch_leftmost(trait_surface, trait_ref_name(name)) >= 0 {
         EnvTraitImplGen(name, params, bounds, target, restricted)
       } else {
@@ -4909,7 +4909,7 @@ fn restrict_env_to_export_surface_with_defs(value_surface: Array[String], trait_
       }
     },
     EnvTypeDefs(defs, _, rest) => {
-      let restricted = restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs, trait_methods)
+      let restricted = restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs, trait_methods, strict)
       let kept = array_empty()
       let mut i = 0
       while i < Array::length(defs) {
@@ -4943,7 +4943,7 @@ fn restrict_env_to_export_surface_with_defs(value_surface: Array[String], trait_
       let mut i = 0
       while i < Array::length(bindings) {
         let (name, binding) = Array::get(bindings, i)
-        if bsearch_leftmost(value_surface, name) >= 0 || is_selected_type_companion(name, binding, type_surface, all_defs, trait_methods) {
+        if bsearch_leftmost(value_surface, name) >= 0 || is_selected_type_companion(name, binding, type_surface, all_defs, trait_methods, strict) {
           Array::push(kept, (name, binding))
         } else {
           ()
@@ -4961,13 +4961,13 @@ fn restrict_env_to_export_surface_with_defs(value_surface: Array[String], trait_
     // module lane resolves an import over a same-named local (the merge
     // lane shadows correctly), while an `as` alias broke the
     // collect_merged_stmts lane instead. Both are their own bugs.
-    EnvCached(_, _, rest) => restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs, trait_methods)
+    EnvCached(_, _, rest) => restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs, trait_methods, strict)
   }
 }
 
-fn restrict_env_to_export_surface(value_surface: Array[String], trait_surface: Array[String], type_surface: Array[String], env: TypeEnv) -> TypeEnv {
+fn restrict_env_to_export_surface(value_surface: Array[String], trait_surface: Array[String], type_surface: Array[String], env: TypeEnv, strict: Bool) -> TypeEnv {
   let all_defs = env_type_defs(env)
-  let restricted = restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, env, all_defs, env_trait_method_names(env))
+  let restricted = restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, env, all_defs, env_trait_method_names(env), strict)
   if Array::length(type_surface) > 0 && Array::length(env_selectable_type_defs(restricted)) == 0 {
     // Opaque builtins and re-exported contracts can grant type authority
     // without carrying a forgeable TypeDef payload. Keep one surface node for
@@ -5051,13 +5051,29 @@ fn append_env_tail(head: TypeEnv, tail: TypeEnv) -> TypeEnv {
 /// markers` is fed `value_surface`, which contains the export names
 /// themselves, so a marker could make an absent name look bound.
 export fn checked_module_public_env_with_reexport_declarations(stmts: Array[Stmt], full_checked_env: TypeEnv, reexport_declarations: TypeEnv) -> TypeEnv with Exception {
+  checked_module_public_env_publishing(stmts, full_checked_env, reexport_declarations, false)
+}
+
+/// Publication for the module at `path`. A package contract (`index.vpkg`)
+/// publishes exactly what it declares: a type it re-exports carries its enum
+/// variants, its derived methods and the methods of its impls, not every
+/// function of the implementation that shares its prefix or returns it
+/// (`is_selected_type_companion`). That is what keeps `@vibe/concurrent`,
+/// which re-exports the stable subset of `@vibe/concurrent/experimental`,
+/// from publishing `TaskGroup::spawn_suspend` through `TaskGroup`. An ordinary
+/// module keeps the older companion rule.
+export fn checked_module_public_env_for_path(path: String, stmts: Array[Stmt], full_checked_env: TypeEnv, reexport_declarations: TypeEnv) -> TypeEnv with Exception {
+  checked_module_public_env_publishing(stmts, full_checked_env, reexport_declarations, is_contract_ext(path))
+}
+
+fn checked_module_public_env_publishing(stmts: Array[Stmt], full_checked_env: TypeEnv, reexport_declarations: TypeEnv, strict: Bool) -> TypeEnv with Exception {
   // Local declarations stay ahead of the publication-only projection, which
   // preserves lexical shadowing when both select the same public spelling.
   let publication_env = append_env_tail(full_checked_env, reexport_declarations)
   let value_surface = interface_public_value_names(stmts)
   let trait_surface = interface_public_trait_names(stmts, publication_env)
   let type_surface = interface_public_type_names(stmts, publication_env)
-  let published = bind_type_reference_definitions(value_surface, publication_env, env_preserve_type_definition_origins(restrict_env_to_export_surface(value_surface, trait_surface, type_surface, publication_env), publication_env))
+  let published = bind_type_reference_definitions(value_surface, publication_env, env_preserve_type_definition_origins(restrict_env_to_export_surface(value_surface, trait_surface, type_surface, publication_env, strict), publication_env))
   // Builtin declarations have no TypeDef node to survive the restriction.
   // Their explicit selected surface still needs a transport node, otherwise
   // the importer cannot distinguish this export from an empty dependency.
@@ -7559,7 +7575,7 @@ fn check_module_impl(job: ModuleJob, observe_typing_artifact: Bool, program_tran
       // still cached an artifact would be reused through
       // `checked_module_artifact_outcome` on the next build, and the refusal
       // would disappear.
-      let checked_env = checked_module_public_env_with_reexport_declarations(stmts, full_checked_env, reexport_declarations)
+      let checked_env = checked_module_public_env_for_path(job.path, stmts, full_checked_env, reexport_declarations)
       let interface_identity = if incremental_interface_trace_enabled() {
         incremental_interface_identity(job.source, checked_env)
       } else {
@@ -7934,7 +7950,7 @@ fn checked_module_artifact_outcome(job: ModuleJob, artifact: CheckedModuleArtifa
     throw("checked module: validated imports no longer resolve")
   }
   let fingerprint = build_fingerprint(job.path, job.source, job.dep_fps, typing_semantics_seed())
-  let env = checked_module_public_env_with_reexport_declarations(artifact.parsed_stmts, artifact.checked_program.final_env, reexports)
+  let env = checked_module_public_env_for_path(job.path, artifact.parsed_stmts, artifact.checked_program.final_env, reexports)
   module_typed_lowering_memo_put(job.path, fingerprint, artifact.lowering_offsets, artifact.eq_offsets, artifact.eq_keys)
   let tracing = incremental_interface_trace_enabled()
   Checked(job.path, fingerprint, env, if tracing {
