@@ -1,0 +1,52 @@
+import @vibe/builtin {
+  trait Iterator
+}
+
+// #3185: `Iterator::map` / `fold` / `filter` over an array is devirtualized to
+// the builtin `Array::map` / `fold` / `filter`, and that call is the
+// compiler's, not the program's: it is spelled `builtin_ref`, so a program's own
+// function of the builtin's spelling -- which answers the calls the program
+// writes to it -- does not take it. Linear lanes only: importing
+// `@vibe/builtin`'s `Iterator` does not compile on wasm-gc (its async half
+// reaches `Future::ready`, which that lane does not lower).
+
+fn Array::map(xs: Array[Int], f: (Int) -> Int) -> String {
+  "own map \{Array::length(xs)} \{f(10)}"
+}
+
+fn Array::fold(xs: Array[Int], init: Int, f: (Int, Int) -> Int) -> String {
+  "own fold \{init - Array::length(xs)} \{f(9, 2)}"
+}
+
+fn Array::filter(xs: Array[Int], f: (Int) -> Bool) -> Int {
+  let _ = f
+  Array::length(xs) * 100
+}
+
+test "the program's own functions answer the calls it wrote" {
+  inspect(Array::map([1, 2, 3], (x: Int) -> Int {
+    x * 2
+  }), content = "own map 3 20")
+  inspect(Array::fold([1, 2], 10, (a: Int, b: Int) -> Int {
+    a - b
+  }), content = "own fold 8 7")
+  inspect(Array::filter([1, 2, 3], (x: Int) -> Bool {
+    x > 1
+  }), content = "300")
+}
+
+test "Iterator operations over an array still reach the builtins" {
+  let doubled = Iterator::map([1, 2, 3], (x: Int) -> Int {
+    x * 2
+  })
+  inspect(Array::length(doubled), content = "3")
+  inspect(doubled[2] - doubled[0], content = "4")
+  let total = Iterator::fold([1, 2, 3], 0, (acc: Int, x: Int) -> Int {
+    acc + x
+  })
+  inspect(total, content = "6")
+  let kept = Iterator::filter([1, 2, 3, 4], (x: Int) -> Bool {
+    x > 2
+  })
+  inspect(Array::length(kept), content = "2")
+}

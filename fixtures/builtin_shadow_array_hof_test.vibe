@@ -1,0 +1,72 @@
+// #3185: a program's own `Array::map` / `fold` / `reverse` / `filter` /
+// `any` / `all` / `find` answers the calls the program wrote, on
+// every lane. Both lanes lowered those spellings inline ahead of the function
+// table, so the program's declaration was ignored -- and for `filter` / `any`
+// / `all` / `find` the checker typed the call from that declaration
+// while the builtin ran. Each function here answers a type its builtin never
+// does. The compiler's own calls by these names (the renderer of an array,
+// for-in) still reach the builtins; `builtin_shadow_iterator_devirt_test.vibe`
+// covers `Iterator::map` over an array, devirtualized to `Array::map`.
+
+fn Array::map(xs: Array[Int], f: (Int) -> Int) -> String {
+  "own map \{Array::length(xs)} \{f(10)}"
+}
+
+fn Array::fold(xs: Array[Int], init: Int, f: (Int, Int) -> Int) -> String {
+  "own fold \{init - Array::length(xs)} \{f(9, 2)}"
+}
+
+fn Array::reverse(n: Int) -> String {
+  "own reverse \{n}"
+}
+
+fn Array::filter(xs: Array[Int], f: (Int) -> Bool) -> Int {
+  let _ = f
+  Array::length(xs) * 100
+}
+
+fn Array::any(xs: Array[Int], f: (Int) -> Bool) -> String {
+  let _ = f
+  "own any \{Array::length(xs)}"
+}
+
+fn Array::all(xs: Array[Int], f: (Int) -> Bool) -> String {
+  let _ = f
+  "own all \{Array::length(xs)}"
+}
+
+fn Array::find(xs: Array[Int], f: (Int) -> Bool) -> Int {
+  let _ = f
+  0 - Array::length(xs)
+}
+
+test "the program's own higher-order Array functions answer its calls" {
+  inspect(Array::map([1, 2, 3], (x: Int) -> Int {
+    x * 2
+  }), content = "own map 3 20")
+  inspect(Array::fold([1, 2], 10, (a: Int, b: Int) -> Int {
+    a - b
+  }), content = "own fold 8 7")
+  inspect(Array::reverse(4), content = "own reverse 4")
+  inspect(Array::filter([1, 2, 3], (x: Int) -> Bool {
+    x > 1
+  }), content = "300")
+  inspect(Array::any([1, 2], (x: Int) -> Bool {
+    x > 1
+  }), content = "own any 2")
+  inspect(Array::all([1, 2], (x: Int) -> Bool {
+    x > 1
+  }), content = "own all 2")
+  inspect(Array::find([1, 2, 3, 4], (x: Int) -> Bool {
+    x > 1
+  }), content = "-4")
+}
+
+test "the compiler's own calls by those names still reach the builtins" {
+  inspect("\{[4, 5]}", content = "[4, 5]")
+  let mut total = 0
+  for x in [1, 2, 3] {
+    total = total + x
+  }
+  inspect(total, content = "6")
+}

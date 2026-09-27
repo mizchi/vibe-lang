@@ -1,0 +1,126 @@
+//# Every by-name codegen intercept is moved aside for a program's own function (#3185)
+
+// Codegen intercepts some callees by SPELLING, ahead of the function table: the
+// linear call ladder (`codegen/expr/compile_call.vibe`) and the gc lane's call
+// arms (`codegen/gc/backend_call.vibe`). A program's own function of such a
+// spelling used to be ignored there -- the call ran the builtin while the
+// checker typed it from the program's declaration (`Int::to_double(3)` from a
+// program `-> Int` answered 3 on linear and 1.48e-321 on wasm-gc). The fix is
+// the rename: `rename_builtin_shadow_defs` moves the program's definition, and
+// every call it wrote, to a spelling no intercept tests.
+//
+// This test reads both lowerings' source text and checks every builtin
+// spelling an arm compares the callee against, so an arm added for a new
+// spelling fails here until the spelling is on the rename list (or on the
+// short list below of spellings whose source definition the compiler
+// honours on purpose).
+
+//# Imports
+
+import @vibe/compiler/core {
+  builtin_shadow_renames_name
+}
+
+//# Functions
+
+/// Every `<needle>"<literal>"` in `src` outside a `//` comment line. The
+/// literals are plain callee spellings, so the first `"` after the opening one
+/// closes it.
+fn compared_literals(src: String, needle: String) -> Array[String] {
+  let out: Array[String] = []
+  let nlen = String::length(needle)
+  let len = String::length(src)
+  let mut i = 0
+  let mut comment_line = line_is_comment(src, 0)
+  while i + nlen <= len {
+    let c = String::char_code_at(src, i)
+    if c == '\n' {
+      comment_line = line_is_comment(src, i + 1)
+      i = i + 1
+    } else if !comment_line && String::substring(src, i, i + nlen) == needle {
+      let mut j = i + nlen
+      while j < len && String::char_code_at(src, j) != '"' {
+        j = j + 1
+      }
+      Array::push(out, String::substring(src, i + nlen, j))
+      i = j
+    } else {
+      i = i + 1
+    }
+  }
+  out
+}
+
+/// Does the line starting at `pos` begin (after indentation) with `//`?
+fn line_is_comment(src: String, pos: Int) -> Bool {
+  let len = String::length(src)
+  let mut k = pos
+  while k < len && String::char_code_at(src, k) == ' ' {
+    k = k + 1
+  }
+  k + 1 < len && String::char_code_at(src, k) == '/' && String::char_code_at(src, k + 1) == '/'
+}
+
+/// A builtin's spelling: qualified (`Array::map`), a compiler dunder
+/// (`__slice`), or `await`. Bare names (`print`, `eq`, `not`, ...) are legal
+/// local names, so every arm testing one carries its own shadowing guard
+/// instead (#2283, #2300, #2309).
+fn is_builtin_spelling(name: String) -> Bool {
+  String::contains(name, "::") || String::starts_with(name, "__") || name == "await"
+}
+
+/// Spellings whose source definition the compiler honours on purpose, so
+/// they are not moved aside: `Map::iter_get` / `Map::__iter_get_unchecked`
+/// (#2379, both lanes guard their arm on the definition) and `String::equals`
+/// (the prelude's source definition, #2483).
+fn honours_source_definition(name: String) -> Bool {
+  name == "Map::iter_get" || name == "Map::__iter_get_unchecked" || name == "String::equals" || is_capability_spelling(name)
+}
+
+/// The capability builtins' spellings, which #3186 moves aside with the
+/// authority check that goes with them.
+fn is_capability_spelling(name: String) -> Bool {
+  String::starts_with(name, "Console::") || String::starts_with(name, "Env::") || String::starts_with(name, "Fs::") || String::starts_with(name, "Http::") || String::starts_with(name, "Profiler::") || String::starts_with(name, "Stderr::") || String::starts_with(name, "Stdin::") || String::starts_with(name, "StdinStream::") || String::starts_with(name, "Stdout::")
+}
+
+/// The spellings `path`'s arms compare against that no rename covers,
+/// `;`-joined (empty = every intercept yields to a program's own function).
+fn uncovered(path: String) -> String with Fs {
+  let src = Fs::read_file(path)
+  let seen: Array[String] = []
+  let lits = compared_literals(src, "fname == \"")
+  for lit in compared_literals(src, "get_eident_name(callee) == \"") {
+    Array::push(lits, lit)
+  }
+  for lit in lits {
+    if is_builtin_spelling(lit) && !honours_source_definition(lit) && !builtin_shadow_renames_name(lit) && !Array::any(seen, (s) -> s == lit) {
+      Array::push(seen, lit)
+    } else {
+      ()
+    }
+  }
+  String::join(seen, ";")
+}
+
+//# Tests
+
+test "every builtin spelling the linear call ladder intercepts is moved aside" {
+  // Red before #3185: `Array::map`, `Int::to_double`, `Char::to_int`,
+  // `Map::set`, `FixedArray::make`, `__slice`, ... (over a hundred spellings).
+  inspect(uncovered("lib/@vibe/compiler/codegen/expr/compile_call.vibe"), content = "")
+}
+
+test "every builtin spelling the gc call arms intercept is moved aside" {
+  inspect(uncovered("lib/@vibe/compiler/codegen/gc/backend_call.vibe"), content = "")
+}
+
+test "the scan sees the arms it guards" {
+  // A scan that found nothing would pass vacuously.
+  let src = Fs::read_file("lib/@vibe/compiler/codegen/expr/compile_call.vibe")
+  let lits = compared_literals(src, "fname == \"")
+  inspect(Array::length(lits) > 140, content = "true")
+  inspect(Array::any(lits, (l) -> l == "Array::map"), content = "true")
+  inspect(builtin_shadow_renames_name("Array::map"), content = "true")
+  inspect(builtin_shadow_renames_name("my_helper"), content = "false")
+  inspect(honours_source_definition("Map::iter_get"), content = "true")
+}

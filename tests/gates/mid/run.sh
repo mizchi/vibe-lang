@@ -745,6 +745,45 @@ for dc_lane in shadow gc; do
 done
 rm -f "$ROOT_DIR/_build/_gate_builtin_shadow_direct_call.log"
 echo "[compiler-gate] program-declared builtin spellings ok: direct calls answer the program's own functions (shadow + gc)"
+# #3185: the spellings a LOWERING intercepts ahead of the function
+# table -- the frozen-array / MutList / MutBytes conversions, the higher-order
+# Array family, Map::set / delete, FixedArray::make / unsafe_set / blit, the
+# parser sugar's __slice / __len / __set_field / __region_run, the conversions
+# (Int::to_double, Char::to_int, ...). A program's own function of one of them used to be
+# ignored for its direct calls (the checker typed the declaration, the builtin
+# ran), and `fn __set_field` took every field write. One fixture per family,
+# each answering values its builtin never does, with the compiler's own calls
+# by those names checked beside them -- and a dependency's calls, which cannot
+# see the program's private definition (entry_scope). The unit runner covers
+# the default lane.
+for bf_lane in shadow gc; do
+  case "$bf_lane" in
+    shadow) bf_env="VIBE_RC=shadow" ;;
+    gc) bf_env="VIBE_TEST_BACKEND=gc" ;;
+  esac
+  if ! env "$bf_env" VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+      bash scripts/vibe_test.sh fixtures/builtin_shadow_region_collections_test.vibe fixtures/builtin_shadow_array_hof_test.vibe \
+        fixtures/builtin_shadow_map_fixed_array_test.vibe fixtures/builtin_shadow_sugar_callee_test.vibe \
+        fixtures/builtin_shadow_conversion_test.vibe \
+        fixtures/builtin_shadow_entry_scope_test.vibe \
+      >"$ROOT_DIR/_build/_gate_builtin_shadow_intercept.log" 2>&1; then
+    echo "[compiler-gate] FAIL: a program's own function of a builtin spelling a lowering intercepts was ignored for its direct call, or took the compiler's own call, on the $bf_lane lane (#3185):" >&2
+    tail -20 "$ROOT_DIR/_build/_gate_builtin_shadow_intercept.log" >&2
+    exit 1
+  fi
+done
+# `Iterator::map` over an array is devirtualized to the builtin `Array::map`
+# behind the program's own one. Shadow only: importing @vibe/builtin's
+# Iterator does not compile on wasm-gc (its async half reaches Future::ready).
+if ! VIBE_RC=shadow VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+    bash scripts/vibe_test.sh fixtures/builtin_shadow_iterator_devirt_test.vibe \
+    >"$ROOT_DIR/_build/_gate_builtin_shadow_intercept.log" 2>&1; then
+  echo "[compiler-gate] FAIL: a devirtualized Iterator operation over an array reached the program's own Array function under VIBE_RC=shadow (#3185):" >&2
+  tail -20 "$ROOT_DIR/_build/_gate_builtin_shadow_intercept.log" >&2
+  exit 1
+fi
+rm -f "$ROOT_DIR/_build/_gate_builtin_shadow_intercept.log"
+echo "[compiler-gate] intercepted builtin spellings ok: the program's own functions answer its calls (shadow + gc)"
 # #3158: the 63-bit wrap contract (#1877) holds the SAME values on every
 # backend, so its test runs on wasm-gc too (the unit runner covers linear).
 # It could not compile there: the erased-generic `[T: Add]` / `[T: Ord]`

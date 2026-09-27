@@ -11674,7 +11674,14 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         // The recognized-callee path types arguments directly, but its callee
         // remains structural child 0 under core::expr_children.
         typed_occurrence_capture_skip_children(capture, 1)
-        field_write_mut_check(name, args, env, defs, s, c, errors, tytab, check_expr)
+        // #3185: the field-write check belongs to the builtin `__set_field`
+        // (the `obj.f = x` sugar, spelled `builtin_ref`); a program's own
+        // function of that name is an ordinary call.
+        if builtin_resolves_at(env, name, callee_off) {
+          field_write_mut_check(name, args, env, defs, s, c, errors, tytab, check_expr)
+        } else {
+          ()
+        }
         retaining_write_region_check(name, args, env, defs, s, c, errors, check_expr)
         // #3179: the builtin arms below are selected by `arm`, never by
         // `name`: a spelling the program's own function answers for reaches
@@ -13010,6 +13017,14 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           // plain expression here, but the separate effect-row pass still
           // sees the lambda wrapper, so effects performed inside a region
           // body are not attributed to the enclosing fn by that pass.
+          // #3185: the `region` syntax spells its call `builtin_ref_at`, which keys
+          // the keyword's offset below `builtin_ref_offset()`; decode it so an escape
+          // is still reported at the `region` keyword.
+          let region_off = if is_builtin_ref_offset(callee_off) {
+            index_site_offset(callee_off)
+          } else {
+            callee_off
+          }
           let skolem_name = String::concat("#region_", __to_string(c))
           match Array::get(args, 0) {
             EFn(_, _, fn_params, _, _, fn_body) => if Array::length(fn_params) == 1 {
@@ -13031,7 +13046,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               typed_occurrence_capture_restore_frame_depth(capture, virtual_parent_depth)
               let zonked_ret = subst_apply(s1, body_ty)
               if type_mentions_named(zonked_ret, skolem_name) || tail_named_record_mentions_region(fn_body, env_body, defs, s, c + 1, skolem_name, check_expr) {
-                Array::push(errors, String::concat("region escapes its scope: the value returned from this region body still depends on the region's own token", off_marker_len(callee_off, String::length(name))))
+                Array::push(errors, String::concat("region escapes its scope: the value returned from this region body still depends on the region's own token", off_marker_len(region_off, String::length(name))))
               } else {
                 ()
               }
@@ -13049,7 +13064,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                 oi = oi + 1
               }
               if leaked {
-                Array::push(errors, String::concat("region escapes its scope: an outer binding now depends on this region's own token", off_marker_len(callee_off, String::length(name))))
+                Array::push(errors, String::concat("region escapes its scope: an outer binding now depends on this region's own token", off_marker_len(region_off, String::length(name))))
               } else {
                 ()
               }
@@ -13073,14 +13088,14 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                     Some(s_unified) => {
                       let zonked_ret = subst_apply(s_unified, body_ret)
                       if type_mentions_named(zonked_ret, skolem_name) {
-                        Array::push(errors, String::concat("region escapes its scope: the value returned from this region body still depends on the region's own token", off_marker_len(callee_off, String::length(name))))
+                        Array::push(errors, String::concat("region escapes its scope: the value returned from this region body still depends on the region's own token", off_marker_len(region_off, String::length(name))))
                       } else {
                         ()
                       }
                       (tab_call_ty(tytab, call_off, zonked_ret, capture, lane), s_unified, c_body)
                     },
                     None => {
-                      Array::push(errors, String::concat("region body parameter type mismatch for __region_run", off_marker_len(callee_off, String::length(name))))
+                      Array::push(errors, String::concat("region body parameter type mismatch for __region_run", off_marker_len(region_off, String::length(name))))
                       (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), s_body, c_body)
                     }
                   }

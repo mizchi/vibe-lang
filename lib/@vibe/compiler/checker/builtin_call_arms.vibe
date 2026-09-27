@@ -44,103 +44,103 @@ export fn builtin_resolves_at(env: TypeEnv, name: String, ident_off: Int) -> Boo
 }
 
 // #3179: every call arm `check_expr_capture_impl` selects by the callee's
-// SPELLING, as (name, argument count, yields). An arm types a call from the
-// builtin's rules, so it may take only a call that RUNS the builtin.
-//
-// A `true` row yields to the program: codegen sends a direct call the program
-// wrote to the program's own function of that spelling (the definition is
-// renamed aside by `rename_builtin_shadow_defs`, #3132, or no lowering
-// intercepts the name), so that call is typed from the program's declaration
-// and the arm takes only a call that means the builtin (`builtin_resolves_at`).
-// Before this, `fn Array::get(xs: Array[Int], i: Int) -> String` had its own
+// SPELLING, as (name, argument count). An arm types a call from the builtin's
+// rules, so it may take only a call that RUNS the builtin: one that means the
+// builtin at its position (`builtin_resolves_at`) -- nothing of the program
+// binds the spelling, or the compiler synthesized the call (`builtin_ref`,
+// #3146). A direct call the program wrote to its own function of the spelling
+// reaches the ordinary call path and is typed from the declaration. Before
+// this, `fn Array::get(xs: Array[Int], i: Int) -> String` had its own
 // `Array::get([1, 2], 0) + 1` typed `Int`, checked clean, and added 1 to a
 // string.
 //
-// A `false` row keeps the arm for every call: a lowering intercepts the
-// spelling ahead of the program's function, so a direct call runs the builtin
-// whatever the program declares, and typing it from the declaration would
-// describe a function that never runs. Measured on a stage2 built from main at
-// 6646ccbfb with a program function of each spelling: `Array::map` / `fold` /
-// `reverse`, `Map::set` / `delete`, `FixedArray::make` / `unsafe_set` /
-// `blit`, `__slice` and `__len` run the builtin on linear and wasm-gc; the
-// frozen-array conversions and the `MutList` / `MutBytes` constructors and
-// exits run it on linear (compile_call rewrites them first) and the program's
-// function on wasm-gc; `__region_run` is the `region` syntax's own call. A row
-// moves to `true` once codegen calls the program's function on every lane.
+// That is sound because codegen calls the program's function for every such
+// call, on every lane: `rename_builtin_shadow_defs` moves the program's
+// definition, and each reference the program wrote, to a spelling of its own
+// (#3132), and since #3185 it does so for every builtin spelling a lowering
+// intercepts. Eighteen rows used to keep the arm for every call instead,
+// because a lowering intercepted the spelling ahead of the program's function
+// and ran the builtin: `Array::map` / `fold` / `reverse`, `Map::set` /
+// `delete`, `FixedArray::make` / `unsafe_set` / `blit`, `__slice` and
+// `__len` on both lanes, the frozen-array conversions and the `MutList` /
+// `MutBytes` constructors and exits on linear, and `__region_run`. The
+// parser's `xs[a:b]` / `region` sugar now spells those calls `builtin_ref`,
+// so they keep the builtin arm and a program's own function answers only the
+// calls it was written for.
 //
 // `builtin_call_arm` answers "" for a spelling this table does not list, so an
 // arm cannot fire without a row here, and the checker test
 // `builtin_call_arm_shadow_test.vibe` walks every row. An arm that compares
 // `name` itself would bypass the table; scripts/review_lint.vibex reports the
 // `name == "X::y" && Array::length(args) == n` shape under checker/.
-let builtin_call_arm_table: Array[(String, Int, Bool)] = [
-  ("__index", 2, true),
-  ("__rec_field", 2, true),
-  ("__slice", 3, false),
-  ("__len", 1, false),
-  ("__region_run", 1, false),
-  ("Array::with_capacity", 1, true),
-  ("ArrayBuilder::new", 0, true),
-  ("ArrayBuilder::push", 2, true),
-  ("ArrayBuilder::freeze", 1, true),
-  ("FrozenArray::from_array", 1, false),
-  ("FrozenArray::to_array", 1, false),
-  ("FrozenArray::get", 2, true),
-  ("FrozenArray::length", 1, true),
-  ("MutList::empty", 1, false),
-  ("MutList::push", 2, true),
-  ("MutList::freeze", 1, false),
-  ("MutList::to_array", 1, false),
-  ("MutList::get", 2, true),
-  ("MutList::length", 1, true),
-  ("MutList::truncate", 2, true),
-  ("MutBytes::empty", 1, false),
-  ("MutBytes::push", 2, true),
-  ("MutBytes::append", 2, true),
-  ("MutBytes::length", 1, true),
-  ("MutBytes::to_bytes", 1, false),
-  ("FixedArray::make", 2, false),
-  ("FixedArray::get", 2, true),
-  ("FixedArray::set", 3, true),
-  ("FixedArray::unsafe_set", 3, false),
-  ("FixedArray::length", 1, true),
-  ("FixedArray::blit", 5, false),
-  ("Map::set", 3, false),
-  ("Map::get", 2, true),
-  ("MapBuilder::get", 2, true),
-  ("Map::keys", 1, true),
-  ("Map::values", 1, true),
-  ("Map::delete", 2, false),
-  ("Array::push", 2, true),
-  ("Array::set", 3, true),
-  ("Array::push_all", 2, true),
-  ("Array::get", 2, true),
-  ("Array::reverse", 1, false),
-  ("Array::concat", 2, true),
-  ("Array::slice", 3, true),
-  ("Array::fold", 3, false),
-  ("Array::map", 2, false),
-  ("TaskGroup::run", 1, true),
-  ("TaskGroup::spawn", 2, true),
-  ("TaskGroup::spawn_suspend", 2, true),
-  ("Future::ready", 1, true),
-  ("Future::pending", 0, true),
-  ("Future::resolve", 2, true),
-  ("await", 1, true)
+let builtin_call_arm_table: Array[(String, Int)] = [
+  ("__index", 2),
+  ("__rec_field", 2),
+  ("__slice", 3),
+  ("__len", 1),
+  ("__region_run", 1),
+  ("Array::with_capacity", 1),
+  ("ArrayBuilder::new", 0),
+  ("ArrayBuilder::push", 2),
+  ("ArrayBuilder::freeze", 1),
+  ("FrozenArray::from_array", 1),
+  ("FrozenArray::to_array", 1),
+  ("FrozenArray::get", 2),
+  ("FrozenArray::length", 1),
+  ("MutList::empty", 1),
+  ("MutList::push", 2),
+  ("MutList::freeze", 1),
+  ("MutList::to_array", 1),
+  ("MutList::get", 2),
+  ("MutList::length", 1),
+  ("MutList::truncate", 2),
+  ("MutBytes::empty", 1),
+  ("MutBytes::push", 2),
+  ("MutBytes::append", 2),
+  ("MutBytes::length", 1),
+  ("MutBytes::to_bytes", 1),
+  ("FixedArray::make", 2),
+  ("FixedArray::get", 2),
+  ("FixedArray::set", 3),
+  ("FixedArray::unsafe_set", 3),
+  ("FixedArray::length", 1),
+  ("FixedArray::blit", 5),
+  ("Map::set", 3),
+  ("Map::get", 2),
+  ("MapBuilder::get", 2),
+  ("Map::keys", 1),
+  ("Map::values", 1),
+  ("Map::delete", 2),
+  ("Array::push", 2),
+  ("Array::set", 3),
+  ("Array::push_all", 2),
+  ("Array::get", 2),
+  ("Array::reverse", 1),
+  ("Array::concat", 2),
+  ("Array::slice", 3),
+  ("Array::fold", 3),
+  ("Array::map", 2),
+  ("TaskGroup::run", 1),
+  ("TaskGroup::spawn", 2),
+  ("TaskGroup::spawn_suspend", 2),
+  ("Future::ready", 1),
+  ("Future::pending", 0),
+  ("Future::resolve", 2),
+  ("await", 1)
 ]
 
 /// #3179: the by-name call arm a direct call to `name` with `argc` arguments
 /// takes, or "" when it takes none: the spelling is not listed in
-/// `builtin_call_arm_table`, or its row yields and the call means the
-/// program's own function (`builtin_resolves_at`). The arity is compared
-/// first, so a call pays the string compares only against its own arity's rows.
+/// `builtin_call_arm_table`, or the call means the program's own function
+/// (`builtin_resolves_at`). The arity is compared first, so a call pays the
+/// string compares only against its own arity's rows.
 export fn builtin_call_arm(env: TypeEnv, name: String, argc: Int, callee_off: Int) -> String {
   let mut i = 0
   let mut arm = ""
   while i < Array::length(builtin_call_arm_table) {
-    let (row_name, row_argc, yields) = Array::get(builtin_call_arm_table, i)
+    let (row_name, row_argc) = Array::get(builtin_call_arm_table, i)
     if row_argc == argc && row_name == name {
-      if !yields || builtin_resolves_at(env, name, callee_off) {
+      if builtin_resolves_at(env, name, callee_off) {
         arm = name
       } else {
         ()
@@ -154,6 +154,6 @@ export fn builtin_call_arm(env: TypeEnv, name: String, argc: Int, callee_off: In
 }
 
 /// #3179: `builtin_call_arm_table` as data, for the test that walks it.
-export fn builtin_call_arms() -> Array[(String, Int, Bool)] {
+export fn builtin_call_arms() -> Array[(String, Int)] {
   builtin_call_arm_table
 }
