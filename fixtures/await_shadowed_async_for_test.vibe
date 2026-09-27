@@ -1,0 +1,43 @@
+// #3198 review (Codex): an async `for` -- an iterand whose `T::next` returns a
+// `Future` -- desugars after type checking to `await(T::next(cursor))`. That
+// `await` is the compiler's, and means the builtin even inside a scope where
+// the program binds `await` itself; the await lowering honours the program's
+// binding only for the calls the program wrote. Before, a shadowing binding
+// took the generated call too, and the loop ran the program's closure instead
+// of polling `Countdown::next`.
+struct Countdown {
+  n: Int
+}
+
+fn Countdown::next(c: Countdown) -> Future[Option[(Int, Countdown)]] {
+  if c.n <= 0 {
+    Future::ready(None)
+  } else {
+    Future::ready(Some((c.n, Countdown::{ n: c.n - 1 })))
+  }
+}
+
+fn sum_with_local_await() -> Int with Async {
+  let await = (f: Future[Int]) -> 1000
+  let mut acc = await(Future::ready(0))
+  for x in Countdown::{ n: 4 } {
+    acc = acc + x
+  }
+  acc
+}
+
+fn sum_with_param_await(await: (Future[Int]) -> Int) -> Int with Async {
+  let mut acc = 0
+  for x in Countdown::{ n: 3 } {
+    acc = acc + x
+  }
+  acc + await(Future::ready(0))
+}
+
+test "an async for polls the builtin await under a local await" {
+  inspect(sum_with_local_await(), content = "1010")
+}
+
+test "an async for polls the builtin await under a parameter await" {
+  inspect(sum_with_param_await((f: Future[Int]) -> 500), content = "506")
+}

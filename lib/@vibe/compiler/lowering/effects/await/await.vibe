@@ -1,5 +1,5 @@
 import @vibe/ast {
-  builtin_ref
+  builtin_ref, is_builtin_ref_offset
 }
 
 import @vibe/compiler/core {
@@ -88,14 +88,23 @@ export fn await_poll_pass(stmts: Array[Stmt], host_future: Bool, waiter_hooks: B
   // export with its module suffix). `__aw_pay` hands it the cell it is about
   // to park on, so a release of that read can poison the cell (see
   // awp_pay_fn_def).
-  if awp_program_defines_await(stmts) {
-    ()
-  } else {
+  //
+  // #3198 review: a program's own top-level `await` no longer skips the pass.
+  // It shadows every `await` the program WROTE (the `await` bit starts set),
+  // but an `await` the compiler synthesized -- the async `for` desugar's
+  // `await(C::next(..))` -- is `builtin_ref("await")` and always means the
+  // builtin, whatever the program binds under that name.
+  {
     let ctr = [0]
-    let sh = if awp_program_defines(stmts, "Future::ready") {
-      awp_ready_shadowed_bit()
+    let await_sh = if awp_program_defines_await(stmts) {
+      awp_await_bound_bit()
     } else {
       0
+    }
+    let sh = if awp_program_defines(stmts, "Future::ready") {
+      await_sh|awp_ready_shadowed_bit()
+    } else {
+      await_sh
     }
     let mut i = 0
     while i < Array::length(stmts) {
@@ -305,7 +314,11 @@ fn awp_lift(e: Expr, ctr: Array[Int], binds: Array[(String, Expr, String)], sh: 
         EIdent(cn, _) => cn,
         _ => ""
       }
-      if callee_nm == "await" && Array::length(args) == 1 && !awp_await_bound(sh) {
+      let synthesized = match callee {
+        EIdent(_, coff) => is_builtin_ref_offset(coff),
+        _ => false
+      }
+      if callee_nm == "await" && Array::length(args) == 1 && (synthesized || !awp_await_bound(sh)) {
         let inner = awp_lift(Array::get(args, 0), ctr, binds, sh)
         match awp_ready_payload(inner, sh) {
           Some(payload) => payload,
