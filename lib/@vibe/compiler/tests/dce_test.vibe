@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, ImportItem, Pat, Stmt, TypeExpr, dce_stmts, dce_stmts_before_trait_desugar, wat_callee_names
+  Expr, ImportItem, Pat, Stmt, TypeExpr, dce_keep_flags, dce_stmts, dce_stmts_before_trait_desugar, wat_callee_names
 }
 
 import @vibe/core {
@@ -310,4 +310,20 @@ test "3111: an impl of a trait declared elsewhere keeps its owner's bindings" {
     SLet(false, false, "main", no_ty(), EInt(0))
   ]
   inspect(kept_names(dce_stmts_before_trait_desugar(stmts, ["main"])), "Qt::go main ")
+}
+
+test "#3193: break and continue payloads keep their callees" {
+  let helper = SLet(false, false, "helper", no_ty(), EInt(7))
+  let break_main = SLet(false, false, "main", no_ty(), ELoop([], EBreak(Some(ECall(EIdent("helper", -1), [], -1)))))
+  let continue_main = SLet(false, false, "main", no_ty(), ELoop([], EContinue([ECall(EIdent("helper", -1), [], -1)])))
+  inspect(Array::length(dce_stmts([helper, break_main], ["main"])), "2")
+  inspect(Array::length(dce_stmts([helper, continue_main], ["main"])), "2")
+}
+
+test "#3193: a live interpolation with unresolved text keeps definitions" {
+  let helper = SLet(false, false, "helper", no_ty(), EInt(7))
+  let main = SLet(false, false, "main", no_ty(), EStringInterp(["", "helper()", ""]))
+  inspect(Array::length(dce_stmts([helper, main], ["main"])), "2")
+  let flags = dce_keep_flags([helper, main], ["main"])
+  inspect(Array::get(flags, 0), "true")
 }
