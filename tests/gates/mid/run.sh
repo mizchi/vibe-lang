@@ -745,11 +745,12 @@ for dc_lane in shadow gc; do
 done
 rm -f "$ROOT_DIR/_build/_gate_builtin_shadow_direct_call.log"
 echo "[compiler-gate] program-declared builtin spellings ok: direct calls answer the program's own functions (shadow + gc)"
-# #3185: the spellings a LOWERING intercepts ahead of the function
+# #3185 / #3186: the spellings a LOWERING intercepts ahead of the function
 # table -- the frozen-array / MutList / MutBytes conversions, the higher-order
 # Array family, Map::set / delete, FixedArray::make / unsafe_set / blit, the
 # parser sugar's __slice / __len / __set_field / __region_run, the conversions
-# (Int::to_double, Char::to_int, ...). A program's own function of one of them used to be
+# (Int::to_double, Char::to_int, ...) and the capability builtins (Fs::exists,
+# Env::args_len, ...). A program's own function of one of them used to be
 # ignored for its direct calls (the checker typed the declaration, the builtin
 # ran), and `fn __set_field` took every field write. One fixture per family,
 # each answering values its builtin never does, with the compiler's own calls
@@ -764,10 +765,10 @@ for bf_lane in shadow gc; do
   if ! env "$bf_env" VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
       bash scripts/vibe_test.sh fixtures/builtin_shadow_region_collections_test.vibe fixtures/builtin_shadow_array_hof_test.vibe \
         fixtures/builtin_shadow_map_fixed_array_test.vibe fixtures/builtin_shadow_sugar_callee_test.vibe \
-        fixtures/builtin_shadow_conversion_test.vibe \
+        fixtures/builtin_shadow_conversion_test.vibe fixtures/builtin_shadow_capability_test.vibe \
         fixtures/builtin_shadow_entry_scope_test.vibe \
       >"$ROOT_DIR/_build/_gate_builtin_shadow_intercept.log" 2>&1; then
-    echo "[compiler-gate] FAIL: a program's own function of a builtin spelling a lowering intercepts was ignored for its direct call, or took the compiler's own call, on the $bf_lane lane (#3185):" >&2
+    echo "[compiler-gate] FAIL: a program's own function of a builtin spelling a lowering intercepts was ignored for its direct call, or took the compiler's own call, on the $bf_lane lane (#3185 / #3186):" >&2
     tail -20 "$ROOT_DIR/_build/_gate_builtin_shadow_intercept.log" >&2
     exit 1
   fi
@@ -784,6 +785,65 @@ if ! VIBE_RC=shadow VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_N
 fi
 rm -f "$ROOT_DIR/_build/_gate_builtin_shadow_intercept.log"
 echo "[compiler-gate] intercepted builtin spellings ok: the program's own functions answer its calls (shadow + gc)"
+# #3186: the authority half, read off the artifact. A program whose own PURE
+# `Fs::exists` / `Env::args_len` / `Stdin::read_char` answers for the builtin is
+# exempt from the capability row (#2107), so its linear module must not reach
+# the host: it must load, and it must import no capability. Before the fix the
+# linear lane took the call into the host-import shim, which here emitted a
+# module that did not validate.
+capdir="_build/_gate_builtin_shadow_capability"
+rm -rf "$capdir"; mkdir -p "$capdir"
+cat > "$capdir/own_fs.vibe" <<'CAPEOF'
+fn Fs::exists(path: String) -> Bool {
+  String::length(path) == 3
+}
+
+fn Env::args_len() -> Int {
+  77
+}
+
+fn Stdin::read_char() -> Int {
+  0 - 5
+}
+
+export fn probe() -> Int {
+  if Fs::exists("abc") {
+    Env::args_len() + Stdin::read_char()
+  } else {
+    0
+  }
+}
+CAPEOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$capdir/own_fs.vibe" "$capdir/own_fs.wasm" __no_entry__ >"$capdir/build.log" 2>&1 || true
+if [ ! -s "$capdir/own_fs.wasm" ]; then
+  echo "[compiler-gate] FAIL: a program with its own pure Fs::exists did not build on linear (#3186):" >&2
+  cat "$capdir/own_fs.wasm.diag" >&2 2>/dev/null || tail -20 "$capdir/build.log" >&2
+  exit 1
+fi
+# The linear lane may emit exnref, which this node may still gate behind a flag
+# (the host runner probes it the same way).
+cap_node_flags=()
+if node --experimental-wasm-exnref -e "" >/dev/null 2>&1; then
+  cap_node_flags=(--experimental-wasm-exnref)
+fi
+if ! cap_imports="$(node ${cap_node_flags[@]+"${cap_node_flags[@]}"} -e '
+const bytes = require("fs").readFileSync(process.argv[1]);
+const mod = new WebAssembly.Module(bytes);
+for (const i of WebAssembly.Module.imports(mod)) console.log(i.module + "." + i.name);
+' "$capdir/own_fs.wasm" 2>&1)"; then
+  echo "[compiler-gate] FAIL: the linear module of a program with its own pure Fs::exists does not load (#3186):" >&2
+  printf '%s\n' "$cap_imports" | tail -5 >&2
+  exit 1
+fi
+if printf '%s\n' "$cap_imports" | grep -Eq '^vibe\.(fs_|env_|stdin_)'; then
+  echo "[compiler-gate] FAIL: a program's own pure Fs::exists / Env::args_len / Stdin::read_char reached a host capability on linear (#3186):" >&2
+  printf '%s\n' "$cap_imports" >&2
+  exit 1
+fi
+rm -rf "$capdir"
+echo "[compiler-gate] own pure capability-named functions ok: the linear module loads and imports no capability (#3186)"
 # #3158: the 63-bit wrap contract (#1877) holds the SAME values on every
 # backend, so its test runs on wasm-gc too (the unit runner covers linear).
 # It could not compile there: the erased-generic `[T: Add]` / `[T: Ord]`

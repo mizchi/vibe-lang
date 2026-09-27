@@ -4049,27 +4049,32 @@ export fn apply_top_level_fn_alias_renames(stmts: Array[Stmt], renames: Array[(S
 /// classifiers), the calls its desugarings synthesize (for-in,
 /// interpolation, structural `==`, effect lowering, iterator
 /// devirtualization), the parser's sugar (`__index`, `__rec_field`,
-/// `__slice`, `__len`, `__set_field`, `__region_run`). The list is the union
-/// of the builtin registry, the ladder's name set, the gc lane's arms and the
-/// checker's by-name builtins, so a program's own definition of any of them is
-/// moved aside and every call the program wrote reaches it on every lane --
-/// the call the checker types from that definition.
+/// `__slice`, `__len`, `__set_field`, `__region_run`), and the capability
+/// builtins (#3186). The list is the union of the builtin registry, the
+/// ladder's name set, the gc lane's arms and the checker's by-name builtins,
+/// so a program's own definition of any of them is moved aside and every call
+/// the program wrote reaches it on every lane -- the call the checker types
+/// from that definition.
 ///
 /// Before #3185 the list held only the container builtins the compiler itself
 /// calls. A program's own `Array::map`, `Int::to_double`, `Char::to_int`,
-/// `Map::set` or `__slice` kept its source spelling, so the ladder took the
-/// program's direct call and ran the builtin: the checker typed
-/// `Int::to_double(3)` from the program's `-> Int` declaration and the call
-/// answered `3` on linear and `1.48e-321` on wasm-gc. The parser's
-/// `obj.f = x` sugar was a bare `__set_field`, so a program's own
-/// `fn __set_field` took every field write.
+/// `Map::set`, `__slice` or `Fs::exists` kept its source spelling, so the
+/// ladder took the program's direct call and ran the builtin: the checker
+/// typed `Int::to_double(3)` from the program's `-> Int` declaration and the
+/// call answered `3` on linear and `1.48e-321` on wasm-gc, and a pure
+/// program `Fs::exists` -- exempt from the `Fs` row because the program's
+/// function answers for it (#2107) -- reached the host import shim on
+/// linear. The parser's `obj.f = x` sugar was a bare `__set_field`, so a
+/// program's own `fn __set_field` took every field write.
 ///
 /// Excluded on purpose: `Map::iter_get` / `Map::__iter_get_unchecked`, whose
 /// source definition the compiler deliberately honours (#2379);
 /// `String::equals`, which the prelude defines as source (#2483); and
 /// `__compact_fingerprint_hash`, whose `lib/@vibe/cache` definition the
 /// linked lane bridges by its namespaced name. A `lib/` package that
-/// publishes one of these names publishes it bodyless (`@vibe/builtin`).
+/// publishes one of these names publishes it bodyless (`@vibe/builtin`) or as
+/// a value alias of its own wrapper (`@vibe/fs`, `@vibe/http`), which the
+/// rename moves aside like any definition.
 ///
 /// Kept sorted (`LC_ALL=C`), which `is_builtin_shadow_rename_name` relies on
 /// for its binary search. scripts/review_lint.vibex reads this literal to
@@ -4116,6 +4121,12 @@ let builtin_shadow_rename_names: Array[String] = [
   "Bytes::with_capacity",
   "Char::from_int",
   "Char::to_int",
+  "Console::read_char",
+  "Console::read_stream",
+  "Console::write_char",
+  "Console::write_err_char",
+  "Console::write_err_stream",
+  "Console::write_stream",
   "Double::abs",
   "Double::ceil",
   "Double::floor",
@@ -4129,6 +4140,9 @@ let builtin_shadow_rename_names: Array[String] = [
   "Double::to_i64_bits_lo",
   "Double::to_int",
   "Double::to_string",
+  "Env::args_get",
+  "Env::args_len",
+  "Env::get",
   "FixedArray::blit",
   "FixedArray::get",
   "FixedArray::length",
@@ -4142,6 +4156,26 @@ let builtin_shadow_rename_names: Array[String] = [
   "FrozenArray::get",
   "FrozenArray::length",
   "FrozenArray::to_array",
+  "Fs::append",
+  "Fs::chdir",
+  "Fs::copy",
+  "Fs::exists",
+  "Fs::getcwd",
+  "Fs::is_dir",
+  "Fs::is_file",
+  "Fs::mkdir",
+  "Fs::mkdir_p",
+  "Fs::publish_immutable_text",
+  "Fs::read_bytes",
+  "Fs::read_file",
+  "Fs::readdir",
+  "Fs::remove",
+  "Fs::remove_file",
+  "Fs::remove_tree",
+  "Fs::rename",
+  "Fs::stat_token",
+  "Fs::write_bytes",
+  "Fs::write_file",
   "Future::pending",
   "Future::ready",
   "Future::resolve",
@@ -4149,6 +4183,11 @@ let builtin_shadow_rename_names: Array[String] = [
   "HostResponse::status",
   "HostStream::close",
   "HostStream::next",
+  "Http::close",
+  "Http::request",
+  "Http::response_body",
+  "Http::response_header",
+  "Http::response_status",
   "Int64Array::get",
   "Int64Array::length",
   "Int64Array::make",
@@ -4190,6 +4229,20 @@ let builtin_shadow_rename_names: Array[String] = [
   "Path::ref",
   "Path::resolve",
   "Path::to_string",
+  "Profiler::HeapBytes",
+  "Profiler::NowUs",
+  "Profiler::heap_bytes",
+  "Profiler::now_us",
+  "Stderr::write_char",
+  "Stderr::write_stream",
+  "Stdin::read_char",
+  "Stdin::read_stream",
+  "Stdin::read_via_stream",
+  "StdinStream::close",
+  "StdinStream::next",
+  "StdinStream::read_chunk",
+  "Stdout::write_char",
+  "Stdout::write_stream",
   "String::char_code_at",
   "String::concat",
   "String::contains",
@@ -4225,7 +4278,25 @@ let builtin_shadow_rename_names: Array[String] = [
   "__slice",
   "__to_string",
   "await",
-  "map_has"
+  "map_has",
+  "sh_lines",
+  "vibe_fs_stat_token_raw",
+  "vibe_http_close_raw",
+  "vibe_http_request_raw",
+  "vibe_http_response_body_raw",
+  "vibe_http_response_header_raw",
+  "vibe_http_response_status_raw",
+  "vibe_process_exit_raw",
+  "vibe_sh_capture_close_raw",
+  "vibe_sh_capture_exit_code_raw",
+  "vibe_sh_capture_raw",
+  "vibe_sh_capture_stderr_raw",
+  "vibe_sh_capture_stdout_raw",
+  "vibe_stdin_provider_read_raw",
+  "vibe_tcp_close_raw",
+  "vibe_tcp_connect_raw",
+  "vibe_tcp_read_raw",
+  "vibe_tcp_write_raw"
 ]
 
 /// Binary search over the sorted list: the rename asks this of every

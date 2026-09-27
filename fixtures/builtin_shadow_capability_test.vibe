@@ -1,0 +1,61 @@
+// #3186: a program's own pure function spelled like a capability builtin
+// answers the calls the program wrote, on every lane. The checker exempts
+// such a call from the capability's row because the program's function answers
+// for it (#2107), but the linear lane lowered `Fs::exists` / `Fs::is_dir` /
+// `Env::args_len` / `Stdin::read_char` / `Profiler::now_us` to the host import
+// shim ahead of the function table -- a call reaching a capability its row
+// never declared, and here a module that failed to load. Each function below
+// answers a value the host never gives, and none of them performs anything.
+// tests/gates/mid/run.sh also builds one on linear and checks it imports no
+// capability.
+
+fn Fs::exists(path: String) -> Bool {
+  String::length(path) == 3
+}
+
+fn Fs::is_dir(path: String) -> String {
+  "own is_dir \{path}"
+}
+
+fn Fs::read_file(path: String) -> String {
+  "own read_file \{path}"
+}
+
+fn Env::args_len() -> Int {
+  77
+}
+
+fn Env::get(key: String) -> String {
+  "own env \{key}"
+}
+
+fn Stdin::read_char() -> Int {
+  0 - 5
+}
+
+fn Profiler::now_us() -> String {
+  "own now_us"
+}
+
+fn Console::write_stream(s: String) -> Int {
+  String::length(s) * 2
+}
+
+/// A row-less caller: the program's functions are pure, so no capability is
+/// charged here, and none is reached.
+fn probe() -> String {
+  let e3 = Fs::exists("abc")
+  let e4 = Fs::exists("abcd")
+  let dir = Fs::is_dir("d")
+  let file = Fs::read_file("f")
+  let argc = Env::args_len()
+  let env_value = Env::get("K")
+  let ch = Stdin::read_char()
+  let now = Profiler::now_us()
+  let wrote = Console::write_stream("xyz")
+  "\{e3} \{e4} \{dir} \{file} \{argc} \{env_value} \{ch} \{now} \{wrote}"
+}
+
+test "the program's own capability-named functions answer, performing nothing" {
+  inspect(probe(), content = "true false own is_dir d own read_file f 77 own env K -5 own now_us 6")
+}
