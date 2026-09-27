@@ -2874,14 +2874,33 @@ fn all_calls_heap_at(idx: Int, calls: Array[Array[Bool]]) -> Bool {
   all_heap
 }
 
+/// #3169: the evidence-passing lowering (lowering/effects/evidence,
+/// `edp_dict_struct_name`) prepends a parameter typed `__EvDict_<E>` to every
+/// function that performs a migrated user effect, and each call inside the
+/// handle passes a FRESH record literal there -- one owned reference the
+/// callee must release. The name starts with `_`, so the capital-letter test
+/// below called it scalar: the callee planned no drop and every handled call
+/// leaked its dictionary (24 B for a one-operation effect).
+fn type_name_is_evidence_dict(n: String) -> Bool {
+  String::length(n) > 9 && String::substring(n, 0, 9) == "__EvDict_"
+}
+
 fn type_name_is_heap(n: String) -> Bool {
   if String::length(n) == 0 {
     false
+  } else if type_name_is_evidence_dict(n) {
+    true
   } else {
     let c0 = String::char_code_at(n, 0)
     if c0 < 'A' || c0 > 'Z' {
       false
-    } else if n == "Int" || n == "Bool" || n == "Double" || n == "Float" || n == "String" || n == "Bytes" || n == "Char" || n == "Unit" || n == "StdinStream" {
+    } else if n == "Int" || n == "Bool" || n == "String" || n == "Bytes" || n == "Char" || n == "Unit" || n == "StdinStream" {
+      // #3135: `Double` and `Float` are NOT in this list. The RC lane boxes
+      // every one of them on the heap (`emit_box_float`), and the plan has
+      // counted a `Double` binding as heap since #3130 -- so a caller hands
+      // its box to a `Double` parameter as an owned reference. Listing them
+      // here made the callee's parameter scalar: it planned no drop, and the
+      // box every call passed leaked (32 B a call for `take_d(x)`).
       false
     } else {
       true
@@ -3598,11 +3617,14 @@ fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
       pc_emit(ctx, scope, b)
       pe_scope_end(ctx, id, nm)
     },
+    // #3135: an operator reads its operands and never releases them (see
+    // pc_operand_count), so a bare name there is a borrow, as at a borrowed
+    // call position.
     EBinOp(_op, l, r, _) => {
-      pc_emit(ctx, scope, l)
-      pc_emit(ctx, scope, r)
+      pc_operand_emit(ctx, scope, l)
+      pc_operand_emit(ctx, scope, r)
     },
-    EUnaryOp(_op, e) => pc_emit(ctx, scope, e),
+    EUnaryOp(_op, e) => pc_operand_emit(ctx, scope, e),
     ETuple(items) => {
       let mut i = 0
       while i < Array::length(items) {
@@ -4035,6 +4057,32 @@ fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
   }
 }
 
+/// #3135: an operand of a binary or unary operator. Codegen reads an
+/// operand and never releases it: a `Double` is unboxed into an f64 op (see
+/// `emit_float_operand_bits`), and `==` / `!=` on anything else compares in
+/// place (`emit_eq_value`). Counting a bare name there as an owning use handed
+/// the binding's reference to a consumer that drops nothing -- at the last use
+/// the binding lost its scope-end drop, at an earlier one it took a dup nobody
+/// released -- so every `Double` compared or computed with leaked its box. A
+/// bare name is therefore a borrow here, like a borrowed call argument
+/// (`pc_count_borrow` keeps the binding alive through it, and its scope-end
+/// drop releases it). Any other operand is walked as before.
+fn pc_operand_count(ctx: PCtx, scope: PScope, e: Expr) -> Int {
+  match e {
+    EIdent(x, _) => pc_count_borrow(ctx, scope, x),
+    _ => pc_count(ctx, scope, e)
+  }
+}
+
+/// The emission twin of `pc_operand_count`: a bare-name operand is a borrow,
+/// so it plans no dup and spends no reference.
+fn pc_operand_emit(ctx: PCtx, scope: PScope, e: Expr) -> Int {
+  match e {
+    EIdent(_, _) => 0,
+    _ => pc_emit(ctx, scope, e)
+  }
+}
+
 fn pc_count(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
   match expr {
     EInt(_) => 0,
@@ -4170,10 +4218,10 @@ fn pc_count(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
       pc_count(ctx, scope, b)
     },
     EBinOp(_op, l, r, _) => {
-      pc_count(ctx, scope, l)
-      pc_count(ctx, scope, r)
+      pc_operand_count(ctx, scope, l)
+      pc_operand_count(ctx, scope, r)
     },
-    EUnaryOp(_op, e) => pc_count(ctx, scope, e),
+    EUnaryOp(_op, e) => pc_operand_count(ctx, scope, e),
     ETuple(items) => {
       let mut i = 0
       while i < Array::length(items) {

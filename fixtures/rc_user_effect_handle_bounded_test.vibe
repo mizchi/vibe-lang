@@ -1,0 +1,146 @@
+// #3169: a user-effect `handle` keeps the RC heap frontier bounded.
+//
+// A handle whose body reaches its `perform` through a call is lowered by
+// evidence passing (lowering/effects/evidence): the handler arms become the
+// closures of a dictionary record, the handle passes a FRESH record to each
+// call, and the callee takes it as a parameter typed `__EvDict_<E>`. The
+// Perceus plan decided that parameter's heap-ness by the type name's first
+// letter, `_`, so it called the dictionary scalar: the callee never dropped
+// it, and every handled call leaked it (24 B for a one-operation effect, more
+// for a wider one or an arm that captures).
+//
+// Measured on a stage2 built from main at c04f4d619, VIBE_RC=1, this fixture
+// grew __heap_ptr by 704,112 B over its 2000 rounds (352 B a round). The gate
+// compiles it under VIBE_RC=1 and bounds the growth (tests/gates/mid/run.sh,
+// 40f0j); the same gate checks the answer on the bump, rc, shadow and gc
+// lanes, and the shadow lane traps on the drop of a freed block. What each
+// handled call still reads afterwards is pinned by
+// fixtures/rc_user_effect_handle_test.vibe.
+//
+// `main` sums, per round i: 2 from `plain`, i from `bound`, 3 * i from
+// `two_ops`, i + 1 from `captures`, 1 from `nested`, 1 from `with_heap`:
+// 2000 * 5 + 5 * 1999 * 2000 / 2 = 10005000.
+
+effect Tick {
+  Tick(Int) -> Unit
+}
+
+effect Ask {
+  Get() -> Int;
+  Put(Int) -> Unit
+}
+
+enum D {
+  A(Array[Int])
+}
+
+fn second(d: D) -> Int {
+  match d {
+    A(xs) => Array::get(xs, 1)
+  }
+}
+
+fn tick(n: Int) -> Unit with Tick {
+  perform Tick::Tick(n)
+}
+
+// A needing function that forwards its dictionary to another.
+fn tick_twice(n: Int) -> Unit with Tick {
+  tick(n)
+  tick(n + 1)
+}
+
+fn ask_sum() -> Int with Ask {
+  let a = perform Ask::Get()
+  perform Ask::Put(a)
+  a + perform Ask::Get() + perform Ask::Get()
+}
+
+// A discarded handle whose body only calls.
+fn plain(n: Int) -> Int {
+  let mut count = 0
+  handle {
+    tick(n)
+    tick(n)
+  } with {
+    Tick::Tick(_) => {
+      count = count + 1
+      resume(())
+    }
+  }
+  count
+}
+
+// A handle whose value is bound.
+fn bound(n: Int) -> Int {
+  let r = handle {
+    tick(n)
+    n
+  } with {
+    Tick::Tick(_) => resume(())
+  }
+  r
+}
+
+// A two-operation effect.
+fn two_ops(n: Int) -> Int {
+  handle {
+    ask_sum()
+  } with {
+    Ask::Get() => resume(n);
+    Ask::Put(_) => resume(())
+  }
+}
+
+// An arm that captures a `let mut` cell: its closure is a heap block the
+// dictionary owns, and the cell is released with it. (An arm capturing an
+// array local is left out: a closure capturing one leaks without any handle
+// around it, a separate leak.)
+fn captures(n: Int) -> Int {
+  let mut seen = 0
+  handle {
+    tick(n)
+  } with {
+    Tick::Tick(k) => {
+      seen = k + 1
+      resume(())
+    }
+  }
+  seen
+}
+
+// A dictionary forwarded through a second needing function.
+fn nested(n: Int) -> Int {
+  let mut last = 0
+  handle {
+    tick_twice(n)
+  } with {
+    Tick::Tick(k) => {
+      last = k - n
+      resume(())
+    }
+  }
+  last
+}
+
+// A discarded handle ending in a heap binding (#3162 shape).
+fn with_heap(n: Int) -> Int {
+  let d = A([n, 1])
+  handle {
+    tick(n)
+    d
+  } with {
+    Tick::Tick(_) => resume(())
+  }
+  second(d)
+}
+
+export fn main() -> Int {
+  let mut i = 0
+  let mut acc = 0
+  while i < 2000 {
+    acc = acc + plain(i) + bound(i) + two_ops(i) + captures(i) + nested(i) + with_heap(i)
+    i = i + 1
+  }
+  acc
+}

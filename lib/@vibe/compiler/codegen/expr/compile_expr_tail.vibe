@@ -3488,7 +3488,21 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         // `dup 2, drop 1` once a consuming use is added). It is kept because the
         // property is structural -- a slot cannot release what it just stored --
         // and not because a measurement pins it.
-        let release_old = is_self && replacement_unowned && ctx.rc_drop_func_idx >= 0 && md_consume_count_b(value, name, ctx.borrow_param_user, ctx.borrow_param_mask) == 0 && !assign_value_mentions(mib_spine_leaf(value, array_empty()), name)
+        //
+        // #3135: an OPERATOR result needs the same release though it is owned.
+        // `acc = acc + x` on a `Double` reads the slot as a borrow (the plan's
+        // `pc_operand_count`) and stores a fresh box, so nothing consumed the
+        // box the slot held and every such reassignment leaked 16 B. An
+        // operator's result is never derived from its operands' blocks (an
+        // Int, a Bool or a fresh box), so the second guard does not apply to
+        // it; the consume count still does.
+        let leaf = mib_spine_leaf(value, array_empty())
+        let fresh_operator_leaf = match leaf {
+          EBinOp(_, _, _, _) => true,
+          EUnaryOp(_, _) => true,
+          _ => false
+        }
+        let release_old = is_self && (replacement_unowned || fresh_operator_leaf) && is_heap_mut && ctx.rc_drop_func_idx >= 0 && md_consume_count_b(value, name, ctx.borrow_param_user, ctx.borrow_param_mask) == 0 && (fresh_operator_leaf || !assign_value_mentions(leaf, name))
         let nl_after = if release_old {
           emit_local_get(buf, idx)
           emit_local_set(buf, nl)

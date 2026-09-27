@@ -1,0 +1,361 @@
+// #3135: a `Double` an operator reads is BORROWED, and a `Double` parameter
+// is OWNED (dropped by the callee), on the RC lane. Releasing too much is a
+// use-after-free, so this file pins the other half of
+// fixtures/rc_double_release_bounded_test.vibe (tests/gates/mid/run.sh,
+// 40f0i): every box an operator, an inline `Double` builtin or a callee reads
+// is still alive where it is read afterwards -- a binding compared and then
+// used, a parameter compared and then returned, a binding handed to the same
+// callee twice and to both parameters of one call, a top-level `Double`, an
+// array element, a struct field, a match binder, a captured `Double`, a
+// loop-carried `Double`, a generic identity, a `Double` inside an `Option`,
+// the elements an `Array::map` / `Array::filter` callback with a `Double`
+// parameter receives, a `Double` rendered by interpolation and read back by
+// `Double::parse`, a `Double` compared in a `while` condition (which compared
+// box addresses before #3135), and a negation. Each
+// reads its value AFTER `churn()` allocates boxes that would
+// reuse a freed block, so a premature release answers with the churn value
+// instead (and VIBE_RC=shadow traps on the drop of a freed block).
+
+struct P {
+  x: Double;
+  y: Double
+}
+
+enum Shape {
+  Circle(Double)
+}
+
+let top: Double = 2.5
+
+fn churn() -> Double {
+  let a = Int::to_double(777)
+  let b = Int::to_double(778) * 1.0
+  a + b
+}
+
+fn take_d(x: Double) -> Int {
+  Double::to_int(x * 10.0)
+}
+
+fn take_two(a: Double, b: Double) -> Int {
+  Double::to_int(a * 10.0) + Double::to_int(b)
+}
+
+fn id_d(x: Double) -> Double {
+  x
+}
+
+fn cmp_ret(x: Double) -> Double {
+  if x > 1.0 {
+    x
+  } else {
+    0.0 - x
+  }
+}
+
+fn pick(a: Double, b: Double) -> Double {
+  if a < b {
+    a
+  } else {
+    b
+  }
+}
+
+fn ident[T](v: T) -> T {
+  v
+}
+
+fn tenths(x: Double) -> Int {
+  Double::to_int(x * 10.0)
+}
+
+fn apply(f: (Double) -> Double, x: Double) -> Double {
+  f(x)
+}
+
+struct Q {
+  v: Double
+}
+
+fn mk(x: Double) -> Q {
+  Q::{ v: x }
+}
+
+fn opt(x: Double) -> Option[Double] {
+  if x > 0.0 {
+    Some(x)
+  } else {
+    None
+  }
+}
+
+fn sum_all(xs: Array[Double]) -> Double {
+  let mut s = 0.0
+  for x in xs {
+    s = s + x
+  }
+  s
+}
+
+test "a binding compared, then read again" {
+  let x = Int::to_double(3) + 0.5
+  let a = if x > 1.0 {
+    1
+  } else {
+    0
+  }
+  let _ = churn()
+  inspect(a, content = "1")
+  inspect(tenths(x), content = "35")
+}
+
+test "a binding handed to a Double parameter twice" {
+  let x = Int::to_double(4) + 0.25
+  let a = take_d(x)
+  let _ = churn()
+  let b = take_d(x)
+  let _ = churn()
+  inspect(a + b, content = "84")
+  inspect(tenths(x), content = "42")
+}
+
+test "one binding in both parameters of a call" {
+  let x = Int::to_double(2) + 0.5
+  let n = take_two(x, x)
+  let _ = churn()
+  inspect(n, content = "27")
+  inspect(tenths(x), content = "25")
+}
+
+test "a parameter compared, then returned" {
+  let x = Int::to_double(5) + 0.5
+  let r = cmp_ret(x)
+  let _ = churn()
+  inspect(tenths(r), content = "55")
+  inspect(tenths(x), content = "55")
+}
+
+test "a parameter returned from one branch, the other dropped" {
+  let a = Int::to_double(1) + 0.5
+  let b = Int::to_double(7) + 0.5
+  let m = pick(a, b)
+  let _ = churn()
+  inspect(tenths(m), content = "15")
+  inspect(tenths(a) + tenths(b), content = "90")
+}
+
+test "an identity hands the box back" {
+  let x = Int::to_double(6) + 0.5
+  let y = id_d(x)
+  let _ = churn()
+  inspect(tenths(y), content = "65")
+  let z = ident(x)
+  let _ = churn()
+  inspect(tenths(z), content = "65")
+}
+
+test "a top-level Double handed to a parameter" {
+  let mut k = 0
+  let mut acc = 0
+  while k < 3 {
+    acc = acc + take_d(top)
+    let _ = churn()
+    k = k + 1
+  }
+  inspect(acc, content = "75")
+  inspect(top > 2.0, content = "true")
+}
+
+test "an array element compared and handed on" {
+  let xs = [Int::to_double(1) + 0.5, Int::to_double(2) + 0.5]
+  let a = if Array::get(xs, 0) < Array::get(xs, 1) {
+    1
+  } else {
+    0
+  }
+  let b = take_d(Array::get(xs, 1))
+  let _ = churn()
+  inspect(a, content = "1")
+  inspect(b, content = "25")
+  inspect(tenths(Array::get(xs, 0)) + tenths(Array::get(xs, 1)), content = "40")
+}
+
+test "a struct field compared and handed on" {
+  let p = P::{ x: Int::to_double(3) + 0.5, y: 1.0 }
+  let a = if p.x > 1.0 {
+    1
+  } else {
+    0
+  }
+  let b = take_d(p.x)
+  let _ = churn()
+  inspect(a + b, content = "36")
+  inspect(tenths(p.x) + tenths(p.y), content = "45")
+}
+
+test "a match binder compared and handed on" {
+  let s = Circle(Int::to_double(2) + 0.5)
+  let r = match s {
+    Circle(radius) => if radius > 1.0 {
+      take_d(radius)
+    } else {
+      0
+    }
+  }
+  let _ = churn()
+  inspect(r, content = "25")
+  let again = match s {
+    Circle(radius) => tenths(radius)
+  }
+  inspect(again, content = "25")
+}
+
+test "a captured Double compared in a closure" {
+  let limit = Int::to_double(2) + 0.5
+  let f = (v: Double) -> Bool { v > limit }
+  let a = f(3.0)
+  let b = f(2.0)
+  let _ = churn()
+  inspect(a, content = "true")
+  inspect(b, content = "false")
+  inspect(tenths(limit), content = "25")
+}
+
+test "a loop-carried Double read by operators and a callee" {
+  let x = Int::to_double(1) + 0.5
+  let mut k = 0
+  let mut acc = 0
+  while k < 4 {
+    if x * 2.0 > 2.0 {
+      acc = acc + take_d(x)
+    }
+    let _ = churn()
+    k = k + 1
+  }
+  inspect(acc, content = "60")
+  inspect(tenths(x), content = "15")
+}
+
+test "the inline builtins borrow their arguments" {
+  let x = Int::to_double(0 - 3) - 0.5
+  let y = Int::to_double(2) + 0.5
+  let a = Double::to_int(Double::abs(x))
+  let m = Double::max(x, y)
+  let n = Double::min(x, x)
+  let f = Double::floor(y)
+  let _ = churn()
+  inspect(a, content = "3")
+  inspect(tenths(m) + tenths(n) + tenths(f), content = "10")
+  inspect(tenths(x) + tenths(y), content = "-10")
+  inspect(Double::to_i64_bits_hi(y) == Double::to_i64_bits_hi(2.5), content = "true")
+}
+
+test "a Double inside an Option" {
+  let o = Some(Int::to_double(4) + 0.5)
+  let r = match o {
+    Some(v) => take_d(v),
+    None => 0
+  }
+  let _ = churn()
+  inspect(r, content = "45")
+  let s = match o {
+    Some(v) => if v > 4.0 {
+      tenths(v)
+    } else {
+      0
+    },
+    None => 0
+  }
+  inspect(s, content = "45")
+}
+
+test "an accumulator reassigned from itself" {
+  let mut acc = 0.5
+  let mut k = 0
+  while k < 4 {
+    acc = acc + Int::to_double(k)
+    let _ = churn()
+    k = k + 1
+  }
+  inspect(tenths(acc), content = "65")
+}
+
+test "map with an annotated Double callback" {
+  let xs = [Int::to_double(1) + 0.5, Int::to_double(2) + 0.5]
+  let ys = Array::map(xs, (x: Double) -> Double { x * 2.0 })
+  let _ = churn()
+  inspect(tenths(Array::get(ys, 0)) + tenths(Array::get(ys, 1)), content = "80")
+  inspect(tenths(Array::get(xs, 0)) + tenths(Array::get(xs, 1)), content = "40")
+}
+
+test "filter and fold over Doubles" {
+  let xs = [Int::to_double(1) + 0.5, Int::to_double(3) + 0.5]
+  let big = Array::filter(xs, (x: Double) -> Bool { x > 2.0 })
+  let _ = churn()
+  inspect(Array::length(big), content = "1")
+  inspect(tenths(Array::get(big, 0)), content = "35")
+  inspect(tenths(sum_all(xs)), content = "50")
+  inspect(tenths(Array::get(xs, 0)), content = "15")
+}
+
+test "a Double passed through a higher-order function" {
+  let x = Int::to_double(2) + 0.25
+  let r = apply((v: Double) -> Double { v + 1.0 }, x)
+  let r2 = apply((v: Double) -> Double { v }, x)
+  let _ = churn()
+  inspect(tenths(r) + tenths(r2) + tenths(x), content = "76")
+}
+
+test "a Double parameter stored in a struct and an option" {
+  let x = Int::to_double(4) + 0.5
+  let q = mk(x)
+  let o = opt(x)
+  let _ = churn()
+  inspect(tenths(q.v), content = "45")
+  let n = match o {
+    Some(v) => tenths(v),
+    None => 0
+  }
+  inspect(n, content = "45")
+  inspect(tenths(x), content = "45")
+}
+
+test "interpolation and to_string of a Double" {
+  let x = Int::to_double(3) + 0.5
+  let s = "\{x}"
+  let t = Double::to_string(x)
+  let _ = churn()
+  inspect(s, content = "3.5")
+  inspect(t, content = "3.5")
+  inspect(x > 3.0, content = "true")
+}
+
+test "Double parse round-trip" {
+  let o = Double::parse("2.5")
+  let v = match o {
+    Some(d) => d,
+    None => 0.0
+  }
+  let _ = churn()
+  inspect(tenths(v) + tenths(v), content = "50")
+}
+
+test "a Double compared in a while condition" {
+  let mut x = 0.5
+  let mut n = 0
+  while x < 3.0 {
+    x = x + 1.0
+    n = n + 1
+    let _ = churn()
+  }
+  inspect(n, content = "3")
+  inspect(tenths(x), content = "35")
+}
+
+test "a negated Double, then the operand again" {
+  let x = Int::to_double(2) + 0.5
+  let y = -x
+  let z = -(x * 2.0)
+  let _ = churn()
+  inspect(tenths(y) + tenths(z) + tenths(x), content = "-50")
+}

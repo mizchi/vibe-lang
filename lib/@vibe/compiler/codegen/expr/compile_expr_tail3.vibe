@@ -203,7 +203,7 @@ import @vibe/compiler/codegen/wasm_emit {
 }
 
 import ./compile_call.vibe {
-  compile_call, rc_exit_release
+  cc_operands_floatish, compile_call, rc_exit_release
 }
 
 import ./compile_expr_tail4.vibe {
@@ -255,7 +255,14 @@ export fn compile_expr_tail3(buf: Bytes, expr: Expr, local_names: Array[String],
     let w_cond_tag = expr_tag(cond)
     let nl1 = if w_cond_tag == 5 {
       let wcop = get_ebinop_op(cond)
-      if wcop == "<" || wcop == ">" || wcop == "<=" || wcop == ">=" {
+      // #3135: the fast path compares i64s, which is an Int comparison only.
+      // A `Double` operand is a box pointer on the RC lane, so
+      // `while x < 3.0` compared two ADDRESSES: measured on main at
+      // c04f4d619, a loop counting x from 0.5 past 3.0 trapped in the
+      // allocator, and with the operand boxes released it answered after one
+      // iteration instead of three. A `Double` comparison takes the general
+      // path, which compares f64 values (compile_expr's float binop arm).
+      if (wcop == "<" || wcop == ">" || wcop == "<=" || wcop == ">=") && !cc_operands_floatish(get_ebinop_lhs(cond), get_ebinop_rhs(cond), local_names, ctx) {
         let wlhs = get_ebinop_lhs(cond)
         let wrhs = get_ebinop_rhs(cond)
         let wnl1 = compile_expr(buf, wlhs, local_names, next_local, ctx, w_ld_in)
