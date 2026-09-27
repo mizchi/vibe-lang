@@ -1352,7 +1352,14 @@ fn afe_heads_agree(left: Option[String], right: Option[String]) -> Option[String
 }
 
 fn afe_bind_shapes(locals: AfeLocals, name: String, val: Expr, env: TypeEnv) -> AfeLocals {
-  let without = afe_bind_local(afe_bind_local(locals, afe_tuple_shape_key(name), None), afe_array_elem_key(name), None)
+  afe_bind_shapes_from(locals, locals, name, val, env)
+}
+
+/// `afe_bind_shapes` with the scope `val` is read in (`outer`) kept apart from
+/// the one the shapes are added to (`acc`).
+fn afe_bind_shapes_from(acc: AfeLocals, outer: AfeLocals, name: String, val: Expr, env: TypeEnv) -> AfeLocals {
+  let locals = outer
+  let without = afe_bind_local(afe_bind_local(acc, afe_tuple_shape_key(name), None), afe_array_elem_key(name), None)
   match val {
     ETuple(items) => if Array::length(items) > 0 {
       let parts = array_empty()
@@ -1399,6 +1406,17 @@ fn afe_bind_value(locals: AfeLocals, name: String, val: Expr, env: TypeEnv) -> A
   let with_head = afe_bind_local(locals, name, afe_expr_head_name(val, env, locals))
   let with_fn = afe_bind_local_fn_return(with_head, name, val, env)
   afe_bind_shapes(with_fn, name, val, env)
+}
+
+/// #3198 review: `afe_bind_value` with the scope `val` is read in (`outer`)
+/// kept apart from the one `name` is added to (`acc`). A `loop` state's
+/// initial value is read in the enclosing scope while its name joins the
+/// body's, so `loop (it = it) { for x in it { .. } }` keeps the async
+/// iterator head the outer `it` carries.
+fn afe_bind_value_from(acc: AfeLocals, outer: AfeLocals, name: String, val: Expr, env: TypeEnv) -> AfeLocals {
+  let with_head = afe_bind_local(acc, name, afe_expr_head_name(val, env, outer))
+  let with_fn = afe_bind_local_fn_return(with_head, name, val, env)
+  afe_bind_shapes_from(with_fn, outer, name, val, env)
 }
 
 /// The scope a match arm's body is read in. #3177: every pattern binder masks
@@ -2341,14 +2359,15 @@ fn check_async_effects_expr_lo_into(expr: Expr, env: TypeEnv, in_async: Bool, lo
       }
     },
     // #3177: the state names of `loop (h = f) { .. }` are bound in its body;
-    // their initial values are read in the enclosing scope.
+    // their initial values are read in the enclosing scope, and each name
+    // carries the head its initial value reveals (#3198 review).
     ELoop(states, body) => {
       let mut body_locals = locals
       let mut li = 0
       while li < Array::length(states) {
         let (sname, sval) = Array::get(states, li)
         check_async_effects_expr_lo_into(sval, env, in_async, locals, out)
-        body_locals = afe_bind_local(body_locals, sname, None)
+        body_locals = afe_bind_value_from(body_locals, locals, sname, sval, env)
         li = li + 1
       }
       check_async_effects_expr_lo_into(body, env, in_async, body_locals, out)
