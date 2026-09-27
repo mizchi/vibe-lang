@@ -133,6 +133,23 @@ if throw_only_found != gc_throw_only_expected:
           f"implementation (found {sorted(throw_only_found)})", file=sys.stderr)
     sys.exit(1)
 gc_cs -= throw_only_found
+# #3188: guest futures and builtin await are also deliberate GC refusals.
+# Match the complete guard and throw so a future implementation, a removed
+# shadowing check, or a changed diagnosis cannot silently count as served.
+gc_future_throw_expected = {
+    "await", "Future::ready", "Future::pending", "Future::resolve"
+}
+future_throw_match = re.search(
+    r'if\s+\(((?:fname == "(?:await|Future::ready|Future::pending|Future::resolve)"(?:\s*\|\|\s*)?)+)\)\s*&&\s*!gc_name_is_user_defined\(ctx, local_names, fname\)\s*\{\s*throw\("compile with the linear or RC backend:',
+    gc_text)
+future_throw_found = (set(re.findall(r'fname == "([^"]+)"', future_throw_match.group(1)))
+                      if future_throw_match else set())
+if future_throw_found != gc_future_throw_expected:
+    print("[builtin-parity] FAIL: GC guest future rejection shape changed; "
+          "update the throw-only extraction without counting rejection as "
+          f"implementation (found {sorted(future_throw_found)})", file=sys.stderr)
+    sys.exit(1)
+gc_cs -= future_throw_found
 if not lin_cs or not gc_cs:
     print(f"[builtin-parity] FAIL: extracted no dispatch arms "
           f"(linear {len(lin_cs)}, gc {len(gc_cs)}) -- did the dispatch "
