@@ -3247,33 +3247,39 @@ fn lc_stmts_call_host_future(stmts: Array[Stmt]) -> Bool {
 
 /// #3150 / #3189 review: does a host-stream READ survive in `stmts`? Asked
 /// after the reachability prune, which keeps every definition the source
-/// wrote and drops each GENERATED one nothing kept still calls -- the injected
-/// read path among them, once `fold_const_bool_params` has removed the arm
-/// that held the only read.
+/// wrote and drops each GENERATED one that nothing kept still calls -- the
+/// injected read path among them, once `fold_const_bool_params` has removed
+/// the arm that held the only read.
 ///
-/// A read is the injected `__hs_next` / `__hs_next_option` OR a step clone of
-/// either (`__scps_cps_<E>___hs_next[_option]`, the suspend lowering's
-/// `scps_clone_name`). A read on a CPS spine -- a spawned closure literal, an
-/// entry lowered to steps -- calls the clone, and the prune then drops the
-/// original, so the originals alone under-count: that was #3150, where the
-/// hooks kept their stubs and every such read answered 0.
+/// The answer comes from a call edge, not from a name. Every read goes
+/// through the injected finisher `__hs_fin`: the injected `__hs_next` and
+/// `__hs_next_option` call it, and so does each step clone the suspend
+/// lowering makes of them, because a clone is a transformed copy of that
+/// body. Nothing else calls it. So the finisher survives the prune exactly
+/// when a read does.
 ///
-/// A false answer is sound by construction: with no read definition left, no
-/// code can perform a stream-band suspend. A name that only looks like a clone
-/// (a clone of a program's own `f___hs_next`) answers true, which costs an
-/// unused import, never an unarmed read.
+/// Recognizing the reads by their spelling could not be made sound, because
+/// both a source name and a generated one can carry that spelling:
+/// - Counting only `__hs_next` / `__hs_next_option` under-counts: a read on a
+///   CPS spine calls the clone, and the prune then drops the original. That
+///   was #3150, where the hooks kept their stubs and every such read answered
+///   0.
+/// - Adding the clones by the suffix `___hs_next` over-counts. A source
+///   `fn __scps_cps_Async_helper___hs_next` matches it, and so does the clone
+///   the lowering makes of a source Async helper named `helper___hs_next`.
+///   Either one kept the hooks armed after the real read was folded away, and
+///   the build was refused ("host_stream_cancel without a host stream").
+///
 /// `source_names` are the top-level names the program itself defined before
-/// the prelude ran (`pre_prelude_let_names`). A name among them is the
-/// program's own, never a generated read path, however it is spelled -- a
-/// source `fn __scps_cps_Async_helper___hs_next` must not keep the stream
-/// hooks armed for a read that was folded away (#3189 review).
+/// the prelude ran (`pre_prelude_let_names`). A program that defines its own
+/// `__hs_fin` contributes that one definition, which is not a read.
 fn lc_program_keeps_stream_read(stmts: Array[Stmt], source_names: Array[String]) -> Bool {
-  let mut found = false
+  let mut finishers = 0
   let mut i = 0
-  while i < Array::length(stmts) && !found {
+  while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SLet(_, _, nm, _, _) => if lc_is_stream_read_name(nm) && !lc_string_in(source_names, nm) {
-        found = true
+      SLet(_, _, nm, _, _) => if nm == "__hs_fin" {
+        finishers = finishers + 1
       } else {
         ()
       },
@@ -3281,7 +3287,12 @@ fn lc_program_keeps_stream_read(stmts: Array[Stmt], source_names: Array[String])
     }
     i = i + 1
   }
-  found
+  let own = if lc_string_in(source_names, "__hs_fin") {
+    1
+  } else {
+    0
+  }
+  finishers > own
 }
 
 fn lc_string_in(xs: Array[String], x: String) -> Bool {
@@ -3296,14 +3307,6 @@ fn lc_string_in(xs: Array[String], x: String) -> Bool {
     i = i + 1
   }
   found
-}
-
-fn lc_is_stream_read_name(name: String) -> Bool {
-  if name == "__hs_next" || name == "__hs_next_option" {
-    true
-  } else {
-    String::starts_with(name, "__scps_cps_") && (String::ends_with(name, "___hs_next") || String::ends_with(name, "___hs_next_option"))
-  }
 }
 
 /// #3189 review: the entry boundary's settle keeps its STREAM band only while
