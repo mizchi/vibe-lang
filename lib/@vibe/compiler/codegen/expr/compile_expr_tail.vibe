@@ -3193,6 +3193,25 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
       // classifiers above must see that same scope, even though the value
       // has already been stored so their retains can target local_idx.
       Array::set(local_names, local_idx, name)
+      // A mutable binding may hold a different value on every path through
+      // its body. Move its planned dups to the owning use sites only when
+      // every row has an identifiable source occurrence.
+      let mut_use_mark = Array::length(ctx.rc_mut_use_names)
+      let mut mut_use_sites = ctx.enable_rc && !array_contains_str(ctx.ref_cell_names, name)
+      let mut mdi = 0
+      while mdi < Array::length(ctx.rc_dup_names) {
+        if Array::get(ctx.rc_dup_names, mdi) == name && Array::get(ctx.rc_dup_offsets, mdi) < 0 {
+          mut_use_sites = false
+        } else {
+          ()
+        }
+        mdi = mdi + 1
+      }
+      if mut_use_sites {
+        Array::push(ctx.rc_mut_use_names, name)
+      } else {
+        ()
+      }
       // #715: the ELet path (tag 9) emits every dup the Perceus plan budgeted
       // for a binding (ctx.rc_dup_names) at its declaration site -- this
       // ELetMut path never did, while the matching scope-end drop below DID
@@ -3207,7 +3226,7 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
       // this branch's scope-end drop, second inside
       // check_perform_effects_expr_tx). The guarded dup no-ops on scalars, so
       // over-emission for a scalar-planned name is harmless.
-      if ctx.enable_rc {
+      if ctx.enable_rc && !mut_use_sites {
         let mut mdbi = 0
         while mdbi < Array::length(ctx.rc_dup_names) {
           if Array::get(ctx.rc_dup_names, mdbi) == name {
@@ -3229,6 +3248,7 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         ()
       }
       let nl2 = compile_expr(buf, body, local_names, nl, ctx, ld)
+      Array::truncate(ctx.rc_mut_use_names, mut_use_mark)
       if exit_owned {
         rc_exit_truncate(ctx, xmark)
       } else {
@@ -3569,7 +3589,7 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         // (mirroring the `!is_self` path) fixes it: at worst an extra dup on
         // an already-dead reference (a leak, per the trade-off above), never
         // a missing one.
-        if ctx.enable_rc && is_heap_mut {
+        if ctx.enable_rc && is_heap_mut && !array_contains_str(ctx.rc_mut_use_names, name) {
           let mut adbi = 0
           while adbi < Array::length(ctx.rc_dup_names) {
             if Array::get(ctx.rc_dup_names, adbi) == name {

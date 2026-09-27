@@ -669,6 +669,19 @@ export fn compile_forin_loop(buf: Bytes, expr: Expr, local_names: Array[String],
   Array::push(local_names, "__forin_val")
   if collect {
     emit_local_set(buf, body_val)
+    // A collected `for` owns every value pushed into its result. The element
+    // binding (and any projection or borrow-returning read of it) is a view
+    // into the iterable, whose own scope-end drop still runs after the loop.
+    // Match the ownership transfer at array-literal element stores above.
+    let body_is_proj = match body {
+      EDot(_, _, _, _) => true,
+      _ => false
+    }
+    if ctx.enable_rc && (body_is_proj || cet2_is_ref_cell_read(body, ctx) || cc_is_borrow_ret_call(body, ctx) || cc_is_loop_borrowed_ident(body, ctx)) {
+      emit_rc_dup_guarded(buf, body_val, ctx.rc_shadow, ctx.rc_dup_func_idx)
+    } else {
+      ()
+    }
     emit_local_get(buf, result_local)
     emit_local_get(buf, body_val)
     emit_call(buf, arr_push_fi)
@@ -696,4 +709,3 @@ export fn compile_forin_loop(buf: Bytes, expr: Expr, local_names: Array[String],
   }
   final_nl
 }
-
