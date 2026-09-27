@@ -40,7 +40,8 @@ let run: () -> Int with Async = () -> { 42 }
 VIBE
 cat >"$out_dir/live_wat.vibe" <<'VIBE'
 fn helper() -> Int = wasm"(i64.const 84)"
-fn via_wat() -> Int = wasm"(call $helper)"
+fn middle() -> Int = wasm"(call $helper)"
+fn via_wat() -> Int = wasm"(call $middle)"
 let run: () -> Int = () -> { via_wat() }
 VIBE
 cat >"$out_dir/live_future.vibe" <<'VIBE'
