@@ -6051,6 +6051,44 @@ fn unknown_effect_arm_in_expr(expr: Expr, es_names: Array[String], ed_names: Arr
   out
 }
 
+/// The builtin traits whose seeded impl rows `register_builtin_traits_for`
+/// leaves out for this program. `Show` keeps the shape test below. `Signed`
+/// and `Default` (#3187) are withheld whenever a trait of that name is in
+/// sight at all -- declared by the program, or arriving through the projected
+/// import env -- because that declaration governs its own impls. A seeded
+/// `impl Default for Double` beside a program's own method-bearing `Default`
+/// with no `Double` impl would satisfy `[T: Default]` at `Double` and then
+/// dispatch `Double::default`, which nobody wrote; and an import of
+/// `@vibe/core`'s `Default` brings that module's impls with it.
+fn builtin_seed_withheld(stmts: Array[Stmt], env: TypeEnv) -> Array[String] {
+  let out: Array[String] = []
+  if !builtin_show_seed_allowed(stmts, env) {
+    Array::push(out, "Show")
+  }
+  let guarded: Array[String] = ["Signed", "Default"]
+  for name in guarded {
+    if trait_defined(env, name) || stmts_declare_trait(stmts, name) {
+      Array::push(out, name)
+    }
+  }
+  out
+}
+
+fn stmts_declare_trait(stmts: Array[Stmt], name: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      STrait(_, tname, _, _, _, _) => if tname == name {
+        found = true
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 /// Whether the builtin scalar `Show` impls may be seeded: only when every
 /// `Show` in sight -- declared here or arriving through the projected import
 /// env -- is the builtin shape: no supertraits and exactly
@@ -8516,7 +8554,7 @@ fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: Option[
   let seeded_raw_env = if trait_defined(EnvEmpty, "Eq") {
     EnvEmpty
   } else {
-    register_builtin_traits_for(EnvEmpty, builtin_show_seed_allowed(stmts, EnvEmpty))
+    register_builtin_traits_for(EnvEmpty, builtin_seed_withheld(stmts, EnvEmpty))
   }
   let seeded_env = env_cache(seeded_raw_env)
   let tytab = array_empty()
@@ -10826,7 +10864,7 @@ export fn check_program_type_table(stmts: Array[Stmt]) -> (Array[(Int, Type)], S
   let seeded_raw_env = if trait_defined(EnvEmpty, "Eq") {
     EnvEmpty
   } else {
-    register_builtin_traits_for(EnvEmpty, builtin_show_seed_allowed(stmts, EnvEmpty))
+    register_builtin_traits_for(EnvEmpty, builtin_seed_withheld(stmts, EnvEmpty))
   }
   let seeded_env = env_cache(seeded_raw_env)
   let errors = ArrayBuilder::new()
@@ -10916,7 +10954,7 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
       let seeded_raw_env = if trait_defined(cached_env, "Eq") {
         cached_env
       } else {
-        register_builtin_traits_for(cached_env, builtin_show_seed_allowed(stmts, cached_env))
+        register_builtin_traits_for(cached_env, builtin_seed_withheld(stmts, cached_env))
       }
       let seeded_env = env_cache(seeded_raw_env)
       let tytab = array_empty()

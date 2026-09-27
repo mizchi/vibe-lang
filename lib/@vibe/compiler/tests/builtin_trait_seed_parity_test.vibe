@@ -1,0 +1,223 @@
+//# #3187: the checker's builtin trait table agrees with the prelude
+//
+// A program that never imports `@vibe/builtin` still sees the prelude's
+// `impl Signed for Int` and friends -- but not by reading
+// `lib/@vibe/builtin/builtin_traits.vibe`. The checker seeds its own copy of
+// those impls in `register_builtin_traits_for` (checker_trait.vibe), and the
+// copy drifted from the file three times, each time as a refused `[T: X]` at
+// a scalar the prelude declares: `Show` (#3004), `Add for String` (#3178),
+// `Signed` and `Default` (#3187). Nothing compared the two, so each drift was
+// found by a program that happened to hit it.
+//
+// This file compares them row by row. It reads the prelude from the tree, so
+// an impl added to either side alone fails here, naming the row and the side
+// that lacks it. The two red tests mutate the real file in memory and assert
+// that the comparison reports the mutation: a comparison that cannot fail
+// proves nothing. The last section pins what the seeded rows answer, and when
+// they are withheld.
+
+//# Imports
+
+import @vibe/builtin {
+  String::replace
+}
+
+import @vibe/compiler/checker {
+  check_program, register_builtin_traits_for
+}
+
+import @vibe/compiler/core {
+  Stmt, TypeEnv, TypeExpr, type_to_string
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+//# Functions
+
+fn prelude_path() -> String {
+  "lib/@vibe/builtin/builtin_traits.vibe"
+}
+
+/// Seeded rows the prelude does not declare, each for a reason that is not
+/// drift. `Send` is compiler-judged (ADR-0068): `impl Send` is an error, so the
+/// prelude cannot state it. The sized integer types have no declaration in the
+/// prelude to hang an impl on; their rows let them compare and order the way
+/// `Int` does.
+fn seeded_only(trait_name: String, target: String) -> Bool {
+  if trait_name == "Send" {
+    true
+  } else {
+    target == "i64" || target == "u8" || target == "u16" || target == "u32" || target == "u64" || target == "i16"
+  }
+}
+
+fn push_seeded_rows(env: TypeEnv, out: Array[(String, String)]) -> Unit {
+  match env {
+    EnvEmpty => (),
+    EnvBind(_, _, rest) => push_seeded_rows(rest, out),
+    EnvMutCell(_, _, rest) => push_seeded_rows(rest, out),
+    EnvTraitDef(_, _, _, _, rest, _, _) => push_seeded_rows(rest, out),
+    EnvTraitImpl(trait_name, target, rest) => {
+      Array::push(out, (trait_name, type_to_string(target)))
+      push_seeded_rows(rest, out)
+    },
+    EnvTraitImplGen(trait_name, _, _, target, rest) => {
+      Array::push(out, (trait_name, String::concat("generic ", type_to_string(target))))
+      push_seeded_rows(rest, out)
+    },
+    EnvTypeDefs(_, _, rest) => push_seeded_rows(rest, out),
+    EnvFlat(_) => (),
+    EnvCached(_, _, rest) => push_seeded_rows(rest, out)
+  }
+}
+
+/// Every impl row the checker seeds when nothing is withheld.
+fn seeded_rows() -> Array[(String, String)] {
+  let out: Array[(String, String)] = []
+  push_seeded_rows(register_builtin_traits_for(EnvEmpty, []), out)
+  out
+}
+
+/// Every `impl Trait for Type` the prelude source declares. A generic or
+/// structural target is recorded under a spelling no seeded row has, so it is
+/// reported rather than skipped.
+fn prelude_rows(source: String) -> Array[(String, String)] with Exception {
+  let out: Array[(String, String)] = []
+  let stmts = parse_program(lex(source))
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SImpl(tparams, _, trait_name, target) => {
+        let spelled = match target {
+          TyName(name) => if Array::length(tparams) == 0 {
+            name
+          } else {
+            String::concat("generic ", name)
+          },
+          _ => "a structural target"
+        }
+        Array::push(out, (trait_name, spelled))
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn has_row(rows: Array[(String, String)], trait_name: String, target: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(rows) {
+    let (t, ty) = Array::get(rows, i)
+    found = t == trait_name && ty == target
+    i = i + 1
+  }
+  found
+}
+
+/// Every disagreement, the prelude's side first; "" when they agree. Joined
+/// with "; " rather than newlines because a failing `inspect` prints only the
+/// first line of its actual value, which would show one missing row of many.
+fn disagreements(prelude_source: String) -> String with Exception {
+  let seeded = seeded_rows()
+  let declared = prelude_rows(prelude_source)
+  let lines: Array[String] = []
+  let mut i = 0
+  while i < Array::length(declared) {
+    let (t, ty) = Array::get(declared, i)
+    if !has_row(seeded, t, ty) {
+      Array::push(lines, "declared in builtin_traits.vibe but not seeded by register_builtin_traits_for: `impl \{t} for \{ty}`")
+    }
+    i = i + 1
+  }
+  let mut j = 0
+  while j < Array::length(seeded) {
+    let (t, ty) = Array::get(seeded, j)
+    if !seeded_only(t, ty) && !has_row(declared, t, ty) {
+      Array::push(lines, "seeded by register_builtin_traits_for but not declared in builtin_traits.vibe: `impl \{t} for \{ty}`")
+    }
+    j = j + 1
+  }
+  String::join(lines, "; ")
+}
+
+//# Tests
+
+test "the seeded trait table agrees with builtin_traits.vibe" {
+  let source = Fs::read_file(prelude_path())
+  // The file was read and parsed: an empty or unparsable read would compare
+  // an empty prelude and report every seeded row instead of agreeing.
+  assert(Array::length(prelude_rows(source)) > 20)
+  inspect(disagreements(source), content = "")
+}
+
+test "red: a prelude impl the checker does not seed is reported" {
+  let source = Fs::read_file(prelude_path())
+  let mutated = String::concat(source, "\nimpl Sub for String\n")
+  inspect(disagreements(mutated), content = "declared in builtin_traits.vibe but not seeded by register_builtin_traits_for: `impl Sub for String`")
+}
+
+test "red: a seeded row the prelude does not declare is reported" {
+  let source = Fs::read_file(prelude_path())
+  let mutated = String::replace(source, "impl Signed for Double\n", "")
+  // The mutation hit. An edit that matched nothing would leave the tables in
+  // agreement and prove nothing about the comparison.
+  assert(mutated != source)
+  inspect(disagreements(mutated), content = "seeded by register_builtin_traits_for but not declared in builtin_traits.vibe: `impl Signed for Double`")
+}
+
+//# What the seeded rows answer, and when they are withheld
+
+/// Every checker error for `source` on the single-file lane, or "" when it
+/// checks clean. That lane seeds the table exactly as the FS lane does for a
+/// program with no imports.
+fn check_errors(source: String) -> String {
+  handle {
+    let _ = check_program(parse_program(lex(source)))
+    ""
+  } with { Exception::Throw(msg) => msg }
+}
+
+fn signed_keep() -> String {
+  "fn keep[T: Signed](x: T) -> T {\n  x\n}\n"
+}
+
+fn default_keep() -> String {
+  "fn keep[T: Default](x: T) -> T {\n  x\n}\n"
+}
+
+test "Signed and Default bounds hold at the prelude's scalars without an import" {
+  inspect(check_errors(String::concat(signed_keep(), "fn main() -> Int {\n  keep(3)\n}\n")), content = "")
+  inspect(check_errors(String::concat(signed_keep(), "fn main() -> Double {\n  keep(2.5)\n}\n")), content = "")
+  inspect(check_errors(String::concat(default_keep(), "fn main() -> Int {\n  keep(3)\n}\n")), content = "")
+  inspect(check_errors(String::concat(default_keep(), "fn main() -> Double {\n  keep(2.5)\n}\n")), content = "")
+  inspect(check_errors(String::concat(default_keep(), "fn main() -> Bool {\n  keep(true)\n}\n")), content = "")
+  inspect(check_errors(String::concat(default_keep(), "fn main() -> String {\n  keep(\"s\")\n}\n")), content = "")
+}
+
+test "Signed is still refused where the prelude declares no impl" {
+  inspect(String::contains(check_errors(String::concat(signed_keep(), "fn main() -> String {\n  keep(\"a\")\n}\n")), "no impl `Signed` for `String`"), content = "true")
+}
+
+test "T::default() without @vibe/core names the import" {
+  let msg = check_errors("fn fresh[T: Default](witness: T) -> T {\n  T::default()\n}\n\nfn main() -> Int {\n  fresh(3)\n}\n")
+  inspect(String::contains(msg, "add `import @vibe/core { Default }` to call `T::default()`"), content = "true")
+  inspect(String::contains(msg, "unknown name"), content = "false")
+}
+
+test "a program's own Default withholds the seeded rows" {
+  // A method-bearing `Default` with an `Int` impl only. A seeded
+  // `impl Default for Double` would satisfy the bound at `Double` and send
+  // `T::default()` to a `Double::default` nobody wrote.
+  let own = "trait Default {\n  default() -> Self\n}\n\nimpl Default for Int {\n  default() -> Int {\n    0\n  }\n}\n\nfn fresh[T: Default](witness: T) -> T {\n  T::default()\n}\n\n"
+  inspect(check_errors(String::concat(own, "fn main() -> Int {\n  fresh(3)\n}\n")), content = "")
+  inspect(String::contains(check_errors(String::concat(own, "fn main() -> Double {\n  fresh(1.5)\n}\n")), "no impl `Default` for `Double`"), content = "true")
+}
+
+test "a program's own Signed withholds the seeded rows" {
+  let own = "trait Signed\n\n"
+  inspect(String::contains(check_errors(String::concat(own, String::concat(signed_keep(), "fn main() -> Int {\n  keep(3)\n}\n"))), "no impl `Signed` for `Int`"), content = "true")
+}

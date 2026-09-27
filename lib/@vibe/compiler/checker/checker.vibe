@@ -107,6 +107,7 @@ import @vibe/compiler/core {
   subst_bounds_for,
   subst_lookup,
   trait_decl_params,
+  trait_defined,
   trait_method_sig_binders_deep,
   trait_method_sig_deep,
   trait_supers,
@@ -11391,6 +11392,41 @@ fn field_read_type(resolved: Type, field: String, defs: Array[TypeDef], s1: Subs
   }
 }
 
+/// #3187: `T::default()` where `T` is bounded by `Default` and no declaration
+/// of `Default` is in sight. The prelude's impls satisfy the bound on their
+/// own (`register_builtin_traits_for` seeds them), but the method-bearing
+/// `trait Default { default() -> Self }` lives in `@vibe/core`, so there is no
+/// `default` to dispatch. "unknown name: T::default" named the symptom; this
+/// names the import. A program that declares its own `Default` without the
+/// method keeps the plain `unknown name`, which is then the honest answer.
+fn marker_default_dispatch_error(name: String, env: TypeEnv, s: Subst) -> Option[String] {
+  let idx = String::index_of(name, "::")
+  if idx <= 0 || String::substring(name, idx + 2, String::length(name)) != "default" || trait_defined(env, "Default") {
+    None
+  } else {
+    let head = String::substring(name, 0, idx)
+    match env_lookup(env, head) {
+      Some(CtVar(vid)) => {
+        let bounds = subst_bounds_for(s, vid)
+        let mut bounded = false
+        let mut bi = 0
+        while bi < Array::length(bounds) {
+          if trait_ref_name(Array::get(bounds, bi)) == "Default" {
+            bounded = true
+          }
+          bi = bi + 1
+        }
+        if bounded {
+          Some(String::concat("add `import @vibe/core { Default }` to call `", String::concat(name, String::concat("()`: without it `Default` is only the prelude's marker trait, which satisfies `[", String::concat(head, ": Default]` but declares no `default` method to dispatch")))))
+        } else {
+          None
+        }
+      },
+      _ => None
+    }
+  }
+}
+
 /// #2900: four `Array::` spellings the checker used to admit had no lowering
 /// anywhere, so a call type-checked clean and then died in codegen with
 /// `reached code generation unresolved` -- a message that blames the compiler
@@ -11568,7 +11604,10 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                 // the wrong question. Name its two expression roles instead.
                 Array::push(errors, String::concat("`_` is not a value here: it is only a pipe slot (in the call directly after `|>`) or a lambda section (as part of a larger expression, e.g. `_ * 2`)", off_marker_len(ident_off, 1)))
               } else {
-                Array::push(errors, String::concat(String::concat(String::concat("unknown name: ", name), builtin_no_lowering_hint(name)), off_marker_len(ident_off, String::length(name))))
+                match marker_default_dispatch_error(name, env, s) {
+                  Some(msg) => Array::push(errors, String::concat(msg, off_marker_len(ident_off, String::length(name)))),
+                  None => Array::push(errors, String::concat(String::concat(String::concat("unknown name: ", name), builtin_no_lowering_hint(name)), off_marker_len(ident_off, String::length(name))))
+                }
               }
               (CtUnknown, s, c)
             }
