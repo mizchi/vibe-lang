@@ -13457,7 +13457,15 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             // dot-call, well-typed or not: `a.set(0, 42)` fails identically to
             // `a.set(0, "bad")`). Reject these HERE instead of silently
             // accepting a call that can never compile.
-            if !has_real_fn_binding && is_known_builtin_receiver_prefix(type_prefix) {
+            // #3198 review: a program may declare its own type with a builtin
+            // head's spelling (`struct Future[T] { apply: (T) -> T }`); the
+            // resolver lets it own that name, so its receiver is the program's
+            // type -- a function-valued field read below, not a builtin method.
+            let prefix_is_declared = match find_typedef(defs, type_prefix) {
+              Some(_) => true,
+              None => false
+            }
+            if !has_real_fn_binding && !prefix_is_declared && is_known_builtin_receiver_prefix(type_prefix) {
               match lookup_builtin_in_env(env, qualified) {
                 Some(_) => {
                   Array::push(errors, String::concat("dot-call syntax is not supported for the builtin method `", String::concat(qualified, String::concat("` -- call it as `", String::concat(qualified, String::concat("(...)`", off_marker_len(qcall_field_off, String::length(method))))))))
