@@ -162,6 +162,10 @@ import @vibe/compiler/codegen/common_extractors {
   str_table_lookup
 }
 
+import @vibe/compiler/perceus {
+  perceus_loop_result_slot
+}
+
 import @vibe/compiler/codegen/wasm_emit {
   emit_block_i64,
   emit_block_void,
@@ -3120,6 +3124,27 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
       // that repeatedly drifted out of sync with ELet's (the #715/#791 bug
       // family); sharing one function makes that drift impossible.
       let (_mut_rc_kind, _mut_is_borrow_ret_ext) = classify_let_value_heap(buf, value_sd, name, local_idx, local_names, ctx)
+      // #3168: a parameterized loop's result slot starts as a `0`
+      // placeholder, which classifies it scalar, while each `break v` stores
+      // a value of the loop's type. Classified from the placeholder, a store
+      // neither retained a borrowed value (`break Array::get(xs, 0)` handed
+      // out an element its array still owned, and the consumer's release
+      // freed it) nor did the scope end release the value of a loop whose
+      // result is discarded. It is an owning slot like any heap `let mut`:
+      // the EAssign lowering retains an unowned store, and the scope end
+      // drops what it holds when the plan says the result is not handed out
+      // (`perceus_loop_result_slot`, which classifies the slot the same way).
+      let loop_slot = ctx.enable_rc && perceus_loop_result_slot(name, value, body)
+      if loop_slot && !array_contains_str(ctx.heap_binding_names, name) {
+        Array::push(ctx.heap_binding_names, name)
+      } else {
+        ()
+      }
+      if loop_slot {
+        Array::push(ctx.rc_loop_result_slots, name)
+      } else {
+        ()
+      }
       // A borrowed call initializes an owning mutable slot. Its later value
       // may be a fresh allocation, so keeping the initializer's borrow flag
       // would suppress both the slot's drop and a wrapper result's drop.
@@ -3206,6 +3231,11 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
       let nl2 = compile_expr(buf, body, local_names, nl, ctx, ld)
       if exit_owned {
         rc_exit_truncate(ctx, xmark)
+      } else {
+        ()
+      }
+      if loop_slot {
+        Array::truncate(ctx.rc_loop_result_slots, Array::length(ctx.rc_loop_result_slots) - 1)
       } else {
         ()
       }
@@ -3468,7 +3498,13 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
           nl
         }
         emit_local_set(buf, idx)
-        if replacement_unowned {
+        // #3168: a parameterized loop's result slot owns what its `break v`
+        // stores, and the loop hands that on (or its scope end releases it).
+        // A value the exit operand's test cannot vouch for as owned -- a
+        // borrowed `let` alias, a pattern binder, a `for` element -- is
+        // retained, the direction that can only leak.
+        let slot_retain = is_heap_mut && !replacement_unowned && !store_retain && !tails_retained && array_contains_str(ctx.rc_loop_result_slots, name) && !rc_exit_value_owned(ctx, local_names, value)
+        if replacement_unowned || slot_retain {
           emit_rc_dup_guarded(buf, idx, ctx.rc_shadow, ctx.rc_dup_func_idx)
         } else {
           ()
@@ -3535,7 +3571,7 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         // #3141: an early exit in the continuation must not release what the
         // stored value may still read (see rc_exit_note_store) -- unless the
         // slot retained it above and so holds a reference of its own.
-        let xtok = if replacement_unowned || store_retain {
+        let xtok = if replacement_unowned || store_retain || slot_retain {
           0 - 1
         } else {
           rc_exit_note_store(ctx, local_names, value)

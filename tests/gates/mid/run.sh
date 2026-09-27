@@ -1257,7 +1257,17 @@ echo "[compiler-gate] field assignment release guard ok (2019000 on bump/rc/shad
 #        parameterized loop, which store a value in a slot that outlives the
 #        exit (it trapped under shadow when the exit released what that value
 #        was a view of).
-echo "[compiler-gate] 40f0h/40 an early exit releases the scopes it leaves (#3141)"
+#        #3168 / #3175: a parameterized loop's result slot was classified
+#        from its `0` placeholder, so a discarded loop leaked what `break v`
+#        stored and a borrowed `break Array::get(xs, i)` handed out an element
+#        its array still owned; a `continue` (or any exit) after a branch that
+#        consumed a binding on one path only left it unreleased; and a
+#        reassigned `let mut` with a dup budget got no exit row. With those
+#        rounds added (loop_discard, loop_brk_body, loop_borrow) the fixture
+#        traps on the default, rc and shadow lanes of a stage2 from main at
+#        a81ffcb2e (loop_borrow's element is released twice); without
+#        loop_borrow it grows __heap_ptr by 1,120,244 B there. Fixed, 472 B.
+echo "[compiler-gate] 40f0h/40 an early exit releases the scopes it leaves (#3141, #3168, #3175)"
 exdir="_build/_gate_rc_early_exit"
 rm -rf "$exdir"; mkdir -p "$exdir"
 for ex_lane in bump rc shadow gc; do
@@ -1274,8 +1284,8 @@ for ex_lane in bump rc shadow gc; do
     exit 1
   fi
   ex_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$exdir/ex.wasm" 2>&1 | tail -1)"
-  if [ "$ex_out" != "2043000" ]; then
-    echo "[compiler-gate] FAIL: rc_early_exit_bounded got '$ex_out' on the $ex_lane lane (want 2043000). A trap means an early exit released a binding it did not own or one still in use (#3141)." >&2
+  if [ "$ex_out" != "2049000" ]; then
+    echo "[compiler-gate] FAIL: rc_early_exit_bounded got '$ex_out' on the $ex_lane lane (want 2049000). A trap means an early exit, or a loop's result slot, released a binding it did not own or one still in use (#3141, #3168)." >&2
     exit 1
   fi
   if [ "$ex_lane" = rc ]; then
@@ -1300,7 +1310,7 @@ for ex_lane in 1 shadow; do
   fi
 done
 rm -f "$ROOT_DIR/_build/_gate_rc_early_exit_release.log"
-echo "[compiler-gate] early exit release guard ok (2043000 on bump/rc/shadow/gc, rc heap_used=$ex_used B; handed-out and outer values alive on rc + shadow)"
+echo "[compiler-gate] early exit release guard ok (2049000 on bump/rc/shadow/gc, rc heap_used=$ex_used B; handed-out and outer values alive on rc + shadow)"
 
 # 40f0i. #3184: a `let mut` slot owns what it holds, but a store of a VIEW
 #        (`let v = Array::get(xs, 0); cur = v`, a `for` element, an alias or

@@ -7908,6 +7908,18 @@ fn rc_exit_plan_count(ctx: CompileCtx, ord: Int, n: String) -> Int {
   count
 }
 
+/// #3175: is wasm local `flag` the per-path release flag of a `let` in scope
+/// (and not, say, a reuse flag)?
+fn rc_exit_is_path_flag(ctx: CompileCtx, flag: Int) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(ctx.rc_path_flag_locals) {
+    found = Array::get(ctx.rc_path_flag_locals, i) == flag
+    i = i + 1
+  }
+  found
+}
+
 /// Does exit `ord` of the plan have `kind`, `fingerprint` and innermost `let`
 /// `inner`? Anything else means plan and codegen numbered the exits apart.
 fn rc_exit_site_matches(ctx: CompileCtx, ord: Int, kind: Int, fingerprint: Int, inner: String) -> Bool {
@@ -8022,7 +8034,17 @@ export fn rc_exit_release(buf: Bytes, ctx: CompileCtx, local_names: Array[String
               1
             } else {
               let planned = rc_exit_plan_count(ctx, ord, n)
-              if ek == 2 {
+              if planned < 0 {
+                // #3175: a split binding's row -- release once, and only
+                // under the path flag its scope-end drop is guarded on. With
+                // no such flag the path that consumed it would release it
+                // again, so the exit releases nothing.
+                if ek == 0 && flag >= 0 && rc_exit_is_path_flag(ctx, flag) {
+                  1
+                } else {
+                  0
+                }
+              } else if ek == 2 {
                 planned - 1
               } else {
                 planned
