@@ -455,7 +455,8 @@ export fn unresolved_aggregate_export_name(stmts: Array[Stmt], env: TypeEnv) -> 
 /// spelling rule would be a second text that has to keep agreeing with that
 /// pass, and it would refuse a user's own `fn __test_probe`, which is a real
 /// declaration and which the test below pins as still accepted (the prefix is
-/// not reserved: only `__vibe_` is, per `collect_reserved_value_prefix_errors`).
+/// not reserved: only `__vibe_` and `__hs_` are, per
+/// `collect_reserved_value_prefix_errors`).
 export fn unresolved_aggregate_export_name_excluding(stmts: Array[Stmt], env: TypeEnv, synthesized: Array[String]) -> Option[String] {
   let bindings = env_flat_bindings(env)
   let names = aggregate_export_names(stmts)
@@ -6951,12 +6952,21 @@ fn bfs_note(exported: Bool, name: String, body: Expr, trait_names: Array[String]
 /// first, is what makes a by-spelling presence test sound
 /// (`program_defines_top_level`).
 ///
+/// #3189 review: `__hs_` is the compiler's for the same reason. The host
+/// stream reader the linked lowering injects -- `__hs_next`,
+/// `__hs_next_option`, the finisher `__hs_fin`, `__hs_close` -- is added
+/// under fixed names, called by those names, and pruned by name. A program's
+/// own top-level `__hs_fin` therefore shared a name with the injected one:
+/// the injected reader could call the program's function, and the prune kept
+/// both, so "did a read survive" could not be answered from the finisher.
+///
 /// Top-level binders only -- `let` / `fn`, `let mut`, a destructuring `let`,
 /// an extern, in a module body too: those are what a generated function's
 /// name is resolved against. A LOCAL binder is left alone because the
-/// compiler's own desugars introduce locals under this prefix before the
-/// check runs (`__vibe_inspect_actual`, desugar_trait_dict.vibe) and a
-/// re-check of desugared statements must stay clean.
+/// compiler's own desugars introduce locals under these prefixes before the
+/// check runs (`__vibe_inspect_actual` and `__hs_src`,
+/// desugar_trait_dict.vibe) and a re-check of desugared statements must stay
+/// clean.
 fn collect_reserved_value_prefix_errors(stmts: Array[Stmt], errors: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
@@ -6975,6 +6985,8 @@ fn collect_reserved_value_prefix_errors(stmts: Array[Stmt], errors: Array[String
 fn rvp_report(name: String, errors: Array[String]) -> Unit {
   if String::starts_with(name, "__vibe_") {
     Array::push(errors, String::concat("rename `", String::concat(name, "`: the `__vibe_` prefix is reserved for definitions the compiler generates (the Double runtime prelude's `__vibe_double_to_string`, for one), and a program's own top-level definition spelled that way would silently take the generated one's place (#2652)")))
+  } else if String::starts_with(name, "__hs_") {
+    Array::push(errors, String::concat("rename `", String::concat(name, "`: the `__hs_` prefix is reserved for the host-stream reader the compiler generates (`__hs_next` and its finisher `__hs_fin`, for two), and a program's own top-level definition spelled that way would share a name with the generated one")))
   } else {
     ()
   }

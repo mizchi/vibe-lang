@@ -3251,12 +3251,14 @@ fn lc_stmts_call_host_future(stmts: Array[Stmt]) -> Bool {
 /// injected read path among them, once `fold_const_bool_params` has removed
 /// the arm that held the only read.
 ///
-/// The answer comes from a call edge, not from a name. Every read goes
-/// through the injected finisher `__hs_fin`: the injected `__hs_next` and
+/// The answer comes from a call edge, not from the readers' names. Every read
+/// goes through the injected finisher `__hs_fin`: the injected `__hs_next` and
 /// `__hs_next_option` call it, and so does each step clone the suspend
 /// lowering makes of them, because a clone is a transformed copy of that
-/// body. Nothing else calls it. So the finisher survives the prune exactly
-/// when a read does.
+/// body. Nothing else calls it, and no program can define it: the checker
+/// reserves the `__hs_` prefix for top-level definitions
+/// (`collect_reserved_value_prefix_errors`). So the finisher survives the
+/// prune exactly when a read does.
 ///
 /// Recognizing the reads by their spelling could not be made sound, because
 /// both a source name and a generated one can carry that spelling:
@@ -3269,40 +3271,17 @@ fn lc_stmts_call_host_future(stmts: Array[Stmt]) -> Bool {
 ///   the lowering makes of a source Async helper named `helper___hs_next`.
 ///   Either one kept the hooks armed after the real read was folded away, and
 ///   the build was refused ("host_stream_cancel without a host stream").
-///
-/// `source_names` are the top-level names the program itself defined before
-/// the prelude ran (`pre_prelude_let_names`). A program that defines its own
-/// `__hs_fin` contributes that one definition, which is not a read.
-fn lc_program_keeps_stream_read(stmts: Array[Stmt], source_names: Array[String]) -> Bool {
-  let mut finishers = 0
+fn lc_program_keeps_stream_read(stmts: Array[Stmt]) -> Bool {
+  let mut found = false
   let mut i = 0
-  while i < Array::length(stmts) {
+  while i < Array::length(stmts) && !found {
     match Array::get(stmts, i) {
       SLet(_, _, nm, _, _) => if nm == "__hs_fin" {
-        finishers = finishers + 1
+        found = true
       } else {
         ()
       },
       _ => ()
-    }
-    i = i + 1
-  }
-  let own = if lc_string_in(source_names, "__hs_fin") {
-    1
-  } else {
-    0
-  }
-  finishers > own
-}
-
-fn lc_string_in(xs: Array[String], x: String) -> Bool {
-  let mut found = false
-  let mut i = 0
-  while i < Array::length(xs) && !found {
-    if Array::get(xs, i) == x {
-      found = true
-    } else {
-      ()
     }
     i = i + 1
   }
@@ -9567,7 +9546,7 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
   // ("host_stream_cancel without a host stream"). Asked as "is `__hs_next`
   // still defined" it under-counts (#3150): see lc_program_keeps_stream_read.
   // Read BEFORE the analyses below so the settle rewrite is what they see.
-  let lc_stream_reads_survive = lc_program_keeps_stream_read(stmts, pre_prelude_let_names)
+  let lc_stream_reads_survive = lc_program_keeps_stream_read(stmts)
   if lc_stream_reads_survive {
     ()
   } else {

@@ -810,6 +810,27 @@ fi
   || { echo "named hoststreams component gate FAILED: stream_folded_spawn_clone_of_source_helper expected 42, got: $(cat "$SFH_LOG")" >&2; exit 1; }
 echo "[named-hoststreams-component-gate] stream_folded_spawn_clone_of_source_helper: 42 (a generated clone of a source helper is not a read)"
 
+# fixtures/async_spawn_host_futures/stream_folded_spawn_source_finisher_refused.vibe:
+# the same folded read, plus a reachable SOURCE function named `__hs_fin`, the
+# name of the finisher the compiler injects for every read. The prune removes
+# generated definitions by name, so the program's call kept the injected
+# finisher alive and the build was refused as "host_stream_cancel without a
+# host stream". The checker reserves the `__hs_` prefix now: the build must be
+# refused at the binder, with the rename first, and never reach composition
+# (#3189 review, round 4).
+SFF_OUT="$OUT_DIR/spawn_stream_folded_source_finisher.component.wasm"
+rm -f "$SFF_OUT" "$SFF_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/stream_folded_spawn_source_finisher_refused.vibe "$SFF_OUT" run >/dev/null 2>&1 || true
+if [ -s "$SFF_OUT" ]; then
+  echo "named hoststreams component gate FAILED: stream_folded_spawn_source_finisher_refused.vibe compiled -- a program's own \`__hs_fin\` must be refused (#3189)" >&2
+  exit 1
+fi
+grep -qF 'rename `__hs_fin`: the `__hs_` prefix is reserved' "$SFF_OUT.diag" 2>/dev/null \
+  || { echo "named hoststreams component gate FAILED: stream_folded_spawn_source_finisher_refused.vibe was not refused with the rename (#3189): $(cat "$SFF_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+echo "[named-hoststreams-component-gate] stream_folded_spawn_source_finisher_refused: refused at the binder (the \`__hs_\` prefix is the compiler's)"
+
 # fixtures/async_spawn_host_futures/stream_folded_helper.vibe: the only read is
 # in a helper closure on an arm a constant `false` removes, spelled
 # `HostStream::next`. With every read pruned the program has no host waitable
