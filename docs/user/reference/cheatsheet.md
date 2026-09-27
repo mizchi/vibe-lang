@@ -2845,7 +2845,12 @@ fn simd_add(a: Int, b: Int) -> Int = wasm
 
 A top-level definition wins over a builtin of the same name. For a **qualified**
 name (`X::y`) the scope of that win is the whole linked program -- not the file,
-not the import list. Measured (2026-08-28), three files:
+not the import list. What it wins is the call sites the program writes: the
+calls the compiler generates itself by that name (a `for` loop's
+`Array::length` / `Array::get`, array interpolation, structural `==`) still
+reach the builtin (#3132, pinned by
+`fixtures/builtin_shadow_internal_lowering_test.vibe`), and the warning says so
+(#3180). Measured (2026-08-28), three files:
 
 ```vibe skip
 // dep.vibe

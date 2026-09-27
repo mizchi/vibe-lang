@@ -1152,8 +1152,10 @@ export fn check_let_star_warnings_from_source_groups(input_path: String, source_
 }
 
 /// #2378: a qualified definition (`Type::method`) of a name the builtin
-/// registry owns replaces that builtin for the WHOLE linked program, including
-/// files that never import it -- and nothing said so.
+/// registry owns replaces that builtin at every call site the program writes,
+/// in every file of the linked program, including files that never import it
+/// -- and nothing said so. (Since #3132 the calls the compiler synthesizes by
+/// that name still reach the builtin, #3180.)
 ///
 /// The rule is narrow because the leak is. Measured: a BARE `fn eq` in a
 /// dependency does not leak (export namespacing renames every non-entry value
@@ -1197,7 +1199,12 @@ fn append_builtin_shadowing_warnings(out: Array[String], path: String, source: S
   let mut i = 0
   while i < Array::length(names) {
     let name = Array::get(names, i)
-    let tail = String::concat("` -- a qualified definition of a builtin name replaces that builtin for the whole linked program, including files that never import it. Use a different name, or `let ", String::concat(name, " = <builtin>` if you mean to re-export it."))
+    // #3180: "for the whole linked program" stopped being true with #3132 --
+    // the calls the compiler synthesizes by a builtin's name (a `for` loop's
+    // `Array::length` / `Array::get`, array interpolation, structural `==`)
+    // reach the builtin, not this definition. What it replaces is the calls
+    // the program writes, in every file it links.
+    let tail = String::concat("` -- a qualified definition of a builtin name replaces that builtin at the program's own call sites, in every linked file including files that never import it (calls the compiler generates itself still reach the builtin). Use a different name, or `let ", String::concat(name, " = <builtin>` if you mean to re-export it."))
     let located = locate_type_error(source, String::concat("warning: rename `", String::concat(name, tail)))
     Array::push(out, if String::length(label) == 0 {
       located

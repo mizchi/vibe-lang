@@ -238,3 +238,25 @@ test "#3118: no branch of this diagnostic names a pass or an ADR" {
     i = i + 1
   }
 }
+
+test "#3180: a rowless closure that performs is named, and both edits compile" {
+  // The handled body's only call is `side`, a closure bound outside it with no
+  // effect row, and `side` itself performs `Ask`. It was refused as a handle
+  // that "can never fire ... reaches no `perform`", which is false: it reaches
+  // one, through `side`. Still refused; now the message says where and how.
+  let src = program("fn run() -> Int with Ask {\n  let side = () -> Int {\n    perform Ask::Get()\n  }\n  handle {\n    side()\n  } with {\n    Ask::Get() => resume(42)\n  }\n}\n")
+  assert(!compiles_linear(src))
+  let msg = reject_message(src)
+  assert(String::contains(msg, "give the local closure `side` an effect row"))
+  assert(String::contains(msg, "with Ask { .. }"))
+  assert(String::contains(msg, "directly in the handled body"))
+  assert(!String::contains(msg, "can never fire"))
+  assert(!String::contains(msg, "reaches no"))
+  // The two edits it offers. (fixtures/handle_rowless_closure_row_edit_test
+  // .vibe runs them: each answers through the inner handler.)
+  let driver = "\ntest \"t\" {\n  let r = handle {\n    run()\n  } with {\n    Ask::Get() => resume(1)\n  }\n  assert_eq(r, 42)\n}\n"
+  let with_row = program(String::concat("fn run() -> Int with Ask {\n  let side = () -> Int with Ask {\n    perform Ask::Get()\n  }\n  handle {\n    side()\n  } with {\n    Ask::Get() => resume(42)\n  }\n}\n", driver))
+  assert(compiles_both(with_row))
+  let inlined = program(String::concat("fn run() -> Int with Ask {\n  handle {\n    perform Ask::Get()\n  } with {\n    Ask::Get() => resume(42)\n  }\n}\n", driver))
+  assert(compiles_both(inlined))
+}
