@@ -26,9 +26,11 @@ fn main allows Console {
 vibe 42 0.5 true
 ```
 
-The primitives are `Int`, `Double`, `Bool`, `String` and `Char`. Write
-the annotation when you want it documented or when inference has no
-opinion:
+The primitives are `Int`, `Double`, `Bool` and `String`. You will also
+see `Char`, but it is not a fifth type: `Char` is another name for
+`Int`, so a `Char` goes anywhere an `Int` does and the other way round.
+Write the annotation when you want it documented or when inference has
+no opinion:
 
 ```vibe run
 fn main allows Console {
@@ -52,7 +54,9 @@ c = 65
 
 Two things to notice. `\{...}` inside a string is interpolation — any
 expression goes in there. And `'A'` printed `65`: a character literal
-*is* its code point, an `Int`. Indexing a string also gives a number —
+is an `Int`, the value of the one ASCII character between the quotes
+(or of an escape such as `'\n'`); a non-ASCII character between the
+quotes is refused. Indexing a string also gives a number —
 `s[0]` is the **byte** at that offset, not a one-character string. For
 ASCII the code point and the byte are the same number; beyond ASCII they
 are not, and [Types and strings](05_types_strings.vibe.md) covers that.

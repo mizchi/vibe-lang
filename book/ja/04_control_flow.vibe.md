@@ -114,8 +114,8 @@ fn main allows Console {
   let with_index = for i, x in [10, 20] {
     i + x
   }
-  println("doubled = [\{Array::get(doubled, 0)}, \{Array::get(doubled, 1)}, \{Array::get(doubled, 2)}]")
-  println("with_index = [\{Array::get(with_index, 0)}, \{Array::get(with_index, 1)}]")
+  println("doubled = \{doubled}")
+  println("with_index = \{with_index}")
 }
 ```
 
