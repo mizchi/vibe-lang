@@ -25,6 +25,18 @@ fn read_stream() -> Int with Async {
 }
 let run: () -> Int with Async = () -> { read_stream() }
 VIBE
+cat >"$out_dir/dead_wat.vibe" <<'VIBE'
+fn dead_stream() -> Int with Async {
+  host_stream_next(host_stream_named("left"))
+}
+fn dead_wat() -> Int = wasm"(call $dead_stream)"
+let run: () -> Int with Async = () -> { 42 }
+VIBE
+cat >"$out_dir/live_wat.vibe" <<'VIBE'
+fn helper() -> Int = wasm"(i64.const 84)"
+fn via_wat() -> Int = wasm"(call $helper)"
+let run: () -> Int = () -> { via_wat() }
+VIBE
 cat >"$out_dir/live_future.vibe" <<'VIBE'
 fn read_future() -> Int with Async {
   await(host_future_named("price"))
@@ -32,7 +44,7 @@ fn read_future() -> Int with Async {
 let run: () -> Int with Async = () -> { read_future() }
 VIBE
 
-for case_name in dead live_stream live_future; do
+for case_name in dead dead_wat live_stream live_wat live_future; do
   out="$out_dir/$case_name.wasm"
   rm -f "$out" "$out.diag"
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
@@ -46,14 +58,19 @@ for case_name in dead live_stream live_future; do
   wasm-tools print "$out" >"$out_dir/$case_name.wat"
 done
 
-if rg -q '\(import "vibe" "(host_stream|host_future)' "$out_dir/dead.wat"; then
+if rg -q '\(import "vibe" "(host_stream|host_future)' "$out_dir/dead.wat" "$out_dir/dead_wat.wat"; then
   echo "[capability-dce] FAIL: unreachable helpers retained host imports" >&2
-  rg '\(import "vibe" "(host_stream|host_future)' "$out_dir/dead.wat" >&2
+  rg '\(import "vibe" "(host_stream|host_future)' "$out_dir/dead.wat" "$out_dir/dead_wat.wat" >&2
   exit 1
 fi
 if ! rg -q '\(import "vibe" "host_stream_get\$left"' "$out_dir/live_stream.wat" ||
    ! rg -q '\(import "vibe" "host_stream_read"' "$out_dir/live_stream.wat"; then
   echo "[capability-dce] FAIL: reachable stream read lost its host imports" >&2
+  exit 1
+fi
+wat_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke run "$out_dir/live_wat.wasm" 2>&1 | tail -1)"
+if [ "$wat_result" != 42 ]; then
+  echo "[capability-dce] FAIL: reachable inline WAT callee returned '$wat_result' (want 42)" >&2
   exit 1
 fi
 if ! rg -q '\(import "vibe" "host_future_get\$price"' "$out_dir/live_future.wat" ||
