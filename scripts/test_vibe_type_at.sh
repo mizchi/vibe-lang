@@ -283,5 +283,33 @@ binder 5 3 "forall ?t1. (?t1) -> ?t1" "call of a polymorphic local closure"
 binder 4 5 "(Int) -> Int" "declaration after a comment between let and the name"
 binder 5 11 "(Int) -> Int" "call of a closure declared after a comment"
 
+# #3106: a local `let rec` whose every use is a call. `ELetRec` carries no
+# offset, so the checker keys its type by the smallest offset inside its value
+# and the scope walk maps the binder to that value. The outer `f` in `main`
+# opens its value with an inner `f`, so it must keep a key of its own, and the
+# call in `main` must answer for the local `f`, never the top-level `fn f`.
+b="$WORK/let_rec_called_only.vibe"
+cat > "$b" <<'VIBE'
+fn f(s: String) -> String {
+  s
+}
+fn main() -> Int {
+  let rec go = (n: Int) -> Int { if n == 0 { 0 } else { go(n - 1) } }
+  let rec f = () -> Int {
+    let rec f = (n: Int) -> Int { if n == 0 { 0 } else { f(n - 1) } }
+    f(1)
+  }
+  go(2) + f()
+}
+VIBE
+binder 5 11 "(Int) -> Int" "declaration of a let rec only ever called"
+binder 5 57 "(Int) -> Int" "recursive call of a let rec"
+binder 10 3 "(Int) -> Int" "outer call of a let rec"
+binder 6 11 "() -> Int" "declaration of a let rec whose value opens with another let rec"
+binder 7 13 "(Int) -> Int" "declaration of the inner let rec"
+binder 8 5 "(Int) -> Int" "call of the inner let rec"
+binder 10 11 "() -> Int" "call of a let rec that shadows a top-level fn"
+binder 1 4 "(String) -> String" "top-level fn shadowed by a let rec"
+
 echo "[vibe-type-at] $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1

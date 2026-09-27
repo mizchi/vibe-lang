@@ -353,6 +353,25 @@ test "type-at: a local closure used only as a callee answers at its declaration 
   assert(type_at_source(shadow_src, 1, 4) == "(String) -> String")
 }
 
+// #3106: the same for a local `let rec`. `ELetRec` carries no offset, so the
+// checker files its type under the smallest offset inside its value, and the
+// scope walk says which value a binder introduces. An outer `let rec` whose
+// value opens with an inner one of the same name keeps a key of its own, and
+// the call in `main` answers for the local, not the top-level `fn f`.
+test "type-at: a local let rec used only as a callee answers at its declaration and its calls" {
+  let src = "fn main() -> Int {\n  let rec go = (n: Int) -> Int { if n == 0 { 0 } else { go(n - 1) } }\n  go(2)\n}\n"
+  assert(type_at_source(src, 2, 11) == "(Int) -> Int")
+  assert(type_at_source(src, 2, 57) == "(Int) -> Int")
+  assert(type_at_source(src, 3, 3) == "(Int) -> Int")
+  let nested_src = "fn f(s: String) -> String {\n  s\n}\nfn main() -> Int {\n  let rec f = () -> Int {\n    let rec f = (n: Int) -> Int { if n == 0 { 0 } else { f(n - 1) } }\n    f(1)\n  }\n  f()\n}\n"
+  assert(type_at_source(nested_src, 5, 11) == "() -> Int")
+  assert(type_at_source(nested_src, 6, 13) == "(Int) -> Int")
+  assert(type_at_source(nested_src, 6, 58) == "(Int) -> Int")
+  assert(type_at_source(nested_src, 7, 5) == "(Int) -> Int")
+  assert(type_at_source(nested_src, 9, 3) == "() -> Int")
+  assert(type_at_source(nested_src, 1, 4) == "(String) -> String")
+}
+
 test "type-at: an unused pattern binder does not borrow a top-level name's type" {
   let src = "fn v() -> String {\n  \"x\"\n}\nfn f(o: Option[Int]) -> Int {\n  match o {\n    Some(v) => 0\n    None => 1\n  }\n}\n"
   assert(type_at_source(src, 6, 10) == "")

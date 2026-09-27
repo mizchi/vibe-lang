@@ -3141,27 +3141,52 @@ fi
 # for, so the build failed: "add a body for `measure` to `impl Measured for
 # Pt_dep_...`". The shapes beyond this one (enum, several methods, UFCS) are
 # pinned by fixtures/private_type_impl_import_test.vibe.
-# VIBE_RC=1 selects the production lane `vibe build` takes by default; this
-# lane pins VIBE_RC=0 (lib.sh). The bump lane's `mvp` mode prunes with
-# `dce_stmts` BEFORE the dictionary desugar, which drops an impl method that
-# only a dictionary reaches -- a separate defect that fails this program even
-# with `export struct Pt`, so it is not what this row measures.
-ll_rel_out="$(VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  build fixtures/linked_library_trait_dict/main.vibe -o "$lldir/release.wasm" --entry _start 2>&1 || true)"
-if [ ! -s "$lldir/release.wasm" ]; then
-  echo "[compiler-gate] FAIL: non-debug build of a library with a private type's trait impl produced no wasm (#3105)" >&2
-  printf '%s\n' "$ll_rel_out" >&2; exit 1
-fi
-if bash scripts/wasmtime_run.sh --version >/dev/null 2>&1; then
-  ll_rel_res="$(run_bounded 60 bash scripts/wasmtime_run.sh run --invoke _start "$lldir/release.wasm" 2>&1 | tr -dc '0-9-' || true)"
-  if [ "$ll_rel_res" != "172" ]; then
-    echo "[compiler-gate] FAIL: non-debug trait library build answered '$ll_rel_res' (expected 172) (#3105)" >&2; exit 1
+# #3111: both lanes. VIBE_RC=1 is the production lane `vibe build` takes by
+# default; VIBE_RC=0 (this gate's default, lib.sh) is the bump lane, whose
+# `mvp` mode prunes with DCE BEFORE the dictionary desugar. That prune dropped
+# every impl method only a dictionary reaches, and the build failed with the
+# same "add a body for `measure`" even with `export struct Pt`.
+for ll_rc in 1 0; do
+  rm -f "$lldir/release.wasm"
+  ll_rel_out="$(VIBE_RC="$ll_rc" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    build fixtures/linked_library_trait_dict/main.vibe -o "$lldir/release.wasm" --entry _start 2>&1 || true)"
+  if [ ! -s "$lldir/release.wasm" ]; then
+    echo "[compiler-gate] FAIL: VIBE_RC=$ll_rc non-debug build of a library with a trait impl produced no wasm (#3105, #3111)" >&2
+    printf '%s\n' "$ll_rel_out" >&2; exit 1
   fi
-  echo '[compiler-gate] non-debug trait library build ok (172)'
-else
-  echo '[compiler-gate] non-debug trait library compiled; SKIP run: wasmtime not available'
-fi
+  if bash scripts/wasmtime_run.sh --version >/dev/null 2>&1; then
+    ll_rel_res="$(run_bounded 60 bash scripts/wasmtime_run.sh run --invoke _start "$lldir/release.wasm" 2>&1 | tr -dc '0-9-' || true)"
+    if [ "$ll_rel_res" != "172" ]; then
+      echo "[compiler-gate] FAIL: VIBE_RC=$ll_rc non-debug trait library build answered '$ll_rel_res' (expected 172) (#3105, #3111)" >&2; exit 1
+    fi
+    echo "[compiler-gate] VIBE_RC=$ll_rc non-debug trait library build ok (172)"
+  else
+    echo "[compiler-gate] VIBE_RC=$ll_rc non-debug trait library compiled; SKIP run: wasmtime not available"
+  fi
+done
+# #3111: a single-file executable whose impl methods -- on a struct, on `Int`
+# and on an applied `Array[Int]` target -- are reached only through trait
+# dictionaries: 70 + 100 + 600 + 2.
+for ll_rc in 1 0; do
+  rm -f "$lldir/early_dce.wasm"
+  ll_ed_out="$(VIBE_RC="$ll_rc" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    build fixtures/trait_dict_early_dce_build.vibe -o "$lldir/early_dce.wasm" --entry _start 2>&1 || true)"
+  if [ ! -s "$lldir/early_dce.wasm" ]; then
+    echo "[compiler-gate] FAIL: VIBE_RC=$ll_rc build of impl methods reached only through dictionaries produced no wasm (#3111)" >&2
+    printf '%s\n' "$ll_ed_out" >&2; exit 1
+  fi
+  if bash scripts/wasmtime_run.sh --version >/dev/null 2>&1; then
+    ll_ed_res="$(run_bounded 60 bash scripts/wasmtime_run.sh run --invoke _start "$lldir/early_dce.wasm" 2>&1 | tr -dc '0-9-' || true)"
+    if [ "$ll_ed_res" != "772" ]; then
+      echo "[compiler-gate] FAIL: VIBE_RC=$ll_rc dictionary-only impl build answered '$ll_ed_res' (expected 772) (#3111)" >&2; exit 1
+    fi
+    echo "[compiler-gate] VIBE_RC=$ll_rc dictionary-only impl build ok (772)"
+  else
+    echo "[compiler-gate] VIBE_RC=$ll_rc dictionary-only impl build compiled; SKIP run: wasmtime not available"
+  fi
+done
 rm -rf "$lldir"
 
 # 15b-3c'. #3067: `String::substring` clamps its indices on every lane. The gc

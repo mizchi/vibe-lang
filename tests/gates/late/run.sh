@@ -658,6 +658,15 @@ fi
 rm -rf "$g944cdir"
 echo "[compiler-gate] entry-boundary Error handler ok (#944 stage C, typed payload #1372, kind channel #1374)"
 bash scripts/test_uncaught_exception_exit.sh "$stage2_wasm"
+# #3109: the node host runner ends every run -- a guest `process_exit`, a
+# trap, a runner error -- through Node's normal exit path. `process.exit()`
+# can hang on Node 24 against a concurrent Sparkplug job.
+if ! node --test scripts/wasm_vibe_host_runner_exit.test.cjs >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: host runner exit paths (#3109)" >&2
+  node --test scripts/wasm_vibe_host_runner_exit.test.cjs >&2 || true
+  exit 1
+fi
+echo "[compiler-gate] host runner exit paths ok (#3109)"
 
 # 44d. #1087: a NON-tail `throw` inline in a `handle .. with Error` body
 #      must abort the body -- the arm's value (1) is the handle's result,

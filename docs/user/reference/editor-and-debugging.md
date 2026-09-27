@@ -83,7 +83,8 @@ vibe check --single-file --json <file.vibe>  # same JSON contract without resolv
   (`Some(v)`, `Log::Emit(msg)`), a `guard` / `is` pattern, a `let`
   destructuring (`let (a, b) = p`, `let Some(x) = o`, `let P::{ x, y } = p`,
   `let record { x, y } = r`, at top level too) and a `for` header
-  (`for i, x in xs`) (#3000).
+  (`for i, x in xs`) (#3000). A local `let`, `let mut` or `let rec` closure
+  answers even when every use of it is a call (#3050, #3106).
   **A position with no identifier under it** — whitespace, a keyword, a
   literal, punctuation, past the end of the line or file — is an error:
   `type-at: no identifier at FILE:LINE:COL` on stderr and exit 1, and so is a

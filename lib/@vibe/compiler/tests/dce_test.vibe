@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, ImportItem, Pat, Stmt, TypeExpr, dce_stmts, wat_callee_names
+  Expr, ImportItem, Pat, Stmt, TypeExpr, dce_stmts, dce_stmts_before_trait_desugar, wat_callee_names
 }
 
 import @vibe/core {
@@ -262,4 +262,52 @@ test "#2348 dce: a parameter named like the callee does not hide the edge" {
     SLet(false, false, "main", no_ty(), ECall(EIdent("caller", -1), [EInt(10)], -1))
   ]
   assert(eq(Array::length(dce_stmts(stmts, ["main"])), 3))
+}
+
+// #3111: before the trait-dictionary desugar, `[T: Measured]` calls
+// `T::measure`, which names no binding; only the dictionary built later
+// references `Pt::measure`. An early prune must keep every impl method, and
+// the plain `dce_stmts` (the late prune, after the desugar) must not.
+fn impl_dispatch_program() -> Array[Stmt] {
+  [
+    STrait(false, "Measured", array_empty(), [
+      ("measure", [TyName("Self")], TyName("Int"))
+    ], array_empty(), array_empty()),
+    SImpl(array_empty(), array_empty(), "Measured", TyName("Pt")),
+    SLet(false, false, "Pt::measure", no_ty(), ECall(EIdent("helper", -1), array_empty(), -1)),
+    SLet(false, false, "helper", no_ty(), EInt(1)),
+    SLet(false, false, "Pt::inherent", no_ty(), EInt(2)),
+    SLet(false, false, "main", no_ty(), ECall(EIdent("T::measure", -1), array_empty(), -1))
+  ]
+}
+
+fn kept_names(stmts: Array[Stmt]) -> String {
+  let mut out = ""
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, name, _, _) => out = String::concat(out, String::concat(name, " ")),
+      _ => ()
+    }
+  }
+  out
+}
+
+test "3111: the early prune keeps a method only a trait dictionary reaches" {
+  let kept = dce_stmts_before_trait_desugar(impl_dispatch_program(), ["main"])
+  inspect(kept_names(kept), "Pt::measure helper main ")
+}
+
+test "3111: the late prune still drops an undispatched impl method" {
+  let kept = dce_stmts(impl_dispatch_program(), ["main"])
+  inspect(kept_names(kept), "main ")
+}
+
+test "3111: an impl of a trait declared elsewhere keeps its owner's bindings" {
+  let stmts = [
+    SImpl(array_empty(), array_empty(), "Imported", TyName("Qt")),
+    SLet(false, false, "Qt::go", no_ty(), EInt(1)),
+    SLet(false, false, "Other::go", no_ty(), EInt(2)),
+    SLet(false, false, "main", no_ty(), EInt(0))
+  ]
+  inspect(kept_names(dce_stmts_before_trait_desugar(stmts, ["main"])), "Qt::go main ")
 }

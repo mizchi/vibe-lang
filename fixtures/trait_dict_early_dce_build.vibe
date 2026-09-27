@@ -1,0 +1,54 @@
+// #3111: an executable whose impl methods are reached ONLY through trait
+// dictionaries, built with `vibe build` on the bump lane (`VIBE_RC=0`).
+//
+// That lane prunes the merged program with DCE before the trait-dictionary
+// desugar runs. At that point `meas` calls `T::measure`, which names no
+// binding, so nothing referenced `Pt::measure`, `Int::measure` or the applied
+// `Array[Int]` impl's method; the prune removed them and the desugar then
+// refused the program: "add a body for `measure` to `impl Measured for Pt`".
+// The RC lane answered 70 + 100 + 600 + 2 = 772 all along.
+//
+// `twice` is declared by the trait and called through the dictionary only for
+// `Pt`, so every impl keeps both methods reachable; `Pt::unused` is an
+// inherent method nobody calls.
+
+trait Measured {
+  measure(Self) -> Int
+  twice(Self) -> Int
+}
+
+struct Pt {
+  x: Int;
+  y: Int
+}
+
+fn Pt::unused(p: Pt) -> Int {
+  p.x
+}
+
+impl Measured for Pt {
+  measure(a: Pt) -> Int { a.x + a.y }
+  twice(a: Pt) -> Int { Pt::measure(a) * 2 }
+}
+
+impl Measured for Int {
+  measure(a: Int) -> Int { a * 2 }
+  twice(a: Int) -> Int { a * 4 }
+}
+
+impl Measured for Array[Int] {
+  measure(a: Array[Int]) -> Int { Array::length(a) * 20 }
+  twice(a: Array[Int]) -> Int { Array::length(a) * 40 }
+}
+
+fn meas[T: Measured](v: T) -> Int {
+  T::measure(v) * 10
+}
+
+fn dbl[T: Measured](v: T) -> Int {
+  T::twice(v) / 7
+}
+
+export let _start = () -> Int {
+  meas(Pt::{ x: 3, y: 4 }) + meas(5) + meas([1, 2, 3]) + dbl(Pt::{ x: 3, y: 4 })
+}
