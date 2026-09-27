@@ -425,6 +425,305 @@ fn init_call_store_view(n: Int) -> String {
   String::join([hold(cur), hold(Array::get(ys, 0))], ";")
 }
 
+// #3190: a `let mut` or `let` in a loop initialized from a CONDITIONAL, a
+// match or a block that hands back an owned binding from outside the loop.
+// The initializer is a store into the binder that runs once per iteration,
+// so it takes a reference of its own there as an assignment does. Before the
+// fix the plan transferred `p`'s one reference into the binder, the first
+// iteration's owning use of it freed `p`, and the next read freed memory.
+fn len_of(d: D) -> Int {
+  match d {
+    A(s) => String::length(s)
+  }
+}
+
+fn init_cond_loop_carried(k: Int) -> String {
+  let p = A(fresh("ic", k))
+  let mut i = 0
+  let mut acc = ""
+  while i < 3 {
+    let mut c = if i >= 1 {
+      p
+    } else {
+      A(fresh("fr", i))
+    }
+    acc = String::concat(acc, hold(c))
+    i = i + 1
+  }
+  let z = churn_d(k)
+  String::join([acc, name_of(z), hold(p)], ";")
+}
+
+fn init_match_loop_carried(k: Int) -> String {
+  let p = A(fresh("im", k))
+  let mut i = 0
+  let mut acc = ""
+  while i < 3 {
+    let mut c = match i {
+      0 => A(fresh("fr", i)),
+      _ => p
+    }
+    acc = String::concat(acc, hold(c))
+    i = i + 1
+  }
+  let z = churn_d(k)
+  String::join([acc, name_of(z), hold(p)], ";")
+}
+
+fn init_block_loop_carried(k: Int) -> String {
+  let p = A(fresh("ib", k))
+  let mut i = 0
+  let mut acc = ""
+  while i < 3 {
+    let mut c = {
+      let _ = churn()
+      p
+    }
+    acc = String::concat(acc, hold(c))
+    i = i + 1
+  }
+  let z = churn_d(k)
+  String::join([acc, name_of(z), hold(p)], ";")
+}
+
+fn let_cond_loop_carried(k: Int) -> String {
+  let p = A(fresh("pc", k))
+  let mut i = 0
+  let mut acc = ""
+  while i < 3 {
+    let c = if i >= 1 {
+      p
+    } else {
+      A(fresh("fr", i))
+    }
+    acc = String::concat(acc, hold(c))
+    i = i + 1
+  }
+  let z = churn_d(k)
+  String::join([acc, name_of(z), hold(p)], ";")
+}
+
+fn let_match_loop_carried(k: Int) -> String {
+  let p = A(fresh("pm", k))
+  let mut i = 0
+  let mut acc = ""
+  while i < 3 {
+    let c = match i {
+      0 => A(fresh("fr", i)),
+      _ => p
+    }
+    acc = String::concat(acc, hold(c))
+    i = i + 1
+  }
+  let z = churn_d(k)
+  String::join([acc, name_of(z), hold(p)], ";")
+}
+
+fn let_block_loop_carried(k: Int) -> String {
+  let p = A(fresh("pb", k))
+  let mut i = 0
+  let mut acc = ""
+  while i < 3 {
+    let c = {
+      let _ = churn()
+      p
+    }
+    acc = String::concat(acc, hold(c))
+    i = i + 1
+  }
+  let z = churn_d(k)
+  String::join([acc, name_of(z), hold(p)], ";")
+}
+
+// Only read: the binder's own scope end releases what it holds.
+fn init_cond_read(k: Int) -> String {
+  let p = A(fresh("ir", k))
+  let mut i = 0
+  let mut acc = 0
+  while i < 3 {
+    let mut c = if i >= 1 {
+      p
+    } else {
+      A(fresh("fresh", i))
+    }
+    acc = acc + len_of(c)
+    i = i + 1
+  }
+  let z = churn_d(k)
+  String::join([__to_string(acc), name_of(z), hold(p)], ";")
+}
+
+// Stored over after the conditional initializer: the store releases it.
+fn init_cond_then_store(k: Int) -> String {
+  let p = A(fresh("iw", k))
+  let mut i = 0
+  let mut acc = ""
+  while i < 3 {
+    let mut c = if i >= 1 {
+      p
+    } else {
+      A(fresh("fr", i))
+    }
+    acc = String::concat(acc, hold(c))
+    c = A(fresh("st", i))
+    acc = String::concat(acc, hold(c))
+    i = i + 1
+  }
+  let z = churn_d(k)
+  String::join([acc, name_of(z), hold(p)], ";")
+}
+
+fn init_cond_param(p: D) -> String {
+  let mut i = 0
+  let mut acc = ""
+  while i < 3 {
+    let mut c = if i >= 1 {
+      p
+    } else {
+      A(fresh("fr", i))
+    }
+    acc = String::concat(acc, hold(c))
+    i = i + 1
+  }
+  acc
+}
+
+fn param_init_cond(k: Int) -> String {
+  let p = A(fresh("ia", k))
+  let a = init_cond_param(p)
+  let z = churn_d(k)
+  String::join([a, name_of(z), hold(p)], ";")
+}
+
+// Both branches hand back an owned binding from outside the loop.
+fn init_cond_both(k: Int) -> String {
+  let p = A(fresh("iq", k))
+  let q = A(fresh("iq", k + 1))
+  let mut i = 0
+  let mut acc = ""
+  while i < 3 {
+    let mut c = if i >= 1 {
+      p
+    } else {
+      q
+    }
+    acc = String::concat(acc, hold(c))
+    i = i + 1
+  }
+  let z = churn_d(k)
+  String::join([acc, name_of(z), hold(p), hold(q)], ";")
+}
+
+// Every branch or arm the SAME name: one use, retained on whichever path
+// runs -- as an initializer, and as an assignment.
+fn init_same_branches(k: Int) -> String {
+  let p = A(fresh("ie", k))
+  let mut i = 0
+  let mut acc = ""
+  while i < 3 {
+    let mut c = if i >= 1 {
+      p
+    } else {
+      p
+    }
+    acc = String::concat(acc, hold(c))
+    i = i + 1
+  }
+  let z = churn_d(k)
+  String::join([acc, name_of(z), hold(p)], ";")
+}
+
+fn let_same_arms(k: Int) -> String {
+  let p = A(fresh("sm", k))
+  let mut i = 0
+  let mut acc = ""
+  while i < 3 {
+    let c = match i {
+      0 => p,
+      _ => p
+    }
+    acc = String::concat(acc, hold(c))
+    i = i + 1
+  }
+  let z = churn_d(k)
+  String::join([acc, name_of(z), hold(p)], ";")
+}
+
+// The binder of a conditional initializer, stored into a slot: it holds a
+// reference of its own, which the slot's next store releases.
+fn let_cond_stored(k: Int) -> String {
+  let p = A(fresh("cs", k))
+  let mut cur = A(fresh("c", 0))
+  let mut i = 0
+  while i < 3 {
+    let c = if i >= 1 {
+      p
+    } else {
+      A(fresh("fr", i))
+    }
+    cur = c
+    i = i + 1
+  }
+  let z = churn_d(k)
+  String::join([hold(cur), name_of(z), hold(p)], ";")
+}
+
+// The same with a view on the other branch: the binder stays borrow-bound,
+// and the retained branch must still hold a reference the slot can release.
+fn let_mixed_stored(k: Int) -> String {
+  let p = A(fresh("mx", k))
+  let mut cur = A(fresh("c", 0))
+  let mut i = 0
+  while i < 3 {
+    let xs = [A(fresh("no", i))]
+    let c = if i >= 0 {
+      p
+    } else {
+      Array::get(xs, 0)
+    }
+    cur = c
+    i = i + 1
+  }
+  let z = churn_d(k)
+  String::join([hold(cur), name_of(z), hold(p)], ";")
+}
+
+// #768's shape: an outer `let mut` reassigned in the loop, handed back by a
+// branch of a `let` initializer.
+fn cached_last(k: Int) -> String {
+  let mut last = A(fresh("ca", k))
+  let mut i = 0
+  let mut acc = ""
+  while i < 4 {
+    let bucket = if i % 2 == 1 {
+      last
+    } else {
+      A(fresh("cb", i))
+    }
+    acc = String::concat(acc, hold(bucket))
+    last = bucket
+    i = i + 1
+  }
+  let z = churn_d(k)
+  String::join([acc, name_of(z), hold(last)], ";")
+}
+
+fn store_same_branches(k: Int) -> String {
+  let p = A(fresh("se", k))
+  let mut cur = A(fresh("c", 0))
+  let mut i = 0
+  while i < 3 {
+    cur = if i >= 1 {
+      p
+    } else {
+      p
+    }
+    i = i + 1
+  }
+  let z = churn_d(k)
+  String::join([hold(cur), name_of(z), hold(p)], ";")
+}
+
 test "a while loop storing a view" {
   let a = while_view(3)
   let x = churn()
@@ -528,4 +827,68 @@ test "a let mut initialized in a loop from an owned binding outside it" {
 
 test "a let mut initialized from a borrowed call storing a view" {
   inspect(init_call_store_view(3), content = "is3;c0")
+}
+
+test "a let mut initialized in a loop from a conditional naming an owned binding outside it" {
+  inspect(init_cond_loop_carried(4), content = "fr0ic4ic4;zz4;ic4")
+}
+
+test "a let mut initialized in a loop from a match naming an owned binding outside it" {
+  inspect(init_match_loop_carried(4), content = "fr0im4im4;zz4;im4")
+}
+
+test "a let mut initialized in a loop from a block ending in an owned binding outside it" {
+  inspect(init_block_loop_carried(4), content = "ib4ib4ib4;zz4;ib4")
+}
+
+test "a let initialized in a loop from a conditional naming an owned binding outside it" {
+  inspect(let_cond_loop_carried(4), content = "fr0pc4pc4;zz4;pc4")
+}
+
+test "a let initialized in a loop from a match naming an owned binding outside it" {
+  inspect(let_match_loop_carried(4), content = "fr0pm4pm4;zz4;pm4")
+}
+
+test "a let initialized in a loop from a block ending in an owned binding outside it" {
+  inspect(let_block_loop_carried(4), content = "pb4pb4pb4;zz4;pb4")
+}
+
+test "a let mut initialized from a conditional in a loop and only read" {
+  inspect(init_cond_read(4), content = "12;zz4;ir4")
+}
+
+test "a let mut initialized from a conditional in a loop and stored over" {
+  inspect(init_cond_then_store(4), content = "fr0st0iw4st1iw4st2;zz4;iw4")
+}
+
+test "a parameter handed back from a conditional initializer in a loop" {
+  inspect(param_init_cond(4), content = "fr0ia4ia4;zz4;ia4")
+}
+
+test "a conditional initializer whose branches both name owned bindings outside the loop" {
+  inspect(init_cond_both(4), content = "iq5iq4iq4;zz4;iq4;iq5")
+}
+
+test "a conditional initializer naming the same owned binding on both branches" {
+  inspect(init_same_branches(4), content = "ie4ie4ie4;zz4;ie4")
+}
+
+test "a match initializer naming the same owned binding in every arm" {
+  inspect(let_same_arms(4), content = "sm4sm4sm4;zz4;sm4")
+}
+
+test "an assignment of a conditional naming the same owned binding on both branches" {
+  inspect(store_same_branches(4), content = "se4;zz4;se4")
+}
+
+test "the binder of a conditional initializer stored into a slot" {
+  inspect(let_cond_stored(4), content = "cs4;zz4;cs4")
+}
+
+test "a binder with a view branch and an owned branch stored into a slot" {
+  inspect(let_mixed_stored(4), content = "mx4;zz4;mx4")
+}
+
+test "an outer let mut reassigned in the loop and handed back by a branch" {
+  inspect(cached_last(4), content = "cb0cb0cb2cb2;zz4;cb2")
 }

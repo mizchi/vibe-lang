@@ -284,7 +284,11 @@ fn mr_spine_tail(e: Expr) -> Expr with Exception {
 fn mr_spine_lets_ok(e: Expr, ctx: CompileCtx) -> Bool with Exception {
   if expr_tag(e) == 9 {
     let n = get_elet_name(e)
-    if array_contains_str(ctx.rc_drop_names, n) || array_contains_str(ctx.rc_dup_names, n) || array_contains_str(ctx.rc_alias_dup_names, n) {
+    // #3190: a value whose tail the plan took as a `PaStoreDup` row needs
+    // the retain the `let` lowering gives it; the plain value compile of the
+    // fused spine gives none, so the binding would hand the ctor a reference
+    // its source still releases. Declining sends the arm down that lowering.
+    if array_contains_str(ctx.rc_drop_names, n) || array_contains_str(ctx.rc_dup_names, n) || array_contains_str(ctx.rc_alias_dup_names, n) || store_dup_tail_present(get_elet_val(e), ctx) {
       false
     } else {
       mr_spine_lets_ok(get_elet_body(e), ctx)
@@ -292,6 +296,52 @@ fn mr_spine_lets_ok(e: Expr, ctx: CompileCtx) -> Bool with Exception {
   } else {
     true
   }
+}
+
+/// #3190: does a branch or block tail of `e` name an occurrence one of the
+/// plan's `PaStoreDup` rows names? The `let` lowering retains such a tail
+/// (compile_expr_tail's `let_retain_store_dup_tails`, which asks this first so
+/// that a value with none is not rebuilt), and the plan left the source its
+/// own reference. The rows are keyed by the occurrence's source offset, so
+/// matching (name, offset) without resolving scopes can only say yes where
+/// that rewrite may retain.
+export fn store_dup_tail_present(e: Expr, ctx: CompileCtx) -> Bool {
+  if Array::length(ctx.rc_store_dup_offs) == 0 {
+    false
+  } else {
+    match e {
+      EIdent(x, off) => {
+        let mut found = false
+        let mut i = 0
+        while !found && off >= 0 && i < Array::length(ctx.rc_store_dup_offs) {
+          found = Array::get(ctx.rc_store_dup_offs, i) == off && Array::get(ctx.rc_store_dup_names, i) == x
+          i = i + 1
+        }
+        found
+      },
+      EIf(_, t, el) => store_dup_tail_present(t, ctx) || store_dup_tail_present(el, ctx),
+      EMatch(_, arms) => store_dup_arm_tail_present(arms, ctx),
+      EHandle(hb, arms) => store_dup_tail_present(hb, ctx) || store_dup_arm_tail_present(arms, ctx),
+      ELet(_, _, b, _) => store_dup_tail_present(b, ctx),
+      ELetMut(_, _, b, _) => store_dup_tail_present(b, ctx),
+      ELetRec(_, _, b) => store_dup_tail_present(b, ctx),
+      ESeq(_, b) => store_dup_tail_present(b, ctx),
+      EAssign(_, _, b) => store_dup_tail_present(b, ctx),
+      EAssignOp(_, _, _, b) => store_dup_tail_present(b, ctx),
+      _ => false
+    }
+  }
+}
+
+fn store_dup_arm_tail_present(arms: Array[(Pat, Expr)], ctx: CompileCtx) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(arms) {
+    let (_, ab) = Array::get(arms, i)
+    found = store_dup_tail_present(ab, ctx)
+    i = i + 1
+  }
+  found
 }
 
 /// Eligibility for the reuse fusion on ONE conditional arm: the staged

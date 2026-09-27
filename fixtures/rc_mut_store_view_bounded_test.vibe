@@ -4,13 +4,19 @@
 // the slot (its next store, or its scope end), and a loop-carried binding the
 // store no longer takes by transfer keeps its own scope-end release.
 //
+// #3190 extends it to a `let` / `let mut` initialized from a conditional, a
+// match or a block whose tail names such a binding (the shapes after
+// `kid_walk` below).
+//
 // Each shape returns 1 when the value it stored is still the one it stored,
-// and each round runs all 23, so `main` answers 2000 * 23 = 46000. The gate
+// and each round runs all 41, so `main` answers 2000 * 41 = 82000. The gate
 // (tests/gates/mid/run.sh, 40f0i) checks that answer on the bump, rc, shadow
 // and gc lanes -- on a stage2 from the #3181 branch (9159d7a76) the rc lane
 // answered with the blocks that reused the freed ones and the shadow lane
-// trapped -- and bounds the rc lane's `__heap_ptr` growth. What each shape
-// hands out afterwards is pinned by fixtures/rc_mut_store_view_test.vibe.
+// trapped, and so did the #3190 shapes on one from the #3184 branch
+// (40d32fe86) -- and bounds the rc lane's `__heap_ptr` growth. What each
+// shape hands out afterwards is pinned by
+// fixtures/rc_mut_store_view_test.vibe.
 //
 // A stored `for` element is pinned there and not here: a `for` over a named
 // array leaks that array under RC whether or not its body stores anything
@@ -361,12 +367,328 @@ fn kid_walk(n: Int) -> Int {
   check(cur.tag, n)
 }
 
+// #3190: a `let mut` or `let` in a loop initialized from a conditional, a
+// match or a block that hands back an owned binding from outside the loop.
+// The binder takes a reference of its own there, released by its owning use,
+// its next store or its scope end, and `p` keeps its own for its scope end.
+// Unfixed, the `let mut` shapes trapped under shadow (the plan transferred
+// `p` into the binder on every iteration) and the `let` shapes leaked 112 or
+// 224 B per round (codegen retained the tail the plan had also budgeted).
+fn peek(d: D) -> Int {
+  match d {
+    A(xs) => Array::get(xs, 1) + 0
+  }
+}
+
+fn init_cond_loop_carried(n: Int) -> Int {
+  let p = A([30, n])
+  let mut i = 0
+  let mut acc = 0
+  while i < 3 {
+    let mut c = if i >= 1 {
+      p
+    } else {
+      A([0, n])
+    }
+    acc = acc + hold(c)
+    i = i + 1
+  }
+  check(acc + hold(p), 4 * n)
+}
+
+fn init_match_loop_carried(n: Int) -> Int {
+  let p = A([31, n])
+  let mut i = 0
+  let mut acc = 0
+  while i < 3 {
+    let mut c = match i {
+      0 => A([0, n]),
+      _ => p
+    }
+    acc = acc + hold(c)
+    i = i + 1
+  }
+  check(acc + hold(p), 4 * n)
+}
+
+fn init_block_loop_carried(n: Int) -> Int {
+  let p = A([32, n])
+  let mut i = 0
+  let mut acc = 0
+  while i < 3 {
+    let mut c = {
+      let e = A([i, i])
+      p
+    }
+    acc = acc + hold(c)
+    i = i + 1
+  }
+  check(acc + hold(p), 4 * n)
+}
+
+fn let_cond_loop_carried(n: Int) -> Int {
+  let p = A([33, n])
+  let mut i = 0
+  let mut acc = 0
+  while i < 3 {
+    let c = if i >= 1 {
+      p
+    } else {
+      A([0, n])
+    }
+    acc = acc + hold(c)
+    i = i + 1
+  }
+  check(acc + hold(p), 4 * n)
+}
+
+fn let_match_loop_carried(n: Int) -> Int {
+  let p = A([34, n])
+  let mut i = 0
+  let mut acc = 0
+  while i < 3 {
+    let c = match i {
+      0 => A([0, n]),
+      _ => p
+    }
+    acc = acc + hold(c)
+    i = i + 1
+  }
+  check(acc + hold(p), 4 * n)
+}
+
+fn let_block_loop_carried(n: Int) -> Int {
+  let p = A([35, n])
+  let mut i = 0
+  let mut acc = 0
+  while i < 3 {
+    let c = {
+      let e = A([i, i])
+      p
+    }
+    acc = acc + hold(c)
+    i = i + 1
+  }
+  check(acc + hold(p), 4 * n)
+}
+
+fn init_cond_read(n: Int) -> Int {
+  let p = A([36, n])
+  let mut i = 0
+  let mut acc = 0
+  while i < 3 {
+    let mut c = if i >= 1 {
+      p
+    } else {
+      A([0, n])
+    }
+    acc = acc + peek(c)
+    i = i + 1
+  }
+  check(acc + hold(p), 4 * n)
+}
+
+fn let_cond_read(n: Int) -> Int {
+  let p = A([37, n])
+  let mut i = 0
+  let mut acc = 0
+  while i < 3 {
+    let c = if i >= 1 {
+      p
+    } else {
+      A([0, n])
+    }
+    acc = acc + peek(c)
+    i = i + 1
+  }
+  check(acc + hold(p), 4 * n)
+}
+
+fn init_cond_then_store(n: Int) -> Int {
+  let p = A([38, n])
+  let mut i = 0
+  let mut acc = 0
+  while i < 3 {
+    let mut c = if i >= 1 {
+      p
+    } else {
+      A([0, n])
+    }
+    acc = acc + peek(c)
+    c = A([1, n])
+    acc = acc + peek(c)
+    i = i + 1
+  }
+  check(acc + hold(p), 7 * n)
+}
+
+fn init_cond_param(p: D) -> Int {
+  let mut i = 0
+  let mut acc = 0
+  while i < 3 {
+    let mut c = if i >= 1 {
+      p
+    } else {
+      A([0, 0])
+    }
+    acc = acc + hold(c)
+    i = i + 1
+  }
+  acc
+}
+
+fn param_init_cond(n: Int) -> Int {
+  let p = A([39, n])
+  let a = init_cond_param(p)
+  check(a + hold(p), 3 * n)
+}
+
+fn init_cond_both(n: Int) -> Int {
+  let p = A([40, n])
+  let q = A([41, n])
+  let mut i = 0
+  let mut acc = 0
+  while i < 3 {
+    let mut c = if i >= 1 {
+      p
+    } else {
+      q
+    }
+    acc = acc + hold(c)
+    i = i + 1
+  }
+  check(acc + hold(p) + hold(q), 5 * n)
+}
+
+fn init_same_branches(n: Int) -> Int {
+  let p = A([42, n])
+  let mut i = 0
+  let mut acc = 0
+  while i < 3 {
+    let mut c = if i >= 1 {
+      p
+    } else {
+      p
+    }
+    acc = acc + hold(c)
+    i = i + 1
+  }
+  check(acc + hold(p), 4 * n)
+}
+
+fn let_same_arms(n: Int) -> Int {
+  let p = A([43, n])
+  let mut i = 0
+  let mut acc = 0
+  while i < 3 {
+    let c = match i {
+      0 => p,
+      _ => p
+    }
+    acc = acc + hold(c)
+    i = i + 1
+  }
+  check(acc + hold(p), 4 * n)
+}
+
+fn store_same_branches(n: Int) -> Int {
+  let p = A([44, n])
+  let mut cur = A([0, 0])
+  let mut i = 0
+  while i < 3 {
+    cur = if i >= 1 {
+      p
+    } else {
+      p
+    }
+    i = i + 1
+  }
+  check(hold(cur) + hold(p), 2 * n)
+}
+
+// The binder of a conditional initializer stored into a slot that its scope
+// end releases (unfixed: a trap under rc).
+fn let_cond_stored(n: Int) -> Int {
+  let p = A([45, n])
+  let mut cur = A([0, 0])
+  let mut i = 0
+  let mut acc = 0
+  while i < 3 {
+    let c = if i >= 0 {
+      p
+    } else {
+      A([0, n])
+    }
+    cur = c
+    acc = acc + peek(cur)
+    i = i + 1
+  }
+  check(acc + peek(cur) + hold(p), 5 * n)
+}
+
+// A view on one branch: the binder stays borrow-bound, and only read.
+fn view_or_outer_read(n: Int) -> Int {
+  let p = A([46, n])
+  let mut i = 0
+  let mut acc = 0
+  while i < 3 {
+    let xs = [A([0, n])]
+    let c = if i >= 1 {
+      p
+    } else {
+      Array::get(xs, 0)
+    }
+    acc = acc + peek(c)
+    i = i + 1
+  }
+  check(acc + hold(p), 4 * n)
+}
+
+// #768's shape: an outer `let mut` reassigned in the loop, handed back by a
+// branch (unfixed: 336 B per round leaked, as a `let` and as a `let mut`).
+fn cached_last(n: Int) -> Int {
+  let mut last = A([47, n])
+  let mut i = 0
+  let mut acc = 0
+  while i < 4 {
+    let bucket = if i % 2 == 1 {
+      last
+    } else {
+      A([1, n])
+    }
+    acc = acc + peek(bucket)
+    last = bucket
+    i = i + 1
+  }
+  check(acc + hold(last), 5 * n)
+}
+
+fn cached_last_mut(n: Int) -> Int {
+  let mut last = A([48, n])
+  let mut i = 0
+  let mut acc = 0
+  while i < 4 {
+    let mut bucket = if i % 2 == 1 {
+      last
+    } else {
+      A([1, n])
+    }
+    acc = acc + peek(bucket)
+    last = bucket
+    i = i + 1
+  }
+  check(acc + hold(last), 5 * n)
+}
+
 fn round(i: Int) -> Int {
   let views = while_view(i) + branch_view(i) + owner_outlives(i) + view_outside_loop(i) + alias_view(i) + block_view(i) + wrapper_view(i)
   let conds = cond_view(i) + cond_proj(i) + cond_call(i) + cond_fresh(i) + kid_walk(i) + kid_walk_cond(i)
   let loops = break_view(i) + continue_view(i) + loop_carried(i) + loop_carried_used(i) + cond_loop_carried(i) + block_loop_carried(i) + param_loop(i)
   let inits = init_view(i) + init_loop_carried(i) + init_call_store_view(i)
-  views + conds + loops + inits
+  let tail_inits = init_cond_loop_carried(i) + init_match_loop_carried(i) + init_block_loop_carried(i) + let_cond_loop_carried(i) + let_match_loop_carried(i) + let_block_loop_carried(i) + init_cond_read(i)
+  let more_inits = let_cond_read(i) + init_cond_then_store(i) + param_init_cond(i) + init_cond_both(i) + init_same_branches(i) + let_same_arms(i) + store_same_branches(i)
+  let binders = let_cond_stored(i) + view_or_outer_read(i) + cached_last(i) + cached_last_mut(i)
+  views + conds + loops + inits + tail_inits + more_inits + binders
 }
 
 export fn main() -> Int {

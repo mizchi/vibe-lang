@@ -1311,7 +1311,10 @@ echo "[compiler-gate] early exit release guard ok (2043000 on bump/rc/shadow/gc,
 #        iteration, freeing it on the second. A `let mut` initializer had both
 #        holes too. Unfixed (a stage2 from the #3181 branch, 9159d7a76) the
 #        bounded fixture traps under shadow and answers with reused blocks
-#        under rc. The answer (46000) is checked on bump, rc, shadow and gc,
+#        under rc. #3190: so did a `let` / `let mut` in a loop initialized
+#        from a conditional, a match or a block handing back an owned
+#        binding from outside the loop, on a stage2 from the #3184 branch
+#        (40d32fe86). The answer (82000) is checked on bump, rc, shadow and gc,
 #        and the rc lane's heap growth is bounded, so the retains the fix adds
 #        are each released again; rc_mut_store_view_test.vibe then checks, on
 #        rc and shadow, that what each slot holds is alive where it is read.
@@ -1332,8 +1335,8 @@ for ms_lane in bump rc shadow gc; do
     exit 1
   fi
   ms_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$msdir/ms.wasm" 2>&1 | tail -1)"
-  if [ "$ms_out" != "46000" ]; then
-    echo "[compiler-gate] FAIL: rc_mut_store_view_bounded got '$ms_out' on the $ms_lane lane (want 46000). A trap, or fewer than 23 per round, means a let mut slot held a value some other binding released (#3184)." >&2
+  if [ "$ms_out" != "82000" ]; then
+    echo "[compiler-gate] FAIL: rc_mut_store_view_bounded got '$ms_out' on the $ms_lane lane (want 82000). A trap, or fewer than 41 per round, means a let or let mut held a value some other binding released (#3184, #3190)." >&2
     exit 1
   fi
   if [ "$ms_lane" = rc ]; then
@@ -1358,7 +1361,7 @@ for ms_lane in 1 shadow; do
   fi
 done
 rm -f "$ROOT_DIR/_build/_gate_rc_mut_store_view.log"
-echo "[compiler-gate] let mut store ownership guard ok (46000 on bump/rc/shadow/gc, rc heap_used=$ms_used B; stored values alive on rc + shadow)"
+echo "[compiler-gate] let mut store ownership guard ok (82000 on bump/rc/shadow/gc, rc heap_used=$ms_used B; stored values alive on rc + shadow)"
 
 # 40f1a. #2427: the shadow table must not overlap the heap it describes.
 #        40f above proves the marks catch a real dup/drop-of-freed; this

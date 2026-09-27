@@ -87,3 +87,75 @@ test "the loop-result slot keeps the transfer" {
   let plan = plan_of(program("let run: (Int) -> Int = (n) -> {\n  let p = A([n])\n  let d = loop (i = 0) {\n    if i == 2 {\n      break p\n    }\n    continue(i + 1)\n  }\n  let e = keep(d)\n  0\n}"))
   assert(!String::contains(plan, "store_dup"))
 }
+
+// #3190: a `let` / `let mut` initializer is a store into its binder, and a
+// branch, arm or block tail of it naming an owned binding from outside the
+// loop runs once per iteration like any other store.
+fn store_dup_rows(plan: String, name: String) -> Int {
+  Array::length(String::split(plan, String::concat("run ", String::concat(name, " store_dup:")))) - 1
+}
+
+test "a let mut initialized from a conditional in a loop retains the branch" {
+  let plan = plan_of(program("let run: (Int) -> Int = (n) -> {\n  let p = A([n])\n  let mut i = 0\n  while i < 3 {\n    let mut c = if i > 1 {\n      p\n    } else {\n      A([i])\n    }\n    let e = keep(c)\n    i = i + 1\n  }\n  0\n}"))
+  assert(store_dup_rows(plan, "p") == 1)
+  // The binding keeps its reference, so its scope end releases it.
+  assert(String::contains(plan, "run p drop 1"))
+}
+
+test "a let initialized from a conditional in a loop retains the branch" {
+  let plan = plan_of(program("let run: (Int) -> Int = (n) -> {\n  let p = A([n])\n  let mut i = 0\n  while i < 3 {\n    let c = if i > 1 {\n      p\n    } else {\n      A([i])\n    }\n    let e = keep(c)\n    i = i + 1\n  }\n  0\n}"))
+  assert(store_dup_rows(plan, "p") == 1)
+  assert(String::contains(plan, "run p drop 1"))
+}
+
+test "a let or let mut initialized from a match in a loop retains the arm" {
+  let plan = plan_of(program("let run: (Int) -> Int = (n) -> {\n  let p = A([n])\n  let q = A([n])\n  let mut i = 0\n  while i < 3 {\n    let c = match i {\n      0 => A([i]),\n      _ => p\n    }\n    let mut d = match i {\n      0 => q,\n      _ => A([i])\n    }\n    let e = keep(c)\n    let f = keep(d)\n    i = i + 1\n  }\n  0\n}"))
+  assert(store_dup_rows(plan, "p") == 1)
+  assert(store_dup_rows(plan, "q") == 1)
+  assert(String::contains(plan, "run p drop 1"))
+  assert(String::contains(plan, "run q drop 1"))
+}
+
+test "a let or let mut initialized from a block in a loop retains its tail" {
+  let plan = plan_of(program("let run: (Int) -> Int = (n) -> {\n  let p = A([n])\n  let q = A([n])\n  let mut i = 0\n  while i < 3 {\n    let c = {\n      let g = A([i])\n      p\n    }\n    let mut d = {\n      let h = A([i])\n      q\n    }\n    let e = keep(c)\n    let f = keep(d)\n    i = i + 1\n  }\n  0\n}"))
+  assert(store_dup_rows(plan, "p") == 1)
+  assert(store_dup_rows(plan, "q") == 1)
+  assert(!String::contains(plan, "run g store_dup"))
+  assert(!String::contains(plan, "run h store_dup"))
+}
+
+test "a later owning use takes the binding's own reference after a conditional initializer" {
+  let plan = plan_of(program("let run: (Int) -> Int = (n) -> {\n  let p = A([n])\n  let mut i = 0\n  while i < 3 {\n    let c = if i > 1 {\n      p\n    } else {\n      A([i])\n    }\n    let e = keep(c)\n    i = i + 1\n  }\n  let f = keep(p)\n  0\n}"))
+  assert(store_dup_rows(plan, "p") == 1)
+  // The store spent no dup from the budget, and the last use transfers.
+  assert(!String::contains(plan, "run p dup"))
+  assert(!String::contains(plan, "run p drop"))
+}
+
+test "a straight-line conditional initializer transfers" {
+  let plan = plan_of(program("let run: (Int) -> Int = (n) -> {\n  let p = A([n])\n  let c = if n > 1 {\n    p\n  } else {\n    A([n])\n  }\n  let mut d = if n > 2 {\n    A([n])\n  } else {\n    c\n  }\n  let e = keep(d)\n  0\n}"))
+  assert(!String::contains(plan, "store_dup"))
+}
+
+test "a conditional initializer naming a binding declared in the loop body transfers" {
+  let plan = plan_of(program("let run: (Int) -> Int = (n) -> {\n  let mut i = 0\n  while i < 3 {\n    let q = A([i])\n    let c = if i > 1 {\n      q\n    } else {\n      A([i])\n    }\n    let e = keep(c)\n    i = i + 1\n  }\n  0\n}"))
+  assert(!String::contains(plan, "store_dup"))
+}
+
+test "a parameter handed back from a conditional initializer in a loop retains" {
+  let body = "let run: (D) -> Int = (p) -> {\n  let mut i = 0\n  while i < 3 {\n    let mut c = if i > 1 {\n      p\n    } else {\n      A([i])\n    }\n    let e = keep(c)\n    i = i + 1\n  }\n  0\n}"
+  let plan = plan_of(String::concat(prologue, String::concat(body, "\nlet main: () -> Int = () -> {\n  run(A([1]))\n}")))
+  assert(store_dup_rows(plan, "p") == 1)
+  assert(String::contains(plan, "run p drop 1"))
+}
+
+test "the same name on every branch or arm retains on each" {
+  // `if c { p } else { p }` and a match whose every arm is `p` are one use
+  // of `p`, walked once; each occurrence still gets its row, so codegen
+  // retains on whichever path runs.
+  let plan = plan_of(program("let run: (Int) -> Int = (n) -> {\n  let p = A([n])\n  let q = A([n])\n  let mut cur = A([0])\n  let mut i = 0\n  while i < 3 {\n    let mut c = if i > 1 {\n      p\n    } else {\n      p\n    }\n    let d = match i {\n      0 => q,\n      1 => q,\n      _ => q\n    }\n    cur = if i > 0 {\n      p\n    } else {\n      p\n    }\n    let e = keep(c)\n    let f = keep(d)\n    i = i + 1\n  }\n  let g = keep(cur)\n  0\n}"))
+  assert(store_dup_rows(plan, "p") == 4)
+  assert(store_dup_rows(plan, "q") == 3)
+  assert(String::contains(plan, "run p drop 1"))
+  assert(String::contains(plan, "run q drop 1"))
+}

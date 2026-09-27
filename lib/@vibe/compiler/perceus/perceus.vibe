@@ -92,8 +92,10 @@ export enum PerceusActionKind {
   // #3184: `PaStoreDup(src)`: the store `x = src` at the occurrence whose
   // source offset is `use_offset` runs once per iteration of a loop `src` was
   // declared outside of, so the slot takes a reference of its own there and
-  // `src` keeps its initial one (see `pe_store_dup`). Codegen retains at that
-  // store; the bump and wasm-gc lanes ignore it.
+  // `src` keeps its initial one (see `pe_store_dup`). The store is an
+  // assignment or a `let mut` initializer, or (#3190) a branch or block tail
+  // of one or of a `let` initializer. Codegen retains at that store; the bump
+  // and wasm-gc lanes ignore it.
   PaStoreDup
 }
 
@@ -419,8 +421,10 @@ fn pe_use(ctx: PCtx, scope: PScope, name: String, use_offset: Int) -> Int {
 /// `let` alias follows. Unlike an alias, one slot is stored from many
 /// places, so the row is keyed by the OCCURRENCE: `PaStoreDup(src)` with the
 /// occurrence's source offset, which codegen retains at (compile_expr_tail's
-/// EAssign and ELetMut arms). An occurrence with no source offset cannot be
-/// told apart from another of the same name, so it keeps today's transfer.
+/// EAssign and ELetMut arms, and -- for a branch or block tail of a `let` /
+/// `let mut` initializer, #3190 -- `let_retain_store_dup_tails`). An
+/// occurrence with no source offset cannot be told apart from another of the
+/// same name, so it keeps today's transfer.
 ///
 /// Only a slot the plan treats as OWNING takes part (`target_owning`: not
 /// scalar -- a `let mut` initialized from a name always is). A scalar slot,
@@ -512,9 +516,9 @@ fn pe_mark_store_tails(e: Expr, target: String, inner: Array[String]) -> Unit {
       pe_mark_store_tails(hb, target, inner)
       pe_mark_store_arm_tails(arms, target, inner)
     },
-    ELet(n, _, b, _) => pe_mark_store_tails(b, target, pe_with_name(inner, n)),
-    ELetMut(n, _, b, _) => pe_mark_store_tails(b, target, pe_with_name(inner, n)),
-    ELetRec(n, _, b) => pe_mark_store_tails(b, target, pe_with_name(inner, n)),
+    ELet(n, _, b, _) => pe_mark_store_tails_under(b, target, inner, n),
+    ELetMut(n, _, b, _) => pe_mark_store_tails_under(b, target, inner, n),
+    ELetRec(n, _, b) => pe_mark_store_tails_under(b, target, inner, n),
     ESeq(_, b) => pe_mark_store_tails(b, target, inner),
     EAssign(_, _, b) => pe_mark_store_tails(b, target, inner),
     EAssignOp(_, _, _, b) => pe_mark_store_tails(b, target, inner),
@@ -522,21 +526,82 @@ fn pe_mark_store_tails(e: Expr, target: String, inner: Array[String]) -> Unit {
   }
 }
 
+// `inner` is a stack: a binder is pushed for the walk of the body it scopes
+// and truncated after, so marking every `let` initializer in a loop (#3190)
+// copies nothing.
 fn pe_mark_store_arm_tails(arms: Array[(Pat, Expr)], target: String, inner: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(arms) {
     let (ap, ab) = Array::get(arms, i)
-    let arm_inner = Array::slice(inner, 0, Array::length(inner))
-    let _ = pat_names(ap, arm_inner)
-    pe_mark_store_tails(ab, target, arm_inner)
+    let mark = Array::length(inner)
+    let _ = pat_names(ap, inner)
+    pe_mark_store_tails(ab, target, inner)
+    Array::truncate(inner, mark)
     i = i + 1
   }
 }
 
-fn pe_with_name(inner: Array[String], n: String) -> Array[String] {
-  let out = Array::slice(inner, 0, Array::length(inner))
-  Array::push(out, n)
-  out
+fn pe_mark_store_tails_under(b: Expr, target: String, inner: Array[String], n: String) -> Unit {
+  let mark = Array::length(inner)
+  Array::push(inner, n)
+  pe_mark_store_tails(b, target, inner)
+  Array::truncate(inner, mark)
+}
+
+/// #3184 / #3190: walk the value a slot stores -- an assignment's, or a
+/// `let` / `let mut` initializer's -- taking each store of an owned binding
+/// from outside the enclosing loop as a `PaStoreDup`: the bare name
+/// (`pe_store_dup`), or a branch or block tail naming it
+/// (`pe_mark_store_tails`, the tails codegen's
+/// `assign_retain_store_dup_tails` retains). `owning` is whether the slot
+/// holds a reference of its own (not `scalar`); a slot that does not keeps
+/// today's plan. `target` is a name the value cannot store into its own slot
+/// by naming -- the assigned name -- or "" for a `let` initializer, where
+/// the binder is not yet in scope and a same-spelled name is the outer one.
+fn pe_emit_store_value(ctx: PCtx, scope: PScope, target: String, owning: Bool, value: Expr) -> Unit {
+  if !pe_store_dup(ctx, scope, target, owning, value) {
+    let tail_mark = Array::length(pe_store_tail_offs)
+    // Only a binding declared before the loop floor takes a row
+    // (`pe_store_dup_at`), and outside every loop there is none.
+    if owning && ctx.loop_floor > 0 {
+      pe_mark_store_tails(value, target, array_empty())
+    } else {
+      ()
+    }
+    pc_emit(ctx, scope, value)
+    Array::truncate(pe_store_tail_names, tail_mark)
+    Array::truncate(pe_store_tail_offs, tail_mark)
+  } else {
+    ()
+  }
+}
+
+/// #3190: `if c { p } else { p }`, or a match whose every arm hands back the
+/// same bare `p` (#1915 mechanism 3), is ONE runtime use of `p`, which the
+/// EIf / EMatch arms walk once with no source offset. When every one of
+/// those occurrences is a marked store tail (`pe_mark_store_tails`), the use
+/// is a store of `p` from outside the loop like any other: it takes the one
+/// use as a `PaStoreDup` at the first occurrence and adds a row for each
+/// other one, so codegen retains on whichever path runs. Answers whether it
+/// took the use; the caller walks it the old way otherwise.
+fn pe_store_dup_alts(ctx: PCtx, scope: PScope, name: String, offs: Array[Int]) -> Bool {
+  let mut all_marked = Array::length(offs) > 0
+  let mut i = 0
+  while all_marked && i < Array::length(offs) {
+    all_marked = pe_store_tail_marked(name, Array::get(offs, i))
+    i = i + 1
+  }
+  if all_marked && pe_store_dup_at(ctx, scope, name, Array::get(offs, 0)) {
+    let sid = ps_get(scope, name)
+    let mut j = 1
+    while j < Array::length(offs) {
+      let _ = pe_push_for(ctx, PaStoreDup, name, sid, Array::get(offs, j))
+      j = j + 1
+    }
+    true
+  } else {
+    false
+  }
 }
 
 /// `borrow_ret_names` is the whole-program borrow-returning-function-name set
@@ -987,6 +1052,49 @@ fn pv_spine_under_binder(ctx: PCtx, scope: PScope, n: String, b: Expr, binders: 
   let r = pv_spine_is_view(ctx, scope, b, binders)
   Array::truncate(binders, mark)
   r
+}
+
+/// #3114: does a plain `let`'s value hand its binder a BORROWED VIEW -- a
+/// borrow-returning call, an alias of a view, or a wrapper whose result spine
+/// ends in one? pc_count records the answer (`borrowed_view`, and `scalar`
+/// with it); pc_emit asks the same question of the same value (#3190), where
+/// the binder's id is not yet known.
+fn pe_let_value_is_view(ctx: PCtx, scope: PScope, value: Expr) -> Bool {
+  match value {
+    ECall(EIdent(fname, _), _, _) => !ps_has(scope, fname) && is_borrow_ret_fname(ctx, fname),
+    EIdent(src, _) => ps_has(scope, src) && Array::get(ctx.borrowed_view, ps_get(scope, src)),
+    ELet(_, _, _, _) => pv_spine_is_view(ctx, scope, value, array_empty()),
+    ELetMut(_, _, _, _) => pv_spine_is_view(ctx, scope, value, array_empty()),
+    ELetRec(_, _, _) => pv_spine_is_view(ctx, scope, value, array_empty()),
+    ESeq(_, _) => pv_spine_is_view(ctx, scope, value, array_empty()),
+    EAssign(_, _, _) => pv_spine_is_view(ctx, scope, value, array_empty()),
+    EAssignOp(_, _, _, _) => pv_spine_is_view(ctx, scope, value, array_empty()),
+    _ => false
+  }
+}
+
+/// #2750: does a `let mut`'s value reach a borrow-returning call along its
+/// straight-line spine? Such a slot acquires a reference of its own, so
+/// pc_count never calls it scalar.
+fn pe_let_mut_borrowed_call(ctx: PCtx, value: Expr) -> Bool {
+  let bc_binders = array_empty()
+  match pmvc_spine_leaf(value, bc_binders) {
+    ECall(EIdent(fname, _), _, _) => !array_contains_str_pctx(bc_binders, fname) && is_borrow_ret_fname(ctx, fname),
+    _ => false
+  }
+}
+
+/// #3190: does the `let` (or `let mut`, `is_mut`) binder about to be declared
+/// own what its value hands it -- is it NOT `scalar`? The same answer
+/// pc_count recorded at the binder's id, recomputed from the value: pc_emit
+/// needs it BEFORE walking the value, and the value may declare bindings of
+/// its own, so the binder's id is not `ctx.next_id` yet.
+fn pe_let_binder_owning(ctx: PCtx, scope: PScope, value: Expr, is_mut: Bool) -> Bool {
+  if is_mut {
+    pe_let_mut_borrowed_call(ctx, value) || !is_scalar_expr(ctx, scope, value)
+  } else {
+    !pe_let_value_is_view(ctx, scope, value) && !is_scalar_expr(ctx, scope, value)
+  }
 }
 
 /// ADR-0092 per-use pairing: mark `id` as a view-call let-binding when its
@@ -1505,6 +1613,22 @@ fn ematch_same_ident_arms(arms: Array[(Pat, Expr)]) -> Bool {
     i = i + 1
   }
   ok && nm != ""
+}
+
+/// #3190: the source offsets of the bare names a same-ident match's arms
+/// hand back (`ematch_same_ident_arms`), in arm order.
+fn ematch_arm_ident_offs(arms: Array[(Pat, Expr)]) -> Array[Int] {
+  let out: Array[Int] = []
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (_, body) = Array::get(arms, i)
+    match body {
+      EIdent(_, off) => Array::push(out, off),
+      _ => Array::push(out, 0 - 1)
+    }
+    i = i + 1
+  }
+  out
 }
 
 fn next_seq_name(ctx: PCtx) -> String {
@@ -3294,7 +3418,15 @@ fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
           }
           0
         },
-        _ => pc_emit(ctx, scope, value)
+        // #3190: a branch or block tail of the value naming an owned binding
+        // from outside the enclosing loop is a store into this binder that
+        // runs once per iteration, exactly as the tail of an assignment is
+        // (`pe_emit_store_value`). A bare name is the alias above, which
+        // takes a reference of its own by the same rule (#3134).
+        _ => {
+          pe_emit_store_value(ctx, scope, "", pe_let_binder_owning(ctx, scope, value, false), value)
+          0
+        }
       }
       let id = pe_declare(ctx, name)
       pe_flag_or(ctx, id, pf_exit_owner)
@@ -3315,13 +3447,12 @@ fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
     },
     ELetMut(name, value, body, _) => {
       // #3184: an initializer naming an owned binding from outside the
-      // enclosing loop runs once per iteration, like a store.
-      let owning = ctx.next_id < Array::length(ctx.scalar) && !Array::get(ctx.scalar, ctx.next_id)
-      if !pe_store_dup(ctx, scope, name, owning, value) {
-        pc_emit(ctx, scope, value)
-      } else {
-        ()
-      }
+      // enclosing loop runs once per iteration, like a store -- and so does
+      // one handing such a binding back from a branch or a block tail
+      // (#3190: `let mut c = if k { p } else { A(..) }`, which transferred
+      // `p` into the slot on every iteration). The binder is not in scope
+      // in its own initializer, so no name in it is excluded as the slot.
+      pe_emit_store_value(ctx, scope, "", pe_let_binder_owning(ctx, scope, value, true), value)
       let id = pe_declare(ctx, name)
       pe_flag_or(ctx, id, pf_exit_owner)
       if pe_assigns(body, name) {
@@ -3356,19 +3487,7 @@ fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
       ctx.move_use_id = mid
       ctx.move_hit = false
       let owning = ps_has(scope, name) && !Array::get(ctx.scalar, ps_get(scope, name))
-      if !pe_store_dup(ctx, scope, name, owning, value) {
-        let tail_mark = Array::length(pe_store_tail_offs)
-        if owning {
-          pe_mark_store_tails(value, name, array_empty())
-        } else {
-          ()
-        }
-        pc_emit(ctx, scope, value)
-        Array::truncate(pe_store_tail_names, tail_mark)
-        Array::truncate(pe_store_tail_offs, tail_mark)
-      } else {
-        ()
-      }
+      pe_emit_store_value(ctx, scope, name, owning, value)
       ctx.move_use_id = 0 - 1
       if ctx.move_hit {
         Array::set(ctx.remaining, mid, Array::get(ctx.remaining, mid) + 1)
@@ -3452,9 +3571,20 @@ fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
       if eif_same_ident_branches(then_e, else_e) {
         // This action represents either branch, not the first branch's
         // concrete syntax node. Keep it on the declaration-site fallback
-        // until codegen can represent a set of alternative use sites.
+        // until codegen can represent a set of alternative use sites --
+        // except for a store (#3190), whose row names each occurrence.
         match then_e {
-          EIdent(name, _) => pe_use(ctx, scope, name, -1),
+          EIdent(name, toff) => {
+            let eoff = match else_e {
+              EIdent(_, o) => o,
+              _ => 0 - 1
+            }
+            if pe_store_dup_alts(ctx, scope, name, [toff, eoff]) {
+              0
+            } else {
+              pe_use(ctx, scope, name, -1)
+            }
+          },
           _ => 0
         }
       } else {
@@ -3660,9 +3790,14 @@ fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
           }
           if a == 0 {
             // The one merged action represents every arm. It must not inherit
-            // only the first arm's source position (see the EIf case above).
+            // only the first arm's source position (see the EIf case above)
+            // -- except for a store (#3190), whose rows name every arm's.
             match arm.1 {
-              EIdent(name, _) => pe_use(ctx, s, name, -1),
+              EIdent(name, _) => if pe_store_dup_alts(ctx, s, name, ematch_arm_ident_offs(arms)) {
+                0
+              } else {
+                pe_use(ctx, s, name, -1)
+              },
               _ => 0
             }
           } else {
@@ -3882,17 +4017,7 @@ fn pc_count(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
       // drop and marks the binding borrow-bound). Reading only the top node
       // here called `{ let i = 0; Array::get(xs, i) }` owned, so its alias
       // took a reference by transfer that codegen never gave the source.
-      let borrowed_view = match value {
-        ECall(EIdent(fname, _), _, _) => !ps_has(scope, fname) && is_borrow_ret_fname(ctx, fname),
-        EIdent(src, _) => ps_has(scope, src) && Array::get(ctx.borrowed_view, ps_get(scope, src)),
-        ELet(_, _, _, _) => pv_spine_is_view(ctx, scope, value, array_empty()),
-        ELetMut(_, _, _, _) => pv_spine_is_view(ctx, scope, value, array_empty()),
-        ELetRec(_, _, _) => pv_spine_is_view(ctx, scope, value, array_empty()),
-        ESeq(_, _) => pv_spine_is_view(ctx, scope, value, array_empty()),
-        EAssign(_, _, _) => pv_spine_is_view(ctx, scope, value, array_empty()),
-        EAssignOp(_, _, _, _) => pv_spine_is_view(ctx, scope, value, array_empty()),
-        _ => false
-      }
+      let borrowed_view = pe_let_value_is_view(ctx, scope, value)
       let id = pc_declare(ctx, name, borrowed_view || is_scalar_expr(ctx, scope, value))
       if borrowed_view {
         Array::set(ctx.borrowed_view, id, true)
@@ -3923,11 +4048,7 @@ fn pc_count(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
       // itself bound is a local with no contract -- both matching the retain
       // in compile_expr_tail's ELetMut arm, which must fire on exactly the
       // same values as this plan or the two sides desync.
-      let bc_binders = array_empty()
-      let borrowed_call = match pmvc_spine_leaf(value, bc_binders) {
-        ECall(EIdent(fname, _), _, _) => !array_contains_str_pctx(bc_binders, fname) && is_borrow_ret_fname(ctx, fname),
-        _ => false
-      }
+      let borrowed_call = pe_let_mut_borrowed_call(ctx, value)
       let id = pc_declare(ctx, name, !borrowed_call && is_scalar_expr(ctx, scope, value))
       if !borrowed_call {
         let _ = pctx_mark_view_call(ctx, scope, id, value)
