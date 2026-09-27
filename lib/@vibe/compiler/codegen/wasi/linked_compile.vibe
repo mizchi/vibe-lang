@@ -21,6 +21,7 @@ import @vibe/compiler/core {
   dce_keep_flags,
   dce_stmts,
   exception_effect_labels_equal,
+  executable_export_kept,
   executable_export_kept_bytes,
   executable_exports_stripped,
   expr_child_at,
@@ -9174,6 +9175,10 @@ fn lc_is_derive_helper_name(derive_names: Array[String], name: String) -> Bool {
   String::starts_with(name, "__arr_equals__") || String::starts_with(name, "__arr_to_string__") || array_contains_str(derive_names, name)
 }
 
+fn lc_export_is_root(name: String, entry_name: String) -> Bool {
+  !executable_exports_stripped() || executable_export_kept(name, entry_name)
+}
+
 fn lc_late_dce_roots(stmts: Array[Stmt], entry_name: String, keep_source_defs: Bool) -> Array[String] {
   let roots = lc_fresh_string_array()
   let derive_names = lc_derive_helper_names(stmts)
@@ -9195,7 +9200,7 @@ fn lc_late_dce_roots(stmts: Array[Stmt], entry_name: String, keep_source_defs: B
       // Keep ordinary value initializers available to the direct codegen
       // lane's diagnostics. Function values are the definitions whose dead
       // bodies can safely be removed before they commit host imports.
-      SLet(exported, _, name, _, value) => if (keep_all || exported || match value {
+      SLet(exported, _, name, _, value) => if (keep_all || (exported && lc_export_is_root(name, entry_name)) || match value {
         EFn(_, _, _, _, _, _) => false,
         _ => true
       }) && !lc_is_derive_helper_name(derive_names, name) {
@@ -9203,7 +9208,7 @@ fn lc_late_dce_roots(stmts: Array[Stmt], entry_name: String, keep_source_defs: B
       } else {
         ()
       },
-      SFnDecl(exported, name, _, _, _) => if (keep_all || exported) && !lc_is_derive_helper_name(derive_names, name) {
+      SFnDecl(exported, name, _, _, _) => if (keep_all || (exported && lc_export_is_root(name, entry_name))) && !lc_is_derive_helper_name(derive_names, name) {
         Array::push(roots, name)
       } else {
         ()
@@ -9214,7 +9219,12 @@ fn lc_late_dce_roots(stmts: Array[Stmt], entry_name: String, keep_source_defs: B
       SExport(names) => {
         let mut j = 0
         while j < Array::length(names) {
-          Array::push(roots, Array::get(names, j))
+          let name = Array::get(names, j)
+          if lc_export_is_root(name, entry_name) {
+            Array::push(roots, name)
+          } else {
+            ()
+          }
           j = j + 1
         }
       },
