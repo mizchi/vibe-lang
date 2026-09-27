@@ -7,6 +7,11 @@
 // stream"). A name the program wrote itself is never a generated read path:
 // the program composes with no host-stream import and answers
 // 1 + 41 + 0 = 42.
+//
+// The helper is called from `run`'s own body rather than inside the task
+// group's closure. The suspend lowering treats a reference into the
+// `__scps_` namespace inside a closure literal as tainted and refuses the
+// program, conservatively, which is a different question from this one.
 // Executed by scripts/test_named_hoststreams_component_gate.sh.
 import @vibe/concurrent {
   TaskGroup, TaskHandle
@@ -30,9 +35,10 @@ fn start(g: TaskGroup, read: Bool) -> TaskHandle[Int] {
 }
 
 let run: () -> Int with Async + Exception = () -> {
+  let z = __scps_cps_Async_helper___hs_next(7)
   TaskGroup::run((g) -> {
     let t = start(g, false)
     TaskGroup::pump_all(g)
-    TaskHandle::join(t) + __scps_cps_Async_helper___hs_next(7)
-  })
+    TaskHandle::join(t)
+  }) + z
 }
