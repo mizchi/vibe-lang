@@ -42,13 +42,19 @@ test "inline Iterator iter devirtualizes without using async Array::iter" {
   assert(!String::contains(rewritten, "Array::iter([1"))
 }
 
-test "a bound eager Array iterator blocks only its intrinsic rewrite" {
+// #3185: a program's own `Array::iter_eager` is renamed `Array::iter_eager$user`
+// and answers only the calls the program wrote, so it no longer needs to block
+// the intrinsic rewrite -- the devirtualized call reaches the builtin, never
+// the program's function.
+test "a program's own eager Array iterator does not take the intrinsic rewrite" {
   let iterator_source = "import @vibe/builtin { trait Iterator }\nfn Array::iter_eager(_xs: Array[Int], _f: (Int) -> Unit) -> Int { 77 }\nfn _start() -> Int { Iterator::iter([1, 2, 3], (_x: Int) -> Unit { () }) }"
   let through_iterator = closure_merged_stmts(iterator_source, "main.vibe", builtin_sources())
   desugar_trait_dicts(through_iterator)
   let rewritten = print_program(through_iterator)
-  assert(String::contains(rewritten, "Iterator::iter([1, 2, 3]"))
-  assert(!String::contains(rewritten, "Array::iter_eager([1, 2, 3]"))
+  assert(String::contains(rewritten, "let rec Array::iter_eager$user = "))
+  assert(String::contains(rewritten, "Array::iter_eager([1, 2, 3]"))
+  assert(!String::contains(rewritten, "Array::iter_eager$user([1, 2, 3]"))
+  assert(!String::contains(rewritten, "Iterator::iter([1, 2, 3]"))
 }
 
 test "a later custom Iterator trait import blocks builtin intrinsics" {
