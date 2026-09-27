@@ -1,8 +1,8 @@
 import @vibe/ast {
-  Expr, Stmt, builtin_ref
+  Expr, Stmt, builtin_ref, index_site_offset, is_builtin_ref_offset
 }
 import @vibe/compiler/core {
-  builtin_shadow_rename_of, rename_builtin_shadow_defs
+  builtin_shadow_rename_names_are_sorted, builtin_shadow_rename_of, rename_builtin_shadow_defs
 }
 
 // #3132: a program's own definition of a builtin the compiler calls by name
@@ -100,4 +100,115 @@ test "#3144: a second run renames a reference written after the first" {
   assert_eq(let_name(Array::get(stmts, 0)), "String::length$user")
   assert_eq(callee_of_body(Array::get(stmts, 1)), "String::length$user")
   assert_eq(callee_of_body(Array::get(stmts, 2)), "String::length")
+}
+
+test "#3185: the list is sorted, which its binary search relies on" {
+  assert(builtin_shadow_rename_names_are_sorted())
+}
+
+test "#3185: a builtin spelling a lowering intercepts is renamed" {
+  // Each of these used to keep its source spelling, so a lowering took the
+  // program's own call and ran the builtin.
+  let names = [
+    "Array::map",
+    "Int::to_double",
+    "Char::to_int",
+    "Map::set",
+    "FixedArray::make",
+    "FrozenArray::to_array",
+    "MutList::empty",
+    "__slice",
+    "__len",
+    "__set_field",
+    "__region_run",
+    "__to_string",
+    "Fs::exists",
+    "Env::get",
+    "Console::write_stream",
+    "Http::request"
+  ]
+  let mut i = 0
+  while i < Array::length(names) {
+    let name = Array::get(names, i)
+    let stmts = [one_param_fn(name, "x", EInt(1))]
+    rename_builtin_shadow_defs(stmts)
+    assert_eq(let_name(Array::get(stmts, 0)), builtin_shadow_rename_of(name))
+    i = i + 1
+  }
+}
+
+fn callee_off_of_body(s: Stmt) -> Int {
+  match s {
+    SLet(_, _, _, _, EFn(_, _, _, _, _, ECall(EIdent(_, off), _, _))) => off,
+    _ => 0
+  }
+}
+
+fn source_boundary() -> Stmt {
+  SReExportSourceBoundary([], [])
+}
+
+test "#3185: a private definition renames its own file's references only" {
+  // A dependency file, then the entry file that defines its own Array::get.
+  let dep_call = one_param_fn("first", "xs", ECall(EIdent("Array::get", 40), [
+    EIdent("xs", 51),
+    EInt(0)
+  ], 40))
+  let def = one_param_fn("Array::get", "xs", EInt(77))
+  let entry_call = one_param_fn("mine", "xs", ECall(EIdent("Array::get", 90), [
+    EIdent("xs", 101),
+    EInt(0)
+  ], 90))
+  let stmts = [source_boundary(), dep_call, source_boundary(), def, entry_call]
+  rename_builtin_shadow_defs(stmts)
+  assert_eq(let_name(Array::get(stmts, 3)), "Array::get$user")
+  assert_eq(callee_of_body(Array::get(stmts, 4)), "Array::get$user")
+  // The dependency's call keeps the builtin's name and is MARKED as the
+  // builtin's, keyed with its own offset, so no later run can take it.
+  assert_eq(callee_of_body(Array::get(stmts, 1)), "Array::get")
+  assert(is_builtin_ref_offset(callee_off_of_body(Array::get(stmts, 1))))
+  assert_eq(index_site_offset(callee_off_of_body(Array::get(stmts, 1))), 40)
+  rename_builtin_shadow_defs(stmts)
+  assert_eq(callee_of_body(Array::get(stmts, 1)), "Array::get")
+  assert_eq(callee_of_body(Array::get(stmts, 4)), "Array::get$user")
+}
+
+test "#3185: a published definition still renames every file's references" {
+  let dep_call = one_param_fn("first", "xs", ECall(EIdent("Array::get", 40), [
+    EIdent("xs", 51),
+    EInt(0)
+  ], 40))
+  let def = SLet(true, false, "Array::get", None, EFn([], [], [("xs", None)], None, None, EInt(77)))
+  let stmts = [source_boundary(), dep_call, source_boundary(), def]
+  rename_builtin_shadow_defs(stmts)
+  assert_eq(callee_of_body(Array::get(stmts, 1)), "Array::get$user")
+}
+
+test "#3185: a program with no source boundaries is one file" {
+  let def = one_param_fn("Array::get", "xs", EInt(77))
+  let call = one_param_fn("mine", "xs", ECall(EIdent("Array::get", 90), [
+    EIdent("xs", 101),
+    EInt(0)
+  ], 90))
+  let stmts = [call, def]
+  rename_builtin_shadow_defs(stmts)
+  assert_eq(callee_of_body(Array::get(stmts, 0)), "Array::get$user")
+}
+
+test "#3185: the parser's field-write sugar keeps the builtin under the program's __set_field" {
+  let def = one_param_fn("__set_field", "x", EInt(1))
+  let sugar = one_param_fn("write", "o", ECall(builtin_ref("__set_field"), [
+    EIdent("o", -1),
+    EString("v", -1),
+    EInt(5)
+  ], -1))
+  let direct = one_param_fn("direct", "o", ECall(EIdent("__set_field", 30), [
+    EIdent("o", 42),
+    EString("v", -1),
+    EInt(5)
+  ], 30))
+  let stmts = [def, sugar, direct]
+  rename_builtin_shadow_defs(stmts)
+  assert_eq(callee_of_body(Array::get(stmts, 1)), "__set_field")
+  assert_eq(callee_of_body(Array::get(stmts, 2)), "__set_field$user")
 }

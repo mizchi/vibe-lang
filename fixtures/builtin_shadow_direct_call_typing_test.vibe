@@ -1,0 +1,113 @@
+// #3179: the checker picks some builtins' call arms by SPELLING (`Array::get`
+// with two arguments, `Map::get`, `FixedArray::get`, `MutList::get`, ...).
+// Those arms also took a call the program wrote to its OWN function of that
+// spelling, so the call was typed as the builtin while codegen called the
+// program's function: with the `Array::get` below, `Array::get([1, 2], 0) + 1`
+// checked clean and added 1 to a string. Each call here is now typed from the
+// program's declaration and answers the program's value, on every lane.
+//
+// One program function per arm family. Each answers a type its builtin never
+// does (`String` from an `Int` receiver), so a call typed by the builtin's arm
+// is refused and a call reaching the builtin answers a different value. The
+// String / Bytes rows are the direct-return table's family, pinned beside them.
+
+fn Array::get(xs: Array[Int], i: Int) -> String {
+  "own Array::get \{Array::length(xs)} \{i}"
+}
+
+fn Array::slice(a: Int, b: Int, c: Int) -> String {
+  "own Array::slice \{a - b - c}"
+}
+
+fn ArrayBuilder::push(a: Int, b: Int) -> String {
+  "own ArrayBuilder::push \{a - b}"
+}
+
+fn FrozenArray::get(a: Int, b: Int) -> String {
+  "own FrozenArray::get \{a - b}"
+}
+
+fn FixedArray::set(a: Int, b: Int, c: Int) -> String {
+  "own FixedArray::set \{a - b - c}"
+}
+
+fn MutList::get(a: Int, b: Int) -> String {
+  "own MutList::get \{a - b}"
+}
+
+fn MutBytes::length(a: Int) -> String {
+  "own MutBytes::length \{a}"
+}
+
+fn Map::get(a: Int, b: Int) -> String {
+  "own Map::get \{a - b}"
+}
+
+fn MapBuilder::get(a: Int, b: Int) -> String {
+  "own MapBuilder::get \{a - b}"
+}
+
+fn Future::ready(a: Int) -> String {
+  "own Future::ready \{a}"
+}
+
+fn await(a: Int) -> String {
+  "own await \{a}"
+}
+
+fn TaskGroup::run(a: Int) -> String {
+  "own TaskGroup::run \{a}"
+}
+
+fn __index(a: Int, b: Int) -> String {
+  "own __index \{a - b}"
+}
+
+fn String::substring(a: Int, b: Int, c: Int) -> Int {
+  a - b - c
+}
+
+fn Bytes::length(s: String) -> String {
+  "own Bytes::length \{s}"
+}
+
+test "Array: the issue's program answers the program's own Array::get" {
+  let v = Array::get([1, 2], 0)
+  inspect(v, content = "own Array::get 2 0")
+  inspect(String::length(v), content = "18")
+  inspect(Array::slice(9, 2, 3), content = "own Array::slice 4")
+}
+
+test "builders, frozen and fixed arrays answer the program's own functions" {
+  inspect(ArrayBuilder::push(9, 2), content = "own ArrayBuilder::push 7")
+  inspect(FrozenArray::get(9, 2), content = "own FrozenArray::get 7")
+  inspect(FixedArray::set(9, 2, 3), content = "own FixedArray::set 4")
+}
+
+test "region collections answer the program's own functions" {
+  inspect(MutList::get(9, 2), content = "own MutList::get 7")
+  inspect(MutBytes::length(4), content = "own MutBytes::length 4")
+}
+
+test "Map: the program's own Map::get and MapBuilder::get answer" {
+  inspect(Map::get(9, 2), content = "own Map::get 7")
+  inspect(MapBuilder::get(9, 2), content = "own MapBuilder::get 7")
+}
+
+test "futures and task groups answer the program's own functions" {
+  inspect(Future::ready(3), content = "own Future::ready 3")
+  inspect(await(4), content = "own await 4")
+  inspect(TaskGroup::run(5), content = "own TaskGroup::run 5")
+}
+
+test "a direct __index call answers the program's own function while index sugar reads the builtin" {
+  inspect(__index(9, 2), content = "own __index 7")
+  let xs = [10, 20, 30]
+  inspect(xs[2] - xs[0], content = "20")
+}
+
+test "String and Bytes: the direct-return family answers the program's own functions" {
+  let n: Int = String::substring(9, 2, 3)
+  inspect(n, content = "4")
+  inspect(Bytes::length("x"), content = "own Bytes::length x")
+}

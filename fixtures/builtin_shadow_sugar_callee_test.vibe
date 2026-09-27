@@ -1,0 +1,66 @@
+// #3185: the parser spells its slice, field-write and `region` sugar as calls
+// to the builtins `__slice`, `__len`, `__set_field` and `__region_run`. Those
+// callees are now marked as the builtin's (`builtin_ref`), so a program's own
+// function of one of those names answers only the calls the program wrote to
+// it, on every lane, and the sugar keeps meaning the builtin. Before, the
+// program's `fn __set_field` took every field write (`c.v = 5` left `c.v` at
+// 1), and a program's own `__slice` / `__len` / `__region_run` was ignored for
+// its direct calls while the checker typed them as the builtin.
+
+struct Counter {
+  mut v: Int
+}
+
+fn __slice(a: Int, b: Int, c: Int) -> String {
+  "own __slice \{a - b - c}"
+}
+
+fn __len(n: Int) -> String {
+  "own __len \{n}"
+}
+
+fn __set_field(a: Int, b: Int, c: Int) -> String {
+  "own __set_field \{a - b - c}"
+}
+
+fn __region_run(n: Int) -> String {
+  "own __region_run \{n}"
+}
+
+test "the program's own functions answer the calls it wrote" {
+  inspect(__slice(9, 2, 3), content = "own __slice 4")
+  inspect(__len(5), content = "own __len 5")
+  inspect(__set_field(9, 2, 3), content = "own __set_field 4")
+  inspect(__region_run(6), content = "own __region_run 6")
+}
+
+test "slice sugar still reaches the builtin" {
+  let xs = [10, 20, 30, 40]
+  let tail = xs[1:]
+  let mid = xs[1:3]
+  let head = xs[:2]
+  inspect(Array::length(tail), content = "3")
+  inspect(mid[1] - mid[0], content = "10")
+  inspect(Array::length(head), content = "2")
+  let s = "hello"
+  inspect(s[1:], content = "ello")
+  inspect(s[0:2], content = "he")
+}
+
+test "field-write sugar still reaches the builtin" {
+  let c = Counter::{ v: 1 }
+  c.v = 5
+  inspect(c.v, content = "5")
+  c.v = c.v - 7
+  inspect(c.v, content = "-2")
+}
+
+test "region sugar still reaches the builtin" {
+  let n = region r {
+    let m = MutList::empty(r)
+    MutList::push(m, 3)
+    MutList::push(m, 4)
+    MutList::length(m)
+  }
+  inspect(n, content = "2")
+}

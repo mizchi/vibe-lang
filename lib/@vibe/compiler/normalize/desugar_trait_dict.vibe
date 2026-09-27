@@ -662,7 +662,7 @@ export fn wrap_entry_exception_boundary(stmts: Array[Stmt], entry_name: String) 
         let rendered_ok = EBinOp("!=", ECall(builtin_ref("String::length"), [
           msg_ident
         ], -1), EInt(0), -1)
-        let text = EIf(printable, ECall(EIdent("__to_string", -1), [
+        let text = EIf(printable, ECall(builtin_ref("__to_string"), [
           EIdent(payload_name, -1)
         ], -1), EIf(rendered_ok, msg_ident, ECall(builtin_ref("String::concat"), [
           EString("<", -1),
@@ -672,12 +672,12 @@ export fn wrap_entry_exception_boundary(stmts: Array[Stmt], entry_name: String) 
         // ends on the diagnosis instead of a second report of the trap that
         // used to follow it. The trap stays as the fallback for a host whose
         // exit call returns.
-        let fail = ESeq(ECall(EIdent("vibe_process_exit_raw", -1), [EInt(1)], -1), ECall(EIdent("assert_true", -1), [
+        let fail = ESeq(ECall(builtin_ref("vibe_process_exit_raw"), [EInt(1)], -1), ECall(EIdent("assert_true", -1), [
           EBool(false)
         ], -1))
-        let diag = ELet(kind_name, exn_kind_read_expr(), ELet(rendered_name, exn_msg_read_expr(), ESeq(ECall(EIdent("Stderr::write_stream", -1), [
+        let diag = ELet(kind_name, exn_kind_read_expr(), ELet(rendered_name, exn_msg_read_expr(), ESeq(ECall(builtin_ref("Stderr::write_stream"), [
           EString("vibe: uncaught error: ", -1)
-        ], -1), ESeq(ECall(EIdent("Stderr::write_stream", -1), [text], -1), ESeq(ECall(EIdent("Stderr::write_stream", -1), [
+        ], -1), ESeq(ECall(builtin_ref("Stderr::write_stream"), [text], -1), ESeq(ECall(builtin_ref("Stderr::write_stream"), [
           EString("\n", -1)
         ], -1), fail))), -1), -1)
         let wrapped = EHandle(body, [
@@ -1857,6 +1857,19 @@ fn iterator_array_intrinsic(name: String, args: Array[Expr], gens: Array[DictGen
     } else {
       None
     }
+  }
+}
+
+/// #3185: the callee of a devirtualized iterator operation. The Array
+/// operations are the builtins, whatever the program defines, so they are
+/// spelled `builtin_ref`: a program's own `fn Array::map` must not take an
+/// `Iterator::map` over an array it never called. `flatmap` is the library
+/// specialization beside the trait helper and keeps its ordinary resolution.
+fn iterator_array_intrinsic_callee(intrinsic: String, coff: Int) -> Expr {
+  if String::ends_with(intrinsic, "::flatmap") {
+    EIdent(intrinsic, coff)
+  } else {
+    builtin_ref(intrinsic)
   }
 }
 
@@ -10117,7 +10130,7 @@ fn show_tmp_name() -> String {
 /// synthetic `__to_string(sub)`, so a nested wrapper or a derive(Show) value
 /// inside one is rendered too.
 fn interp_render_sub(sub: Expr, derived_only: Bool, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
-  rewrite_expr(ECall(EIdent("__to_string", -1), Array::slice([sub], 0, 1), -1), gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+  rewrite_expr(ECall(builtin_ref("__to_string"), Array::slice([sub], 0, 1), -1), gens, traits, struct_sets, dict_binds, var_types, fn_returns)
 }
 
 /// `open_s ++ e0 ++ sep ++ e1 ++ .. ++ close_s`, each element rendered.
@@ -10662,7 +10675,7 @@ fn char_render_expr(val: Expr) -> Expr {
   let four = concat2(lead(240, shr(18)), concat2(cont(shr(12)), concat2(cont(shr(6)), cont(cv))))
   // Through `Char::to_int` so the binder is an Int: the gc lane has no `<` /
   // `>>` lowering for a Char-typed operand.
-  ELet(c, ECall(EIdent("Char::to_int", -1), [val], -1), EIf(EBinOp("<", cv, EInt(128), -1), byte(cv), EIf(EBinOp("<", cv, EInt(2048), -1), two, EIf(EBinOp("<", cv, EInt(65536), -1), three, four))), -1)
+  ELet(c, ECall(builtin_ref("Char::to_int"), [val], -1), EIf(EBinOp("<", cv, EInt(128), -1), byte(cv), EIf(EBinOp("<", cv, EInt(2048), -1), two, EIf(EBinOp("<", cv, EInt(65536), -1), three, four))), -1)
 }
 
 /// #3075: render a `Unit` as `()`, still evaluating the value once.
@@ -11178,7 +11191,7 @@ fn assert_eq_render(arg: Expr, gens: Array[DictGen], traits: Array[(String, Arra
     } else {
       match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
         Some(tn) => if is_scalar_type_name(tn) {
-          ECall(EIdent("__to_string", -1), Array::slice([arg], 0, 1), -1)
+          ECall(builtin_ref("__to_string"), Array::slice([arg], 0, 1), -1)
         } else {
           EString("<unprintable>", -1)
         },
@@ -11191,7 +11204,7 @@ fn assert_eq_render(arg: Expr, gens: Array[DictGen], traits: Array[(String, Arra
             _ => false
           }
           if as_scalar {
-            ECall(EIdent("__to_string", -1), Array::slice([arg], 0, 1), -1)
+            ECall(builtin_ref("__to_string"), Array::slice([arg], 0, 1), -1)
           } else {
             EString("<unprintable>", -1)
           }
@@ -11446,7 +11459,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
           // cannot see that binder's type, so `[1.5, 2.25]` rendered the boxed
           // Doubles' addresses (`[352, 360]`). This pass knows the type, so it
           // names the renderer.
-          Some(ECall(EIdent("Double::to_string", -1), Array::slice([
+          Some(ECall(builtin_ref("Double::to_string"), Array::slice([
             rewrite_expr(Array::get(args, 0), gens, traits, struct_sets, dict_binds, var_types, fn_returns)
           ], 0, 1), off))
         } else if interp_arg_is_char(Array::get(args, 0), struct_sets, var_types, fn_returns) {
@@ -11491,7 +11504,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
               // what makes them one answer again. The callee is unreachable
               // afterwards only if nothing else calls it; that is DCE's
               // business, not this pass's.
-              Some(ECall(EIdent("__to_string", -1), Array::slice([
+              Some(ECall(builtin_ref("__to_string"), Array::slice([
                 rewrite_expr(Array::get(args, 0), gens, traits, struct_sets, dict_binds, var_types, fn_returns)
               ], 0, 1), off))
             } else {
@@ -11704,7 +11717,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
               }
               let array_intrinsic = iterator_array_intrinsic(name, args, gens, struct_sets, var_types, fn_returns)
               match array_intrinsic {
-                Some(intrinsic) => ECall(EIdent(intrinsic, coff), rwargs, off),
+                Some(intrinsic) => ECall(iterator_array_intrinsic_callee(intrinsic, coff), rwargs, off),
                 None => match as_method {
                   Some(dict_pname) => ECall(EDot(EIdent(dict_pname, -1), member_of(name), -1, -1), rwargs, off),
                   None => match lookup_gen_entry(gens, name) {
@@ -12347,7 +12360,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
           // the bare name of an in-scope generic type parameter — the
           // concrete runtime type is erased, so dispatch at runtime instead
           // (see is_erased_generic_operand / gen_generic_rel_diff_body).
-          EBinOp(op, ECall(EIdent("__generic_rel_diff", -1), [rl, rr], -1), EInt(0), -1)
+          EBinOp(op, ECall(builtin_ref("__generic_rel_diff"), [rl, rr], -1), EInt(0), -1)
         } else {
           EBinOp(op, rl, rr, boff)
         }
@@ -12371,7 +12384,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
           ECall(builtin_ref("String::concat"), [rl, rr], -1)
         } else if is_erased_generic_operand(l, r, struct_sets, var_types, fn_returns) {
           // #973: same erased-`[T: Add]` case as the relational branch above.
-          ECall(EIdent("__generic_add", -1), [rl, rr], -1)
+          ECall(builtin_ref("__generic_add"), [rl, rr], -1)
         } else {
           EBinOp(op, rl, rr, boff)
         }
@@ -13031,11 +13044,11 @@ fn show_for_typed(fty: TypeExpr, val: Expr, known_types: Array[String]) -> Expr 
     // `Box[Bool]`), where codegen sees only the erased field; name the
     // renderer rather than leave it to the representation.
     TyName("Bool") => EIf(val, EString("true", -1), EString("false", -1)),
-    TyName("Double") => ECall(EIdent("Double::to_string", -1), [val], -1),
+    TyName("Double") => ECall(builtin_ref("Double::to_string"), [val], -1),
     TyName(n) => if !is_scalar_type_name(n) && str_array_contains(known_types, n) {
       ECall(EIdent(qualified_name(n, "to_string"), -1), Array::slice([val], 0, 1), -1)
     } else {
-      ECall(EIdent("__to_string", -1), Array::slice([val], 0, 1), -1)
+      ECall(builtin_ref("__to_string"), Array::slice([val], 0, 1), -1)
     },
     TyApp("Option", args) => if Array::length(args) == 1 {
       let t = Array::get(args, 0)
@@ -13046,7 +13059,7 @@ fn show_for_typed(fty: TypeExpr, val: Expr, known_types: Array[String]) -> Expr 
         (PCtor("None", array_empty()), EString("None", -1))
       ], 0, 2))
     } else {
-      ECall(EIdent("__to_string", -1), Array::slice([val], 0, 1), -1)
+      ECall(builtin_ref("__to_string"), Array::slice([val], 0, 1), -1)
     },
     TyApp("Result", args) => if Array::length(args) == 2 {
       let t = Array::get(args, 0)
@@ -13060,7 +13073,7 @@ fn show_for_typed(fty: TypeExpr, val: Expr, known_types: Array[String]) -> Expr 
         (PCtor("Err", Array::slice([PBind("__rs_v")], 0, 1)), err_body)
       ], 0, 2))
     } else {
-      ECall(EIdent("__to_string", -1), Array::slice([val], 0, 1), -1)
+      ECall(builtin_ref("__to_string"), Array::slice([val], 0, 1), -1)
     },
     TyTuple(ts) => {
       let n = Array::length(ts)
@@ -13096,7 +13109,7 @@ fn show_for_typed(fty: TypeExpr, val: Expr, known_types: Array[String]) -> Expr 
         val
       ], 0, 1), -1)
     } else {
-      ECall(EIdent("__to_string", -1), Array::slice([val], 0, 1), -1)
+      ECall(builtin_ref("__to_string"), Array::slice([val], 0, 1), -1)
     },
     TyApp(n, targs) => if show_generic_known(n) && show_ty_args_concrete(targs, known_types) {
       // #3082: a derived renderer's field or payload of a `derive (Show)`
@@ -13107,9 +13120,9 @@ fn show_for_typed(fty: TypeExpr, val: Expr, known_types: Array[String]) -> Expr 
     } else if str_array_contains(known_types, n) {
       ECall(EIdent(qualified_name(n, "to_string"), -1), Array::slice([val], 0, 1), -1)
     } else {
-      ECall(EIdent("__to_string", -1), Array::slice([val], 0, 1), -1)
+      ECall(builtin_ref("__to_string"), Array::slice([val], 0, 1), -1)
     },
-    _ => ECall(EIdent("__to_string", -1), Array::slice([val], 0, 1), -1)
+    _ => ECall(builtin_ref("__to_string"), Array::slice([val], 0, 1), -1)
   }
 }
 
@@ -15864,7 +15877,7 @@ fn eq_for_typed(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]
       // `==` codegen recognizes the operands as floatish (expr_is_floatish) and
       // takes the unbox-then-f64.eq path. Harmless on the non-RC backend, where
       // the wrapper is identity and the float branch compares raw bits (#704).
-      EBinOp("==", ECall(EIdent("Double::to_float", -1), Array::slice([lhs], 0, 1), -1), ECall(EIdent("Double::to_float", -1), Array::slice([
+      EBinOp("==", ECall(builtin_ref("Double::to_float"), Array::slice([lhs], 0, 1), -1), ECall(builtin_ref("Double::to_float"), Array::slice([
         rhs
       ], 0, 1), -1), -1)
     } else if n == "Bytes" {
@@ -22263,7 +22276,7 @@ fn inspect_lowering_expr(value: Expr, content: Expr) -> Expr {
     EBool(false)
   ], 0 - 1))
   let check = EIf(EBinOp("==", actual, expected, -1), EUnit, on_mismatch)
-  ELet(actual_name, ECall(EIdent("__to_string", 0 - 1), [value], 0 - 1), ELet(expected_name, content, check, 0 - 1), 0 - 1)
+  ELet(actual_name, ECall(builtin_ref("__to_string"), [value], 0 - 1), ELet(expected_name, content, check, 0 - 1), 0 - 1)
 }
 
 /// Rewrite every two-argument `inspect(value, content)` call to its expansion.
@@ -25120,7 +25133,9 @@ fn ehp_wrap(body: Expr, performed: Array[(String, Int)], granted: (String) -> Bo
           Array::push(actuals, EIdent(pname, -1))
           a = a + 1
         }
-        let direct = ECall(EIdent(canonical_builtin_name(op), -1), actuals, -1)
+        // #3185: the host builtin itself, whatever the program defines under its
+        // spelling (a pure program `Fs::exists` must not answer a real perform).
+        let direct = ECall(builtin_ref(canonical_builtin_name(op)), actuals, -1)
         Array::push(arms, (PCtor(op, binders), ECall(EIdent("resume", -1), [
           direct
         ], -1)))

@@ -2876,10 +2876,10 @@ explicit in the program being compiled, and
 `fixtures/to_string_shadowed_builtin_test.vibe` relies on it — and so does
 what does not leak: a bare name (namespaced per file), a `Trait::operation`
 whose trait the same file declares (namespaced the same way), a qualified name
-the registry does not own (`Array::map`, which `@vibe/builtin` itself
+the registry does not own (`Double::cube`, which `@vibe/builtin` itself
 defines), and a `let` value alias at the qualified name (`export let
-Fs::exists = exists` in `lib/@vibe/fs/fs.vibe`), which takes no part in the
-name-to-fn-def resolution a real definition hijacks. The rule is the
+Fs::exists = exists` in `lib/@vibe/fs/fs.vibe`), whose wrapper performs the
+builtin's own operation. The rule is the
 compiler's, not a lexical scan's — `fn r#String::index_of` reads as `r` to a
 scanner, `#deprecated fn X::y` sits off column zero, and `fn` and its name may
 sit on separate lines; each of those was a silent miss in a scanner built for
@@ -2891,6 +2891,27 @@ A compiler-provided name can still be published from a package without
 defining it — a bodyless declaration on the export surface, the shape
 `String::utf8_length` uses — so `import @vibe/builtin { String::split }`
 resolves without anything shadowing the builtin.
+
+### A program's own `X::y` answers the calls it wrote, on every lane
+
+A program may define a function at a builtin's spelling -- `fn Array::map`,
+`fn Int::to_double`, `fn __set_field`, a pure `fn Fs::exists`. Its direct
+calls are typed from that declaration and run that function on both lanes, and
+the compiler's own calls by the same name (the `obj.f = x` / `xs[a:b]` /
+`region` sugar, interpolation, `Iterator::map` over an array, the host
+provider) keep running the builtin (#3185, #3186). Measured before: with
+`fn Int::to_double(n: Int) -> Int { n * 100 }`, `Int::to_double(3)` checked
+as `Int` and answered `3` on linear and `1.48e-321` on wasm-gc, and a
+program's own `fn __set_field` took every field write on linear, so `c.v = 5`
+left `c.v` at `1`. The compiler moves the definition, and every call the program
+wrote, to a spelling of its own (`rename_builtin_shadow_defs`), so no lowering
+that intercepts the builtin by name can take it.
+
+A private definition answers the calls of ITS OWN file only. A dependency
+cannot see the entry file's `fn Array::get`, and its own `Array::get(xs, 0)`
+keeps running the builtin -- before #3185 it answered the entry's function
+(`first([5, 6])` gave the entry's `77`). A published definition (`export fn
+X::y`) is the program-wide case of the section above.
 
 ### A builtin can be a value, and the rule is one property
 

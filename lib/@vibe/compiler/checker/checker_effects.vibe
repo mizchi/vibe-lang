@@ -50,7 +50,7 @@ import @vibe/core {
 }
 
 import @vibe/ast {
-  type_param_name
+  is_builtin_ref_offset, type_param_name
 }
 
 // #897 (ADR-0070 Phase 3): this file was moved from
@@ -73,6 +73,10 @@ import @vibe/ast {
 // checker export.
 import ./builtins.vibe {
   lookup_builtin
+}
+
+import ./builtin_call_arms.vibe {
+  builtin_call_arm
 }
 
 //# Types
@@ -1669,8 +1673,12 @@ fn afe_array_elem_head(args: Array[Expr], env: TypeEnv, locals: AfeLocals) -> Op
   }
 }
 
-fn afe_ident_call_head(f: String, args: Array[Expr], env: TypeEnv, locals: AfeLocals) -> Option[String] {
-  if f == "Array::get" || f == "__index" {
+/// #3179: `f_off` is the callee identifier's offset. The element-type
+/// shortcut reads the builtin `Array::get` / index sugar, so it answers only
+/// for a call the checker types as that builtin (`builtin_call_arm`); a
+/// program's own function of either spelling is read from its declaration.
+fn afe_ident_call_head(f: String, f_off: Int, args: Array[Expr], env: TypeEnv, locals: AfeLocals) -> Option[String] {
+  if (f == "Array::get" || f == "__index") && builtin_call_arm(env, f, Array::length(args), f_off) != "" {
     match afe_array_elem_head(args, env, locals) {
       Some(head) => Some(head),
       None => afe_ident_call_head_generic(f, args, env, locals)
@@ -1731,7 +1739,7 @@ fn afe_dot_call_head(obj: Expr, method: String, args: Array[Expr], env: TypeEnv,
       let display = afe_display_iter_head(receiver)
       let qualified = String::concat(display, String::concat("::", method))
       let call_args = afe_prepend_expr(obj, args)
-      match afe_ident_call_head(qualified, call_args, env, locals) {
+      match afe_ident_call_head(qualified, 0 - 1, call_args, env, locals) {
         Some(head) => Some(head),
         None => if receiver == afe_builtin_async_iter_head && afe_is_async_iter_publication_name(qualified) {
           Some(afe_builtin_async_iter_head)
@@ -2329,7 +2337,7 @@ fn afe_expr_head_name(e: Expr, env: TypeEnv, locals: AfeLocals) -> Option[String
       }
     },
     ECall(callee, args, _) => match callee {
-      EIdent(f, _) => afe_ident_call_head(f, args, env, locals),
+      EIdent(f, f_off) => afe_ident_call_head(f, f_off, args, env, locals),
       EDot(obj, method, _, _) => afe_dot_call_head(obj, method, args, env, locals),
       EFn(_, _, params, _, _, body) => afe_iife_head(params, body, args, env, locals),
       _ => None
@@ -6268,6 +6276,10 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
             // Some([]) means a pure local binding; only None may fall through
             // to the module-level function table.
             let lexical_callee = lookup_fn_effs(ov_names, ov_effs, name)
+            // #3146: a call the compiler synthesized (`builtin_ref`) reaches
+            // the builtin even where the program defines the same name, so
+            // it carries the builtin's row, never that definition's.
+            let synthesized_builtin = is_builtin_ref_offset(callee_ident_off)
             if name == "perform?" && Array::length(args) == 1 {
               match perform_question_op_name(Array::get(args, 0)) {
                 Some(op_name) => {
@@ -6375,7 +6387,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                 },
                 _ => ()
               }
-            } else if source_definition_shadows_builtin(name, lexical_callee, fn_names, fn_effs, fn_index) {
+            } else if !synthesized_builtin && source_definition_shadows_builtin(name, lexical_callee, fn_names, fn_effs, fn_index) {
               // #2107: a source definition of this name wins, so the builtin's
               // row is not the one to require -- the callee's OWN declared row
               // is, and the transitive check below reads it. Codegen has the
@@ -6426,7 +6438,11 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
             // false positives (see `generic_effect_matrix_ok_passthrough_pure`).
             let top_level_callee = match lexical_callee {
               Some(_) => None,
-              None => lookup_program_fn_effs(fn_index, fn_effs, name)
+              None => if synthesized_builtin {
+                None
+              } else {
+                lookup_program_fn_effs(fn_index, fn_effs, name)
+              }
             }
             match top_level_callee {
               Some(callee_effs) => {

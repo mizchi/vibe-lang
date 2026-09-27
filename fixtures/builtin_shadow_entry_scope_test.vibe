@@ -1,0 +1,44 @@
+import ./modules/builtin_shadow_entry_scope_dep.vibe {
+  code_of, doubled, first
+}
+
+// #3185: the program's own function of a builtin's spelling answers the calls
+// THIS file wrote, and only those. The dependency cannot see it -- the checker
+// typed its `Array::get` / `Char::to_int` / `Array::map` as the builtins -- so
+// its calls keep reaching the builtins. The rename that moves the program's
+// definition aside used to rename every file's references: measured,
+// `first([5, 6])` answered the program's 77 instead of 5. The signatures match
+// the builtins' so a whole-program check (the wasm-gc lane) accepts the
+// dependency's calls either way; the answers tell the functions apart.
+
+fn Array::get(xs: Array[Int], i: Int) -> Int {
+  let _ = xs
+  let _ = i
+  77
+}
+
+fn Char::to_int(c: Char) -> Int {
+  let _ = c
+  0 - 1
+}
+
+fn Array::map(xs: Array[Int], f: (Int) -> Int) -> Array[Int] {
+  let _ = xs
+  let _ = f
+  [42]
+}
+
+test "the program's own functions answer the calls this file wrote" {
+  inspect(Array::get([5, 6], 0), content = "77")
+  inspect(Char::to_int('a'), content = "-1")
+  inspect(Array::length(Array::map([1, 2, 3], (x: Int) -> Int {
+    x + 1
+  })), content = "1")
+}
+
+test "the dependency's calls keep reaching the builtins" {
+  inspect(first([5, 6]), content = "5")
+  inspect(code_of('a'), content = "97")
+  let ys = doubled([1, 2, 3])
+  inspect(Array::length(ys), content = "3")
+}

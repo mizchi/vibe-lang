@@ -544,6 +544,53 @@ fn report_bare_builtin_ref_hits(raw: String, listed: String, emit: Bool) -> Int 
   count
 }
 
+// #3179: the checker selects a builtin's call arm through `builtin_call_arm`
+// (checker/builtin_call_arms.vibe), whose table lists every spelling the
+// checker arms and lets a spelling the program's own function answers for
+// fall through to the ordinary call path. An arm keyed on the callee's
+// spelling directly -- `name == "Array::get" && Array::length(args) == 2`, the
+// shape all 46 arms had before -- types the program's own `fn Array::get` call
+// as the builtin, and a clean `vibe check` then adds 1 to a string.
+//
+// The literal is a builtin's spelling when it is qualified, a compiler dunder
+// or `await`. `perform` / `resume` are syntax, not builtins, and a bare type
+// name (`Map`, `Array`) compares a type, not a callee.
+fn by_name_arm_literal_is_builtin(literal: String) -> Bool {
+  String::contains(literal, "::") || String::starts_with(literal, "\"__") || literal == "\"await\""
+}
+
+// Same one-directional window as is_allowed: the hit line, or the line after
+// it, where `pkf run fmt` moves a trailing comment.
+fn by_name_arm_suppressed(path: String, line: Int) -> Bool with Fs {
+  let marker = "review-lint: allow-by-name-call-arm"
+  String::contains(source_line(path, line), marker) ||
+  String::contains(source_line(path, line + 1), marker)
+}
+
+fn report_by_name_call_arm_hits(raw: String, emit: Bool) -> Int with Fs + Stderr {
+  let hits = Json::parse(raw)
+  let mut i = 0
+  let mut count = 0
+  while i < Json::length(hits) {
+    let hit = Json::index(hits, i)
+    let path = Json::string(Json::field(hit, "path"))
+    let literal = Json::string(Json::field(Json::field(Json::field(hit, "captures"), "lit"), "text"))
+    let line = Double::to_int(Json::number(Json::field(hit, "line")))
+    if String::contains(path, "/compiler/checker/") && is_production_compiler_path(path) && !is_generated_bundle(path) && by_name_arm_literal_is_builtin(literal) && !by_name_arm_suppressed(path, line) {
+      if emit {
+        report_finding(path, line, Json::string(Json::field(hit, "text")), "select this arm with `arm == " + literal + "` and list the spelling in builtin_call_arm_table (checker/builtin_call_arms.vibe): an arm keyed on `name` types the program's own function of that spelling as the builtin (#3179)")
+      } else {
+        ()
+      }
+      count = count + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  count
+}
+
 fn lint(root: String, vibe: String) -> Int with Fs + Process + Stderr {
   let patterns = [
     "$(ctor:id)($(name:const), $(rest:args))",
@@ -551,7 +598,8 @@ fn lint(root: String, vibe: String) -> Int with Fs + Process + Stderr {
     "EAssignOp($(target:arg), $(operator:id), $(rest:args))",
     "String::contains($(row:exp), \"Async\")",
     "fname == $(name:const)",
-    "EIdent($(name:const), $(rest:args))"
+    "EIdent($(name:const), $(rest:args))",
+    "name == $(lit:const) && Array::length(args) == $(k:const)"
   ]
   let effect_patterns = effect_name_compare_patterns()
   let mut ep = 0
@@ -595,9 +643,11 @@ fn lint(root: String, vibe: String) -> Int with Fs + Process + Stderr {
         } else {
           violations = violations + report_bare_builtin_ref_hits(output, listed, true)
         }
+      } else if i == 6 {
+        violations = violations + report_by_name_call_arm_hits(output, true)
       } else {
-        // patterns 6.. are effect_name_compare_patterns(): four per name.
-        let name = Array::get(policy_effect_names(), (i - 6) / 4)
+        // patterns 7.. are effect_name_compare_patterns(): four per name.
+        let name = Array::get(policy_effect_names(), (i - 7) / 4)
         violations = violations + report_effect_name_compare_hits(output, "\"" + name + "\"", true)
       }
     }
@@ -818,6 +868,53 @@ fn builtin_ref_self_test() -> Int with Fs + Stderr {
     1
   } else if !String::contains(builtin_shadow_names_source("/nonexistent-staged-snapshot"), "\"Array::length\"") {
     Stderr::write_stream("review-lint self-test: the builtin-shadow list lookup did not fall back to the working tree\n")
+    1
+  } else {
+    by_name_arm_self_test()
+  }
+}
+
+fn by_name_arm_hit(path: String, literal: String) -> String {
+  "[{\"path\":\"" + path + "\",\"line\":1,\"text\":\"name == " + literal + " && Array::length(args) == 2\",\"captures\":{\"lit\":{\"text\":\"" + literal + "\"},\"k\":{\"text\":\"2\"}}}]"
+}
+
+fn by_name_arm_write_probe(path: String, with_marker: Bool) -> Unit with Fs {
+  let body = if with_marker {
+    "} else if name == \"Array::get\" && Array::length(args) == 2 {\n// review-lint: allow-by-name-call-arm -- reason\n"
+  } else {
+    "} else if name == \"Array::get\" && Array::length(args) == 2 {\n// ordinary comment\n"
+  }
+  Fs::write_file(path, body)
+}
+
+fn by_name_arm_self_test() -> Int with Fs + Stderr {
+  let checker = "/repo/lib/@vibe/compiler/checker/checker.vibe"
+  let marked = "_build/_review_lint_arm_marked/compiler/checker/c.vibe"
+  let plain = "_build/_review_lint_arm_plain/compiler/checker/c.vibe"
+  by_name_arm_write_probe(marked, true)
+  by_name_arm_write_probe(plain, false)
+  if report_by_name_call_arm_hits(by_name_arm_hit(checker, "\\\"Array::get\\\""), false) != 1 {
+    Stderr::write_stream("review-lint self-test: a checker arm keyed on a qualified builtin spelling was not reported\n")
+    1
+  } else if report_by_name_call_arm_hits(by_name_arm_hit(checker, "\\\"__index\\\""), false) != 1 || report_by_name_call_arm_hits(by_name_arm_hit(checker, "\\\"await\\\""), false) != 1 {
+    Stderr::write_stream("review-lint self-test: a checker arm keyed on a dunder or `await` was not reported\n")
+    1
+  } else if report_by_name_call_arm_hits(by_name_arm_hit(checker, "\\\"perform\\\""), false) != 0 || report_by_name_call_arm_hits(by_name_arm_hit(checker, "\\\"Map\\\""), false) != 0 {
+    // `perform` is syntax and `Map` a type name, not a builtin callee.
+    Stderr::write_stream("review-lint self-test: a compare that is not a builtin callee was reported\n")
+    1
+  } else if report_by_name_call_arm_hits(by_name_arm_hit("/repo/lib/@vibe/compiler/codegen/expr/compile_call.vibe", "\\\"Array::get\\\""), false) != 0 {
+    // Codegen dispatches by spelling after the program's definitions are renamed.
+    Stderr::write_stream("review-lint self-test: a compare outside the checker was reported\n")
+    1
+  } else if report_by_name_call_arm_hits(by_name_arm_hit("/repo/lib/@vibe/compiler/checker/x_test.vibe", "\\\"Array::get\\\""), false) != 0 {
+    Stderr::write_stream("review-lint self-test: a checker test file was reported\n")
+    1
+  } else if report_by_name_call_arm_hits(by_name_arm_hit(marked, "\\\"Array::get\\\""), false) != 0 {
+    Stderr::write_stream("review-lint self-test: the by-name call arm suppression marker was ignored\n")
+    1
+  } else if report_by_name_call_arm_hits(by_name_arm_hit(plain, "\\\"Array::get\\\""), false) != 1 {
+    Stderr::write_stream("review-lint self-test: an unmarked by-name call arm was suppressed anyway\n")
     1
   } else {
     0

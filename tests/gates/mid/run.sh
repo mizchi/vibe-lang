@@ -702,9 +702,13 @@ echo "[compiler-gate] MutList / MutBytes builtin aliases ok on shadow"
 # Map loops, interpolation, structural `==` -- must reach the builtin when the
 # program defines `Array::length` / `get` / `push`, on the shadow lane and on
 # wasm-gc (whose native-array shortcuts used to answer a program's own direct
-# `Array::length` call with the builtin).
+# `Array::length` call with the builtin). #3146: the CHECKER types those
+# synthesized calls from the builtin's signature and row too, so a program
+# whose own `String::concat` / `Array::get` differs from the builtin still
+# compiles its interpolation and index sugar.
 if ! VIBE_RC=shadow VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
     bash scripts/vibe_test.sh fixtures/builtin_shadow_internal_lowering_test.vibe fixtures/builtin_shadow_parser_sugar_test.vibe \
+      fixtures/builtin_shadow_synthesized_typing_test.vibe fixtures/builtin_shadow_synthesized_row_test.vibe \
     >"$ROOT_DIR/_build/_gate_builtin_shadow_lowering.log" 2>&1; then
   echo "[compiler-gate] FAIL: a compiler-internal call by a builtin's name reached the program's same-named function under VIBE_RC=shadow (#3132):" >&2
   tail -20 "$ROOT_DIR/_build/_gate_builtin_shadow_lowering.log" >&2
@@ -712,6 +716,7 @@ if ! VIBE_RC=shadow VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_N
 fi
 if ! VIBE_TEST_BACKEND=gc VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
     bash scripts/vibe_test.sh fixtures/mut_alias_shadowed_builtin_test.vibe fixtures/builtin_shadow_internal_lowering_test.vibe fixtures/builtin_shadow_parser_sugar_test.vibe \
+      fixtures/builtin_shadow_synthesized_typing_test.vibe fixtures/builtin_shadow_synthesized_row_test.vibe \
     >"$ROOT_DIR/_build/_gate_builtin_shadow_lowering.log" 2>&1; then
   echo "[compiler-gate] FAIL: on wasm-gc a builtin and a same-named program function were confused (#3129 / #3132):" >&2
   tail -20 "$ROOT_DIR/_build/_gate_builtin_shadow_lowering.log" >&2
@@ -719,6 +724,126 @@ if ! VIBE_TEST_BACKEND=gc VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMP
 fi
 rm -f "$ROOT_DIR/_build/_gate_builtin_shadow_lowering.log"
 echo "[compiler-gate] builtin-named internal calls ok on shadow and wasm-gc"
+# #3179: the other direction. A direct call the program wrote to its OWN
+# function of a spelling the checker arms by name (`Array::get`, `Map::get`,
+# `MutList::get`, `Future::ready`, `__index`, ...) is typed from that
+# function's declaration and answers its value. The checker used to type it
+# as the builtin while codegen called the program's function, so a String
+# result was added to as an Int. The unit runner covers the default lane.
+for dc_lane in shadow gc; do
+  case "$dc_lane" in
+    shadow) dc_env="VIBE_RC=shadow" ;;
+    gc) dc_env="VIBE_TEST_BACKEND=gc" ;;
+  esac
+  if ! env "$dc_env" VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+      bash scripts/vibe_test.sh fixtures/builtin_shadow_direct_call_typing_test.vibe \
+      >"$ROOT_DIR/_build/_gate_builtin_shadow_direct_call.log" 2>&1; then
+    echo "[compiler-gate] FAIL: a direct call to the program's own function of a builtin-armed spelling was typed, or run, as the builtin on the $dc_lane lane (#3179):" >&2
+    tail -20 "$ROOT_DIR/_build/_gate_builtin_shadow_direct_call.log" >&2
+    exit 1
+  fi
+done
+rm -f "$ROOT_DIR/_build/_gate_builtin_shadow_direct_call.log"
+echo "[compiler-gate] program-declared builtin spellings ok: direct calls answer the program's own functions (shadow + gc)"
+# #3185 / #3186: the spellings a LOWERING intercepts ahead of the function
+# table -- the frozen-array / MutList / MutBytes conversions, the higher-order
+# Array family, Map::set / delete, FixedArray::make / unsafe_set / blit, the
+# parser sugar's __slice / __len / __set_field / __region_run, the conversions
+# (Int::to_double, Char::to_int, ...) and the capability builtins (Fs::exists,
+# Env::args_len, ...). A program's own function of one of them used to be
+# ignored for its direct calls (the checker typed the declaration, the builtin
+# ran), and `fn __set_field` took every field write. One fixture per family,
+# each answering values its builtin never does, with the compiler's own calls
+# by those names checked beside them -- and a dependency's calls, which cannot
+# see the program's private definition (entry_scope). The unit runner covers
+# the default lane.
+for bf_lane in shadow gc; do
+  case "$bf_lane" in
+    shadow) bf_env="VIBE_RC=shadow" ;;
+    gc) bf_env="VIBE_TEST_BACKEND=gc" ;;
+  esac
+  if ! env "$bf_env" VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+      bash scripts/vibe_test.sh fixtures/builtin_shadow_region_collections_test.vibe fixtures/builtin_shadow_array_hof_test.vibe \
+        fixtures/builtin_shadow_map_fixed_array_test.vibe fixtures/builtin_shadow_sugar_callee_test.vibe \
+        fixtures/builtin_shadow_conversion_test.vibe fixtures/builtin_shadow_capability_test.vibe \
+        fixtures/builtin_shadow_entry_scope_test.vibe \
+      >"$ROOT_DIR/_build/_gate_builtin_shadow_intercept.log" 2>&1; then
+    echo "[compiler-gate] FAIL: a program's own function of a builtin spelling a lowering intercepts was ignored for its direct call, or took the compiler's own call, on the $bf_lane lane (#3185 / #3186):" >&2
+    tail -20 "$ROOT_DIR/_build/_gate_builtin_shadow_intercept.log" >&2
+    exit 1
+  fi
+done
+# `Iterator::map` over an array is devirtualized to the builtin `Array::map`
+# behind the program's own one. Shadow only: importing @vibe/builtin's
+# Iterator does not compile on wasm-gc (its async half reaches Future::ready).
+if ! VIBE_RC=shadow VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+    bash scripts/vibe_test.sh fixtures/builtin_shadow_iterator_devirt_test.vibe \
+    >"$ROOT_DIR/_build/_gate_builtin_shadow_intercept.log" 2>&1; then
+  echo "[compiler-gate] FAIL: a devirtualized Iterator operation over an array reached the program's own Array function under VIBE_RC=shadow (#3185):" >&2
+  tail -20 "$ROOT_DIR/_build/_gate_builtin_shadow_intercept.log" >&2
+  exit 1
+fi
+rm -f "$ROOT_DIR/_build/_gate_builtin_shadow_intercept.log"
+echo "[compiler-gate] intercepted builtin spellings ok: the program's own functions answer its calls (shadow + gc)"
+# #3186: the authority half, read off the artifact. A program whose own PURE
+# `Fs::exists` / `Env::args_len` / `Stdin::read_char` answers for the builtin is
+# exempt from the capability row (#2107), so its linear module must not reach
+# the host: it must load, and it must import no capability. Before the fix the
+# linear lane took the call into the host-import shim, which here emitted a
+# module that did not validate.
+capdir="_build/_gate_builtin_shadow_capability"
+rm -rf "$capdir"; mkdir -p "$capdir"
+cat > "$capdir/own_fs.vibe" <<'CAPEOF'
+fn Fs::exists(path: String) -> Bool {
+  String::length(path) == 3
+}
+
+fn Env::args_len() -> Int {
+  77
+}
+
+fn Stdin::read_char() -> Int {
+  0 - 5
+}
+
+export fn probe() -> Int {
+  if Fs::exists("abc") {
+    Env::args_len() + Stdin::read_char()
+  } else {
+    0
+  }
+}
+CAPEOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$capdir/own_fs.vibe" "$capdir/own_fs.wasm" __no_entry__ >"$capdir/build.log" 2>&1 || true
+if [ ! -s "$capdir/own_fs.wasm" ]; then
+  echo "[compiler-gate] FAIL: a program with its own pure Fs::exists did not build on linear (#3186):" >&2
+  cat "$capdir/own_fs.wasm.diag" >&2 2>/dev/null || tail -20 "$capdir/build.log" >&2
+  exit 1
+fi
+# The linear lane may emit exnref, which this node may still gate behind a flag
+# (the host runner probes it the same way).
+cap_node_flags=()
+if node --experimental-wasm-exnref -e "" >/dev/null 2>&1; then
+  cap_node_flags=(--experimental-wasm-exnref)
+fi
+if ! cap_imports="$(node ${cap_node_flags[@]+"${cap_node_flags[@]}"} -e '
+const bytes = require("fs").readFileSync(process.argv[1]);
+const mod = new WebAssembly.Module(bytes);
+for (const i of WebAssembly.Module.imports(mod)) console.log(i.module + "." + i.name);
+' "$capdir/own_fs.wasm" 2>&1)"; then
+  echo "[compiler-gate] FAIL: the linear module of a program with its own pure Fs::exists does not load (#3186):" >&2
+  printf '%s\n' "$cap_imports" | tail -5 >&2
+  exit 1
+fi
+if printf '%s\n' "$cap_imports" | grep -Eq '^vibe\.(fs_|env_|stdin_)'; then
+  echo "[compiler-gate] FAIL: a program's own pure Fs::exists / Env::args_len / Stdin::read_char reached a host capability on linear (#3186):" >&2
+  printf '%s\n' "$cap_imports" >&2
+  exit 1
+fi
+rm -rf "$capdir"
+echo "[compiler-gate] own pure capability-named functions ok: the linear module loads and imports no capability (#3186)"
 # #3158: the 63-bit wrap contract (#1877) holds the SAME values on every
 # backend, so its test runs on wasm-gc too (the unit runner covers linear).
 # It could not compile there: the erased-generic `[T: Add]` / `[T: Ord]`
