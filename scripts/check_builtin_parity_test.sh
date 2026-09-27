@@ -117,4 +117,25 @@ if ! grep -qi "call-site-lowered builtin has no" "$WORK/callsite.log"; then
 fi
 echo "builtin-parity-selftest:   red ok: callsite-exemption"
 
+# The GC future rows remain classified as linear-only only while their
+# callsite condition refuses builtin calls and preserves user shadowing.
+FUTURE_COPY="$WORK/backend_future_call.vibe"
+python3 - "$GC_CALLSITE_REAL" "$FUTURE_COPY" <<'PY'
+import sys
+src, dst = sys.argv[1:]
+s = open(src, encoding="utf-8").read()
+needle = 'fname == "Future::resolve") && !gc_name_is_user_defined(ctx, local_names, fname)'
+assert s.count(needle) == 1, "GC future refusal guard not found exactly once"
+open(dst, "w", encoding="utf-8").write(s.replace(needle, needle.replace(' && !', ' && '), 1))
+PY
+if VIBE_BUILTIN_PARITY_GC_CALLSITE="$FUTURE_COPY" bash "$GATE" >"$WORK/future.log" 2>&1; then
+  cat "$WORK/future.log" >&2
+  fail "the gate PASSED after the GC future shadowing guard changed"
+fi
+if ! grep -qF 'GC guest future rejection shape changed' "$WORK/future.log"; then
+  cat "$WORK/future.log" >&2
+  fail "the future-guard mutation failed for another reason"
+fi
+echo "builtin-parity-selftest:   red ok: gc-future-refusal"
+
 echo "builtin-parity-selftest: ok"

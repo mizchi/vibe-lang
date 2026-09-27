@@ -5745,3 +5745,6 @@ smoke_check tostr 4321
 smoke_check ieq 4321
 rm -rf "$sdir"
 echo "[compiler-gate] multi-feature end-to-end smoke ok (10/153/6/111/11111/321/3021/11111/4321/7654321/148/4321/4321/78/4321/4321)"
+
+echo "[compiler-gate] GC guest future refusal (#3188)"
+VIBE_STAGE2_WASM="$stage2_wasm" bash scripts/test_gc_future_refusal.sh
