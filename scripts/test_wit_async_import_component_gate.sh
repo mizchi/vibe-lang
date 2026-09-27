@@ -706,6 +706,12 @@ cancel_row wit_future_import resolve_many prices_bindings.vibe 640 \
   "$PIFACE#get-price=40:30,$PIFACE#get-tax=2:1" "" "600 get-tax futures answered by Future::resolve release their slots"
 cancel_row wit_future_import resolve_claimed prices_bindings.vibe 2 \
   "$PIFACE#get-price=40:300,$PIFACE#get-tax=2:1" "" "300 awaited futures resolved under their waiters stay counted"
+# #3164: the table's edge -- 511 slots claimed by parked awaiters and the
+# 512th call's future dropped. The reclaim used to run after a call took its
+# slot and spare it, so nothing was reclaimed and the next call trapped in the
+# getter; room is now made before the getter runs.
+cancel_row wit_future_import claimed_edge prices_bindings.vibe 2 \
+  "$PIFACE#get-price=40:300,$PIFACE#get-tax=2:1" "" "511 claimed slots and a dropped future: the next call reclaims it"
 # A reclaimed future awaited afterwards: its slot now holds a later call, so
 # the await must trap rather than answer that call's value.
 RECLAIM_DIR="$OUT/reclaimed_await_trap"

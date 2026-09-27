@@ -57,7 +57,6 @@ import @vibe/compiler/codegen/common_base {
   emit_i64_store,
   emit_shift_count_clamp,
   emit_str_ref,
-  emit_unbox_float,
   expr_tag,
   float_log_reset_above,
   func_table_builtin_index_of,
@@ -231,7 +230,7 @@ import @vibe/compiler/codegen/wasm_emit {
 }
 
 import ./compile_call.vibe {
-  cc_expr_is_stringish, compile_call
+  cc_expr_is_stringish, compile_call, emit_float_operand_bits
 }
 
 import ./compile_expr_tail.vibe {
@@ -1329,15 +1328,11 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
       }
       nle
     } else if expr_is_floatish(lhs, local_names, ctx) || expr_is_floatish(rhs, local_names, ctx) {
-      let nl1 = compile_expr(buf, lhs, local_names, next_local, ctx, ld)
-      if ctx.enable_rc {
-        emit_unbox_float(buf)
-      }
+      // #3135: each operand arrives as its bits, and a box made only to be
+      // read here is released (or never made): see emit_float_operand_bits.
+      let nl1 = emit_float_operand_bits(buf, lhs, local_names, next_local, ctx, ld, compile_expr)
       emit_f64_reinterpret_i64(buf)
-      let nl2 = compile_expr(buf, rhs, local_names, nl1, ctx, ld)
-      if ctx.enable_rc {
-        emit_unbox_float(buf)
-      }
+      let nl2 = emit_float_operand_bits(buf, rhs, local_names, nl1, ctx, ld, compile_expr)
       emit_f64_reinterpret_i64(buf)
       if op == "+" || op == "-" || op == "*" || op == "/" {
         if op == "+" {
@@ -1450,14 +1445,12 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
     let operand = get_eunaryop_expr(expr)
     if op == "-" {
       if expr_is_floatish(operand, local_names, ctx) {
-        let nl = compile_expr(buf, operand, local_names, next_local, ctx, ld)
         // #745: under RC the operand is a BOXED float — unbox before the
         // f64.neg and rebox the result, exactly like the float binop path.
         // Without this, `-1.0` negated the box POINTER and the "float" that
-        // escaped was garbage bits.
-        if ctx.enable_rc {
-          emit_unbox_float(buf)
-        }
+        // escaped was garbage bits. #3135: the operand's own box is released
+        // when it is a temporary (emit_float_operand_bits).
+        let nl = emit_float_operand_bits(buf, operand, local_names, next_local, ctx, ld, compile_expr)
         emit_f64_reinterpret_i64(buf)
         emit_f64_neg(buf)
         emit_i64_reinterpret_f64(buf)
@@ -1531,19 +1524,9 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
           // #704: unbox boxed floats under RC before reinterpreting as f64, and
           // handle ==/!= here (f64_eq/f64_ne) so float equality in an if/while
           // condition compares values, not box pointers.
-          let cnl1 = compile_expr(buf, clhs, local_names, next_local, ctx, ld)
-          if ctx.enable_rc {
-            emit_unbox_float(buf)
-          } else {
-            ()
-          }
+          let cnl1 = emit_float_operand_bits(buf, clhs, local_names, next_local, ctx, ld, compile_expr)
           emit_f64_reinterpret_i64(buf)
-          let cnl2 = compile_expr(buf, crhs, local_names, cnl1, ctx, ld)
-          if ctx.enable_rc {
-            emit_unbox_float(buf)
-          } else {
-            ()
-          }
+          let cnl2 = emit_float_operand_bits(buf, crhs, local_names, cnl1, ctx, ld, compile_expr)
           emit_f64_reinterpret_i64(buf)
           if cop == "==" {
             emit_f64_eq(buf)
@@ -1618,19 +1601,9 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
             } else if expr_is_floatish(ilhs, local_names, ctx) || expr_is_floatish(irhs, local_names, ctx) {
               // #704: unbox boxed floats under RC; handle ==/!= via f64_eq/f64_ne.
               // This arm is `!(ilhs iop irhs)`, so the trailing eqz negates.
-              let inl1 = compile_expr(buf, ilhs, local_names, next_local, ctx, ld)
-              if ctx.enable_rc {
-                emit_unbox_float(buf)
-              } else {
-                ()
-              }
+              let inl1 = emit_float_operand_bits(buf, ilhs, local_names, next_local, ctx, ld, compile_expr)
               emit_f64_reinterpret_i64(buf)
-              let inl2 = compile_expr(buf, irhs, local_names, inl1, ctx, ld)
-              if ctx.enable_rc {
-                emit_unbox_float(buf)
-              } else {
-                ()
-              }
+              let inl2 = emit_float_operand_bits(buf, irhs, local_names, inl1, ctx, ld, compile_expr)
               emit_f64_reinterpret_i64(buf)
               if iop == "==" {
                 emit_f64_eq(buf)

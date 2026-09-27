@@ -1,0 +1,134 @@
+// #3169: the evidence dictionary a user-effect `handle` passes to each call
+// is now OWNED by the callee (its `__EvDict_<E>` parameter is a heap
+// parameter), which drops it when it returns. Releasing too much is a
+// use-after-free, so this file pins the other half of
+// fixtures/rc_user_effect_handle_bounded_test.vibe (tests/gates/mid/run.sh,
+// 40f0j): a callee that performs several times, forwards the dictionary to
+// another needing function, or performs from a loop still reaches a live
+// dictionary; an arm's captured heap locals and cells survive the handle; and
+// values the handled body returns stay alive. Each reads its value AFTER
+// `churn()` allocates blocks that would reuse a freed one, so a premature
+// release answers with the churn value instead (and VIBE_RC=shadow traps on
+// the drop of a freed block).
+
+effect Tick {
+  Tick(Int) -> Unit
+}
+
+effect Ask {
+  Get() -> Int;
+  Put(Int) -> Unit
+}
+
+fn churn() -> Int {
+  let a = [7, 7, 7]
+  let b = [8, 8, 8, 8]
+  Array::length(a) + Array::length(b)
+}
+
+fn tick(n: Int) -> Unit with Tick {
+  perform Tick::Tick(n)
+}
+
+fn tick_many(n: Int) -> Unit with Tick {
+  let mut k = 0
+  while k < n {
+    tick(k)
+    let _ = churn()
+    k = k + 1
+  }
+}
+
+fn tick_nested(n: Int) -> Unit with Tick {
+  tick(n)
+  let _ = churn()
+  tick_many(n)
+  tick(n)
+}
+
+fn ask_list(n: Int) -> Array[Int] with Ask {
+  let a = perform Ask::Get()
+  perform Ask::Put(a + n)
+  let _ = churn()
+  [a, perform Ask::Get(), n]
+}
+
+test "a callee performs from a loop through one dictionary" {
+  let mut total = 0
+  handle {
+    tick_many(5)
+  } with {
+    Tick::Tick(k) => {
+      total = total + k
+      resume(())
+    }
+  }
+  let _ = churn()
+  inspect(total, content = "10")
+}
+
+test "a dictionary forwarded to another needing function" {
+  let mut calls = 0
+  handle {
+    tick_nested(3)
+    tick_nested(2)
+  } with {
+    Tick::Tick(_) => {
+      calls = calls + 1
+      resume(())
+    }
+  }
+  let _ = churn()
+  inspect(calls, content = "9")
+}
+
+test "an arm's captured heap local survives the handle" {
+  let xs = [10, 20, 30]
+  let mut seen = 0
+  handle {
+    tick(1)
+    tick(2)
+  } with {
+    Tick::Tick(k) => {
+      seen = seen + Array::get(xs, k)
+      resume(())
+    }
+  }
+  let _ = churn()
+  inspect(seen, content = "50")
+  inspect(Array::get(xs, 0) + Array::length(xs), content = "13")
+}
+
+test "a handled body returns a heap value" {
+  let mut stored = 0
+  let r: Array[Int] = handle {
+    ask_list(4)
+  } with {
+    Ask::Get() => resume(stored + 1);
+    Ask::Put(v) => {
+      stored = v
+      resume(())
+    }
+  }
+  let _ = churn()
+  inspect(r, content = "[1, 6, 4]")
+}
+
+test "the same handle run many times" {
+  let mut acc = 0
+  let mut i = 0
+  while i < 50 {
+    let mut local = 0
+    handle {
+      tick_many(3)
+    } with {
+      Tick::Tick(k) => {
+        local = local + k
+        resume(())
+      }
+    }
+    acc = acc + local + churn()
+    i = i + 1
+  }
+  inspect(acc, content = "500")
+}

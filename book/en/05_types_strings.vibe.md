@@ -4,8 +4,9 @@ Previous: [Control flow](04_control_flow.vibe.md)
 
 日本語版: [05_types_strings.vibe.md](../ja/05_types_strings.vibe.md)
 
-You have been using `Int`, `Double`, `Bool`, `String` and `Char`
-without being told much about them, and mostly that has been fine.
+You have been using `Int`, `Double`, `Bool` and `String` (and `Char`,
+which is another name for `Int`) without being told much about them,
+and mostly that has been fine.
 This chapter covers the two places where it stops being fine: text is
 bytes, and printing a value needs a way to print it.
 
@@ -43,8 +44,8 @@ length = 5
 
 `String::from_byte` writes a byte back out as a one-byte `String` —
 `String::from_char_code` is its older name. It does **not** encode a
-code point: hand it `233` (`'é'`) and you get a lone `0xE9` byte, which
-is not valid UTF-8 (#2203). The four
+code point: hand it `233` (the code point of `é`) and you get a lone
+`0xE9` byte, which is not valid UTF-8 (#2203). The four
 slice forms — `s[:]`, `s[:n]`, `s[n:]`, `s[a:b]` — work the same on
 `Bytes` and on `Array[T]`.
 
@@ -52,6 +53,21 @@ Because indices are bytes, slicing does not respect Unicode code point
 boundaries. Slicing ASCII is safe; slicing arbitrary text at an
 arbitrary index is not, and that is a deliberate choice — the memory is
 bytes, so the type says bytes rather than pretending otherwise.
+
+Nothing checks that a `String` holds valid UTF-8, and invalid bytes
+survive inside the program until something outside it has to read them
+as text:
+
+- **Interpolation** copies the bytes unchanged. `"<\{String::from_byte(233)}>"`
+  is three bytes long, and byte 1 is still `233`.
+- **Printing** hands the bytes to the host, and the runner behind `vibe run`
+  and `vibe test` decodes its output as UTF-8, so each invalid sequence
+  appears as `�` (U+FFFD). The replacement happens on the way out; the
+  `String` itself is not changed.
+- **A WIT boundary** does not accept them at all. A WIT `string` must be
+  valid UTF-8, so returning such a value from a component export fails
+  when the runtime lifts it (wasmtime reports `incomplete utf-8 byte
+  sequence`) instead of delivering altered text.
 
 ## Interpolation
 

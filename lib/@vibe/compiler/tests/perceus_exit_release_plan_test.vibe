@@ -85,10 +85,49 @@ test "a binding consumed on the way to the exit is not released" {
   assert(String::contains(plan, "run e exit_drop:0:1 1"))
 }
 
-test "a binding consumed on one branch before the exit is not released" {
-  // The consuming branch may be the path that reaches the exit.
+test "a binding consumed on one branch before the exit is released under its path flag" {
+  // The consuming branch may be the path that reaches the exit, so the row
+  // is the path row (-1): codegen releases once, guarded on the flag the
+  // consuming path sets -- the flag its scope-end path drop reads (#3175).
   let plan = plan_of(program("let run: (Int) -> Int = (n) -> {\n  let d = A([n])\n  if n > 5 {\n    let e = keep(d)\n    0\n  } else {\n    0\n  }\n  if n > 0 {\n    return 1\n  }\n  0\n}"))
-  assert(!String::contains(plan, "exit_drop"))
+  assert(String::contains(plan, "run d path_drop 1"))
+  assert(String::contains(plan, "run d exit_drop:0:-1 1"))
+  assert(!String::contains(plan, "run d exit_drop:0:1"))
+}
+
+test "a binding a break consumes is released under its path flag by a continue" {
+  // #3175: `break d` of a parameterized loop consumes the body binding on
+  // one path; the `continue` the other path takes left it unreleased.
+  let plan = plan_of(program("let run: (Int) -> D = (n) -> {\n  loop (i = 0) {\n    let d = A([i])\n    if i == n {\n      break d\n    }\n    continue(i + 1)\n  }\n}"))
+  assert(String::contains(plan, "run d path_drop 1"))
+  assert(String::contains(plan, "run d exit_drop:1:-1 1"))
+}
+
+test "a binding consumed on a branch and used after the merge gets no path row" {
+  // The later use keeps a reference through the merge (a dup), so the exit
+  // gets an ordinary row and no path drop is planned.
+  let plan = plan_of(program("let run: (Int) -> Int = (n) -> {\n  let d = A([n])\n  if n > 5 {\n    let e = keep(d)\n    0\n  } else {\n    0\n  }\n  if n > 0 {\n    return 1\n  }\n  let f = keep(d)\n  0\n}"))
+  assert(!String::contains(plan, "run d path_drop"))
+  assert(!String::contains(plan, "run d exit_drop:0:-1"))
+  assert(String::contains(plan, "run d exit_drop:0:1 1"))
+}
+
+test "a discarded parameterized loop drops what its break stored" {
+  // #3168: the loop's result slot is classified from what `break` stores,
+  // not from its `0` placeholder, and a discarded result is released at the
+  // slot's scope end.
+  let plan = plan_of(program("let run: (Int) -> Int = (n) -> {\n  loop (i = 0) {\n    let d = A([i])\n    if i == n {\n      break d\n    }\n    continue(i + 1)\n  }\n  0\n}"))
+  assert(String::contains(plan, "run __loop_result drop 1"))
+}
+
+test "a used parameterized loop hands its break value on" {
+  let plan = plan_of(program("let run: (Int) -> D = (n) -> {\n  let r = loop (i = 0) {\n    let d = A([i])\n    if i == n {\n      break d\n    }\n    continue(i + 1)\n  }\n  keep(r)\n}"))
+  assert(!String::contains(plan, "run __loop_result drop"))
+}
+
+test "a discarded loop that breaks with a scalar literal drops nothing" {
+  let plan = plan_of(program("let run: (Int) -> Int = (n) -> {\n  loop (i = 0) {\n    if i == n {\n      break 7\n    }\n    continue(i + 1)\n  }\n  0\n}"))
+  assert(!String::contains(plan, "__loop_result"))
 }
 
 test "exits are numbered in walk order" {
@@ -125,12 +164,19 @@ test "a let mut with no dup budget is released once, stored before the exit or a
   assert(String::contains(after, "run d exit_drop:0:1 1"))
 }
 
-test "a stored let mut with a dup budget is not released" {
-  // A store re-applies the dup budget -- except the self-reusing tuple
-  // store -- so what the slot holds at the exit is not known.
+test "a stored let mut with a dup budget is released like an unstored one" {
+  // #3175: every store but the self-reusing tuple store re-applies the dup
+  // budget, so the slot holds its reference and the whole budget again.
   let plan = plan_of(program("let run: (Int) -> Int = (n) -> {\n  let mut d = A([n])\n  d = A([n])\n  if n > 0 {\n    return 1\n  }\n  let e = keep(d)\n  let f = keep(d)\n  0\n}"))
+  assert(String::contains(plan, "run d exit_drop:0:2 1"))
+}
+
+test "a let mut with a dup budget and a tuple store is not released" {
+  // The self-reusing tuple store leaves the slot one reference, so what it
+  // holds at the exit is not known.
+  let plan = plan_of(program("let run: (Int) -> Int = (n) -> {\n  let mut t = (A([n]), 1)\n  t = (A([n]), 2)\n  if n > 0 {\n    return 1\n  }\n  let e = [t]\n  let f = [t]\n  0\n}"))
   assert(String::contains(plan, "exit_site:0:0"))
-  assert(!String::contains(plan, "run d exit_drop"))
+  assert(!String::contains(plan, "run t exit_drop"))
 }
 
 test "a let mut a call moves out of and back into is released once" {

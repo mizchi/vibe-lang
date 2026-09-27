@@ -1,0 +1,23 @@
+// #3192: an Async entry that spawns a suspendable task and ALSO calls an
+// Async closure literal of its own, before the group. The closure is compiled
+// to the step convention; the entry's own call to it compiled as a plain call
+// and bound `x` to the step object, so the entry answered a heap pointer
+// (849) with no error. 40 + 1 = 41. Executed by
+// scripts/test_named_hostfutures_component_gate.sh.
+import @vibe/concurrent/experimental {
+  TaskGroup, TaskHandle
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  let fetch = () -> Int with Async {
+    await(host_future_named("slow"))
+  }
+  let x = fetch()
+  let y = TaskGroup::run((g) -> {
+    let a = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      1
+    })
+    TaskHandle::join(a)
+  })
+  x + y
+}

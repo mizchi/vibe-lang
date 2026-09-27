@@ -108,30 +108,43 @@ bundled
 `allows Console + Fs::read_file` と厳密に同じです — それ以上でも以下でも
 ありません。
 
-## 省略可能なケーパビリティ: `perform?`
+## 省略可能なケーパビリティ: `perform?` (実験的)
 
 `allows` の項目に付く `?` は「省略可能」を表します。ホストがそれを許可した
 かどうかに関わらず、プログラムは走れます。対応する
 `perform? Fs::read_file("p")` は `Attempt` を返します —
 `Granted` / `NotGranted` / `Errored`。
 
-非対話コンパイラには build/apply の grant 情報がないため、未解決の optional
-capability は codegen 前に `NotGranted` へ固定されます。operation とその引数は
-評価されません。
+この機能は**実験的**です。プログラムがどの腕を通るかはビルドの仕方に
+よって変わります。付与を一度記録してビルドから実行まで持ち運ぶ仕組みが、
+まだ無いからです:
+
+- `vibe run` は `main` の前にフラグから付与を決めます。フラグが無ければ
+  ケーパビリティは付与され、operation が実行されて `Granted` を返すか、
+  失敗したとき (存在しないファイルなど) は `Errored` を返します。
+  `--deny-fs` を付けると `NotGranted` になります。
+- `vibe build` と、この本の例を検査するレーンには参照できる付与が無いので、
+  省略可能なケーパビリティはすべてコンパイル時に `NotGranted` へ固定されます。
+  operation とその引数は評価されず、ホストの import も成果物に入りません。
+- `test` / `bench` / `example` ブロックでは `perform?` は拒否されます。
+  これらのブロックは全権限で走るので、そこで `NotGranted` は起こり得ません。
+
+ここに示す出力は `NotGranted` の場合の答えです。フラグ無しの `vibe run`
+では、読むべき `config.json` も `cache.json` も無いので、同じプログラムは
+`Errored` の腕を通ります (`errored` と `cache failed`)。
 
 ```vibe run
-fn main() -> Int allows Console + Fs::read_file? {
-  let a = perform? Fs::read_file("config.json")
-  match a {
-    NotGranted => 0,
-    Errored(_) => 1,
-    Granted(_) => 2
+fn main allows Console + Fs::read_file? {
+  match perform? Fs::read_file("config.json") {
+    NotGranted => println("not granted"),
+    Errored(_) => println("errored"),
+    Granted(_) => println("granted")
   }
 }
 ```
 
 ```output
-0
+not granted
 ```
 
 省略可能な付与が必須の呼び出しの代わりになることはありません。
@@ -170,9 +183,8 @@ no cache
 それを差し止められる者がいないので、その等級は何についての主張でもない
 からです。
 
-固定済み解決表からの lowering は linear / wasm-gc の両 backend で共通です。
-`--allow-*`、BindingLock、対話 preflight を production に接続する作業は #2332 に残り、
-それまでは production compile が `Granted` / `Errored` を選ぶことはありません。
+答えがまだビルドに依存するので、プログラムがどこで走っても同じでなければ
+ならない振る舞いを `perform?` に頼らないでください。
 
 ## 2種類の見分け方
 

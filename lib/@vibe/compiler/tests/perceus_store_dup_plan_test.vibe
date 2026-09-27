@@ -5,8 +5,9 @@
 // in cannot be the transfer of that binding's one reference: it runs once per
 // iteration. The plan says so with `store_dup:OFFSET` (the occurrence's source
 // offset), codegen retains there, and the binding keeps its own reference --
-// and so its scope-end drop. A straight-line store, a binding declared inside
-// the loop body, and the scalar loop-result slot keep the transfer. The
+// and so its scope-end drop. A straight-line store and a binding declared inside
+// the loop body keep the transfer; the loop-result slot owns what it stores
+// (#3168) and retains like any owning slot. The
 // runtime halves are fixtures/rc_mut_store_view_test.vibe and
 // fixtures/rc_mut_store_view_bounded_test.vibe (tests/gates/mid/run.sh, 40f0i).
 
@@ -81,11 +82,14 @@ test "a parameter stored in a loop retains and keeps its drop" {
   assert(String::contains(plan, "run p drop 1"))
 }
 
-test "the loop-result slot keeps the transfer" {
-  // `break p` is `__loop_result = p; break`: stored once, before the loop is
-  // left, into a slot the plan calls scalar.
+test "the loop-result slot takes a reference of its own" {
+  // `break p` is `__loop_result = p; break`. Since #3168 the loop-result slot
+  // owns what its `break v` stores (it is no longer planned as scalar), so a
+  // store of a binding from outside the loop retains like any owning slot, and
+  // the binding keeps its own reference and its scope-end drop.
   let plan = plan_of(program("let run: (Int) -> Int = (n) -> {\n  let p = A([n])\n  let d = loop (i = 0) {\n    if i == 2 {\n      break p\n    }\n    continue(i + 1)\n  }\n  let e = keep(d)\n  0\n}"))
-  assert(!String::contains(plan, "store_dup"))
+  assert(store_dup_rows(plan, "p") == 1)
+  assert(String::contains(plan, "run p drop 1"))
 }
 
 // #3190: a `let` / `let mut` initializer is a store into its binder, and a

@@ -1705,7 +1705,16 @@ export fn mut_needs_ref_cell(body: Expr, name: String) -> Bool {
 /// receiver (cc_internal_borrow_mask), so counting the position as owning
 /// planned a reference for it that nothing released -- the struct leaked.
 export fn md_is_borrow_arg0_call(f: String) -> Bool {
-  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::truncate" || f == "Array::push" || f == "Array::push_all" || f == "ArrayBuilder::push" || f == "MutList::push" || f == "MutList::get" || f == "MutList::length" || f == "MutList::truncate" || f == "MutBytes::push" || f == "MutBytes::length" || f == "StringBuilder::push" || f == "MapBuilder::set" || f == "MapBuilder::has_key" || f == "MapBuilder::get" || f == "Map::get" || f == "Map::iter_get" || f == "Map::__iter_get_unchecked" || f == "Map::keys" || f == "Map::values" || f == "Map::size" || f == "Map::has_key" || f == "Map::has" || f == "Bytes::push" || f == "Bytes::set" || f == "Bytes::get" || f == "Bytes::length" || f == "Bytes::index_of" || f == "Bytes::count" || f == "Bytes::last_index_of" || f == "Bytes::index_of_bytes" || f == "Bytes::compare" || f == "FrozenArray::get" || f == "FrozenArray::length" || f == "FixedArray::get" || f == "FixedArray::set" || f == "FixedArray::length" || f == "String::join" || f == "eq" || f == "__rec_field" || f == "__set_field"
+  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::truncate" || f == "Array::push" || f == "Array::push_all" || f == "ArrayBuilder::push" || f == "MutList::push" || f == "MutList::get" || f == "MutList::length" || f == "MutList::truncate" || f == "MutBytes::push" || f == "MutBytes::length" || f == "StringBuilder::push" || f == "MapBuilder::set" || f == "MapBuilder::has_key" || f == "MapBuilder::get" || f == "Map::get" || f == "Map::iter_get" || f == "Map::__iter_get_unchecked" || f == "Map::keys" || f == "Map::values" || f == "Map::size" || f == "Map::has_key" || f == "Map::has" || f == "Bytes::push" || f == "Bytes::set" || f == "Bytes::get" || f == "Bytes::length" || f == "Bytes::index_of" || f == "Bytes::count" || f == "Bytes::last_index_of" || f == "Bytes::index_of_bytes" || f == "Bytes::compare" || f == "FrozenArray::get" || f == "FrozenArray::length" || f == "FixedArray::get" || f == "FixedArray::set" || f == "FixedArray::length" || f == "String::join" || f == "eq" || f == "__rec_field" || f == "__set_field" || md_is_double_reader(f)
+}
+
+/// #3135: the `Double` builtins whose inline lowering reads the box of its
+/// argument and releases nothing (`emit_float_operand_bits`). Counted as
+/// owning, a bare-name argument handed its reference to a reader that never
+/// dropped it, and the binding's box leaked. `Double::max` / `Double::min`
+/// read both operands (md_is_borrow_arg1_call).
+fn md_is_double_reader(f: String) -> Bool {
+  f == "Double::to_int" || f == "Float::to_int" || f == "Double::abs" || f == "Double::floor" || f == "Double::ceil" || f == "Double::max" || f == "Double::min" || f == "Double::to_i64_bits_lo" || f == "Double::to_i64_bits_hi"
 }
 fn md_max(a: Int, b: Int) -> Int {
   if a > b {
@@ -1800,7 +1809,7 @@ export fn md_self_reassign_move_arg(value: Expr, name: String, bfns: Array[Strin
 /// say this -- it is one bit -- which is why this is a separate list rather
 /// than a wider version of that one.
 fn md_is_borrow_arg1_call(f: String) -> Bool {
-  f == "Bytes::index_of_bytes" || f == "Bytes::compare"
+  f == "Bytes::index_of_bytes" || f == "Bytes::compare" || f == "Double::max" || f == "Double::min"
 }
 
 /// Which parameter positions of callee `f` are borrowed. A name present in
@@ -2093,6 +2102,15 @@ export fn md_consume_count_b(e: Expr, name: String, bfns: Array[String], bmasks:
   md_cc_go(e, name, bfns, md_shadow_zeroed_bmasks(e, bfns, bmasks))
 }
 
+/// An operator's operand: a bare name is read in place, anything else is
+/// walked for the consumes inside it.
+fn md_cc_operand(e: Expr, name: String, bfns: Array[String], bmasks: Array[Int]) -> Int {
+  match e {
+    EIdent(_, _) => 0,
+    _ => md_cc_go(e, name, bfns, bmasks)
+  }
+}
+
 fn md_cc_go(e: Expr, name: String, bfns: Array[String], bmasks: Array[Int]) -> Int {
   match e {
     EInt(_) => 0,
@@ -2233,8 +2251,12 @@ fn md_cc_go(e: Expr, name: String, bfns: Array[String], bmasks: Array[Int]) -> I
       }
       acc
     },
-    EBinOp(_, l, r, _) => md_cc_go(l, name, bfns, bmasks) + md_cc_go(r, name, bfns, bmasks),
-    EUnaryOp(_, x) => md_cc_go(x, name, bfns, bmasks),
+    // #3135: an operator reads its operands in place and releases neither (a
+    // `Double` is unboxed, `==` compares where the value lies), so a bare
+    // name there is read, not consumed -- the Perceus plan counts it as a
+    // borrow too (`pc_operand_count`).
+    EBinOp(_, l, r, _) => md_cc_operand(l, name, bfns, bmasks) + md_cc_operand(r, name, bfns, bmasks),
+    EUnaryOp(_, x) => md_cc_operand(x, name, bfns, bmasks),
     EFn(_, _, _, _, _, body) => md_cc_go(body, name, bfns, bmasks),
     EDot(x, _, _, _) => md_cc_go(x, name, bfns, bmasks),
     ELabeledArg(_, _, v) => md_cc_go(v, name, bfns, bmasks),

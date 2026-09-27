@@ -708,21 +708,15 @@ export fn TaskGroup::run[T, rg, e](body: (TaskGroup[rg, e]) -> T with e) -> T wi
     conc_host_release_timer(n)
     throw(payload)
   } }
-  // Normal body end starts joining unfinished children.
+  // Normal body end starts joining unfinished children: queued
+  // run-to-completion tasks run first, then every suspendable child still
+  // parked is pumped until it settles (conc_close_join).
   n.phase = 2
   let mut progressed = true
   while progressed {
     progressed = drive_one(n)
   }
-  // Closing with a still-parked (or mid-resume) adopted task is a
-  // deadlock — nothing inside run can produce its wake value — so trap,
-  // mirroring join's rule, instead of silently dropping the task.
-  let mut ai = 0
-  while ai < Array::length(n.adopted) {
-    let ac = Array::get(n.adopted, ai)
-    conc_require(ac.status == 2 || ac.status == 3 || ac.status == 4)
-    ai = ai + 1
-  }
+  conc_close_join(n)
   n.phase = 3
   conc_host_release_timer(n)
   if n.failing {
@@ -730,6 +724,39 @@ export fn TaskGroup::run[T, rg, e](body: (TaskGroup[rg, e]) -> T with e) -> T wi
   } else {
     v
   }
+}
+
+/// #3160: the close half of structured concurrency -- a group does not close
+/// while a child is live. A suspendable child the body left parked is pumped
+/// under pump_all's rules until it settles: host futures and stream reads are
+/// settled, timers and sleep debts run down, and siblings that resolve each
+/// other's futures interleave. Close used to trap on ANY parked child, though
+/// a child parked on a host waitable is exactly what the pump can wake, so a
+/// body had to end with `pump_all` or `join` to avoid it.
+///
+/// What still traps is a genuine deadlock: a child whose wake nothing inside
+/// the group can produce (a poll-waiter with no producer, a direct waiter
+/// whose notify never comes). The pump's stall rule catches the first; the
+/// terminal check below catches what the pump leaves parked.
+fn conc_close_join[rg, e](n: TaskGroup[rg, e]) -> Unit {
+  conc_pump_rounds(n, [])
+  let mut ai = 0
+  while ai < Array::length(n.adopted) {
+    let ac = Array::get(n.adopted, ai)
+    if ac.status == 2 || ac.status == 3 || ac.status == 4 {
+      ()
+    } else {
+      conc_deadlock()
+    }
+    ai = ai + 1
+  }
+}
+
+/// A deadlock inside a group: every task left waits on something no task in
+/// it can produce. Traps with a message naming the edit, where a bare
+/// `unreachable` used to be all a program got (#3160).
+fn conc_deadlock() -> Unit {
+  abort("vibe: deadlock in TaskGroup::run: every task left is waiting on something no task in the group can produce (a channel with no sender or receiver, or a future nobody resolves); give each wait a producer, or cancel the waiting task before the group closes")
 }
 
 /// #1537: a group closing with its timer still armed -- every sleeper it
@@ -905,7 +932,11 @@ export fn TaskHandle::join[rg, e, T](h: TaskHandle[rg, e, T]) -> T with Exceptio
       conc_pump_until_settled(h.group, h.cell)
       // Nothing resumable, nothing queued, and the target still parked: a
       // deadlock. A task a resumed one spawned is dispatched next round.
-      conc_require(h.cell.status != 5 || conc_has_ready(h.group))
+      if h.cell.status == 5 && !conc_has_ready(h.group) {
+        conc_deadlock()
+      } else {
+        ()
+      }
     }
     continue (d)
   }
@@ -936,9 +967,9 @@ export fn TaskHandle::cancel[rg, e, T](h: TaskHandle[rg, e, T]) -> Unit {
 //# Channel
 
 fn chan_closed[rg, e, T](c: Channel[rg, e, T]) -> Bool {
-  // Closed by last-sender release, or by the owning task group leaving its
-  // Open/Cancelling phases (normal close closes remaining endpoints).
-  c.closed || c.group.phase >= 2
+  // Normal close still joins live children, which may need the channel to
+  // settle. Group-owned endpoints close only after that join completes.
+  c.closed || c.group.phase >= 3
 }
 
 /// Bounded MPMC channel. Capacity 0 is a rendezvous channel; negative
@@ -2147,7 +2178,11 @@ export fn TaskGroup::pump_all[rg, e](n: TaskGroup[rg, e]) -> Unit {
   // like the stalled-poller rule instead of returning with live tasks.
   let mut di = 0
   while di < Array::length(n.adopted) {
-    conc_require(Array::get(n.adopted, di).status != 5)
+    if Array::get(n.adopted, di).status == 5 {
+      conc_deadlock()
+    } else {
+      ()
+    }
     di = di + 1
   }
 }
@@ -2207,7 +2242,7 @@ fn conc_pump_rounds[rg, e](n: TaskGroup[rg, e], until: Array[TaskCell]) -> Unit 
           n.direct_valve_used = true
           stall = 0
         } else {
-          conc_require(false)
+          conc_deadlock()
         }
       } else {
         ()

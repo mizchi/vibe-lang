@@ -1918,7 +1918,17 @@ loop becomes a recursive closure returning a step; bodies with `break` /
 `continue` work, `break` becoming the loop's exit continuation and `continue`
 the loop's own call; only a body containing `return` is still a compile error,
 because a closure cannot return from the function). A callee with a row
-variable (`with e`) and a perform inside a `for` form are compile errors. A
+variable (`with e`) and a perform inside a `for` form are compile errors --
+except a row-variable callee whose closure arguments are literals that provably
+cannot perform the effect, which is how an `Async` entry calls `TaskGroup::run`.
+Such a literal may capture a name bound outside it only when that name holds
+plain data: a scalar or string literal, a non-empty array or tuple of them, a
+value given a plain-data type (`let n: Int = f()`), or a parameter declared as
+one (#3161). So one group can hold ordinary `TaskGroup::spawn` children that
+read those values beside `TaskGroup::spawn_suspend` children; a capture of any
+other name is refused with a message naming it. An annotated `let`
+(`let v: Int = await(f)`) is accepted in a suspending body wherever the
+unannotated one is (it used to be refused as a call through a closure). A
 second call of the same continuation traps with a diagnostic on stderr.
 Post-processing is written through the value (`let k = resume  let r = k(v)
 r + 7`). When a call that cannot be seen through causes a rejection, the
@@ -1933,9 +1943,21 @@ with E {...} }`, so the handle site can live in a library
 (`TaskGroup::spawn_suspend` has this shape). A suspending closure literal
 **needs an explicit row annotation**: `() -> Int with E { ... }` (an
 unannotated lambda's effects are inherited from the enclosing row, #761). A
+suspending closure literal bound by `let` or `let rec` can be called directly
+on the suspending spine -- in a block, a branch or a statement, from a
+suspending closure literal that binds it itself, or inside a top-level
+`fn .. with E` -- and the call suspends (#3192: such a call used to compile as
+a plain call and answer the continuation object, a heap pointer). A call to it
+from inside a closure handed to a row-variable callee is a compile error that
+names it -- `TaskGroup::run` runs its body where it cannot suspend, so call the
+closure before or after the group, or run it in a `TaskGroup::spawn_suspend`
+task -- and so is a call from another closure literal that only captures it.
+An `Async` entry gets the resume-as-value spelling of its boundary handler
+whenever the program step-compiles a closure, so the entry can call its own
+suspending closure beside a group of plain `TaskGroup::spawn` children. A
 program that step-compiles a closure while the same effect is mixed between a
-"resume-as-value handler" and a "tail-resumptive handler" is a compile error
-(the convention-consistency guard).
+"resume-as-value handler" and a "tail-resumptive handler" of its own is a
+compile error (the convention-consistency guard).
 
 The `k` convention, which binds one trailing parameter beyond the operation's
 declared arity (`Emit(v, k) => v + k(0)`, a non-tail continuation), **was a
@@ -2823,7 +2845,12 @@ fn simd_add(a: Int, b: Int) -> Int = wasm
 
 A top-level definition wins over a builtin of the same name. For a **qualified**
 name (`X::y`) the scope of that win is the whole linked program -- not the file,
-not the import list. Measured (2026-08-28), three files:
+not the import list. What it wins is the call sites the program writes: the
+calls the compiler generates itself by that name (a `for` loop's
+`Array::length` / `Array::get`, array interpolation, structural `==`) still
+reach the builtin (#3132, pinned by
+`fixtures/builtin_shadow_internal_lowering_test.vibe`), and the warning says so
+(#3180). Measured (2026-08-28), three files:
 
 ```vibe skip
 // dep.vibe

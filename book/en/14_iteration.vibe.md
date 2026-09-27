@@ -27,19 +27,19 @@ fn main allows Console {
   }
   println("evens length = \{Array::length(evens)}")
   println("sum = \{sum}")
-  println("doubled[3] = \{Array::get(doubled, 3)}")
+  println("doubled = \{doubled}")
 }
 ```
 
 ```output
 evens length = 2
 sum = 10
-doubled[3] = 8
+doubled = [2, 4, 6, 8]
 ```
 
 `for x in xs { body }` **collects**. When `xs` is an `Array` or another
 builtin collection, the loop is an expression whose value is `Array[T]` —
-which is why `doubled` can be indexed. `for i, x in xs` binds the index
+which is why `doubled` prints, and indexes, like any other array. `for i, x in xs` binds the index
 too. A `for` whose value is discarded builds no array at all, so a loop
 run for its side effects costs no more than a `while`.
 

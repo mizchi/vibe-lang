@@ -865,4 +865,23 @@ fi
   || { echo "named hoststreams component gate FAILED: stream_folded_helper expected 42, got: $(cat "$SFH_LOG")" >&2; exit 1; }
 echo "[named-hoststreams-component-gate] stream_folded_helper: 42 (a read the fold removed leaves a plain module)"
 
+# fixtures/async_spawn_host_futures/stream_read_annotated.vibe (#3183): an
+# annotated `let x: Int = host_stream_next(s)` in a task literal and in a named
+# function a task calls. The annotation used to make the read uncompilable.
+SRN_OUT="$OUT_DIR/spawn_stream_read_annotated.component.wasm"
+rm -f "$SRN_OUT" "$SRN_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/stream_read_annotated.vibe "$SRN_OUT" run >/dev/null 2>&1 || true
+[ -s "$SRN_OUT" ] || { echo "named hoststreams component gate FAILED: fixtures/async_spawn_host_futures/stream_read_annotated.vibe did not compile: $(cat "$SRN_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+SRN_LOG="$OUT_DIR/spawn_stream_read_annotated.log"
+if ! VIBE_ASYNC_STREAMS="left=1|2@20,right=3|4@20" run_bounded 60 "$RUNNER" "$SRN_OUT" >"$SRN_LOG" 2>&1; then
+  echo "named hoststreams component gate FAILED: stream_read_annotated did not exit 0" >&2
+  cat "$SRN_LOG" >&2
+  exit 1
+fi
+[ "$(cat "$SRN_LOG")" = "1020304" ] \
+  || { echo "named hoststreams component gate FAILED: stream_read_annotated expected 1020304, got: $(cat "$SRN_LOG")" >&2; exit 1; }
+echo "[named-hoststreams-component-gate] stream_read_annotated: 1020304 (annotated reads in a task literal and a named fn)"
+
 echo "named hoststreams component gate OK"

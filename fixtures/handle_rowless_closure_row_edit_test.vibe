@@ -1,0 +1,71 @@
+// #3180: the edits the refusal of
+// fixtures/typecheck/handle_rowless_closure_performs_reject.vibe offers, run.
+// A local closure that performs `Ask` is called inside a `handle` of `Ask`.
+// With no effect row on the closure the handle is refused; each spelling
+// below is one the message suggests, and each answers through the INNER
+// handler (42), not the outer one around the call (1).
+effect Ask {
+  Get() -> Int
+}
+
+fn ask_once() -> Int with Ask {
+  perform Ask::Get()
+}
+
+fn with_row() -> Int with Ask {
+  let side = () -> Int with Ask {
+    perform Ask::Get()
+  }
+  handle {
+    side()
+  } with {
+    Ask::Get() => resume(42)
+  }
+}
+
+fn with_annotated_row() -> Int with Ask {
+  let side: () -> Int with Ask = () -> Int {
+    perform Ask::Get()
+  }
+  handle {
+    side()
+  } with {
+    Ask::Get() => resume(42)
+  }
+}
+
+fn inlined() -> Int with Ask {
+  handle {
+    perform Ask::Get()
+  } with {
+    Ask::Get() => resume(42)
+  }
+}
+
+// Each is called directly under the outer handle. (Passing one of these
+// functions as a VALUE to a parameter and calling it under a handle traps
+// with `null function or function signature mismatch` -- a separate defect,
+// measured the same on main before this change.)
+test "a closure given the row is handled by the handle around its call" {
+  let a = handle {
+    with_row()
+  } with {
+    Ask::Get() => resume(1)
+  }
+  inspect(a, "42")
+  let b = handle {
+    with_annotated_row()
+  } with {
+    Ask::Get() => resume(1)
+  }
+  inspect(b, "42")
+}
+
+test "the perform written in the handled body" {
+  let c = handle {
+    inlined()
+  } with {
+    Ask::Get() => resume(1)
+  }
+  inspect(c, "42")
+}

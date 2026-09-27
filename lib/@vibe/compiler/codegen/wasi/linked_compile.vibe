@@ -318,6 +318,7 @@ import @vibe/compiler/codegen/common_base {
   str_table_index_of,
   str_table_new,
   suspend_cps_pass,
+  suspend_prepass_splits,
   ty_head_names_formal,
   unique_name_flags,
   wrap_entry_exception_boundary,
@@ -2277,7 +2278,7 @@ fn lc_rename_hs_call(e: Expr, active: Bool, from_name: String, to_name: String) 
 
 /// Shadow-aware call retarget: every call of `from_name` that still names the
 /// top-level builtin is renamed to `to_name`, or -- with `wrap` -- kept and
-/// passed to `to_name` (`to_name(from_name(..))`).
+/// handed to `to_name` as a WIT getter (`lc_ws_tracked_getter`).
 fn lc_retarget_call(e: Expr, active: Bool, from_name: String, to_name: String, wrap: Bool) -> Expr {
   match e {
     ECall(callee, args, off) => {
@@ -2290,7 +2291,7 @@ fn lc_retarget_call(e: Expr, active: Bool, from_name: String, to_name: String, w
       match callee {
         EIdent(nm, coff) => if active && nm == from_name {
           if wrap {
-            ECall(EIdent(to_name, -1), [ECall(callee, new_args, off)], off)
+            lc_ws_tracked_getter(to_name, callee, new_args, off)
           } else {
             ECall(EIdent(to_name, coff), new_args, off)
           }
@@ -3576,11 +3577,17 @@ fn lc_host_hook_dispatch(payload: Expr, hf_machinery: Bool, hs_machinery: Bool, 
 /// dropped future is invisible to the program, so the slot is reclaimed here
 /// instead: every WIT future cell (a handle of 1024 or more) is recorded under
 /// its slot as it is made (`__ws_track`), `__aw_pay` marks the cell it awaits
-/// (`__ws_claim`), and when a call leaves every slot taken the oldest cell
+/// (`__ws_claim`), and when a call finds every slot taken the oldest cell
 /// nobody is awaiting is cancelled -- its slot freed -- and poisoned (state 9).
 /// Awaiting it later traps with `__aw_pay`'s message rather than reading the
-/// call that reused its slot. With every slot awaited, the next call still
-/// traps, as before: 512 futures really are in flight.
+/// call that reused its slot. With every slot awaited, the call still traps,
+/// as before: 512 futures really are in flight.
+///
+/// #3164: room is made BEFORE the call (`__ws_room`, placed by
+/// lc_ws_tracked_getter), not after it. Made after, it had to spare the slot
+/// the call had just taken, so with 511 slots awaited and the 512th call's
+/// future dropped nothing could be reclaimed, and the NEXT call trapped in the
+/// adapter's getter although that dropped future was there to evict.
 fn lc_ws_track_inject(stmts: Array[Stmt]) -> Unit {
   let get = (a: Expr, i: Expr) -> ECall(builtin_ref("Array::get"), [a, i], -1)
   let set = (a: Expr, i: Expr, v: Expr) -> ECall(builtin_ref("Array::set"), [
@@ -3606,9 +3613,9 @@ fn lc_ws_track_inject(stmts: Array[Stmt]) -> Unit {
   Array::push(stmts, SLet(false, false, lc_fixed_synthetic_name("__ws_ctr", "review-lint: allow-fixed-synthetic-name"), Some(TyApp("Array", [
     int_ty
   ])), EArray([EInt(0)])))
-  // __ws_room(s): the slot table is full -- evict the oldest unclaimed cell
-  // other than slot `s`, the one just recorded.
-  let rs = EIdent("__wsr_s", -1)
+  // __ws_room(): a call is about to take a slot. If the table is full, evict
+  // the oldest unclaimed cell so the call finds one free. Every candidate is
+  // an existing cell: the call's own has not been made yet.
   let ri = EIdent("__wsr_i", -1)
   let rlive = EIdent("__wsr_live", -1)
   let rbest = EIdent("__wsr_best", -1)
@@ -3625,7 +3632,7 @@ fn lc_ws_track_inject(stmts: Array[Stmt]) -> Unit {
   let rst = get(rc, EInt(0))
   let unclaimed = EBinOp("&&", EBinOp("<", EInt(0), rq, -1), EBinOp("!=", rst, EInt(9), -1), -1)
   let holds = EBinOp("||", unclaimed, EBinOp("==", rq, EInt(0 - 1), -1), -1)
-  let better = EBinOp("&&", unclaimed, EBinOp("&&", EBinOp("!=", ri, rs, -1), EBinOp("||", EBinOp("<", rbest, EInt(0), -1), EBinOp("<", rq, rbq, -1), -1), -1), -1)
+  let better = EBinOp("&&", unclaimed, EBinOp("||", EBinOp("<", rbest, EInt(0), -1), EBinOp("<", rq, rbq, -1), -1), -1)
   let take = EAssign("__wsr_best", ri, EAssign("__wsr_bq", rq, EUnit))
   let count = EAssign("__wsr_live", EBinOp("+", rlive, EInt(1), -1), EIf(better, take, EUnit))
   let per_slot = ELet("__wsr_c", get(cells, ri), ELet("__wsr_q", get(seqs, ri), EIf(holds, count, EUnit), -1), -1)
@@ -3643,13 +3650,21 @@ fn lc_ws_track_inject(stmts: Array[Stmt]) -> Unit {
   let evict = ELet("__wsr_v", get(cells, rbest), ELet("__wsr_x", cancel, ESeq(set(seqs, rbest, EInt(0 - 2)), poison), -1), -1)
   // review-lint: allow-fixed-synthetic-name (the injected __ws_* helpers' own scopes)
   let full = EBinOp("&&", EBinOp("<", EInt(lc_ws_slot_count() - 1), rlive, -1), EBinOp("<", EInt(0 - 1), rbest, -1), -1)
-  let room_body = ELetMut("__wsr_i", EInt(0), ELetMut("__wsr_live", EInt(0), ELetMut("__wsr_best", EInt(0 - 1), ELetMut("__wsr_bq", EInt(0), ESeq(scan, EIf(full, evict, EUnit)), -1), -1), -1), -1)
+  // An Int, so it can stand as an argument evaluated just before the getter.
+  let room_body = ELetMut("__wsr_i", EInt(0), ELetMut("__wsr_live", EInt(0), ELetMut("__wsr_best", EInt(0 - 1), ELetMut("__wsr_bq", EInt(0), ESeq(scan, ESeq(EIf(full, evict, EUnit), EInt(0))), -1), -1), -1), -1)
   // review-lint: allow-fixed-synthetic-name (the injected __ws_room's own scope)
-  let room_params: Array[(String, Option[TypeExpr])] = [
-    ("__wsr_s", Some(int_ty))
+  let room_params: Array[(String, Option[TypeExpr])] = []
+  Array::push(stmts, SLet(false, false, lc_fixed_synthetic_name("__ws_room", "review-lint: allow-fixed-synthetic-name"), None, EFn(lc_fresh_string_array(), array_empty(), room_params, Some(int_ty), None, room_body)))
+  // __ws_room_arg(s): make room, then pass the getter's last argument `s`
+  // through -- the room is made after every argument is evaluated.
+  let room_arg_body = ELet("__wsa_u", ECall(EIdent("__ws_room", -1), lc_fresh_expr_array(), -1), EIdent("__wsa_s", -1), -1)
+  // review-lint: allow-fixed-synthetic-name (the injected __ws_room_arg's own scope)
+  let room_arg_params: Array[(String, Option[TypeExpr])] = [
+    ("__wsa_s", Some(TyName("String")))
   ]
-  Array::push(stmts, SLet(false, false, lc_fixed_synthetic_name("__ws_room", "review-lint: allow-fixed-synthetic-name"), None, EFn(lc_fresh_string_array(), array_empty(), room_params, Some(TyName("Unit")), None, room_body)))
-  // __ws_track(f): record a WIT cell under its slot, then make room.
+  Array::push(stmts, SLet(false, false, lc_fixed_synthetic_name("__ws_room_arg", "review-lint: allow-fixed-synthetic-name"), None, EFn(lc_fresh_string_array(), array_empty(), room_arg_params, Some(TyName("String")), None, room_arg_body)))
+  // __ws_track(r, f): record a WIT cell under its slot. `r` is the room the
+  // call made beforehand (lc_ws_tracked_getter), already spent.
   let tf = EIdent("__wst_f", -1)
   let th = EIdent("__wst_h", -1)
   let ts = EIdent("__wst_s", -1)
@@ -3659,13 +3674,13 @@ fn lc_ws_track_inject(stmts: Array[Stmt]) -> Unit {
   ])), push(seqs, EInt(0 - 2))))
   let bump = set(ctr, EInt(0), EBinOp("+", get(ctr, EInt(0)), EInt(1), -1))
   let record = ESeq(set(cells, ts, tf), set(seqs, ts, get(ctr, EInt(0))))
-  let room = ECall(EIdent("__ws_room", -1), [ts], -1)
-  let track = ELet("__wst_s", EBinOp("-", th, EInt(lc_ws_handle_base()), -1), ESeq(grow, ESeq(bump, ESeq(record, room))), -1)
+  let track = ELet("__wst_s", EBinOp("-", th, EInt(lc_ws_handle_base()), -1), ESeq(grow, ESeq(bump, record)), -1)
   // review-lint: allow-fixed-synthetic-name (the injected __ws_* helpers' own scopes)
   let is_slot = EBinOp("&&", EBinOp("==", get(tf, EInt(0)), EInt(2), -1), EBinOp("<", EInt(lc_ws_handle_base() - 1), th, -1), -1)
   let track_body = ELet("__wst_h", get(tf, EInt(1)), ESeq(EIf(is_slot, track, EUnit), tf), -1)
   // review-lint: allow-fixed-synthetic-name (the injected __ws_track's own scope)
   let track_params: Array[(String, Option[TypeExpr])] = [
+    ("__wst_r", Some(int_ty)),
     ("__wst_f", Some(cell_ty))
   ]
   Array::push(stmts, SLet(false, false, lc_fixed_synthetic_name("__ws_track", "review-lint: allow-fixed-synthetic-name"), None, EFn(lc_fresh_string_array(), array_empty(), track_params, Some(cell_ty), None, track_body)))
@@ -3702,7 +3717,7 @@ fn lc_ws_track_inject(stmts: Array[Stmt]) -> Unit {
         ], -1)
         Array::set(stmts, i, SLet(ex, isrec, name, ty, EFn(tps, tbs, params, ret, eff, ELet("__awp_k", claim, body, -1))))
         // review-lint: allow-fixed-synthetic-name (the injected __aw_pay's own scope)
-      } else if name == "__ws_track" || name == "__ws_room" || name == "__ws_claim" || name == "__ws_freed" {
+      } else if name == "__ws_track" || name == "__ws_room" || name == "__ws_room_arg" || name == "__ws_claim" || name == "__ws_freed" {
         ()
       } else {
         Array::set(stmts, i, SLet(ex, isrec, name, ty, EFn(tps, tbs, params, ret, eff, lc_ws_wrap_getters(body))))
@@ -3718,12 +3733,48 @@ fn lc_ws_track_inject(stmts: Array[Stmt]) -> Unit {
   }
 }
 
-/// The getters whose handle can be a WIT slot, each wrapped as
-/// `__ws_track(getter(..))` (shadow-aware, lc_retarget_call).
+/// The getters whose handle can be a WIT slot, each handed to `__ws_track`
+/// (shadow-aware, lc_retarget_call; the shape is lc_ws_tracked_getter's).
 fn lc_ws_wrap_getters(e: Expr) -> Expr {
   let a = lc_retarget_call(e, true, "host_future_named", "__ws_track", true)
   let b = lc_retarget_call(a, true, "host_response_named", "__ws_track", true)
   lc_retarget_call(b, true, "host_response_named_with", "__ws_track", true)
+}
+
+/// #3164: `track(room, getter(..))`, where `room` makes room in the WIT slot
+/// table (`__ws_room`) when the getter takes a slot -- a WIT response, or a
+/// named future whose name is a WIT address (it has a `#`, the test the import
+/// emission uses) -- and is `0` otherwise. Arguments are evaluated left to
+/// right, so the room is made just before the getter runs. A getter with an
+/// argument of its own (the response request's string) makes room through
+/// that LAST argument instead (`__ws_room_arg`): evaluated first, the room
+/// could be spent by a WIT call inside the argument before this getter took
+/// it.
+fn lc_ws_tracked_getter(track: String, callee: Expr, args: Array[Expr], off: Int) -> Expr {
+  let nm = match callee {
+    EIdent(n, _) => n,
+    _ => ""
+  }
+  let wit_address = Array::length(args) > 0 && match Array::get(args, 0) {
+    EString(s, _) => String::index_of(s, "#") > 0,
+    _ => false
+  }
+  let takes_slot = nm == "host_response_named" || nm == "host_response_named_with" || (nm == "host_future_named" && wit_address)
+  let n = Array::length(args)
+  if takes_slot && nm == "host_response_named_with" && n == 2 {
+    let args2 = Array::slice(args, 0, n)
+    Array::set(args2, 1, ECall(EIdent("__ws_room_arg", -1), [
+      Array::get(args, 1)
+    ], -1))
+    ECall(EIdent(track, -1), [EInt(0), ECall(callee, args2, off)], off)
+  } else if takes_slot {
+    ECall(EIdent(track, -1), [
+      ECall(EIdent("__ws_room", -1), lc_fresh_expr_array(), -1),
+      ECall(callee, args, off)
+    ], off)
+  } else {
+    ECall(EIdent(track, -1), [EInt(0), ECall(callee, args, off)], off)
+  }
 }
 
 /// The adapter's WIT slot handle base and slot count
@@ -4013,6 +4064,10 @@ fn lc_expr_has_spawn_suspend(e: Expr) -> Bool {
         lc_exprs_have_spawn_suspend(args)
       }
     },
+    // #3182: the function taken as a value (`let sp =
+    // TaskGroup::spawn_suspend`) spawns wherever the alias is called. No local
+    // binder can spell a qualified name, so this one is the library's.
+    EIdent(name, _) => name == "TaskGroup::spawn_suspend",
     ECall(callee, args, _) => lc_expr_has_spawn_suspend(callee) || lc_exprs_have_spawn_suspend(args),
     ELet(_, value, body, _) => lc_expr_has_spawn_suspend(value) || lc_expr_has_spawn_suspend(body),
     ELetMut(_, value, body, _) => lc_expr_has_spawn_suspend(value) || lc_expr_has_spawn_suspend(body),
@@ -4736,6 +4791,14 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
   } else {
     ()
   }
+  // #3192: the boundary takes the suspend-class spelling whenever the program
+  // step-compiles a closure for `Async`, not only when it spawns suspendable
+  // tasks: an `Async` closure literal the entry calls beside a
+  // `TaskGroup::run` is compiled to the step convention, which the
+  // tail-resumptive spelling cannot call, so the convention guard refused
+  // exactly these programs. A program whose only `Async` handler would be
+  // this boundary step-compiles nothing, so it keeps the tail-resumptive one.
+  let step_boundary = has_spawn_suspend || (entry_has_async && (sleep_machinery || hf_machinery || hs_machinery) && suspend_prepass_splits(stmts, "Async"))
   if entry_has_async && (sleep_machinery || hf_machinery || hs_machinery) {
     let req = EIdent("__entry_slp_req", -1)
     // ADR-0089 D2 (#1218): the boundary is tail-resumptive -- nothing
@@ -4806,7 +4869,7 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
       ]
       Array::push(stmts, SLet(false, false, lc_fixed_synthetic_name("__entry_settle", "review-lint: allow-fixed-synthetic-name"), None, EFn(lc_fresh_string_array(), array_empty(), settle_params, Some(TyName("Int")), None, settle_body)))
       let settled = ECall(EIdent("__entry_settle", -1), [req], -1)
-      if has_spawn_suspend {
+      if step_boundary {
         // #1537: the suspend-class spelling, as in the sleep-only arm
         // below -- bind `resume` first, so this handler takes the step
         // convention the spawned tasks use.
@@ -4822,7 +4885,7 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
       let settle = EIf(EBinOp("<", req, EInt(0), -1), ECall(EIdent("sleep_blocking", -1), [
         EBinOp("-", EInt(0), req, -1)
       ], -1), ECall(EIdent("assert", -1), [EBinOp("<", req, EInt(1), -1)], -1))
-      if has_spawn_suspend {
+      if step_boundary {
         // #2065 wall 2: suspend-class spelling -- see the guard above.
         ESeq(settle, ELet(lc_fixed_synthetic_name("__entry_k", "review-lint: allow-fixed-synthetic-name"), EIdent("resume", -1), ECall(EIdent("__entry_k", -1), [
           EInt(0)
@@ -4854,7 +4917,7 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
           // `TaskGroup::spawn_suspend` already uses -- the abortive
           // Exception handle outside, the CPS-lowered Async handle inside --
           // so a throw from the body still reaches the boundary diagnostic.
-          let wrapped = if has_spawn_suspend {
+          let wrapped = if step_boundary {
             match with_cells {
               EHandle(inner, earms) => if lc_is_exception_boundary_arms(earms) {
                 EHandle(EHandle(inner, async_arms), earms)
@@ -13356,6 +13419,7 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
           rc_exit_keep: lc_fresh_string_array(),
           rc_store_dup_names: rc_store_dup_names,
           rc_store_dup_offs: rc_store_dup_offs,
+          rc_loop_result_slots: lc_fresh_string_array(),
           reuse_scrutinee_names: lc_fresh_string_array(),
           reuse_flag_locals: lc_fresh_int_array(),
           rc_reuse_token_names: rc_reuse_names,

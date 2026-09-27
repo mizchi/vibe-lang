@@ -1,0 +1,57 @@
+// #3161: one group holding both kinds of child in an Async entry -- ordinary
+// `spawn` children doing CPU work over values bound before the group, and a
+// `spawn_suspend` child awaiting a host future. A capture used to refuse the
+// whole group ("cannot see through ... the call to 'TaskGroup::run'"): the
+// entry's boundary must prove the closure handed to `TaskGroup::run` cannot
+// suspend, and a captured name might have been a closure that does. A name
+// bound to plain data -- a literal, a value given a plain-data type, or a
+// parameter declared as one (`doubled_beside`'s `n`) -- cannot be one, so it
+// may be captured. 12 + (21 + 4) + 40 in the entry's group, 10 + 40 in the
+// helper's: 127. Executed by scripts/test_named_hostfutures_component_gate.sh.
+import @vibe/concurrent/experimental {
+  TaskGroup, TaskHandle
+}
+
+fn weigh(xs: Array[Int], k: Int) -> Int {
+  let mut total = 0
+  let mut i = 0
+  while i < Array::length(xs) {
+    total = total + Array::get(xs, i) * k
+    i = i + 1
+  }
+  total
+}
+
+fn doubled_beside(n: Int) -> Int with Async + Exception {
+  TaskGroup::run((g) -> {
+    let a = TaskGroup::spawn(g, () -> Int {
+      n * 2
+    })
+    let c = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      await(host_future_named("slow"))
+    })
+    TaskHandle::join(a) + TaskHandle::join(c)
+  })
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  let k = 2
+  let tag = "vibe"
+  let scale: Int = weigh([7], 3)
+  let here = TaskGroup::run((g) -> {
+    let a = TaskGroup::spawn(g, () -> Int {
+      weigh([1, 2, 3], k)
+    })
+    let b = TaskGroup::spawn(g, () -> Int {
+      scale + String::length(tag)
+    })
+    let c = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      // An annotated `let` in a suspending body, refused before #3161 as a
+      // call through a closure (the ascription's own spelling).
+      let v: Int = await(host_future_named("slow"))
+      v
+    })
+    TaskHandle::join(a) + TaskHandle::join(b) + TaskHandle::join(c)
+  })
+  here + doubled_beside(5)
+}

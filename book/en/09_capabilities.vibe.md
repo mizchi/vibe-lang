@@ -106,29 +106,43 @@ bundled
 The set is expanded before anything is checked, so `allows AppCaps` is
 exactly `allows Console + Fs::read_file` — no more, no less.
 
-## Optional capability: `perform?`
+## Optional capability: `perform?` (experimental)
 
 A `?` on an `allows` item marks it optional — the program can run whether
 or not the host granted it. The matching `perform? Fs::read_file("p")`
 gives back an `Attempt`: `Granted`, `NotGranted`, or `Errored`.
 
-The non-interactive compiler has no build/apply grant fact, so it freezes an
-unresolved optional capability to `NotGranted` before code generation. The
-operation and its arguments are not evaluated:
+This part of the language is **experimental**. Which arm a program takes
+depends on how it was built, because nothing yet records a grant once and
+carries it from build to run:
+
+- `vibe run` resolves the grant from its flags before `main`. With no flag
+  the capability is granted, so the operation runs and answers `Granted`, or
+  `Errored` when it fails (a file that does not exist). `--deny-fs` makes it
+  `NotGranted`.
+- `vibe build`, and the lane that checks this book's examples, have no grant
+  to consult, so they fix every optional capability to `NotGranted` at compile
+  time. The operation and its arguments are not evaluated, and the host
+  import is not in the artifact.
+- A `test`, `bench` or `example` block refuses `perform?`: those blocks run
+  with full authority, so `NotGranted` could never happen there.
+
+The outputs shown here are the `NotGranted` answers. Under `vibe run` with no
+flag, there is no `config.json` or `cache.json` to read, so the same programs
+take the `Errored` arm (`errored`, and `cache failed`).
 
 ```vibe run
-fn main() -> Int allows Console + Fs::read_file? {
-  let a = perform? Fs::read_file("config.json")
-  match a {
-    NotGranted => 0,
-    Errored(_) => 1,
-    Granted(_) => 2
+fn main allows Console + Fs::read_file? {
+  match perform? Fs::read_file("config.json") {
+    NotGranted => println("not granted"),
+    Errored(_) => println("errored"),
+    Granted(_) => println("granted")
   }
 }
 ```
 
 ```output
-0
+not granted
 ```
 
 An optional grant never stands in for a required call: `Fs::read_file("p")`
@@ -164,10 +178,8 @@ The `?` marks a host capability and nothing else: `with Ask::Get?` on an
 effect you declared, or `allows Exception?`, is refused — nobody outside the
 program could withhold those, so the grade would be a claim about nothing.
 
-The frozen-resolution lowering is shared by the linear and wasm-gc backends.
-Wiring `--allow-*`, BindingLock, and interactive preflight into production is
-tracked in #2332; until then production compilation does not select `Granted`
-or `Errored`.
+Because the answer still depends on the build, do not rely on `perform?` for
+behaviour that must be the same everywhere the program runs.
 
 ## Telling the two kinds apart
 

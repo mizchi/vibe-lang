@@ -48,12 +48,12 @@ fn main allows Console {
     1
   ]
   grow(xs)
-  println("length = \{Array::length(xs)}, last = \{Array::get(xs, 1)}")
+  println("xs = \{xs}")
 }
 ```
 
 ```output
-length = 2, last = 9
+xs = [1, 9]
 ```
 
 This is worth being deliberate about: `xs` is shared, not copied. If you

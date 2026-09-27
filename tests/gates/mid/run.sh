@@ -1257,7 +1257,17 @@ echo "[compiler-gate] field assignment release guard ok (2019000 on bump/rc/shad
 #        parameterized loop, which store a value in a slot that outlives the
 #        exit (it trapped under shadow when the exit released what that value
 #        was a view of).
-echo "[compiler-gate] 40f0h/40 an early exit releases the scopes it leaves (#3141)"
+#        #3168 / #3175: a parameterized loop's result slot was classified
+#        from its `0` placeholder, so a discarded loop leaked what `break v`
+#        stored and a borrowed `break Array::get(xs, i)` handed out an element
+#        its array still owned; a `continue` (or any exit) after a branch that
+#        consumed a binding on one path only left it unreleased; and a
+#        reassigned `let mut` with a dup budget got no exit row. With those
+#        rounds added (loop_discard, loop_brk_body, loop_borrow) the fixture
+#        traps on the default, rc and shadow lanes of a stage2 from main at
+#        a81ffcb2e (loop_borrow's element is released twice); without
+#        loop_borrow it grows __heap_ptr by 1,120,244 B there. Fixed, 472 B.
+echo "[compiler-gate] 40f0h/40 an early exit releases the scopes it leaves (#3141, #3168, #3175)"
 exdir="_build/_gate_rc_early_exit"
 rm -rf "$exdir"; mkdir -p "$exdir"
 for ex_lane in bump rc shadow gc; do
@@ -1274,8 +1284,8 @@ for ex_lane in bump rc shadow gc; do
     exit 1
   fi
   ex_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$exdir/ex.wasm" 2>&1 | tail -1)"
-  if [ "$ex_out" != "2043000" ]; then
-    echo "[compiler-gate] FAIL: rc_early_exit_bounded got '$ex_out' on the $ex_lane lane (want 2043000). A trap means an early exit released a binding it did not own or one still in use (#3141)." >&2
+  if [ "$ex_out" != "2049000" ]; then
+    echo "[compiler-gate] FAIL: rc_early_exit_bounded got '$ex_out' on the $ex_lane lane (want 2049000). A trap means an early exit, or a loop's result slot, released a binding it did not own or one still in use (#3141, #3168)." >&2
     exit 1
   fi
   if [ "$ex_lane" = rc ]; then
@@ -1300,7 +1310,7 @@ for ex_lane in 1 shadow; do
   fi
 done
 rm -f "$ROOT_DIR/_build/_gate_rc_early_exit_release.log"
-echo "[compiler-gate] early exit release guard ok (2043000 on bump/rc/shadow/gc, rc heap_used=$ex_used B; handed-out and outer values alive on rc + shadow)"
+echo "[compiler-gate] early exit release guard ok (2049000 on bump/rc/shadow/gc, rc heap_used=$ex_used B; handed-out and outer values alive on rc + shadow)"
 
 # 40f0i. #3184: a `let mut` slot owns what it holds, but a store of a VIEW
 #        (`let v = Array::get(xs, 0); cur = v`, a `for` element, an alias or
@@ -1362,6 +1372,126 @@ for ms_lane in 1 shadow; do
 done
 rm -f "$ROOT_DIR/_build/_gate_rc_mut_store_view.log"
 echo "[compiler-gate] let mut store ownership guard ok (82000 on bump/rc/shadow/gc, rc heap_used=$ms_used B; stored values alive on rc + shadow)"
+
+# 40f0j. #3135: a `Double` is a heap box on the RC lane, but the plan counted
+#        a bare name as an OWNING use when it was an operand of a comparison
+#        or of arithmetic, and a `Double` parameter as scalar -- so an
+#        operand's last use handed its box to an f64 op that only reads, an
+#        earlier use took a dup nobody released, a callee never dropped the
+#        box a caller handed its `Double` parameter, and the box of a literal
+#        operand, of an intermediate result and of a call's result read by an
+#        operator was never freed. An operator's name operand is a borrow now,
+#        a `Double` parameter is owned, operands are computed on their bits
+#        (emit_float_operand_bits) and a self-reassignment through an operator
+#        (`acc = acc + x`) releases the box it replaces. A `while` condition
+#        comparing a `Double` no longer takes the integer fast path, which
+#        compared box addresses. Unfixed, the bounded fixture grew
+#        __heap_ptr by 1,344,120 B over its 2000 rounds without its
+#        `while_cmp` shape, and trapped in the allocator with it. The
+#        answer is checked on bump, rc, shadow and gc; the shadow lane traps
+#        on the drop of a freed block. rc_double_release_test.vibe then
+#        checks, on rc and shadow, that every box an operator, a builtin or a
+#        callee reads is still alive afterwards.
+echo "[compiler-gate] 40f0j/40 a Double an operator or a parameter reads is released (#3135)"
+dbdir="_build/_gate_rc_double_release"
+rm -rf "$dbdir"; mkdir -p "$dbdir"
+for db_lane in bump rc shadow gc; do
+  rm -f "$dbdir/db.wasm" "$dbdir/db.wasm.diag"
+  case "$db_lane" in
+    bump) env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_double_release_bounded_test.vibe" "$dbdir/db.wasm" main >/dev/null 2>&1 || true ;;
+    rc) env VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_double_release_bounded_test.vibe" "$dbdir/db.wasm" main >/dev/null 2>&1 || true ;;
+    shadow) env VIBE_RC=shadow VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_double_release_bounded_test.vibe" "$dbdir/db.wasm" main >/dev/null 2>&1 || true ;;
+    gc) env VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_double_release_bounded_test.vibe" "$dbdir/db.wasm" main >/dev/null 2>&1 || true ;;
+  esac
+  if [ ! -s "$dbdir/db.wasm" ]; then
+    echo "[compiler-gate] FAIL: rc_double_release_bounded fixture did not compile on the $db_lane lane (#3135)" >&2
+    cat "$dbdir/db.wasm.diag" >&2 2>/dev/null || true
+    exit 1
+  fi
+  db_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$dbdir/db.wasm" 2>&1 | tail -1)"
+  if [ "$db_out" != "29007002" ]; then
+    echo "[compiler-gate] FAIL: rc_double_release_bounded got '$db_out' on the $db_lane lane (want 29007002). A trap means a Double box was released while an operator, a builtin or a callee still read it (#3135)." >&2
+    exit 1
+  fi
+  if [ "$db_lane" = rc ]; then
+    db_json="$(node scripts/measure_heap.mjs "$dbdir/db.wasm" main 2>/dev/null)"
+    db_used="$(printf '%s' "$db_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+    if [ -z "$db_used" ]; then
+      echo "[compiler-gate] FAIL: could not measure rc_double_release_bounded heap ($db_json)" >&2; exit 1
+    fi
+    if [ "$db_used" -ge 20000 ]; then
+      echo "[compiler-gate] FAIL: rc_double_release_bounded heap_used=$db_used >= 20000 (#3135 regressed: a Double read by an operator, an inline Double builtin or a Double parameter is leaked again; unfixed, this fixture measured 1,344,120 B)" >&2; exit 1
+    fi
+  fi
+done
+rm -rf "$dbdir"
+for db_lane in 1 shadow; do
+  if ! VIBE_RC="$db_lane" VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+      bash scripts/vibe_test.sh fixtures/rc_double_release_test.vibe \
+      >"$ROOT_DIR/_build/_gate_rc_double_release.log" 2>&1; then
+    echo "[compiler-gate] FAIL: fixtures/rc_double_release_test.vibe failed with VIBE_RC=$db_lane (#3135). A trap or a churn value means a Double box was released while still in use:" >&2
+    tail -20 "$ROOT_DIR/_build/_gate_rc_double_release.log" >&2
+    exit 1
+  fi
+done
+rm -f "$ROOT_DIR/_build/_gate_rc_double_release.log"
+echo "[compiler-gate] Double release guard ok (29007002 on bump/rc/shadow/gc, rc heap_used=$db_used B; borrowed and owned boxes alive on rc + shadow)"
+
+# 40f0k. #3169: a handle whose body reaches its `perform` through a call is
+#        lowered by evidence passing: the handle passes a FRESH dictionary
+#        record of arm closures to each call, and the callee takes it as a
+#        parameter typed `__EvDict_<E>`. The plan read that name's first
+#        letter, `_`, as "not a type that is heap", so the callee never
+#        dropped the dictionary and every handled call leaked it. Unfixed, the
+#        bounded fixture grew __heap_ptr by 704,112 B over its 2000 rounds.
+#        The answer is checked on bump, rc, shadow and gc; the shadow lane
+#        traps on the drop of a freed block. rc_user_effect_handle_test.vibe
+#        then checks, on rc and shadow, that a callee performing from a loop,
+#        a forwarded dictionary and an arm's captured locals stay alive.
+echo "[compiler-gate] 40f0k/40 a user-effect handle releases its evidence dictionary (#3169)"
+ehdir="_build/_gate_rc_user_effect_handle"
+rm -rf "$ehdir"; mkdir -p "$ehdir"
+for eh_lane in bump rc shadow gc; do
+  rm -f "$ehdir/eh.wasm" "$ehdir/eh.wasm.diag"
+  case "$eh_lane" in
+    bump) env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_user_effect_handle_bounded_test.vibe" "$ehdir/eh.wasm" main >/dev/null 2>&1 || true ;;
+    rc) env VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_user_effect_handle_bounded_test.vibe" "$ehdir/eh.wasm" main >/dev/null 2>&1 || true ;;
+    shadow) env VIBE_RC=shadow VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_user_effect_handle_bounded_test.vibe" "$ehdir/eh.wasm" main >/dev/null 2>&1 || true ;;
+    gc) env VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_user_effect_handle_bounded_test.vibe" "$ehdir/eh.wasm" main >/dev/null 2>&1 || true ;;
+  esac
+  if [ ! -s "$ehdir/eh.wasm" ]; then
+    echo "[compiler-gate] FAIL: rc_user_effect_handle_bounded fixture did not compile on the $eh_lane lane (#3169)" >&2
+    cat "$ehdir/eh.wasm.diag" >&2 2>/dev/null || true
+    exit 1
+  fi
+  eh_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$ehdir/eh.wasm" 2>&1 | tail -1)"
+  if [ "$eh_out" != "10005000" ]; then
+    echo "[compiler-gate] FAIL: rc_user_effect_handle_bounded got '$eh_out' on the $eh_lane lane (want 10005000). A trap means a callee released an evidence dictionary it did not own, or one still in use (#3169)." >&2
+    exit 1
+  fi
+  if [ "$eh_lane" = rc ]; then
+    eh_json="$(node scripts/measure_heap.mjs "$ehdir/eh.wasm" main 2>/dev/null)"
+    eh_used="$(printf '%s' "$eh_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+    if [ -z "$eh_used" ]; then
+      echo "[compiler-gate] FAIL: could not measure rc_user_effect_handle_bounded heap ($eh_json)" >&2; exit 1
+    fi
+    if [ "$eh_used" -ge 20000 ]; then
+      echo "[compiler-gate] FAIL: rc_user_effect_handle_bounded heap_used=$eh_used >= 20000 (#3169 regressed: a callee's __EvDict_ parameter is scalar to the plan again, so every handled call leaks its dictionary; unfixed, this fixture measured 704,112 B)" >&2; exit 1
+    fi
+  fi
+done
+rm -rf "$ehdir"
+for eh_lane in 1 shadow; do
+  if ! VIBE_RC="$eh_lane" VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+      bash scripts/vibe_test.sh fixtures/rc_user_effect_handle_test.vibe \
+      >"$ROOT_DIR/_build/_gate_rc_user_effect_handle.log" 2>&1; then
+    echo "[compiler-gate] FAIL: fixtures/rc_user_effect_handle_test.vibe failed with VIBE_RC=$eh_lane (#3169). A trap or a churn value means an evidence dictionary or a value it reaches was released while still in use:" >&2
+    tail -20 "$ROOT_DIR/_build/_gate_rc_user_effect_handle.log" >&2
+    exit 1
+  fi
+done
+rm -f "$ROOT_DIR/_build/_gate_rc_user_effect_handle.log"
+echo "[compiler-gate] user-effect handle guard ok (10005000 on bump/rc/shadow/gc, rc heap_used=$eh_used B; dictionaries and captured values alive on rc + shadow)"
 
 # 40f1a. #2427: the shadow table must not overlap the heap it describes.
 #        40f above proves the marks catch a real dup/drop-of-freed; this

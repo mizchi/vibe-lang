@@ -1,0 +1,185 @@
+// #3135: a `Double` compared, computed with, or handed to a `Double`
+// parameter keeps the RC heap frontier bounded.
+//
+// The RC lane boxes every `Double` (16 B). The Perceus plan counted a bare
+// name as an OWNING use when it was an operand of a comparison or of
+// arithmetic, and a `Double` parameter as scalar, so
+//
+// - an operand's last use handed its reference to an f64 op that only reads,
+//   and an earlier use took a dup nobody released;
+// - a callee never dropped the box a caller handed to its `Double`
+//   parameter;
+// - the box of a literal operand (`x > 1.0`), of an intermediate result
+//   (`Int::to_double(i) * 0.5`) and of a call's result read by an operator
+//   was allocated and never freed.
+//
+// Now an operator's name operand is a borrow (the binding keeps its
+// scope-end drop), a `Double` parameter is owned and dropped like any heap
+// parameter, and an operand is computed on its bits (emit_float_operand_bits):
+// a literal needs no box, a chain allocates only its result's box, and a
+// fresh box read by an operator is released there. The inline `Double`
+// builtins (`Double::to_int`, `Double::abs`, `Double::max`, ...) borrow their
+// arguments the same way. And since the slot is only read, a self-reassignment
+// through an operator (`acc = acc + x`) releases the box it replaces, which
+// no consumer had taken.
+//
+// A `while` condition comparing a `Double` (`while_cmp`) took an integer fast
+// path that compared the two boxes' ADDRESSES; it now compares the values.
+//
+// Measured on a stage2 built from main at c04f4d619, VIBE_RC=1, this fixture
+// without `while_cmp` grew __heap_ptr by 1,344,120 B over its 2000 rounds
+// (672 B a round); with it, the program traps in the allocator on the rc,
+// shadow and default lanes (gc answers 29007002). The
+// gate compiles it under VIBE_RC=1 and bounds the growth
+// (tests/gates/mid/run.sh, 40f0i); the same gate checks the answer on the
+// bump, rc, shadow and gc lanes, and the shadow lane traps on the drop of a
+// freed block. What each borrowed or released value still reads afterwards
+// is pinned by fixtures/rc_double_release_test.vibe.
+//
+// `main` sums, per round i, the Int results below; see `round`.
+
+struct P {
+  x: Double;
+  y: Double
+}
+
+fn step(x: Double) -> Int {
+  if x > 1.0 {
+    1
+  } else {
+    0
+  }
+}
+
+fn take_d(x: Double) -> Int {
+  Double::to_int(x)
+}
+
+fn half(x: Double) -> Double {
+  x * 0.5
+}
+
+fn forward(x: Double) -> Int {
+  take_d(x)
+}
+
+// Last use in a comparison.
+fn cmp_last(i: Int) -> Int {
+  let x = Int::to_double(i)
+  if x > 1.0 {
+    1
+  } else {
+    0
+  }
+}
+
+// Used in a comparison, then handed on.
+fn cmp_then_pass(i: Int) -> Int {
+  let x = Int::to_double(i)
+  let a = if x >= 0.0 {
+    1
+  } else {
+    0
+  }
+  a + step(x)
+}
+
+// Handed to a `Double` parameter, once and twice.
+fn pass_once(i: Int) -> Int {
+  let x = Int::to_double(i)
+  take_d(x)
+}
+
+fn pass_twice(i: Int) -> Int {
+  let x = Int::to_double(i)
+  take_d(x) + take_d(x)
+}
+
+// An arithmetic value, then a parameter.
+fn arith_then_pass(i: Int) -> Int {
+  let x = Int::to_double(i) * 0.5
+  take_d(x)
+}
+
+// A chain of operators, a negation, a call result read by an operator.
+fn chain(i: Int) -> Int {
+  let x = Int::to_double(i)
+  let y = (x * 2.0 + 1.0) / 2.0 - 0.5
+  let n = if -y <= 0.0 {
+    1
+  } else {
+    0
+  }
+  n + Double::to_int(y) + Double::to_int(half(x) * 2.0)
+}
+
+// The inline builtins.
+fn builtins(i: Int) -> Int {
+  let x = Int::to_double(i)
+  let y = Int::to_double(i + 1)
+  Double::to_int(Double::abs(x)) + Double::to_int(Double::max(x, y)) + Double::to_int(Double::floor(y)) + Double::to_int(Double::min(x, y))
+}
+
+// A parameter forwarded to another function.
+fn forwarded(i: Int) -> Int {
+  forward(Int::to_double(i))
+}
+
+// A field read by an operator and handed to a parameter.
+fn field(i: Int) -> Int {
+  let p = P::{ x: Int::to_double(i), y: 2.0 }
+  let n = if p.x < 2.0 {
+    1
+  } else {
+    0
+  }
+  n + take_d(p.x)
+}
+
+// An element read by an operator and handed to a parameter.
+fn element(i: Int) -> Int {
+  let xs = [Int::to_double(i), 3.0]
+  let n = if Array::get(xs, 0) < Array::get(xs, 1) {
+    1
+  } else {
+    0
+  }
+  n + take_d(Array::get(xs, 1))
+}
+
+// An accumulator reassigned from itself.
+fn accumulate(i: Int) -> Int {
+  let mut acc = 0.0
+  let mut k = 0
+  while k < 3 {
+    acc = acc + Int::to_double(i)
+    k = k + 1
+  }
+  Double::to_int(acc)
+}
+
+// A `Double` compared in a `while` condition, counted from 0.5, 1.5 or 2.5
+// past 3.0.
+fn while_cmp(i: Int) -> Int {
+  let mut x = Int::to_double(i % 3) + 0.5
+  let mut n = 0
+  while x < 3.0 {
+    x = x + 1.0
+    n = n + 1
+  }
+  n
+}
+
+fn round(i: Int) -> Int {
+  cmp_last(i) + cmp_then_pass(i) + pass_once(i) + pass_twice(i) + arith_then_pass(i) + chain(i) + builtins(i) + forwarded(i) + field(i) + element(i) + accumulate(i) + while_cmp(i)
+}
+
+export fn main() -> Int {
+  let mut i = 0
+  let mut acc = 0
+  while i < 2000 {
+    acc = acc + round(i)
+    i = i + 1
+  }
+  acc
+}

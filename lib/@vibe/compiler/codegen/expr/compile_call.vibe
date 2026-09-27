@@ -849,6 +849,124 @@ fn cc_is_owned_temp(e: Expr, ctx: CompileCtx) -> Bool {
   }
 }
 
+/// Is either operand of a comparison a `Double`? For the lowerings outside
+/// compile_expr that pick an integer compare by themselves (the `while`
+/// condition fast path): they cannot reach `expr_is_floatish` without an
+/// import cycle, so they ask this file's mirror of it.
+export fn cc_operands_floatish(l: Expr, r: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  cc_expr_is_floatish(l, local_names, ctx) || cc_expr_is_floatish(r, local_names, ctx)
+}
+
+/// #3135: the builtins whose inline lowering allocates a FRESH `Double` box on
+/// the RC lane. `Float::to_double` / `Double::to_float` are absent on purpose:
+/// they compile to their argument unchanged, so their result is the
+/// argument's box, and releasing it would free a value its binding still
+/// holds.
+fn cc_float_builtin_is_fresh(f: String) -> Bool {
+  f == "Int::to_double" || f == "Int::to_float" || f == "Double::abs" || f == "Double::floor" || f == "Double::ceil" || f == "Double::max" || f == "Double::min" || f == "Double::from_i64_bits" || f == "Double::from_i64_bits_lohi"
+}
+
+/// #3135: is the floatish operand `e` a fresh box that nothing else holds, so
+/// the consumer that unboxes it must release it? A call to a program function
+/// that cannot return a view (the same test `cc_is_owned_temp` applies: every
+/// such function returns an owned reference) or to a builtin that allocates.
+/// Anything else -- a name, a projection, a borrow-returning call, a branch --
+/// is left alone: a leak at worst, never a release of a value in use.
+fn cc_float_operand_is_owned_temp(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool {
+  match e {
+    ECall(callee, _, _) => match callee {
+      EIdent(f, _) => if cc_float_builtin_is_fresh(f) {
+        true
+      } else {
+        find_local_slot(local_names, f) < 0 && func_table_user_index_of(ctx.func_table, f, ctx.num_user_funcs) >= 0 && !cc_callee_may_return_view(f, ctx)
+      },
+      _ => false
+    },
+    _ => false
+  }
+}
+
+/// #3135: push the raw f64 bits (as an i64) of `e`, an operand a `Double`
+/// operation consumes -- an arithmetic or comparison operand, the argument of
+/// an inline `Double` builtin -- WITHOUT leaking the box it arrives in.
+///
+/// Off the RC lane a `Double` already is its bits, so this is `ce`. On it,
+/// every `Double` is a heap box (`emit_box_float`), and unboxing an operand
+/// used to be all a consumer did: the box of a literal (`d > 1.0`), of an
+/// intermediate result (`to_double(i) * 0.5 * 2.0`) and of a call's result
+/// were each allocated and never freed, 16 B apiece. Now
+///
+/// - a literal is its bits (an `f64.const`), with no box at all;
+/// - an arithmetic operator or a negation is computed on the bits of its own
+///   operands, so a chain allocates only the box its result finally needs;
+/// - a fresh box (`cc_float_operand_is_owned_temp`) is unboxed and released;
+/// - a name, a projection or anything else is unboxed and left to its owner.
+///   The Perceus plan counts a bare-name operand as a borrow
+///   (`pc_operand_count`), so the binding keeps the reference and its
+///   scope-end drop releases it.
+///
+/// A nested operator reached here is a `Double` operation whatever its
+/// syntax: the checker gives both operands of a `Double` operation one type.
+export fn emit_float_operand_bits(buf: Bytes, e: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
+  if !ctx.enable_rc {
+    ce(buf, e, local_names, next_local, ctx, ld)
+  } else {
+    match e {
+      EFloat(v) => {
+        emit_f64_const_lohi(buf, Double::to_i64_bits_lo(v), Double::to_i64_bits_hi(v))
+        emit_i64_reinterpret_f64(buf)
+        next_local
+      },
+      EBinOp(op, l, r, _) => if op == "+" || op == "-" || op == "*" || op == "/" {
+        let nl1 = emit_float_operand_bits(buf, l, local_names, next_local, ctx, ld, ce)
+        emit_f64_reinterpret_i64(buf)
+        let nl2 = emit_float_operand_bits(buf, r, local_names, nl1, ctx, ld, ce)
+        emit_f64_reinterpret_i64(buf)
+        if op == "+" {
+          emit_f64_add(buf)
+        } else if op == "-" {
+          emit_f64_sub(buf)
+        } else if op == "*" {
+          emit_f64_mul(buf)
+        } else {
+          emit_f64_div(buf)
+        }
+        emit_i64_reinterpret_f64(buf)
+        nl2
+      } else {
+        cc_float_operand_unbox(buf, e, local_names, next_local, ctx, ld, ce)
+      },
+      EUnaryOp(op, inner) => if op == "-" {
+        let nl = emit_float_operand_bits(buf, inner, local_names, next_local, ctx, ld, ce)
+        emit_f64_reinterpret_i64(buf)
+        emit_f64_neg(buf)
+        emit_i64_reinterpret_f64(buf)
+        nl
+      } else {
+        cc_float_operand_unbox(buf, e, local_names, next_local, ctx, ld, ce)
+      },
+      _ => cc_float_operand_unbox(buf, e, local_names, next_local, ctx, ld, ce)
+    }
+  }
+}
+
+/// The RC-lane fallback of `emit_float_operand_bits`: compile `e` to its box
+/// and load the bits, releasing the box when it is a fresh temporary.
+fn cc_float_operand_unbox(buf: Bytes, e: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
+  let nl = ce(buf, e, local_names, next_local, ctx, ld)
+  if ctx.rc_drop_func_idx >= 0 && cc_float_operand_is_owned_temp(e, local_names, ctx) {
+    Array::push(local_names, "__ftmp")
+    emit_local_tee(buf, nl)
+    emit_unbox_float(buf)
+    emit_local_get(buf, nl)
+    emit_call(buf, ctx.rc_drop_func_idx)
+    nl + 1
+  } else {
+    emit_unbox_float(buf)
+    nl
+  }
+}
+
 /// Is `e` provably a scalar (Int/Bool) by structure alone — an int/bool literal,
 /// a bitwise/shift/comparison/logical binop, or a logical `!`? Conservative: no
 /// ident-slot/type lookup and no arith ops (+,-,*,/ can be Float). Used to route
@@ -3545,15 +3663,9 @@ fn compile_call_core(buf: Bytes, callee: Expr, raw_args: Array[Expr], local_name
       // below -- and this arm had NO guard at all, so it was the sharper of
       // the two: `let eq = (a: Double, b: Double) -> Double { a + b }` then
       // `eq(1.5, 2.5)` printed `0` under RC, which is the production lane.
-      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
-      if ctx.enable_rc {
-        emit_unbox_float(buf)
-      }
+      let mut nl = emit_float_operand_bits(buf, Array::get(args, 0), local_names, next_local, ctx, ld, ce)
       emit_f64_reinterpret_i64(buf)
-      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
-      if ctx.enable_rc {
-        emit_unbox_float(buf)
-      }
+      nl = emit_float_operand_bits(buf, Array::get(args, 1), local_names, nl, ctx, ld, ce)
       emit_f64_reinterpret_i64(buf)
       emit_f64_eq(buf)
       emit_i64_extend_i32_s(buf)
@@ -4694,10 +4806,9 @@ fn compile_call_core(buf: Bytes, callee: Expr, raw_args: Array[Expr], local_name
       // identical guard). No feature flag on this wasm target makes
       // `i64.trunc_sat_f64_s` available, so NaN and out-of-i64-range
       // values saturate to 0 by hand instead of trunc'ing at all.
-      let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
-      if ctx.enable_rc {
-        emit_unbox_float(buf)
-      }
+      // #3135: the argument's box is borrowed (md_is_double_reader) or, when
+      // it is a temporary, released here (emit_float_operand_bits).
+      let nl = emit_float_operand_bits(buf, Array::get(args, 0), local_names, next_local, ctx, ld, ce)
       let val_l = nl
       Array::push(local_names, "__d2i_val")
       emit_local_set(buf, val_l)
@@ -4805,10 +4916,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, raw_args: Array[Expr], local_name
       ce(buf, double_parse_expr(Array::get(args, 0)), local_names, next_local, ctx, ld)
     }
     else if fname == "Double::abs" || fname == "Double::floor" || fname == "Double::ceil" {
-      let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
-      if ctx.enable_rc {
-        emit_unbox_float(buf)
-      }
+      let nl = emit_float_operand_bits(buf, Array::get(args, 0), local_names, next_local, ctx, ld, ce)
       emit_f64_reinterpret_i64(buf)
       if fname == "Double::abs" {
         emit_f64_abs(buf)
@@ -4828,15 +4936,9 @@ fn compile_call_core(buf: Bytes, callee: Expr, raw_args: Array[Expr], local_name
       }
     }
     else if fname == "Double::max" || fname == "Double::min" {
-      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
-      if ctx.enable_rc {
-        emit_unbox_float(buf)
-      }
+      let mut nl = emit_float_operand_bits(buf, Array::get(args, 0), local_names, next_local, ctx, ld, ce)
       emit_f64_reinterpret_i64(buf)
-      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
-      if ctx.enable_rc {
-        emit_unbox_float(buf)
-      }
+      nl = emit_float_operand_bits(buf, Array::get(args, 1), local_names, nl, ctx, ld, ce)
       emit_f64_reinterpret_i64(buf)
       if fname == "Double::max" {
         emit_f64_max(buf)
@@ -4984,10 +5086,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, raw_args: Array[Expr], local_name
       }
     }
     else if fname == "Double::to_i64_bits_lo" || fname == "Double::to_i64_bits_hi" {
-      let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
-      if ctx.enable_rc {
-        emit_unbox_float(buf)
-      }
+      let nl = emit_float_operand_bits(buf, Array::get(args, 0), local_names, next_local, ctx, ld, ce)
       if fname == "Double::to_i64_bits_hi" {
         emit_i64_const(buf, 32)
         emit_i64_shr_s(buf)
@@ -7908,6 +8007,18 @@ fn rc_exit_plan_count(ctx: CompileCtx, ord: Int, n: String) -> Int {
   count
 }
 
+/// #3175: is wasm local `flag` the per-path release flag of a `let` in scope
+/// (and not, say, a reuse flag)?
+fn rc_exit_is_path_flag(ctx: CompileCtx, flag: Int) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(ctx.rc_path_flag_locals) {
+    found = Array::get(ctx.rc_path_flag_locals, i) == flag
+    i = i + 1
+  }
+  found
+}
+
 /// Does exit `ord` of the plan have `kind`, `fingerprint` and innermost `let`
 /// `inner`? Anything else means plan and codegen numbered the exits apart.
 fn rc_exit_site_matches(ctx: CompileCtx, ord: Int, kind: Int, fingerprint: Int, inner: String) -> Bool {
@@ -8022,7 +8133,17 @@ export fn rc_exit_release(buf: Bytes, ctx: CompileCtx, local_names: Array[String
               1
             } else {
               let planned = rc_exit_plan_count(ctx, ord, n)
-              if ek == 2 {
+              if planned < 0 {
+                // #3175: a split binding's row -- release once, and only
+                // under the path flag its scope-end drop is guarded on. With
+                // no such flag the path that consumed it would release it
+                // again, so the exit releases nothing.
+                if ek == 0 && flag >= 0 && rc_exit_is_path_flag(ctx, flag) {
+                  1
+                } else {
+                  0
+                }
+              } else if ek == 2 {
                 planned - 1
               } else {
                 planned

@@ -282,7 +282,8 @@ let pf_used_after = 8
 // keeps a release-stack entry for -- a `let`, a `let mut` and a parameter --
 // so only they get a `PaExitDrop` row; a pattern binder, a `for` element or a
 // sequencing temp gets none, and still shadows an outer binding of its name.
-// PF_MUT_ASSIGNED marks a `let mut` whose body assigns it.
+// PF_MUT_ASSIGNED marks a `let mut` whose body may store into it without
+// re-applying its dup budget (`pe_stores_tuple`).
 let pf_exit_owner = 16
 
 let pf_mut_assigned = 32
@@ -1328,6 +1329,66 @@ fn pe_cons_end(ctx: PCtx, mark: Int) -> Unit {
   Array::truncate(pe_cons_scratch, mark)
 }
 
+/// #3168: is `let mut name = value; body` the result slot of a parameterized
+/// `loop`? The parser lowers `loop (i = a) { .. break v .. }` to `let mut
+/// __loop_result = 0; while true { .. __loop_result = v; break .. };
+/// __loop_result`, and the RC lane's uniquify pass may rename the slot, so the
+/// SHAPE identifies it: an `Int` placeholder, a `while true` whose value is
+/// discarded, and the slot itself as the result. The placeholder is not the
+/// slot's type -- every `break v` stores a value of the loop's type -- so the
+/// slot is classified from what it stores (`pe_loop_result_stores_heap`), and
+/// codegen gives it an owning slot's stores and scope end (compile_expr_tail's
+/// ELetMut arm). A user `let mut x = 0` of this shape is an `Int` slot, whose
+/// stores are scalars, and a scalar is never released.
+export fn perceus_loop_result_slot(name: String, value: Expr, body: Expr) -> Bool {
+  let zero = match value {
+    EInt(k) => k == 0,
+    _ => false
+  }
+  if zero {
+    match body {
+      ESeq(EWhile(EBool(true), _), EIdent(n, _)) => n == name,
+      // A loop whose value is discarded reaches the plan with its result
+      // read in place (`pe_discarded_spine`).
+      ESeq(EWhile(EBool(true), _), EDot(EIdent(n, _), f, _, _)) => n == name && f == "",
+      _ => false
+    }
+  } else {
+    false
+  }
+}
+
+/// #3168: does `e` store into the loop-result slot `name` anything but a
+/// scalar literal? A nested slot of the same name stores into itself, so the
+/// walk does not enter its body, and a closure cannot store into the slot.
+fn pe_loop_result_stores_heap(e: Expr, name: String) -> Bool {
+  match e {
+    EAssign(n, v, b) => {
+      let scalar = match v {
+        EInt(_) => true,
+        EBool(_) => true,
+        EUnit => true,
+        _ => false
+      }
+      (n == name && !scalar) || pe_loop_result_stores_heap(v, name) || pe_loop_result_stores_heap(b, name)
+    },
+    ELetMut(n, v, b, _) => pe_loop_result_stores_heap(v, name) || (n != name && pe_loop_result_stores_heap(b, name)),
+    EFn(_, _, _, _, _, _) => false,
+    _ => {
+      let mark = expr_children_push(e)
+      let end = expr_children_top()
+      let mut i = mark
+      let mut found = false
+      while i < end && !found {
+        found = pe_loop_result_stores_heap(expr_child_at(i), name)
+        i = i + 1
+      }
+      expr_children_pop(mark)
+      found
+    }
+  }
+}
+
 /// #3141: the fingerprint of an exit's operand that codegen recomputes to
 /// check it is compiling the exit a `PaExitSite` row numbers: the first
 /// source offset a pre-order walk meets, or -1. Both sides read the same
@@ -1361,13 +1422,20 @@ export fn perceus_exit_fingerprint(e: Expr) -> Int {
   }
 }
 
-/// #3141: does `e` assign `name` anywhere (`name = ..` or `name op= ..`)?
-/// Syntactic and blind to shadowing, so an inner binding of the same name
-/// answers yes too -- the direction that withholds rows (`pf_mut_assigned`).
-fn pe_assigns(e: Expr, name: String) -> Bool {
+/// #3141 / #3175: does `e` store a tuple into `name` anywhere (`name = (..)`)? That
+/// is the one store that may not re-apply the slot's dup budget: when the
+/// tuple mentions the slot, compile_expr_tail's EAssign lowering takes the
+/// self-reusing path (`reassign_self_reusable`), which leaves the slot one
+/// reference. Every other store re-applies the whole budget. Syntactic,
+/// blind to shadowing and to whether the tuple mentions the slot, so it
+/// answers yes wherever that path could be taken -- the direction that
+/// withholds rows (`pf_mut_assigned`).
+///
+/// #3175: this used to answer for ANY store, so a `let mut` with a dup
+/// budget that was ever reassigned got no row, and an exit leaked it.
+fn pe_stores_tuple(e: Expr, name: String) -> Bool {
   let own = match e {
-    EAssign(n, _, _) => n == name,
-    EAssignOp(n, _, _, _) => n == name,
+    EAssign(n, ETuple(_), _) => n == name,
     _ => false
   }
   if own {
@@ -1378,7 +1446,7 @@ fn pe_assigns(e: Expr, name: String) -> Bool {
     let mut i = mark
     let mut found = false
     while i < end && !found {
-      found = pe_assigns(expr_child_at(i), name)
+      found = pe_stores_tuple(expr_child_at(i), name)
       i = i + 1
     }
     expr_children_pop(mark)
@@ -1453,7 +1521,9 @@ fn pe_exit(ctx: PCtx, scope: PScope, kind: Int, floor: Int, operand: Expr) -> Un
       PsBind(n, id, rest) => {
         if !name_in(seen, n) {
           Array::push(seen, n)
-          if id >= floor && id < Array::length(ctx.remaining) && pe_flag_has(ctx, id, pf_exit_owner) && Array::get(ctx.remaining, id) > 0 && !Array::get(ctx.scalar, id) && !Array::get(ctx.view_call_let, id) {
+          // #3175: a split binding (see `pe_emit_exit_rows`) is a candidate
+          // with nothing remaining, too.
+          if id >= floor && id < Array::length(ctx.remaining) && pe_flag_has(ctx, id, pf_exit_owner) && (Array::get(ctx.remaining, id) > 0 || pe_flag_has(ctx, id, pf_split)) && !Array::get(ctx.scalar, id) && !Array::get(ctx.view_call_let, id) {
             Array::push(ctx.exit_ids, id)
             Array::push(ctx.exit_ords, ord)
             Array::push(ctx.exit_rems, Array::get(ctx.remaining, id))
@@ -1512,12 +1582,23 @@ fn pe_emit_exit_rows(ctx: PCtx) -> Unit {
         1 + Array::get(dups, id) - Array::get(ctx.exit_cons, ei)
       }
       let rem = Array::get(ctx.exit_rems, ei)
-      let count = if held < rem {
+      // #3175: nothing remaining means a branch merge zeroed the count
+      // against a sibling branch that kept the reference -- `if c { break d
+      // }; continue` consumes `d` on one path only. Such a binding is released
+      // at its scope end by the guarded path drop (`pe_emit_path_release`),
+      // and when it has one, nothing uses it between the merge and the scope
+      // end (`pf_used_after`), so an exit in between leaves it holding exactly
+      // what that drop releases. The row says so with a count of -1: release
+      // once, under the same path flag, which codegen requires.
+      let path_row = rem == 0 && pe_path_dropped(ctx, id)
+      let count = if path_row {
+        0 - 1
+      } else if held < rem {
         held
       } else {
         rem
       }
-      if count > 0 {
+      if count > 0 || path_row {
         Array::push(ctx.actions, PerceusAction::{
           kind: PaExitDrop,
           name: Array::get(ctx.exit_names, ei),
@@ -2793,14 +2874,33 @@ fn all_calls_heap_at(idx: Int, calls: Array[Array[Bool]]) -> Bool {
   all_heap
 }
 
+/// #3169: the evidence-passing lowering (lowering/effects/evidence,
+/// `edp_dict_struct_name`) prepends a parameter typed `__EvDict_<E>` to every
+/// function that performs a migrated user effect, and each call inside the
+/// handle passes a FRESH record literal there -- one owned reference the
+/// callee must release. The name starts with `_`, so the capital-letter test
+/// below called it scalar: the callee planned no drop and every handled call
+/// leaked its dictionary (24 B for a one-operation effect).
+fn type_name_is_evidence_dict(n: String) -> Bool {
+  String::length(n) > 9 && String::substring(n, 0, 9) == "__EvDict_"
+}
+
 fn type_name_is_heap(n: String) -> Bool {
   if String::length(n) == 0 {
     false
+  } else if type_name_is_evidence_dict(n) {
+    true
   } else {
     let c0 = String::char_code_at(n, 0)
     if c0 < 'A' || c0 > 'Z' {
       false
-    } else if n == "Int" || n == "Bool" || n == "Double" || n == "Float" || n == "String" || n == "Bytes" || n == "Char" || n == "Unit" || n == "StdinStream" {
+    } else if n == "Int" || n == "Bool" || n == "String" || n == "Bytes" || n == "Char" || n == "Unit" || n == "StdinStream" {
+      // #3135: `Double` and `Float` are NOT in this list. The RC lane boxes
+      // every one of them on the heap (`emit_box_float`), and the plan has
+      // counted a `Double` binding as heap since #3130 -- so a caller hands
+      // its box to a `Double` parameter as an owned reference. Listing them
+      // here made the callee's parameter scalar: it planned no drop, and the
+      // box every call passed leaked (32 B a call for `take_d(x)`).
       false
     } else {
       true
@@ -3455,7 +3555,7 @@ fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
       pe_emit_store_value(ctx, scope, "", pe_let_binder_owning(ctx, scope, value, true), value)
       let id = pe_declare(ctx, name)
       pe_flag_or(ctx, id, pf_exit_owner)
-      if pe_assigns(body, name) {
+      if pe_stores_tuple(body, name) {
         pe_flag_or(ctx, id, pf_mut_assigned)
       } else {
         ()
@@ -3517,11 +3617,14 @@ fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
       pc_emit(ctx, scope, b)
       pe_scope_end(ctx, id, nm)
     },
+    // #3135: an operator reads its operands and never releases them (see
+    // pc_operand_count), so a bare name there is a borrow, as at a borrowed
+    // call position.
     EBinOp(_op, l, r, _) => {
-      pc_emit(ctx, scope, l)
-      pc_emit(ctx, scope, r)
+      pc_operand_emit(ctx, scope, l)
+      pc_operand_emit(ctx, scope, r)
     },
-    EUnaryOp(_op, e) => pc_emit(ctx, scope, e),
+    EUnaryOp(_op, e) => pc_operand_emit(ctx, scope, e),
     ETuple(items) => {
       let mut i = 0
       while i < Array::length(items) {
@@ -3954,6 +4057,32 @@ fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
   }
 }
 
+/// #3135: an operand of a binary or unary operator. Codegen reads an
+/// operand and never releases it: a `Double` is unboxed into an f64 op (see
+/// `emit_float_operand_bits`), and `==` / `!=` on anything else compares in
+/// place (`emit_eq_value`). Counting a bare name there as an owning use handed
+/// the binding's reference to a consumer that drops nothing -- at the last use
+/// the binding lost its scope-end drop, at an earlier one it took a dup nobody
+/// released -- so every `Double` compared or computed with leaked its box. A
+/// bare name is therefore a borrow here, like a borrowed call argument
+/// (`pc_count_borrow` keeps the binding alive through it, and its scope-end
+/// drop releases it). Any other operand is walked as before.
+fn pc_operand_count(ctx: PCtx, scope: PScope, e: Expr) -> Int {
+  match e {
+    EIdent(x, _) => pc_count_borrow(ctx, scope, x),
+    _ => pc_count(ctx, scope, e)
+  }
+}
+
+/// The emission twin of `pc_operand_count`: a bare-name operand is a borrow,
+/// so it plans no dup and spends no reference.
+fn pc_operand_emit(ctx: PCtx, scope: PScope, e: Expr) -> Int {
+  match e {
+    EIdent(_, _) => 0,
+    _ => pc_emit(ctx, scope, e)
+  }
+}
+
 fn pc_count(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
   match expr {
     EInt(_) => 0,
@@ -4049,7 +4178,14 @@ fn pc_count(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
       // in compile_expr_tail's ELetMut arm, which must fire on exactly the
       // same values as this plan or the two sides desync.
       let borrowed_call = pe_let_mut_borrowed_call(ctx, value)
-      let id = pc_declare(ctx, name, !borrowed_call && is_scalar_expr(ctx, scope, value))
+      // #3168: a loop-result slot's `0` is a placeholder; the slot holds what
+      // its `break v` stores.
+      let scalar = if perceus_loop_result_slot(name, value, body) {
+        !pe_loop_result_stores_heap(body, name)
+      } else {
+        !borrowed_call && is_scalar_expr(ctx, scope, value)
+      }
+      let id = pc_declare(ctx, name, scalar)
       if !borrowed_call {
         let _ = pctx_mark_view_call(ctx, scope, id, value)
         ()
@@ -4082,10 +4218,10 @@ fn pc_count(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
       pc_count(ctx, scope, b)
     },
     EBinOp(_op, l, r, _) => {
-      pc_count(ctx, scope, l)
-      pc_count(ctx, scope, r)
+      pc_operand_count(ctx, scope, l)
+      pc_operand_count(ctx, scope, r)
     },
-    EUnaryOp(_op, e) => pc_count(ctx, scope, e),
+    EUnaryOp(_op, e) => pc_operand_count(ctx, scope, e),
     ETuple(items) => {
       let mut i = 0
       while i < Array::length(items) {
@@ -6369,6 +6505,12 @@ fn pe_int_array_has(xs: Array[Int], v: Int) -> Bool {
     i = i + 1
   }
   found
+}
+
+/// #3175: does `pe_emit_path_release` give binding `id` its guarded path drop?
+/// The same test it applies, for the exit rows that mirror that drop.
+fn pe_path_dropped(ctx: PCtx, id: Int) -> Bool {
+  pe_flag_has(ctx, id, pf_split) && !pe_flag_has(ctx, id, pf_mark_bad) && !pe_flag_has(ctx, id, pf_used_after) && pe_int_array_has(ctx.mark_ids, id)
 }
 
 /// #2389 per-path release: turn the recorded initial-reference occurrences of

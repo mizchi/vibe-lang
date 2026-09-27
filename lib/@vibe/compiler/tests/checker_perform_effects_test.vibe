@@ -477,3 +477,86 @@ test "a row-carrying closure literal in the body counts as reachable" {
   ])
   assert(eq(Array::length(errors), 0))
 }
+
+// #3180: the same refusal, when the opaque callee is a local closure with no
+// effect row whose body performs the effect. "This body reaches no perform"
+// was false -- it reaches one through the closure -- so the message names the
+// call and the edit instead. The closures are bound OUTSIDE the handle (a
+// literal written inside the handled body is visible, and not refused), in a
+// function whose row carries `Yield` so no row error comes first.
+
+fn yield_arms() -> Array[(Pat, Expr)] {
+  [(PCtor("Yield::Yield", [PBind("x")]), EInt(0))]
+}
+
+fn yield_drive_with_row(body: Expr) -> Stmt {
+  SLet(false, false, "drive", None, fn_with(Some("Yield"), body))
+}
+
+fn rowless_yielding_closure() -> Expr {
+  fn_with(None, perform_op("Yield::Yield", EInt(1)))
+}
+
+fn call_at(name: String, off: Int) -> Expr {
+  ECall(EIdent(name, off), array_empty(), -1)
+}
+
+fn dead_handle_errors(body: Expr) -> Array[EffectError] {
+  check_perform_effects_stmts([
+    yield_effect_def(),
+    yield_producer(),
+    yield_drive_with_row(body)
+  ])
+}
+
+fn is_rowless_closure_err(e: EffectError) -> Bool {
+  match e {
+    EEHandleRowlessClosure(_, _, _) => true,
+    _ => false
+  }
+}
+
+test "#3180: a handle over a rowless closure that performs names the call and the edit" {
+  let body = ELet("side", rowless_yielding_closure(), EHandle(call_at("side", 40), yield_arms()), -1)
+  let errors = dead_handle_errors(body)
+  inspect(Array::length(errors), content = "1")
+  assert(is_rowless_closure_err(Array::get(errors, 0)))
+  inspect(effect_error_to_string(Array::get(errors, 0)), content = "give the local closure `side` an effect row -- `let side = (..) -> T with Yield { .. }` -- or write its `perform Yield::..` directly in the handled body: `side` has no row, so this handle of effect 'Yield' cannot see the perform that the call to it reaches [@off=40]")
+}
+
+test "#3180: a closure that reaches the perform through another rowless closure is named" {
+  let inner = rowless_yielding_closure()
+  let outer = fn_with(None, call_at("inner", -1))
+  let body = ELet("inner", inner, ELet("outer", outer, EHandle(call_at("outer", -1), yield_arms()), -1), -1)
+  let errors = dead_handle_errors(body)
+  assert(Array::length(errors) > 0)
+  let msg = effect_error_to_string(Array::get(errors, 0))
+  inspect(String::contains(msg, "give the local closure `outer` an effect row"), content = "true")
+}
+
+test "#3180: a pattern binder of the closure's spelling is not the closure" {
+  // `side` inside the arm is the match's binder, not the closure bound
+  // outside it, so nothing is attributed and the #1347 message stands.
+  let arm = EHandle(call_at("side", -1), yield_arms())
+  let body = ELet("side", rowless_yielding_closure(), EMatch(EInt(1), [
+    (PBind("side"), arm)
+  ]), -1)
+  let errors = dead_handle_errors(body)
+  assert(Array::length(errors) > 0)
+  assert(is_dead_handle_err(Array::get(errors, 0)))
+}
+
+test "#3180: a rowless closure that performs nothing keeps the #1347 message" {
+  let body = ELet("side", fn_with(None, EInt(1)), EHandle(call_at("side", -1), yield_arms()), -1)
+  let errors = dead_handle_errors(body)
+  assert(Array::length(errors) > 0)
+  assert(is_dead_handle_err(Array::get(errors, 0)))
+}
+
+test "#3180: a closure whose own handle discharges the effect performs nothing outside" {
+  let discharged = fn_with(None, EHandle(perform_op("Yield::Yield", EInt(1)), yield_arms()))
+  let body = ELet("side", discharged, EHandle(call_at("side", -1), yield_arms()), -1)
+  let errors = dead_handle_errors(body)
+  assert(Array::length(errors) > 0)
+  assert(is_dead_handle_err(Array::get(errors, 0)))
+}

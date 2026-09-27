@@ -22,6 +22,15 @@
 // element, and a pattern binder or `for` element spelled like an owned
 // `let`. Then a `let mut` no closure captures, which an exit now releases:
 // stored before the exit, after it, and in the loop the exit leaves.
+//
+// The last group (#3168, #3175) pins a parameterized loop's result slot,
+// which now owns what `break v` stores and releases it when the loop's value
+// is discarded: a borrowed element or `let` alias stored there (retained, so
+// the array it came from keeps its element -- on main the used forms trapped
+// under VIBE_RC=shadow), a parameter or outer binding stored there, a body
+// binding handed out after `continue`s released its earlier copies, a
+// binding consumed on one path and left by a `continue` both paths reach,
+// and a reassigned `let mut` with a dup budget left by an early return.
 
 enum D {
   A(String)
@@ -600,4 +609,186 @@ test "a let mut struct literal released by an early return of another binding" {
   let x = churn()
   let b = mut_record_other(false)
   inspect(String::join([hold(a), x, hold(b)], ";"), content = "ro1;churn0;ro2")
+}
+
+// #3168: a parameterized loop's result slot is an owning slot. A `break v`
+// that stores a borrowed element retains it, so the loop's value outlives
+// the array's own release of that element -- on main the element was handed
+// out unretained, the consumer released it, and the array's second read
+// trapped under VIBE_RC=shadow.
+fn loop_borrow_outlives(n: Int) -> String {
+  let ds = [A(fresh("lo", n)), A(fresh("lp", n))]
+  let r = loop (i = 0) {
+    if i == 1 {
+      break Array::get(ds, 1)
+    }
+    continue(i + 1)
+  }
+  let x = churn()
+  String::join([hold(r), x, name_of(Array::get(ds, 1))], ";")
+}
+
+// A loop whose value is discarded releases what its `break` stored, and
+// nothing else: the outer binding and the array it borrowed from are alive.
+fn loop_discarded(n: Int) -> String {
+  let outer = A(fresh("ld", n))
+  let ds = [A(fresh("le", n))]
+  loop (i = 0) {
+    let d = A(fresh("lf", i))
+    if i == 2 {
+      break d
+    }
+    continue(i + 1)
+  }
+  loop (i = 0) {
+    if i == 1 {
+      break Array::get(ds, 0)
+    }
+    continue(i + 1)
+  }
+  let x = churn()
+  String::join([name_of(outer), x, name_of(Array::get(ds, 0))], ";")
+}
+
+// A `break` storing a borrowed `let` alias: the slot retains it too, whether
+// the loop's value is used or discarded, and the array keeps its element.
+fn loop_alias_used(n: Int) -> String {
+  let ds = [A(fresh("lu", n))]
+  let r = loop (i = 0) {
+    let v = Array::get(ds, 0)
+    if i == 1 {
+      break v
+    }
+    continue(i + 1)
+  }
+  let x = churn()
+  String::join([hold(r), x, name_of(Array::get(ds, 0))], ";")
+}
+
+fn loop_alias_discarded(n: Int) -> String {
+  let ds = [A(fresh("la", n))]
+  loop (i = 0) {
+    let v = Array::get(ds, 0)
+    if i == 1 {
+      break v
+    }
+    continue(i + 1)
+  }
+  let x = churn()
+  String::concat(x, name_of(Array::get(ds, 0)))
+}
+
+// A discarded loop that breaks with a parameter, or with a binding declared
+// outside it: the caller's value, and the binding, are not released twice.
+fn loop_param_discarded(d: D) -> String {
+  loop (i = 0) {
+    if i == 1 {
+      break d
+    }
+    continue(i + 1)
+  }
+  let x = churn()
+  String::concat(x, name_of(d))
+}
+
+fn loop_outer_discarded(n: Int) -> String {
+  let d = A(fresh("lq", n))
+  loop (i = 0) {
+    if i == 1 {
+      break d
+    }
+    continue(i + 1)
+  }
+  churn()
+}
+
+// #3175: the body binding a `break d` hands out is released by the earlier
+// iterations' `continue`s, and the one the loop hands out is alive.
+fn loop_break_body_binding(n: Int) -> D {
+  loop (i = 0) {
+    let d = A(fresh("lb", i))
+    if i == n {
+      break d
+    }
+    continue(i + 1)
+  }
+}
+
+// A binding consumed on one path, then left by a `continue` both paths
+// reach: the consuming path must not release it again (its path flag says
+// it was consumed), and what it was consumed into is alive afterwards.
+fn split_then_continue(n: Int) -> String {
+  let kept: Array[D] = []
+  let mut i = 0
+  while i < n {
+    let d = A(fresh("sc", i))
+    i = i + 1
+    if i % 2 == 0 {
+      Array::push(kept, d)
+    } else {
+      ()
+    }
+    continue
+  }
+  let x = churn()
+  String::join([x, name_of(Array::get(kept, 0)), name_of(Array::get(kept, 1))], ";")
+}
+
+// A `let mut` with a dup budget that a store replaced, left by an early
+// return: the return releases the stored value, and the value it hands out
+// is alive.
+fn mut_budget_stored(c: Bool) -> D {
+  let other = A(fresh("mb", 0))
+  let mut d = A(fresh("mb", 1))
+  d = A(fresh("mb", 2))
+  if c {
+    return other
+  }
+  let e = keep(d)
+  let _ = name_of(e)
+  keep(d)
+}
+
+test "a break value borrowed from an array that outlives the loop" {
+  inspect(loop_borrow_outlives(3), content = "lp3;churn0;lp3")
+}
+
+test "a discarded loop releases only what its break stored" {
+  inspect(loop_discarded(4), content = "ld4;churn0;le4")
+}
+
+test "a break value that is a borrowed alias, used" {
+  inspect(loop_alias_used(2), content = "lu2;churn0;lu2")
+}
+
+test "a break value that is a borrowed alias, discarded" {
+  inspect(loop_alias_discarded(2), content = "churn0la2")
+}
+
+test "a discarded loop breaking with a parameter" {
+  let d = A(fresh("lp", 1))
+  let a = loop_param_discarded(d)
+  let x = churn()
+  inspect(String::join([a, x, name_of(d)], ";"), content = "churn0lp1;churn0;lp1")
+}
+
+test "a discarded loop breaking with an outer binding" {
+  inspect(loop_outer_discarded(3), content = "churn0")
+}
+
+test "a break of the body binding after continues" {
+  let a = loop_break_body_binding(2)
+  let x = churn()
+  inspect(String::concat(hold(a), x), content = "lb2churn0")
+}
+
+test "a binding consumed on one path and left by a continue" {
+  inspect(split_then_continue(4), content = "churn0;sc1;sc3")
+}
+
+test "a reassigned let mut with a dup budget left by an early return" {
+  let a = mut_budget_stored(true)
+  let x = churn()
+  let b = mut_budget_stored(false)
+  inspect(String::join([hold(a), x, hold(b)], ";"), content = "mb0;churn0;mb2")
 }

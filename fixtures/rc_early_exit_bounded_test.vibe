@@ -23,13 +23,24 @@
 // followed by the exit (#3181 review). With them the fixture grows
 // 3,888,084 B on a stage2 from main at 6646ccbfb (no exit releases
 // anything), 1,344,212 B when every exit releases what it leaves except a
-// `let mut`, and 440 B now.
+// `let mut`, and 440 B after #3181.
+//
+// #3168 / #3175 add a parameterized loop whose value is discarded
+// (loop_discard: its result slot held the `break d` value and nothing
+// released it), a `break d` of the body binding after `continue`s
+// (loop_brk_body: the `continue` left `d`, consumed on the `break` path
+// only, unreleased) and a `break` storing a borrowed element whose array
+// outlives the loop (loop_borrow: the slot did not retain it, and the
+// consumer released the array's element). On a stage2 from main at
+// a81ffcb2e the fixture traps in loop_borrow on the default, rc and shadow
+// lanes; without loop_borrow it grows 1,120,244 B there. Now 472 B.
 //
 // `main` sums, per round i: 1 each from ret_guard, ret_budget, ret_pick, brk,
 // thr, thr_local, mut_guard, mut_budget, mut_store_before, mut_store_after,
-// mut_store_in_loop, mut_brk, mut_record, ret_map and loop_exit, 2 from cont,
-// 5 from nested, and i from ret_cell:
-// 2000 * (15 + 2 + 5) + 1999 * 2000 / 2 = 2043000.
+// mut_store_in_loop, mut_brk, mut_record, ret_map, loop_exit, loop_discard,
+// loop_brk_body and loop_borrow, 2 from cont, 5 from nested, and i from
+// ret_cell:
+// 2000 * (18 + 2 + 5) + 1999 * 2000 / 2 = 2049000.
 
 enum D {
   A(Array[Int])
@@ -263,10 +274,51 @@ fn loop_exit(n: Int) -> Int {
   }
 }
 
+// #3168: a parameterized loop whose value is discarded. Its `break d`
+// stores `d` in the loop's result slot, which the scope end now releases.
+fn loop_discard(n: Int) -> Int {
+  loop (i = 0) {
+    let d = A([i + n, 1])
+    if i == 2 {
+      break d
+    }
+    continue(i + 1)
+  }
+  1
+}
+
+// #3175: `break d` consumes the body binding on one path only, and the
+// earlier iterations' `continue` leaves it on the other; the `continue`
+// releases it under the binding's path flag.
+fn loop_brk_body(n: Int) -> Int {
+  let r = loop (i = 0) {
+    let d = A([i + n, 1])
+    if i == 2 {
+      break d
+    }
+    continue(i + 1)
+  }
+  second(r)
+}
+
+// #3168: a `break` storing a borrowed element; the slot retains it, and the
+// array outlives the loop.
+fn loop_borrow(n: Int) -> Int {
+  let ds = [A([n, 3]), A([n, 1])]
+  let r = loop (i = 0) {
+    if i == 1 {
+      break Array::get(ds, 1)
+    }
+    continue(i + 1)
+  }
+  second(r) + second(Array::get(ds, 1)) - 1
+}
+
 fn round(i: Int) -> Int {
   let mixed = ret_guard(i) + ret_budget(i) + second(ret_pick(i)) + brk(i) + cont(i) + thr(i) + thr_local(i) + nested(i) + second(ret_cell(i >= 0, i))
   let muts = mut_guard(i) + mut_budget(i) + mut_store_before(i) + mut_store_after(i) + mut_store_in_loop(i) + mut_brk(i) + mut_record(i) + ret_map(i) + loop_exit(i)
-  mixed + muts
+  let loops = loop_discard(i) + loop_brk_body(i) + loop_borrow(i)
+  mixed + muts + loops
 }
 
 export fn main() -> Int {

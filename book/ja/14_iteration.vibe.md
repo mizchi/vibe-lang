@@ -26,19 +26,19 @@ fn main allows Console {
   }
   println("evens length = \{Array::length(evens)}")
   println("sum = \{sum}")
-  println("doubled[3] = \{Array::get(doubled, 3)}")
+  println("doubled = \{doubled}")
 }
 ```
 
 ```output
 evens length = 2
 sum = 10
-doubled[3] = 8
+doubled = [2, 4, 6, 8]
 ```
 
 `for x in xs { body }` は**集める**。`xs` が `Array`（または他の組み込み
 コレクション）なら、このループは式で、その値は `Array[T]` になる。だから
-`doubled` は添字で引ける。`for i, x in xs` と書けば添字も束縛される。
+`doubled` は他の配列と同じように印字でき、添字でも引ける。`for i, x in xs` と書けば添字も束縛される。
 値が捨てられる `for` は配列をまったく作らないので、副作用のために回す
 ループのコストは `while` と変わらない。
 

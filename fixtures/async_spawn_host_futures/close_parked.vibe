@@ -1,0 +1,23 @@
+// #3160: a group whose body returns while a suspendable child is still parked
+// on a host future, with no `pump_all` or `join`. Close joins every remaining
+// child, so it pumps the group until the child's 300ms future lands; it used
+// to trap as a deadlock. The child resolves `done` with what it read, so the
+// entry reads 40 only if close ran the child to the end rather than dropping
+// it: 2 + 40 = 42, in about 300ms. Executed by
+// scripts/test_named_hostfutures_component_gate.sh.
+import @vibe/concurrent/experimental {
+  TaskGroup, TaskHandle
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  let done = Future::pending()
+  let body = TaskGroup::run((g) -> {
+    let _ = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      let v = await(host_future_named("slow"))
+      Future::resolve(done, v)
+      v
+    })
+    2
+  })
+  body + await(done)
+}

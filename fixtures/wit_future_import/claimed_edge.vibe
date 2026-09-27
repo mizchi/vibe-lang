@@ -1,0 +1,35 @@
+// #3164: the slot table's edge. 511 tasks park awaiting slow prices, which
+// claims 511 of the adapter's 512 result slots, and the 512th call's future is
+// dropped unawaited. The reclaim used to run AFTER a call took its slot and
+// spared that slot, so here it found nothing else to evict, and the NEXT call
+// trapped in the adapter's getter although the dropped future was there to
+// reclaim. Room is now made before the getter runs: the dropped future is
+// evicted and the call takes its slot. Every price still lands with its
+// awaiting task (a claimed slot is never evicted), and the last call's tax is
+// read after the group: 2. Executed by
+// scripts/test_wit_async_import_component_gate.sh.
+import ./prices_bindings.vibe {
+  get_price, get_tax
+}
+
+import @vibe/concurrent/experimental {
+  TaskGroup, TaskHandle
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  let t = TaskGroup::run((g) -> {
+    let mut i = 0
+    while i < 511 {
+      let _ = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+        await(get_price())
+      })
+      i = i + 1
+    }
+    let _ = get_tax()
+    // The call itself is what trapped: every slot was taken.
+    let t = get_tax()
+    TaskGroup::pump_all(g)
+    t
+  })
+  await(t)
+}

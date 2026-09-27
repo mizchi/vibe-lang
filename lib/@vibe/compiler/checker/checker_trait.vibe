@@ -389,14 +389,36 @@ export fn check_bounds_satisfied(env: TypeEnv, s: Subst, ty: Type, bounds: Array
 }
 
 export fn register_builtin_traits(env: TypeEnv) -> TypeEnv {
-  register_builtin_traits_for(env, true)
+  register_builtin_traits_for(env, empty_strings())
 }
 
-/// `seed_show` is false when the program declares its OWN `trait Show`: the
-/// scalar impls below belong to the builtin trait, and seeding them by name
-/// would let a local `Show` with a different method be satisfied at `Int` by
-/// an impl nobody wrote (#3022 review).
-export fn register_builtin_traits_for(env: TypeEnv, seed_show: Bool) -> TypeEnv {
+fn seed_withheld(withheld: Array[String], trait_name: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(withheld) {
+    if Array::get(withheld, i) == trait_name {
+      found = true
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// The prelude's impls, seeded for a program that never imports
+/// `@vibe/builtin`. The checker does not read
+/// `lib/@vibe/builtin/builtin_traits.vibe` for its builtin trait authority, so
+/// this table is a COPY of that file's impls, and the copy drifted three times
+/// -- `Show` (#3004), `Add for String` (#3178), `Signed` and `Default` (#3187)
+/// -- each time as a refused `[T: X]` at a scalar the prelude declares.
+/// `lib/@vibe/compiler/tests/builtin_trait_seed_parity_test.vibe` compares the
+/// two row by row, so an impl added on one side only fails there.
+///
+/// `withheld` names the traits whose impl rows are left out for this program
+/// (`builtin_seed_withheld` in checker_stmt.vibe): the program declares a trait
+/// of that name itself, or one arrives through its imports, and that
+/// declaration's own impls govern. Seeding the builtin rows by name would let
+/// such a trait be satisfied at `Int` by an impl nobody wrote (#3022 review).
+export fn register_builtin_traits_for(env: TypeEnv, withheld: Array[String]) -> TypeEnv {
   let no_supers = empty_strings()
   let eq_supers = one_super("Eq")
   let i64_type = CtNamed("i64", no_type_args())
@@ -422,7 +444,7 @@ export fn register_builtin_traits_for(env: TypeEnv, seed_show: Bool) -> TypeEnv 
   // five scalars, but only the `Eq` / `Ord` / arithmetic rows below were
   // seeded, so `[T: Show]` answered ``no impl `Show` for `Int` `` while a
   // `derive (Show)` struct satisfied it. Seeded the same way as `Eq`'s.
-  let env_show = if seed_show {
+  let env_show = if !seed_withheld(withheld, "Show") {
     EnvTraitImpl("Show", CtString, EnvTraitImpl("Show", CtChar, EnvTraitImpl("Show", CtBool, EnvTraitImpl("Show", CtDouble, EnvTraitImpl("Show", CtInt, env)))))
   } else {
     env
@@ -437,7 +459,10 @@ export fn register_builtin_traits_for(env: TypeEnv, seed_show: Bool) -> TypeEnv 
   let e8 = EnvTraitImpl("Eq", CtDouble, e7)
   let e9 = EnvTraitImpl("Eq", CtString, e8)
   let e10 = EnvTraitImpl("Eq", CtBool, e9)
-  let e11 = EnvTraitImpl("Ord", CtInt, e10)
+  // #3187: the prelude declares `impl Eq for Char` too. Its witness is the
+  // annotated `a == b` desugar_trait_dict synthesizes for each scalar.
+  let e10c = EnvTraitImpl("Eq", CtChar, e10)
+  let e11 = EnvTraitImpl("Ord", CtInt, e10c)
   let e12 = EnvTraitImpl("Ord", CtDouble, e11)
   let e13 = EnvTraitImpl("Ord", CtString, e12)
   let e14 = EnvTraitImpl("Add", CtInt, e13)
@@ -502,7 +527,25 @@ export fn register_builtin_traits_for(env: TypeEnv, seed_show: Bool) -> TypeEnv 
   let e62 = EnvTraitImpl("Send", CtBool, e61)
   let e63 = EnvTraitImpl("Send", CtUnit, e62)
   let e64 = EnvTraitImpl("Send", CtChar, e63)
-  e64
+  // #3187: the prelude's `Signed` and `Default` impls. A program that never
+  // imports `@vibe/builtin` answered ``no impl `Signed` for `Int` `` (and the
+  // same for `Default`) although the prelude declares both. Impls only, with
+  // no trait definition, the way `Show`'s are: `Default` has a method-bearing
+  // declaration in `@vibe/core`, and a seeded marker definition that reached
+  // an importer's environment could sit above it and hide `default`. The
+  // bound needs only the impl. `T::default()` needs `@vibe/core`'s
+  // declaration, and the checker names that import when it is missing
+  // (`marker_default_dispatch_error` in checker.vibe).
+  let env_signed = if !seed_withheld(withheld, "Signed") {
+    EnvTraitImpl("Signed", CtDouble, EnvTraitImpl("Signed", CtInt, e64))
+  } else {
+    e64
+  }
+  if !seed_withheld(withheld, "Default") {
+    EnvTraitImpl("Default", CtString, EnvTraitImpl("Default", CtBool, EnvTraitImpl("Default", CtDouble, EnvTraitImpl("Default", CtInt, env_signed))))
+  } else {
+    env_signed
+  }
 }
 
 export fn validate_supers_defined(env: TypeEnv, supers: Array[String]) -> Array[String] {

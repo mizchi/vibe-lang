@@ -670,6 +670,46 @@ JP_MS=$(( ( $(date +%s%N) - JP_START ) / 1000000 ))
   || { echo "named hostfutures component gate FAILED: join_parked took ${JP_MS}ms -- the cancelled 5s sleeper held the run" >&2; exit 1; }
 echo "[named-hostfutures-component-gate] join_parked: 7 in ${JP_MS}ms (join pumped the parked task)"
 
+# close_parked (#3160): the group body returns while a suspendable child is
+# still parked on a host future, with no pump_all or join. Close joins the
+# child -- it pumps the group until the future lands -- where it used to trap
+# as a deadlock. The child resolves the future the entry reads afterwards, so
+# 42 (2 + 40) means close ran it to its end rather than dropping it.
+CP_OUT="$OUT_DIR/spawn_close_parked.component.wasm"
+rm -f "$CP_OUT" "$CP_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/close_parked.vibe "$CP_OUT" run >/dev/null 2>&1 || true
+[ -s "$CP_OUT" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/close_parked.vibe did not compile: $(cat "$CP_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+CP_LOG="$OUT_DIR/spawn_close_parked.log"
+if ! VIBE_ASYNC_FUTURES="slow=40:$LONG_MS" run_bounded 60 "$RUNNER" "$CP_OUT" >"$CP_LOG" 2>&1; then
+  echo "named hostfutures component gate FAILED: close_parked did not exit 0 -- close trapped on a child the pump could wake" >&2
+  cat "$CP_LOG" >&2
+  exit 1
+fi
+[ "$(cat "$CP_LOG")" = "42" ] \
+  || { echo "named hostfutures component gate FAILED: close_parked expected 42 (2 + 40), got: $(cat "$CP_LOG")" >&2; exit 1; }
+echo "[named-hostfutures-component-gate] close_parked: 42 (close joined the child parked on a host future)"
+
+# close_deadlock (#3160): the side that must still trap. The body leaves a
+# child awaiting a future no task resolves; close pumps, finds nothing that can
+# wake it, and traps with a message rather than returning the body's value
+# with a live child.
+CD_OUT="$OUT_DIR/spawn_close_deadlock.component.wasm"
+rm -f "$CD_OUT" "$CD_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/close_deadlock.vibe "$CD_OUT" run >/dev/null 2>&1 || true
+[ -s "$CD_OUT" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/close_deadlock.vibe did not compile: $(cat "$CD_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+CD_LOG="$OUT_DIR/spawn_close_deadlock.log"
+if VIBE_ASYNC_FUTURES="slow=40:1" run_bounded 60 "$RUNNER" "$CD_OUT" >"$CD_LOG" 2>&1; then
+  echo "named hostfutures component gate FAILED: close_deadlock exited 0 (answered $(cat "$CD_LOG")) -- a child nothing can wake was dropped at close" >&2
+  exit 1
+fi
+grep -qF "deadlock in TaskGroup::run" "$CD_LOG" \
+  || { echo "named hostfutures component gate FAILED: close_deadlock failed without the deadlock message: $(cat "$CD_LOG")" >&2; exit 1; }
+echo "[named-hostfutures-component-gate] close_deadlock: traps naming the deadlock"
+
 # catch_in_entry: an Async entry that spawns suspendable tasks catches
 # exceptions around code that cannot suspend (one passes a local into a
 # String parameter). Such an entry's boundary is suspend-class, and it used to
@@ -849,5 +889,128 @@ fi
 [ "$(cat "$HT_LOG")" = "1100" ] \
   || { echo "named hostfutures component gate FAILED: host_wait_release_thrown expected 1100, got: $(cat "$HT_LOG")" >&2; exit 1; }
 echo "[named-hostfutures-component-gate] host_wait_release_thrown: 1100 (each thrown group released its parked child's read)"
+
+# mixed_spawn (#3161): ordinary `spawn` children and a `spawn_suspend` child
+# in one group of an Async entry, the spawn children capturing values bound
+# before the group -- literals, a value with a written type, and (in a helper)
+# a parameter declared Int. It was refused at compile time. 127.
+MS_OUT="$OUT_DIR/spawn_mixed_spawn.component.wasm"
+rm -f "$MS_OUT" "$MS_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/mixed_spawn.vibe "$MS_OUT" run >/dev/null 2>&1 || true
+[ -s "$MS_OUT" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/mixed_spawn.vibe did not compile: $(cat "$MS_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+MS_LOG="$OUT_DIR/spawn_mixed_spawn.log"
+if ! VIBE_ASYNC_FUTURES="slow=40:1" run_bounded 60 "$RUNNER" "$MS_OUT" >"$MS_LOG" 2>&1; then
+  echo "named hostfutures component gate FAILED: mixed_spawn did not exit 0" >&2
+  cat "$MS_LOG" >&2
+  exit 1
+fi
+[ "$(cat "$MS_LOG")" = "127" ] \
+  || { echo "named hostfutures component gate FAILED: mixed_spawn expected 127, got: $(cat "$MS_LOG")" >&2; exit 1; }
+echo "[named-hostfutures-component-gate] mixed_spawn: 127 (spawn and spawn_suspend children in one group)"
+
+# mixed_spawn_capture_refused (#3161): a spawn child capturing a call result
+# with no written type stays refused -- the value might be a closure that
+# suspends -- and the message leads with the edit instead of naming only the
+# call to TaskGroup::run.
+MR_OUT="$OUT_DIR/spawn_mixed_spawn_capture_refused.component.wasm"
+rm -f "$MR_OUT" "$MR_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/mixed_spawn_capture_refused.vibe "$MR_OUT" run >/dev/null 2>&1 || true
+if [ -s "$MR_OUT" ]; then
+  echo "named hostfutures component gate FAILED: mixed_spawn_capture_refused compiled -- a capture of unknown type reached a plain-convention child" >&2
+  exit 1
+fi
+grep -qF 'captures `n`, which may hold a closure that suspends' "$MR_OUT.diag" 2>/dev/null \
+  && grep -qF 'give its binding a type (`let n: Int' "$MR_OUT.diag" 2>/dev/null \
+  || { echo "named hostfutures component gate FAILED: mixed_spawn_capture_refused gave an unexpected diagnostic: $(cat "$MR_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+echo "[named-hostfutures-component-gate] mixed_spawn_capture_refused: refused, naming the capture and the edit"
+
+# #3192 / #3161 rows: an Async entry calling an Async closure literal of its
+# own. Each compiles a fixture, runs it with `slow` answering 40, and compares
+# the answer. Before #3192 the literal was compiled to the step convention but
+# the entry's call to it was compiled as a plain call, so the entry answered
+# the step object -- a heap pointer -- and nothing failed.
+step_closure_row() {
+  local name="$1" want="$2" why="$3"
+  local out="$OUT_DIR/spawn_$name.component.wasm" log="$OUT_DIR/spawn_$name.log"
+  rm -f "$out" "$out.diag"
+  VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+    bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+    "$COMPILER" "fixtures/async_spawn_host_futures/$name.vibe" "$out" run >/dev/null 2>&1 || true
+  [ -s "$out" ] || { echo "named hostfutures component gate FAILED: fixtures/async_spawn_host_futures/$name.vibe did not compile: $(cat "$out.diag" 2>/dev/null)" >&2; exit 1; }
+  if ! VIBE_ASYNC_FUTURES="slow=40:1" run_bounded 60 "$RUNNER" "$out" >"$log" 2>&1; then
+    echo "named hostfutures component gate FAILED: $name did not exit 0" >&2
+    cat "$log" >&2
+    exit 1
+  fi
+  [ "$(cat "$log")" = "$want" ] \
+    || { echo "named hostfutures component gate FAILED: $name expected $want, got: $(cat "$log")" >&2; exit 1; }
+  echo "[named-hostfutures-component-gate] $name: $want ($why)"
+}
+
+# fixtures/async_spawn_host_futures/step_closure_before_group.vibe and
+# fixtures/async_spawn_host_futures/step_closure_after_group.vibe: the entry
+# also spawns a suspendable task. They answered 849 and 1421.
+step_closure_row step_closure_before_group 41 "the entry's own call, before the group"
+step_closure_row step_closure_after_group 41 "the entry's own call, after the group"
+# fixtures/async_spawn_host_futures/step_closure_shapes.vibe: the call inside
+# a block, a branch, a statement, a `while` body, a `match` arm and the tail,
+# through a closure that binds its own, through a top-level fn, through a
+# `let rec`, and a closure that only holds a suspendable task (a plain call,
+# which a step name nested in it used to hide).
+step_closure_row step_closure_shapes 90124002 "each shape through its own offset"
+# fixtures/async_spawn_host_futures/step_closure_beside_group.vibe: the group
+# holds only ordinary `spawn` children, so no suspendable task makes the
+# entry's boundary suspend-class; the step-compiled literal now does. It was
+# refused. fixtures/async_spawn_host_futures/step_fn_beside_group.vibe declares
+# the closure as a top-level fn instead, which keeps the tail-resumptive
+# boundary.
+step_closure_row step_closure_beside_group 41 "a boundary that suspends because a closure does"
+step_closure_row step_fn_beside_group 41 "a top-level fn keeps the tail-resumptive boundary"
+# fixtures/async_spawn_host_futures/spawn_suspend_alias.vibe (#3182):
+# `TaskGroup::spawn_suspend` through a local alias bound inside the group body,
+# one bound before `TaskGroup::run`, and an alias of an alias. Each was refused
+# (the convention guard, or a "capture" of the function) where the direct call
+# compiles.
+step_closure_row spawn_suspend_alias 178 "spawn_suspend called through local aliases"
+
+# step_closure_in_group_refused (#3192): the call inside the body handed to
+# `TaskGroup::run`, which runs that body where it cannot suspend. It stays
+# refused, and the message names the closure and the edit instead of only the
+# call to TaskGroup::run.
+SG_OUT="$OUT_DIR/spawn_step_closure_in_group_refused.component.wasm"
+rm -f "$SG_OUT" "$SG_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/step_closure_in_group_refused.vibe "$SG_OUT" run >/dev/null 2>&1 || true
+if [ -s "$SG_OUT" ]; then
+  echo "named hostfutures component gate FAILED: step_closure_in_group_refused compiled -- a step-compiled closure reached a body TaskGroup::run runs without suspending" >&2
+  exit 1
+fi
+grep -qF 'the closure passed to `TaskGroup::run` calls `fetch`, a closure that suspends' "$SG_OUT.diag" 2>/dev/null \
+  && grep -qF 'call `fetch` before or after `TaskGroup::run` instead' "$SG_OUT.diag" 2>/dev/null \
+  || { echo "named hostfutures component gate FAILED: step_closure_in_group_refused gave an unexpected diagnostic: $(cat "$SG_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+echo "[named-hostfutures-component-gate] step_closure_in_group_refused: refused, naming the closure and the edit"
+
+# fn_value_in_group_refused (#3182): a top-level function passed as a value in
+# the body handed to `TaskGroup::run`. Still refused; the message used to
+# suggest annotating it as a binding (`let inc: Int = ..`), and now names the
+# closure-literal edit that compiles.
+FV_OUT="$OUT_DIR/spawn_fn_value_in_group_refused.component.wasm"
+rm -f "$FV_OUT" "$FV_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/fn_value_in_group_refused.vibe "$FV_OUT" run >/dev/null 2>&1 || true
+if [ -s "$FV_OUT" ]; then
+  echo "named hostfutures component gate FAILED: fn_value_in_group_refused compiled -- a function value the boundary cannot follow reached TaskGroup::run" >&2
+  exit 1
+fi
+grep -qF 'the closure passed to `TaskGroup::run` passes the function `inc` as a value' "$FV_OUT.diag" 2>/dev/null \
+  && grep -qF 'pass a closure literal that calls it instead (`(..) -> inc(..)`)' "$FV_OUT.diag" 2>/dev/null \
+  || { echo "named hostfutures component gate FAILED: fn_value_in_group_refused gave an unexpected diagnostic: $(cat "$FV_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+echo "[named-hostfutures-component-gate] fn_value_in_group_refused: refused, naming the closure-literal edit"
 
 echo "named hostfutures component gate OK"

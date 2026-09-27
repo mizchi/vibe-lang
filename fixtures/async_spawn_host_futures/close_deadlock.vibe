@@ -1,0 +1,18 @@
+// #3160, the side that must still trap: a child awaiting a future that no
+// task resolves, left parked when the body returns. Close pumps the group, but
+// nothing inside it can produce the value, so it is a deadlock and traps (with
+// a message) rather than returning the body's 2 with a live child. Executed by
+// scripts/test_named_hostfutures_component_gate.sh.
+import @vibe/concurrent/experimental {
+  TaskGroup, TaskHandle
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  let never: Future[Int] = Future::pending()
+  TaskGroup::run((g) -> {
+    let _ = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      await(never)
+    })
+    2
+  })
+}

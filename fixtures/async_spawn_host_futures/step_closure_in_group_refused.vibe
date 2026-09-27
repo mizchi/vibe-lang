@@ -1,0 +1,22 @@
+// #3192: the Async closure called INSIDE the body handed to `TaskGroup::run`.
+// `TaskGroup::run` runs that body where it cannot suspend, so a call to a
+// closure compiled to the step convention cannot work there. It stays a
+// compile error, and the message names the closure and the edit: call it
+// before or after `TaskGroup::run`, or run it in a `TaskGroup::spawn_suspend`
+// task. Compiled and refused by scripts/test_named_hostfutures_component_gate.sh.
+import @vibe/concurrent/experimental {
+  TaskGroup, TaskHandle
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  let fetch = () -> Int with Async {
+    await(host_future_named("slow"))
+  }
+  TaskGroup::run((g) -> {
+    let h = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      1
+    })
+    let x = fetch()
+    x + TaskHandle::join(h)
+  })
+}

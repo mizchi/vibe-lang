@@ -130,6 +130,11 @@ export enum EffectError {
   // body cannot reach a perform of E and only invokes an opaque value —
   // the handler-switch footgun. Field: the effect name.
   EEHandleNeverFires(String);
+  // #3180: the #1347 shape where the opaque call IS visible -- a local closure
+  // with no effect row whose body performs the effect. The handle is refused
+  // the same way, but "reaches no perform" is false. Fields: the effect, the
+  // closure's name, the call's source offset (-1 when unlocated).
+  EEHandleRowlessClosure(String, String, Int);
   // ADR-0102 / #1678: defense in depth for AST producers that bypass the
   // source parser. EHandle does not retain its source effect name, so this
   // diagnostic deliberately names the structural problem instead.
@@ -519,6 +524,16 @@ export fn effect_error_to_string(err: EffectError) -> String {
     EEHandleNeverFires(eff) => {
       let tail = String::concat(eff, "::..` and calls an opaque function value. A continuation captured by another handler carries THAT handler with it, so wrapping its invocation in a new `handle` does not switch handlers (non-scoped resumption is unsupported -- ADR-0089 Part A, #1347). Drive the continuation without the wrapping handle, or handle the effect where it is performed")
       String::concat("handle of effect '", String::concat(eff, String::concat("' can never fire: this body reaches no `perform ", tail)))
+    },
+    EEHandleRowlessClosure(eff, cname, off) => {
+      let edit = String::concat("give the local closure `", String::concat(cname, String::concat("` an effect row -- `let ", String::concat(cname, String::concat(" = (..) -> T with ", String::concat(eff, String::concat(" { .. }` -- or write its `perform ", String::concat(eff, "::..` directly in the handled body"))))))))
+      let why = String::concat(": `", String::concat(cname, String::concat("` has no row, so this handle of effect '", String::concat(eff, "' cannot see the perform that the call to it reaches"))))
+      let body = String::concat(edit, why)
+      if off >= 0 {
+        String::concat(body, String::concat(" [@off=", String::concat(__to_string(off), "]")))
+      } else {
+        body
+      }
     },
     EEEmptyHandle => "handler must contain at least one arm; an empty handler cannot discharge an effect",
     EEPerformQuestionRequiresOptional(fname, operation, off) => {
@@ -8181,11 +8196,333 @@ fn dh_has_opaque_call(expr: Expr, fn_names: Array[String], fn_index: MutMap[Stri
   }
 }
 
+//# #3180: which call a dead-looking handle reaches its perform through
+//
+// The #1347 check above refuses a handle whose body calls an opaque value and
+// reaches no perform it can see. A local closure with no effect row is opaque
+// to it the same way a stored continuation is, but it is not the same shape:
+// its body is right there, and when that body performs the effect, "reaches
+// no perform" is false. The handle is refused either way -- the closure's
+// perform is not routed to a handler around its call -- so this changes the
+// message, not the verdict: it names the call and the edit.
+
+/// The empty scope of local closures. A scope (`lc`) lists bindings innermost
+/// FIRST. A binding carries its value when that value is a closure literal
+/// with no effect row, and `None` otherwise; a `None` entry only shadows. A
+/// parameter, a pattern, a loop variable and a `let` of any other value all
+/// hide an outer closure of the same spelling, so a call is attributed to a
+/// closure only when that closure is what the name means at the call.
+fn no_lc() -> Array[(String, Option[Expr])] {
+  array_empty()
+}
+
+/// `lc` with `name` bound innermost. A shadowing entry is only recorded when
+/// it hides something: every other binder leaves the scope as it is, so a
+/// body with no rowless closure in scope never copies it.
+fn dh_lc_with(lc: Array[(String, Option[Expr])], name: String, closure: Option[Expr]) -> Array[(String, Option[Expr])] {
+  let hides = match closure {
+    Some(_) => true,
+    None => dh_lc_index(lc, name) >= 0
+  }
+  if !hides {
+    lc
+  } else {
+    let out: Array[(String, Option[Expr])] = [(name, closure)]
+    let mut i = 0
+    while i < Array::length(lc) {
+      Array::push(out, Array::get(lc, i))
+      i = i + 1
+    }
+    out
+  }
+}
+
+fn dh_lc_shadow_names(lc: Array[(String, Option[Expr])], names: Array[String]) -> Array[(String, Option[Expr])] {
+  let mut out = lc
+  let mut i = 0
+  while i < Array::length(names) {
+    out = dh_lc_with(out, Array::get(names, i), None)
+    i = i + 1
+  }
+  out
+}
+
+fn dh_lc_shadow_pat(lc: Array[(String, Option[Expr])], pat: Pat) -> Array[(String, Option[Expr])] {
+  if Array::length(lc) == 0 {
+    lc
+  } else {
+    let names: Array[String] = []
+    collect_pat_binds_into(pat, names)
+    dh_lc_shadow_names(lc, names)
+  }
+}
+
+/// A handler arm binds its pattern's names and `resume`.
+fn dh_lc_shadow_arm(lc: Array[(String, Option[Expr])], pat: Pat) -> Array[(String, Option[Expr])] {
+  dh_lc_with(dh_lc_shadow_pat(lc, pat), "resume", None)
+}
+
+fn dh_lc_shadow_params(lc: Array[(String, Option[Expr])], params: Array[(String, Option[TypeExpr])]) -> Array[(String, Option[Expr])] {
+  let mut out = lc
+  let mut i = 0
+  while Array::length(out) > 0 && i < Array::length(params) {
+    let (pname, _) = Array::get(params, i)
+    out = dh_lc_with(out, dh_param_base_name(pname), None)
+    i = i + 1
+  }
+  out
+}
+
+fn dh_for_names(name: String, index_name: Option[String]) -> Array[String] {
+  let names: Array[String] = [name]
+  match index_name {
+    Some(idx) => Array::push(names, idx),
+    None => ()
+  }
+  names
+}
+
+fn dh_lc_bind(lc: Array[(String, Option[Expr])], name: String, val: Expr) -> Array[(String, Option[Expr])] {
+  let closure = match val {
+    EFn(_, _, _, _, eff, _) => if Array::length(effect_row_labels(effect_row_parse(eff))) == 0 {
+      Some(val)
+    } else {
+      None
+    },
+    _ => None
+  }
+  dh_lc_with(lc, name, closure)
+}
+
+/// Index of the innermost binding of `name` in `lc`, or -1.
+fn dh_lc_index(lc: Array[(String, Option[Expr])], name: String) -> Int {
+  let mut found = 0 - 1
+  let mut i = 0
+  while found < 0 && i < Array::length(lc) {
+    let (n, _) = Array::get(lc, i)
+    if n == name {
+      found = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Does a label in `labels` NAME `ename`? Unlike `dh_labels_may_be`, a row
+/// variable does not count: this answers "does it perform", not "might it".
+fn dh_labels_name(labels: Array[String], ename: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(labels) {
+    let l = Array::get(labels, i)
+    found = !label_is_effect_var(l) && row_label_base(effect_name_of_op(l)) == ename
+    i = i + 1
+  }
+  found
+}
+
+/// Does `expr` visibly perform `ename`: a `perform` of it that no handle of
+/// it inside `expr` discharges, or a call to a named function or row-carrying
+/// parameter whose declared row names it.
+fn dh_expr_performs(expr: Expr, ename: String, fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], ov_names: Array[String], ov_effs: Array[Array[String]]) -> Bool {
+  if dh_perform_effect(expr) == ename {
+    true
+  } else {
+    match expr {
+      // A handle of `ename` inside the closure discharges what its body
+      // performs; only its arms can still reach a handler outside.
+      EHandle(body, arms) => {
+        let own = effect_row_has_label(Some(collect_handle_effects(arms)), ename)
+        let mut found = !own && dh_expr_performs(body, ename, fn_effs, fn_index, ov_names, ov_effs)
+        let mut ai = 0
+        while !found && ai < Array::length(arms) {
+          let (_, arm_body) = Array::get(arms, ai)
+          found = dh_expr_performs(arm_body, ename, fn_effs, fn_index, ov_names, ov_effs)
+          ai = ai + 1
+        }
+        found
+      },
+      _ => {
+        let direct = match expr {
+          ECall(EIdent(nm, _), _, _) => match lookup_fn_effs(ov_names, ov_effs, nm) {
+            Some(effs) => dh_labels_name(effs, ename),
+            None => match lookup_program_fn_effs(fn_index, fn_effs, nm) {
+              Some(effs) => dh_labels_name(effs, ename),
+              None => false
+            }
+          },
+          _ => false
+        }
+        if direct {
+          true
+        } else {
+          let children = expr_children(expr)
+          let mut found = false
+          let mut i = 0
+          while !found && i < Array::length(children) {
+            found = dh_expr_performs(Array::get(children, i), ename, fn_effs, fn_index, ov_names, ov_effs)
+            i = i + 1
+          }
+          found
+        }
+      }
+    }
+  }
+}
+
+/// Does this rowless closure literal perform `ename` -- in its own body, or
+/// through a call to another such closure in scope where it was bound
+/// (`scope`), up to `depth` closures deep?
+fn dh_closure_performs(closure: Expr, ename: String, scope: Array[(String, Option[Expr])], fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], depth: Int) -> Bool {
+  match closure {
+    EFn(_, _, params, _, _, body) => {
+      let (pn, pe) = dh_overlay_with_params(no_str_labels(), no_ov_effs(), params, fn_names, fn_index)
+      if dh_expr_performs(body, ename, fn_effs, fn_index, pn, pe) {
+        true
+      } else if depth > 0 {
+        match dh_rowless_closure_call(body, ename, dh_lc_shadow_params(scope, params), fn_names, fn_effs, fn_index, depth - 1) {
+          Some(_) => true,
+          None => false
+        }
+      } else {
+        false
+      }
+    },
+    _ => false
+  }
+}
+
+fn dh_rowless_closure_call_in(exprs: Array[Expr], ename: String, lc: Array[(String, Option[Expr])], fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], depth: Int) -> Option[(String, Int)] {
+  let mut found: Option[(String, Int)] = None
+  let mut i = 0
+  while i < Array::length(exprs) {
+    match found {
+      None => {
+        found = dh_rowless_closure_call(Array::get(exprs, i), ename, lc, fn_names, fn_effs, fn_index, depth)
+      },
+      Some(_) => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn dh_rowless_closure_call_arms(arms: Array[(Pat, Expr)], ename: String, lc: Array[(String, Option[Expr])], fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], depth: Int, handler: Bool) -> Option[(String, Int)] {
+  let mut found: Option[(String, Int)] = None
+  let mut i = 0
+  while i < Array::length(arms) {
+    match found {
+      None => {
+        let (pat, arm_body) = Array::get(arms, i)
+        let arm_lc = if handler {
+          dh_lc_shadow_arm(lc, pat)
+        } else {
+          dh_lc_shadow_pat(lc, pat)
+        }
+        found = dh_rowless_closure_call(arm_body, ename, arm_lc, fn_names, fn_effs, fn_index, depth)
+      },
+      Some(_) => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// The first call in `expr` to a rowless local closure that performs
+/// `ename`: the closure's name and the call's source offset. Scoped like
+/// `dh_check_expr`, so the name is resolved to the binding it means there.
+fn dh_rowless_closure_call(expr: Expr, ename: String, lc: Array[(String, Option[Expr])], fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], depth: Int) -> Option[(String, Int)] {
+  match expr {
+    ECall(callee, args, _) => {
+      let direct = match callee {
+        EIdent(nm, off) => {
+          let idx = dh_lc_index(lc, nm)
+          if idx >= 0 && dh_callee_is_opaque(nm, fn_names, fn_index) {
+            let (_, closure) = Array::get(lc, idx)
+            match closure {
+              Some(lit) => if dh_closure_performs(lit, ename, Array::slice(lc, idx + 1, Array::length(lc)), fn_names, fn_effs, fn_index, depth) {
+                Some((nm, off))
+              } else {
+                None
+              },
+              None => None
+            }
+          } else {
+            None
+          }
+        },
+        _ => None
+      }
+      match direct {
+        Some(hit) => Some(hit),
+        None => dh_rowless_closure_call_in(expr_children(expr), ename, lc, fn_names, fn_effs, fn_index, depth)
+      }
+    },
+    ELet(name, val, body, _) => match dh_rowless_closure_call(val, ename, lc, fn_names, fn_effs, fn_index, depth) {
+      Some(hit) => Some(hit),
+      None => dh_rowless_closure_call(body, ename, dh_lc_bind(lc, name, val), fn_names, fn_effs, fn_index, depth)
+    },
+    ELetMut(name, val, body, _) => match dh_rowless_closure_call(val, ename, lc, fn_names, fn_effs, fn_index, depth) {
+      Some(hit) => Some(hit),
+      None => dh_rowless_closure_call(body, ename, dh_lc_bind(lc, name, val), fn_names, fn_effs, fn_index, depth)
+    },
+    ELetRec(name, val, body) => {
+      let rlc = dh_lc_bind(lc, name, val)
+      match dh_rowless_closure_call(val, ename, rlc, fn_names, fn_effs, fn_index, depth) {
+        Some(hit) => Some(hit),
+        None => dh_rowless_closure_call(body, ename, rlc, fn_names, fn_effs, fn_index, depth)
+      }
+    },
+    EFn(_, _, params, _, _, body) => dh_rowless_closure_call(body, ename, dh_lc_shadow_params(lc, params), fn_names, fn_effs, fn_index, depth),
+    EMatch(scrutinee, arms) => match dh_rowless_closure_call(scrutinee, ename, lc, fn_names, fn_effs, fn_index, depth) {
+      Some(hit) => Some(hit),
+      None => dh_rowless_closure_call_arms(arms, ename, lc, fn_names, fn_effs, fn_index, depth, false)
+    },
+    // A nested handle of the effect answers for its own body.
+    EHandle(body, arms) => {
+      let own = effect_row_has_label(Some(collect_handle_effects(arms)), ename)
+      let in_body = if own {
+        None
+      } else {
+        dh_rowless_closure_call(body, ename, lc, fn_names, fn_effs, fn_index, depth)
+      }
+      match in_body {
+        Some(hit) => Some(hit),
+        None => dh_rowless_closure_call_arms(arms, ename, lc, fn_names, fn_effs, fn_index, depth, true)
+      }
+    },
+    ELoop(params, body) => {
+      let names: Array[String] = []
+      let inits: Array[Expr] = []
+      let mut pi = 0
+      while pi < Array::length(params) {
+        let (pname, init) = Array::get(params, pi)
+        Array::push(names, pname)
+        Array::push(inits, init)
+        pi = pi + 1
+      }
+      match dh_rowless_closure_call_in(inits, ename, lc, fn_names, fn_effs, fn_index, depth) {
+        Some(hit) => Some(hit),
+        None => dh_rowless_closure_call(body, ename, dh_lc_shadow_names(lc, names), fn_names, fn_effs, fn_index, depth)
+      }
+    },
+    EForIn(name, index_name, iter, body) => match dh_rowless_closure_call(iter, ename, lc, fn_names, fn_effs, fn_index, depth) {
+      Some(hit) => Some(hit),
+      None => dh_rowless_closure_call(body, ename, dh_lc_shadow_names(lc, dh_for_names(name, index_name)), fn_names, fn_effs, fn_index, depth)
+    },
+    _ => dh_rowless_closure_call_in(expr_children(expr), ename, lc, fn_names, fn_effs, fn_index, depth)
+  }
+}
+
 /// Scope-aware descent: the #885/#1361 overlay of in-scope function-typed
 /// parameters and row-declaring local closures is rebuilt exactly as the
 /// transitive walk above rebuilds it, so a handle site is judged against the
 /// same notion of "this callee's declared row" the row checker itself uses.
-fn dh_check_expr(expr: Expr, declared: Array[String], performed: Array[String], fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], ov_names: Array[String], ov_effs: Array[Array[String]], errors: Array[EffectError]) -> Unit {
+/// `lc` is the #3180 scope of local closures, used only to say WHICH call a
+/// dead-looking handle reaches its perform through.
+fn dh_check_expr(expr: Expr, declared: Array[String], performed: Array[String], fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], ov_names: Array[String], ov_effs: Array[Array[String]], lc: Array[(String, Option[Expr])], errors: Array[EffectError]) -> Unit {
   match expr {
     EHandle(body, arms) => {
       let handled = collect_handle_effects(arms)
@@ -8193,44 +8530,79 @@ fn dh_check_expr(expr: Expr, declared: Array[String], performed: Array[String], 
       while i < Array::length(handled) {
         let eff = Array::get(handled, i)
         if effect_row_has_label(Some(declared), eff) && effect_row_has_label(Some(performed), eff) && !dh_may_reach(body, eff, fn_names, fn_effs, fn_index, ov_names, ov_effs) && dh_has_opaque_call(body, fn_names, fn_index) {
-          Array::push(errors, EEHandleNeverFires(eff))
+          // #3180: the handle is refused either way, but when the opaque call
+          // is a local closure with no effect row that DOES perform `eff`,
+          // "reaches no perform" is false -- it reaches one this handle
+          // cannot see. Say which call, and the edit.
+          match dh_rowless_closure_call(body, eff, lc, fn_names, fn_effs, fn_index, 4) {
+            Some((cname, coff)) => Array::push(errors, EEHandleRowlessClosure(eff, cname, coff)),
+            None => Array::push(errors, EEHandleNeverFires(eff))
+          }
         } else {
           ()
         }
         i = i + 1
       }
-      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, errors)
+      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, lc, errors)
       let mut ai = 0
       while ai < Array::length(arms) {
-        let (_, arm_body) = Array::get(arms, ai)
-        dh_check_expr(arm_body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, errors)
+        let (pat, arm_body) = Array::get(arms, ai)
+        dh_check_expr(arm_body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, dh_lc_shadow_arm(lc, pat), errors)
         ai = ai + 1
       }
     },
     EFn(_, _, params, _, _, body) => {
       let (bn, be) = dh_overlay_with_params(ov_names, ov_effs, params, fn_names, fn_index)
-      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, bn, be, errors)
+      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, bn, be, dh_lc_shadow_params(lc, params), errors)
     },
     ELet(name, val, body, _) => {
-      dh_check_expr(val, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, errors)
+      dh_check_expr(val, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, lc, errors)
       let (bn, be) = overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs, fn_index)
-      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, bn, be, errors)
+      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, bn, be, dh_lc_bind(lc, name, val), errors)
     },
     ELetMut(name, val, body, _) => {
-      dh_check_expr(val, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, errors)
+      dh_check_expr(val, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, lc, errors)
       let (bn, be) = overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs, fn_index)
-      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, bn, be, errors)
+      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, bn, be, dh_lc_bind(lc, name, val), errors)
     },
     ELetRec(name, val, body) => {
       let (rn, re) = overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs, fn_index)
-      dh_check_expr(val, declared, performed, fn_names, fn_effs, fn_index, rn, re, errors)
-      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, rn, re, errors)
+      let rlc = dh_lc_bind(lc, name, val)
+      dh_check_expr(val, declared, performed, fn_names, fn_effs, fn_index, rn, re, rlc, errors)
+      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, rn, re, rlc, errors)
+    },
+    // The three binders the generic walk below cannot see: a pattern, a loop
+    // variable and a `for` variable each hide an outer closure of the same
+    // spelling. Same children, in the same order, as `expr_children`.
+    EMatch(scrutinee, arms) => {
+      dh_check_expr(scrutinee, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, lc, errors)
+      let mut ai = 0
+      while ai < Array::length(arms) {
+        let (pat, arm_body) = Array::get(arms, ai)
+        dh_check_expr(arm_body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, dh_lc_shadow_pat(lc, pat), errors)
+        ai = ai + 1
+      }
+    },
+    ELoop(params, body) => {
+      let names: Array[String] = []
+      let mut pi = 0
+      while pi < Array::length(params) {
+        let (pname, init) = Array::get(params, pi)
+        dh_check_expr(init, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, lc, errors)
+        Array::push(names, pname)
+        pi = pi + 1
+      }
+      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, dh_lc_shadow_names(lc, names), errors)
+    },
+    EForIn(name, index_name, iter, body) => {
+      dh_check_expr(iter, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, lc, errors)
+      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, dh_lc_shadow_names(lc, dh_for_names(name, index_name)), errors)
     },
     _ => {
       let children = expr_children(expr)
       let mut c = 0
       while c < Array::length(children) {
-        dh_check_expr(Array::get(children, c), declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, errors)
+        dh_check_expr(Array::get(children, c), declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, lc, errors)
         c = c + 1
       }
     }
@@ -8285,9 +8657,9 @@ fn dh_check_binding(ty: Option[TypeExpr], body: Expr, declared: Array[String], p
     // EFn node, is where a separately-typed signature keeps its rows).
     EFn(_, _, params, _, _, fbody) => {
       let (n, e) = dh_overlay_with_params(no_str_labels(), no_ov_effs(), merge_param_types_with_sig(ty, params), fn_names, fn_index)
-      dh_check_expr(fbody, declared, performed, fn_names, fn_effs, fn_index, n, e, errors)
+      dh_check_expr(fbody, declared, performed, fn_names, fn_effs, fn_index, n, e, dh_lc_shadow_params(no_lc(), params), errors)
     },
-    _ => dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, no_str_labels(), no_ov_effs(), errors)
+    _ => dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, no_str_labels(), no_ov_effs(), no_lc(), errors)
   }
 }
 

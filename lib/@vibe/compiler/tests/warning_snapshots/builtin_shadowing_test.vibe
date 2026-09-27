@@ -1,0 +1,25 @@
+import ../../cli_support.vibe {
+  check_builtin_shadowing_warnings_from_source_groups
+}
+
+// #2378 / #3180: a qualified `fn` at a builtin's name warns at its definition.
+// The warning used to say it replaces the builtin "for the whole linked
+// program". Since #3132 the calls the compiler synthesizes by that name -- a
+// `for` loop's `Array::length` / `Array::get`, array interpolation, structural
+// `==` -- reach the builtin, not the program's function
+// (fixtures/builtin_shadow_internal_lowering_test.vibe pins those answers),
+// so the warning says what is replaced: the program's own call sites.
+
+fn shadow_warnings(source: String) -> String with Exception + Fs {
+  String::join(check_builtin_shadowing_warnings_from_source_groups("main.vibe", [
+    ("main.vibe", [("main.vibe", source)])
+  ]), "\n")
+}
+
+test "a qualified fn at a builtin name warns, scoped to the program's own call sites" {
+  inspect(shadow_warnings("fn Array::length(xs: Array[Int]) -> Int {\n  77\n}\n"), "warning: rename `Array::length` -- a qualified definition of a builtin name replaces that builtin at the program's own call sites, in every linked file including files that never import it (calls the compiler generates itself still reach the builtin). Use a different name, or `let Array::length = <builtin>` if you mean to re-export it.")
+}
+
+test "a value alias at a builtin name is silent" {
+  inspect(shadow_warnings("fn my_length(xs: Array[Int]) -> Int {\n  77\n}\n\nlet Array::length = my_length\n"), "")
+}
