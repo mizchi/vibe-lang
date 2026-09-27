@@ -964,6 +964,97 @@ fn afe_bind_params(locals: AfeLocals, params: Array[(String, Option[TypeExpr])],
       None => None
     }
     cur = afe_bind_local(cur, pname, head)
+    cur = match ptype {
+      Some(te) => afe_bind_annotation_payloads(cur, pname, te, env),
+      None => afe_clear_annotation_payloads(cur, pname)
+    }
+    i = i + 1
+  }
+  cur
+}
+
+/// #3198 review: the heads an ANNOTATED aggregate's payloads carry, so a match
+/// arm over that name can hand them to its binders. The lowering recovers the
+/// same payloads from the annotation (`seed_var_types`,
+/// `arm_binder_var_types_env`) and builds the awaiting loop from them, so a
+/// binder this walk left headless -- `match o { Some(c) => for x in c { .. } }`
+/// with `o: Option[Countdown]` -- was accepted in a row-free function while the
+/// desugar inserted the builtin `await`.
+///
+/// Recorded: `Option[T]` (`Some`), `Result[T, E]` (`Ok`, `Err`) and a tuple
+/// annotation (its shape, which `.0` / `.1` projections already read).
+fn afe_bind_annotation_payloads(locals: AfeLocals, name: String, te: TypeExpr, env: TypeEnv) -> AfeLocals {
+  let cleared = afe_clear_annotation_payloads(locals, name)
+  match te {
+    TyApp(head, args) => if head == "Option" && Array::length(args) == 1 {
+      afe_bind_local(cleared, afe_ctor_payload_key(name, "Some"), Some(afe_payload_heads_csv(args, env)))
+    } else if head == "Result" && Array::length(args) == 2 {
+      let with_ok = afe_bind_local(cleared, afe_ctor_payload_key(name, "Ok"), Some(afe_payload_heads_csv([
+        Array::get(args, 0)
+      ], env)))
+      afe_bind_local(with_ok, afe_ctor_payload_key(name, "Err"), Some(afe_payload_heads_csv([
+        Array::get(args, 1)
+      ], env)))
+    } else {
+      cleared
+    },
+    TyTuple(items) => if Array::length(items) > 0 {
+      afe_bind_local(cleared, afe_tuple_shape_key(name), Some(afe_payload_heads_csv(items, env)))
+    } else {
+      cleared
+    },
+    _ => cleared
+  }
+}
+
+/// A rebinding of `name` without an annotation hides the payload heads an
+/// outer annotated binding of the same name recorded.
+fn afe_clear_annotation_payloads(locals: AfeLocals, name: String) -> AfeLocals {
+  let no_some = afe_bind_local(locals, afe_ctor_payload_key(name, "Some"), None)
+  let no_ok = afe_bind_local(no_some, afe_ctor_payload_key(name, "Ok"), None)
+  afe_bind_local(no_ok, afe_ctor_payload_key(name, "Err"), None)
+}
+
+fn afe_ctor_payload_key(name: String, ctor: String) -> String {
+  String::concat("__ctorpay$", String::concat(ctor, String::concat("$", name)))
+}
+
+fn afe_payload_heads_csv(items: Array[TypeExpr], env: TypeEnv) -> String {
+  let parts = array_empty()
+  let mut i = 0
+  while i < Array::length(items) {
+    let part = match afe_texpr_head_name(Array::get(items, i)) {
+      Some(h) => afe_tag_async_iter_head(h, afe_type_binding_is_builtin_async_iter(env)),
+      None => ""
+    }
+    Array::push(parts, part)
+    i = i + 1
+  }
+  afe_join_csv(parts)
+}
+
+/// The constructor name without its qualifier (`Option::Some` -> `Some`).
+fn afe_bare_ctor(cn: String) -> String {
+  let parts = String::split(cn, "::")
+  Array::get(parts, Array::length(parts) - 1)
+}
+
+/// Bind the plain binders of `pats` to the heads in `csv`, position by
+/// position. An empty head, or a non-binder pattern, is left as masked.
+fn afe_bind_pats_to_heads(acc: AfeLocals, pats: Array[Pat], csv: String) -> AfeLocals {
+  let heads = afe_split_csv(csv)
+  let mut cur = acc
+  let mut i = 0
+  while i < Array::length(pats) && i < Array::length(heads) {
+    let h = Array::get(heads, i)
+    match Array::get(pats, i) {
+      PBind(n) => if String::length(h) > 0 {
+        cur = afe_bind_local(cur, n, Some(h))
+      } else {
+        ()
+      },
+      _ => ()
+    }
     i = i + 1
   }
   cur
@@ -1405,7 +1496,33 @@ fn afe_bind_local_fn_return(locals: AfeLocals, name: String, val: Expr, env: Typ
 fn afe_bind_value(locals: AfeLocals, name: String, val: Expr, env: TypeEnv) -> AfeLocals {
   let with_head = afe_bind_local(locals, name, afe_expr_head_name(val, env, locals))
   let with_fn = afe_bind_local_fn_return(with_head, name, val, env)
-  afe_bind_shapes(with_fn, name, val, env)
+  afe_bind_value_payloads(afe_bind_shapes(with_fn, name, val, env), name, val, env)
+}
+
+/// #3198 review: an annotated `let` (the parser's `((__asc: T) -> __asc)(v)`)
+/// records its payload heads like an annotated parameter; any other `let`
+/// hides the ones an outer binding of the same name recorded.
+fn afe_bind_value_payloads(locals: AfeLocals, name: String, val: Expr, env: TypeEnv) -> AfeLocals {
+  match afe_ascribed_type(val) {
+    Some(te) => afe_bind_annotation_payloads(locals, name, te, env),
+    None => afe_clear_annotation_payloads(locals, name)
+  }
+}
+
+fn afe_ascribed_type(val: Expr) -> Option[TypeExpr] {
+  match val {
+    ECall(EFn(_, _, params, _, _, EIdent(bname, _)), args, _) => if Array::length(params) == 1 && Array::length(args) == 1 {
+      let (pname, pty) = Array::get(params, 0)
+      if pname == "__asc" && bname == "__asc" {
+        pty
+      } else {
+        None
+      }
+    } else {
+      None
+    },
+    _ => None
+  }
 }
 
 /// #3198 review: `afe_bind_value` with the scope `val` is read in (`outer`)
@@ -1416,7 +1533,7 @@ fn afe_bind_value(locals: AfeLocals, name: String, val: Expr, env: TypeEnv) -> A
 fn afe_bind_value_from(acc: AfeLocals, outer: AfeLocals, name: String, val: Expr, env: TypeEnv) -> AfeLocals {
   let with_head = afe_bind_local(acc, name, afe_expr_head_name(val, env, outer))
   let with_fn = afe_bind_local_fn_return(with_head, name, val, env)
-  afe_bind_shapes_from(with_fn, outer, name, val, env)
+  afe_bind_value_payloads(afe_bind_shapes_from(with_fn, outer, name, val, env), name, val, env)
 }
 
 /// The scope a match arm's body is read in. #3177: every pattern binder masks
@@ -1443,6 +1560,28 @@ fn afe_match_arm_locals_onto(scrut: Expr, pat: Pat, env: TypeEnv, outer: AfeLoca
       } else {
         acc
       },
+      // #3198 review: a NAME whose annotation recorded this constructor's
+      // payload heads (`o: Option[Countdown]`, `Some(c)`).
+      EIdent(sname, _) => match afe_lookup_local(outer, afe_ctor_payload_key(sname, afe_bare_ctor(cn))) {
+        Some(csv) => afe_bind_pats_to_heads(acc, sub, csv),
+        None => acc
+      },
+      _ => acc
+    },
+    PTuple(items) => match scrut {
+      ETuple(vals) => {
+        let mut cur = acc
+        let mut i = 0
+        while i < Array::length(items) && i < Array::length(vals) {
+          cur = afe_match_arm_locals_onto(Array::get(vals, i), Array::get(items, i), env, outer, cur)
+          i = i + 1
+        }
+        cur
+      },
+      EIdent(sname, _) => match afe_lookup_local(outer, afe_tuple_shape_key(sname)) {
+        Some(csv) => afe_bind_pats_to_heads(acc, items, csv),
+        None => acc
+      },
       _ => acc
     },
     _ => acc
@@ -1456,7 +1595,7 @@ fn afe_match_arm_locals_onto(scrut: Expr, pat: Pat, env: TypeEnv, outer: AfeLoca
 /// match-bound `await` called in a row-free lambda demanded `Async`).
 fn afe_mask_pat_binders(locals: AfeLocals, pat: Pat) -> AfeLocals {
   match pat {
-    PBind(name) => afe_bind_local(locals, name, None),
+    PBind(name) => afe_clear_annotation_payloads(afe_bind_local(afe_bind_local(locals, afe_tuple_shape_key(name), None), name, None), name),
     PCtor(_, sub) => afe_mask_pats_binders(locals, sub),
     PTuple(items) => afe_mask_pats_binders(locals, items),
     POr(a, b) => afe_mask_pat_binders(afe_mask_pat_binders(locals, a), b),
