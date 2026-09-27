@@ -750,6 +750,35 @@ fi
   || { echo "named hoststreams component gate FAILED: stream_folded_spawn expected 42 (1 + 41), got: $(cat "$SFS_LOG")" >&2; exit 1; }
 echo "[named-hoststreams-component-gate] stream_folded_spawn: 42 (a read the fold removed composes no stream machinery)"
 
+# fixtures/async_spawn_host_futures/stream_folded_spawn_clone_named_source.vibe:
+# the same folded read, plus a reachable SOURCE function spelled like a
+# generated step clone of the read (`__scps_cps_Async_helper___hs_next`). A
+# name the program wrote is never a generated read path, so it must not keep
+# the stream hooks armed (#3189 review): same checks as above, answer 42.
+SFC_OUT="$OUT_DIR/spawn_stream_folded_clone_named.component.wasm"
+rm -f "$SFC_OUT" "$SFC_OUT.diag"
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" fixtures/async_spawn_host_futures/stream_folded_spawn_clone_named_source.vibe "$SFC_OUT" run >/dev/null 2>&1 || true
+[ -s "$SFC_OUT" ] || { echo "named hoststreams component gate FAILED: stream_folded_spawn_clone_named_source.vibe did not compile (#3189): $(cat "$SFC_OUT.diag" 2>/dev/null)" >&2; exit 1; }
+check_component_header "$SFC_OUT"
+wasm-tools print "$SFC_OUT" >"$SFC_OUT.wat" 2>/dev/null || { echo "named hoststreams component gate FAILED: could not print stream_folded_spawn_clone_named_source" >&2; exit 1; }
+grep -q '"host_future_arm"' "$SFC_OUT.wat" \
+  || { echo "named hoststreams component gate FAILED: stream_folded_spawn_clone_named_source composed without the host_future_arm hook import (the control for the check below)" >&2; exit 1; }
+if grep -q 'host_stream' "$SFC_OUT.wat"; then
+  echo "named hoststreams component gate FAILED: a source name spelled like a stream step clone kept host-stream machinery (#3189): $(grep -o 'host_stream[a-z_$]*' "$SFC_OUT.wat" | sort -u | tr '\n' ' ')" >&2
+  exit 1
+fi
+SFC_LOG="$OUT_DIR/spawn_stream_folded_clone_named.log"
+if ! VIBE_ASYNC_FUTURES="fast=1:100" run_bounded 60 "$RUNNER" "$SFC_OUT" >"$SFC_LOG" 2>&1; then
+  echo "named hoststreams component gate FAILED: stream_folded_spawn_clone_named_source did not exit 0" >&2
+  cat "$SFC_LOG" >&2
+  exit 1
+fi
+[ "$(cat "$SFC_LOG")" = "42" ] \
+  || { echo "named hoststreams component gate FAILED: stream_folded_spawn_clone_named_source expected 42, got: $(cat "$SFC_LOG")" >&2; exit 1; }
+echo "[named-hoststreams-component-gate] stream_folded_spawn_clone_named_source: 42 (a source name spelled like a clone is not a read)"
+
 # fixtures/async_spawn_host_futures/stream_folded_helper.vibe: the only read is
 # in a helper closure on an arm a constant `false` removes, spelled
 # `HostStream::next`. With every read pruned the program has no host waitable
