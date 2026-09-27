@@ -708,7 +708,12 @@ fn is_selected_type_companion(name: String, binding: EnvValueBinding, type_surfa
       // (Codex on #3172).
       type_returns_name(binding.ty, type_name) && is_enum_variant_of(all_defs, type_name, name)
     } else {
-      String::length(member) > 0 && (is_enum_variant_of(all_defs, type_name, member) || contains_str(trait_methods, name) || is_derived_member_shape(member, binding.ty, type_name))
+      // A re-export under another name (`struct Ver as PublicVer`) renames the
+      // companion but not the types in its signature or the impl table, so the
+      // alias is read through to the type it stands for (Codex on #3172).
+      let source = alias_source_head(all_defs, type_name)
+      let source_name = String::concat(source, String::concat("::", member))
+      String::length(member) > 0 && (is_enum_variant_of(all_defs, type_name, member) || contains_str(trait_methods, name) || contains_str(trait_methods, source_name) || is_derived_member_shape(member, binding.ty, type_name) || is_derived_member_shape(member, binding.ty, source))
     }
     if keep {
       selected = true
@@ -734,15 +739,17 @@ fn env_trait_method_names(env: TypeEnv) -> Array[String] {
       EnvBind(_, _, rest) => cur = rest,
       EnvMutCell(_, _, rest) => cur = rest,
       EnvTraitDef(tname, _, _, methods, rest, _, _) => {
-        Array::push(traits, (tname, methods))
+        Array::push(traits, (trait_ref_name(tname), methods))
         cur = rest
       },
+      // An impl of a parameterized trait is keyed by the applied reference
+      // (`Value[Int]`); its definition by the bare name (Codex on #3172).
       EnvTraitImpl(tname, target, rest) => {
-        Array::push(impls, (tname, type_head_name(target)))
+        Array::push(impls, (trait_ref_name(tname), type_head_name(target)))
         cur = rest
       },
       EnvTraitImplGen(tname, _, _, target, rest) => {
-        Array::push(impls, (tname, type_head_name(target)))
+        Array::push(impls, (trait_ref_name(tname), type_head_name(target)))
         cur = rest
       },
       EnvTypeDefs(_, _, rest) => cur = rest,
@@ -775,6 +782,34 @@ fn env_trait_method_names(env: TypeEnv) -> Array[String] {
     i = i + 1
   }
   out
+}
+
+/// The type a name stands for once type aliases are followed (`PublicVer` for
+/// `Ver` after `struct Ver as PublicVer`); the name itself when it is no alias.
+fn alias_source_head(defs: Array[TypeDef], name: String) -> String {
+  let mut target = name
+  let mut fuel = 8
+  let mut going = true
+  while going && fuel > 0 {
+    fuel = fuel - 1
+    let mut next = ""
+    let mut i = 0
+    while i < Array::length(defs) {
+      match Array::get(defs, i) {
+        TDAlias(n, _, body) => if n == target {
+          next = type_head_name(body)
+        },
+        _ => ()
+      }
+      i = i + 1
+    }
+    if String::length(next) == 0 || next == target {
+      going = false
+    } else {
+      target = next
+    }
+  }
+  target
 }
 
 fn type_head_name(t: Type) -> String {

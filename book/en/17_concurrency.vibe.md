@@ -104,22 +104,27 @@ parameter can be spawned.
 
 ## Suspending versus blocking
 
-The blocking operations above keep the task that calls them on the stack
-until they finish. The experimental package adds a second flavour of every
-waiting operation, and the difference is whether siblings get to run:
+There are three ways to wait, and they differ in what else gets to run:
 
-| blocks the instance | suspends the task |
-|---|---|
-| `sleep` | `sleep_wait` |
-| `send` / `recv` | `send_wait` / `recv_wait` |
+| waits by | siblings | operations |
+|---|---|---|
+| blocking the instance | nothing runs | `sleep` |
+| driving on the caller's stack | ready siblings run to completion | `join`, `send` / `recv` |
+| suspending the task | siblings interleave with it | `sleep_wait`, `send_wait` / `recv_wait` |
 
-The `_wait` forms run inside a task started with `TaskGroup::spawn_suspend`,
-all from `@vibe/concurrent/experimental` (so the build needs
-`VIBE_UNSTABLE=1`); the blocking ones stop everything, not just the caller.
+`join`, `send` and `recv` are not blocking: while the caller waits, they run
+the group's ready tasks on its stack until the value, the room or the handle
+it needs is there. What they cannot do is pause the caller mid-body and come
+back to it later, so a task that has to wait halfway through for a sibling
+which in turn waits on it cannot be written that way. `sleep` is the one that
+stops everything.
 
-Suspension is carried by an `Async` effect on that package, declared as
-`Suspend(Int) -> Int`. It is a library effect like any other — not a
-keyword, and it shows up in rows the same way.
+Suspension is the experimental lane: the `_wait` forms run inside a task
+started with `TaskGroup::spawn_suspend`, all from
+`@vibe/concurrent/experimental` (so the build needs `VIBE_UNSTABLE=1`). It is
+carried by an `Async` effect on that package, declared as
+`Suspend(Int) -> Int` -- a library effect like any other, not a keyword, and
+it shows up in rows the same way.
 
 ## Shared-nothing
 
