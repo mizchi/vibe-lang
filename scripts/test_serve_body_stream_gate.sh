@@ -217,10 +217,23 @@ serve_handler() {
   wac plug --plug "$component" "$ADAPTER" -o "$composed"
   wasm-tools validate --features all "$composed" >/dev/null
 
-  ADDR="${ADDR%:*}:$((${ADDR##*:} + 1))"
-  "$WASMTIME_BIN" serve "${WASM_FLAGS[@]}" --addr "$ADDR" "$composed" >"$SERVE_LOG" 2>&1 &
-  SERVE_PID=$!
-  local ready=0 _i
+  # The port is derived from the shell's pid, so on a busy runner it can
+  # already be held by an unrelated process. `Address already in use` is
+  # the one bind failure that says nothing about the component under test:
+  # step to the next port and start again (a bounded number of times). Any
+  # other early exit is still a failure.
+  local ready=0 _i _bind
+  for _bind in 1 2 3 4 5; do
+    ADDR="${ADDR%:*}:$((${ADDR##*:} + 1))"
+    "$WASMTIME_BIN" serve "${WASM_FLAGS[@]}" --addr "$ADDR" "$composed" >"$SERVE_LOG" 2>&1 &
+    SERVE_PID=$!
+    sleep 0.25
+    if kill -0 "$SERVE_PID" 2>/dev/null || ! grep -qF 'Address already in use' "$SERVE_LOG" 2>/dev/null; then
+      break
+    fi
+    wait "$SERVE_PID" 2>/dev/null || true
+    echo "[serve-body] port ${ADDR##*:} is taken on this host; retrying on the next port ($tag)" >&2
+  done
   for _i in $(seq 1 40); do
     if ! kill -0 "$SERVE_PID" 2>/dev/null; then
       echo "[serve-body] FAILED: wasmtime exited before accepting requests ($tag)" >&2

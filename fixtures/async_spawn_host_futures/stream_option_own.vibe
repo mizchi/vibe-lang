@@ -1,0 +1,51 @@
+// #3151: spawned tasks read host streams they opened themselves through the
+// `HostStream::next` spelling, and one closes its stream early. Only
+// `host_stream_next` referenced the injected `__hs_next`, so a program that
+// read through `HostStream::next` alone lost `__hs_next` to the reachability
+// prune, and with it the @vibe/concurrent host hooks (#3150's route): the
+// first read parked as a poller that nothing could complete and the group hit
+// its deadlock trap (`wasm unreachable`). The one-owner stamp of #3091 was
+// not the cause: each stream here has exactly one task.
+//
+// a: drains `left=1|2|3` -> 6
+// b: reads 4 from `right=4|5|6`, closes, then reads None -> 4 * 10 + 0 = 40
+// 6 * 1000 + 40 = 6040. Executed by
+// scripts/test_named_hoststreams_component_gate.sh.
+import @vibe/concurrent/experimental {
+  TaskGroup, TaskHandle
+}
+
+fn drain(s: HostStream) -> Int with Async {
+  let mut total = 0
+  let mut going = true
+  while going {
+    match HostStream::next(s) {
+      Some(b) => total = total + b,
+      None => going = false
+    }
+  }
+  total
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  TaskGroup::run((g) -> {
+    let a = TaskGroup::spawn_suspend(g, () -> Int with Async {
+      drain(host_stream_named("left"))
+    })
+    let b = TaskGroup::spawn_suspend(g, () -> Int with Async {
+      let s = host_stream_named("right")
+      let first = match HostStream::next(s) {
+        Some(v) => v,
+        None => 0 - 1
+      }
+      host_stream_close(s)
+      let after = match HostStream::next(s) {
+        Some(_) => 100,
+        None => 0
+      }
+      first * 10 + after
+    })
+    TaskGroup::pump_all(g)
+    TaskHandle::join(a) * 1000 + TaskHandle::join(b)
+  })
+}

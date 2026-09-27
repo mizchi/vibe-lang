@@ -1,0 +1,603 @@
+// #3141: an early `return` / `break` / `continue` / `throw` now releases the
+// bindings of every scope it leaves before it transfers (rc_exit_release,
+// driven by the Perceus plan's PaExitDrop rows). Releasing too much is a
+// use-after-free, so this file pins the other half: every value an exit hands
+// out, and every binding it does NOT leave, is still alive where it is read
+// afterwards -- the returned binding itself, a constructor or tuple around
+// it, a projection off a released-looking binding, a parameter, a closure's
+// return, a captured cell, a thrown payload, a binding outside the loop a
+// `break` / `continue` leaves, an inner `break` inside an outer loop body, a
+// collecting `for` that `continue`s, and the dup budget of a binding consumed
+// after a guard. Each reads its value AFTER an allocation that would reuse a
+// freed block, so a premature release answers with the churn string instead
+// (and VIBE_RC=shadow traps on the drop of a freed block). The bounded-heap
+// half is fixtures/rc_early_exit_bounded_test.vibe (tests/gates/mid/run.sh,
+// 40f0h).
+//
+// The second half (the #3181 review) pins values an exit could hand on as a
+// VIEW of what it releases: a `break v` / `continue(a)` of a parameterized
+// loop (a store into a slot that outlives the exit, then the exit -- on the
+// #3141 stage2 the first three trapped under VIBE_RC=shadow and answered
+// with freed blocks under VIBE_RC=1), a projection through a borrowed
+// element, and a pattern binder or `for` element spelled like an owned
+// `let`. Then a `let mut` no closure captures, which an exit now releases:
+// stored before the exit, after it, and in the loop the exit leaves.
+
+enum D {
+  A(String)
+}
+
+struct P {
+  name: String
+}
+
+fn name_of(d: D) -> String {
+  match d {
+    A(s) => s
+  }
+}
+
+fn fresh(s: String, i: Int) -> String {
+  String::concat(s, __to_string(i))
+}
+
+fn churn() -> String {
+  fresh("churn", 0)
+}
+
+fn keep(d: D) -> D {
+  d
+}
+
+fn ret_binding(c: Bool) -> D {
+  let d = A(fresh("d", 1))
+  let e = A(fresh("e", 1))
+  if c {
+    return d
+  }
+  e
+}
+
+fn ret_wrapped(c: Bool) -> Option[D] {
+  let d = A(fresh("w", 1))
+  let e = A(fresh("w", 2))
+  if c {
+    return Some(d)
+  }
+  Some(e)
+}
+
+fn ret_tuple(c: Bool) -> (D, Int) {
+  let d = A(fresh("t", 1))
+  let e = A(fresh("t", 2))
+  if c {
+    return (d, 1)
+  }
+  (e, 2)
+}
+
+fn ret_projection(c: Bool) -> String {
+  let p = P::{ name: fresh("p", 1) }
+  let q = P::{ name: fresh("q", 1) }
+  if c {
+    return p.name
+  }
+  q.name
+}
+
+fn ret_param(d: D, c: Bool) -> D {
+  let e = A(fresh("pe", 1))
+  if c {
+    return d
+  }
+  keep(e)
+}
+
+fn ret_budget(c: Bool) -> String {
+  let d = A(fresh("b", 1))
+  if c {
+    return "early"
+  }
+  let e = keep(d)
+  String::concat(name_of(e), name_of(keep(d)))
+}
+
+fn ret_from_closure(c: Bool) -> D {
+  let outer = A(fresh("o", 1))
+  let f = () -> D {
+    let d = A(fresh("cl", 1))
+    if c {
+      return d
+    }
+    A(fresh("cl", 2))
+  }
+  let r = f()
+  let _ = name_of(outer)
+  r
+}
+
+fn ret_cell(c: Bool) -> D {
+  let mut d = A(fresh("cell", 1))
+  let f = () -> String { name_of(d) }
+  let _ = f()
+  if c {
+    return d
+  }
+  A(fresh("cell", 2))
+}
+
+fn ret_in_match(d: D) -> String {
+  let e = A(fresh("m", 1))
+  match d {
+    A(s) => {
+      let t = fresh(s, 9)
+      if String::length(t) > 0 {
+        return t
+      }
+    }
+  }
+  name_of(e)
+}
+
+fn brk_keeps_outer(ns: Array[Int]) -> String {
+  let d = A(fresh("bo", 1))
+  let mut acc = ""
+  for x in ns {
+    let e = A(fresh("bi", x))
+    if x == 2 {
+      break
+    }
+    acc = String::concat(acc, name_of(e))
+  }
+  let c = churn()
+  String::concat(String::concat(acc, name_of(d)), c)
+}
+
+fn cont_keeps_outer(ns: Array[Int]) -> String {
+  let d = A(fresh("co", 1))
+  let mut acc = ""
+  let mut i = 0
+  while i < Array::length(ns) {
+    let x = Array::get(ns, i)
+    i = i + 1
+    let e = A(fresh("ci", x))
+    if x == 2 {
+      continue
+    }
+    acc = String::concat(acc, name_of(e))
+  }
+  let c = churn()
+  String::concat(String::concat(acc, name_of(d)), c)
+}
+
+fn inner_break(ns: Array[Int]) -> String {
+  let mut acc = ""
+  for x in ns {
+    let outer = A(fresh("ob", x))
+    let mut j = 0
+    while j < 3 {
+      let inner = A(fresh("ib", j))
+      if j == 1 {
+        break
+      }
+      acc = String::concat(acc, name_of(inner))
+      j = j + 1
+    }
+    let c = churn()
+    acc = String::concat(String::concat(acc, name_of(outer)), c)
+  }
+  acc
+}
+
+fn collect_continue(ns: Array[Int]) -> Array[String] {
+  for x in ns {
+    let d = A(fresh("cc", x))
+    if x == 2 {
+      continue
+    }
+    name_of(d)
+  }
+}
+
+fn thrower(c: Bool) -> String with Exception[D] {
+  let d = A(fresh("th", 1))
+  let e = A(fresh("th", 2))
+  if c {
+    throw(d)
+  }
+  name_of(e)
+}
+
+fn throw_payload(c: Bool) -> String {
+  handle { thrower(c) } with { Exception[D]::Throw(p) => name_of(p) }
+}
+
+fn throw_local(c: Bool) -> String {
+  let outer = A(fresh("tl", 0))
+  let r = handle {
+    let d = A(fresh("tl", 1))
+    if c {
+      throw("stop")
+    }
+    name_of(d)
+  } with { Exception::Throw(_) => "caught" }
+  let x = churn()
+  String::concat(String::concat(r, name_of(outer)), x)
+}
+
+test "an early return hands its binding over and releases the other" {
+  let a = ret_binding(true)
+  let x = churn()
+  let b = ret_binding(false)
+  inspect(String::join([name_of(a), x, name_of(b)], ";"), content = "d1;churn0;e1")
+}
+
+test "an early return of a constructor around a binding" {
+  let a = ret_wrapped(true)
+  let x = churn()
+  let s = match a {
+    Some(d) => name_of(d),
+    None => "none"
+  }
+  inspect(String::concat(s, x), content = "w1churn0")
+}
+
+test "an early return of a tuple around a binding" {
+  let a = ret_tuple(true)
+  let x = churn()
+  inspect(String::concat(name_of(a.0), x), content = "t1churn0")
+}
+
+test "an early return of a projection keeps its root" {
+  let a = ret_projection(true)
+  let x = churn()
+  let b = ret_projection(false)
+  inspect(String::join([a, x, b], ";"), content = "p1;churn0;q1")
+}
+
+test "an early return of a parameter" {
+  let a = ret_param(A(fresh("arg", 1)), true)
+  let x = churn()
+  let b = ret_param(A(fresh("arg", 2)), false)
+  inspect(String::join([name_of(a), x, name_of(b)], ";"), content = "arg1;churn0;pe1")
+}
+
+test "a binding consumed twice after a guard" {
+  inspect(String::join([ret_budget(true), ret_budget(false), churn()], ";"), content = "early;b1b1;churn0")
+}
+
+test "an early return inside a closure" {
+  let a = ret_from_closure(true)
+  let x = churn()
+  let b = ret_from_closure(false)
+  inspect(String::join([name_of(a), x, name_of(b)], ";"), content = "cl1;churn0;cl2")
+}
+
+test "an early return of a captured cell" {
+  let a = ret_cell(true)
+  let x = churn()
+  let b = ret_cell(true)
+  let c = ret_cell(false)
+  inspect(String::join([name_of(a), x, name_of(b), name_of(c)], ";"), content = "cell1;churn0;cell1;cell2")
+}
+
+test "an early return inside a match arm" {
+  let a = ret_in_match(A(fresh("s", 1)))
+  let x = churn()
+  inspect(String::concat(a, x), content = "s19churn0")
+}
+
+test "a break leaves the loop body only" {
+  inspect(brk_keeps_outer([0, 1, 2, 3]), content = "bi0bi1bo1churn0")
+}
+
+test "a continue leaves the loop body only" {
+  inspect(cont_keeps_outer([1, 2, 3]), content = "ci1ci3co1churn0")
+}
+
+test "an inner break leaves the inner loop body only" {
+  inspect(inner_break([1, 2]), content = "ib0ob1churn0ib0ob2churn0")
+}
+
+test "a continue in a collecting for" {
+  let r = collect_continue([1, 2, 3])
+  let x = churn()
+  inspect(String::join(r, ","), content = "cc1,cc3")
+  inspect(x, content = "churn0")
+}
+
+test "a thrown binding reaches the handler" {
+  let a = throw_payload(true)
+  let x = churn()
+  let b = throw_payload(false)
+  inspect(String::join([a, x, b], ";"), content = "th1;churn0;th2")
+}
+
+test "a throw leaves the handle body only" {
+  inspect(String::join([throw_local(true), throw_local(false)], ";"), content = "caughttl0churn0;tl1tl0churn0")
+}
+struct R {
+  d: D
+}
+
+// Takes `d` owned and consumes it twice, so a caller holding a view retains
+// it first and VIBE_RC=shadow traps on a value an exit already released.
+fn hold(d: D) -> String {
+  let h = [d, d]
+  name_of(Array::get(h, 1))
+}
+
+// #3181 review: `break v` of a parameterized loop is `__loop_result = v;
+// break`, and `__loop_result` neither retains what it stores nor releases
+// it. A projection of the loop body's binding, stored there, outlives the
+// `break` that releases the binding -- so the store's value is held to the
+// exit operand's test.
+fn brk_value_proj(n: Int) -> D {
+  loop (i = 0) {
+    let r = R::{ d: A(fresh("bp", i)) }
+    if i == n {
+      break r.d
+    }
+    continue(i + 1)
+  }
+}
+
+fn brk_value_view(n: Int) -> D {
+  loop (i = 0) {
+    let xs = [A(fresh("bv", i))]
+    if i == n {
+      break Array::get(xs, 0)
+    }
+    continue(i + 1)
+  }
+}
+
+// `continue(a)` assigns the loop's parameter; a borrowed element stored
+// there outlives the `continue` that releases its array.
+fn cont_value_view(n: Int) -> String {
+  loop (cur = A(fresh("cv", 0)), i = 0) {
+    if i == n {
+      break name_of(cur)
+    }
+    let xs = [A(fresh("cv", i + 1))]
+    continue(Array::get(xs, 0), i + 1)
+  }
+}
+
+// A `break` right after a `let mut` retained a borrowed element.
+fn brk_after_store(ns: Array[Int]) -> String {
+  let mut best = A(fresh("none", 0))
+  for x in ns {
+    let xs = [A(fresh("bs", x))]
+    if x == 2 {
+      best = Array::get(xs, 0)
+      break
+    }
+  }
+  hold(best)
+}
+
+// Codex's shape: a thrown payload projected through a borrowed element.
+fn thr_view_proj(c: Bool) -> String with Exception[D] {
+  let xs = [R::{ d: A(fresh("tv", 1)) }]
+  let p = Array::get(xs, 0)
+  if c {
+    throw(p.d)
+  }
+  name_of(p.d)
+}
+
+fn catch_view_proj(c: Bool) -> String {
+  handle { thr_view_proj(c) } with { Exception[D]::Throw(p) => hold(p) }
+}
+
+fn ret_view_proj(c: Bool) -> D {
+  let xs = [R::{ d: A(fresh("rv", 1)) }]
+  let p = Array::get(xs, 0)
+  if c {
+    return p.d
+  }
+  A(fresh("rv", 2))
+}
+
+// A pattern binder or a `for` element that shadows an owned `let`: the name
+// no longer denotes the `let`, so neither vouches for the other.
+fn ret_binder_shadow(c: Bool) -> D {
+  let s = A(fresh("so", 1))
+  let w = Some(A(fresh("si", 1)))
+  match w {
+    Some(s) => if c {
+      return s
+    } else {
+      ()
+    },
+    None => ()
+  }
+  s
+}
+
+fn ret_for_shadow(c: Bool) -> D {
+  let x = A(fresh("fo", 1))
+  let xs = [A(fresh("fi", 1))]
+  for x in xs {
+    if c {
+      return x
+    }
+  }
+  x
+}
+
+// #3181 review: a `let mut` no closure captures. An exit releases what the
+// slot holds when it is taken; a store before it leaves the slot owning the
+// value it stored.
+fn mut_ret_reassigned(c: Bool) -> D {
+  let mut d = A(fresh("mr", 1))
+  d = A(fresh("mr", 2))
+  let e = A(fresh("mr", 3))
+  if c {
+    return d
+  }
+  e
+}
+
+fn mut_ret_other(c: Bool) -> D {
+  let mut d = A(fresh("mo", 1))
+  d = A(fresh("mo", 2))
+  let e = A(fresh("mo", 3))
+  if c {
+    return e
+  }
+  d
+}
+
+fn mut_ret_before_store(c: Bool) -> D {
+  let mut d = A(fresh("ma", 1))
+  if c {
+    return d
+  }
+  d = A(fresh("ma", 2))
+  d
+}
+
+fn mut_ret_in_loop(n: Int) -> D {
+  let mut d = A(fresh("ml", 0))
+  let mut i = 0
+  while i < 3 {
+    d = A(fresh("ml", i))
+    if i == n {
+      return d
+    }
+    i = i + 1
+  }
+  d
+}
+
+fn mut_brk_in_loop(ns: Array[Int]) -> String {
+  let mut acc = ""
+  let outer = A(fresh("mk", 0))
+  for x in ns {
+    let mut d = A(fresh("mi", x))
+    d = A(fresh("mj", x))
+    if x == 2 {
+      break
+    }
+    acc = String::concat(acc, name_of(d))
+  }
+  let c = churn()
+  String::join([acc, name_of(outer), c], ";")
+}
+
+test "a break value projected from the loop body" {
+  let a = brk_value_proj(2)
+  let x = churn()
+  inspect(String::concat(hold(a), x), content = "bp2churn0")
+}
+
+test "a break value borrowed from the loop body" {
+  let a = brk_value_view(2)
+  let x = churn()
+  inspect(String::concat(hold(a), x), content = "bv2churn0")
+}
+
+test "a continue argument borrowed from the loop body" {
+  let a = cont_value_view(3)
+  let x = churn()
+  inspect(String::concat(a, x), content = "cv3churn0")
+}
+
+test "a break after a let mut retained a borrowed element" {
+  inspect(String::concat(brk_after_store([1, 2, 3]), churn()), content = "bs2churn0")
+}
+
+test "a thrown projection of a borrowed element" {
+  let a = catch_view_proj(true)
+  let x = churn()
+  inspect(String::concat(a, x), content = "tv1churn0")
+}
+
+test "a returned projection of a borrowed element" {
+  let a = ret_view_proj(true)
+  let x = churn()
+  inspect(String::concat(hold(a), x), content = "rv1churn0")
+}
+
+test "a returned pattern binder shadowing an owned let" {
+  let a = ret_binder_shadow(true)
+  let x = churn()
+  let b = ret_binder_shadow(false)
+  inspect(String::join([hold(a), x, hold(b)], ";"), content = "si1;churn0;so1")
+}
+
+test "a returned for element shadowing an owned let" {
+  let a = ret_for_shadow(true)
+  let x = churn()
+  let b = ret_for_shadow(false)
+  inspect(String::join([hold(a), x, hold(b)], ";"), content = "fi1;churn0;fo1")
+}
+
+test "a let mut reassigned before an early return of itself" {
+  let a = mut_ret_reassigned(true)
+  let x = churn()
+  let b = mut_ret_reassigned(false)
+  inspect(String::join([hold(a), x, hold(b)], ";"), content = "mr2;churn0;mr3")
+}
+
+test "a let mut reassigned before an early return of another binding" {
+  let a = mut_ret_other(true)
+  let x = churn()
+  let b = mut_ret_other(false)
+  inspect(String::join([hold(a), x, hold(b)], ";"), content = "mo3;churn0;mo2")
+}
+
+test "a let mut reassigned after an early return" {
+  let a = mut_ret_before_store(true)
+  let x = churn()
+  let b = mut_ret_before_store(false)
+  inspect(String::join([hold(a), x, hold(b)], ";"), content = "ma1;churn0;ma2")
+}
+
+test "a let mut reassigned in a loop and returned from it" {
+  let a = mut_ret_in_loop(1)
+  let x = churn()
+  let b = mut_ret_in_loop(7)
+  inspect(String::join([hold(a), x, hold(b)], ";"), content = "ml1;churn0;ml2")
+}
+
+test "a let mut in a loop body left by break" {
+  inspect(mut_brk_in_loop([0, 1, 2, 3]), content = "mj0mj1;mk0;churn0")
+}
+
+// #3181 review: a `let mut` initialized from a struct literal is owned like
+// one initialized from a constructor, so an early exit releases it -- and
+// what the exit hands out must still be alive.
+fn mut_record_ret(c: Bool) -> D {
+  let mut r = R::{ d: A(fresh("rr", 1)) }
+  if c {
+    return r.d
+  }
+  r = R::{ d: A(fresh("rr", 2)) }
+  r.d
+}
+
+fn mut_record_other(c: Bool) -> D {
+  let other = A(fresh("ro", 1))
+  let mut r = R::{ d: A(fresh("ro", 2)) }
+  if c {
+    return other
+  }
+  r.d
+}
+
+test "a let mut struct literal and an early return of its field" {
+  let a = mut_record_ret(true)
+  let x = churn()
+  let b = mut_record_ret(false)
+  inspect(String::join([hold(a), x, hold(b)], ";"), content = "rr1;churn0;rr2")
+}
+
+test "a let mut struct literal released by an early return of another binding" {
+  let a = mut_record_other(true)
+  let x = churn()
+  let b = mut_record_other(false)
+  inspect(String::join([hold(a), x, hold(b)], ";"), content = "ro1;churn0;ro2")
+}

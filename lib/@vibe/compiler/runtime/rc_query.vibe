@@ -44,6 +44,8 @@ import @vibe/compiler/perceus {
   pa_is_consume_mark,
   pa_is_drop,
   pa_is_dup,
+  pa_is_exit_drop,
+  pa_is_exit_site,
   pa_is_field_release,
   pa_is_path_drop,
   pa_is_reuse_alloc,
@@ -160,6 +162,13 @@ fn rcq_action_name(a: PerceusAction) -> String {
     // #3140: a field assignment of this local struct releases the value it
     // overwrites.
     "field_release"
+  } else if pa_is_exit_site(a) {
+    // #3141: exit `use_offset` of kind `binding_id` (0 return, 1 break,
+    // 2 continue, 3 throw); the row's name is its innermost `let`.
+    String::concat("exit_site:", String::concat(__to_string(a.use_offset), String::concat(":", __to_string(a.binding_id))))
+  } else if pa_is_exit_drop(a) {
+    // #3141: exit `use_offset` releases this binding `extra` times.
+    String::concat("exit_drop:", String::concat(__to_string(a.use_offset), String::concat(":", __to_string(a.extra))))
   } else {
     "other"
   }
@@ -270,7 +279,13 @@ fn rcq_emit_fn_plan(acc: StringBuilder, first: Array[Bool], fname: String, param
         j = Array::length(plan)
       }
     }
-    let line = String::concat(fname, String::concat(" ", String::concat(binding, String::concat(" ", String::concat(action, String::concat(" ", __to_string(count)))))))
+    // An exit outside every `let` names none; keep the field count fixed.
+    let shown = if binding == "" {
+      "-"
+    } else {
+      binding
+    }
+    let line = String::concat(fname, String::concat(" ", String::concat(shown, String::concat(" ", String::concat(action, String::concat(" ", __to_string(count)))))))
     rcq_push_line(acc, first, line)
     i = i + count
   }

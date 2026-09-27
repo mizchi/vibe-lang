@@ -1,0 +1,35 @@
+// #3150: spawned closure literals that call `host_stream_next` themselves and
+// compute with the byte. Such a read runs on the literal's CPS spine, which
+// calls the step clone of the injected `__hs_next` and never `__hs_next`
+// itself, so the reachability prune removed `__hs_next`. The linker keyed
+// @vibe/concurrent's host-waitable hooks on that name, so they kept their
+// "no host waitables" stubs: each read parked as a poller, the pump resumed it
+// with 0, and the stream was never read. This program answered 40000
+// (40 and 0 - 0) instead of 42067.
+//
+// t1: 2 + 40 = 42 (the issue's repro, `left=2|3|4`)
+// t2: 7 * 10 - 3 = 67 (two chained reads, `right=7|3`; `-` so a swapped
+//     pair of reads cannot pass)
+// 42 * 1000 + 67 = 42067. Executed by
+// scripts/test_named_hoststreams_component_gate.sh.
+import @vibe/concurrent/experimental {
+  TaskGroup, TaskHandle
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  TaskGroup::run((g) -> {
+    let t1 = TaskGroup::spawn_suspend(g, () -> Int with Async {
+      let s = host_stream_named("left")
+      let x = host_stream_next(s)
+      x + 40
+    })
+    let t2 = TaskGroup::spawn_suspend(g, () -> Int with Async {
+      let r = host_stream_named("right")
+      let a = host_stream_next(r)
+      let b = host_stream_next(r)
+      a * 10 - b
+    })
+    TaskGroup::pump_all(g)
+    TaskHandle::join(t1) * 1000 + TaskHandle::join(t2)
+  })
+}

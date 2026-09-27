@@ -1008,6 +1008,11 @@ send_check_reject "err_builtin_fn_shadowing.vibe" 'replaces that builtin for EVE
 # compiler generates and finds again by spelling; a program's own
 # `fn __vibe_double_to_string` used to pass for the Double runtime prelude.
 send_check_reject "err_reserved_vibe_prefix.vibe" 'rename `__vibe_double_to_string`: the `__vibe_` prefix is reserved' "rvp"
+# #3189 review: the `__hs_` prefix is reserved the same way. The host-stream
+# reader the linked lowering injects (`__hs_next`, its finisher `__hs_fin`) is
+# called and pruned by name, so a program's own top-level `__hs_fin` shared a
+# name with the generated one.
+send_check_reject "err_reserved_hs_prefix.vibe" 'rename `__hs_fin`: the `__hs_` prefix is reserved' "rvphs"
 # The control, and the reason the two rows above cannot pass by rejecting the
 # type outright: the same heads used correctly -- including a function
 # polymorphic over the element, which is what the `0` bucket exists for --

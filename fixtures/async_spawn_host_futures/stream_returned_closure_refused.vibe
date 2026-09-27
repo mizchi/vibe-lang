@@ -1,0 +1,35 @@
+// #3151, as filed: a host stream opened by the entry reaches ONE task through
+// a closure a helper returned. It trapped at run time; the spawn check now
+// refuses a closure whose captures it cannot see (#3152), so this is a compile
+// error that names the edit. Compiled and refused by
+// scripts/test_named_hoststreams_component_gate.sh.
+import @vibe/concurrent/experimental {
+  TaskGroup, TaskHandle
+}
+
+fn drain(s: HostStream) -> Int with Async {
+  let mut total = 0
+  let mut going = true
+  while going {
+    match HostStream::next(s) {
+      Some(b) => total = total + b,
+      None => going = false
+    }
+  }
+  total
+}
+
+fn reader(s: HostStream) -> () -> Int with Async {
+  () -> Int with Async {
+    drain(s)
+  }
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  let w = reader(host_stream_named("left"))
+  TaskGroup::run((g) -> {
+    let a = TaskGroup::spawn_suspend(g, w)
+    TaskGroup::pump_all(g)
+    TaskHandle::join(a)
+  })
+}

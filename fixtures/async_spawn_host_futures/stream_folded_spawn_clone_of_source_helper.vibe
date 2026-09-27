@@ -1,0 +1,41 @@
+// #3189 review (Codex, round 3): the stream_folded_spawn shape, where the
+// surviving arm calls a SOURCE helper named `helper___hs_next`. The helper
+// performs Async and is called from a spawned closure literal, so the
+// suspend lowering gives it a step clone, `__scps_cps_Async_helper___hs_next`
+// (`scps_clone_name`). That clone is generated, so excluding the names the
+// program wrote does not exclude it, and a check that recognized a read by
+// the suffix `___hs_next` took it for a clone of the injected reader: the
+// stream hooks stayed armed after the real read was folded away, and the
+// build was refused ("host_stream_cancel without a host stream"). Only the
+// injected read path calls the stream finisher `__hs_fin`, and the helper's
+// clone does not, so the program composes with no host-stream import and
+// answers 1 + 41 = 42.
+// Executed by scripts/test_named_hoststreams_component_gate.sh.
+import @vibe/concurrent/experimental {
+  TaskGroup, TaskHandle
+}
+
+fn helper___hs_next(n: Int) -> Int with Async + Exception {
+  await(host_future_named("fast")) + n
+}
+
+fn start(g: TaskGroup, read: Bool) -> TaskHandle[Int] {
+  if read {
+    TaskGroup::spawn_suspend(g, () -> Int with Async {
+      let s = host_stream_named("left")
+      host_stream_next(s)
+    })
+  } else {
+    TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      helper___hs_next(41)
+    })
+  }
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  TaskGroup::run((g) -> {
+    let t = start(g, false)
+    TaskGroup::pump_all(g)
+    TaskHandle::join(t)
+  })
+}

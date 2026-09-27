@@ -1,0 +1,47 @@
+// #3189 review: host-stream reads that run ONLY on a CPS spine, through the
+// `HostStream::next` spelling. Each spawned literal calls the step clone of
+// the injected `__hs_next_option` and nothing calls the original, so the
+// reachability prune removes `__hs_next_option` itself. Whether a stream read
+// survived is decided after that prune, so it has to count the clone: a test
+// that saw only the original would leave @vibe/concurrent's host hooks with
+// their "no host waitables" stubs, and the first read would hit the group's
+// deadlock trap (#3151's route, #3150's shape).
+//
+// a: `left=2|3|4` -> 2 * 10 + 3 = 23 (`*` then `+`, so swapped reads fail)
+// b: drains `right=7|3` -> 7 + 3 = 10
+// 23 * 100 + 10 = 2310. Executed by
+// scripts/test_named_hoststreams_component_gate.sh.
+import @vibe/concurrent/experimental {
+  TaskGroup, TaskHandle
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  TaskGroup::run((g) -> {
+    let a = TaskGroup::spawn_suspend(g, () -> Int with Async {
+      let s = host_stream_named("left")
+      let first = match HostStream::next(s) {
+        Some(v) => v,
+        None => 0 - 100
+      }
+      let second = match HostStream::next(s) {
+        Some(v) => v,
+        None => 0 - 100
+      }
+      first * 10 + second
+    })
+    let b = TaskGroup::spawn_suspend(g, () -> Int with Async {
+      let r = host_stream_named("right")
+      let mut total = 0
+      let mut going = true
+      while going {
+        match HostStream::next(r) {
+          Some(v) => total = total + v,
+          None => going = false
+        }
+      }
+      total
+    })
+    TaskGroup::pump_all(g)
+    TaskHandle::join(a) * 100 + TaskHandle::join(b)
+  })
+}
