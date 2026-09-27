@@ -17,44 +17,34 @@ callee であるか — トップレベル `fn`、それを別名で束縛した
 handled body の**内側**で宣言されたクロージャ。
 
 したがって local 束縛や引数を経由した呼び出しも、その型が row を持って
-いれば通る。local 束縛であること自体が問題なのではない。失敗するのは
-**handled body の外で宣言された row を持たないクロージャ**で、その
-呼び出しが何を perform するかを handle に伝えるものが無い。row を付けるか、
-`let` を body の内側へ移す — 診断はその両方を挙げる。実測した全一覧は
+いれば通る。local 束縛であること自体が問題なのではない。
+**handled body の外で宣言された row を持たないクロージャ**も、本体が
+純粋な計算だけなら通る。handle は引数を見ている。失敗するのは見える本体が
+無い呼び出し — 即座に適用するクロージャや、本体が perform する、あるいは
+この判定が名前を追えない呼び出しをするラムダ。診断は直し方を述べ、ADR 番号は
+出さない。実測した全一覧は
 [docs/user/reference/cheatsheet.md](../../docs/user/reference/cheatsheet.md) にある。
 
 ```vibe skip
-// skip: 適格性による拒否 — 見せたいのは診断であって実行ではない
+// skip: 適格性による拒否 — callee が名前ではなく式
 effect Ask {
   Get() -> Int
 }
 
-fn main allows Exception {
-  let bump = (x: Int) -> Int {
-    x + 1
+fn ask() -> Int with Ask {
+  perform Ask::Get()
+}
+
+fn main() -> Int {
+  handle { ((n: Int) -> Int { n })(ask()) } with {
+    Ask::Get() => resume(0)
   }
-  let n = handle {
-    bump(perform Ask::Get())
-  } with Ask {
-    Get() => resume(0)
-  }
-  ()
 }
 ```
 
 ```
-handle of effect 'Ask' cannot be compiled here: this handle cannot see what
-one call in its body performs (here: the call to 'bump'). Make that call
-visible -- declare 'bump' as a top-level `fn`, give the binding or parameter
-it arrives through an effect row (`with Ask`), or move its `let` inside the
-handled body. Moving the `handle` into the function that performs works too.
-(ADR-0076 evidence-passing migration.)
+handle of effect 'Ask' cannot be compiled here: the handled body calls through an expression rather than a name, and this handle cannot see what that call performs. Give the callee a name it can see -- a top-level `fn`, or a `let` bound to the closure literal inside the handled body -- or move the `handle` into the function that performs.
 ```
-
-`bump` に effect row が**無い**ことに注意。リテラルに `with Ask` を付けると、
-それはメッセージが挙げる4つの直し方のひとつなのでコンパイルが通る — そこが
-要点で、束縛に付いた row が perform を見えるようにしている。`bump` を
-トップレベルの `fn` に持ち上げるのも同じく有効。
 
 ## `Int` の幅はタグビットに従う
 
@@ -88,7 +78,7 @@ handled body. Moving the `handle` into the function that performs works too.
 ```
 
 ```
-top-level expressions are not allowed; move it into fn main (ADR-0069)
+top-level expressions are not allowed; move it into fn main
 ```
 
 ## `test` / `bench` は文字列を取るか何も取らないか

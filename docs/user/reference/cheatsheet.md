@@ -3053,7 +3053,9 @@ inside the handled body. Moving the `handle` into the function that performs
 works too. ...
 ```
 
-The diagnostic **names the offending call and points at its `line:col`**
+A rowless closure bound outside the handle whose body is only pure
+computation is visible (#3124). The quote above is the message for a call
+whose body this pass cannot see. The diagnostic **names the offending call and points at its `line:col`**
 (#1514) — the culprit call's position, not the `handle`'s. When the culprit
 lives in a dependency module it falls back to no position (better than pointing
 at a wrong line in the entry file).
@@ -3075,7 +3077,8 @@ pins every row except the builtin one, which
 | a **rowless local closure declared inside the handled body** | ok |
 | a local binding that **aliases** a performing top-level `fn` | ok |
 | a first-order builtin (`println`, `Fs::read_file`, …) — #2109 | ok |
-| a **rowless local closure declared outside the handled body** | **NG** |
+| a **rowless local closure declared outside**, body visibly pure (`(x) -> x + 1`) | ok |
+| a **rowless local closure declared outside**, body performs or calls something not visible | **NG** |
 | a call through an **expression** (an immediately-applied lambda, `(ops.0)(x)`) | **NG** |
 
 Two more rejections exist that are *not* about the handled body at all: a

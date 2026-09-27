@@ -361,10 +361,17 @@ The accept/reject-and-wording pairs are pinned by
 `lib/@vibe/compiler/tests/handle_eligibility_diagnostic_test.vibe`, and the
 measured table of accepted forms lives in `docs/user/reference/cheatsheet.md`.
 
-**Until the next bootstrap bump**, `08_handle_ineligible/diag.grep` uses only
-substrings common to the old wording (seed) and the new one (stage2) —
-`run_repair.sh` falls back to the seed where no generation stage2 exists (the
-CI late shard), and the seed emits the old wording, so needles pinning the new
-wording alone make the score depend on which compiler answered. After the
-bump, restore the new-wording needles that
-`handle_eligibility_diagnostic_test.vibe` pins.
+The late gate passes `LANG_REVIEW_STAGE2`, so these cases are measured on the
+checkout compiler, not the committed seed.
+
+### Re-score 2026-09-26 (#3118, #3124)
+
+Case 03 no longer ends with `(ADR-0069)`. The table above already quoted the
+message without that tail. `diag.grep` drops the `ADR-0069` needle. L/A/C
+stay 1/1/2: the diagnostic still has a location and names the edit.
+
+Case 08's old `broken.vibe` was `let bump = (x: Int) -> Int { x + 1 }`. That
+body is visibly pure, so the handle compiles (#3124). The broken program is
+now a lambda whose body is an immediately-applied lambda, which this pass
+still cannot see. The culprit is still the call to `bump`, `diag.grep` is
+unchanged, and the score stays L=0 / A=1 / C=2.

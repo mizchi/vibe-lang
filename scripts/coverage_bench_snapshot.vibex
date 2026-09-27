@@ -1,0 +1,235 @@
+// Compact coverage snapshot stored on the bench-data branch. Only the
+// union metrics are kept: an entry-weighted rate gets worse every time a
+// test is added, which reads as a regression when coverage grew.
+//
+//   bash scripts/vibe_run.sh scripts/coverage_bench_snapshot.vibex -- report.json [prev.json]
+//   bash scripts/vibe_run.sh scripts/coverage_bench_snapshot.vibex -- --self-test
+//
+// GITHUB_SHA and GITHUB_RUN_NUMBER are copied through. A corrupt previous
+// snapshot leaves `prev` null instead of blocking the current one.
+
+import @vibe/json {
+  Json, Json::bool, Json::get_opt, Json::number, Json::parse, Json::stringify, Json::string, Json::type_of
+}
+import @vibe/time { now_utc_iso }
+import @vibex/argparse { arg, flag }
+import @vibex/tasks { die }
+
+fn is_num(v: Json) -> Bool {
+  Json::type_of(v) == "number"
+}
+
+fn num_field(obj: Json, key: String) -> Option[Double] {
+  match Json::get_opt(obj, key) {
+    Some(v) => if is_num(v) { Some(Json::number(v)) } else { None },
+    None => None
+  }
+}
+
+fn obj_field(obj: Json, key: String) -> Option[Json] {
+  match Json::get_opt(obj, key) {
+    Some(v) => if Json::type_of(v) == "object" { Some(v) } else { None },
+    None => None
+  }
+}
+
+fn jnum(n: Double) -> Json {
+  JNum(n)
+}
+
+fn jstr(s: String) -> Json {
+  JStr(s)
+}
+
+fn union_metrics(block: Json) -> Option[Json] {
+  match num_field(block, "hit") {
+    Some(hit) => match num_field(block, "total") {
+      Some(total) => match num_field(block, "rate") {
+        Some(rate) => Some(JObj(Map::from_pairs([
+          ("hit", jnum(hit)),
+          ("total", jnum(total)),
+          ("rate", jnum(rate))
+        ]))),
+        None => None
+      },
+      None => None
+    },
+    None => None
+  }
+}
+
+fn branch_metrics(block: Json) -> Option[Json] {
+  match num_field(block, "hit") {
+    Some(hit) => match num_field(block, "total") {
+      Some(total) => match num_field(block, "rate") {
+        Some(rate) => {
+          let exact = match Json::get_opt(block, "exact") {
+            Some(v) => if Json::type_of(v) == "boolean" { Json::bool(v) } else { true },
+            None => true
+          }
+          Some(JObj(Map::from_pairs([
+            ("hit", jnum(hit)),
+            ("total", jnum(total)),
+            ("rate", jnum(rate)),
+            ("exact", JBool(exact))
+          ])))
+        },
+        None => None
+      },
+      None => None
+    },
+    None => None
+  }
+}
+
+fn opt_num(obj: Json, key: String) -> Json {
+  match num_field(obj, key) {
+    Some(n) => jnum(n),
+    None => JNull
+  }
+}
+
+fn opt_str(obj: Json, key: String) -> Json {
+  match Json::get_opt(obj, key) {
+    Some(v) => if Json::type_of(v) == "string" && Json::string(v) != "" { jstr(Json::string(v)) } else { JNull },
+    None => JNull
+  }
+}
+
+fn prev_of(path: String) -> Json with Fs {
+  if path == "" || !Fs::exists(path) {
+    JNull
+  } else {
+    let parsed = Json::parse(Fs::read_file(path))
+    match obj_field(parsed, "function_union") {
+      Some(fu) => match obj_field(parsed, "branch_union") {
+        Some(bu) => match num_field(fu, "rate") {
+          Some(fr) => match num_field(bu, "rate") {
+            Some(br) => JObj(Map::from_pairs([
+              ("commit", opt_str(parsed, "commit")),
+              ("date", opt_str(parsed, "date")),
+              ("function_union_rate", jnum(fr)),
+              ("branch_union_rate", jnum(br))
+            ])),
+            None => JNull
+          },
+          None => JNull
+        },
+        None => JNull
+      },
+      None => JNull
+    }
+  }
+}
+
+fn snapshot(report: Json, prev_path: String, commit: String, run_number: String, date: String) -> Json with Fs + Stderr + Process {
+  match obj_field(report, "function_union") {
+    None => {
+      die("coverage_bench_snapshot: suite report has no usable function_union — refusing to emit a partial snapshot")
+      JNull
+    },
+    Some(fu) => match union_metrics(fu) {
+      None => {
+        die("coverage_bench_snapshot: suite report has no usable function_union — refusing to emit a partial snapshot")
+        JNull
+      },
+      Some(function_union) => match obj_field(report, "branch_union") {
+        None => {
+          die("coverage_bench_snapshot: suite report has no usable branch_union — refusing to emit a partial snapshot")
+          JNull
+        },
+        Some(bu) => match branch_metrics(bu) {
+          None => {
+            die("coverage_bench_snapshot: suite report has no usable branch_union — refusing to emit a partial snapshot")
+            JNull
+          },
+          Some(branch_union) => {
+            let run = match Int::parse(run_number) {
+              Some(n) => jnum(Int::to_double(n)),
+              None => JNull
+            }
+            JObj(Map::from_pairs([
+              ("schema", jnum(1.0)),
+              ("commit", jstr(commit)),
+              ("run_number", run),
+              ("date", jstr(date)),
+              ("function_union", function_union),
+              ("branch_union", branch_union),
+              ("entries_total", opt_num(report, "entries_total")),
+              ("entries_passed", opt_num(report, "entries_passed")),
+              ("case_rate", opt_num(report, "case_rate")),
+              ("prev", prev_of(prev_path))
+            ]))
+          }
+        }
+      }
+    }
+  }
+}
+
+fn expect(cond: Bool, message: String) -> Unit with Stderr + Process {
+  if cond { () } else { die("coverage-bench-snapshot: " + message) }
+}
+
+fn hundredths(n: Double) -> Int {
+  Double::to_int(n * 100.0 + 0.5)
+}
+
+fn self_test() -> Unit with Fs + Console + Stderr + Process {
+  let dir = "_build/coverage-bench-snapshot-selftest"
+  if Fs::exists(dir) { Fs::remove_tree(dir) } else { () }
+  Fs::mkdir_p(dir)
+  let report_path = dir + "/report.json"
+  Fs::write_file(report_path, "{\"function_union\":{\"hit\":12950,\"total\":14995,\"rate\":86.36},\"branch_union\":{\"hit\":26442,\"total\":45986,\"rate\":57.5,\"exact\":true},\"entries_total\":582,\"entries_passed\":582,\"case_rate\":100}\n")
+  let prev_path = dir + "/prev.json"
+  Fs::write_file(prev_path, "{\"commit\":\"prevsha\",\"date\":\"2026-08-14T00:00:00Z\",\"function_union\":{\"hit\":1,\"total\":2,\"rate\":86},\"branch_union\":{\"hit\":1,\"total\":2,\"rate\":57.07}}\n")
+  let doc = snapshot(Json::parse(Fs::read_file(report_path)), prev_path, "abc123def456", "1234", "2026-09-26T00:00:00Z")
+  expect(Json::string(match Json::get_opt(doc, "commit") { Some(v) => v, None => JNull }) == "abc123def456", "commit")
+  match Json::get_opt(doc, "run_number") {
+    Some(v) => expect(hundredths(Json::number(v)) == 123400, "run_number"),
+    None => die("coverage-bench-snapshot: missing run_number")
+  }
+  match Json::get_opt(doc, "branch_union") {
+    Some(b) => {
+      expect(hundredths(Json::number(match Json::get_opt(b, "rate") { Some(v) => v, None => JNull })) == 5750, "branch rate")
+      expect(Json::bool(match Json::get_opt(b, "exact") { Some(v) => v, None => JNull }), "exact")
+    },
+    None => die("coverage-bench-snapshot: missing branch_union")
+  }
+  match Json::get_opt(doc, "prev") {
+    Some(p) => {
+      expect(Json::string(match Json::get_opt(p, "commit") { Some(v) => v, None => JNull }) == "prevsha", "prev commit")
+      expect(hundredths(Json::number(match Json::get_opt(p, "branch_union_rate") { Some(v) => v, None => JNull })) == 5707, "prev branch rate")
+    },
+    None => die("coverage-bench-snapshot: missing prev")
+  }
+  let bare = snapshot(Json::parse(Fs::read_file(report_path)), "", "abc", "", "2026-09-26T00:00:00Z")
+  expect(Json::type_of(match Json::get_opt(bare, "prev") { Some(v) => v, None => JNull }) == "null", "no prev")
+  expect(Json::type_of(match Json::get_opt(bare, "run_number") { Some(v) => v, None => JNull }) == "null", "no run number")
+  Fs::write_file(dir + "/bad.json", "{ not json")
+  let corrupt = snapshot(Json::parse(Fs::read_file(report_path)), dir + "/bad.json", "abc", "1", "2026-09-26T00:00:00Z")
+  expect(Json::type_of(match Json::get_opt(corrupt, "prev") { Some(v) => v, None => JNull }) == "null", "corrupt prev")
+  let broken = Json::parse("{\"function_union\":{\"hit\":1,\"total\":2,\"rate\":1},\"branch_union\":{\"rate\":57.5}}")
+  match obj_field(broken, "branch_union") {
+    Some(b) => expect(match branch_metrics(b) { Some(_) => false, None => true }, "a rate without hit/total is not a snapshot"),
+    None => die("coverage-bench-snapshot: broken fixture was not an object")
+  }
+  Fs::remove_tree(dir)
+  println("coverage-bench-snapshot: ok")
+}
+
+fn main() -> Unit allows Env + Fs + Console + Stderr + Process {
+  if flag("--self-test") {
+    self_test()
+  } else {
+    let report_path = arg(0)
+    if report_path == "" {
+      die("usage: coverage_bench_snapshot.vibex <suite_report.json> [prev_snapshot.json]")
+    } else if !Fs::exists(report_path) {
+      die("coverage_bench_snapshot: no such file: " + report_path)
+    } else {
+      let doc = snapshot(Json::parse(Fs::read_file(report_path)), arg(1), Env::get("GITHUB_SHA"), Env::get("GITHUB_RUN_NUMBER"), now_utc_iso())
+      println(Json::stringify(doc))
+    }
+  }
+}
