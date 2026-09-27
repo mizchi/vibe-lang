@@ -45,7 +45,7 @@ The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
   / adapter bundles from compiler source
 - `build_cli_wasm.sh` — build the distributable compiler wasm (seed→stage1→stage2)
 - `fetch_compiler.sh` — fetch a prebuilt compiler
-- `refresh_batch_weight_seed.sh` (+ `_test`), `select_test_shard.mjs`
+- `refresh_batch_weight_seed.sh` (+ `_test`), `select_test_shard.vibex`
 
 ## Tests (`test_*`)
 - **Editor primitives:** `test_vibe_symbols.sh`, `test_vibe_type_at.sh`,
@@ -95,11 +95,13 @@ The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
   `fixtures/**/*.vibe` carrying `test` blocks must run in a lane or be listed
   with a reason. `unit_test_runner.sh` discovers committed `*_test.vibe`
   files directly. Runs at the top of `compiler_gate.sh` before the selfbuild.
-- `check_fixture_snapshots.mjs` (+ `.test.mjs`) — rejects `__DATA__` tails and
+- `check_fixture_snapshots.vibex` (+ `_test.sh`) — rejects `__DATA__` tails and
   `.diag` expectations under `fixtures/`. Runtime and warning expectations
   live in executable `inspect` snapshots (#1571). Invoked by the fixture
   execution check; its mutation tests run in bootstrap preflight and the
   pre-commit self-test.
+- `check_import_reservation.vibex` (+ `_test.sh`) — every user-callable
+  capability spelling reserves the host import it lowers onto (#2905).
 - `lint_architecture_debt.sh` (+ `architecture_debt_{rules.tsv,allowlist.txt}`),
   `lint_tracked_experiment_names.sh`
 - `verify_rc.sh`, `rc_corpus_parity.sh`, `rc_cutover_readiness.sh`

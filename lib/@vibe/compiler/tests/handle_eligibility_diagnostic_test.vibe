@@ -132,27 +132,65 @@ test "a recording arm pushing into an annotated local compiles" {
 
 //# Tests -- shapes that ARE rejected, and what the message says about them
 
-test "#2137: a local closure outside the handled body is rejected, and named" {
-  // The shape docs/user/reference/cheatsheet.md and book/src/05_effects.vibe.md both use as
-  // the example. `side` is a rowless closure bound OUTSIDE the handled body,
-  // so the scope-tracked traversal that checks the body never sees its
-  // definition and cannot tell whether calling it performs `Ask`.
+test "#3124: a rowless lambda whose body is visibly pure compiles outside the handle" {
+  // `side` performs nothing. The perform is `ask_once()`, written in the
+  // handled body. The pass reads the lambda literal and treats the call as
+  // inert, then still walks the argument.
   let src = program("test \"t\" {\n  let side = (n: Int) -> Int {\n    n\n  }\n  let r = handle {\n    side(ask_once())\n  } with {\n    Ask::Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
+  assert(compiles_both(src))
+}
+
+test "#3124: a later lambda does not inherit an earlier pure body of the same name" {
+  // The inert set is keyed by spelling. Recording only the first `side`
+  // would treat the performing one as pure and let the handle compile.
+  let src = program("test \"t\" {\n  let side = (n: Int) -> Int {\n    n\n  }\n  let side = (n: Int) -> Int {\n    perform Ask::Get()\n  }\n  let r = handle {\n    side(1)\n  } with {\n    Ask::Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
   assert(!compiles_linear(src))
-  let msg = reject_message(src)
-  assert(String::contains(msg, "handle of effect 'Ask' cannot be compiled here"))
-  // The culprit is named (#1514), through the EXACT clause spelling
-  // cli_support.vibe's verify_culprit_off_marker parses to check the
-  // `[@off=N:M]` span before any lane resolves it to `line:col` (#1596).
-  // Rewording this clause silently disables that check, so pin it verbatim.
-  assert(String::contains(msg, "(here: the call to 'side')"))
-  // ... and every repair offered is one this file proves above.
-  assert(String::contains(msg, "top-level `fn`"))
-  assert(String::contains(msg, "with Ask"))
-  assert(String::contains(msg, "move its `let` inside the handled body"))
-  // ... and the claims that were false are gone.
-  assert(!String::contains(msg, "closure parameter"))
-  assert(!String::contains(msg, "the handled body may only"))
+}
+
+test "#3124: a lambda parameter that shadows a pure fn is not read as that fn" {
+  // `apply`'s body calls its PARAMETER `side`, not the pure top-level `fn
+  // side`. Deciding the call from the flat inert set read it as the fn, so
+  // `apply` looked inert, the handle below compiled, and the performing
+  // callback answered wrong (a trap on gc). It must be refused exactly as
+  // it is when no top-level name collides.
+  let body = "test \"t\" {\n  let apply = (side: (Int) -> Int, n: Int) -> Int {\n    side(n)\n  }\n  let r = handle {\n    apply((n: Int) -> Int {\n      perform Ask::Get() + n\n    }, 1)\n  } with {\n    Ask::Get() => resume(42)\n  }\n  assert_eq(r, 43)\n}\n"
+  let with_top = program("fn side(n: Int) -> Int {\n  n\n}\n\n\{body}")
+  let without_top = program(body)
+  assert(!compiles_linear(without_top))
+  assert(!compiles_linear(with_top))
+  let msg = reject_message(with_top)
+  assert(String::contains(msg, "the call to 'apply'"))
+}
+
+test "#3124: a let inside the lambda that shadows a pure fn is not read as that fn" {
+  let body = "test \"t\" {\n  let apply = (f: (Int) -> Int, n: Int) -> Int {\n    let side = f\n    side(n)\n  }\n  let r = handle {\n    apply((n: Int) -> Int {\n      perform Ask::Get() + n\n    }, 1)\n  } with {\n    Ask::Get() => resume(42)\n  }\n  assert_eq(r, 43)\n}\n"
+  assert(!compiles_linear(program("fn side(n: Int) -> Int {\n  n\n}\n\n\{body}")))
+}
+
+test "#3124: a pure local lambda does not make an unrelated parameter of its spelling inert" {
+  // The inert set is keyed by spelling and read at every call site. A pure
+  // `let side` in the test admitted the spelling, so `through`'s closure
+  // PARAMETER `side` became inert inside its handle, and the callback's
+  // perform reached the OUTER handler: the program compiled and answered 50,
+  // not 85. Without the unrelated `let side` it is refused -- and must be
+  // refused with it too.
+  let through = "fn through(side: (Int) -> Int) -> Int {\n  handle {\n    side(1) + ask_once()\n  } with {\n    Ask::Get() => resume(42)\n  }\n}\n\n"
+  let call = "  let r = handle {\n    through((n: Int) -> Int {\n      perform Ask::Get() + n\n    })\n  } with {\n    Ask::Get() => resume(7)\n  }\n"
+  let with_local = program("\{through}test \"t\" {\n  let side = (n: Int) -> Int {\n    n\n  }\n\{call}  assert_eq(r + side(0), 85)\n}\n")
+  let without_local = program("\{through}test \"t\" {\n\{call}  assert_eq(r, 85)\n}\n")
+  assert(!compiles_linear(without_local))
+  assert(!compiles_linear(with_local))
+  assert(String::contains(reject_message(with_local), "the call to 'side'"))
+}
+
+test "#3124: two pure lambdas may share a spelling" {
+  let src = program("test \"t\" {\n  let side = (n: Int) -> Int {\n    n\n  }\n  let side = (n: Int) -> Int {\n    n\n  }\n  let r = handle {\n    side(ask_once())\n  } with {\n    Ask::Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
+  assert(compiles_both(src))
+}
+
+test "#3124: a rowless lambda whose body performs is still refused" {
+  let src = program("test \"t\" {\n  let side = (n: Int) -> Int {\n    perform Ask::Get()\n  }\n  let r = handle {\n    side(1)\n  } with {\n    Ask::Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
+  assert(!compiles_linear(src))
 }
 
 test "#2137: a call through an expression says so instead of naming nothing" {
@@ -184,25 +222,19 @@ test "#2137: an opaque callee one level down is not blamed on the handled body" 
   assert(compiles_both(repaired))
 }
 
-test "#2137: no branch of this diagnostic names a pass that no longer exists" {
-  // Every branch used to end with "the replay engine that used to accept this
-  // shape was removed". #1511 already flagged compiler-internal vocabulary as
-  // unactionable and moved it to the end; #2137 removed it. The ADR reference
-  // stays -- that one resolves to a document a reader can open.
-  let opaque_name = program("test \"t\" {\n  let side = (n: Int) -> Int {\n    n\n  }\n  let r = handle {\n    side(ask_once())\n  } with {\n    Ask::Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
+test "#3118: no branch of this diagnostic names a pass or an ADR" {
+  // #2137 removed "the replay engine that used to accept this shape was
+  // removed". #3118 removes the `(ADR-0076 ...)` tail. A pure outside
+  // lambda now compiles (#3124); these two shapes are still rejected.
   let opaque_expr = program("test \"t\" {\n  let r = handle {\n    ((n: Int) -> Int {\n      n\n    })(ask_once())\n  } with {\n    Ask::Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
   let deeper = "effect Ask {\n  Get() -> Int\n}\n\nfn ask_once_via(g: (Int) -> Int) -> Int with Ask {\n  g(perform Ask::Get())\n}\n\ntest \"t\" {\n  let r = handle {\n    ask_once_via((n: Int) -> Int {\n      n\n    })\n  } with {\n    Ask::Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n"
-  let msgs = [
-    reject_message(opaque_name),
-    reject_message(opaque_expr),
-    reject_message(deeper)
-  ]
+  let msgs = [reject_message(opaque_expr), reject_message(deeper)]
   let mut i = 0
   while i < Array::length(msgs) {
     let m = Array::get(msgs, i)
     assert(String::length(m) > 0)
     assert(!String::contains(m, "replay engine"))
-    assert(String::contains(m, "ADR-0076"))
+    assert(!String::contains(m, "ADR-0076"))
     i = i + 1
   }
 }

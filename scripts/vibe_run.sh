@@ -131,9 +131,13 @@ if [ "$coverage" = "1" ]; then
 fi
 # Keep the runner's result-to-status bridge enabled for the canonical Unit
 # result (0); explicit Process exit and traps still determine non-zero status.
+# Do not also print that 0. main returns Unit, so the printed result is never
+# the program's output, and a script whose stdout is data (a manifest, a
+# selected file list) cannot tell it from a row. viberun_node.sh already
+# quiets cli_main for the same reason.
 # Trailing argv (parsed above) is appended after $out_rel, exactly where the
 # runner's own arg parser (scripts/wasm_vibe_host_runner.js::parseArgs)
 # starts collecting `passthroughArgs` once it has seen the wasm path.
-exec env VIBE_COV_OUT="$cov_out" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_RUNNER_EXIT_WITH_RESULT=1 \
+exec env VIBE_COV_OUT="$cov_out" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_RUNNER_EXIT_WITH_RESULT=1 VIBE_RUNNER_QUIET_RESULT=1 \
   bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" --invoke "$entry" "$out_rel" \
   ${extra_args[@]+"${extra_args[@]}"}

@@ -11,9 +11,15 @@ trap 'rm -rf "$WORK" "$ROOT_DIR/_build/vibe_run"' EXIT
 
 # single-file executable root
 printf 'fn main allows Stdout {\n  let xs = [1, 2, 3, 4]\n  let total = Array::fold(xs, 0, _ + _)\n  Stdout::write_stream("\\{total}\\n")\n}\n' > "$WORK/prog.vibex"
-out="$(bash "$ROOT_DIR/scripts/vibe_run.sh" "$WORK/prog.vibex" | tr -dc '0-9\n' | grep -E '.' | head -1)"
+raw="$(bash "$ROOT_DIR/scripts/vibe_run.sh" "$WORK/prog.vibex")"
+out="$(printf '%s\n' "$raw" | tr -dc '0-9\n' | grep -E '.' | head -1)"
 if [ "$out" != "10" ]; then
   echo "[vibe-run-smoke] FAIL single-file: expected 10, got '$out'" >&2; exit 1
+fi
+# The Unit result used to be printed as a trailing 0. Stdout is the program's.
+if [ "$raw" != "$(printf '10\n')" ]; then
+  echo "[vibe-run-smoke] FAIL single-file stdout is not exactly 10: $(printf '%q' "$raw")" >&2
+  exit 1
 fi
 
 # multi-file (FS import resolution)

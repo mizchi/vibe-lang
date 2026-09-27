@@ -97,9 +97,10 @@ Rules:
   - `Stdin::read_char()` requires `{Stdin}`
   - `Stdin::read_stream(...)` requires `{Stdin}`
   - `sleep(...)` requires `{Async}`
-- The concurrency surface is `lib/@vibe/concurrent` (`TaskGroup`, ADR-0068);
-  importing it is authorized per compilation by `VIBE_UNSTABLE=1`. There is no
-  `--unstable-async` flag.
+- The concurrency surface is `lib/@vibe/concurrent` (`TaskGroup`, ADR-0068),
+  stable and imported with no opt-in. Its suspendable-task lane,
+  `@vibe/concurrent/experimental`, is authorized per compilation by
+  `VIBE_UNSTABLE=1`. There is no `--unstable-async` flag.
 
 Examples:
 
@@ -855,7 +856,7 @@ Notes:
   block; `vibe test --update` rewrites a stale expected literal to the actual
   value (#1571). A compile rejection is classified by verdict and message in
   `fixtures/typecheck/expected.tsv`. No fixture carries a `__DATA__` tail;
-  `scripts/check_fixture_snapshots.mjs` rejects one.
+  `scripts/check_fixture_snapshots.vibex` rejects one.
 
 CLI:
 - The canonical compiler / checker / CLI implementation lives under `lib/@vibe/compiler/`

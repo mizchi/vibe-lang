@@ -50,6 +50,18 @@ run || { cat "$WORK/out" >&2; fail "a *_gate.sh WITH a self-test was rejected"; 
 echo "  ok  a *_gate.sh with a self-test passes"
 rm -f "$WORK/scripts/verify_release_gate.sh" "$WORK/scripts/verify_release_gate_test.sh"
 
+# A .vibex gate is a gate. Before this, discovery stopped at .sh/.py/.mjs, so
+# replacing a gate with .vibex dropped it out of the rule.
+hdr
+printf 'fn main() -> Unit allows Console { () }\n' > "$WORK/scripts/check_ported.vibex"
+if run; then cat "$WORK/out" >&2; fail "a .vibex gate with no self-test was accepted"; fi
+grep -q "check_ported.vibex" "$WORK/out" || fail "the failure did not name the .vibex gate"
+echo "  ok  a .vibex gate with no self-test is rejected"
+printf '#!/usr/bin/env bash\n' > "$WORK/scripts/check_ported_test.sh"
+run || { cat "$WORK/out" >&2; fail "a .vibex gate WITH a self-test was rejected"; }
+echo "  ok  a .vibex gate with a self-test passes"
+rm -f "$WORK/scripts/check_ported.vibex" "$WORK/scripts/check_ported_test.sh"
+
 # A gate WITHOUT one fails.
 rm "$WORK/scripts/check_thing_test.sh"
 if run; then fail "a gate with no self-test was accepted"; fi

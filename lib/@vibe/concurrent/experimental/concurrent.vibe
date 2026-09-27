@@ -1,0 +1,2480 @@
+// @vibe/concurrent — ADR-0068 shared-nothing structured concurrency,
+// cooperative run-to-completion slice (docs/internal/design/concurrency.md).
+//
+// This is the FIRST runtime slice of the ADR-0068 semantics: a
+// deterministic single-threaded scheduler where `spawn` defers the child
+// thunk into a FIFO ready queue and blocking operations (join / send /
+// recv / task-group close) drive that queue on the caller's stack
+// ("thread-of-control borrowing"). No continuations are involved, so a
+// dispatched task always runs to completion; mid-body suspension and the
+// preemptive cancel points of the full spec arrive with the ADR-0076
+// Phase 3 suspend IR and replace the internals here without changing this
+// surface.
+//
+// Conformance scope (vs docs/internal/design/concurrency.md):
+//   implemented — deferred spawn, FIFO deterministic dispatch, join
+//     idempotence on stable terminal outcomes, cancel-before-dispatch,
+//     cancel idempotence, fail-fast sibling cancel + first-observed
+//     failure as the task group result, child Exception::Throw -> Failed
+//     conversion, recoverable child failure as a Result *value*, bounded
+//     MPMC channel (capacity 0 = rendezvous, NegativeCapacity), per-sender
+//     FIFO, close on last Sender release, group-close closes endpoints,
+//     drain-then-None, Err(Closed) on send-after-close.
+//   NOT implemented yet (deferred, tracked by ADR-0068 implementation
+//   order) — region escape checking beyond the return-position case (see
+//     index.vpkg's `r` note for the exact enforced scope), `Spawnable[rg]`
+//     capture checking, mid-run cancel observation, deep-copy message
+//     snapshots (single-heap: callers must send immutable values),
+//     Task::yield. (Async rows on the blocking API landed for the
+//     suspendable lane: Sender::send_wait / Receiver::recv_wait, with a
+//     concrete `with Async` row. #1181 made TaskGroup/Channel/Sender/
+//     Receiver row-polymorphic in `e` so spawned tasks can use effects
+//     beyond Error, which widened the stack-driving Sender::send /
+//     Receiver::recv / TaskHandle::join from row-free to `with e` -- a
+//     row VARIABLE. Callers inside an Async-carrying spawn_suspend closure
+//     literal must use the `_wait` primitives instead: the ADR-0076
+//     suspend/CPS lowering pass (inline_direct_perform.vibe,
+//     scps_calls_ok/scps_row_has_var) always conservatively rejects a
+//     row-variable callee there, since it cannot see what `e` resolves to
+//     at that call site.)
+//   Message/result types ARE `Send`-bounded: spawn results, channel
+//     elements, and Parallel::map inputs/outputs carry `[T: Send]`
+//     (compiler-judged structural marker, checker/checker_trait.vibe).
+//
+// Naming: the task handle is `TaskHandle` (not the spec's `Task[rg, T]`)
+// because `Task::*` is claimed by the retired eager builtin prototype in
+// the compiler's builtin dispatch table; the spelling converges when the
+// builtin surface is replaced. The scope type is `TaskGroup` — the spec
+// (docs/internal/design/concurrency.md) calls the CONCEPT a "nursery" (Trio lineage),
+// but the library uses the asyncio/Swift spelling, which is the most
+// widely trained/recognized name for exactly these semantics.
+//
+// Blocking with no runnable task is a genuine deadlock in this model and
+// traps (a `where requires` contract failure) rather than inventing an
+// outcome. The main shape this bites: two spawned tasks that BOTH block
+// mid-body against each other (e.g. a producer overflowing capacity while
+// a dispatched consumer drains greedily) — that interleaving needs real
+// suspension. Drive such pipelines from the task group body side, or size
+// the capacity to the burst, until the suspend IR lands.
+//
+// 3c UPDATE (ADR-0076 Phase 3a/3b landed): mid-body suspension IS now
+// available through the suspendable-task API at the bottom of this file
+// (TaskGroup::adopt / TaskHandle::park / wake / pump — `Async::Suspend`
+// + first-class `resume`). Two adopted tasks CAN block mid-body against
+// each other and interleave (suspend_test.vibe).
+//
+// 追記31 UPDATE (closure-CPS ABI landed): `TaskGroup::spawn_suspend`
+// moves the handle site INSIDE the library — the caller passes a plain
+// `() -> T with Async { ... }` closure (explicit row annotation
+// required, #761) and never writes handle boilerplate. The legacy
+// run-to-completion `spawn` keeps its deferred-FIFO semantics unchanged.
+// Channel blocking for suspendable tasks landed on the same machinery:
+// Sender::send_wait / Receiver::recv_wait (bottom of this file) suspend
+// instead of stack-driving, so the producer-overflows-capacity shape the
+// header above calls out now works with plain spawn_suspend closures.
+// Fail-fast is integrated with the suspendable lane too: an Exception::Throw
+// escaping a spawn_suspend body (settle leg OR a resumed leg on the
+// pump's stack) converts to Failed and auto-cancels parked siblings
+// (conc_fail_cell).
+
+//# Types
+
+/// Task status codes (internal): 0 ready, 1 running, 2 succeeded,
+/// 3 failed, 4 cancelled, 5 parked (suspended mid-body; `cont` holds the
+/// continuation — ADR-0076 Phase 3a/3b first-class resume). Terminal
+/// states (2/3/4) never change again.
+export struct TaskCell {
+  mut status: Int;
+  mut cancel_requested: Bool;
+  mut fail_msg: String;
+  // The continuation slot (ADR-0068 実装ノート 3c): a parked suspendable
+  // task's wrapped resume — calling it with the wake value runs the task
+  // to its next suspend (or completion). Uniform (Int) -> Unit so the
+  // group can hold heterogeneous tasks; the T-aware settle logic lives in
+  // the wrapper closure TaskHandle::park builds.
+  mut cont: Option[(Int) -> Unit];
+  // Parked as a POLLER (Suspend(1) — waiting on an external condition it
+  // re-checks on every wake, e.g. send_wait/recv_wait) rather than a
+  // productive cooperative yield (Suspend(0)). pump_all's deadlock trap
+  // only fires when EVERY parked task is a poller: resuming a yielder
+  // always advances its body, so yielders are never deadlock evidence
+  // (Codex review on #1110 — a lone task yielding 3+ times must not trap).
+  mut wait_poll: Bool;
+  // Milliseconds still owed to a `sleep_wait` (#1227). 0 = not sleeping.
+  mut sleep_left: Int;
+  // ADR-0089 (#1218) direct-wake waiter lists: a poller that registered
+  // itself with the condition it waits on (result_wait's target cell,
+  // send_wait/recv_wait's channel) parks with `direct_wait` set, and the
+  // pump SKIPS it until the completion site clears the flag — turning the
+  // O(rounds x awaiters) re-poll churn into one wake per completion.
+  // Semantics are unchanged by construction: clearing the flag only makes
+  // the task RESUMABLE again (it re-checks its condition like any poll
+  // round), a spurious clear is just an extra poll, and a MISSED clear is
+  // rescued by the pump's once-per-progress fallback valve
+  // (conc_clear_direct_waits) before the deadlock rules apply.
+  mut direct_wait: Bool;
+  // #1537: the HOST future handle this task is parked on (-1 = none). Set
+  // when the task's `await` of a host future suspends with the waitable
+  // band; the pump skips it, and when nothing else can run the group
+  // blocks on every pending handle at once (`conc_settle_host_waits`) and
+  // resumes whichever landed, with its value.
+  mut host_wait: Int;
+  // #1537: this sleeper's debt was pending when the group's shared timer was
+  // armed, so that timer's duration is what it may be debited when it fires.
+  // A sleep that began after the arm is not covered and keeps its debt.
+  mut timer_covered: Bool;
+  // #1537: a stable identity for the host-wait registry, which cannot compare
+  // cells (`==` on a struct compares content). Assigned once, never reused.
+  serial: Int;
+  // Tasks parked waiting for THIS cell to reach a terminal status
+  // (TaskHandle::result_wait). Every terminal transition clears their
+  // direct_wait via conc_notify_waiters.
+  mut waiters: Array[TaskCell]
+}
+
+/// Task-group phase codes: 0 open, 1 cancelling (fail-fast in progress),
+/// 2 closing (body returned, draining children), 3 closed.
+/// `r` is a compile-time-only generative region tag (#1081 step 3): it is
+/// never read at runtime (the `_region_witness` field's closure is never
+/// called; codegen erases unused type params, docs/spec/uniform-value-
+/// repr.md). It exists only so `struct_fields_ground` does NOT collapse a
+/// `TaskGroup[rg]` construction's type argument away (a struct whose every
+/// declared field type is "ground" loses its type args entirely — see
+/// checker/checker.vibe `struct_fields_ground`/`type_is_ground` — and
+/// `TaskGroup` otherwise has no field that mentions any type param at all).
+/// An identity-function witness `(r) -> r` is the cheapest field shape that
+/// forces non-groundedness for ANY `r`, including the skolem `TaskGroup::run`
+/// mints, without needing an unsafe/opaque-value primitive to conjure a
+/// literal value of the (otherwise uninhabited) abstract type `r`.
+// #1181: `e` is the effect row that spawned run-to-completion thunks may
+// perform, in addition to Error (discharged by the runner wrapper in
+// TaskGroup::spawn before storage). Threading it as a type parameter
+// (rather than a fixed closed set) keeps a nursery that spawns no
+// effectful closures free of any capability requirement -- a fixed set
+// baked into `runners`' element type was tried first and reverted: it
+// forced every caller of TaskGroup::run (even ones spawning nothing
+// beyond `{ Error }`) to declare Fs/Env/Process/Console, regressing the
+// plain-nursery fixture (fixtures/region_ok_basic.vibe).
+export struct TaskGroup[rg, e] {
+  mut tasks: Array[TaskCell];
+  mut runners: Array[() -> Unit with e];
+  mut count: Int;
+  mut next: Int;
+  mut phase: Int;
+  mut failing: Bool;
+  mut fail_msg: String;
+  // Suspendable (adopted) tasks — driven by pump/wake, not drive_one.
+  mut adopted: Array[TaskCell];
+  mut pump_next: Int;
+  // Monotone progress counter (channel blocking slice): bumped on every
+  // channel push/take and every suspendable-task settle. pump_all uses it
+  // to detect a full no-progress sweep of parked tasks (= deadlock trap
+  // instead of livelock, mirroring drive_one's conc_require rule).
+  mut progress: Int;
+  // The direct-wake fallback valve (see TaskCell.direct_wait) has been
+  // opened since the last progress event. Once per progress epoch the
+  // pump may clear ALL direct_wait flags instead of concluding deadlock —
+  // a missed notify then degrades to ordinary polling instead of a
+  // spurious trap. Reset by conc_progress.
+  mut direct_valve_used: Bool;
+  // #1537: the timer this group armed in the shared waitable set (its id in
+  // the timer band, 0 = none) and its milliseconds. Per group: a group
+  // nested in another one's task arms and recognises only its own.
+  mut host_timer: Int;
+  mut host_timer_ms: Int;
+  _region_witness: (rg) -> rg
+}
+
+export struct ResCell[T] {
+  mut value: Option[T]
+}
+
+export struct TaskHandle[rg, e, T] {
+  group: TaskGroup[rg, e];
+  cell: TaskCell;
+  result: ResCell[T]
+}
+
+// #1392 slice 3: `derive(Show)` so a throw of one of these carries a rendered
+// message through the exception side channel. The renderer is chosen at the
+// THROW site (where the payload's static type is known); an erased
+// `with Exception { Throw(m) => .. }` arm -- which is what the task runner below
+// is -- binds `m` at `CtUnknown` and can never resolve one itself.
+export enum TaskError {
+  Failed(String);
+  Cancelled
+} derive (Show)
+
+export enum SendError {
+  Closed
+} derive (Show)
+
+export enum ChannelConfigError {
+  NegativeCapacity
+} derive (Show)
+
+/// Internal growable ring queue (deque-style: filler-grown because a
+/// default value of an arbitrary T cannot be conjured).
+export struct Ring[T] {
+  mut buf: Array[T];
+  mut head: Int;
+  mut len: Int
+}
+
+/// Channel core. `pend` holds messages whose send is either blocked
+/// (buffer full / rendezvous with no receiver yet) or deposited for a
+/// receiver that is currently blocked below us on the stack.
+/// `pend_seq` / `pend_consumed` are monotone counters that let a blocked
+/// sender detect that its own message was taken (FIFO order).
+export struct Channel[rg, e, T] {
+  group: TaskGroup[rg, e];
+  capacity: Int;
+  mut senders: Int;
+  mut closed: Bool;
+  mut waiting_recv: Int;
+  buf: Ring[T];
+  pend: Ring[T];
+  mut pend_seq: Int;
+  mut pend_consumed: Int;
+  // Suspendable tasks parked in send_wait/recv_wait on this channel
+  // (direct-wake waiter list; see TaskCell.direct_wait). Every
+  // linearization event (push/take/close) clears their flags via
+  // conc_chan_notify.
+  mut waiters: Array[TaskCell]
+}
+
+export struct Sender[rg, e, T] {
+  ch: Channel[rg, e, T]
+}
+
+export struct Receiver[rg, e, T] {
+  ch: Channel[rg, e, T]
+}
+
+//# Direct-wake globals (ADR-0089 #1218)
+
+// The task currently running on the (single-threaded) scheduler stack —
+// top of stack; nested groups / nested resumes push and pop. This is how
+// a blocking helper called from inside a task body identifies ITS OWN
+// cell for waiter registration: the suspend payload is a bare Int and
+// cannot carry it. Empty outside any task leg (entry-level blocking
+// helpers then skip registration and fall back to plain polling). A
+// module GLOBAL rather than a TaskGroup field so the compiler-facing
+// await hooks below (__aw_wait — called from the synthesized __aw_poll
+// with only the future cell in hand) can reach it too.
+let conc_running_stack: Array[TaskCell] = []
+
+// Waiter registry for BUILTIN futures (`await` on a `Future::pending`
+// cell): parallel arrays of (future id, parked cell). The future's [state,
+// payload] array cannot hold TaskCells in typed library code, so the
+// registration assigns the cell an id in slot 2 (Array::push — awaits
+// only ever read slots 0/1) and keys this registry with it. Entries are
+// dropped on notify; terminal waiters are swept opportunistically.
+let conc_fut_waiter_ids: Array[Int] = []
+
+let conc_fut_waiter_cells: Array[TaskCell] = []
+
+let conc_fut_id_ctr: Array[Int] = [0]
+
+// #1537: every task parked on a host waitable, across ALL groups (a group
+// nested inside another group's task shares the one waitable set). Stale
+// entries -- resumed or cancelled cells -- are pruned whenever a task parks,
+// so a cell appears at most once. Cells are counted, never compared: `==` on
+// a struct compares content.
+let conc_host_parked: Array[TaskCell] = []
+
+// #1537: a host value a group TOOK while tasks of another group still waited
+// on the same waitable (a future captured by both), one entry per such task:
+// its cell serial and the value, consumed by the owning group's next settle.
+// Keyed by the WAITER, not the waitable: taking the value released the
+// handle, so the runtime may hand the same handle to a later future, and a
+// handle-keyed entry would answer that future with this stale value (Codex
+// on #3091). A listed task is parked until it consumes its entry, so its
+// serial cannot stand for any other wait.
+let conc_host_landed_keys: Array[Int] = []
+let conc_host_landed_vals: Array[Int] = []
+
+// #1537: timers that fired while ANOTHER group was waiting on the shared set
+// (their ids). The owning group finds its own here on its next settle.
+let conc_host_fired_timers: Array[Int] = []
+
+// #1537: the timer band of the suspend payloads (see component_codegen's
+// comp_timer_band_base): a timer id is `n + 4096` for an adapter-assigned n that
+// never repeats, so a stale mailbox entry cannot match a newer timer.
+fn conc_timer_band_base() -> Int {
+  4096
+}
+
+//# Internal helpers
+
+/// Runtime invariant / deadlock trap: violating the requires-contract
+/// traps deterministically at the faulting operation.
+fn conc_require(ok: Bool) -> Unit where {
+  requires: ok
+} {
+  ()
+}
+
+/// Bump the group's progress counter (channel push/take, task settle).
+/// Kept row-free and trivially eligible so suspend-lowered clone bodies
+/// may call it (ADR-0076 追記31: concrete Async-free row callees are safe).
+/// Progress also re-arms the direct-wake fallback valve (see
+/// TaskGroup.direct_valve_used): each real state change earns the pump one
+/// fresh clear-all-flags rescue before the deadlock rules fire.
+fn conc_progress[rg, e](n: TaskGroup[rg, e]) -> Unit {
+  n.progress = n.progress + 1
+  n.direct_valve_used = false
+}
+
+/// Direct-wake notify (ADR-0089 #1218): a terminal transition of `c` makes
+/// every task parked in result_wait on `c` resumable again. Clearing the
+/// flag is the whole wake — the pump's ordinary round-robin then resumes
+/// the task and its poll re-check observes the terminal status. The list
+/// may hold duplicates (a valve-rescued waiter re-registers) and stale
+/// entries (a waiter that moved on to a different wait); both are safe —
+/// a cleared flag is never more than an extra poll round.
+fn conc_notify_waiters(c: TaskCell) -> Unit {
+  let mut i = 0
+  while i < Array::length(c.waiters) {
+    let w = Array::get(c.waiters, i)
+    w.direct_wait = false
+    i = i + 1
+  }
+  c.waiters = empty_cells()
+}
+
+/// Direct-wake notify for a channel linearization event (push/take/close):
+/// same contract as conc_notify_waiters.
+fn conc_chan_notify[rg, e, T](c: Channel[rg, e, T]) -> Unit {
+  let mut i = 0
+  while i < Array::length(c.waiters) {
+    let w = Array::get(c.waiters, i)
+    w.direct_wait = false
+    i = i + 1
+  }
+  c.waiters = empty_cells()
+}
+
+/// Push/pop the currently running task (see conc_running_stack). Every
+/// task leg — an ordinary runner in drive_one, the initial spawn_suspend
+/// run, and every resumed leg through park_kind's wrapper — brackets
+/// itself with these; the Error boundaries
+/// at both sites catch throws before the pop, so the bracket balances.
+fn conc_running_push(c: TaskCell) -> Unit {
+  Array::push(conc_running_stack, c)
+}
+
+fn conc_running_pop() -> Unit {
+  let n = Array::length(conc_running_stack)
+  if n > 0 {
+    Array::truncate(conc_running_stack, n - 1)
+  } else {
+    ()
+  }
+}
+
+/// Register the CURRENTLY RUNNING task as a direct-wake waiter on channel
+/// `c`, immediately before it parks (send_wait/recv_wait's retry perform).
+/// Outside any task leg (stack empty — e.g. an entry-level call) this is
+/// a no-op and the caller parks as a plain poller, unchanged.
+fn conc_chan_register[rg, e, T](c: Channel[rg, e, T]) -> Unit {
+  let depth = Array::length(conc_running_stack)
+  if depth > 0 {
+    let me = Array::get(conc_running_stack, depth - 1)
+    Array::push(c.waiters, me)
+    me.direct_wait = true
+  } else {
+    ()
+  }
+}
+
+/// Register the CURRENTLY RUNNING task as a direct-wake waiter on the
+/// target cell of a result_wait, immediately before it parks. The global
+/// running stack identifies the awaiter regardless of which group the
+/// TARGET handle belongs to (cross-group awaits register the true
+/// awaiter; its own group's pump then honors the flag).
+fn conc_result_register[rg, e, T](h: TaskHandle[rg, e, T]) -> Unit {
+  let depth = Array::length(conc_running_stack)
+  if depth > 0 {
+    let me = Array::get(conc_running_stack, depth - 1)
+    Array::push(h.cell.waiters, me)
+    me.direct_wait = true
+  } else {
+    ()
+  }
+}
+
+/// The direct-wake fallback valve: make every direct-parked task resumable
+/// again. Returns false when there was nothing to clear (the caller's
+/// deadlock evidence stands). Semantics-preserving by construction — a
+/// cleared task just re-checks its condition like any poll round, and
+/// re-registers if still blocked.
+fn conc_clear_direct_waits[rg, e](n: TaskGroup[rg, e]) -> Bool {
+  let mut any = false
+  let mut i = 0
+  while i < Array::length(n.adopted) {
+    let c = Array::get(n.adopted, i)
+    if c.status == 5 && c.direct_wait {
+      c.direct_wait = false
+      any = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  any
+}
+
+/// #1374: render the payload of an exception caught by an ERASED `with Exception`
+/// arm, given the kind `__exn_kind()` reports for the throw now unwinding.
+///
+/// ADR-0085's runtime carries ONE abortive tag with no kind, and the erased
+/// `Error` spelling is compatible with every kind, so such an arm also catches
+/// every typed `Exception[E]` and its binder's static type is unknown. Every
+/// caller here funnels the payload into `fail_msg: String`, so before the kind
+/// side channel existed there was nothing to check:
+///
+///   String / Int  `rendered` (i.e. `__to_string`) is FAITHFUL -- ADR-0058's
+///                 int/string discrimination is the identity on a real string
+///                 and renders an int as its decimal. Unchanged text.
+///   ""            the throw site could not resolve a type name. Keep the
+///                 rendered form: bounded, and possibly the real message.
+///   otherwise     the payload's bytes are not text. Name the KIND rather than
+///                 a decimal that reads like a message. #1372's measured
+///                 failure was `String::length` == 2129 (a raw pointer) on a
+///                 `Closed` payload; it is now `<Closed>`.
+///
+/// Call it INSIDE the arm: the cell holds the kind of the throw currently
+/// unwinding, and the next throw overwrites it.
+fn conc_exn_message(rendered: String, kind: String) -> String {
+  if kind == "" || kind == "String" || kind == "Int" {
+    rendered
+  } else {
+    // #1392 slice 3: the throw site also renders the payload, when it can find
+    // a structural renderer for it, and writes the string alongside the kind.
+    // A non-empty slot means it found one -- it deliberately writes nothing
+    // when all it had was `__to_string`, so this stays a plain emptiness check
+    // instead of an impossible "is this decimal real" one, and the `<Kind>`
+    // form remains the answer for a payload nothing can render.
+    let shown = __exn_message()
+    if String::length(shown) == 0 {
+      "<\{kind}>"
+    } else {
+      shown
+    }
+  }
+}
+
+/// Fail-fast entry for the SUSPENDABLE lane (mirrors spawn's runner-side
+/// Error conversion): mark the cell Failed, record the group's first
+/// observed failure, and auto-cancel parked adopted siblings — their
+/// stored continuations are DROPPED (RC frees the captures, the ADR-0076
+/// "Cont は RC drop で解放" guarantee) so pump_all has nothing left to
+/// deliver and the group close observes terminal states only. Ready
+/// run-to-completion siblings are covered by the existing dispatch-time
+/// cancel point (drive_one checks n.failing). Counts as progress (a
+/// terminal transition).
+fn conc_fail_cell[rg, e](n: TaskGroup[rg, e], cell: TaskCell, msg: String) -> Unit {
+  cell.status = 3
+  cell.fail_msg = msg
+  cell.cont = None
+  conc_notify_waiters(cell)
+  if !n.failing {
+    n.failing = true
+    n.fail_msg = msg
+    if n.phase == 0 {
+      n.phase = 1
+    }
+  }
+  conc_cancel_parked(n)
+  conc_progress(n)
+}
+
+/// Fail-fast sweep shared by BOTH failure lanes (#1115 Codex review): a
+/// run-to-completion child's Throw (spawn's runner) must cancel parked
+/// suspendable siblings exactly like a suspendable failure does —
+/// otherwise the parked sibling either keeps running under a later
+/// pump_all or leaves run's terminal-state check to TRAP instead of
+/// returning Err(Failed(...)).
+fn conc_cancel_parked[rg, e](n: TaskGroup[rg, e]) -> Unit {
+  // #1537: a task parked on a host waitable releases it as TaskHandle::cancel
+  // does -- after every cell is marked, so a sibling cancelled in the same
+  // sweep no longer counts as a waiter. Left armed, its read stayed in the
+  // shared set with nobody to take it (Codex on #3091).
+  let host_waits: Array[Int] = []
+  let host_serials: Array[Int] = []
+  let mut i = 0
+  while i < Array::length(n.adopted) {
+    let c = Array::get(n.adopted, i)
+    if c.status == 5 {
+      if c.host_wait >= 0 {
+        Array::push(host_waits, c.host_wait)
+        Array::push(host_serials, c.serial)
+      } else {
+        ()
+      }
+      c.status = 4
+      c.cont = None
+      c.host_wait = 0 - 1
+      c.wait_poll = false
+      c.direct_wait = false
+      conc_notify_waiters(c)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  let mut k = 0
+  while k < Array::length(host_waits) {
+    conc_host_release_orphan(n, Array::get(host_waits, k), Array::get(host_serials, k))
+    k = k + 1
+  }
+}
+
+fn empty_cells() -> Array[TaskCell] {
+  ArrayBuilder::freeze(ArrayBuilder::new())
+}
+
+fn empty_runners[e]() -> Array[() -> Unit with e] {
+  ArrayBuilder::freeze(ArrayBuilder::new())
+}
+
+fn ring_new[T]() -> Ring[T] {
+  Ring::{
+    buf: ArrayBuilder::freeze(ArrayBuilder::new()),
+    head: 0,
+    len: 0
+  }
+}
+
+/// Grow the ring to the next capacity, linearizing head -> 0. `filler`
+/// (the element being pushed) fills fresh slots.
+fn ring_grow[T](r: Ring[T], filler: T) -> Unit {
+  let old_cap = Array::length(r.buf)
+  let new_cap = if old_cap > 0 {
+    old_cap * 2
+  } else {
+    8
+  }
+  let b = ArrayBuilder::new()
+  let mut i = 0
+  while i < new_cap {
+    ArrayBuilder::push(b, filler)
+    i = i + 1
+  }
+  let nbuf = ArrayBuilder::freeze(b)
+  let mut j = 0
+  while j < r.len {
+    Array::set(nbuf, j, Array::get(r.buf, (r.head + j) % old_cap))
+    j = j + 1
+  }
+  r.buf = nbuf
+  r.head = 0
+}
+
+fn ring_push[T](r: Ring[T], v: T) -> Unit {
+  if r.len >= Array::length(r.buf) {
+    ring_grow(r, v)
+  }
+  let cap = Array::length(r.buf)
+  Array::set(r.buf, (r.head + r.len) % cap, v)
+  r.len = r.len + 1
+}
+
+/// Take the front element; caller must have checked len > 0 (traps
+/// otherwise).
+fn ring_take[T](r: Ring[T]) -> T {
+  conc_require(r.len > 0)
+  let cap = Array::length(r.buf)
+  let v = Array::get(r.buf, r.head)
+  r.head = (r.head + 1) % cap
+  r.len = r.len - 1
+  v
+}
+
+/// Dispatch the next Ready task in spawn (FIFO) order. Returns false when
+/// no Ready task exists. This is THE scheduler: deterministic, and safe to
+/// call reentrantly (a dispatched task's blocking op may call it again).
+/// A queued run-to-completion task drive_one would dispatch next.
+fn conc_has_ready[rg, e](n: TaskGroup[rg, e]) -> Bool {
+  let mut found = false
+  let mut i = n.next
+  while !found && i < n.count {
+    if Array::get(n.tasks, i).status == 0 {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn drive_one[rg, e](n: TaskGroup[rg, e]) -> Bool with e {
+  let idx = loop (i = n.next) {
+    if i >= n.count {
+      break -1
+    }
+    let c = Array::get(n.tasks, i)
+    if c.status == 0 {
+      break i
+    } else {
+      continue (i + 1)
+    }
+  }
+  if idx < 0 {
+    false
+  } else {
+    n.next = idx
+    let c = Array::get(n.tasks, idx)
+    if c.cancel_requested || n.failing {
+      // Ready -> dispatch is a cancel point: a cancel requested before
+      // dispatch, or a failing task group (fail-fast sibling cancel),
+      // resolves the task as Cancelled without running its body.
+      c.status = 4
+      conc_notify_waiters(c)
+    } else {
+      c.status = 1
+      let r = Array::get(n.runners, idx)
+      // #2066 (Codex on #3091): an ordinary runner is a task too, so it runs
+      // as the running task like every suspendable leg does. A stream
+      // operation claims its cell for that task (`__conc_stream_claim`), and
+      // with no identity here the claim was skipped. The runner catches its
+      // own throws, so the bracket balances.
+      conc_running_push(c)
+      r()
+      conc_running_pop()
+    }
+    true
+  }
+}
+
+//# TaskGroup
+
+/// The spec's `nursery { n => body }` construct as a library function
+/// until the dedicated syntax lands: introduces the scope, runs body,
+/// then joins all remaining children (normal close). The group THROWS
+/// `Failed(first observed failure)` when any child failed, otherwise it
+/// returns the body's result. NOTE (MVP): a `throw` escaping the body
+/// itself is not yet converted to a group failure — it propagates as a
+/// normal Error effect of `e`.
+///
+/// #1324: this used to return `Result[T, TaskError]`. The outcome is now
+/// carried by the typed `Exception[TaskError]` row (ADR-0085), so the happy
+/// path is the value itself and a caller that wants to inspect the failure
+/// writes `handle { .. } with Exception[TaskError] { Throw(e) => .. }`.
+///
+/// NOTE for callers: this row carries the effect VARIABLE `e`, and the
+/// ADR-0076 suspend/evidence lowering refuses a row-variable callee reached
+/// from a closure literal (scps_calls_ok). So the call must sit at the USE
+/// site -- it can be wrapped in neither a generic helper (the nursery token
+/// then escapes through the type variable, #1081 step 3) nor a closure
+/// literal. Put the catching `handle` directly around the call instead.
+export fn TaskGroup::run[T, rg, e](body: (TaskGroup[rg, e]) -> T with e) -> T with Exception[TaskError] + e {
+  // Explicit type argument (#886 `TaskGroup[rg]::{ .. }` syntax) is required
+  // here, not just cosmetic: the `_region_witness` field's value is a
+  // freely-inferred closure literal `(x) => x` with nothing else tying its
+  // type to THIS function's own `r`. Inferring the struct's own param from
+  // field values (the ordinary #829 path) would give it an unconstrained
+  // fresh var instead, silently decoupling the constructed value's region
+  // from the `r` the checker's escape check keys off of.
+  let n = TaskGroup[rg, e]::{
+    tasks: empty_cells(),
+    runners: empty_runners(),
+    count: 0,
+    next: 0,
+    phase: 0,
+    failing: false,
+    fail_msg: "",
+    adopted: empty_cells(),
+    pump_next: 0,
+    progress: 0,
+    direct_valve_used: false,
+    host_timer: 0,
+    host_timer_ms: 0,
+    _region_witness: (x) -> x
+  }
+  // #1537: a throw escaping the body skips the close below, so it releases
+  // what the group holds on the host on the way out: every parked child is
+  // cancelled, which releases its host wait, and then the armed timer. A
+  // caller catching the throw and running the group again would otherwise
+  // keep one read and one timer subtask per iteration (Codex on #3091). The
+  // payload is re-thrown unchanged.
+  let v = handle {
+    body(n)
+  } with { Exception::Throw(payload) => {
+    n.phase = 3
+    conc_cancel_parked(n)
+    conc_host_release_timer(n)
+    throw(payload)
+  } }
+  // Normal body end starts joining unfinished children.
+  n.phase = 2
+  let mut progressed = true
+  while progressed {
+    progressed = drive_one(n)
+  }
+  // Closing with a still-parked (or mid-resume) adopted task is a
+  // deadlock — nothing inside run can produce its wake value — so trap,
+  // mirroring join's rule, instead of silently dropping the task.
+  let mut ai = 0
+  while ai < Array::length(n.adopted) {
+    let ac = Array::get(n.adopted, ai)
+    conc_require(ac.status == 2 || ac.status == 3 || ac.status == 4)
+    ai = ai + 1
+  }
+  n.phase = 3
+  conc_host_release_timer(n)
+  if n.failing {
+    throw(Failed(n.fail_msg))
+  } else {
+    v
+  }
+}
+
+/// #1537: a group closing with its timer still armed -- every sleeper it
+/// covered was cancelled, or the group failed -- releases it. A timer that
+/// already fired while another group waited is only a mailbox entry now (the
+/// adapter dropped its subtask); otherwise it is still pending, and its
+/// subtask is cancelled. Left alone, each such group would hold a subtask
+/// handle for the rest of the run (Codex on #3091).
+fn conc_host_release_timer[rg, e](n: TaskGroup[rg, e]) -> Unit {
+  if n.host_timer > 0 {
+    let timer = n.host_timer
+    n.host_timer = 0
+    n.host_timer_ms = 0
+    if conc_host_take_fired_timer(timer) {
+      ()
+    } else {
+      let _ = __conc_host_sleep_cancel(timer)
+      ()
+    }
+  } else {
+    ()
+  }
+}
+
+/// Deferred spawn: the child is queued Ready and does NOT run here (the
+/// eager builtin prototype is out of contract). The thunk may throw —
+/// an Exception::Throw reaching the child boundary becomes Failed(msg) and
+/// triggers fail-fast. Spawning into a task group that is no longer Open
+/// (closing/closed, or cancelling after a sibling failure) traps.
+///
+/// #1181: `f`'s row also allows the enclosing TaskGroup's own `e` capability
+/// row alongside Error, so spawned tasks can shell out to subprocesses or
+/// touch the filesystem — the motivating case (concurrently compiling+
+/// running doctest blocks, scripts/vibe_md.vibex) was previously blocked
+/// by the `{ Error }`-only row. `e` is threaded through TaskGroup[rg, e]
+/// (see its field comment) rather than fixed, so a nursery that spawns
+/// nothing beyond `{ Error }` still requires no extra capability from its
+/// caller.
+export fn TaskGroup::spawn[rg, e, T: Send](n: TaskGroup[rg, e], f: () -> T with Exception + e) -> TaskHandle[rg, e, T] {
+  conc_require(n.phase == 0)
+  let rc = ResCell::{
+    value: None
+  }
+  let cell = TaskCell::{
+    status: 0,
+    cancel_requested: false,
+    fail_msg: "",
+    cont: None,
+    wait_poll: false,
+    sleep_left: 0,
+    direct_wait: false,
+    host_wait: 0 - 1,
+    timer_covered: false,
+    serial: conc_next_cell_serial(),
+    waiters: empty_cells()
+  }
+  let runner: () -> Unit with e = () -> {
+    handle {
+      let v = f()
+      rc.value = Some(v)
+      cell.status = 2
+      conc_notify_waiters(cell)
+    } with { Exception::Throw(payload) => {
+      // #1372 review (Codex P1) / #1374: `payload` is not necessarily a
+      // String -- see conc_exn_message.
+      let msg = conc_exn_message("\{payload}", __exn_kind())
+      cell.status = 3
+      cell.fail_msg = msg
+      conc_notify_waiters(cell)
+      if !n.failing {
+        n.failing = true
+        n.fail_msg = msg
+        if n.phase == 0 {
+          n.phase = 1
+        }
+      }
+      conc_cancel_parked(n)
+    } }
+  }
+  // The append is INLINE on purpose: an append helper of the shape
+  // `if has-space { Array::set(.., v) .. } else { while { push(.., v) } .. }`
+  // over-drops v under RC (#1085 — the #706/#725 loop-borrow epilogue
+  // drop fires unconditionally even when the real-consume `set` arm ran;
+  // not closure-specific, reproduces with plain structs). The inline
+  // form is accounted through the ELet/loop path instead of the
+  // param-epilogue path and stays correct. Both arrays share n.count and
+  // always grow together.
+  let cap = Array::length(n.runners)
+  if n.count < cap {
+    Array::set(n.tasks, n.count, cell)
+    Array::set(n.runners, n.count, runner)
+  } else {
+    let ncap = if cap > 0 {
+      cap * 2
+    } else {
+      8
+    }
+    let rb = ArrayBuilder::new()
+    let mut i = 0
+    while i < ncap {
+      ArrayBuilder::push(rb, runner)
+      i = i + 1
+    }
+    let nr = ArrayBuilder::freeze(rb)
+    let mut j = 0
+    while j < n.count {
+      Array::set(nr, j, Array::get(n.runners, j))
+      j = j + 1
+    }
+    n.runners = nr
+    let tb = ArrayBuilder::new()
+    let mut i2 = 0
+    while i2 < ncap {
+      ArrayBuilder::push(tb, cell)
+      i2 = i2 + 1
+    }
+    let nt = ArrayBuilder::freeze(tb)
+    let mut j2 = 0
+    while j2 < n.count {
+      Array::set(nt, j2, Array::get(n.tasks, j2))
+      j2 = j2 + 1
+    }
+    n.tasks = nt
+  }
+  n.count = n.count + 1
+  TaskHandle::{
+    group: n,
+    cell: cell,
+    result: rc
+  }
+}
+
+//# TaskHandle
+
+/// Join: drives the scheduler until the target task is terminal, then
+/// returns its outcome. Terminal outcomes are stable — joining again
+/// returns the same value. Joining a task that is currently Running
+/// (i.e. the join forms a cycle through the dispatch stack) is a
+/// deadlock and traps.
+export fn TaskHandle::join[rg, e, T](h: TaskHandle[rg, e, T]) -> T with Exception[TaskError] + e {
+  loop (d = 0) {
+    let s = h.cell.status
+    if s == 2 {
+      break match h.result.value {
+        Some(v) => v,
+        None => throw(Failed("concurrent: missing result"))
+      }
+    }
+    if s == 3 {
+      throw(Failed(h.cell.fail_msg))
+    }
+    if s == 4 {
+      throw(Cancelled)
+    }
+    // s == 1: join cycle through the dispatch stack — deadlock.
+    conc_require(s == 0 || s == 5)
+    // s == 0: the target is still Ready somewhere in the queue.
+    // s == 5: it is PARKED (a suspendable task awaiting a host waitable, a
+    // timer, a future or a channel). Joining one used to trap as if it were
+    // a deadlock, so a join had to follow an explicit pump_all (#1537). It
+    // now pumps the group until THIS task settles -- not every task, so a
+    // long sibling does not hold the join -- under pump_all's rules: virtual
+    // time advances for sleepers, and a stalled sweep with nothing to wake
+    // it still traps as a deadlock.
+    if s == 0 {
+      conc_require(drive_one(h.group))
+    } else if drive_one(h.group) {
+      // A queued run-to-completion task ran first: the target may be
+      // waiting on it (a producer resolving its future), and the pump
+      // rounds below never dispatch that lane (Codex on #3091).
+      ()
+    } else {
+      conc_pump_until_settled(h.group, h.cell)
+      // Nothing resumable, nothing queued, and the target still parked: a
+      // deadlock. A task a resumed one spawned is dispatched next round.
+      conc_require(h.cell.status != 5 || conc_has_ready(h.group))
+    }
+    continue (d)
+  }
+}
+
+/// Cooperative cancel request: idempotent; a no-op on terminal tasks.
+/// Observed at the Ready -> dispatch cancel point, and — since the 3c
+/// suspendable-task slice — at the PARKED state: cancelling a parked task
+/// resolves it Cancelled immediately and DROPS its stored continuation
+/// (the RC drop frees everything the continuation captured — the
+/// ADR-0076 "Cont は RC drop で解放" guarantee).
+export fn TaskHandle::cancel[rg, e, T](h: TaskHandle[rg, e, T]) -> Unit {
+  let c = h.cell
+  c.cancel_requested = true
+  if c.status == 5 {
+    let waited = c.host_wait
+    c.status = 4
+    c.cont = None
+    c.host_wait = 0 - 1
+    c.direct_wait = false
+    conc_host_release_orphan(h.group, waited, c.serial)
+    conc_notify_waiters(c)
+  } else {
+    ()
+  }
+}
+
+//# Channel
+
+fn chan_closed[rg, e, T](c: Channel[rg, e, T]) -> Bool {
+  // Closed by last-sender release, or by the owning task group leaving its
+  // Open/Cancelling phases (normal close closes remaining endpoints).
+  c.closed || c.group.phase >= 2
+}
+
+/// Bounded MPMC channel. Capacity 0 is a rendezvous channel; negative
+/// capacity is a configuration error.
+export fn Channel::bounded[rg, e, T: Send](n: TaskGroup[rg, e], capacity: Int) -> (Sender[rg, e, T], Receiver[rg, e, T]) with Exception[ChannelConfigError] {
+  if capacity < 0 {
+    throw(NegativeCapacity)
+  } else {
+    let core = Channel::{
+      group: n,
+      capacity: capacity,
+      senders: 1,
+      closed: false,
+      waiting_recv: 0,
+      buf: ring_new(),
+      pend: ring_new(),
+      pend_seq: 0,
+      pend_consumed: 0,
+      waiters: empty_cells()
+    }
+    (Sender::{
+      ch: core
+    }, Receiver::{
+      ch: core
+    })
+  }
+}
+
+/// Send: returns once the message is linearized (buffered, deposited for a
+/// committed receiver, or consumed by a receiver we drove). THROWS `Closed`
+/// on a closed channel (#1324: was `Err(Closed)` in a Result return). Blocking with no runnable task traps (deadlock).
+/// Row-polymorphic (`with e`, #1181) -- ineligible as a callee inside
+/// an `Async`-carrying `spawn_suspend` closure literal (ADR-0076 suspend
+/// lowering rejects row-variable callees); use `Sender::send_wait` there.
+export fn Sender::send[rg, e, T](s: Sender[rg, e, T], v: T) -> Unit with Exception[SendError] + e {
+  let c = s.ch
+  if chan_closed(c) {
+    throw(Closed)
+  }
+  if c.capacity > 0 && c.buf.len < c.capacity && c.pend.len == 0 {
+    ring_push(c.buf, v)
+    conc_progress(c.group)
+    conc_chan_notify(c)
+    return ()
+  }
+  if c.waiting_recv > 0 {
+    // A receiver below us on the stack is committed to taking the next
+    // message: deposit is the rendezvous linearization point.
+    ring_push(c.pend, v)
+    c.pend_seq = c.pend_seq + 1
+    conc_progress(c.group)
+    conc_chan_notify(c)
+    return ()
+  }
+  // Block: register the message and drive other tasks until a receiver
+  // consumes it (FIFO by pend_seq). The deposit itself can satisfy a
+  // direct-parked recv_wait, so notify before blocking.
+  ring_push(c.pend, v)
+  let myseq = c.pend_seq
+  c.pend_seq = c.pend_seq + 1
+  conc_chan_notify(c)
+  loop (d = 0) {
+    if c.pend_consumed > myseq {
+      break ()
+    }
+    if chan_closed(c) {
+      throw(Closed)
+    }
+    conc_require(drive_one(c.group))
+    continue (d)
+  }
+}
+
+/// Clone a sender endpoint (MPMC). Each clone must eventually be
+/// released; the channel closes when the live sender count reaches zero.
+export fn Sender::clone[rg, e, T](s: Sender[rg, e, T]) -> Sender[rg, e, T] {
+  let c = s.ch
+  c.senders = c.senders + 1
+  Sender::{
+    ch: c
+  }
+}
+
+/// Release a sender handle (models the affine drop until affine handles
+/// land). The last release closes the channel: buffered messages remain
+/// receivable, then recv returns None.
+export fn Sender::release[rg, e, T](s: Sender[rg, e, T]) -> Unit {
+  let c = s.ch
+  if c.senders > 0 {
+    c.senders = c.senders - 1
+    if c.senders == 0 {
+      c.closed = true
+      // Close is a wake condition: direct-parked recv_wait tasks must
+      // observe drain-then-None, parked send_wait tasks Err(Closed).
+      conc_chan_notify(c)
+    }
+  }
+}
+
+//# Combinators
+
+/// Parallel::map (docs/internal/design/concurrency.md "Safe parallel API"): spawn one
+/// child per element, return results in INPUT INDEX order — task
+/// completion order is not observable. The first child failure (or
+/// cancellation) is returned as the map's error; remaining children are
+/// cancelled by the task group's fail-fast when they have not started yet.
+export struct Parallel {
+  tag: Int
+}
+
+export fn Parallel::map[rg, e, T: Send, U: Send](n: TaskGroup[rg, e], xs: Array[T], f: (T) -> U with Exception + e) -> Array[U] with Exception[TaskError] + e {
+  let len = Array::length(xs)
+  let hb = ArrayBuilder::new()
+  let mut i = 0
+  while i < len {
+    let x = Array::get(xs, i)
+    // #944 checked-Error row discipline: annotate the thunk's row so the
+    // latent { Error, e } stays on the closure value instead of being
+    // attributed to Parallel::map's own perform set (map's own row comes
+    // from driving the scheduler, not from performing these itself — see
+    // TaskGroup::spawn's #1181 comment).
+    let thunk: () -> U with Exception + e = () -> {
+      f(x)
+    }
+    let t = TaskGroup::spawn(n, thunk)
+    ArrayBuilder::push(hb, t)
+    i = i + 1
+  }
+  let handles = ArrayBuilder::freeze(hb)
+  let rb = ArrayBuilder::new()
+  loop (j = 0) {
+    if j >= len {
+      break ArrayBuilder::freeze(rb)
+    }
+    // #1324: join now THROWS its TaskError, so a child failure aborts this
+    // loop by itself -- the old `Err(e) => break Err(e)` re-wrap is gone.
+    ArrayBuilder::push(rb, TaskHandle::join(Array::get(handles, j)))
+    continue (j + 1)
+  }
+}
+
+/// Receive: Some(message) in linearization order, or None once the
+/// channel is closed and drained. Blocks by driving ready tasks;
+/// blocking with no runnable task traps (deadlock).
+/// Row-polymorphic (`with e`, #1181) -- ineligible as a callee inside
+/// an `Async`-carrying `spawn_suspend` closure literal (ADR-0076 suspend
+/// lowering rejects row-variable callees); use `Receiver::recv_wait` there.
+export fn Receiver::recv[rg, e, T](rh: Receiver[rg, e, T]) -> Option[T] with e {
+  let c = rh.ch
+  c.waiting_recv = c.waiting_recv + 1
+  let out = loop (d = 0) {
+    if c.buf.len > 0 {
+      let v = ring_take(c.buf)
+      // Promote the oldest blocked send into the freed buffer slot.
+      if c.pend.len > 0 && c.capacity > 0 {
+        let p = ring_take(c.pend)
+        ring_push(c.buf, p)
+        c.pend_consumed = c.pend_consumed + 1
+      }
+      conc_progress(c.group)
+      conc_chan_notify(c)
+      break Some(v)
+    }
+    if c.pend.len > 0 {
+      // Rendezvous / deposited message: take it directly.
+      let v = ring_take(c.pend)
+      c.pend_consumed = c.pend_consumed + 1
+      conc_progress(c.group)
+      conc_chan_notify(c)
+      break Some(v)
+    }
+    if chan_closed(c) {
+      break None
+    }
+    conc_require(drive_one(c.group))
+    continue (d)
+  }
+  c.waiting_recv = c.waiting_recv - 1
+  out
+}
+
+//# Suspendable tasks (ADR-0068 実装ノート 3c — ADR-0076 Phase 3a/3b の
+//# first-class resume を scheduler に接続する最初のスライス)
+
+// A suspendable task is DRIVEN FROM USER CODE: the task body runs inside
+// a `handle ... with Async` written at the adoption site (the suspend
+// lowering needs the body lexically -- calling a stored closure from
+// library code cannot suspend until the closure-CPS ABI lands), its arm
+// parks `resume` into the task's continuation slot, and the group's
+// pump/wake APIs later run the stored continuation to the next suspend.
+// Canonical shape:
+//
+//   let h = TaskGroup::adopt(g)
+//   TaskHandle::settle(h, handle {
+//     ...body, `perform Async::Suspend(reason)` at suspension points...
+//     SDone(result)
+//   } with Async {
+//     Suspend(r) => {
+//       TaskHandle::park(h, resume)
+//       SParked
+//     }
+//   })
+//
+// Arms should PROPAGATE the suspend reason: `TaskHandle::park_poll(h,
+// resume, r == 1)` (payload convention: 0 = cooperative yield, 1 = poll
+// wait). Plain `TaskHandle::park` records a YIELD — safe for pure
+// yielding bodies, but a body that blocks in send_wait/recv_wait under a
+// plain-park arm is invisible to pump_all's deadlock trap (it livelocks
+// instead of trapping; Codex review on #1111).
+//
+// The body is subject to the suspend lowering's eligibility rules
+// (docs/internal/design/effect-evidence-passing.md 追記27-29): performs and calls to
+// row-carrying functions on the let/seq/tail/branch-tail spine; other
+// calls limited to pure builtins / constructors / provably-Async-free
+// functions.
+
+/// The step a suspendable task's handle produces: the user wraps the
+/// body's value in SDone; the parking arm returns SParked.
+export enum TaskStep[T] {
+  SDone(T);
+  SParked
+}
+
+/// Transparent suspension effect (#752: the declaration IS the contract —
+/// index.vpkg declares the same shape; user units redeclare it locally and
+/// match by definition). Declared here so spawn_suspend's own handle can
+/// discharge it inside the library.
+effect Async {
+  Suspend(Int) -> Int
+}
+
+/// Spawn a SUSPENDABLE task: the handle site lives INSIDE the library
+/// (closure-CPS ABI, ADR-0076 追記31 Vertical B) — the caller passes a
+/// plain `() -> T with Async` body and never writes the handle
+/// boilerplate. The body runs eagerly to its first suspend (adopt
+/// semantics: the cell starts Running, never enters the drive_one queue);
+/// mid-body suspends park the continuation for pump/pump_all/wake.
+/// The suspend lowering compiles `f` step-returning at the call site
+/// (the literal is CPS-split for Async) and this body bubbles the steps
+/// it returns, so `f()` below is a needing call through a closure value —
+/// the exact shape 3c could not express lexically.
+export fn TaskGroup::spawn_suspend[rg, e, T: Send](n: TaskGroup[rg, e], f: () -> T with Async + Exception) -> TaskHandle[rg, e, T] {
+  let h = TaskGroup::adopt(n)
+  // Running-task tracking (direct-wake waiter registration, ADR-0089
+  // #1218): the initial leg runs on this stack — blocking helpers called
+  // from the body read the global running stack to identify their own
+  // cell. A push/pop bracket (not set/clear) because task bodies may
+  // spawn nested suspendable tasks.
+  conc_running_push(h.cell)
+  let step = handle {
+    handle {
+      let v = f()
+      SDone(v)
+    } with { Async::Suspend(r) => {
+      // Payload convention: 0 = yield, 1 = poll wait, NEGATIVE = a sleep
+      // debt of -r ms (#1227), [2, 2047] = a host future (handle + 2),
+      // [2048, 3071] = a host stream read (handle + 2048) -- ADR-0089 D2's
+      // third wait kind. Either parks on its waitable when the program's
+      // entry boundary settles host waitables (#1537: `__conc_host_arm`
+      // answers >= 0), and the group waits on all of them at once. Without
+      // that boundary nothing in-guest can complete a host waitable, so it
+      // parks as a POLLER and the backend degrades to the deadlock trap
+      // rather than to a silent yield livelock (a yielder is resumed for
+      // free forever and never counts as stalled).
+      if r < 0 {
+        TaskHandle::park_kind(h, resume, true, 0 - r)
+      } else if r >= 2 && __conc_host_arm(r) >= 0 {
+        // #1537: a host future (handle + 2) or host stream read (handle +
+        // 2048) in a program whose entry boundary settles host waitables.
+        // The group waits on it together with every other pending one
+        // (conc_settle_host_waits); the payload itself names it.
+        TaskHandle::park_kind(h, resume, false, 0)
+        h.cell.host_wait = r
+        conc_host_register_parked(h.cell)
+        conc_host_record_cell(r)
+      } else {
+        TaskHandle::park_kind(h, resume, r >= 1, 0)
+      }
+      SParked
+    } }
+  } with { Exception::Throw(msg) => {
+    // Error escaping the first (settle) leg: Failed conversion +
+    // fail-fast, exactly like spawn's runner. The Async handle is
+    // CPS-lowered (no exceptions), so only real throws land here.
+    // #1374: same erased-arm hazard as the runner -- see conc_exn_message.
+    conc_fail_cell(n, h.cell, conc_exn_message("\{msg}", __exn_kind()))
+    SParked
+  } }
+  conc_running_pop()
+  TaskHandle::settle(h, step)
+  h
+}
+
+/// Register a suspendable task with the group. The body runs (to its
+/// first suspend) at the adoption site immediately after, so the cell
+/// starts Running rather than Ready; it never enters the drive_one queue.
+export fn TaskGroup::adopt[rg, e, T: Send](n: TaskGroup[rg, e]) -> TaskHandle[rg, e, T] {
+  conc_require(n.phase == 0)
+  let rc = ResCell::{
+    value: None
+  }
+  let cell = TaskCell::{
+    status: 1,
+    cancel_requested: false,
+    fail_msg: "",
+    cont: None,
+    wait_poll: false,
+    sleep_left: 0,
+    direct_wait: false,
+    host_wait: 0 - 1,
+    timer_covered: false,
+    serial: conc_next_cell_serial(),
+    waiters: empty_cells()
+  }
+  Array::push(n.adopted, cell)
+  TaskHandle::{
+    group: n,
+    cell: cell,
+    result: rc
+  }
+}
+
+/// Record the handle-site result of a suspendable task: SDone settles the
+/// task (the body finished without suspending, or this is the value of a
+/// later resume leg via the park wrapper); SParked means the arm already
+/// parked the continuation.
+export fn TaskHandle::settle[rg, e, T](h: TaskHandle[rg, e, T], step: TaskStep[T]) -> Unit {
+  match step {
+    SDone(v) => {
+      h.result.value = Some(v)
+      h.cell.status = 2
+      conc_notify_waiters(h.cell)
+      conc_progress(h.group)
+      ()
+    },
+    SParked => ()
+  }
+}
+
+/// Park the arm's first-class `resume` into the task's continuation slot.
+/// The stored wrapper is uniform (Int) -> Unit: calling it resumes the
+/// body with the wake value; if the body runs to completion the wrapper
+/// settles the result, and if it suspends again the arm has already
+/// re-parked (this same function) before the wrapper observes SParked.
+/// Compatibility form: records a cooperative YIELD (wait_poll = false).
+/// Use park_poll with the arm's suspend payload when the body may block
+/// on a channel, or the deadlock trap cannot see the wait.
+export fn TaskHandle::park[rg, e, T](h: TaskHandle[rg, e, T], k: (Int) -> TaskStep[T]) -> Unit {
+  TaskHandle::park_poll(h, k, false)
+}
+
+/// Park with an explicit wait kind: `poll = true` marks the task as
+/// waiting on an external condition (deadlock-trap eligible, see
+/// TaskCell.wait_poll). spawn_suspend derives it from the Suspend payload
+/// (1 = poll wait — the convention the blocking channel ops use).
+export fn TaskHandle::park_poll[rg, e, T](h: TaskHandle[rg, e, T], k: (Int) -> TaskStep[T], poll: Bool) -> Unit {
+  TaskHandle::park_kind(h, k, poll, 0)
+}
+
+/// Park with a sleep debt (#1227): `sleep_ms > 0` means the task owes that
+/// much time before it may run again; the pump settles it.
+export fn TaskHandle::park_kind[rg, e, T](h: TaskHandle[rg, e, T], k: (Int) -> TaskStep[T], poll: Bool, sleep_ms: Int) -> Unit {
+  let cell = h.cell
+  let rc = h.result
+  let grp = h.group
+  cell.status = 5
+  cell.wait_poll = poll
+  cell.sleep_left = sleep_ms
+  cell.cont = Some((rv: Int) -> {
+    cell.status = 1
+    // Resuming consumes any direct-wake registration: the flag is only
+    // meaningful while parked (a registration helper re-sets it right
+    // before the next park). Leaving it set would strand an unrelated
+    // later park (e.g. a cooperative yield) behind the fallback valve.
+    cell.direct_wait = false
+    // Running-task tracking for direct-wake registration (see
+    // conc_running_stack): every resumed leg flows through this wrapper,
+    // so this one push/pop bracket covers pump, pump_all, and wake.
+    conc_running_push(cell)
+    // Each resumed leg gets its own Error boundary: a throw AFTER a
+    // suspend runs on the pump's stack, outside spawn_suspend's own
+    // handler — without this it would unwind straight out of pump_all.
+    let step = handle {
+      k(rv)
+    } with { Exception::Throw(msg) => {
+      // #1374: same erased-arm hazard as the runner -- see conc_exn_message.
+      conc_fail_cell(grp, cell, conc_exn_message("\{msg}", __exn_kind()))
+      SParked
+    } }
+    conc_running_pop()
+    match step {
+      SDone(v) => {
+        rc.value = Some(v)
+        cell.status = 2
+        conc_notify_waiters(cell)
+        conc_progress(grp)
+        ()
+      },
+      SParked => ()
+    }
+  })
+  ()
+}
+
+/// Deliver a wake value to a specific parked task, resuming it on the
+/// caller's stack. False when the task is not currently parked (running,
+/// terminal, or already woken -- the continuation slot is one-shot at the
+/// cell level too, on top of the lowering's own one-shot trap).
+export fn TaskHandle::wake[rg, e, T](h: TaskHandle[rg, e, T], v: Int) -> Bool {
+  let c = h.cell
+  if c.status == 5 {
+    match c.cont {
+      Some(k) => {
+        c.cont = None
+        k(v)
+        true
+      },
+      None => false
+    }
+  } else {
+    false
+  }
+}
+
+/// Resume ONE parked adopted task with wake value 0 (cooperative yield),
+/// round-robin from just after the last pumped slot so two tasks that
+/// re-park immediately keep alternating. False when nothing is parked.
+/// Advance the virtual clock (#1227), and ONLY when every parked task owes
+/// sleep time -- anything merely yielding or polling resumes for free and
+/// must go first.
+///
+/// The point is that concurrent sleeps overlap. The smallest debt is spent
+/// ONCE on the host and then debited from every sleeper, so three tasks
+/// owing 300ms each cost 300ms of wall time rather than 900. No wall clock
+/// is read, so the arithmetic cannot drift.
+///
+/// `sleep_blocking` rather than `sleep` because this function must stay
+/// row-free: an `Async` row here propagates to pump/pump_all, which makes
+/// them "needing" functions that the ADR-0076 suspend pass has to CPS-clone
+/// -- and their `while`/`let mut` shape is ineligible for that (#1227 has
+/// the measurement). Blocking is sound at this exact point precisely
+/// because nothing else is runnable: there is no task to starve.
+fn conc_settle_sleep_debt[rg, e](n: TaskGroup[rg, e]) -> Unit {
+  let total = Array::length(n.adopted)
+  let mut sleepers = 0
+  let mut other_parked = 0
+  let mut host_waiters = 0
+  let mut min_left = 0
+  let mut i = 0
+  while i < total {
+    let c = Array::get(n.adopted, i)
+    if c.status == 5 {
+      if c.sleep_left > 0 {
+        sleepers = sleepers + 1
+        if min_left == 0 || c.sleep_left < min_left {
+          min_left = c.sleep_left
+        } else {
+          ()
+        }
+      } else if c.host_wait >= 0 {
+        // A host waiter (#1537): the group waits on it and the earliest
+        // sleeper together (conc_settle_host_waits), so no blocking sleep.
+        host_waiters = host_waiters + 1
+      } else if c.direct_wait {
+        // A host waiter (#1537) likewise resumes only when its future
+        // lands, so it does not hold back the virtual clock either.
+        //
+        // A direct-parked waiter cannot progress for free (the pump skips
+        // it until its completion notify) — it must not hold back the
+        // virtual clock the way a resumable poller does, or a sleeper it
+        // depends on would never settle (previously that case needed the
+        // pump_all stall counter to reach the FORCE settle).
+        ()
+      } else {
+        other_parked = other_parked + 1
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if sleepers > 0 && other_parked == 0 && host_waiters == 0 && n.host_timer == 0 {
+    sleep_blocking(min_left)
+    let mut j = 0
+    while j < total {
+      let c = Array::get(n.adopted, j)
+      if c.status == 5 && c.sleep_left > 0 {
+        c.sleep_left = c.sleep_left - min_left
+      } else {
+        ()
+      }
+      j = j + 1
+    }
+  } else {
+    ()
+  }
+}
+
+/// Force-settle the smallest sleep debt even while non-sleeping parked
+/// tasks exist (ADR-0089 D2, #1218). `conc_settle_sleep_debt` above only
+/// advances virtual time when EVERY parked task is a sleeper, because a
+/// resumable poller might still make progress for free. But a poller that
+/// depends on a SLEEPING sibling -- awaiting a future the sleeper will
+/// resolve, or recv_wait on a producer that sleeps between sends -- makes
+/// no progress until time advances, and under the old rule pump_all's
+/// stall counter mistook that for deadlock and trapped. pump_all reaches
+/// for this ONLY after a full no-progress sweep of the resumable pollers,
+/// which is exactly the evidence that free resumption is exhausted.
+/// Returns false when no parked task owes sleep time -- that genuinely is
+/// a deadlock, and the caller traps as before. Same no-wall-clock
+/// arithmetic as the plain settle: one host sleep of the minimum debt,
+/// debited from every sleeper.
+fn conc_force_settle_sleep_debt[rg, e](n: TaskGroup[rg, e]) -> Bool {
+  let total = Array::length(n.adopted)
+  let mut sleepers = 0
+  let mut min_left = 0
+  let mut i = 0
+  while i < total {
+    let c = Array::get(n.adopted, i)
+    if c.status == 5 && c.sleep_left > 0 {
+      sleepers = sleepers + 1
+      if min_left == 0 || c.sleep_left < min_left {
+        min_left = c.sleep_left
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if sleepers > 0 {
+    sleep_blocking(min_left)
+    let mut j = 0
+    while j < total {
+      let c = Array::get(n.adopted, j)
+      if c.status == 5 && c.sleep_left > 0 {
+        c.sleep_left = c.sleep_left - min_left
+      } else {
+        ()
+      }
+      j = j + 1
+    }
+    true
+  } else {
+    false
+  }
+}
+
+/// Sleep without blocking the group (#1227). Inside a `spawn_suspend` body
+/// this parks the task so its siblings run, and the group's pump settles
+/// the debt -- so concurrent sleeps overlap instead of serializing.
+///
+/// ADR-0089 D1 (#1218) note: plain `sleep` now does the same thing in the
+/// positions guaranteed a handler -- inside an Async-row closure literal
+/// (spawn_suspend task bodies) or a `handle ... with Async` body, the
+/// compiler retargets it to this very perform shape, and under an
+/// Async-row entry the injected boundary settles it. This function keeps
+/// its DIRECT perform body rather than delegating to `sleep`: a top-level
+/// fn body is deliberately not a retarget position when no entry boundary
+/// exists (Codex P1 on #1312 -- rewriting there can strand a perform with
+/// no handler), so delegation would quietly turn this back into the
+/// blocking builtin.
+export fn sleep_wait(ms: Int) -> Unit with Async {
+  if ms > 0 {
+    let _ = perform Async::Suspend(0 - ms)
+    ()
+  } else {
+    ()
+  }
+}
+
+/// One round-robin dispatch attempt: resume the next RESUMABLE parked task
+/// (not sleeping, not direct-parked). Direct-parked tasks are woken by
+/// their completion notify (or the fallback valve in TaskGroup::pump), so
+/// skipping them here is what turns per-round re-polls into one wake per
+/// completion.
+fn conc_pump_once[rg, e](n: TaskGroup[rg, e]) -> Bool {
+  let total = Array::length(n.adopted)
+  loop (step = 0) {
+    if step >= total {
+      break false
+    }
+    let i = (n.pump_next + step) % total
+    let c = Array::get(n.adopted, i)
+    if c.status == 5 && c.sleep_left == 0 && !c.direct_wait && c.host_wait < 0 {
+      n.pump_next = (i + 1) % total
+      match c.cont {
+        Some(k) => {
+          c.cont = None
+          c.wait_poll = false
+          k(0)
+          ()
+        },
+        None => ()
+      }
+      break true
+    } else {
+      continue (step + 1)
+    }
+  }
+}
+
+/// #1537: resume a task parked on a host future once nothing else can run.
+/// Every pending handle is armed (joined to the adapter's shared waitable
+/// set); a handle whose value already landed resumes at once, otherwise the
+/// group blocks until ANY of them lands -- so tasks awaiting different host
+/// futures interleave in completion order instead of the order they parked.
+/// False when no task waits on the host.
+fn conc_settle_host_waits[rg, e](n: TaskGroup[rg, e]) -> Bool {
+  // A value another group took while this group's tasks waited on it comes
+  // first -- before any arm: its handle is already released, and arming a
+  // released handle traps.
+  if conc_host_local_landed(n) {
+    conc_host_resume_landed(n)
+    true
+  } else {
+    conc_settle_host_waits_armed(n)
+  }
+}
+
+fn conc_settle_host_waits_armed[rg, e](n: TaskGroup[rg, e]) -> Bool {
+  let total = Array::length(n.adopted)
+  let mut pending = false
+  let mut ready = 0 - 1
+  let mut sleepers = 0
+  let mut covered = 0
+  let mut min_left = 0
+  let mut i = 0
+  while i < total {
+    let c = Array::get(n.adopted, i)
+    if c.timer_covered && c.status == 5 && c.sleep_left > 0 {
+      covered = covered + 1
+    } else {
+      ()
+    }
+    if c.status == 5 && c.host_wait >= 0 {
+      pending = true
+      if ready < 0 && __conc_host_arm(c.host_wait) == 1 {
+        ready = c.host_wait
+      } else {
+        ()
+      }
+    } else if c.status == 5 && c.sleep_left > 0 {
+      sleepers = sleepers + 1
+      if min_left == 0 || c.sleep_left < min_left {
+        min_left = c.sleep_left
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if n.host_timer > 0 && covered == 0 {
+    // Every sleeper the timer covered was cancelled while the group stayed
+    // open. Waiting on it would block for a delay nobody sleeps any more, so
+    // release it now rather than at close (Codex on #3091).
+    conc_host_release_timer(n)
+  } else {
+    ()
+  }
+  if n.host_timer > 0 && conc_host_take_fired_timer(n.host_timer) {
+    // This group's timer fired while another group was waiting on the
+    // shared set; it was left here for us.
+    conc_host_own_timer_fired(n)
+    true
+  } else if !pending && n.host_timer == 0 {
+    false
+  } else {
+    // With host waiters pending and no timer yet, the earliest sleeper gets a
+    // timer in the same set: 1 = its delay was already over, a timer id =
+    // started, so the group wakes at whichever comes first; -1 = no timer
+    // support, and the sleep debt settles as before once the host waits are
+    // done.
+    let arm = if pending && ready < 0 && n.host_timer == 0 && sleepers > 0 {
+      __conc_host_sleep_arm(min_left)
+    } else {
+      0 - 1
+    }
+    if arm >= conc_timer_band_base() {
+      n.host_timer = arm
+      n.host_timer_ms = min_left
+      conc_host_cover_sleepers(n)
+    } else {
+      ()
+    }
+    conc_host_settle_one(n, ready, arm, min_left)
+  }
+}
+
+fn conc_host_settle_one[rg, e](n: TaskGroup[rg, e], ready: Int, arm: Int, min_left: Int) -> Bool {
+  if arm == 1 {
+    conc_host_sleep_elapsed(n, min_left)
+    true
+  } else {
+    let fired = if ready >= 0 {
+      ready
+    } else {
+      __conc_host_wait_any()
+    }
+    if fired >= conc_timer_band_base() {
+      if fired == n.host_timer {
+        conc_host_own_timer_fired(n)
+      } else {
+        // Another group's timer (this group runs inside one of its tasks):
+        // leave it for its owner rather than debiting sleepers it never
+        // covered (Codex on #3059).
+        Array::push(conc_host_fired_timers, fired)
+      }
+      true
+    } else {
+      conc_host_resume(n, fired)
+    }
+  }
+}
+
+/// #1537: this group's timer fired: the sleepers it covered advance by what
+/// it waited. One that began sleeping after the arm keeps its whole debt --
+/// debiting it the armed duration would end its sleep early (Codex on #3059);
+/// the next round arms a timer for it.
+fn conc_host_own_timer_fired[rg, e](n: TaskGroup[rg, e]) -> Unit {
+  let elapsed = n.host_timer_ms
+  n.host_timer = 0
+  n.host_timer_ms = 0
+  conc_host_covered_elapsed(n, elapsed)
+}
+
+/// #1537: remove `timer` from the fired mailbox; false when it is not there.
+fn conc_host_take_fired_timer(timer: Int) -> Bool {
+  let mut found = false
+  let mut k = 0
+  while k < Array::length(conc_host_fired_timers) {
+    if !found && Array::get(conc_host_fired_timers, k) == timer {
+      found = true
+      let last = Array::length(conc_host_fired_timers) - 1
+      Array::set(conc_host_fired_timers, k, Array::get(conc_host_fired_timers, last))
+      Array::truncate(conc_host_fired_timers, last)
+    } else {
+      k = k + 1
+    }
+  }
+  found
+}
+
+/// #1537: mark every current sleeper as covered by the timer just armed.
+fn conc_host_cover_sleepers[rg, e](n: TaskGroup[rg, e]) -> Unit {
+  let mut j = 0
+  while j < Array::length(n.adopted) {
+    let c = Array::get(n.adopted, j)
+    c.timer_covered = c.status == 5 && c.sleep_left > 0
+    j = j + 1
+  }
+}
+
+/// #1537: the armed timer fired after `ms`: debit only the sleepers it
+/// covered, and clear the marks.
+fn conc_host_covered_elapsed[rg, e](n: TaskGroup[rg, e], ms: Int) -> Unit {
+  let mut j = 0
+  while j < Array::length(n.adopted) {
+    let c = Array::get(n.adopted, j)
+    if c.timer_covered && c.status == 5 && c.sleep_left > 0 {
+      c.sleep_left = if c.sleep_left > ms {
+        c.sleep_left - ms
+      } else {
+        0
+      }
+    } else {
+      ()
+    }
+    c.timer_covered = false
+    j = j + 1
+  }
+}
+
+/// #1537: `ms` of sleep has passed while the group waited on the host.
+fn conc_host_sleep_elapsed[rg, e](n: TaskGroup[rg, e], ms: Int) -> Unit {
+  let mut j = 0
+  while j < Array::length(n.adopted) {
+    let c = Array::get(n.adopted, j)
+    if c.status == 5 && c.sleep_left > 0 {
+      c.sleep_left = if c.sleep_left > ms {
+        c.sleep_left - ms
+      } else {
+        0
+      }
+    } else {
+      ()
+    }
+    j = j + 1
+  }
+}
+
+/// #1537: a cancelled task was the last one parked on the host waitable
+/// `waited` (a payload, -1 = none). Nobody will take its result, so the read
+/// is cancelled and the handle released now -- a future's, or a stream's,
+/// which no other task can capture; left pending, every such cancellation
+/// would hold an adapter handle for the rest of the run (Codex on #3059).
+/// Another task still parked on the same future keeps it.
+fn conc_host_release_orphan[rg, e](n: TaskGroup[rg, e], waited: Int, serial: Int) -> Unit {
+  let li = conc_host_landed_index(serial)
+  if li >= 0 {
+    // Its value already landed in the mailbox (another group took it and
+    // released the handle): drop this task's entry. Nothing is left to
+    // cancel, and the handle is no longer this task's to reason about.
+    conc_host_landed_remove(li)
+  } else if waited >= 0 {
+    // Any group's task still parked on it keeps it -- including a task of an
+    // enclosing group that captured the same future (Codex on #3091).
+    if conc_host_waiters_on(waited) > 0 {
+      ()
+    } else {
+      conc_host_release(waited)
+    }
+  } else {
+    ()
+  }
+}
+
+/// #1537 (Codex on #3091): the future cell a task parked on. A released read
+/// frees its handle -- a WIT result slot or a canonical waitable -- and the
+/// next call may be given the same one, so a cell still naming it would read
+/// that call's value. `__aw_pay` notes the cell it is about to suspend on
+/// (`__aw_note`), the park records it, and the release POISONS it: a later
+/// await of that future traps instead of reading whatever reused the handle.
+let conc_aw_noted: Array[Array[Int]] = []
+
+let conc_host_cells: Array[Array[Int]] = []
+
+/// Called by the synthesized `__aw_pay` right before a host-future park.
+export fn __aw_note(f: Array[Int]) -> Int {
+  Array::truncate(conc_aw_noted, 0)
+  Array::push(conc_aw_noted, f)
+  0
+}
+
+/// #2066 (Codex on #3091): a host stream cell used by a task -- read or
+/// closed, through `__conc_stream_claim` -- is stamped with that task's
+/// serial (slot 2), and a use by any other task traps.
+/// The capture check refuses sharing a stream it can see; a closure a helper
+/// returned hides it, and two readers of one stream would split or duplicate
+/// its bytes. Keyed by the CELL, so a stream handle reused by a later stream
+/// starts clean.
+fn conc_host_claim_stream(f: Array[Int], serial: Int) -> Unit {
+  if Array::length(f) >= 3 {
+    if Array::get(f, 2) != serial {
+      abort("vibe: a host stream is read by two tasks; give it one owner")
+    } else {
+      ()
+    }
+  } else {
+    Array::push(f, serial)
+  }
+}
+
+/// #2066 (Codex on #3091): a stream operation that does not park -- a close
+/// -- claims the cell for the running task directly. A reader and a closer
+/// handed out by one helper would otherwise let another task drop the stream
+/// under its reader, which then saw a silent end of stream. Code running
+/// outside every task -- a `TaskGroup::run` body, the entry itself -- is one
+/// owner too, serial 0 (task serials start at 1), so a group body cannot close
+/// a stream a child claimed (Codex on #3091).
+export fn __conc_stream_claim(f: Array[Int]) -> Int {
+  let depth = Array::length(conc_running_stack)
+  let owner = if depth > 0 {
+    Array::get(conc_running_stack, depth - 1).serial
+  } else {
+    0
+  }
+  conc_host_claim_stream(f, owner)
+  0
+}
+
+fn conc_host_record_cell(payload: Int) -> Unit {
+  if Array::length(conc_aw_noted) > 0 {
+    let f = Array::get(conc_aw_noted, 0)
+    Array::truncate(conc_aw_noted, 0)
+    if Array::get(f, 0) == 2 && Array::get(f, 1) + 2 == payload {
+      // Settled cells are done with their handle; keep only the live ones.
+      let live: Array[Array[Int]] = []
+      let mut i = 0
+      while i < Array::length(conc_host_cells) {
+        let c = Array::get(conc_host_cells, i)
+        if Array::get(c, 0) == 2 {
+          Array::push(live, c)
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      Array::truncate(conc_host_cells, 0)
+      let mut k = 0
+      while k < Array::length(live) {
+        Array::push(conc_host_cells, Array::get(live, k))
+        k = k + 1
+      }
+      Array::push(conc_host_cells, f)
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+}
+
+/// Release a host read nobody waits on any more, poisoning every recorded
+/// cell that still names it (state 9: `__aw_pay` traps on it).
+fn conc_host_release(waited: Int) -> Unit {
+  let _ = __conc_host_cancel(waited)
+  let mut i = 0
+  while i < Array::length(conc_host_cells) {
+    let c = Array::get(conc_host_cells, i)
+    if Array::get(c, 0) == 2 && Array::get(c, 1) + 2 == waited {
+      Array::set(c, 0, 9)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
+let conc_cell_serial_ctr: Array[Int] = [0]
+
+fn conc_next_cell_serial() -> Int {
+  Array::set(conc_cell_serial_ctr, 0, Array::get(conc_cell_serial_ctr, 0) + 1)
+  Array::get(conc_cell_serial_ctr, 0)
+}
+
+/// #1537: record a task that just parked on a host waitable, dropping stale
+/// entries first -- and this cell's own earlier entry, which looks live again
+/// once the same task parks a second time (Codex on #3091) -- so every cell is
+/// listed at most once.
+fn conc_host_register_parked(cell: TaskCell) -> Unit {
+  let live: Array[TaskCell] = []
+  let mut i = 0
+  while i < Array::length(conc_host_parked) {
+    let c = Array::get(conc_host_parked, i)
+    if c.status == 5 && c.host_wait >= 0 && c.serial != cell.serial {
+      Array::push(live, c)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  Array::truncate(conc_host_parked, 0)
+  let mut k = 0
+  while k < Array::length(live) {
+    Array::push(conc_host_parked, Array::get(live, k))
+    k = k + 1
+  }
+  Array::push(conc_host_parked, cell)
+}
+
+/// #1537: how many tasks, in any group, are parked on `waitable` right now.
+/// A task whose value already landed in the mailbox is not: it waits on the
+/// released handle's OLD future, which a reused handle no longer names.
+fn conc_host_waiters_on(waitable: Int) -> Int {
+  let mut count = 0
+  let mut i = 0
+  while i < Array::length(conc_host_parked) {
+    let c = Array::get(conc_host_parked, i)
+    if c.status == 5 && c.host_wait == waitable && conc_host_landed_index(c.serial) < 0 {
+      count = count + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  count
+}
+
+fn conc_host_landed_remove(li: Int) -> Unit {
+  let last = Array::length(conc_host_landed_keys) - 1
+  Array::set(conc_host_landed_keys, li, Array::get(conc_host_landed_keys, last))
+  Array::set(conc_host_landed_vals, li, Array::get(conc_host_landed_vals, last))
+  Array::truncate(conc_host_landed_keys, last)
+  Array::truncate(conc_host_landed_vals, last)
+}
+
+/// #1537: the mailbox entry of the task with cell serial `serial`, or -1.
+fn conc_host_landed_index(serial: Int) -> Int {
+  let mut found = 0 - 1
+  let mut i = 0
+  while i < Array::length(conc_host_landed_keys) {
+    if found < 0 && Array::get(conc_host_landed_keys, i) == serial {
+      found = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// #1537: does one of this group's parked tasks have a value in the mailbox?
+fn conc_host_local_landed[rg, e](n: TaskGroup[rg, e]) -> Bool {
+  let mut found = false
+  if Array::length(conc_host_landed_keys) > 0 {
+    let mut i = 0
+    while i < Array::length(n.adopted) {
+      let c = Array::get(n.adopted, i)
+      if !found && c.status == 5 && conc_host_landed_index(c.serial) >= 0 {
+        found = true
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+  } else {
+    ()
+  }
+  found
+}
+
+/// #1537: resume every task of this group whose value another group took,
+/// each with its own entry, which it consumes.
+fn conc_host_resume_landed[rg, e](n: TaskGroup[rg, e]) -> Unit {
+  // Collected (and their entries consumed) before any resumes: a resumed
+  // task may park again, and must not be matched to its old entry.
+  let woken: Array[TaskCell] = []
+  let vals: Array[Int] = []
+  let mut j = 0
+  while j < Array::length(n.adopted) {
+    let c = Array::get(n.adopted, j)
+    let li = if c.status == 5 {
+      conc_host_landed_index(c.serial)
+    } else {
+      0 - 1
+    }
+    if li >= 0 {
+      Array::push(vals, Array::get(conc_host_landed_vals, li))
+      conc_host_landed_remove(li)
+      c.host_wait = 0 - 1
+      Array::push(woken, c)
+    } else {
+      ()
+    }
+    j = j + 1
+  }
+  let mut w = 0
+  while w < Array::length(woken) {
+    let c = Array::get(woken, w)
+    let v = Array::get(vals, w)
+    match c.cont {
+      Some(k) => {
+        c.cont = None
+        k(v)
+      },
+      None => ()
+    }
+    w = w + 1
+  }
+}
+
+/// #1537: resume every task parked on the host waitable `fired`.
+fn conc_host_resume[rg, e](n: TaskGroup[rg, e], fired: Int) -> Bool {
+  let total = Array::length(n.adopted)
+  // Several tasks may await the SAME future: the value is taken once (the
+  // readable end is released) and every task parked on that handle
+  // resumes with it. The matching cells are collected before any resumes,
+  // since a resumed task may park again (Codex on #3059).
+  let woken: Array[TaskCell] = []
+  let mut j = 0
+  while j < total {
+    let c = Array::get(n.adopted, j)
+    // A task with a mailbox entry waits on the released handle's OLD
+    // future; `fired` may be a reused handle naming a new one.
+    if c.status == 5 && c.host_wait == fired && conc_host_landed_index(c.serial) < 0 {
+      c.host_wait = 0 - 1
+      Array::push(woken, c)
+    } else {
+      ()
+    }
+    j = j + 1
+  }
+  if Array::length(woken) == 0 {
+    // Not this group's. When a task of an ENCLOSING group is parked on it
+    // (this group runs inside one of that group's tasks), it is left
+    // untaken -- taking it would release the value that task is waiting
+    // for. The adapter already recorded it as completed, so the owning
+    // group's next arm answers "ready" and takes it (Codex on #3059). When
+    // NO task anywhere waits on it, nobody will take it: release it here
+    // rather than hold its handle for the rest of the run (Codex on #3091).
+    if conc_host_waiters_on(fired) == 0 {
+      conc_host_release(fired)
+    } else {
+      ()
+    }
+    true
+  } else {
+    let v = __conc_host_take(fired)
+    // Tasks of ANOTHER group still parked on it (the woken cells above were
+    // already cleared): the value was taken once, so leave it for them
+    // instead of their group arming a released handle (Codex on #3091).
+    // One entry per such task, keyed by its serial rather than the handle
+    // just released (see conc_host_landed_keys).
+    let mut o = 0
+    while o < Array::length(conc_host_parked) {
+      let c = Array::get(conc_host_parked, o)
+      if c.status == 5 && c.host_wait == fired && conc_host_landed_index(c.serial) < 0 {
+        Array::push(conc_host_landed_keys, c.serial)
+        Array::push(conc_host_landed_vals, v)
+      } else {
+        ()
+      }
+      o = o + 1
+    }
+    let mut w = 0
+    while w < Array::length(woken) {
+      let c = Array::get(woken, w)
+      match c.cont {
+        Some(k) => {
+          c.cont = None
+          k(v)
+        },
+        None => ()
+      }
+      w = w + 1
+    }
+    true
+  }
+}
+
+//# Host-waitable hooks (#1537)
+
+// A task that awaits a host future parks on its handle. Waiting on SEVERAL
+// such handles at once needs the component adapter (its shared waitable set),
+// which exists only when the program's entry boundary settles host futures.
+// These are the defaults -- "no host waitables" -- and linked_compile replaces
+// their bodies with the adapter calls exactly when that boundary is built, so
+// a program without host futures imports nothing new.
+
+/// Arm the waitable a task parked on (its suspend payload: handle + 2 for a
+/// future, handle + 2048 for a stream read) for the next
+/// `__conc_host_wait_any`: 1 when its result is already there, 0 when it is
+/// now waiting in the set, -1 when this program has no host waitables (the
+/// task then parks as a poller, as before).
+export fn __conc_host_arm(waitable: Int) -> Int {
+  let _ = waitable
+  0 - 1
+}
+
+/// Start a timer of `ms` in the same set: its id (>= 4096, the timer band)
+/// when pending, 1 when already over, -1 when this program has no host
+/// waitables. `__conc_host_wait_any` answers its completion with that id.
+export fn __conc_host_sleep_arm(ms: Int) -> Int {
+  let _ = ms
+  0 - 1
+}
+
+/// A task group's timer (an id `__conc_host_sleep_arm` answered) is still
+/// pending, and nothing will wait for it: cancel it and release its subtask.
+/// -1 = this program has no host waitables.
+export fn __conc_host_sleep_cancel(timer: Int) -> Int {
+  let _ = timer
+  0 - 1
+}
+
+/// Nobody waits on `waitable` (a payload) any more: cancel its pending read
+/// and release the future or stream. -1 = this program has no host
+/// waitables.
+export fn __conc_host_cancel(waitable: Int) -> Int {
+  let _ = waitable
+  0 - 1
+}
+
+/// Block until one armed waitable completes; returns its payload.
+export fn __conc_host_wait_any() -> Int {
+  0 - 1
+}
+
+/// The result for `waitable` (a payload): a future's value, releasing its
+/// readable end, or a stream's next byte (-1 at its end).
+export fn __conc_host_take(waitable: Int) -> Int {
+  waitable
+}
+
+export fn TaskGroup::pump[rg, e](n: TaskGroup[rg, e]) -> Bool {
+  conc_settle_sleep_debt(n)
+  if conc_pump_once(n) {
+    true
+  } else if conc_settle_host_waits(n) {
+    true
+  } else if !n.direct_valve_used && conc_clear_direct_waits(n) {
+    // Nothing resumable but direct-parked waiters exist: open the
+    // fallback valve (once per progress epoch) and retry, so a missed
+    // completion notify degrades to ordinary polling instead of a
+    // deadlock verdict. If the rescued tasks are genuinely blocked they
+    // re-register and the NEXT false return stands as deadlock evidence.
+    n.direct_valve_used = true
+    conc_pump_once(n)
+  } else {
+    false
+  }
+}
+
+/// Pump until no adopted task is parked. Tasks that yield in a cycle
+/// against each other interleave deterministically (round-robin).
+export fn TaskGroup::pump_all[rg, e](n: TaskGroup[rg, e]) -> Unit {
+  conc_pump_rounds(n, [])
+  // The loop only exits when nothing is resumable. Pre-direct-wake that
+  // implied nothing was parked at all; now it can also mean only
+  // direct-parked waiters remain (their valve already spent) — nothing in
+  // this deterministic scheduler can ever wake them, so trap here exactly
+  // like the stalled-poller rule instead of returning with live tasks.
+  let mut di = 0
+  while di < Array::length(n.adopted) {
+    conc_require(Array::get(n.adopted, di).status != 5)
+    di = di + 1
+  }
+}
+
+/// #1537: pump until `target` settles (it is no longer parked), not until
+/// every task does -- TaskHandle::join's wait on a parked task. It also
+/// stops when a run-to-completion task is queued, which only join can
+/// dispatch (drive_one carries the group's row).
+fn conc_pump_until_settled[rg, e](n: TaskGroup[rg, e], target: TaskCell) -> Unit {
+  conc_pump_rounds(n, [target])
+}
+
+/// Pump rounds under the deadlock rules below, until nothing is resumable
+/// or, when `until` names a task, until that task is no longer parked.
+fn conc_pump_rounds[rg, e](n: TaskGroup[rg, e], until: Array[TaskCell]) -> Unit {
+  let mut go = true
+  let mut stall = 0
+  while go && (Array::length(until) == 0 || (Array::get(until, 0).status == 5 && !conc_has_ready(n))) {
+    let before = n.progress
+    go = TaskGroup::pump(n)
+    if go {
+      if n.progress == before && conc_all_parked_polling(n) {
+        stall = stall + 1
+      } else {
+        stall = 0
+      }
+      // A full round-robin sweep in which every parked task is a POLLER
+      // (Suspend(1) — waiting on an external condition) and zero progress
+      // was made can only repeat itself: the scheduler is deterministic
+      // and no wake can originate outside this loop — blocked-forever
+      // channel waits land here. Trap like every other deadlock
+      // (drive_one's rule) instead of livelocking. Cooperative YIELDS
+      // (Suspend(0)) never count: resuming one always advances its body,
+      // so a lone task yielding any number of times completes normally
+      // (an infinitely-yielding body is an ordinary infinite loop, not a
+      // deadlock).
+      //
+      // ADR-0089 D2 (#1218): one exception — a sweep is NOT deadlock
+      // evidence while some parked task still owes sleep time. A sleeper
+      // counts as a poller here (park_kind stores wait_poll = true for
+      // sleep debts), but pump skips it until its debt clears, so a
+      // poller waiting ON the sleeper (awaiting a future the sleeper
+      // resolves after its nap, recv_wait on a sleeping producer) spins
+      // without progress exactly like a real deadlock. Advance virtual
+      // time and retry; only a stalled sweep with NO sleeper traps.
+      //
+      // Second exception (direct-wake fallback valve): free pollers can
+      // stall while a DIRECT-parked waiter is stranded by a missed
+      // notify whose wake would unblock everything. Before concluding
+      // deadlock, clear the direct flags once per progress epoch and
+      // retry — genuinely blocked waiters re-register, so the next
+      // stalled sweep traps as before.
+      if stall > Array::length(n.adopted) {
+        if conc_force_settle_sleep_debt(n) {
+          stall = 0
+        } else if !n.direct_valve_used && conc_clear_direct_waits(n) {
+          n.direct_valve_used = true
+          stall = 0
+        } else {
+          conc_require(false)
+        }
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+  }
+}
+
+/// Every currently-parked adopted task is a poller (wait_poll). False when
+/// nothing is parked (vacuous sweeps must not accumulate stall).
+fn conc_all_parked_polling[rg, e](n: TaskGroup[rg, e]) -> Bool {
+  let mut any = false
+  let mut all = true
+  let mut i = 0
+  while i < Array::length(n.adopted) {
+    let c = Array::get(n.adopted, i)
+    if c.status == 5 {
+      any = true
+      if c.wait_poll {
+        ()
+      } else {
+        all = false
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  any && all
+}
+
+//# Blocking channel ops (suspend-based)
+
+// Channel blocking for SUSPENDABLE tasks (ADR-0076 追記31 closure-CPS の
+// 続きスライス): `with Async` の row を持つ send/recv。バッファに
+// 空きがない / メッセージがない間は `perform Async::Suspend(0)` で park
+// し、pump/pump_all のラウンドロビンで再開されるたびに再検査する
+// (suspend lowering は loop spine 非対応なので、リトライは自己再帰 —
+// 3b の再帰 clone がそのまま面倒を見る)。既存の stack-driving
+// `Sender::send` / `Receiver::recv` (drive_one でスタック上の他タスクを
+// 走らせる) とは独立で、どちらも同じ linearization (buf / pend /
+// pend_seq / pend_consumed) を共有する。
+
+/// Send for suspendable tasks. Buffered fast path; otherwise the message
+/// is DEPOSITED into `pend` first (the linearization point — rendezvous
+/// receivers and buffer promotion consume from there) and the task
+/// suspends until its own seq is consumed (FIFO).
+///
+/// THROWS `Closed` on a closed channel, matching `Sender::send` (#1324:
+/// was `Err(Closed)` in a `Result` return).
+///
+/// #1324 SUSPEND LANE: this function, `conc_send_wait_consumed` and
+/// `TaskHandle::result_wait` were the last three holdouts, kept on `Result`
+/// by two blockers that are both gone now.
+///
+/// 1. A `throw` inside a CPS-split callee never ran (the task settled with
+///    the step object as its value and the continuation was never resumed).
+///    FIXED in #1371, pinned by suspend_test.vibe's "CPS-split callee
+///    results" section.
+/// 2. These carry ENUM payloads (`Closed`, `Cancelled`) and the erased
+///    `with Exception` handler in the task runner funnels them through
+///    `fail_msg: String`. #1374 stopped that from reading as a raw pointer
+///    but recorded only the payload's TYPE, so `Closed` arrived as
+///    `<SendError>` and the VARIANT -- the thing a caller switches on --
+///    was gone. #1392 slice 3 renders the payload at the THROW site (the
+///    one place its static type is known) and carries the string, so it
+///    arrives as `Closed`.
+///
+/// What a suspendable CALLER can do with the exception is still narrower
+/// than on the stack-driving lane: a suspend-class closure literal cannot
+/// contain a `handle` (the CPS clone's eligibility rules), so inside a
+/// `spawn_suspend` body the throw can only PROPAGATE -- it fails that task
+/// and, through fail-fast, the group. Catching it means putting the
+/// `handle` around the `TaskGroup::run` call at the use site, where the
+/// payload arrives as the runner's `Failed(<rendered>)` rather than as the
+/// original `SendError`/`TaskError` value (#1374's remaining gap: the erased
+/// arm carries the variant's NAME, not a value to pattern-match).
+export fn Sender::send_wait[rg, e, T](s: Sender[rg, e, T], v: T) -> Unit with Exception[SendError] + Async {
+  let c = s.ch
+  if chan_closed(c) {
+    throw(Closed)
+  } else if c.capacity > 0 && c.buf.len < c.capacity && c.pend.len == 0 {
+    ring_push(c.buf, v)
+    conc_progress(c.group)
+    conc_chan_notify(c)
+  } else {
+    // The deposit itself can satisfy a direct-parked recv_wait, so
+    // notify before suspending on our own consumption.
+    ring_push(c.pend, v)
+    let myseq = c.pend_seq
+    c.pend_seq = c.pend_seq + 1
+    conc_chan_notify(c)
+    conc_send_wait_consumed(c, myseq)
+  }
+}
+
+/// Suspend until the deposited message (seq `myseq`) is consumed. A close
+/// while parked THROWS `Closed`, matching Sender::send's blocked branch.
+/// (#1324: suspend lane -- see Sender::send_wait's note.)
+fn conc_send_wait_consumed[rg, e, T](c: Channel[rg, e, T], myseq: Int) -> Unit with Exception[SendError] + Async {
+  if c.pend_consumed > myseq {
+    ()
+  } else if chan_closed(c) {
+    throw(Closed)
+  } else {
+    conc_chan_register(c)
+    let _w = perform Async::Suspend(1)
+    conc_send_wait_consumed(c, myseq)
+  }
+}
+
+/// Receive for suspendable tasks: Some(message) in linearization order
+/// (buffer first, then deposited/rendezvous messages), None once closed
+/// and drained; suspends while open and empty. Does NOT touch
+/// `waiting_recv` — that flag belongs to the stack-driving rendezvous
+/// protocol (a suspended receiver is not "committed below the sender on
+/// the stack"; deposits still reach it through `pend`).
+export fn Receiver::recv_wait[rg, e, T](rh: Receiver[rg, e, T]) -> Option[T] with Async {
+  let c = rh.ch
+  if c.buf.len > 0 {
+    let v = ring_take(c.buf)
+    if c.pend.len > 0 && c.capacity > 0 {
+      let p = ring_take(c.pend)
+      ring_push(c.buf, p)
+      c.pend_consumed = c.pend_consumed + 1
+    } else {
+      ()
+    }
+    conc_progress(c.group)
+    conc_chan_notify(c)
+    Some(v)
+  } else if c.pend.len > 0 {
+    let v = ring_take(c.pend)
+    c.pend_consumed = c.pend_consumed + 1
+    conc_progress(c.group)
+    conc_chan_notify(c)
+    Some(v)
+  } else if chan_closed(c) {
+    None
+  } else {
+    conc_chan_register(c)
+    let _w = perform Async::Suspend(1)
+    Receiver::recv_wait(rh)
+  }
+}
+
+/// Await a sibling task's outcome from INSIDE a suspendable task
+/// (ADR-0089 D2, #1218): polls the cell's terminal status, parking with
+/// the poll-wait reason otherwise (self-recursive retry, the
+/// conc_send_wait_consumed shape -- the suspend lowering has no loop
+/// spine). This is the suspendable-lane sibling of TaskHandle::join,
+/// which stack-drives ready tasks and therefore cannot run inside a
+/// parked task -- and the concrete library form of Decision 2's "a task
+/// handle IS a future": the (cell, result) pair is the reified pending
+/// value, `result_wait` is its await, and the scheduler completes it in
+/// completion order. Awaiting a sibling that only finishes after a sleep
+/// works because pump_all force-settles sleep debts once the resumable
+/// pollers stop progressing (conc_force_settle_sleep_debt). Terminal
+/// outcomes are stable, so awaiting again returns the same value; a
+/// cancelled sibling THROWS `Cancelled` (#1324: was `Err(Cancelled)`).
+/// NOTE fail-fast: a sibling FAILURE usually cancels this parked awaiter
+/// before it can observe `Failed` -- the group result carries the failure
+/// instead.
+///
+/// #1324: this now matches `TaskHandle::join`, with one consequence worth
+/// stating outright -- an awaiter can no longer BRANCH on the outcome. A
+/// suspend-class closure literal cannot contain a `handle`, so a cancelled
+/// or failed sibling propagates and fails the awaiting task too. That is
+/// the intended semantics (cancellation is not something to swallow
+/// silently), but it is a real behavior change from the `Result` form; see
+/// Sender::send_wait's note for the full picture.
+export fn TaskHandle::result_wait[rg, e, T](h: TaskHandle[rg, e, T]) -> T with Exception[TaskError] + Async {
+  let s = h.cell.status
+  if s == 2 {
+    match h.result.value {
+      Some(v) => v,
+      None => throw(Failed("concurrent: missing result"))
+    }
+  } else if s == 3 {
+    throw(Failed(h.cell.fail_msg))
+  } else if s == 4 {
+    throw(Cancelled)
+  } else {
+    conc_result_register(h)
+    let _w = perform Async::Suspend(1)
+    TaskHandle::result_wait(h)
+  }
+}
+
+//# Builtin-future await hooks (ADR-0089 #1218 — resolve -> direct wake)
+
+// `await(f)` on a builtin `Future[T]` is compiler-lowered (the synthesized
+// `__aw_poll` loop, inline_direct_perform.vibe). When a program links this
+// library, the compiler routes each poll round through `__aw_wait` below
+// instead of a bare `perform Async::Suspend(1)`, and appends an
+// `__aw_notify_resolve` call to every `Future::resolve` lowering — so an
+// in-task awaiter of a pending future parks direct-wake (skipped by the
+// pump) and the resolve wakes it, instead of the O(rounds x awaiters)
+// re-poll churn. Both hooks are auto-linked by the linked-compile lane
+// whenever a program imports ANYTHING from a file exporting them (the
+// user never imports these magic names by hand).
+
+/// One poll round of an `await` on a pending future cell: register the
+/// currently running task (if any) as a direct-wake waiter of `f`, then
+/// suspend with the ordinary poll-wait reason. Outside any task leg the
+/// registration is a no-op and this IS the old bare perform — entry-level
+/// awaits keep their boundary behavior (deadlock trap on a never-resolved
+/// cell) unchanged.
+export fn __aw_wait(f: Array[Int]) -> Int with Async {
+  conc_await_register(f)
+  perform Async::Suspend(1)
+}
+
+/// A `Future::resolve(f, v)` ran (the lowering calls this AFTER writing
+/// payload+state): make every waiter registered on `f` resumable again.
+/// Missing registrations (resolve compiled in a unit without the hooks)
+/// are covered by the pump's fallback valve, so this is an optimization
+/// channel, never a correctness dependency.
+export fn __aw_notify_resolve(f: Array[Int]) -> Unit {
+  if Array::length(f) >= 3 {
+    let id = Array::get(f, 2)
+    let n = Array::length(conc_fut_waiter_ids)
+    let mut w = 0
+    let mut i = 0
+    while i < n {
+      let wid = Array::get(conc_fut_waiter_ids, i)
+      let c = Array::get(conc_fut_waiter_cells, i)
+      if wid == id {
+        // Woken: clear the flag, drop the entry.
+        c.direct_wait = false
+      } else if c.status == 2 || c.status == 3 || c.status == 4 {
+        // Terminal waiter (completed/cancelled elsewhere): sweep the
+        // stale entry so a never-resolved future cannot pin it forever.
+        ()
+      } else {
+        Array::set(conc_fut_waiter_ids, w, wid)
+        Array::set(conc_fut_waiter_cells, w, c)
+        w = w + 1
+      }
+      i = i + 1
+    }
+    Array::truncate(conc_fut_waiter_ids, w)
+    Array::truncate(conc_fut_waiter_cells, w)
+  } else {
+    ()
+  }
+}
+
+/// Registration half of __aw_wait: assign the cell a registry id in slot 2
+/// (awaits only read slots 0/1; Future::resolve only writes them) and file
+/// (id, running task) into the parallel-array registry.
+fn conc_await_register(f: Array[Int]) -> Unit {
+  let depth = Array::length(conc_running_stack)
+  if depth > 0 {
+    let me = Array::get(conc_running_stack, depth - 1)
+    if Array::length(f) < 3 {
+      Array::set(conc_fut_id_ctr, 0, Array::get(conc_fut_id_ctr, 0) + 1)
+      Array::push(f, Array::get(conc_fut_id_ctr, 0))
+    } else {
+      ()
+    }
+    Array::push(conc_fut_waiter_ids, Array::get(f, 2))
+    Array::push(conc_fut_waiter_cells, me)
+    me.direct_wait = true
+  } else {
+    ()
+  }
+}

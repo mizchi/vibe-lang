@@ -1,0 +1,56 @@
+// #3167 review: a local rowless lambda that performs, shadowing a pure
+// top-level fn of the same spelling. The evidence pass keys its inert set by
+// spelling, so the local `side` could be read as the pure top-level one; the
+// inner handle would then look dead and could be erased, and the answer
+// would come from the outer arm instead. These are the two shapes in which
+// the checker admits such a lambda at all -- its perform discharged by an
+// enclosing handle, or by the enclosing fn's row -- and both must answer from
+// the INNER handler: 42 + 1, never 7 + 1.
+
+effect Ask {
+  Get() -> Int
+}
+
+fn side(n: Int) -> Int {
+  n
+}
+
+test "a shadowing local lambda's perform reaches the inner handler" {
+  let r = handle {
+    let side = (n: Int) -> Int {
+      perform Ask::Get() + n
+    }
+    handle {
+      side(1)
+    } with {
+      Ask::Get() => resume(42)
+    }
+  } with {
+    Ask::Get() => resume(7)
+  }
+  inspect(r, "43")
+}
+
+fn inner_handled() -> Int with Ask {
+  let side = (n: Int) -> Int {
+    perform Ask::Get() + n
+  }
+  handle {
+    side(1)
+  } with {
+    Ask::Get() => resume(42)
+  }
+}
+
+test "inside a fn whose row discharges it, the inner handler still answers" {
+  let r = handle {
+    inner_handled()
+  } with {
+    Ask::Get() => resume(7)
+  }
+  inspect(r, "43")
+}
+
+test "the top-level fn of that spelling is still pure" {
+  inspect(side(5), "5")
+}

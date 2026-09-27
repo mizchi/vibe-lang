@@ -406,7 +406,7 @@ needs no needle span verified through `str_eq` — not SIMD.
 **`String` routes through the same window search.** `String::index_of` /
 `equals` / `starts_with` / `ends_with` / `split` are SIMD builtins (ADR-0054);
 `String::count` / `replace` / `replace_all` are library functions in
-`@vibe/builtin` and reach that search through `string_index_of_from`, which is
+`@vibe/builtin` and reach that search through `String::index_of_from`, which is
 one `String::index_of` call over a suffix.
 
 Seeding that call costs nothing, because `String::substring` does not copy: on

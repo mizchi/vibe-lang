@@ -138,13 +138,12 @@ handle された本体の各呼び出しについて、コンパイラはその�
 perform するか分かる必要があります。
 
 ほとんどの呼び出しは見えます — トップレベルの `fn`、組み込み、束縛や引数が
-effect row を持つクロージャ、そして handle された本体の中に書かれた
-クロージャ。見えないのは、**row を持たず本体の外で束縛された**クロージャ
-です。見に行く定義も、読む row もありません。型検査は通り、それでも
-拒否されます。
+effect row を持つクロージャ、handle された本体の中に書かれたクロージャ、
+そして本体が純粋な計算だけの、row を持たず外で束縛されたクロージャ。
+下の `bump` は何も perform しません。perform は handle の中に書かれた
+`ask_once()` なので、handle はそれを見ます。
 
-```vibe skip
-// skip: 拒否される形。出る診断を見せるための例
+```vibe run
 effect Ask {
   Once() -> Int
 }
@@ -153,26 +152,23 @@ fn ask_once() -> Int with Ask {
   perform Ask::Once()
 }
 
-fn main() -> Int {
+fn main allows Console {
   let bump = (x: Int) -> Int { x + 1 }
-  handle { bump(ask_once()) } with {
+  let n = handle { bump(ask_once()) } with {
     Ask::Once() => resume(41)
   }
+  println("\{n}")
 }
 ```
 
-```
-handle of effect 'Ask' cannot be compiled here: this handle cannot see what
-one call in its body performs (here: the call to 'bump'). Make that call
-visible -- declare 'bump' as a top-level `fn`, give the binding or parameter
-it arrives through an effect row (`with Ask`), or move its `let` inside the
-handled body. Moving the `handle` into the function that performs works too.
-(ADR-0076 evidence-passing migration.)
+```output
+42
 ```
 
-メッセージは4つの直し方を挙げ、どれか一つで直ります。ここで一番小さいのは
-`bump` をトップレベルの `fn` にすること。末尾の ADR 参照はメンテナ向けの
-注記で、読者に宛てられているのは4つの直し方の部分です。
+まだ見えないのは、見える本体が無い呼び出しです。即座に適用するクロージャや、
+本体自身が perform する、あるいはこの判定が名前を追えない呼び出しをする
+ラムダです。そのプログラムは型検査を通り、それでも拒否されます。診断は
+直し方を述べ、コンパイラのパス名は出しません。
 
 ## handle しないエフェクト: ケーパビリティ
 

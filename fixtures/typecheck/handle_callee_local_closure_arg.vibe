@@ -4,9 +4,10 @@ effect Ask { Get() -> Int }
 
 fn ask_once() -> Int with Ask { perform Ask::Get() }
 
-// The callee is a rowless LOCAL CLOSURE bound outside the handled body, which
-// is the shape the eligibility judgement rejects (ADR-0076's effect-lowering
-// prelude): nothing in scope tells it whether calling `bump` performs `Ask`.
+// The callee is a rowless local closure bound outside the handled body whose
+// body this pass cannot see: an immediately-applied lambda. A visibly pure
+// body (`n + 1`) compiles on the entry lane too (#3124). This one does not,
+// so the entry lane still rejects and the no-entry lane still never asks.
 //
 // It is recorded here as `ok` for the `__no_entry__` lane and `reject` for the
 // entry lane (fixtures/typecheck/expected.tsv columns 4-5), because that is
@@ -36,6 +37,6 @@ fn ask_once() -> Int with Ask { perform Ask::Get() }
 // rejected one produces -- is pinned by
 // lib/@vibe/compiler/tests/handle_eligibility_diagnostic_test.vibe (#2137).
 fn main() -> Unit {
-  let bump = (n: Int) -> Int { n + 1 }
+  let bump = (n: Int) -> Int { ((y: Int) -> Int { y })(n) }
   let _ = handle { bump(ask_once()) } with { Ask::Get() => resume(1) }
 }

@@ -81,6 +81,7 @@ import @vibe/compiler/runtime/checked_module_cache {
 
 import @vibe/compiler/core {
   BindingOrigin,
+  EnvValueBinding,
   Expr,
   Stmt,
   Type,
@@ -668,18 +669,343 @@ fn type_returns_name(ty: Type, type_name: String) -> Bool {
 /// explicitly publishes it. This predicate is deliberately used solely while
 /// constructing that published surface; import validation below never falls
 /// back to builtin, registry, or effect-name recognition.
-fn is_selected_type_companion(name: String, ty: Type, type_surface: Array[String]) -> Bool {
+///
+/// In a package contract (`strict`, see `checked_module_public_env_for_path`),
+/// a type brought in from ANOTHER module (a re-export; the binding's origin
+/// names that module) carries its constructors and the names its defining
+/// module marked as members -- the methods of its impls and of its derives
+/// (`local_type_member_markers`) -- and nothing else that shares its prefix or
+/// returns it: those are published by declaring them. A signature is not
+/// provenance, so a method is never recognized as derived by its shape.
+/// Without this, a contract re-exporting a subset of a package --
+/// `@vibe/concurrent` over `@vibe/concurrent/experimental` -- published the
+/// rest too: listing `TaskGroup` / `TaskHandle` carried
+/// `TaskGroup::spawn_suspend` (by prefix) and `TaskGroup::adopt` (it returns
+/// `TaskHandle`) past a contract that declares neither. Every other module,
+/// and a type declared in the publishing module, keeps the older rule, which
+/// is how derived methods that no export list names reach an importer.
+///
+/// A member marker itself travels with its type, in every module.
+fn is_selected_type_companion(name: String, binding: EnvValueBinding, type_surface: Array[String], all_defs: Array[TypeDef], members: Array[String], strict: Bool) -> Bool {
+  let marker_prefix = type_member_marker("")
+  if String::starts_with(name, marker_prefix) {
+    let member_name = String::substring(name, String::length(marker_prefix), String::length(name))
+    let sep = String::index_of(member_name, "::")
+    return sep > 0 && contains_str(type_surface, String::substring(member_name, 0, sep))
+  }
+  let foreign = strict && (match binding.origin {
+    BindingOriginUnavailable => false,
+    _ => true
+  })
+  let qualified = String::index_of(name, "::") >= 0
   let mut i = 0
   let mut selected = false
   while i < Array::length(type_surface) && !selected {
     let type_name = Array::get(type_surface, i)
-    if name == type_name || String::starts_with(name, String::concat(type_name, "::")) || type_returns_name(ty, type_name) {
+    let own = String::concat(type_name, "::")
+    let member = if String::starts_with(name, own) {
+      String::substring(name, String::length(own), String::length(name))
+    } else {
+      ""
+    }
+    let keep = if name == type_name {
+      true
+    } else if !foreign {
+      String::starts_with(name, own) || type_returns_name(binding.ty, type_name)
+    } else if !qualified {
+      // An unqualified foreign companion is a bare constructor or nothing:
+      // `make_t() -> T` imported beside `T` is not published by listing `T`
+      // (Codex on #3172).
+      type_returns_name(binding.ty, type_name) && is_enum_variant_of(all_defs, type_name, name)
+    } else {
+      // A re-export under another name (`struct Ver as PublicVer`) renames the
+      // companion and its marker; the source spelling is also accepted, since
+      // an alias can reach a module whose markers still name the source.
+      let source = alias_source_head(all_defs, type_name)
+      let source_name = String::concat(source, String::concat("::", member))
+      String::length(member) > 0 && (is_enum_variant_of(all_defs, type_name, member) || contains_str(members, name) || contains_str(members, source_name))
+    }
+    if keep {
       selected = true
     } else {
       i = i + 1
     }
   }
   selected
+}
+
+/// The marker a module publishes beside each qualified binding that belongs to
+/// a type rather than being a free function spelled under it: a method of an
+/// impl for that type (supertrait methods included) and a method a `derive`
+/// binds. `fn T::helper` gets none. The marker travels with the type: the
+/// import projection renames it with the companion
+/// (`bind_enum_constructor_companions`), and a package contract re-exporting
+/// `T` from another module publishes exactly the `T::*` names that carry one.
+/// It is computed where the impl and the derive are visible -- the defining
+/// module -- because the projection into a facade keeps a trait's definition
+/// and impls only when the facade selects that trait, so by the time a
+/// contract publishes, the impl table no longer holds them (Codex on #3172).
+fn type_member_marker(name: String) -> String {
+  String::concat("#type-member:", name)
+}
+
+/// The names a module's own impls and derives bind under a type, as markers.
+/// An impl method is read from the environment's impl table, following
+/// supertraits, since the impl names its trait and the trait its methods. A
+/// derived method has no declaration in the source, so it is a qualified
+/// binding under a type this module declares WITH a derive list that no
+/// statement declares. Anything else under `T::` is a free function.
+fn local_type_member_markers(stmts: Array[Stmt], env: TypeEnv) -> Array[String] {
+  let declared = array_empty()
+  let deriving = array_empty()
+  let mut si = 0
+  while si < Array::length(stmts) {
+    match Array::get(stmts, si) {
+      SLet(_, _, name, _, _) => Array::push(declared, name),
+      SFnDecl(_, name, _, _, _) => Array::push(declared, name),
+      SExternLet(name, _) => Array::push(declared, name),
+      SStruct(_, name, _, derives, _, _) => if Array::length(derives) > 0 {
+        Array::push(deriving, name)
+      },
+      SEnum(_, name, _, _, derives) => if Array::length(derives) > 0 {
+        Array::push(deriving, name)
+      },
+      _ => ()
+    }
+    si = si + 1
+  }
+  let traits = array_empty()
+  let impls = array_empty()
+  let locals = array_empty()
+  let mut cur = env
+  let mut going = true
+  while going {
+    match cur {
+      EnvEmpty => going = false,
+      EnvBind(name, binding, rest) => {
+        match binding.origin {
+          BindingOriginUnavailable => Array::push(locals, name),
+          _ => ()
+        }
+        cur = rest
+      },
+      EnvMutCell(_, _, rest) => cur = rest,
+      EnvTraitDef(tname, supers, _, methods, rest, _, _) => {
+        Array::push(traits, (trait_ref_name(tname), supers, methods))
+        cur = rest
+      },
+      // An impl of a parameterized trait is keyed by the applied reference
+      // (`Value[Int]`); its definition by the bare name.
+      EnvTraitImpl(tname, target, rest) => {
+        Array::push(impls, (trait_ref_name(tname), type_head_name(target)))
+        cur = rest
+      },
+      EnvTraitImplGen(tname, _, _, target, rest) => {
+        Array::push(impls, (trait_ref_name(tname), type_head_name(target)))
+        cur = rest
+      },
+      EnvTypeDefs(_, _, rest) => cur = rest,
+      EnvFlat(bindings) => {
+        let mut fi = 0
+        while fi < Array::length(bindings) {
+          let (name, binding) = Array::get(bindings, fi)
+          match binding.origin {
+            BindingOriginUnavailable => Array::push(locals, name),
+            _ => ()
+          }
+          fi = fi + 1
+        }
+        going = false
+      },
+      EnvCached(_, _, rest) => cur = rest
+    }
+  }
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(impls) {
+    let (tname, head) = Array::get(impls, i)
+    if String::length(head) > 0 {
+      // The impl's trait and, transitively, its supertraits: an impl may
+      // define an inherited method (`formal_field_access_test.vibe`).
+      let pending = array_empty()
+      Array::push(pending, tname)
+      let visited = array_empty()
+      let mut w = 0
+      while w < Array::length(pending) {
+        let t = Array::get(pending, w)
+        w = w + 1
+        if !contains_str(visited, t) {
+          Array::push(visited, t)
+          let mut k = 0
+          while k < Array::length(traits) {
+            let (dname, supers, methods) = Array::get(traits, k)
+            if dname == t {
+              let mut m = 0
+              while m < Array::length(methods) {
+                let (mname, _, _) = Array::get(methods, m)
+                let marker = type_member_marker(String::concat(head, String::concat("::", mname)))
+                if !contains_str(out, marker) {
+                  Array::push(out, marker)
+                }
+                m = m + 1
+              }
+              let mut u = 0
+              while u < Array::length(supers) {
+                Array::push(pending, trait_ref_name(Array::get(supers, u)))
+                u = u + 1
+              }
+            }
+            k = k + 1
+          }
+        }
+      }
+    }
+    i = i + 1
+  }
+  let mut li = 0
+  while li < Array::length(locals) {
+    let name = Array::get(locals, li)
+    let sep = String::index_of(name, "::")
+    if sep > 0 && contains_str(deriving, String::substring(name, 0, sep)) && !contains_str(declared, name) {
+      let marker = type_member_marker(name)
+      if !contains_str(out, marker) {
+        Array::push(out, marker)
+      }
+    }
+    li = li + 1
+  }
+  out
+}
+
+fn bind_type_member_markers(env: TypeEnv, markers: Array[String]) -> TypeEnv {
+  let mut acc = env
+  let mut i = 0
+  while i < Array::length(markers) {
+    acc = env_bind(acc, Array::get(markers, i), CtUnit)
+    i = i + 1
+  }
+  acc
+}
+
+/// The `T::m` names the markers in an environment speak for.
+fn env_type_member_names(env: TypeEnv) -> Array[String] {
+  let prefix = type_member_marker("")
+  let plen = String::length(prefix)
+  let out = array_empty()
+  let mut cur = env
+  let mut going = true
+  while going {
+    match cur {
+      EnvEmpty => going = false,
+      EnvBind(name, _, rest) => {
+        if String::starts_with(name, prefix) {
+          Array::push(out, String::substring(name, plen, String::length(name)))
+        }
+        cur = rest
+      },
+      EnvMutCell(_, _, rest) => cur = rest,
+      EnvTraitDef(_, _, _, _, rest, _, _) => cur = rest,
+      EnvTraitImpl(_, _, rest) => cur = rest,
+      EnvTraitImplGen(_, _, _, _, rest) => cur = rest,
+      EnvTypeDefs(_, _, rest) => cur = rest,
+      EnvFlat(bindings) => {
+        let mut fi = 0
+        while fi < Array::length(bindings) {
+          let (name, _) = Array::get(bindings, fi)
+          if String::starts_with(name, prefix) {
+            Array::push(out, String::substring(name, plen, String::length(name)))
+          }
+          fi = fi + 1
+        }
+        going = false
+      },
+      EnvCached(_, _, rest) => cur = rest
+    }
+  }
+  out
+}
+
+/// The type a name stands for once type aliases are followed (`PublicVer` for
+/// `Ver` after `struct Ver as PublicVer`); the name itself when it is no alias.
+fn alias_source_head(defs: Array[TypeDef], name: String) -> String {
+  let mut target = name
+  let mut fuel = 8
+  let mut going = true
+  while going && fuel > 0 {
+    fuel = fuel - 1
+    let mut next = ""
+    let mut i = 0
+    while i < Array::length(defs) {
+      match Array::get(defs, i) {
+        TDAlias(n, _, body) => if n == target {
+          next = type_head_name(body)
+        },
+        _ => ()
+      }
+      i = i + 1
+    }
+    if String::length(next) == 0 || next == target {
+      going = false
+    } else {
+      target = next
+    }
+  }
+  target
+}
+
+fn type_head_name(t: Type) -> String {
+  match t {
+    CtStruct(n) => n,
+    CtEnum(n) => n,
+    CtNamed(n, _) => n,
+    CtForAll(_, _, body) => type_head_name(body),
+    _ => ""
+  }
+}
+
+/// Is `variant` a constructor of the enum `type_name` names? A re-export under
+/// another name (`export ./p.vibe { enum Choice as PublicChoice }`) projects
+/// `PublicChoice` as an alias of `Choice`, so an alias is followed to the enum
+/// it stands for (Codex on #3172).
+fn is_enum_variant_of(defs: Array[TypeDef], type_name: String, variant: String) -> Bool {
+  let mut target = type_name
+  let mut fuel = 8
+  let mut found = false
+  let mut going = true
+  while going && fuel > 0 {
+    fuel = fuel - 1
+    let mut next = ""
+    let mut i = 0
+    while i < Array::length(defs) {
+      match Array::get(defs, i) {
+        TDEnum(n, _, variants) => if n == target {
+          let mut k = 0
+          while k < Array::length(variants) {
+            let (vn, _) = Array::get(variants, k)
+            if vn == variant {
+              found = true
+            }
+            k = k + 1
+          }
+        },
+        TDAlias(n, _, body) => if n == target {
+          next = match body {
+            CtEnum(h) => h,
+            CtNamed(h, _) => h,
+            _ => ""
+          }
+        },
+        _ => ()
+      }
+      i = i + 1
+    }
+    if found || String::length(next) == 0 || next == target {
+      going = false
+    } else {
+      target = next
+    }
+  }
+  found
 }
 
 /// Companions bound alongside an imported type `T`: (a) constructors and
@@ -715,6 +1041,16 @@ fn selected_module_binding_origin(dep_env: TypeEnv, resolved: String, source_nam
 fn bind_enum_constructor_companions(acc: TypeEnv, dep_env: TypeEnv, resolved: String, dep_bindings: Array[(String, Type)], source_owner: String, local_owner: String, trait_mappings: Array[(String, String)], reexport_surface_only: Bool) -> TypeEnv {
   let qual_prefix = String::concat(source_owner, "::")
   let mut out = acc
+  let marker_prefix = type_member_marker(qual_prefix)
+  let members = array_empty()
+  let mut mi = 0
+  while mi < Array::length(dep_bindings) {
+    let (bname, _) = Array::get(dep_bindings, mi)
+    if String::starts_with(bname, marker_prefix) {
+      Array::push(members, String::substring(bname, String::length(type_member_marker("")), String::length(bname)))
+    }
+    mi = mi + 1
+  }
   // #1908: the dep's flat bindings can carry a name twice — the authoritative
   // generalized scheme first, then a stale shadowed duplicate from the dep's
   // own checking (e.g. the pre-generalization recursion binding of an `fn
@@ -741,6 +1077,12 @@ fn bind_enum_constructor_companions(acc: TypeEnv, dep_env: TypeEnv, resolved: St
           candidate_name
         }
         out = env_bind_with_origin(out, local_name, trait_projection_map_type_bounds(candidate_ty, trait_mappings), selected_module_binding_origin(dep_env, resolved, candidate_name, reexport_surface_only))
+        // A member marker follows its companion, renamed with it, so a
+        // contract further down can tell an impl or derived method from a
+        // free function under the same type (`local_type_member_markers`).
+        if contains_str(members, candidate_name) {
+          out = env_bind(out, type_member_marker(local_name), CtUnit)
+        }
       }
     }
     i = i + 1
@@ -4636,12 +4978,12 @@ fn interface_public_type_names(stmts: Array[Stmt], checked_env: TypeEnv) -> Arra
 /// Trait definitions and implementations are published only for the selected
 /// trait surface. EnvCached wrappers are rebuilt from the restricted chain
 /// (their arrays are acceleration state, same rule as the serializer's).
-fn restrict_env_to_export_surface_with_defs(value_surface: Array[String], trait_surface: Array[String], type_surface: Array[String], env: TypeEnv, all_defs: Array[TypeDef]) -> TypeEnv {
+fn restrict_env_to_export_surface_with_defs(value_surface: Array[String], trait_surface: Array[String], type_surface: Array[String], env: TypeEnv, all_defs: Array[TypeDef], members: Array[String], strict: Bool) -> TypeEnv {
   match env {
     EnvEmpty => EnvEmpty,
     EnvBind(name, binding, rest) => {
-      let restricted = restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs)
-      if bsearch_leftmost(value_surface, name) >= 0 || is_selected_type_companion(name, binding.ty, type_surface) {
+      let restricted = restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs, members, strict)
+      if bsearch_leftmost(value_surface, name) >= 0 || is_selected_type_companion(name, binding, type_surface, all_defs, members, strict) {
         EnvBind(name, binding, restricted)
       } else {
         restricted
@@ -4650,9 +4992,9 @@ fn restrict_env_to_export_surface_with_defs(value_surface: Array[String], trait_
     // #1262: `let mut` escape markers are function-local, so a module's export
     // surface never carries one. Drop it with its scope rather than inventing
     // a rule for publishing mutability across a boundary.
-    EnvMutCell(_, _, rest) => restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs),
+    EnvMutCell(_, _, rest) => restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs, members, strict),
     EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens) => {
-      let restricted = restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs)
+      let restricted = restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs, members, strict)
       if bsearch_leftmost(trait_surface, name) >= 0 {
         EnvTraitDef(name, supers, is_auto, methods, restricted, params, method_gens)
       } else {
@@ -4660,7 +5002,7 @@ fn restrict_env_to_export_surface_with_defs(value_surface: Array[String], trait_
       }
     },
     EnvTraitImpl(name, target, rest) => {
-      let restricted = restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs)
+      let restricted = restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs, members, strict)
       if bsearch_leftmost(trait_surface, trait_ref_name(name)) >= 0 {
         EnvTraitImpl(name, target, restricted)
       } else {
@@ -4668,7 +5010,7 @@ fn restrict_env_to_export_surface_with_defs(value_surface: Array[String], trait_
       }
     },
     EnvTraitImplGen(name, params, bounds, target, rest) => {
-      let restricted = restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs)
+      let restricted = restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs, members, strict)
       if bsearch_leftmost(trait_surface, trait_ref_name(name)) >= 0 {
         EnvTraitImplGen(name, params, bounds, target, restricted)
       } else {
@@ -4676,7 +5018,7 @@ fn restrict_env_to_export_surface_with_defs(value_surface: Array[String], trait_
       }
     },
     EnvTypeDefs(defs, _, rest) => {
-      let restricted = restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs)
+      let restricted = restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs, members, strict)
       let kept = array_empty()
       let mut i = 0
       while i < Array::length(defs) {
@@ -4710,7 +5052,7 @@ fn restrict_env_to_export_surface_with_defs(value_surface: Array[String], trait_
       let mut i = 0
       while i < Array::length(bindings) {
         let (name, binding) = Array::get(bindings, i)
-        if bsearch_leftmost(value_surface, name) >= 0 || is_selected_type_companion(name, binding.ty, type_surface) {
+        if bsearch_leftmost(value_surface, name) >= 0 || is_selected_type_companion(name, binding, type_surface, all_defs, members, strict) {
           Array::push(kept, (name, binding))
         } else {
           ()
@@ -4728,13 +5070,13 @@ fn restrict_env_to_export_surface_with_defs(value_surface: Array[String], trait_
     // module lane resolves an import over a same-named local (the merge
     // lane shadows correctly), while an `as` alias broke the
     // collect_merged_stmts lane instead. Both are their own bugs.
-    EnvCached(_, _, rest) => restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs)
+    EnvCached(_, _, rest) => restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs, members, strict)
   }
 }
 
-fn restrict_env_to_export_surface(value_surface: Array[String], trait_surface: Array[String], type_surface: Array[String], env: TypeEnv) -> TypeEnv {
+fn restrict_env_to_export_surface(value_surface: Array[String], trait_surface: Array[String], type_surface: Array[String], env: TypeEnv, strict: Bool) -> TypeEnv {
   let all_defs = env_type_defs(env)
-  let restricted = restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, env, all_defs)
+  let restricted = restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, env, all_defs, env_type_member_names(env), strict)
   if Array::length(type_surface) > 0 && Array::length(env_selectable_type_defs(restricted)) == 0 {
     // Opaque builtins and re-exported contracts can grant type authority
     // without carrying a forgeable TypeDef payload. Keep one surface node for
@@ -4818,13 +5160,29 @@ fn append_env_tail(head: TypeEnv, tail: TypeEnv) -> TypeEnv {
 /// markers` is fed `value_surface`, which contains the export names
 /// themselves, so a marker could make an absent name look bound.
 export fn checked_module_public_env_with_reexport_declarations(stmts: Array[Stmt], full_checked_env: TypeEnv, reexport_declarations: TypeEnv) -> TypeEnv with Exception {
+  checked_module_public_env_publishing(stmts, full_checked_env, reexport_declarations, false)
+}
+
+/// Publication for the module at `path`. A package contract (`index.vpkg`)
+/// publishes exactly what it declares: a type it re-exports carries its enum
+/// variants, its derived methods and the methods of its impls, not every
+/// function of the implementation that shares its prefix or returns it
+/// (`is_selected_type_companion`). That is what keeps `@vibe/concurrent`,
+/// which re-exports the stable subset of `@vibe/concurrent/experimental`,
+/// from publishing `TaskGroup::spawn_suspend` through `TaskGroup`. An ordinary
+/// module keeps the older companion rule.
+export fn checked_module_public_env_for_path(path: String, stmts: Array[Stmt], full_checked_env: TypeEnv, reexport_declarations: TypeEnv) -> TypeEnv with Exception {
+  checked_module_public_env_publishing(stmts, full_checked_env, reexport_declarations, is_contract_ext(path))
+}
+
+fn checked_module_public_env_publishing(stmts: Array[Stmt], full_checked_env: TypeEnv, reexport_declarations: TypeEnv, strict: Bool) -> TypeEnv with Exception {
   // Local declarations stay ahead of the publication-only projection, which
   // preserves lexical shadowing when both select the same public spelling.
-  let publication_env = append_env_tail(full_checked_env, reexport_declarations)
+  let publication_env = bind_type_member_markers(append_env_tail(full_checked_env, reexport_declarations), local_type_member_markers(stmts, full_checked_env))
   let value_surface = interface_public_value_names(stmts)
   let trait_surface = interface_public_trait_names(stmts, publication_env)
   let type_surface = interface_public_type_names(stmts, publication_env)
-  let published = bind_type_reference_definitions(value_surface, publication_env, env_preserve_type_definition_origins(restrict_env_to_export_surface(value_surface, trait_surface, type_surface, publication_env), publication_env))
+  let published = bind_type_reference_definitions(value_surface, publication_env, env_preserve_type_definition_origins(restrict_env_to_export_surface(value_surface, trait_surface, type_surface, publication_env, strict), publication_env))
   // Builtin declarations have no TypeDef node to survive the restriction.
   // Their explicit selected surface still needs a transport node, otherwise
   // the importer cannot distinguish this export from an empty dependency.
@@ -7326,7 +7684,7 @@ fn check_module_impl(job: ModuleJob, observe_typing_artifact: Bool, program_tran
       // still cached an artifact would be reused through
       // `checked_module_artifact_outcome` on the next build, and the refusal
       // would disappear.
-      let checked_env = checked_module_public_env_with_reexport_declarations(stmts, full_checked_env, reexport_declarations)
+      let checked_env = checked_module_public_env_for_path(job.path, stmts, full_checked_env, reexport_declarations)
       let interface_identity = if incremental_interface_trace_enabled() {
         incremental_interface_identity(job.source, checked_env)
       } else {
@@ -7701,7 +8059,7 @@ fn checked_module_artifact_outcome(job: ModuleJob, artifact: CheckedModuleArtifa
     throw("checked module: validated imports no longer resolve")
   }
   let fingerprint = build_fingerprint(job.path, job.source, job.dep_fps, typing_semantics_seed())
-  let env = checked_module_public_env_with_reexport_declarations(artifact.parsed_stmts, artifact.checked_program.final_env, reexports)
+  let env = checked_module_public_env_for_path(job.path, artifact.parsed_stmts, artifact.checked_program.final_env, reexports)
   module_typed_lowering_memo_put(job.path, fingerprint, artifact.lowering_offsets, artifact.eq_offsets, artifact.eq_keys)
   let tracing = incremental_interface_trace_enabled()
   Checked(job.path, fingerprint, env, if tracing {
