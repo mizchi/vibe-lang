@@ -3403,7 +3403,7 @@ fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
       let mut i = 0
       while i < Array::length(args) {
         let arg = Array::get(args, i)
-        if pe_bmask_has(bmask, i) {
+        if pe_bmask_has(bmask, i) || pc_loop_call_arg_borrow(ctx, scope, arg) {
           match arg {
             EIdent(_, _) => 0,
             _ => pc_emit(ctx, scope, arg)
@@ -3792,7 +3792,9 @@ fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
       0
     },
     EForIn(value_name, index_opt, iterable, fbody) => {
-      pc_emit(ctx, scope, iterable)
+      // The loop reads a named iterable without taking its reference.
+      // A temporary expression still follows its normal ownership path.
+      pc_operand_emit(ctx, scope, iterable)
       // #3134: the iterable runs once; the element binding and the body
       // run per element (see the EWhile arm).
       let saved_floor = ctx.loop_floor
@@ -4083,6 +4085,17 @@ fn pc_operand_emit(ctx: PCtx, scope: PScope, e: Expr) -> Int {
   }
 }
 
+// Codegen retains an owning argument read from before a loop on every
+// iteration (#706). The plan must count that occurrence as a borrow: a PaDup
+// at the binding site would be left over after those per-iteration retains
+// and the callee's drops cancel out.
+fn pc_loop_call_arg_borrow(ctx: PCtx, scope: PScope, e: Expr) -> Bool {
+  match e {
+    EIdent(name, _) => ctx.loop_floor > 0 && ps_has(scope, name) && ps_get(scope, name) < ctx.loop_floor && ps_get(scope, name) != ctx.move_use_id,
+    _ => false
+  }
+}
+
 fn pc_count(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
   match expr {
     EInt(_) => 0,
@@ -4106,7 +4119,7 @@ fn pc_count(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
       let mut i = 0
       while i < Array::length(args) {
         let arg = Array::get(args, i)
-        if pe_bmask_has(bmask, i) {
+        if pe_bmask_has(bmask, i) || pc_loop_call_arg_borrow(ctx, scope, arg) {
           match arg {
             EIdent(obj, _) => pc_count_borrow(ctx, scope, obj),
             _ => pc_count(ctx, scope, arg)
@@ -4200,8 +4213,15 @@ fn pc_count(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
       pc_count(ctx, s2, value)
       pc_count(ctx, s2, body)
     },
-    EAssign(_name, value, body) => {
+    EAssign(name, value, body) => {
+      let move_id = if ps_has(scope, name) && pe_self_reassign_moves(ctx, scope, name, value) {
+        ps_get(scope, name)
+      } else {
+        0 - 1
+      }
+      ctx.move_use_id = move_id
       pc_count(ctx, scope, value)
+      ctx.move_use_id = 0 - 1
       pc_count(ctx, scope, body)
     },
     EAssignOp(_name, _op, value, body) => {
@@ -4290,8 +4310,12 @@ fn pc_count(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
       0
     },
     EWhile(cond, body) => {
+      let saved_floor = ctx.loop_floor
+      ctx.loop_floor = ctx.next_id
       pc_count(ctx, scope, cond)
       pc_count(ctx, scope, pe_discarded_spine(body))
+      ctx.loop_floor = saved_floor
+      0
     },
     EReturn(e) => pc_count(ctx, scope, e),
     ESpread(e) => pc_count(ctx, scope, e),
@@ -4311,7 +4335,9 @@ fn pc_count(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
       0
     },
     EForIn(value_name, index_opt, iterable, fbody) => {
-      pc_count(ctx, scope, iterable)
+      pc_operand_count(ctx, scope, iterable)
+      let saved_floor = ctx.loop_floor
+      ctx.loop_floor = ctx.next_id
       let idv = pc_declare(ctx, value_name, false)
       let s2 = PsBind(value_name, idv, scope)
       let s3 = match index_opt {
@@ -4322,8 +4348,12 @@ fn pc_count(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
         None => s2
       }
       pc_count(ctx, s3, fbody)
+      ctx.loop_floor = saved_floor
+      0
     },
     ELoop(params, lbody) => {
+      let saved_floor = ctx.loop_floor
+      ctx.loop_floor = ctx.next_id
       let mut s = scope
       let mut i = 0
       while i < Array::length(params) {
@@ -4334,6 +4364,8 @@ fn pc_count(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
         i = i + 1
       }
       pc_count(ctx, s, lbody)
+      ctx.loop_floor = saved_floor
+      0
     },
     EMatch(scrut, arms) => {
       match scrut {

@@ -3,7 +3,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/compiler/codegen/common_analysis {
-  borrow_fixpoint_link_parts, compute_borrow_disqualifiers, compute_borrow_param_user_fns, md_consume_count_pre
+  borrow_fixpoint_link_parts, compute_borrow_disqualifiers, compute_borrow_param_user_fns, md_consume_count_pre, md_consume_count_pre_store
 }
 
 fn one_param_fn(name: String, param: String, body: Expr) -> Stmt {
@@ -251,4 +251,20 @@ test "#2379 review: a source-owned Map accessor may still infer a borrowed recei
   assert_eq(mask_for(names, masks, "Map::iter_get"), 1)
   let call = ECall(EIdent("Map::iter_get", -1), [EIdent("m", -1)], -1)
   assert_eq(md_consume_count_pre(call, "m", names, masks), 0)
+}
+
+test "#3191: a store retain replaces a match binder's entry retain at that occurrence" {
+  let body = EIf(EBool(true), ESeq(EIdent("p", 12), EIdent("p", 13)), EIdent("p", 14))
+  let empty_names: Array[String] = []
+  let empty_masks: Array[Int] = []
+  assert_eq(md_consume_count_pre(body, "p", empty_names, empty_masks), 2)
+  assert_eq(md_consume_count_pre_store(body, "p", empty_names, empty_masks, [
+    "p"
+  ], [12]), 1)
+  assert_eq(md_consume_count_pre_store(body, "p", empty_names, empty_masks, [
+    "q"
+  ], [12]), 2)
+  assert_eq(md_consume_count_pre_store(body, "p", empty_names, empty_masks, [
+    "p"
+  ], [99]), 2)
 }
