@@ -264,7 +264,7 @@ import ./compile_lambda.vibe {
 }
 
 import ./compile_match.vibe {
-  compile_match
+  compile_match, store_dup_tail_present
 }
 
 //# Functions
@@ -1631,6 +1631,260 @@ fn call_returns_borrow(value: Expr, local_names: Array[String], ctx: CompileCtx)
   }
 }
 
+/// #3184: does the name `n`, stored into a slot that owns what it holds, name
+/// a VIEW -- a binding holding no reference of its own, whose value a
+/// container or scrutinee owns? The `let` lowering marks every such binding
+/// for its body the same way: a borrowed `let` (`let v = Array::get(xs, 0)`,
+/// a block ending in one, an alias of one) and a `for` element join
+/// `loop_borrowed_names`, and none of them joins `heap_binding_names`, which is
+/// the record of the bindings that DO own their value. A loop-carried name is
+/// in `loop_borrowed_names` too, but an owned one is a heap binding, and the
+/// plan answers for it (`assign_ident_store_dup`). A name that is neither --
+/// an `Int`, a `String` -- is retained through the guarded dup, which leaves
+/// an immediate or a fat pointer alone.
+fn assign_name_is_view(n: String, local_names: Array[String], ctx: CompileCtx) -> Bool {
+  find_local_slot(local_names, n) >= 0 && array_contains_str(ctx.loop_borrowed_names, n) && !array_contains_str(ctx.ref_cell_names, n) && !array_contains_str(ctx.heap_binding_names, n)
+}
+
+fn assign_ident_is_view(value: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  match value {
+    EIdent(n, _) => ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && assign_name_is_view(n, local_names, ctx) && !assign_value_is_immediate(value, local_names, ctx),
+    _ => false
+  }
+}
+
+/// #3184: a value the slot classifiers already call an `Int`, a `Bool` or a
+/// `String` -- the tests the `let mut` lowering tracks a slot's kind with --
+/// holds no RC block, so a retain of it is a guarded no-op that still costs
+/// its instructions, and a `let mut` it initializes need not become a heap
+/// slot (whose every later store would re-apply the dup budget, all of it
+/// no-ops too). Measured: bench/exec/json_scan grew 143 B and 50,750 fuel
+/// from `let mut j2 = i` alone before this test.
+fn assign_value_is_immediate(value: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  expr_is_intish(value, local_names, ctx) || expr_is_boolish(value, local_names, ctx) || cc_expr_is_stringish(value, local_names, ctx)
+}
+
+/// #3184: did the plan ask this store to take a reference of its own
+/// (`PaStoreDup`: the value is an owned binding from outside the loop the
+/// store runs in)? Keyed by the occurrence's source offset, so an occurrence
+/// with none never matches -- the plan does not emit one for it either. An
+/// immediate (`assign_value_is_immediate`) is declined: the plan's row only
+/// kept the name's own release, and a value with no RC block has nothing a
+/// shared copy could outlive.
+fn assign_ident_store_dup(value: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  match value {
+    EIdent(n, off) => if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && off >= 0 && find_local_slot(local_names, n) >= 0 && !array_contains_str(ctx.ref_cell_names, n) && !assign_value_is_immediate(value, local_names, ctx) {
+      let mut found = false
+      let mut i = 0
+      while !found && i < Array::length(ctx.rc_store_dup_names) {
+        if Array::get(ctx.rc_store_dup_offs, i) == off && Array::get(ctx.rc_store_dup_names, i) == n {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    } else {
+      false
+    },
+    _ => false
+  }
+}
+
+/// #3184: the slot a parameterized `loop` hands its value back through.
+/// `break v` desugars to `__loop_result = v; break` (parser_expr_primary.vibe's
+/// `desugar_loop_body`), and the loop's value -- `__loop_result` itself -- is
+/// taken as an owned one wherever it lands (value_spine_borrowed records a
+/// `let mut` binder as owned). The slot is initialized with `0` and stored at
+/// most once before the `break` leaves, so it holds nothing to release, but
+/// what it stores must be a reference of its own. A nested loop's slot is
+/// alpha-renamed (normalize's `__shadow_<n>_` prefix), and keeps its suffix.
+fn is_loop_result_slot(name: String) -> Bool {
+  name == "__loop_result" || (String::starts_with(name, "__shadow_") && String::ends_with(name, "___loop_result"))
+}
+
+/// #3184: a WRAPPED store whose result spine ends in a view name -- `cur = {
+/// let v = Array::get(xs, 0); v }` or `cur = { f(); v }` -- is short a
+/// reference exactly as the bare `cur = v` is. A name the spine itself binds
+/// is a view when its `let` gave it no reference (no `heap_binding_names`
+/// entry, which the `let` lowering writes before this is asked); an owning
+/// binder promotes the escaping value at its own scope end already, or handed
+/// it over by transfer. A name from outside the spine is asked the question
+/// the bare store asks. The bare name itself is the caller's (retained before
+/// the old value is released), so it is declined here.
+fn spine_leaf_ident_view(value: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool {
+  if is_eident(value) || !ctx.enable_rc {
+    false
+  } else {
+    let binders = array_empty()
+    let leaf = mib_spine_leaf(value, binders)
+    match leaf {
+      EIdent(n, _) => if array_contains_str(binders, n) {
+        !array_contains_str(ctx.heap_binding_names, n) && !array_contains_str(ctx.ref_cell_names, n)
+      } else {
+        assign_name_is_view(n, local_names, ctx)
+      },
+      _ => false
+    }
+  }
+}
+
+/// #3184: the branch tails of a conditional stored into an owning slot that
+/// hand back a VIEW, each wrapped in the `__loop_tail_retain` marker
+/// (compile_call emits the value and a guarded dup): a borrow-returning call,
+/// a projection, or a view name (`assign_name_is_view`). An owned tail -- a
+/// fresh value, an owned binding's transfer, a pattern binder the match
+/// lowering already retained for its consume -- is left alone, so each path
+/// stores exactly one reference. Names the value binds on the way are locals
+/// of the branch, not the outer bindings of the same spelling, and are left
+/// alone too: the tail a match arm hands back from its own binder is one the
+/// arm's bind already retained.
+fn assign_retain_view_tails(e: Expr, local_names: Array[String], inner: Array[String], ctx: CompileCtx) -> Expr with Exception {
+  match e {
+    ECall(_, _, _) => if call_returns_borrow(e, local_names, ctx) && !callee_bound_in(e, inner) {
+      ECall(EIdent("__loop_tail_retain", -1), [e], -1)
+    } else {
+      e
+    },
+    EIdent(x, _) => if !array_contains_str(inner, x) && assign_name_is_view(x, local_names, ctx) {
+      ECall(EIdent("__loop_tail_retain", -1), [e], -1)
+    } else {
+      e
+    },
+    EDot(_, _, _, _) => {
+      let root = proj_root_ident(e)
+      if String::length(root) > 0 && !array_contains_str(inner, root) && !array_contains_str(ctx.ref_cell_names, root) {
+        ECall(EIdent("__loop_tail_retain", -1), [e], -1)
+      } else {
+        e
+      }
+    },
+    EIf(c, t, el) => EIf(c, assign_retain_view_tails(t, local_names, inner, ctx), assign_retain_view_tails(el, local_names, inner, ctx)),
+    EMatch(scrut, arms) => {
+      let out = array_empty()
+      let mut ai = 0
+      while ai < Array::length(arms) {
+        let (apat, abody) = Array::get(arms, ai)
+        Array::push(out, (apat, assign_retain_view_tails(abody, local_names, with_pattern_binders(inner, apat), ctx)))
+        ai = ai + 1
+      }
+      EMatch(scrut, out)
+    },
+    EHandle(hb, harms) => {
+      let out = array_empty()
+      let mut ai = 0
+      while ai < Array::length(harms) {
+        let (apat, abody) = Array::get(harms, ai)
+        Array::push(out, (apat, assign_retain_view_tails(abody, local_names, with_pattern_binders(inner, apat), ctx)))
+        ai = ai + 1
+      }
+      EHandle(assign_retain_view_tails(hb, local_names, inner, ctx), out)
+    },
+    ELet(n, v, b, soff) => ELet(n, v, assign_retain_view_tails(b, local_names, with_name(inner, n), ctx), soff),
+    ELetMut(n, v, b, soff) => ELetMut(n, v, assign_retain_view_tails(b, local_names, with_name(inner, n), ctx), soff),
+    ELetRec(n, v, b) => ELetRec(n, v, assign_retain_view_tails(b, local_names, with_name(inner, n), ctx)),
+    ESeq(a, b) => ESeq(a, assign_retain_view_tails(b, local_names, inner, ctx)),
+    EAssign(n, v, b) => EAssign(n, v, assign_retain_view_tails(b, local_names, inner, ctx)),
+    EAssignOp(n, op, v, b) => EAssignOp(n, op, v, assign_retain_view_tails(b, local_names, inner, ctx)),
+    _ => e
+  }
+}
+
+/// #3184: the branch and block tails of a stored value that name an owned
+/// binding from outside the loop the store runs in, each wrapped in the
+/// `__loop_tail_retain` marker where the plan emitted a `PaStoreDup` row for
+/// that occurrence (`assign_ident_store_dup`). The walk is the one the plan
+/// marks the same tails with (perceus.vibe's `pe_mark_store_tails`), so the
+/// plan keeps the binding's own reference exactly where codegen retains.
+fn assign_retain_store_dup_tails(e: Expr, local_names: Array[String], inner: Array[String], ctx: CompileCtx) -> Expr with Exception {
+  match e {
+    EIdent(x, _) => if !array_contains_str(inner, x) && assign_ident_store_dup(e, local_names, ctx) {
+      ECall(EIdent("__loop_tail_retain", -1), [e], -1)
+    } else {
+      e
+    },
+    EIf(c, t, el) => EIf(c, assign_retain_store_dup_tails(t, local_names, inner, ctx), assign_retain_store_dup_tails(el, local_names, inner, ctx)),
+    EMatch(scrut, arms) => {
+      let out = array_empty()
+      let mut ai = 0
+      while ai < Array::length(arms) {
+        let (apat, abody) = Array::get(arms, ai)
+        Array::push(out, (apat, assign_retain_store_dup_tails(abody, local_names, with_pattern_binders(inner, apat), ctx)))
+        ai = ai + 1
+      }
+      EMatch(scrut, out)
+    },
+    EHandle(hb, harms) => {
+      let out = array_empty()
+      let mut ai = 0
+      while ai < Array::length(harms) {
+        let (apat, abody) = Array::get(harms, ai)
+        Array::push(out, (apat, assign_retain_store_dup_tails(abody, local_names, with_pattern_binders(inner, apat), ctx)))
+        ai = ai + 1
+      }
+      EHandle(assign_retain_store_dup_tails(hb, local_names, inner, ctx), out)
+    },
+    ELet(n, v, b, soff) => ELet(n, v, assign_retain_store_dup_tails(b, local_names, with_name(inner, n), ctx), soff),
+    ELetMut(n, v, b, soff) => ELetMut(n, v, assign_retain_store_dup_tails(b, local_names, with_name(inner, n), ctx), soff),
+    ELetRec(n, v, b) => ELetRec(n, v, assign_retain_store_dup_tails(b, local_names, with_name(inner, n), ctx)),
+    ESeq(a, b) => ESeq(a, assign_retain_store_dup_tails(b, local_names, inner, ctx)),
+    EAssign(n, v, b) => EAssign(n, v, assign_retain_store_dup_tails(b, local_names, inner, ctx)),
+    EAssignOp(n, op, v, b) => EAssignOp(n, op, v, assign_retain_store_dup_tails(b, local_names, inner, ctx)),
+    _ => e
+  }
+}
+
+/// #3190: a `let` / `let mut` initializer is a store into its binder too. A
+/// branch or block tail of it naming an owned binding from outside the loop
+/// the `let` runs in -- `let mut c = if k { p } else { A(..) }`, `let c =
+/// match i { 0 => A(..), _ => p }`, `let c = { f(); p }` -- was planned as the
+/// transfer of `p`'s one reference, which the first iteration's release of
+/// `c` (or the owning use it was handed to) spent, and the next iteration read
+/// freed memory. The plan now takes each such tail as a `PaStoreDup` row
+/// (perceus.vibe's `pe_emit_store_value`), keeping `p`'s own reference, and
+/// this wraps exactly those tails in the `__loop_tail_retain` marker, so the
+/// binder holds a reference of its own on every path. A bare name is not
+/// rewritten: `let` takes it as an alias (PaAliasDup) and `let mut` retains it
+/// itself (`assign_ident_store_dup`). Asked with the binder's own slot masked,
+/// as its value compiles, so a same-spelled name is the outer binding the
+/// plan's row was keyed to.
+fn let_retain_store_dup_tails(value: Expr, local_names: Array[String], ctx: CompileCtx) -> Expr with Exception {
+  if ctx.enable_rc && !is_eident(value) && Array::length(ctx.rc_store_dup_names) > 0 && store_dup_tail_present(value, ctx) {
+    assign_retain_store_dup_tails(value, local_names, array_empty(), ctx)
+  } else {
+    value
+  }
+}
+
+/// #3184: did one of the rewrites above retain a tail of this value in place?
+fn assign_tails_retained(e: Expr) -> Bool {
+  match e {
+    ECall(EIdent(f, off), _, _) => f == "__loop_tail_retain" && off < 0,
+    EIf(_, t, el) => assign_tails_retained(t) || assign_tails_retained(el),
+    EMatch(_, arms) => assign_arm_tails_retained(arms),
+    EHandle(hb, harms) => assign_tails_retained(hb) || assign_arm_tails_retained(harms),
+    ELet(_, _, b, _) => assign_tails_retained(b),
+    ELetMut(_, _, b, _) => assign_tails_retained(b),
+    ELetRec(_, _, b) => assign_tails_retained(b),
+    ESeq(_, b) => assign_tails_retained(b),
+    EAssign(_, _, b) => assign_tails_retained(b),
+    EAssignOp(_, _, _, b) => assign_tails_retained(b),
+    _ => false
+  }
+}
+
+fn assign_arm_tails_retained(arms: Array[(Pat, Expr)]) -> Bool {
+  let mut found = false
+  let mut ai = 0
+  while !found && ai < Array::length(arms) {
+    let (_, abody) = Array::get(arms, ai)
+    found = assign_tails_retained(abody)
+    ai = ai + 1
+  }
+  found
+}
+
 /// #768 (heap-corruption root cause): a `let` whose value is an if/match and
 /// whose scope-end drop is planned (rc_drop_names) consumes ONE reference per
 /// EXECUTION -- but a branch tail that is a bare loop-borrowed ident (or a
@@ -2225,7 +2479,17 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     // what makes self-reference work (see ctx.pending_letrec_self_name).
     Array::push(local_names, name)
     Array::set(local_names, local_idx, "")
-    let nl = compile_expr(buf, retain_wrap_let_value(value, name, local_names, ctx), local_names, next_local + 1, ctx, ld)
+    // #3190: the tails the plan's `PaStoreDup` rows name retain in place
+    // (`let_retain_store_dup_tails`). The rewritten value is also what the
+    // ownership classifiers below read, so a retained tail is an owned one;
+    // the slot's KIND (float / int / aggregate) is still read off `value`.
+    // A binder another branch of which still hands back a view stays
+    // borrow-bound (`value_borrow_like` below), and its owning uses retain
+    // again: on the retained branch that leaks one reference, where not
+    // retaining it would let a store of the binder (`cur = c`, which takes a
+    // heap binding as owned) release the reference the plan left with `p`.
+    let value_sd = let_retain_store_dup_tails(value, local_names, ctx)
+    let nl = compile_expr(buf, retain_wrap_let_value(value_sd, name, local_names, ctx), local_names, next_local + 1, ctx, ld)
     Array::set(local_names, local_idx, name)
     emit_local_set(buf, local_idx)
     // #3113: a read of a captured cell arrives behind an owning-store marker
@@ -2342,7 +2606,7 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     }
     Array::push(ctx.agg_local_slots, local_idx * 256 + agg_entry)
     Array::push(ctx.agg_local_exprs, agg_shape_expr)
-    let (rc_kind, is_borrow_ret_ext) = classify_let_value_heap(buf, value, name, local_idx, local_names, ctx)
+    let (rc_kind, is_borrow_ret_ext) = classify_let_value_heap(buf, value_sd, name, local_idx, local_names, ctx)
     // #3114: `let w = v` over a borrow-bound `v` that left `w` owning nothing
     // (rc_kind 0: the Perceus plan inherits `v`'s no-reference class, so `w`
     // has no scope-end drop) is the same borrowed view under another name.
@@ -2419,7 +2683,9 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     // #768: an if/match value with a borrowed branch tail makes this binding a
     // (conditional) borrowed view too -- mark it borrow-bound for the body
     // scope so consuming calls dup it (see value_has_borrowed_branch_tail).
-    let value_borrow_like = ctx.enable_rc && is_branching_value(value) && value_has_borrowed_branch_tail(value, local_names, array_empty(), ctx)
+    // #3190: a tail the plan's store row retained holds a reference of its
+    // own, so it is read off `value_sd`, where it is no longer a bare name.
+    let value_borrow_like = ctx.enable_rc && is_branching_value(value) && value_has_borrowed_branch_tail(value_sd, local_names, array_empty(), ctx)
     if ctx.enable_rc && (is_borrow_ret_ext || value_borrow_like || alias_borrow_like) {
       Array::push(ctx.loop_borrowed_names, name)
     } else {
@@ -2838,7 +3104,11 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
       }
     } else {
       // #768: same branch-tail retain rewrite as ELet (see retain_wrap_let_value).
-      let nl = compile_expr(buf, retain_wrap_let_value(value, name, local_names, ctx), local_names, next_local + 1, ctx, ld)
+      // #3190: and the same retain of the tails the plan's store rows name
+      // (`let_retain_store_dup_tails`), read by the ownership classifiers
+      // below as the ELet arm reads it.
+      let value_sd = let_retain_store_dup_tails(value, local_names, ctx)
+      let nl = compile_expr(buf, retain_wrap_let_value(value_sd, name, local_names, ctx), local_names, next_local + 1, ctx, ld)
       emit_local_set(buf, local_idx)
       // #791: classify AFTER the value is compiled + stored (local_idx now
       // holds it), matching ELet's ordering -- classify_let_value_heap's
@@ -2849,7 +3119,7 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
       // uses -- this used to be a narrower, hand-duplicated condition list
       // that repeatedly drifted out of sync with ELet's (the #715/#791 bug
       // family); sharing one function makes that drift impossible.
-      let (_mut_rc_kind, _mut_is_borrow_ret_ext) = classify_let_value_heap(buf, value, name, local_idx, local_names, ctx)
+      let (_mut_rc_kind, _mut_is_borrow_ret_ext) = classify_let_value_heap(buf, value_sd, name, local_idx, local_names, ctx)
       // A borrowed call initializes an owning mutable slot. Its later value
       // may be a fresh allocation, so keeping the initializer's borrow flag
       // would suppress both the slot's drop and a wrapper result's drop.
@@ -2868,13 +3138,32 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
       } else {
         ()
       }
+      // #3184: an initializer that NAMES a view (`let mut cur = v`, `v` a
+      // borrowed `let` or a `for` element), or one the plan asks to retain
+      // (`PaStoreDup`: an owned binding from outside the loop this `let mut`
+      // is declared in), gives the slot a reference of its own, exactly as a
+      // store of the same value does (the EAssign arm). The plan already
+      // treats the slot as owning; without the retain its scope end, or the
+      // owning use its value was handed to, released the view's owner's
+      // reference.
+      let init_retained = ctx.enable_rc && !spine_retained && (assign_ident_is_view(value, local_names, ctx) || assign_ident_store_dup(value, local_names, ctx))
+      if init_retained {
+        emit_rc_dup_guarded(buf, local_idx, ctx.rc_shadow, ctx.rc_dup_func_idx)
+        if array_contains_str(ctx.heap_binding_names, name) {
+          ()
+        } else {
+          Array::push(ctx.heap_binding_names, name)
+        }
+      } else {
+        ()
+      }
       // #3141: may an early exit out of `body` release this slot? Only when
       // it holds a reference of its own -- retained just above, or a heap
       // value the exit operand's test vouches for (read here, while the
       // binder is still masked) -- so that every store after this one keeps
       // the slot owning (compile_expr_tail's EAssign arm, and the plan's
       // `pe_emit_exit_rows` for what it then holds).
-      let exit_owned = ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && (spine_retained || (_mut_rc_kind > 0 && rc_exit_value_owned(ctx, local_names, value)))
+      let exit_owned = ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && (spine_retained || init_retained || (_mut_rc_kind > 0 && rc_exit_value_owned(ctx, local_names, value_sd)))
       // `let mut peek = peek(xs, 0)` calls the outer `peek`. Both ownership
       // classifiers above must see that same scope, even though the value
       // has already been stored so their retains can target local_idx.
@@ -3007,7 +3296,46 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         rc_exit_end_store(ctx, xtok)
         rnl
       } else {
-        if is_heap_mut && !is_self {
+        // #3184: a slot that owns what it holds must take a reference of its
+        // own when the stored name holds none -- a borrowed `let`, a `for`
+        // element, an alias of either (`assign_name_is_view`) -- or when the
+        // plan says the store runs once per iteration of a loop the name's
+        // owner was declared outside of (`PaStoreDup`, see perceus.vibe's
+        // `pe_store_dup`). Otherwise the owner's scope end releases the value
+        // the slot still holds: `let v = Array::get(xs, 0); cur = v` in a loop
+        // body left `cur` on a block the body's drop of `xs` freed, and
+        // `cur = p` freed `p` on the second iteration. The retain is taken
+        // through the name's own local BEFORE the old value is released, so a
+        // name viewing into the slot's old value survives that release.
+        let slot_owning = is_heap_mut || (ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && is_loop_result_slot(name))
+        let store_retain = !is_self && ((slot_owning && assign_ident_is_view(value, local_names, ctx)) || assign_ident_store_dup(value, local_names, ctx))
+        // #3184: a branch or block tail of the value is a store of its own:
+        // one naming an owned binding from outside the loop retains where the
+        // plan's `PaStoreDup` row says (`assign_retain_store_dup_tails`,
+        // whatever the slot -- the plan kept the binding's own reference), and
+        // a conditional stored into an owning slot retains the branches that
+        // hand back a view, and only those (`assign_retain_view_tails`).
+        let value = if ctx.enable_rc && !is_eident(value) && Array::length(ctx.rc_store_dup_names) > 0 {
+          assign_retain_store_dup_tails(value, local_names, array_empty(), ctx)
+        } else {
+          value
+        }
+        let value = if slot_owning && !is_self && is_branching_value(value) {
+          assign_retain_view_tails(value, local_names, array_empty(), ctx)
+        } else {
+          value
+        }
+        // A tail retained in place takes its reference as the value is
+        // computed, so the slot's old value -- which a view may read into --
+        // is released after it, with the new value on the stack, instead of
+        // before.
+        let tails_retained = assign_tails_retained(value)
+        if store_retain {
+          emit_rc_dup_guarded(buf, find_local_slot(local_names, get_eident_name(value)), ctx.rc_shadow, ctx.rc_dup_func_idx)
+        } else {
+          ()
+        }
+        if is_heap_mut && !is_self && !tails_retained {
           emit_local_get(buf, idx)
           emit_call(buf, ctx.rc_drop_func_idx)
         } else {
@@ -3046,6 +3374,12 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
           Array::push(ctx.loop_borrowed_names, name)
           sm_removed = sm_removed - 1
         }
+        if is_heap_mut && !is_self && tails_retained {
+          emit_local_get(buf, idx)
+          emit_call(buf, ctx.rc_drop_func_idx)
+        } else {
+          ()
+        }
         // An owning mutable slot must acquire a borrowed replacement just
         // as it acquires a borrowed initializer. Otherwise its next drop
         // would release the container's reference instead of its own.
@@ -3083,12 +3417,19 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         // by what the PLAN records for the slot and not by the position, and the
         // second of them is short a reference too in the spelling the leak lane
         // carries.
-        let replacement_unowned = if !is_heap_mut {
+        //
+        // #3184: the loop-result slot (`break v` is `__loop_result = v;
+        // break`) owns what it stores too -- the loop's value is handed on as
+        // an owned one -- so a view stored there is retained like one stored
+        // into an owning slot; it drops nothing, as it holds only its `0`
+        // initializer until the store. And a WRAPPED name is a view as well:
+        // `cur = { let v = Array::get(xs, 0); v }` (`spine_leaf_ident_view`).
+        let replacement_unowned = if !slot_owning {
           false
         } else if is_self {
-          call_returns_borrow(value, local_names, ctx) || (spine_leaf_unowned(value, local_names, ctx) && assign_slot_short_after_store(name, body, ctx))
+          is_heap_mut && (call_returns_borrow(value, local_names, ctx) || (spine_leaf_unowned(value, local_names, ctx) && assign_slot_short_after_store(name, body, ctx)))
         } else {
-          is_edot(value) || call_returns_borrow(value, local_names, ctx) || spine_leaf_unowned(value, local_names, ctx)
+          is_edot(value) || call_returns_borrow(value, local_names, ctx) || spine_leaf_unowned(value, local_names, ctx) || spine_leaf_ident_view(value, local_names, ctx)
         }
         // #2786, the release half. A slot that ACQUIRES its replacement has to
         // let go of what it held, or the retain trades a use-after-free for a
@@ -3194,7 +3535,7 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         // #3141: an early exit in the continuation must not release what the
         // stored value may still read (see rc_exit_note_store) -- unless the
         // slot retained it above and so holds a reference of its own.
-        let xtok = if replacement_unowned {
+        let xtok = if replacement_unowned || store_retain {
           0 - 1
         } else {
           rc_exit_note_store(ctx, local_names, value)

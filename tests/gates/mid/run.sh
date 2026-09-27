@@ -1302,6 +1302,67 @@ done
 rm -f "$ROOT_DIR/_build/_gate_rc_early_exit_release.log"
 echo "[compiler-gate] early exit release guard ok (2043000 on bump/rc/shadow/gc, rc heap_used=$ex_used B; handed-out and outer values alive on rc + shadow)"
 
+# 40f0i. #3184: a `let mut` slot owns what it holds, but a store of a VIEW
+#        (`let v = Array::get(xs, 0); cur = v`, a `for` element, an alias or
+#        a block ending in one, a conditional handing one back) took no
+#        reference of its own, so the view's owner released the value the slot
+#        still held; and `cur = p` of an owned binding declared outside the
+#        loop the store runs in transferred `p`'s one reference on every
+#        iteration, freeing it on the second. A `let mut` initializer had both
+#        holes too. Unfixed (a stage2 from the #3181 branch, 9159d7a76) the
+#        bounded fixture traps under shadow and answers with reused blocks
+#        under rc. #3190: so did a `let` / `let mut` in a loop initialized
+#        from a conditional, a match or a block handing back an owned
+#        binding from outside the loop, on a stage2 from the #3184 branch
+#        (40d32fe86). The answer (82000) is checked on bump, rc, shadow and gc,
+#        and the rc lane's heap growth is bounded, so the retains the fix adds
+#        are each released again; rc_mut_store_view_test.vibe then checks, on
+#        rc and shadow, that what each slot holds is alive where it is read.
+echo "[compiler-gate] 40f0i/40 a let mut owns the view or loop-carried binding it stores (#3184)"
+msdir="_build/_gate_rc_mut_store_view"
+rm -rf "$msdir"; mkdir -p "$msdir"
+for ms_lane in bump rc shadow gc; do
+  rm -f "$msdir/ms.wasm" "$msdir/ms.wasm.diag"
+  case "$ms_lane" in
+    bump) env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_mut_store_view_bounded_test.vibe" "$msdir/ms.wasm" main >/dev/null 2>&1 || true ;;
+    rc) env VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_mut_store_view_bounded_test.vibe" "$msdir/ms.wasm" main >/dev/null 2>&1 || true ;;
+    shadow) env VIBE_RC=shadow VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_mut_store_view_bounded_test.vibe" "$msdir/ms.wasm" main >/dev/null 2>&1 || true ;;
+    gc) env VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_mut_store_view_bounded_test.vibe" "$msdir/ms.wasm" main >/dev/null 2>&1 || true ;;
+  esac
+  if [ ! -s "$msdir/ms.wasm" ]; then
+    echo "[compiler-gate] FAIL: rc_mut_store_view_bounded fixture did not compile on the $ms_lane lane (#3184)" >&2
+    cat "$msdir/ms.wasm.diag" >&2 2>/dev/null || true
+    exit 1
+  fi
+  ms_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$msdir/ms.wasm" 2>&1 | tail -1)"
+  if [ "$ms_out" != "82000" ]; then
+    echo "[compiler-gate] FAIL: rc_mut_store_view_bounded got '$ms_out' on the $ms_lane lane (want 82000). A trap, or fewer than 41 per round, means a let or let mut held a value some other binding released (#3184, #3190)." >&2
+    exit 1
+  fi
+  if [ "$ms_lane" = rc ]; then
+    ms_json="$(node scripts/measure_heap.mjs "$msdir/ms.wasm" main 2>/dev/null)"
+    ms_used="$(printf '%s' "$ms_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+    if [ -z "$ms_used" ]; then
+      echo "[compiler-gate] FAIL: could not measure rc_mut_store_view_bounded heap ($ms_json)" >&2; exit 1
+    fi
+    if [ "$ms_used" -ge 20000 ]; then
+      echo "[compiler-gate] FAIL: rc_mut_store_view_bounded heap_used=$ms_used >= 20000 (#3184: a reference a store took is not released again -- a view retained twice, or a loop-carried binding both retained at the store and still transferred)" >&2; exit 1
+    fi
+  fi
+done
+rm -rf "$msdir"
+for ms_lane in 1 shadow; do
+  if ! VIBE_RC="$ms_lane" VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+      bash scripts/vibe_test.sh fixtures/rc_mut_store_view_test.vibe \
+      >"$ROOT_DIR/_build/_gate_rc_mut_store_view.log" 2>&1; then
+    echo "[compiler-gate] FAIL: fixtures/rc_mut_store_view_test.vibe failed with VIBE_RC=$ms_lane (#3184). A trap or a zz string means a let mut slot held a value some other binding released:" >&2
+    tail -20 "$ROOT_DIR/_build/_gate_rc_mut_store_view.log" >&2
+    exit 1
+  fi
+done
+rm -f "$ROOT_DIR/_build/_gate_rc_mut_store_view.log"
+echo "[compiler-gate] let mut store ownership guard ok (82000 on bump/rc/shadow/gc, rc heap_used=$ms_used B; stored values alive on rc + shadow)"
+
 # 40f1a. #2427: the shadow table must not overlap the heap it describes.
 #        40f above proves the marks catch a real dup/drop-of-freed; this
 #        proves they are marks at all. The table sat at a FIXED 256 MiB while
