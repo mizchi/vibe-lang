@@ -461,7 +461,7 @@ regression lock:
 | slice | 対象 | row |
 | --- | --- | --- |
 | 1 (#1372) | `@vibe/concurrent` の stack-driving 5本 | `Exception[TaskError]` ほか |
-| 2 (#1401) | `@vibe/concurrent` の suspend lane 3本 | `Exception[SendError]` / `Exception[TaskError]` |
+| 2 (#1401) | `@vibe/concurrent/experimental` の suspend lane 3本 | `Exception[SendError]` / `Exception[TaskError]` |
 | 3 | `@vibe/json` (accessor 11 + `parse` + `parse_message` + `RpcMessage::parse`) | **erased `Error`** |
 
 **slice 3 だけ erased `Error` なのは bootstrap の制約による**。`@vibe/json` の

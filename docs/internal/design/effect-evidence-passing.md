@@ -2017,7 +2017,7 @@ gate 50 更新。
 ### 追記30 (2026-07-25): 3c — @vibe/concurrent への接続と
 safe-mut builtin list
 
-`@vibe/concurrent` に suspendable task API (adopt/settle/park/wake/
+`@vibe/concurrent/experimental` に suspendable task API (adopt/settle/park/wake/
 pump — docs/internal/design/concurrency.md 実装ノート「3c」参照) を実装し、2 task の
 mid-body 相互 interleave の conformance lock (`suspend_test.vibe`) が
 Phase 3a/3b の lowering 上で green。パターンの要点:
@@ -2247,7 +2247,7 @@ frontier 付き replay loop の第一級消費者は以下だけ:
 ### 追記33 (2026-07-25): channel blocking スライスと desugar 内部
 primitive の safe-mut 追加
 
-`@vibe/concurrent` の `Sender::send_wait` / `Receiver::recv_wait`
+`@vibe/concurrent/experimental` の `Sender::send_wait` / `Receiver::recv_wait`
 (`with Async`、deposit → suspend → 自己再帰リトライ) を closure-CPS
 機構の上に実装した (docs/internal/design/concurrency.md 実装ノート参照)。compiler 側の
 変更は 1 点だけ: `scps_is_safe_mut_builtin` に parser desugar の内部
@@ -2640,7 +2640,7 @@ let 束縛の綴り (`let v = callee(1); v`) は `__scps_bubble_E` 合成に分�
 同時に塞いでいる。
 
 **regression lock の分担**: landed 分の
-`lib/@vibe/concurrent/suspend_test.vibe` "CPS-split callee results" 4本は
+`lib/@vibe/concurrent/experimental/suspend_test.vibe` "CPS-split callee results" 4本は
 `spawn_suspend` 経由の library-level。`fixtures/scps_tail_needing_literal_test.vibe`
 の7本はそれと独立で、hand-written な suspend-class handle だけの最小形
 (tail / let / 先行 let / capture あり / needing 連鎖 / perform しない needing /
@@ -3354,7 +3354,7 @@ Done-wrap する。それが `if prow != ""` の内側にあり、**step-split �
 | 試行 | 仮説 | 結果 |
 |---|---|---|
 | 1 | `scps_calls_ok` の `EFn` arm が cps_locals を保持している | **効果ゼロ** → literal は既に step-split 済みで、問題は body でなく**渡され方**だと判明 |
-| 2 | arg-position fixup の「鏡」が無い | **P0 は直ったが** `lib/@vibe/concurrent/suspend_test.vibe` (supported な形) を壊した |
+| 2 | arg-position fixup の「鏡」が無い | **P0 は直ったが** `lib/@vibe/concurrent/experimental/suspend_test.vibe` (supported な形) を壊した |
 | 3 | needing callee を免除 | `TaskGroup::run` は cneeding に無く、**変わらず** |
 | 4 | **row 変数のパラメータを免除** | **通った** — P0 は reject、suspend_test は 27 tests pass、601/601、gate green |
 
