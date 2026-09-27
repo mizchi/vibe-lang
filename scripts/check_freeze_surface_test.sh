@@ -100,6 +100,12 @@ doc '- **String**: `length`
 
 ### 3.1 Concurrency (`@vibe/concurrent`)
 
+- the types `Sender[s, e]`'
+expect 1 "a package subsection type written with the wrong arity" "@vibe/concurrent:Sender/arity2!=3"
+doc '- **String**: `length`
+
+### 3.1 Concurrency (`@vibe/concurrent`)
+
 - `Sender::send` / `clone` / `release`'
 expect 0 "abbreviated package methods its contract declares"
 doc '- **String**: `length`

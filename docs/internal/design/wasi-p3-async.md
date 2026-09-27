@@ -281,7 +281,7 @@ silently serial, with no warning and no failure.
 
 The concurrency surface that ships is `lib/@vibe/concurrent`: the stable core
 (`TaskGroup::run` / `spawn`, `TaskHandle::join`, channels, `Parallel::map`) in
-`@vibe/concurrent/experimental`, and the suspendable-task lane (`TaskGroup::spawn_suspend` /
+`@vibe/concurrent`, and the suspendable-task lane (`TaskGroup::spawn_suspend` /
 `sleep_wait`) in `@vibe/concurrent/experimental` behind `VIBE_UNSTABLE=1`. The
 source of truth for the public semantics is the
 [ADR-0068 detailed specification](concurrency.md). A true subtask spawn

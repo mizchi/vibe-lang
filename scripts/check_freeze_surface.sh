@@ -167,11 +167,19 @@ for line in m.group(0).splitlines():
                     pkg_missing.append(pkg + " " + name)
             # A bare type, written alone or applied (`TaskGroup[rg, e]`), is
             # frozen too: it must be a type the contract declares.
-            head = re.fullmatch(r"([A-Z][A-Za-z0-9_]*)(\[[^\]]*\])?", tok.strip())
+            # An applied form also freezes the arity: `TaskHandle[rg, e, T]`
+            # must meet a declaration with three parameters.
+            head = re.fullmatch(r"([A-Z][A-Za-z0-9_]*)(?:\[([^\]]*)\])?", tok.strip())
             if head:
                 name = head.group(1)
-                if not re.search(r"^(opaque )?type " + re.escape(name) + r"\b", declared, re.M):
+                decl = re.search(r"^(?:opaque )?type " + re.escape(name) + r"\b(?:\[([^\]]*)\])?", declared, re.M)
+                if not decl:
                     pkg_missing.append(pkg + " " + name)
+                elif head.group(2) is not None:
+                    want = len([x for x in head.group(2).split(",") if x.strip()])
+                    have = len([x for x in (decl.group(1) or "").split(",") if x.strip()])
+                    if want != have:
+                        pkg_missing.append(pkg + " " + name + "/arity" + str(want) + "!=" + str(have))
         continue
     head = re.match(r"- \*\*([A-Za-z][A-Za-z0-9_]*)\*\*", line)
     if line.startswith("- "):
