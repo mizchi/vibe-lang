@@ -36,6 +36,7 @@ import @vibe/compiler/core {
 
 import @vibe/compiler/codegen/common_analysis {
   collect_free_vars,
+  collect_pattern_bindings,
   collect_strings_stmts,
   emit_closure_call_tail,
   emit_closure_resolve,
@@ -8016,6 +8017,11 @@ fn rc_exit_operands_ok(items: Array[Expr], local_names: Array[String], ctx: Comp
 fn rc_exit_fresh_independent_closure(e: Expr, local_names: Array[String]) -> Bool {
   match e {
     EFn(_, _, _, _, _, _) => true,
+    ECall(EIdent("__lambda_return_owned", off), args, _) => if off < 0 && Array::length(args) == 1 {
+      rc_exit_fresh_independent_closure(Array::get(args, 0), local_names)
+    } else {
+      false
+    },
     ECall(EIdent(name, _), args, _) => Array::length(args) == 0 && find_local_slot(local_names, name) < 0,
     ELet(_, _, tail, _) => rc_exit_fresh_independent_closure(tail, local_names),
     ESeq(_, tail) => rc_exit_fresh_independent_closure(tail, local_names),
@@ -8026,12 +8032,56 @@ fn rc_exit_fresh_independent_closure(e: Expr, local_names: Array[String]) -> Boo
 /// A recursive binder may be transferred on one return branch and abandoned
 /// on the other. The planner merges their counts, so compare the returned
 /// pointer with the binder only for a direct closure result on both paths.
-fn rc_exit_conditional_rec_transfer(e: Expr, name: String, local_names: Array[String]) -> Bool {
+fn rc_exit_passthrough_rec_result(e: Expr, name: String, local_names: Array[String], shadowed: Array[String], ctx: CompileCtx) -> Bool {
+  if array_contains_str(shadowed, name) {
+    return false
+  }
   match e {
-    EIf(_, yes, no) => match (yes, no) {
-      (EIdent(n, _), other) => n == name && rc_exit_fresh_independent_closure(other, local_names),
-      (other, EIdent(n, _)) => n == name && rc_exit_fresh_independent_closure(other, local_names),
-      _ => false
+    EIdent(n, _) => n == name,
+    // Named owning-return normalization can wrap the branch's call before
+    // this exit sees it. The marker preserves pointer identity.
+    ECall(EIdent("__lambda_return_owned", off), args, _) => if off < 0 && Array::length(args) == 1 {
+      rc_exit_passthrough_rec_result(Array::get(args, 0), name, local_names, shadowed, ctx)
+    } else {
+      false
+    },
+    ECall(EIdent(callee, _), args, _) => {
+      if find_local_slot(local_names, callee) >= 0 {
+        return false
+      }
+      for row in ctx.passthrough_ret_params {
+        if row.0 == callee && row.1 < Array::length(args) {
+          match Array::get(args, row.1) {
+            EIdent(n, _) => if n == name {
+              return true
+            },
+            _ => ()
+          }
+        }
+      }
+      false
+    },
+    _ => false
+  }
+}
+
+fn rc_exit_conditional_rec_transfer(e: Expr, name: String, local_names: Array[String], ctx: CompileCtx) -> Bool {
+  match e {
+    EIf(_, yes, no) => rc_exit_passthrough_rec_result(yes, name, local_names, [], ctx) && rc_exit_fresh_independent_closure(no, local_names) || rc_exit_passthrough_rec_result(no, name, local_names, [
+    ], ctx) && rc_exit_fresh_independent_closure(yes, local_names),
+    EMatch(_, arms) => {
+      let mut seen_rec = false
+      let mut safe = Array::length(arms) > 0
+      for arm in arms {
+        let binds: Array[String] = []
+        let _ = collect_pattern_bindings(arm.0, binds)
+        if rc_exit_passthrough_rec_result(arm.1, name, local_names, binds, ctx) {
+          seen_rec = true
+        } else if !rc_exit_fresh_independent_closure(arm.1, local_names) {
+          safe = false
+        }
+      }
+      safe && seen_rec
     },
     _ => false
   }
@@ -8203,7 +8253,7 @@ export fn rc_exit_release(buf: Bytes, ctx: CompileCtx, local_names: Array[String
             let ek = Array::get(info, i * 3)
             let local = Array::get(info, i * 3 + 1)
             let flag = Array::get(info, i * 3 + 2)
-            let conditional_rec = kind == 0 && result_local >= 0 && ek == 6 && !rc_exit_name_shared(names, info, lo, i) && find_local_slot(local_names, n) == local && rc_exit_conditional_rec_transfer(operand, n, local_names)
+            let conditional_rec = kind == 0 && result_local >= 0 && ek == 6 && !rc_exit_name_shared(names, info, lo, i) && find_local_slot(local_names, n) == local && rc_exit_conditional_rec_transfer(operand, n, local_names, ctx)
             let count = if conditional_rec {
               1
             } else if !operand_ok || ek >= 100 || array_contains_str(keep, n) || rc_exit_name_shared(names, info, lo, i) || find_local_slot(local_names, n) != local {
