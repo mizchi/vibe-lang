@@ -321,14 +321,51 @@ fn emit_assignop_rc_tag_fix(buf: Bytes, enable_rc: Bool, op: String) -> Unit {
 /// a projection in this position as a borrow, leaving its owner to drop it.
 /// A named call uses the same declared-return and view checks as the owned
 /// path classifier; an unknown result keeps the previous conservative drop.
+fn seq_handler_resumes(e: Expr) -> Bool {
+  match e {
+    ECall(EIdent("resume", _), _, _) => true,
+    ELet(_, _, body, _) => seq_handler_resumes(body),
+    ELetMut(_, _, body, _) => seq_handler_resumes(body),
+    ELetRec(_, _, body) => seq_handler_resumes(body),
+    ESeq(_, body) => seq_handler_resumes(body),
+    EIf(_, then_body, else_body) => seq_handler_resumes(then_body) && seq_handler_resumes(else_body),
+    _ => false
+  }
+}
+
+fn seq_local_call_owns_result(ctx: CompileCtx, slot: Int) -> Bool {
+  let mut i = Array::length(ctx.seq_owned_return_slots) - 1
+  let mut found = false
+  let mut owned = false
+  while i >= 0 && !found {
+    let entry = Array::get(ctx.seq_owned_return_slots, i)
+    if entry / 2 == slot {
+      owned = entry % 2 == 1
+      found = true
+    }
+    i = i - 1
+  }
+  owned
+}
+
 fn seq_discard_owns_result_in(e: Expr, local_names: Array[String], bound: Array[String], ctx: CompileCtx) -> Bool with Exception {
   match e {
-    ECall(EIdent(n, _), _, _) => !array_contains_str(bound, n) && find_local_slot(local_names, n) < 0 && (is_ctor_call(e, ctx.ctor_table) || (bsearch_leftmost(ctx.heap_ret_names, n) >= 0 && !is_borrow_ret_builtin(n) && bsearch_leftmost(ctx.borrow_ret_names, n) < 0 && bsearch_leftmost(ctx.borrow_view_ret, n) < 0)),
+    ECall(EIdent(n, _), _, _) => if array_contains_str(bound, n) {
+      false
+    } else {
+      let slot = find_local_slot(local_names, n)
+      if slot >= 0 {
+        seq_local_call_owns_result(ctx, slot)
+      } else {
+        is_ctor_call(e, ctx.ctor_table) || (bsearch_leftmost(ctx.heap_ret_names, n) >= 0 && !is_borrow_ret_builtin(n) && bsearch_leftmost(ctx.borrow_ret_names, n) < 0 && bsearch_leftmost(ctx.borrow_view_ret, n) < 0)
+      }
+    },
     EArray(_) => true,
     ETuple(_) => true,
     ERecord(_, _, _) => true,
     EMap(_) => true,
     EFloat(_) => true,
+    EFn(_, _, _, _, _, _) => true,
     EBinOp(op, _, _, _) => (op == "+" || op == "-" || op == "*" || op == "/") && expr_is_floatish(e, local_names, ctx),
     EUnaryOp("-", _) => expr_is_floatish(e, local_names, ctx),
     EIf(_, then_body, else_body) => seq_discard_owns_result_in(then_body, local_names, bound, ctx) && seq_discard_owns_result_in(else_body, local_names, bound, ctx),
@@ -341,6 +378,22 @@ fn seq_discard_owns_result_in(e: Expr, local_names: Array[String], bound: Array[
         let (pat, body) = Array::get(arms, i)
         let mark = Array::length(bound)
         if !pvo_pat_binds(pat, bound) || !seq_discard_owns_result_in(body, local_names, bound, ctx) {
+          owned = false
+        }
+        Array::truncate(bound, mark)
+        i = i + 1
+      }
+      owned
+    },
+    EHandle(body, arms) => if !seq_discard_owns_result_in(body, local_names, bound, ctx) {
+      false
+    } else {
+      let mut owned = true
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (pat, arm_body) = Array::get(arms, i)
+        let mark = Array::length(bound)
+        if !pvo_pat_binds(pat, bound) || !(seq_discard_owns_result_in(arm_body, local_names, bound, ctx) || seq_handler_resumes(arm_body)) {
           owned = false
         }
         Array::truncate(bound, mark)
@@ -378,6 +431,25 @@ fn seq_discard_owns_result_in(e: Expr, local_names: Array[String], bound: Array[
 
 fn seq_discard_owns_result(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
   seq_discard_owns_result_in(e, local_names, array_empty(), ctx)
+}
+
+fn seq_lambda_returns_owned(value: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  if is_efn(value) {
+    let bound = array_empty()
+    let params = get_efn_params(value)
+    let mut i = 0
+    while i < Array::length(params) {
+      let (name, _) = Array::get(params, i)
+      Array::push(bound, name)
+      i = i + 1
+    }
+    seq_discard_owns_result_in(get_efn_body(value), local_names, bound, ctx)
+  } else if is_eident(value) {
+    let slot = find_local_slot(local_names, get_eident_name(value))
+    slot >= 0 && seq_local_call_owns_result(ctx, slot)
+  } else {
+    false
+  }
 }
 
 /// #3126: guard an `Int` `/` or `%` whose divisor may be zero. Called with the
@@ -2609,8 +2681,14 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     // heap binding as owned) release the reference the plan left with `p`.
     let value_sd = let_retain_store_dup_tails(value, local_names, ctx)
     let nl = compile_expr(buf, retain_wrap_let_value(value_sd, name, local_names, ctx), local_names, next_local + 1, ctx, ld)
+    let seq_owned_return = seq_lambda_returns_owned(value, local_names, ctx)
     Array::set(local_names, local_idx, name)
     emit_local_set(buf, local_idx)
+    if seq_owned_return {
+      Array::push(ctx.seq_owned_return_slots, local_idx * 2 + 1)
+    } else if seq_local_call_owns_result(ctx, local_idx) {
+      Array::push(ctx.seq_owned_return_slots, local_idx * 2)
+    }
     // #3113: a read of a captured cell arrives behind an owning-store marker
     // (cl_own_cell_stmts); classify the slot from the value it wraps.
     let class_value = cet_strip_owned_markers(value)

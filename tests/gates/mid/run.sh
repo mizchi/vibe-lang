@@ -1686,11 +1686,33 @@ for sq_lane in bump rc shadow gc; do
       exit 1
     fi
   fi
+  rm -f "$sqdir/extended.wasm" "$sqdir/extended.wasm.diag"
+  env "$sq_env" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    fixtures/rc_seq_discard_extended_test.vibe "$sqdir/extended.wasm" main >/dev/null 2>&1 || true
+  if [ ! -s "$sqdir/extended.wasm" ]; then
+    echo "[compiler-gate] FAIL: rc_seq_discard_extended did not compile on $sq_lane (#3199)" >&2
+    cat "$sqdir/extended.wasm.diag" >&2 2>/dev/null || true
+    exit 1
+  fi
+  sq_extended_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$sqdir/extended.wasm" 2>&1 | tail -1)"
+  if [ "$sq_extended_out" != "8000" ]; then
+    echo "[compiler-gate] FAIL: rc_seq_discard_extended got '$sq_extended_out' on $sq_lane (want 8000; #3199)" >&2
+    exit 1
+  fi
+  if [ "$sq_lane" = rc ]; then
+    sq_extended_json="$(node scripts/measure_heap.mjs "$sqdir/extended.wasm" main 2>/dev/null)"
+    sq_extended_used="$(printf '%s' "$sq_extended_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+    if [ -z "$sq_extended_used" ] || [ "$sq_extended_used" -ge 20000 ]; then
+      echo "[compiler-gate] FAIL: rc_seq_discard_extended heap_used=$sq_extended_used >= 20000 (#3199; before: 576084 B)" >&2
+      exit 1
+    fi
+  fi
 done
 rm -rf "$sqdir"
 for sq_lane in 1 shadow; do
   if ! VIBE_RC="$sq_lane" VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
-      bash scripts/vibe_test.sh fixtures/rc_seq_discard_bounded_test.vibe fixtures/rc_seq_discard_borrow_test.vibe \
+      bash scripts/vibe_test.sh fixtures/rc_seq_discard_bounded_test.vibe fixtures/rc_seq_discard_extended_test.vibe fixtures/rc_seq_discard_borrow_test.vibe \
       >"$ROOT_DIR/_build/_gate_rc_seq_discard.log" 2>&1; then
     echo "[compiler-gate] FAIL: a discarded value leaked or released its owner on VIBE_RC=$sq_lane (#3199):" >&2
     tail -20 "$ROOT_DIR/_build/_gate_rc_seq_discard.log" >&2
@@ -1698,7 +1720,7 @@ for sq_lane in 1 shadow; do
   fi
 done
 rm -f "$ROOT_DIR/_build/_gate_rc_seq_discard.log"
-echo "[compiler-gate] RC discarded sequence result ok (4000 on all lanes, rc heap_used=$sq_used B; borrows alive on rc + shadow)"
+echo "[compiler-gate] RC discarded sequence result ok (4000 + 8000 on all lanes, rc heap_used=$sq_used/$sq_extended_used B; borrows alive on rc + shadow)"
 
 # 40f1a. #2427: the shadow table must not overlap the heap it describes.
 #        40f above proves the marks catch a real dup/drop-of-freed; this
