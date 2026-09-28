@@ -206,4 +206,4 @@ the edit that fixes them rather than an internal pass name.
 
 The [0.1.0 milestone](https://github.com/mizchi/vibe-lang/milestone/2) defines
 the release scope. [#2834](https://github.com/mizchi/vibe-lang/issues/2834)
-tracks the acceptance evidence and remaining release decisions.
+records the release acceptance evidence.

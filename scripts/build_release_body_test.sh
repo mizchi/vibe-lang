@@ -146,6 +146,7 @@ check "exit" "$rc" "0"
 if [ "$rc" = 0 ]; then
   absent "$WORK/actual-rc.md" "## Release checklist (owner)"
   absent "$WORK/actual-rc.md" "- [ ]"
+  absent "$WORK/actual-rc.md" "remaining release decisions"
   contains "$WORK/actual-rc.md" "issues/2834"
 fi
 
