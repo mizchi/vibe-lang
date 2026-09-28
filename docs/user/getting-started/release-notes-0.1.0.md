@@ -7,8 +7,9 @@
 
 The previous stable release is `v0.0.1` (2026-04-14); `v0.1.0-rc.1` and
 `v0.1.0-rc.2` were published as pre-releases. The final candidate also fixes
-RC ownership of store views, local closure captures, and local recursive
-closures (#3215, #3203, #3110); makes qualified constructor patterns through
+RC ownership of store views, local closure captures, recursive closures, and
+closures returned from `Option` payloads (#3215, #3203, #3110, #3240); makes
+qualified constructor patterns through
 public aliases of private enums resolve or refuse safely (#3173, #3238); and
 closes the remaining iterator interpolation and `await` shadowing regressions
 (#3212, #3206). Between `v0.0.1` and 0.1.0 the language was
