@@ -1,5 +1,5 @@
 import @vibe/compiler/core {
-  Expr, Stmt
+  Expr, Stmt, TypeExpr
 }
 import @vibe/compiler/lowering/effects/await {
   await_poll_pass
@@ -14,4 +14,18 @@ test "ready futures lower without adding poll helpers" {
     SExpr(EInt(v)) => v,
     _ => -1
   }, content = "42")
+}
+
+test "an extern await binding is not lowered as the builtin" {
+  let ready = ECall(EIdent("Future::ready", 1), [EInt(5)], 2)
+  let call = ECall(EIdent("await", 3), [ready], 4)
+  let stmts = [
+    SExternLet("await", TyFn([TyApp("Future", [TyName("Int")])], TyName("String"), None)),
+    SExpr(call)
+  ]
+  await_poll_pass(stmts, false, false, "")
+  assert(match Array::get(stmts, 1) {
+    SExpr(ECall(EIdent("await", _), _, _)) => true,
+    _ => false
+  })
 }

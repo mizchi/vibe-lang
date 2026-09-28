@@ -975,6 +975,7 @@ fn afe_bind_params(locals: AfeLocals, params: Array[(String, Option[TypeExpr])],
   let mut i = 0
   while i < Array::length(params) {
     let (pname, ptype) = Array::get(params, i)
+    let name = effect_param_base_name(pname)
     let head = match ptype {
       Some(te) => match afe_texpr_head_name(te) {
         Some(h) => Some(afe_tag_async_iter_head(h, afe_type_binding_is_builtin_async_iter(env))),
@@ -982,10 +983,10 @@ fn afe_bind_params(locals: AfeLocals, params: Array[(String, Option[TypeExpr])],
       },
       None => None
     }
-    cur = afe_bind_local(cur, pname, head)
+    cur = afe_bind_local(cur, name, head)
     cur = match ptype {
-      Some(te) => afe_bind_annotation_payloads(cur, pname, te, env),
-      None => afe_clear_annotation_payloads(cur, pname)
+      Some(te) => afe_bind_annotation_payloads(cur, name, te, env),
+      None => afe_clear_annotation_payloads(cur, name)
     }
     i = i + 1
   }
@@ -8267,7 +8268,7 @@ fn dh_lc_shadow_params(lc: Array[(String, Option[Expr])], params: Array[(String,
   let mut i = 0
   while Array::length(out) > 0 && i < Array::length(params) {
     let (pname, _) = Array::get(params, i)
-    out = dh_lc_with(out, dh_param_base_name(pname), None)
+    out = dh_lc_with(out, effect_param_base_name(pname), None)
     i = i + 1
   }
   out
@@ -8609,12 +8610,10 @@ fn dh_check_expr(expr: Expr, declared: Array[String], performed: Array[String], 
   }
 }
 
-/// Strip a trailing `~` (labeled) / `?` (optional) marker — a parameter is
-/// DECLARED as `f~` but CALLED as `f()`, so the overlay key must be the base
-/// name or the lookup misses. fixtures/effect_inline_lambda_literal_labeled_
-/// arg.vibe is exactly that shape: its handled body's only callee is the
-/// labeled parameter `f~: () -> Int with Log`.
-fn dh_param_base_name(n: String) -> String {
+/// A labeled or optional parameter is declared with a trailing marker but
+/// bound and called by its base name. Use that name for local shadowing and
+/// effect overlays.
+fn effect_param_base_name(n: String) -> String {
   let ln = String::length(n)
   if ln > 0 {
     let last = n[ln - 1: ln]
@@ -8632,7 +8631,7 @@ fn dh_overlay_with_params(ov_names: Array[String], ov_effs: Array[Array[String]]
   let (sn, se) = shadow_overlay_names(ov_names, ov_effs, params)
   let (raw_ln, le) = build_param_overlay(params, fn_names, fn_index)
   let ln = for n in raw_ln {
-    dh_param_base_name(n)
+    effect_param_base_name(n)
   }
   if Array::length(ln) == 0 {
     (sn, se)
@@ -8892,7 +8891,7 @@ fn params_hide_stdout_write(params: Array[(String, Option[TypeExpr])]) -> Bool {
   let mut hide = false
   while i < Array::length(params) {
     let (name, _) = Array::get(params, i)
-    if binding_hides_stdout_write(dh_param_base_name(name)) {
+    if binding_hides_stdout_write(effect_param_base_name(name)) {
       hide = true
     } else {
       ()
