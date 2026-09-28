@@ -66,6 +66,11 @@ fn pass_explicit(callback: (Int) -> Int) -> (Int) -> Int {
   return callback
 }
 
+fn pass_marked(marker: Int, callback: (Int) -> Int) -> (Int) -> Int {
+  let _ = marker
+  callback
+}
+
 fn pass_via_alias(callback: (Int) -> Int) -> (Int) -> Int {
   let alias = callback
   alias
@@ -530,6 +535,36 @@ fn make_counter_via_nested_owner_match(start: Int, owner: Bool, choice: Int) -> 
     }
   } else {
     make_fresh_counter()
+  }
+}
+
+fn make_counter_via_fresh_passthrough(start: Int, owner: Bool) -> (Int) -> Int {
+  let rec go = (n: Int) -> Int {
+    if n > start {
+      n
+    } else {
+      go(n + 1)
+    }
+  }
+  return if owner {
+    go
+  } else {
+    pass_explicit(make_fresh_counter())
+  }
+}
+
+fn make_counter_via_fresh_marked_passthrough(start: Int, owner: Bool) -> (Int) -> Int {
+  let rec go = (n: Int) -> Int {
+    if n > start {
+      n
+    } else {
+      go(n + 1)
+    }
+  }
+  return if owner {
+    go
+  } else {
+    pass_marked(1, make_fresh_counter())
   }
 }
 
@@ -1065,6 +1100,40 @@ test "nested owner match arms release their unselected recursive closure" {
   let before = Profiler::heap_bytes()
   while i < 2200 {
     let f = make_counter_via_nested_owner_match(8, false, 0)
+    let _ = f(5)
+    i = i + 1
+  }
+  inspect(Profiler::heap_bytes() - before < 1000, content = "true")
+}
+
+test "a fresh passthrough releases its unselected recursive closure" {
+  inspect(make_counter_via_fresh_passthrough(8, true)(5), content = "9")
+  let mut i = 0
+  while i < 200 {
+    let f = make_counter_via_fresh_passthrough(8, false)
+    let _ = f(5)
+    i = i + 1
+  }
+  let before = Profiler::heap_bytes()
+  while i < 2200 {
+    let f = make_counter_via_fresh_passthrough(8, false)
+    let _ = f(5)
+    i = i + 1
+  }
+  inspect(Profiler::heap_bytes() - before < 1000, content = "true")
+}
+
+test "a fresh marked passthrough releases its unselected recursive closure" {
+  inspect(make_counter_via_fresh_marked_passthrough(8, true)(5), content = "9")
+  let mut i = 0
+  while i < 200 {
+    let f = make_counter_via_fresh_marked_passthrough(8, false)
+    let _ = f(5)
+    i = i + 1
+  }
+  let before = Profiler::heap_bytes()
+  while i < 2200 {
+    let f = make_counter_via_fresh_marked_passthrough(8, false)
     let _ = f(5)
     i = i + 1
   }
