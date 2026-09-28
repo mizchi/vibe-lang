@@ -14,6 +14,7 @@ import @vibe/compiler/core {
   builtin_iterator_serialized_boundary_markers,
   collect_export_def_value_names,
   collect_import_value_renames,
+  export_plan_fingerprint_text,
   export_plan_renames_for,
   namespace_exported_name,
   namespace_private_value_stmts,
@@ -558,6 +559,21 @@ test "an enum re-export chain is not limited to sixteen hops" {
   let renames = collect_import_value_renames(plan, entry_path, entry)
   inspect(Array::length(renames), "1")
   inspect(Array::get(renames, 0).1, "Choice")
+}
+
+test "an enum alias change invalidates the export plan fingerprint" {
+  let provider = parse_program(lex("export enum Old { First }\nexport enum New { First }"))
+  let old_facade = parse_program(lex("export ./provider.vibe { enum Old as Public }"))
+  let new_facade = parse_program(lex("export ./provider.vibe { enum New as Public }"))
+  let entry = parse_program(lex("import ./facade.vibe { Public }\nlet result = Public::First"))
+  let paths = [
+    "/virtual/provider.vibe",
+    "/virtual/facade.vibe",
+    "/virtual/entry.vibe"
+  ]
+  let old_plan = build_export_rename_plan(paths, [provider, old_facade, entry], "/virtual/entry.vibe")
+  let new_plan = build_export_rename_plan(paths, [provider, new_facade, entry], "/virtual/entry.vibe")
+  inspect(export_plan_fingerprint_text(old_plan) == export_plan_fingerprint_text(new_plan), "false")
 }
 
 //# #2348: a WAT body's `call $name` survives the merge rename
