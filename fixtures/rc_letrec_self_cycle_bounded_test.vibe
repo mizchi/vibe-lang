@@ -496,6 +496,43 @@ fn make_counter_via_nested_fresh_match(start: Int, owner: Bool, choice: Int) -> 
   }
 }
 
+fn make_counter_via_nested_owner_branch(start: Int, owner: Bool, first: Bool) -> (Int) -> Int {
+  let rec go = (n: Int) -> Int {
+    if n > start {
+      n
+    } else {
+      go(n + 1)
+    }
+  }
+  return if owner {
+    if first {
+      go
+    } else {
+      go
+    }
+  } else {
+    make_fresh_counter()
+  }
+}
+
+fn make_counter_via_nested_owner_match(start: Int, owner: Bool, choice: Int) -> (Int) -> Int {
+  let rec go = (n: Int) -> Int {
+    if n > start {
+      n
+    } else {
+      go(n + 1)
+    }
+  }
+  return if owner {
+    match choice {
+      0 => go,
+      _ => go
+    }
+  } else {
+    make_fresh_counter()
+  }
+}
+
 fn make_fresh_counter() -> (Int) -> Int {
   let offset = [1]
   (n: Int) -> Int {
@@ -996,6 +1033,42 @@ test "nested fresh match arms release their unselected recursive closure" {
     inspect(Profiler::heap_bytes() - before < 1000, content = "true")
     choice = choice + 1
   }
+}
+
+test "nested owner branches release their unselected recursive closure" {
+  inspect(make_counter_via_nested_owner_branch(8, true, true)(5), content = "9")
+  inspect(make_counter_via_nested_owner_branch(8, true, false)(5), content = "9")
+  let mut i = 0
+  while i < 200 {
+    let f = make_counter_via_nested_owner_branch(8, false, true)
+    let _ = f(5)
+    i = i + 1
+  }
+  let before = Profiler::heap_bytes()
+  while i < 2200 {
+    let f = make_counter_via_nested_owner_branch(8, false, true)
+    let _ = f(5)
+    i = i + 1
+  }
+  inspect(Profiler::heap_bytes() - before < 1000, content = "true")
+}
+
+test "nested owner match arms release their unselected recursive closure" {
+  inspect(make_counter_via_nested_owner_match(8, true, 0)(5), content = "9")
+  inspect(make_counter_via_nested_owner_match(8, true, 1)(5), content = "9")
+  let mut i = 0
+  while i < 200 {
+    let f = make_counter_via_nested_owner_match(8, false, 0)
+    let _ = f(5)
+    i = i + 1
+  }
+  let before = Profiler::heap_bytes()
+  while i < 2200 {
+    let f = make_counter_via_nested_owner_match(8, false, 0)
+    let _ = f(5)
+    i = i + 1
+  }
+  inspect(Profiler::heap_bytes() - before < 1000, content = "true")
 }
 
 test "an assignment continuation returns a live recursive closure" {

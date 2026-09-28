@@ -8248,6 +8248,23 @@ export fn rc_exit_passthrough_rec_result(e: Expr, name: String, local_names: Arr
     ESeq(head, tail) => !rc_exit_mentions_name(head, name) && rc_exit_passthrough_rec_result(tail, name, local_names, shadowed, ctx),
     EAssign(target, value, tail) => target != name && !rc_exit_mentions_name(value, name) && rc_exit_passthrough_rec_result(tail, name, local_names, shadowed, ctx),
     EAssignOp(target, _, value, tail) => target != name && !rc_exit_mentions_name(value, name) && rc_exit_passthrough_rec_result(tail, name, local_names, shadowed, ctx),
+    EIf(cond, yes, no) => !rc_exit_mentions_name(cond, name) && rc_exit_passthrough_rec_result(yes, name, local_names, shadowed, ctx) && rc_exit_passthrough_rec_result(no, name, local_names, shadowed, ctx),
+    EMatch(scrutinee, arms) => {
+      if rc_exit_mentions_name(scrutinee, name) || Array::length(arms) == 0 {
+        return false
+      }
+      for arm in arms {
+        let arm_shadowed: Array[String] = []
+        for bound in shadowed {
+          Array::push(arm_shadowed, bound)
+        }
+        let _ = collect_pattern_bindings(arm.0, arm_shadowed)
+        if !rc_exit_passthrough_rec_result(arm.1, name, local_names, arm_shadowed, ctx) {
+          return false
+        }
+      }
+      true
+    },
     _ => false
   }
 }
