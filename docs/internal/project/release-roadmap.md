@@ -98,10 +98,13 @@ does not block promotion; an unexplained divergence between two lanes does.
 
 The merged compiler tree for rc.2 completed the hunt: 750/750 generated
 programs produced no divergence, and 300/300 mutation seeds produced one
-pre-existing diagnostic finding on invalid input, tracked as #3226. Direct RC
-leak and shadowing investigations closed #3193 and #3223. The exact compiler
-identity, commands and triage are recorded in [#2834](https://github.com/mizchi/vibe-lang/issues/2834).
-The tag and published-install evidence is tracked in #2834.
+pre-existing diagnostic finding on invalid input, tracked as #3226. Further
+milestone fixes changed the compiler tree after rc.2. The final candidate's
+own stage2 completed another 750/750 generated programs without a finding;
+300/300 mutation seeds reproduced only the same #3226 diagnostic. Direct RC
+leak and shadowing investigations closed #3193, #3223, #3215 and #3203. The
+compiler identity, commands and triage are recorded in [#2834](https://github.com/mizchi/vibe-lang/issues/2834).
+The final tag and published-install evidence remain in #2834.
 
 The stable surface that the `0.1.0` tag freezes is
 [spec/stable-surface.md](../../user/reference/stable-surface.md) (ADR-0057). While the toolchain
