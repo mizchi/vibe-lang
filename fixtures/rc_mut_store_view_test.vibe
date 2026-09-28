@@ -204,6 +204,58 @@ fn cond_view(n: Int) -> String {
   hold(cur)
 }
 
+// #3215: the conditional is the result of a block, not the store's root.
+fn wrapped_cond_view(n: Int) -> String {
+  let mut cur = A(fresh("c", 0))
+  let mut i = 0
+  while i < n {
+    let xs = [A(fresh("wb", i + 1))]
+    let v = Array::get(xs, 0)
+    cur = {
+      churn()
+      if i >= 0 {
+        v
+      } else {
+        A(fresh("no", 0))
+      }
+    }
+    i = i + 1
+  }
+  let z = churn_d(n)
+  String::concat(hold(cur), name_of(z))
+}
+
+// #3215: the branch's local alias is still a view of `xs`.
+fn branch_local_view(n: Int) -> String {
+  let mut cur = A(fresh("c", 0))
+  let mut i = 0
+  while i < n {
+    let xs = [A(fresh("ba", i + 1))]
+    cur = if i >= 0 {
+      let v = Array::get(xs, 0)
+      v
+    } else {
+      A(fresh("no", 0))
+    }
+    i = i + 1
+  }
+  let z = churn_d(n)
+  String::concat(hold(cur), name_of(z))
+}
+
+// A match binder already owns the reference transferred to the slot.
+fn match_binder_store(n: Int) -> String {
+  let mut cur = A(fresh("c", 0))
+  let mut i = 0
+  while i < n {
+    cur = match A(fresh("mb", i + 1)) {
+      d => d
+    }
+    i = i + 1
+  }
+  hold(cur)
+}
+
 fn cond_proj(n: Int) -> String {
   let mut cur = A(fresh("c", 0))
   let mut i = 0
@@ -255,7 +307,10 @@ fn cond_fresh(n: Int) -> String {
 // The view reads INTO the slot's old value: it must be retained before that
 // value is released.
 fn kid_walk(depth: Int) -> String {
-  let mut cur = Node::{ name: "root", kids: [Node::{ name: "k1", kids: [Node::{ name: "k2", kids: [] }] }] }
+  let mut cur = Node::{
+    name: "root",
+    kids: [Node::{ name: "k1", kids: [Node::{ name: "k2", kids: [] }] }]
+  }
   let mut d = 0
   while d < depth {
     let k = Array::get(cur.kids, 0)
@@ -269,7 +324,10 @@ fn kid_walk(depth: Int) -> String {
 // The same, through a conditional: the view is retained as the branch's
 // value, and the old value is released after it.
 fn kid_walk_cond(depth: Int) -> String {
-  let mut cur = Node::{ name: "root", kids: [Node::{ name: "k1", kids: [Node::{ name: "k2", kids: [] }] }] }
+  let mut cur = Node::{
+    name: "root",
+    kids: [Node::{ name: "k1", kids: [Node::{ name: "k2", kids: [] }] }]
+  }
   let mut d = 0
   while d < depth {
     let k = Array::get(cur.kids, 0)
@@ -293,7 +351,7 @@ fn break_view(n: Int) -> D {
     if i == n {
       break v
     }
-    continue(i + 1)
+    continue (i + 1)
   }
 }
 
@@ -304,7 +362,7 @@ fn continue_view(n: Int) -> String {
     }
     let xs = [A(fresh("ct", i + 1))]
     let v = Array::get(xs, 0)
-    continue(v, i + 1)
+    continue (v, i + 1)
   }
 }
 
@@ -765,6 +823,18 @@ test "a borrow-returning wrapper's result stored" {
 
 test "a conditional handing back a view" {
   inspect(cond_view(3), content = "cd3")
+}
+
+test "a wrapped conditional handing back a view" {
+  inspect(wrapped_cond_view(3), content = "wb3zz3")
+}
+
+test "a branch-local borrowed alias stored into an owning slot" {
+  inspect(branch_local_view(3), content = "ba3zz3")
+}
+
+test "a match binder transfers its owned reference into the slot" {
+  inspect(match_binder_store(3), content = "mb3")
 }
 
 test "a conditional handing back a projection" {
