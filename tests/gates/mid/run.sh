@@ -4512,6 +4512,7 @@ for private_pat_lane in bump shadow gc; do
       VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
       bash scripts/vibe_test.sh fixtures/reexport_enum_alias_private_origin_test.vibe \
       fixtures/reexport_enum_alias_private_prefixed_variant_test.vibe \
+      fixtures/reexport_enum_alias_private_entry_local_variant_test.vibe \
       >"$ROOT_DIR/_build/_gate_private_enum_pattern.log" 2>&1; then
     echo "[compiler-gate] FAIL: private enum alias pattern on $private_pat_lane (#3238)" >&2
     tail -20 "$ROOT_DIR/_build/_gate_private_enum_pattern.log" >&2
