@@ -202,51 +202,8 @@ the edit that fixes them rather than an internal pass name.
   mutation campaign found this on invalid input; the committed seed has the
   same behavior. Valid program results are unaffected.
 
-## Release checklist (owner)
+## Release verification
 
-The [0.1.0 milestone](https://github.com/mizchi/vibe-lang/milestone/2) is the
-release scope and [#2834](https://github.com/mizchi/vibe-lang/issues/2834)
-holds the detailed candidate acceptance checklist. These notes remain a draft
-until that candidate is verified.
-
-- [x] Complete or explicitly reschedule every implementation issue in the
-      0.1.0 milestone, including public contract decisions. #3193 and #3223
-      are closed, and #2984's audit children are all closed. #2834 remains
-      open for release acceptance. #1962 was rescheduled to 0.2.0 with a
-      written scope reason after its first rung landed.
-- [ ] Verify clean-machine installation and package publication/fetch/install
-      against the release candidate, using only shipped artifacts. The package
-      half is verified (`tests/integration/install/install_test.sh`: add /
-      fetch / publish against an isolated `git:file://` registry, content
-      hashes pinned, a tampered store copy and a source that does not hash to
-      the pin both refused, and a refused fetch installing nothing). The
-      clean-machine half needs a published release, so it rides the tag: the
-      `release-install` job in `.github/workflows/release.yml` installs it on
-      fresh `ubuntu-latest` and `macos-latest` with nothing but bash, curl and
-      tar, then compiles and runs a program.
-- [x] Confirm the final candidate's pinned seed has published, verified
-      assets. The candidate pins `seed/array-capacity-2026-09-20` (#2554),
-      published 2026-09-20 and verified: `sha256sum -c SHA256SUMS.txt` clean on
-      all four files, the served wasm hashing to the manifest's pin, and a
-      `bootstrap/seed/compiler.wasm`-deleted `ensure_seed.sh` run with
-      rebuilding forbidden fetching it from the release. The manifest asset's
-      `name` field named the previous seed; corrected for future bumps in
-      #2924.
-- [x] Set `VIBE_VERSION` to `0.1.0-rc.2` for the candidate tag; the release
-      asset build requires the version and tag to agree. Before the final
-      `v0.1.0` tag, commit a separate bump to `0.1.0`.
-- [ ] Verify Apache-2.0 license, book parity, stable surface and
-      `pkf run release-check` on the rc.2 tree. `LICENSE` is Apache-2.0.
-      #3225's merged tree passed 39 CI checks with two expected skips, and
-      its local full unit battery passed 1502/1502; rc.2's release check and
-      tag verification still need to run. The differential fuzz campaign on
-      that exact compiler tree completed 750/750 generated programs without
-      a finding. Its 300 mutation seeds produced one pre-existing diagnostic
-      issue, #3226, recorded above.
-- [ ] Publish `v0.1.0-rc.2` and verify its assets and clean-machine installs.
-      `.github/workflows/release.yml` triggers on a `v*` tag push, builds the
-      per-target runners, publishes this document as the release body, and runs
-      `release-install` on Ubuntu and macOS. The body builder checks and
-      absolutizes its relative links before publication. A later, separately
-      authorized `v0.1.0` tag needs the `0.1.0` version bump in its tagged
-      commit and the same post-publication checks.
+The [0.1.0 milestone](https://github.com/mizchi/vibe-lang/milestone/2) defines
+the release scope. [#2834](https://github.com/mizchi/vibe-lang/issues/2834)
+tracks the acceptance evidence and remaining release decisions.

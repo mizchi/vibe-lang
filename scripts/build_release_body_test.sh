@@ -27,11 +27,11 @@ check() { # check <label> <actual> <expected>
   else note "  FAIL $1: got '$2' want '$3'"; fail=1; fi
 }
 contains() {
-  if grep -qF "$2" "$1"; then note "  ok   contains: $2"
+  if grep -qF -e "$2" "$1"; then note "  ok   contains: $2"
   else note "  FAIL missing: $2"; sed 's/^/      /' "$1"; fail=1; fi
 }
 absent() {
-  if grep -qF "$2" "$1"; then note "  FAIL unexpectedly contains: $2"; sed 's/^/      /' "$1"; fail=1
+  if grep -qF -e "$2" "$1"; then note "  FAIL unexpectedly contains: $2"; sed 's/^/      /' "$1"; fail=1
   else note "  ok   free of: $2"; fi
 }
 
@@ -139,6 +139,15 @@ tree "$WORK/r4"
 rc="$(run "$WORK/r4" seed/whatever "$WORK/r4/out.md")"
 check "exit" "$rc" "1"
 contains "$WORK/log" "must start with 'v'"
+
+note "=== 8. the real RC body has no mutable owner checklist ==="
+rc="$(run "$ROOT_DIR" v0.1.0-rc.2 "$WORK/actual-rc.md")"
+check "exit" "$rc" "0"
+if [ "$rc" = 0 ]; then
+  absent "$WORK/actual-rc.md" "## Release checklist (owner)"
+  absent "$WORK/actual-rc.md" "- [ ]"
+  contains "$WORK/actual-rc.md" "issues/2834"
+fi
 
 note
 if [ "$fail" = 0 ]; then note "[build-release-body-test] ok"; else note "[build-release-body-test] FAIL"; fi
