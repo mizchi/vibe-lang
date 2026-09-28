@@ -260,6 +260,7 @@ import ./compile_call.vibe {
   rc_exit_break_result_owns_rec,
   rc_exit_end_store,
   rc_exit_note_store,
+  rc_exit_passthrough_rec_result,
   rc_exit_value_owned
 }
 
@@ -1959,7 +1960,8 @@ fn rc_scope_borrow_arg_reaches_owner(e: Expr, owner: String, local_names: Array[
     },
     ELet(bound, value, tail, _) => if bound == owner {
       false
-    } else if rc_mut_rec_result_is_name(tail, bound) {
+    } else if rc_mut_rec_result_is_name(tail, bound) || rc_exit_passthrough_rec_result(tail, bound, local_names, [
+    ], ctx) {
       rc_scope_borrow_arg_reaches_owner(value, owner, local_names, ctx)
     } else {
       !assign_value_mentions(value, owner) && rc_scope_borrow_arg_reaches_owner(tail, owner, local_names, ctx)
@@ -2005,6 +2007,10 @@ fn rc_mut_rec_result_is_name(e: Expr, name: String) -> Bool {
   }
 }
 
+fn rc_mut_rec_result_flows_from(e: Expr, name: String, local_names: Array[String], ctx: CompileCtx, shadowed: Array[String]) -> Bool {
+  rc_mut_rec_result_is_name(e, name) || rc_exit_passthrough_rec_result(e, name, local_names, shadowed, ctx)
+}
+
 fn rc_mut_rec_prefix_reads_owner(e: Expr, local_names: Array[String], ctx: CompileCtx, shadowed: Array[String]) -> Bool {
   for owner in ctx.rc_exit_lets {
     if !array_contains_str(shadowed, owner) && rc_mut_rec_owner_slot(owner, local_names, ctx) && assign_value_mentions(e, owner) {
@@ -2030,7 +2036,7 @@ fn rc_mut_rec_retain_passthrough_source(e: Expr, local_names: Array[String], ctx
       Array::truncate(shadowed, mark)
       (arm.0, next)
     }),
-    ELet(name, value, body, off) => if rc_mut_rec_result_is_name(body, name) {
+    ELet(name, value, body, off) => if rc_mut_rec_result_flows_from(body, name, local_names, ctx, shadowed) {
       ELet(name, rc_mut_rec_retain_passthrough_source(value, local_names, ctx, shadowed), body, off)
     } else if rc_mut_rec_prefix_reads_owner(value, local_names, ctx, shadowed) {
       e
@@ -2120,6 +2126,8 @@ fn rc_mut_rec_transfer_value(e: Expr, local_names: Array[String], ctx: CompileCt
     ELet(name, value, body, off) => {
       let next_value = if rc_mut_rec_result_is_name(body, name) {
         rc_mut_rec_transfer_value(value, local_names, ctx, shadowed)
+      } else if rc_exit_passthrough_rec_result(body, name, local_names, shadowed, ctx) {
+        rc_mut_rec_retain_passthrough_source(value, local_names, ctx, shadowed)
       } else {
         value
       }
