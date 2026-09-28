@@ -1597,11 +1597,11 @@ done
 rm -f "$ROOT_DIR/_build/_gate_rc_user_effect_handle.log"
 echo "[compiler-gate] user-effect handle guard ok (10005000 on bump/rc/shadow/gc, rc heap_used=$eh_used B; dictionaries and captured values alive on rc + shadow)"
 
-# #3203: the closure environment duplicates its array capture, so the
+# 40f0l/40. #3203: the closure environment duplicates its array capture, so the
 # defining binding keeps a reference to drop. A self-reading array
 # reassignment can release the old slot after constructing a fresh array of
 # immediate elements. Before these fixes the 2000 rounds leaked 704,108 B.
-echo "[compiler-gate] RC local capture and self-reading array release (#3203)"
+echo "[compiler-gate] 40f0l/40 RC local capture and self-reading array release (#3203)"
 cldir="_build/_gate_rc_local_closure_capture"
 rm -rf "$cldir"; mkdir -p "$cldir"
 for cl_lane in bump rc shadow gc; do
