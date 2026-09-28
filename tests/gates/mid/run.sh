@@ -1597,6 +1597,61 @@ done
 rm -f "$ROOT_DIR/_build/_gate_rc_user_effect_handle.log"
 echo "[compiler-gate] user-effect handle guard ok (10005000 on bump/rc/shadow/gc, rc heap_used=$eh_used B; dictionaries and captured values alive on rc + shadow)"
 
+# #3203: the closure environment duplicates its array capture, so the
+# defining binding keeps a reference to drop. A self-reading array
+# reassignment can release the old slot after constructing a fresh array of
+# immediate elements. Before these fixes the 2000 rounds leaked 704,108 B.
+echo "[compiler-gate] RC local capture and self-reading array release (#3203)"
+cldir="_build/_gate_rc_local_closure_capture"
+rm -rf "$cldir"; mkdir -p "$cldir"
+for cl_lane in bump rc shadow gc; do
+  rm -f "$cldir/cl.wasm" "$cldir/cl.wasm.diag"
+  case "$cl_lane" in
+    bump) env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+      bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+      fixtures/rc_local_closure_capture_bounded_test.vibe "$cldir/cl.wasm" main >/dev/null 2>&1 || true ;;
+    rc) env VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+      bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+      fixtures/rc_local_closure_capture_bounded_test.vibe "$cldir/cl.wasm" main >/dev/null 2>&1 || true ;;
+    shadow) env VIBE_RC=shadow VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+      bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+      fixtures/rc_local_closure_capture_bounded_test.vibe "$cldir/cl.wasm" main >/dev/null 2>&1 || true ;;
+    gc) env VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+      bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+      fixtures/rc_local_closure_capture_bounded_test.vibe "$cldir/cl.wasm" main >/dev/null 2>&1 || true ;;
+  esac
+  if [ ! -s "$cldir/cl.wasm" ]; then
+    echo "[compiler-gate] FAIL: rc_local_closure_capture_bounded did not compile on $cl_lane (#3203)" >&2
+    cat "$cldir/cl.wasm.diag" >&2 2>/dev/null || true
+    exit 1
+  fi
+  cl_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$cldir/cl.wasm" 2>&1 | tail -1)"
+  if [ "$cl_out" != "6003000" ]; then
+    echo "[compiler-gate] FAIL: rc_local_closure_capture_bounded got '$cl_out' on $cl_lane (want 6003000; #3203)" >&2
+    exit 1
+  fi
+  if [ "$cl_lane" = rc ]; then
+    cl_json="$(node scripts/measure_heap.mjs "$cldir/cl.wasm" main 2>/dev/null)"
+    cl_used="$(printf '%s' "$cl_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+    if [ -z "$cl_used" ] || [ "$cl_used" -ge 20000 ]; then
+      echo "[compiler-gate] FAIL: rc_local_closure_capture_bounded heap_used=$cl_used >= 20000 (#3203; before: 704108 B)" >&2
+      exit 1
+    fi
+  fi
+done
+rm -rf "$cldir"
+for cl_lane in 1 shadow; do
+  if ! VIBE_RC="$cl_lane" VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+      bash scripts/vibe_test.sh fixtures/rc_local_closure_capture_bounded_test.vibe \
+      >"$ROOT_DIR/_build/_gate_rc_local_closure_capture.log" 2>&1; then
+    echo "[compiler-gate] FAIL: rc_local_closure_capture_bounded tests failed with VIBE_RC=$cl_lane (#3203)" >&2
+    tail -20 "$ROOT_DIR/_build/_gate_rc_local_closure_capture.log" >&2
+    exit 1
+  fi
+done
+rm -f "$ROOT_DIR/_build/_gate_rc_local_closure_capture.log"
+echo "[compiler-gate] RC local capture and self-reading array release ok (6003000 on all lanes, rc heap_used=$cl_used B; view control alive on rc + shadow)"
+
 # 40f1a. #2427: the shadow table must not overlap the heap it describes.
 #        40f above proves the marks catch a real dup/drop-of-freed; this
 #        proves they are marks at all. The table sat at a FIXED 256 MiB while

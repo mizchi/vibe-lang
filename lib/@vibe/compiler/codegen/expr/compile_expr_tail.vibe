@@ -1184,6 +1184,28 @@ fn reassign_self_reusable(value: Expr, name: String) -> Bool with Exception {
   }
 }
 
+/// A fresh array of proven immediate elements cannot keep a view into the
+/// old array slot, even when an element reads that slot to compute an Int.
+/// Release the old array after the replacement has been constructed.
+fn reassign_fresh_scalar_array(value: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  match value {
+    EArray(elems) => {
+      let mut i = 0
+      let mut all_scalar = true
+      while i < Array::length(elems) {
+        if !expr_is_intish(Array::get(elems, i), local_names, ctx) {
+          all_scalar = false
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      all_scalar
+    },
+    _ => false
+  }
+}
+
 /// #791: shared RC heap-classification for a `let`/`let mut` binding's INITIAL
 /// value, extracted so ELet (tag 9) and ELetMut (tag 11) can never drift apart
 /// again -- the entire #715/#791 bug family was ELetMut silently missing shape
@@ -3563,7 +3585,8 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
           EUnaryOp(_, _) => true,
           _ => false
         }
-        let release_old = is_self && (replacement_unowned || fresh_operator_leaf) && is_heap_mut && ctx.rc_drop_func_idx >= 0 && md_consume_count_b(value, name, ctx.borrow_param_user, ctx.borrow_param_mask) == 0 && (fresh_operator_leaf || !assign_value_mentions(leaf, name))
+        let fresh_scalar_array_leaf = reassign_fresh_scalar_array(leaf, local_names, ctx)
+        let release_old = is_self && (replacement_unowned || fresh_operator_leaf || fresh_scalar_array_leaf) && is_heap_mut && ctx.rc_drop_func_idx >= 0 && md_consume_count_b(value, name, ctx.borrow_param_user, ctx.borrow_param_mask) == 0 && (fresh_operator_leaf || fresh_scalar_array_leaf || !assign_value_mentions(leaf, name))
         let nl_after = if release_old {
           emit_local_get(buf, idx)
           emit_local_set(buf, nl)

@@ -1,0 +1,49 @@
+// #3203: a local closure that captures an array and a self-reading array
+// reassignment must release every owned value after each call.
+fn captured_array(n: Int) -> Int {
+  let xs = [n, 1]
+  let g = (k: Int) -> Int {
+    Array::get(xs, 0) + k
+  }
+  g(n)
+}
+
+fn reassign_array(n: Int) -> Int {
+  let mut xs = [n]
+  let mut k = 0
+  while k < 3 {
+    xs = [Array::get(xs, 0) + 1]
+    k = k + 1
+  }
+  Array::get(xs, 0)
+}
+
+// The replacement contains a borrowed heap element, so the old outer array
+// cannot be released by the scalar-element rule.
+fn reassign_array_view(n: Int) -> Int {
+  let mut xs = [[n]]
+  xs = [Array::get(xs, 0)]
+  Array::get(Array::get(xs, 0), 0)
+}
+
+test "a local closure returns the captured array element" {
+  inspect(captured_array(5), content = "10")
+}
+
+test "a self-reading array assignment returns the last element" {
+  inspect(reassign_array(5), content = "8")
+}
+
+test "a replacement retaining a heap view stays alive" {
+  inspect(reassign_array_view(5), content = "5")
+}
+
+export fn main() -> Int {
+  let mut i = 0
+  let mut total = 0
+  while i < 2000 {
+    total = total + captured_array(i) + reassign_array(i)
+    i = i + 1
+  }
+  total
+}

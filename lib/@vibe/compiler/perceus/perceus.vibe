@@ -3782,15 +3782,10 @@ fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
       pe_exit(ctx, scope, pe_exit_continue, ctx.loop_floor, EUnit)
       0
     },
-    EFn(_tp, _tb, params, _ret, _eff, fbody) => {
-      let caps = collect_free_vars(fbody, fn_param_names(params), [])
-      let mut i = 0
-      while i < Array::length(caps) {
-        pe_use(ctx, scope, Array::get(caps, i), -1)
-        i = i + 1
-      }
-      0
-    },
+    // compile_lambda gives the closure environment its own reference to
+    // every heap capture. Creating the closure therefore borrows the
+    // defining binding; its initial reference still needs a scope drop.
+    EFn(_, _, _, _, _, _) => 0,
     EForIn(value_name, index_opt, iterable, fbody) => {
       // The loop reads a named iterable without taking its reference.
       // A temporary expression still follows its normal ownership path.
@@ -4329,7 +4324,7 @@ fn pc_count(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
       let caps = collect_free_vars(fbody, fn_param_names(params), [])
       let mut i = 0
       while i < Array::length(caps) {
-        pc_count_use(ctx, scope, Array::get(caps, i))
+        pc_count_borrow(ctx, scope, Array::get(caps, i))
         i = i + 1
       }
       0

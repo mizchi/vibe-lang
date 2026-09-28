@@ -100,9 +100,9 @@ test "a nested lambda's rebuild match never pairs into the enclosing plan" {
   // fuse) it there, while the enclosing plan sees the EFn only as capture
   // uses. The pairing walk must stop at the EFn boundary -- recursing in
   // would print the row under `outer` and hand the enclosing codegen a
-  // candidate it cannot realize (#2411 review). `t` is used in outer's own
-  // tail too, so it carries an enclosing-plan drop -- the gate a
-  // lambda-only capture (which moves ownership) never opens.
+  // candidate it cannot realize (#2411 review). `t` carries an enclosing-plan
+  // drop: the lambda's capture duplicates its reference, and outer also reads
+  // it in its own tail.
   let src = "enum Node {\n  Leaf(Int);\n  Pair(Node, Node)\n}\nlet outer: (Node) -> Int = (n) -> {\n  let t = Pair(n, Leaf(1))\n  let f = (x: Int) -> {\n    match t {\n      Pair(a, b) => {\n        let a2 = a\n        let b2 = b\n        Pair(a2, b2)\n      },\n      _ => Leaf(0)\n    }\n  }\n  match t {\n    Pair(_, _) => 1,\n    _ => 0\n  }\n}\nlet main: () -> Int = () -> 0"
   let plan = plan_of(src)
   assert(!String::contains(plan, "outer t reuse_token"))

@@ -58,6 +58,17 @@ fn count_drops(plan: Array[PerceusAction], name: String) -> Int {
   n
 }
 
+test "a closure capture borrows its defining local" {
+  let read = ECall(EIdent("Array::get", -1), [EIdent("xs", -1), EInt(0)], -1)
+  let lam = EFn([], [], [("k", None)], None, None, EBinOp("+", read, EIdent("k", -1), -1))
+  let body = ELet("xs", EArray([EInt(5)]), ELet("g", lam, ECall(EIdent("g", -1), [
+    EInt(5)
+  ], -1), -1), -1)
+  let plan = build_perceus_plan(body)
+  inspect(count_drops(plan, "xs"), content = "1")
+  inspect(count_drops(plan, "g"), content = "1")
+}
+
 fn count_all_drops(plan: Array[PerceusAction]) -> Int {
   let mut n = 0
   let mut i = 0
@@ -211,21 +222,18 @@ test "perceus: for-in element binding is dropped" {
   assert(count_drops(plan, "x") == 1)
 }
 
-/// A closure capturing an outer heap binding uses it; the outer binding, only
-/// captured (not otherwise consumed), still owns its reference and the capture
-/// is its consuming use, so no scope-end drop remains for the captured value.
-test "perceus: closure capture counts as an owning use" {
+/// A closure environment duplicates its heap captures, so the defining
+/// binding keeps and eventually releases its own reference.
+test "perceus: closure capture borrows the defining binding" {
   // let t = (1, 2); let g = (x){ t.0 + x }; g(1)
-  // t is captured by g (owning use via capture) -> consumed into the closure
-  // env, so t itself is not separately dropped; g is borrowed by the call and
-  // dropped at scope end.
+  // g's environment owns a duplicated reference to t, while both t and g
+  // release their own references at scope end.
   let lam = EFn([], [], [("x", None)], None, None, EBinOp("+", EDot(EIdent("t", -1), "0", -1, -1), EIdent("x", -1), -1))
   let inner = ELet("g", lam, ECall(EIdent("g", -1), [EInt(1)], -1), -1)
   let body = ELet("t", ETuple([EInt(1), EInt(2)]), inner, -1)
   let plan = build_perceus_plan(body)
   assert(count_drops(plan, "g") == 1)
-  // t is moved into the closure env (its capture is the consuming use).
-  assert(count_drops(plan, "t") == 0)
+  assert(count_drops(plan, "t") == 1)
 }
 
 /// A discarded sequenced heap value is reclaimed (A-1b): `mk(); r` where the
