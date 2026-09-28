@@ -2007,14 +2007,36 @@ fn rc_mut_rec_transfer_value(e: Expr, local_names: Array[String], ctx: CompileCt
       (arm.0, next)
     }),
     ELet(name, value, body, off) => {
-      let next_value = rc_mut_rec_transfer_value(value, local_names, ctx, shadowed)
       let mark = Array::length(shadowed)
       Array::push(shadowed, name)
       let next_body = rc_mut_rec_transfer_value(body, local_names, ctx, shadowed)
       Array::truncate(shadowed, mark)
-      ELet(name, next_value, next_body, off)
+      ELet(name, value, next_body, off)
     },
-    ESeq(head, tail) => ESeq(rc_mut_rec_transfer_value(head, local_names, ctx, shadowed), rc_mut_rec_transfer_value(tail, local_names, ctx, shadowed)),
+    ELetMut(name, value, body, off) => {
+      let mark = Array::length(shadowed)
+      Array::push(shadowed, name)
+      let next_body = rc_mut_rec_transfer_value(body, local_names, ctx, shadowed)
+      Array::truncate(shadowed, mark)
+      ELetMut(name, value, next_body, off)
+    },
+    ELetRec(name, value, body) => {
+      let mark = Array::length(shadowed)
+      Array::push(shadowed, name)
+      let next_body = rc_mut_rec_transfer_value(body, local_names, ctx, shadowed)
+      Array::truncate(shadowed, mark)
+      ELetRec(name, value, next_body)
+    },
+    ESeq(head, tail) => ESeq(head, rc_mut_rec_transfer_value(tail, local_names, ctx, shadowed)),
+    EAssign(name, value, body) => EAssign(name, value, rc_mut_rec_transfer_value(body, local_names, ctx, shadowed)),
+    EAssignOp(name, op, value, body) => EAssignOp(name, op, value, rc_mut_rec_transfer_value(body, local_names, ctx, shadowed)),
+    EHandle(body, arms) => EHandle(rc_mut_rec_transfer_value(body, local_names, ctx, shadowed), for arm in arms {
+      let mark = Array::length(shadowed)
+      let _ = collect_pattern_bindings(arm.0, shadowed)
+      let next = rc_mut_rec_transfer_value(arm.1, local_names, ctx, shadowed)
+      Array::truncate(shadowed, mark)
+      (arm.0, next)
+    }),
     _ => e
   }
 }
