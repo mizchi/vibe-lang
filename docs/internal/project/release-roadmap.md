@@ -5,19 +5,18 @@
 
 ## Version ladder
 
-The repository has published one stable version tag: `v0.0.1`
-(2026-04-14, from the retired MoonBit host), and one pre-release:
-`v0.1.0-rc.1` (2026-09-21). Every other number that appears in
-older documents — "0.1.0 sign-off", "0.2.0", "0.3.0 GA" — was a label in a
-document, never a release. The ladder below numbers releases by what actually
-ships.
+The repository's first stable version tag was `v0.0.1`
+(2026-04-14, from the retired MoonBit host); `v0.1.0-rc.1` was published as a
+pre-release on 2026-09-21. Older labels such as "0.1.0 sign-off", "0.2.0"
+and "0.3.0 GA" in planning documents did not denote published releases. The
+ladder below numbers releases by what actually ships.
 
 | version | meaning | state |
 | --- | --- | --- |
 | `v0.0.1` | The one historical release (MoonBit host era) | tagged 2026-04-14 |
 | `0.0.x` | Everything since: the selfhost cutover and all development, including the content once prepared as "0.3.0 GA" ([archive/release-notes-0.3.0.md](../../archive/release-notes-0.3.0.md)) | never released |
 | `0.1.0-rc.1` | The first candidate to publish assets. Its bug hunt came back clean | published 2026-09-21 as a pre-release; superseded |
-| **`0.1.0-rc.2`** | **The candidate.** The merged compiler tree passed its generative bug hunt; one pre-existing mutation diagnostic is tracked as #3226 | current target, awaiting the tag and install checks |
+| **`0.1.0-rc.2`** | **The candidate.** The merged compiler tree passed its generative bug hunt; one pre-existing mutation diagnostic is tracked as #3226 | release evidence tracked in #2834 |
 | `0.1.0` | **The first release usable by anyone but the author** | after the rc clears §"What promotes an rc to the release"; see [release-notes-0.1.0.md](../../user/getting-started/release-notes-0.1.0.md) |
 | `0.2.0` | Structured concurrency, a type system aimed at formalization, a dedicated agent harness | after 0.1.0 |
 | `1.0.0` | Maturity. Not a synonym for the first public release | unscheduled |
@@ -71,11 +70,11 @@ schedule.**
 ### What promotes an rc to the release
 
 The rc exists because "every checklist item is ticked" and "we have looked for
-bugs" are different claims, and only the first one was true. A feature-complete
-candidate whose failure modes nobody went hunting for is not a release; the
-project's own priority order says the worst way to break is to be **silently
-wrong**, and a checklist cannot find those — it can only confirm the things
-someone already thought to write down.
+bugs" are different claims. At the first candidate, only the checklist claim
+had evidence. A feature-complete candidate whose failure modes nobody went
+hunting for is not a release; the project's own priority order says the worst
+way to break is to be **silently wrong**, and a checklist cannot find those —
+it can only confirm the things someone already thought to write down.
 
 So the rc is promoted by a **bug hunt**, not by more features:
 
@@ -96,6 +95,13 @@ So the rc is promoted by a **bug hunt**, not by more features:
 
 A finding that turns out to be a pre-existing limitation with a written reason
 does not block promotion; an unexplained divergence between two lanes does.
+
+The merged compiler tree for rc.2 completed the hunt: 750/750 generated
+programs produced no divergence, and 300/300 mutation seeds produced one
+pre-existing diagnostic finding on invalid input, tracked as #3226. Direct RC
+leak and shadowing investigations closed #3193 and #3223. The exact compiler
+identity, commands and triage are recorded in [#2834](https://github.com/mizchi/vibe-lang/issues/2834).
+The tag and published-install evidence is tracked in #2834.
 
 The stable surface that the `0.1.0` tag freezes is
 [spec/stable-surface.md](../../user/reference/stable-surface.md) (ADR-0057). While the toolchain
