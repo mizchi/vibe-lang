@@ -8142,6 +8142,26 @@ fn rc_exit_fresh_independent_closure(e: Expr, name: String, local_names: Array[S
     ESeq(head, tail) => !rc_exit_mentions_name(head, name) && rc_exit_fresh_independent_closure(tail, name, local_names, ctx, shadowed),
     EAssign(target, value, tail) => target != name && !rc_exit_mentions_name(value, name) && rc_exit_fresh_independent_closure(tail, name, local_names, ctx, shadowed),
     EAssignOp(target, _, value, tail) => target != name && !rc_exit_mentions_name(value, name) && rc_exit_fresh_independent_closure(tail, name, local_names, ctx, shadowed),
+    EIf(cond, yes, no) => !rc_exit_source_mentions_name(cond, name, ctx.rc_exit_result_stores, Array::length(ctx.rc_exit_result_stores)) && rc_exit_fresh_independent_closure(yes, name, local_names, ctx, shadowed) && rc_exit_fresh_independent_closure(no, name, local_names, ctx, shadowed),
+    EMatch(scrutinee, arms) => {
+      if rc_exit_source_mentions_name(scrutinee, name, ctx.rc_exit_result_stores, Array::length(ctx.rc_exit_result_stores)) || Array::length(arms) == 0 {
+        return false
+      }
+      let independent_source = rc_exit_independent_pattern_source(scrutinee, name, local_names, ctx)
+      for arm in arms {
+        let arm_shadowed: Array[String] = []
+        for bound in shadowed {
+          Array::push(arm_shadowed, bound)
+        }
+        if independent_source {
+          let _ = collect_pattern_bindings(arm.0, arm_shadowed)
+        }
+        if !rc_exit_fresh_independent_closure(arm.1, name, local_names, ctx, arm_shadowed) {
+          return false
+        }
+      }
+      true
+    },
     _ => false
   }
 }
