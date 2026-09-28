@@ -4420,13 +4420,31 @@ for enum_alias_lane in bump shadow gc; do
       fixtures/reexport_enum_alias_local_shadow_test.vibe fixtures/reexport_enum_alias_transparent_test.vibe \
       fixtures/reexport_enum_alias_generic_test.vibe fixtures/reexport_enum_alias_imported_test.vibe \
       fixtures/reexport_enum_alias_sibling_private_test.vibe \
-      fixtures/reexport_enum_alias_local_effect_test.vibe fixtures/reexport_enum_alias_local_struct_test.vibe \
+      fixtures/reexport_enum_alias_local_effect_test.vibe \
+      fixtures/reexport_enum_alias_effect_aggregate_test.vibe \
       >"$ROOT_DIR/_build/_gate_reexport_enum_alias.log" 2>&1; then
     echo "[compiler-gate] FAIL: re-exported enum alias constructor on $enum_alias_lane (#3173)" >&2
     tail -20 "$ROOT_DIR/_build/_gate_reexport_enum_alias.log" >&2
     exit 1
   fi
 done
+# The GC backend currently rejects the provider's nominal struct return
+# through a type alias; the rename-plan unit test pins this origin, and the
+# executable fixture covers the linear lanes.
+for enum_alias_lane in bump shadow; do
+  case "$enum_alias_lane" in
+    bump) enum_alias_rc=0 ;;
+    shadow) enum_alias_rc=shadow ;;
+  esac
+  if ! VIBE_RC="$enum_alias_rc" VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+      bash scripts/vibe_test.sh fixtures/reexport_enum_alias_local_struct_test.vibe \
+      >"$ROOT_DIR/_build/_gate_reexport_enum_alias_struct.log" 2>&1; then
+    echo "[compiler-gate] FAIL: provider-local struct shadows an enum on $enum_alias_lane (#3173)" >&2
+    tail -20 "$ROOT_DIR/_build/_gate_reexport_enum_alias_struct.log" >&2
+    exit 1
+  fi
+done
+rm -f "$ROOT_DIR/_build/_gate_reexport_enum_alias_struct.log"
 rm -f "$ROOT_DIR/_build/_gate_reexport_enum_alias.log"
 echo "[compiler-gate] re-exported enum alias constructors resolve on bump, shadow and gc ok (#3173)"
 for enum_alias_lane in bump shadow gc; do
