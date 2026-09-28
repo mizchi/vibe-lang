@@ -4455,13 +4455,13 @@ export fn rename_builtin_shadow_defs(stmts: Array[Stmt]) -> Unit {
       }
       let source = builtin_shadow_source_name(name)
       if name != "" && is_builtin_shadow_rename_name(source) {
-        if exported || string_array_contains(listed_exports, source) {
+        if exported || builtin_shadow_name_in_unit(listed_exports, source, unit) {
           if !builtin_shadow_rename_listed(published, source) {
             Array::push(published, (source, builtin_shadow_rename_of(source)))
           } else {
             ()
           }
-        } else if !builtin_shadow_private_listed(private_defs, source, unit) {
+        } else if !builtin_shadow_name_in_unit(private_defs, source, unit) {
           Array::push(private_defs, (source, unit))
         } else {
           ()
@@ -4542,37 +4542,41 @@ fn is_source_unit_boundary(stmt: Stmt) -> Bool {
   }
 }
 
-/// The names every `export { .. }` list of `stmts` publishes, in their source
-/// spelling (a list a previous run renamed names `X::y$user`).
-fn builtin_shadow_export_items(stmts: Array[Stmt]) -> Array[String] {
-  let out = empty_strings()
+/// The names every `export { .. }` list publishes, paired with its source
+/// unit. A list in a dependency cannot publish a private entry-file binding
+/// with the same spelling. A previous run may have renamed a listed name.
+fn builtin_shadow_export_items(stmts: Array[Stmt]) -> Array[(String, Int)] {
+  let out: Array[(String, Int)] = []
+  let mut unit = 0
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SExport(items) => {
-        let mut j = 0
-        while j < Array::length(items) {
-          Array::push(out, builtin_shadow_source_name(Array::get(items, j)))
-          j = j + 1
-        }
-      },
-      _ => ()
+    let stmt = Array::get(stmts, i)
+    if is_source_unit_boundary(stmt) {
+      unit = unit + 1
+    } else {
+      match stmt {
+        SExport(items) => {
+          let mut j = 0
+          while j < Array::length(items) {
+            Array::push(out, (builtin_shadow_source_name(Array::get(items, j)), unit))
+            j = j + 1
+          }
+        },
+        _ => ()
+      }
     }
     i = i + 1
   }
   out
 }
 
-fn builtin_shadow_private_listed(private_defs: Array[(String, Int)], name: String, unit: Int) -> Bool {
+fn builtin_shadow_name_in_unit(items: Array[(String, Int)], name: String, unit: Int) -> Bool {
   let mut found = false
   let mut i = 0
-  while !found && i < Array::length(private_defs) {
-    let (source, u) = Array::get(private_defs, i)
-    if source == name && u == unit {
-      found = true
-    } else {
-      i = i + 1
-    }
+  while !found && i < Array::length(items) {
+    let (listed, owner) = Array::get(items, i)
+    found = listed == name && owner == unit
+    i = i + 1
   }
   found
 }
@@ -4609,7 +4613,7 @@ fn builtin_shadow_unit_renames(published: Array[(String, String)], private_defs:
       ()
     } else if u == unit {
       Array::push(out, (source, builtin_shadow_rename_of(source)))
-    } else if !builtin_shadow_private_listed(private_defs, source, unit) {
+    } else if !builtin_shadow_name_in_unit(private_defs, source, unit) {
       Array::push(out, (source, source))
     } else {
       ()
