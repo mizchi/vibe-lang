@@ -3214,6 +3214,7 @@ export struct ExportRenamePlan {
   enum_alias_paths: Array[String];
   enum_alias_names: Array[String];
   enum_alias_origins: Array[String];
+  enum_origin_ambiguous: MutMap[String, Bool];
   enum_alias_count: Int
 }
 
@@ -3498,6 +3499,8 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
   // edge through the graph so a second facade does not leave an intermediate
   // alias as a constructor qualifier.
   let enum_defs: MutMap[String, Bool] = MutMap::new_string()
+  let enum_origin_first_path: MutMap[String, String] = MutMap::new_string()
+  let enum_origin_ambiguous: MutMap[String, Bool] = MutMap::new_string()
   let enum_type_aliases: MutMap[String, String] = MutMap::new_string()
   let enum_import_paths: MutMap[String, String] = MutMap::new_string()
   let enum_import_names: MutMap[String, String] = MutMap::new_string()
@@ -3508,7 +3511,15 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
     let mut dsi = 0
     while dsi < Array::length(stmts) {
       match Array::get(stmts, dsi) {
-        SEnum(_, name, _, _, _) => MutMap::set(enum_defs, plan_rename_key(path, name), true),
+        SEnum(_, name, _, _, _) => {
+          MutMap::set(enum_defs, plan_rename_key(path, name), true)
+          match MutMap::get(enum_origin_first_path, name) {
+            Some(first_path) => if first_path != path {
+              MutMap::set(enum_origin_ambiguous, name, true)
+            },
+            None => MutMap::set(enum_origin_first_path, name, path)
+          }
+        },
         STypeAlias(_, name, _, target) => match target {
           TyName(head) => MutMap::set(enum_type_aliases, plan_rename_key(path, name), head),
           TyApp(head, _) => MutMap::set(enum_type_aliases, plan_rename_key(path, name), head),
@@ -3796,6 +3807,7 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
     enum_alias_paths: enum_alias_paths,
     enum_alias_names: enum_alias_names,
     enum_alias_origins: enum_alias_origins,
+    enum_origin_ambiguous: enum_origin_ambiguous,
     enum_alias_count: enum_alias_count
   }
 }
@@ -3927,7 +3939,7 @@ fn append_imported_trait_operation_renames(plan: ExportRenamePlan, target: Strin
   }
 }
 
-fn append_import_value_renames(plan: ExportRenamePlan, target: String, items: Array[ImportItem], plain_reexports_only: Bool, out: Array[(String, String)], locals_seen: Array[String]) -> Unit {
+fn append_import_value_renames(plan: ExportRenamePlan, target: String, items: Array[ImportItem], plain_reexports_only: Bool, out: Array[(String, String)], locals_seen: Array[String]) -> Unit with Exception {
   let mut j = Array::length(items) - 1
   while j >= 0 {
     let item = Array::get(items, j)
@@ -3958,7 +3970,11 @@ fn append_import_value_renames(plan: ExportRenamePlan, target: String, items: Ar
             Array::push(out, (local, mangled))
           },
           None => match MutMap::get(plan.enum_alias_idx, plan_rename_key(target, original)) {
-            Some(enum_head) => Array::push(out, (local, enum_head)),
+            Some(enum_head) => if MutMap::has(plan.enum_origin_ambiguous, enum_head) {
+              throw("rename one of the enums named `" + enum_head + "`: imported alias `" + local + "` reaches that name in more than one source file, so its constructor cannot be selected safely")
+            } else {
+              Array::push(out, (local, enum_head))
+            },
             None => ()
           }
         }
@@ -3975,7 +3991,7 @@ fn append_import_value_renames(plan: ExportRenamePlan, target: String, items: Ar
 /// (local -> origin) reference renames for one importing file, including a
 /// kinded enum alias imported through a facade. Aliased re-exports remain
 /// publication-only in their own source unit and contribute no local rewrite.
-export fn collect_import_value_renames(plan: ExportRenamePlan, path: String, stmts: Array[Stmt]) -> Array[(String, String)] {
+export fn collect_import_value_renames(plan: ExportRenamePlan, path: String, stmts: Array[Stmt]) -> Array[(String, String)] with Exception {
   let out = empty_aliases()
   let locals_seen = empty_strings()
   let rename_paths = plan.rename_paths
