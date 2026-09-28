@@ -1943,6 +1943,9 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       let local_idx = next_local
       Array::push(local_names, name)
       if mut_needs_ref_cell(body, name) {
+        if gc_expr_is_floatish(value, local_names, ctx) {
+          Array::push(ctx.gc_float_locals, local_idx)
+        }
         Array::push(ctx.ref_cell_names, name)
         // Linear-memory cell: local = cell address (i64), value stored at +0.
         emit_global_get(buf, 0)
@@ -2004,7 +2007,9 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
     },
     EAssignOp(name, op, value, body) => {
       let idx = resolve_local(local_names, name, "gc_var")
-      if array_contains_str(ctx.ref_cell_names, name) {
+      if (op == "+" || op == "-" || op == "*" || op == "/") && (array_contains_int(ctx.gc_float_locals, idx) || gc_expr_is_floatish(value, local_names, ctx)) {
+        ce(buf, EAssign(name, EBinOp(op, EIdent(name, -1), value, -1), body), local_names, next_local, ld)
+      } else if array_contains_str(ctx.ref_cell_names, name) {
         emit_local_get(buf, idx)
         emit_i32_wrap_i64(buf)
         emit_local_get(buf, idx)

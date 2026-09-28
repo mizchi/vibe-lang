@@ -9,11 +9,11 @@ import @vibe/core {
 }
 
 import @vibe/compiler/codegen/common_base {
-  CompileCtxGc, emit_i64_load
+  CompileCtxGc, emit_i64_load, find_local_slot
 }
 
 import @vibe/compiler/codegen/common_extractors {
-  array_contains_str
+  array_contains_int, array_contains_str
 }
 
 import @vibe/compiler/codegen/wasm_emit {
@@ -52,7 +52,7 @@ fn gli_strip_param_label_marker(n: String) -> String {
   }
 }
 
-export fn compile_lambda_inner_gc(params: Array[(String, Option[TypeExpr])], fn_body: Expr, captures: Array[String], user_params: Int, ctx: CompileCtxGc, compile_fn: CompileLambdaGcFn, ld: Int) -> (Bytes, Int, Array[Int]) with Exception {
+export fn compile_lambda_inner_gc(params: Array[(String, Option[TypeExpr])], fn_body: Expr, captures: Array[String], user_params: Int, outer_names: Array[String], ctx: CompileCtxGc, compile_fn: CompileLambdaGcFn, ld: Int) -> (Bytes, Int, Array[Int]) with Exception {
   let lam_buf = bytebuf_new()
   let lam_locals = array_empty()
   let mut lpi = 0
@@ -84,6 +84,14 @@ export fn compile_lambda_inner_gc(params: Array[(String, Option[TypeExpr])], fn_
     ci3 = ci3 + 1
   }
   let lam_ctx = make_lambda_ctx_gc(ctx, lam_ref_cells, lam_ref_local_indices)
+  let mut cfi = 0
+  while cfi < num_captures {
+    let outer_slot = find_local_slot(outer_names, Array::get(captures, cfi))
+    if outer_slot >= 0 && array_contains_int(ctx.gc_float_locals, outer_slot) {
+      Array::push(lam_ctx.gc_float_locals, lam_nl_start + cfi)
+    }
+    cfi = cfi + 1
+  }
   // #744 (gc mirror of the linear lam_float_slots seeding): annotated
   // Float/Double params join the fresh scope's float tracking, so closure
   // bodies get real f64 arithmetic/comparisons and the Double __to_string
