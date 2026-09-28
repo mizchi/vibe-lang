@@ -393,6 +393,25 @@ test "a handler keeps a same-named nested constructor reference" {
   assert(contains_ref(refs, "::A"))
 }
 
+test "a qualified handler operation leaves its qualified payload reference" {
+  let src = "enum Api { A }\neffect Logger { A(Api) -> Int }\nfn f() -> Int { handle { 1 } with Logger { Logger::A(Api::A) => 2 } }"
+  let refs = qualified_pattern_refs_of(parse_program(lex(src)))
+  assert(contains_ref(refs, "Api::A"))
+  assert(!contains_ref(refs, "Logger::A"))
+  assert(!contains_ref(refs, "::A"))
+}
+
+test "a failed parse does not leak bare constructors into the next parse" {
+  let error = handle {
+    let _ = parse_program(lex("fn bad() -> Int { match 0 { A => 1 }"))
+    "OK"
+  } with { Exception::Throw(msg) => msg }
+  assert(error != "OK")
+  let refs = qualified_pattern_refs_of(parse_program(lex("enum Color { A }\nfn f(c: Color) -> Int { match c { Color::A => 1 } }")))
+  assert(contains_ref(refs, "Color::A"))
+  assert(!contains_ref(refs, "::A"))
+}
+
 test "inactive cfg patterns do not enter the active pattern log" {
   let src = "enum Color { A }\n#cfg(disabled) fn hidden(c: Color) -> Int { match c { A => 0 } }\nfn f(c: Color) -> Int { match c { Color::A => 1 } }"
   let refs = qualified_pattern_refs_of(parse_program(lex(src)))

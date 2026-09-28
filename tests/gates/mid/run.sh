@@ -4435,14 +4435,19 @@ for private_pat_lane in bump shadow gc; do
     shadow) private_pat_rc=shadow; private_pat_backend=linear ;;
     gc) private_pat_rc=0; private_pat_backend=gc ;;
   esac
-  if ! VIBE_RC="$private_pat_rc" VIBE_TEST_BACKEND="$private_pat_backend" \
-      VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
-      bash scripts/vibe_test.sh fixtures/reexport_enum_alias_private_effect_pattern_test.vibe \
-      >"$ROOT_DIR/_build/_gate_private_enum_effect_pattern.log" 2>&1; then
-    echo "[compiler-gate] FAIL: effect operation and private enum pattern on $private_pat_lane (#3238)" >&2
-    tail -20 "$ROOT_DIR/_build/_gate_private_enum_effect_pattern.log" >&2
-    exit 1
-  fi
+  for private_pat_fixture in \
+    fixtures/reexport_enum_alias_private_effect_pattern_test.vibe \
+    fixtures/reexport_enum_alias_private_same_target_test.vibe \
+    fixtures/reexport_enum_alias_private_qualified_payload_test.vibe; do
+    if ! VIBE_RC="$private_pat_rc" VIBE_TEST_BACKEND="$private_pat_backend" \
+        VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+        bash scripts/vibe_test.sh "$private_pat_fixture" \
+        >"$ROOT_DIR/_build/_gate_private_enum_effect_pattern.log" 2>&1; then
+      echo "[compiler-gate] FAIL: $private_pat_fixture on $private_pat_lane (#3238)" >&2
+      tail -20 "$ROOT_DIR/_build/_gate_private_enum_effect_pattern.log" >&2
+      exit 1
+    fi
+  done
 done
 rm -f "$ROOT_DIR/_build/_gate_private_enum_effect_pattern.log"
 # The GC backend currently rejects the provider's nominal struct return

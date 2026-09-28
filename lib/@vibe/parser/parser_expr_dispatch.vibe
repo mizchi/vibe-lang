@@ -521,70 +521,45 @@ fn qualify_handle_arm_pattern(effect_name: String, pat: Pat, qualifier: (Int, In
   }
 }
 
-fn handler_payload_mentions_ctor(pat: Pat, variant: String) -> Bool {
-  match source_pat(pat) {
-    PCtor(name, args) => {
-      if name == variant {
-        true
-      } else {
-        let mut found = false
-        for arg in args {
-          if handler_payload_mentions_ctor(arg, variant) {
-            found = true
-          }
+/// The operation's own bare name is recorded after its arguments. Preserve a
+/// same-named bare payload constructor, but not a qualified `Api::A` payload:
+/// that one has a separate `(Api, A)` row and the operation row can be removed.
+fn handler_payload_has_bare_ctor(tokens: Array[Token], root_pos: Int, end: Int, variant: String) -> Bool {
+  let mut i = root_pos + 1
+  let mut found = false
+  while i < end {
+    match peek(tokens, i) {
+      TIdent(name) => if name == variant {
+        let previous_qualified = i > 0 && match peek(tokens, i - 1) {
+          TDoubleColon => true,
+          _ => false
         }
-        found
-      }
-    },
-    PTuple(args) => {
-      let mut found = false
-      for arg in args {
-        if handler_payload_mentions_ctor(arg, variant) {
+        let next_qualified = match peek(tokens, i + 1) {
+          TDoubleColon => true,
+          _ => false
+        }
+        if !previous_qualified && !next_qualified {
           found = true
         }
-      }
-      found
-    },
-    POr(left, right) => handler_payload_mentions_ctor(left, variant) || handler_payload_mentions_ctor(right, variant),
-    PStruct(_, fields) => {
-      let mut found = false
-      for field in fields {
-        if handler_payload_mentions_ctor(field.1, variant) {
-          found = true
-        }
-      }
-      found
-    },
-    _ => false
+      },
+      _ => ()
+    }
+    i = i + 1
   }
-}
-
-fn handler_operation_has_namesake_payload(pat: Pat, variant: String) -> Bool {
-  match source_pat(pat) {
-    PCtor(_, args) => {
-      let mut found = false
-      for arg in args {
-        if handler_payload_mentions_ctor(arg, variant) {
-          found = true
-        }
-      }
-      found
-    },
-    _ => false
-  }
+  found
 }
 
 fn parse_handle_arm(tokens: Array[Token], starts: Array[Int], pos: Int, effect_name: String, qualifier: (Int, Int), parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> ((Pat, Expr), Int) with Exception {
   let ref_mark = pattern_ref_mark()
   let (pat, pat_next) = parse_pattern_with_binder_context(tokens, pos, context)
   match source_pat(pat) {
-    PCtor(name, _) => if !handler_operation_has_namesake_payload(pat, name) {
-      match peek(tokens, pos + 1) {
-        TDoubleColon => match peek(tokens, pos) {
-          TIdent(head) => discard_handler_operation_ref(ref_mark, head, name),
-          _ => ()
-        },
-        _ => discard_handler_operation_ref(ref_mark, "", name)
+    PCtor(name, _) => match peek(tokens, pos + 1) {
+      TDoubleColon => match peek(tokens, pos) {
+        TIdent(head) => discard_handler_operation_ref(ref_mark, head, name),
+        _ => ()
+      },
+      _ => if !handler_payload_has_bare_ctor(tokens, pos, pat_next, name) {
+        discard_handler_operation_ref(ref_mark, "", name)
       }
     },
     _ => ()
@@ -628,7 +603,7 @@ fn parse_qualified_handle_arm(tokens: Array[Token], starts: Array[Int], pos: Int
   }
   let ref_mark = pattern_ref_mark()
   let (pat, pat_next) = parse_pattern_with_binder_context(tokens, operation_pos, context)
-  if !handler_operation_has_namesake_payload(pat, operation_name) {
+  if !handler_payload_has_bare_ctor(tokens, operation_pos, pat_next, operation_name) {
     discard_handler_operation_ref(ref_mark, "", operation_name)
   }
   let qualified_pat = match source_pat(pat) {
