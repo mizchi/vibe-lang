@@ -777,9 +777,9 @@ done
 # behind the program's own one. Shadow only: importing @vibe/builtin's
 # Iterator does not compile on wasm-gc (its async half reaches Future::ready).
 if ! VIBE_RC=shadow VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
-    bash scripts/vibe_test.sh fixtures/builtin_shadow_iterator_devirt_test.vibe \
+    bash scripts/vibe_test.sh fixtures/builtin_shadow_iterator_devirt_test.vibe fixtures/builtin_shadow_export_unit_test.vibe \
     >"$ROOT_DIR/_build/_gate_builtin_shadow_intercept.log" 2>&1; then
-  echo "[compiler-gate] FAIL: a devirtualized Iterator operation over an array reached the program's own Array function under VIBE_RC=shadow (#3185):" >&2
+  echo "[compiler-gate] FAIL: a builtin operation reached a private function from another source unit under VIBE_RC=shadow (#3185 / #3211):" >&2
   tail -20 "$ROOT_DIR/_build/_gate_builtin_shadow_intercept.log" >&2
   exit 1
 fi

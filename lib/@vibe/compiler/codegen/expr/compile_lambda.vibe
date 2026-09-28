@@ -82,6 +82,7 @@ import @vibe/compiler/codegen/common_base {
   emit_rc_word_inc_saturating,
   emit_str_ref,
   expr_tag,
+  find_local_slot,
   get_arm_body,
   get_arm_pat,
   get_ebinop_op,
@@ -1249,6 +1250,29 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
   // an INTEGER multiply of the f64 bits (and under RC compared/box-leaked
   // pointers), so closure float math was silently garbage.
   let lam_float_slots = array_empty()
+  // Captures occupy fresh slots after the environment parameter. Copy the
+  // enclosing slot's last Double classification; a captured mutable cell
+  // still reads its Double payload through EIdent in the lambda body.
+  let mut cfi = 0
+  while cfi < num_captures {
+    let cap_name = Array::get(captures, cfi)
+    let outer_slot = find_local_slot(local_names, cap_name)
+    if outer_slot >= 0 {
+      let mut log_i = Array::length(ctx.float_local_slots) - 1
+      let mut found = false
+      while log_i >= 0 && !found {
+        let entry = Array::get(ctx.float_local_slots, log_i)
+        if entry / 2 == outer_slot {
+          if entry % 2 == 1 {
+            Array::push(lam_float_slots, (lam_nl_start + cfi) * 2 + 1)
+          }
+          found = true
+        }
+        log_i = log_i - 1
+      }
+    }
+    cfi = cfi + 1
+  }
   // #1015: annotated Bool LAMBDA params seed int_local_slots (kind 3 =
   // boolish, #769 encoding slot*4+kind) exactly like top-level fn params do
   // (linked_compile's psi loop) — without this a Bool-typed lambda param
