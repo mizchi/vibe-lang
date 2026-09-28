@@ -1,0 +1,50 @@
+fn fresh_callback() -> (Int) -> Int {
+  let offset = [1]
+  (n: Int) -> Int {
+    n + Array::get(offset, 0)
+  }
+}
+
+fn unwrap_callback(opt: Option[(Int) -> Int]) -> (Int) -> Int {
+  match opt {
+    Some(callback) => callback,
+    None => fresh_callback()
+  }
+}
+
+test "returned Option callback stays live" {
+  let callback = unwrap_callback(Some(fresh_callback()))
+  inspect(callback(5), content = "6")
+}
+
+test "returned Option callback stays bounded" {
+  let mut i = 0
+  while i < 200 {
+    let callback = unwrap_callback(Some(fresh_callback()))
+    let _ = callback(5)
+    i = i + 1
+  }
+  let before = Profiler::heap_bytes()
+  while i < 2200 {
+    let callback = unwrap_callback(Some(fresh_callback()))
+    let _ = callback(5)
+    i = i + 1
+  }
+  inspect(Profiler::heap_bytes() - before < 1000, content = "true")
+}
+
+test "fresh callback branch stays bounded" {
+  let mut i = 0
+  while i < 200 {
+    let callback = unwrap_callback(None)
+    let _ = callback(5)
+    i = i + 1
+  }
+  let before = Profiler::heap_bytes()
+  while i < 2200 {
+    let callback = unwrap_callback(None)
+    let _ = callback(5)
+    i = i + 1
+  }
+  inspect(Profiler::heap_bytes() - before < 1000, content = "true")
+}
