@@ -321,9 +321,9 @@ fn emit_assignop_rc_tag_fix(buf: Bytes, enable_rc: Bool, op: String) -> Unit {
 /// a projection in this position as a borrow, leaving its owner to drop it.
 /// A named call uses the same declared-return and view checks as the owned
 /// path classifier; an unknown result keeps the previous conservative drop.
-fn seq_discard_owns_result(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+fn seq_discard_owns_result_in(e: Expr, local_names: Array[String], bound: Array[String], ctx: CompileCtx) -> Bool with Exception {
   match e {
-    ECall(EIdent(n, _), _, _) => find_local_slot(local_names, n) < 0 && (is_ctor_call(e, ctx.ctor_table) || (bsearch_leftmost(ctx.heap_ret_names, n) >= 0 && !is_borrow_ret_builtin(n) && bsearch_leftmost(ctx.borrow_ret_names, n) < 0 && bsearch_leftmost(ctx.borrow_view_ret, n) < 0)),
+    ECall(EIdent(n, _), _, _) => !array_contains_str(bound, n) && find_local_slot(local_names, n) < 0 && (is_ctor_call(e, ctx.ctor_table) || (bsearch_leftmost(ctx.heap_ret_names, n) >= 0 && !is_borrow_ret_builtin(n) && bsearch_leftmost(ctx.borrow_ret_names, n) < 0 && bsearch_leftmost(ctx.borrow_view_ret, n) < 0)),
     EArray(_) => true,
     ETuple(_) => true,
     ERecord(_, _, _) => true,
@@ -331,8 +331,53 @@ fn seq_discard_owns_result(e: Expr, local_names: Array[String], ctx: CompileCtx)
     EFloat(_) => true,
     EBinOp(op, _, _, _) => (op == "+" || op == "-" || op == "*" || op == "/") && expr_is_floatish(e, local_names, ctx),
     EUnaryOp("-", _) => expr_is_floatish(e, local_names, ctx),
+    EIf(_, then_body, else_body) => seq_discard_owns_result_in(then_body, local_names, bound, ctx) && seq_discard_owns_result_in(else_body, local_names, bound, ctx),
+    EMatch(_, arms) => if Array::length(arms) == 0 {
+      false
+    } else {
+      let mut owned = true
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (pat, body) = Array::get(arms, i)
+        let mark = Array::length(bound)
+        if !pvo_pat_binds(pat, bound) || !seq_discard_owns_result_in(body, local_names, bound, ctx) {
+          owned = false
+        }
+        Array::truncate(bound, mark)
+        i = i + 1
+      }
+      owned
+    },
+    ELet(name, _, body, _) => {
+      let mark = Array::length(bound)
+      Array::push(bound, name)
+      let owned = seq_discard_owns_result_in(body, local_names, bound, ctx)
+      Array::truncate(bound, mark)
+      owned
+    },
+    ELetMut(name, _, body, _) => {
+      let mark = Array::length(bound)
+      Array::push(bound, name)
+      let owned = seq_discard_owns_result_in(body, local_names, bound, ctx)
+      Array::truncate(bound, mark)
+      owned
+    },
+    ELetRec(name, _, body) => {
+      let mark = Array::length(bound)
+      Array::push(bound, name)
+      let owned = seq_discard_owns_result_in(body, local_names, bound, ctx)
+      Array::truncate(bound, mark)
+      owned
+    },
+    ESeq(_, body) => seq_discard_owns_result_in(body, local_names, bound, ctx),
+    EAssign(_, _, body) => seq_discard_owns_result_in(body, local_names, bound, ctx),
+    EAssignOp(_, _, _, body) => seq_discard_owns_result_in(body, local_names, bound, ctx),
     _ => false
   }
+}
+
+fn seq_discard_owns_result(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  seq_discard_owns_result_in(e, local_names, array_empty(), ctx)
 }
 
 /// #3126: guard an `Int` `/` or `%` whose divisor may be zero. Called with the
