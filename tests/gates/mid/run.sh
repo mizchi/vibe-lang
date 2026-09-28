@@ -1372,7 +1372,7 @@ for ms_lane in 1 shadow; do
   fi
 done
 rm -f "$ROOT_DIR/_build/_gate_rc_mut_store_view.log"
-echo "[compiler-gate] let mut store ownership guard ok (82000 on bump/rc/shadow/gc, rc heap_used=$ms_used B; stored values alive on rc + shadow)"
+echo "[compiler-gate] let mut store ownership guard ok (88000 on bump/rc/shadow/gc, rc heap_used=$ms_used B; stored values alive on rc + shadow)"
 
 # 40f0i/41. #3191: each of these loop forms previously kept one reference
 # per round. Check both the answer and the RC heap so a compensating retain
