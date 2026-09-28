@@ -189,6 +189,42 @@ fn make_counter_via_early_wrapped_pass_arg(start: Int, choose: Bool) -> (Int) ->
   }
 }
 
+fn make_counter_via_early_alias_pass_arg(start: Int, choose: Bool) -> (Int) -> Int {
+  let rec go = (n: Int) -> Int {
+    if n > start {
+      n
+    } else {
+      go(n + 1)
+    }
+  }
+  return if choose {
+    borrow_callback({
+      let alias = go
+      alias
+    })
+  } else {
+    make_fresh_counter()
+  }
+}
+
+fn make_counter_via_early_alias_chain_pass_arg(start: Int, choose: Bool) -> (Int) -> Int {
+  let rec go = (n: Int) -> Int {
+    if n > start {
+      n
+    } else {
+      go(n + 1)
+    }
+  }
+  return if choose {
+    borrow_callback({
+      let alias = go
+      borrow_callback(alias)
+    })
+  } else {
+    make_fresh_counter()
+  }
+}
+
 fn make_counter_via_break_branch(start: Int, choose: Bool) -> (Int) -> Int {
   loop (i = 0) {
     let rec go = (n: Int) -> Int {
@@ -1071,6 +1107,40 @@ test "an early wrapped passthrough releases the unselected recursive closure" {
   let before = Profiler::heap_bytes()
   while i < 2200 {
     let f = make_counter_via_early_wrapped_pass_arg(8, false)
+    let _ = f(5)
+    i = i + 1
+  }
+  inspect(Profiler::heap_bytes() - before < 1000, content = "true")
+}
+
+test "an early aliased passthrough releases the unselected recursive closure" {
+  inspect(make_counter_via_early_alias_pass_arg(8, true)(5), content = "9")
+  let mut i = 0
+  while i < 200 {
+    let f = make_counter_via_early_alias_pass_arg(8, false)
+    let _ = f(5)
+    i = i + 1
+  }
+  let before = Profiler::heap_bytes()
+  while i < 2200 {
+    let f = make_counter_via_early_alias_pass_arg(8, false)
+    let _ = f(5)
+    i = i + 1
+  }
+  inspect(Profiler::heap_bytes() - before < 1000, content = "true")
+}
+
+test "an early passthrough alias chain releases the unselected recursive closure" {
+  inspect(make_counter_via_early_alias_chain_pass_arg(8, true)(5), content = "9")
+  let mut i = 0
+  while i < 200 {
+    let f = make_counter_via_early_alias_chain_pass_arg(8, false)
+    let _ = f(5)
+    i = i + 1
+  }
+  let before = Profiler::heap_bytes()
+  while i < 2200 {
+    let f = make_counter_via_early_alias_chain_pass_arg(8, false)
     let _ = f(5)
     i = i + 1
   }
