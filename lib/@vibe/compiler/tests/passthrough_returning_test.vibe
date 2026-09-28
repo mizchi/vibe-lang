@@ -52,8 +52,26 @@ test "a pattern binder cannot stand in for the parameter it shadows" {
   inspect(Array::length(compute_passthrough_returning(forwarded)), "1")
 }
 
-test "a helper with an early fresh return still takes ownership of its argument" {
+test "an unproven zero-argument early call cannot certify freshness" {
   let stmts = parse_program(lex("fn pass_or_fresh(callback: (Int) -> Int, choose: Bool) -> (Int) -> Int { if choose { return make_fresh() }; callback }"))
+  inspect(Array::length(compute_passthrough_returning(stmts)), "0")
+}
+
+test "a zero-argument helper that allocates a closure permits a fresh early return" {
+  let stmts = parse_program(lex("fn pick(callback: (Int) -> Int, choose: Bool) -> (Int) -> Int { if choose { return fresh() }; callback } fn fresh() -> (Int) -> Int { let offset = [1]; (n: Int) -> Int { n + Array::get(offset, 0) } }"))
+  inspect(Array::length(compute_passthrough_returning(stmts)), "1")
+}
+
+test "a zero-argument helper returning a global callback is not fresh" {
+  let stmts = parse_program(lex("let global = (n: Int) -> Int { n } fn pick(callback: (Int) -> Int, choose: Bool) -> (Int) -> Int { if choose { return later() }; callback } fn later() -> (Int) -> Int { global }"))
+  inspect(Array::length(stmts), "3")
+  let rows = compute_passthrough_returning(stmts)
+  inspect(Array::length(rows), "1")
+  inspect(Array::get(rows, 0).0, "global")
+}
+
+test "an early closure literal remains independently fresh" {
+  let stmts = parse_program(lex("fn pass_or_fresh(callback: (Int) -> Int, choose: Bool) -> (Int) -> Int { if choose { return (n: Int) -> Int { n + 1 } }; callback }"))
   inspect(Array::length(compute_passthrough_returning(stmts)), "1")
 }
 
@@ -62,6 +80,11 @@ test "a forward passthrough call on an early exit invalidates the first paramete
   let rows = compute_passthrough_returning(stmts)
   inspect(Array::length(rows), "1")
   inspect(Array::get(rows, 0).0, "later")
+}
+
+test "an unclassified helper call cannot certify a fresh early return" {
+  let stmts = parse_program(lex("fn pick(first: (Int) -> Int, second: (Int) -> Int, choose: Bool) -> (Int) -> Int { if choose { return later(second) }; first } fn later(callback: (Int) -> Int) -> (Int) -> Int { let mut selected = callback; selected }"))
+  inspect(Array::length(compute_passthrough_returning(stmts)), "0")
 }
 
 test "an early return of the same parameter remains a passthrough" {
