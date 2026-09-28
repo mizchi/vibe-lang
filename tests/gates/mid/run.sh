@@ -4417,6 +4417,7 @@ for enum_alias_lane in bump shadow gc; do
       VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
       bash scripts/vibe_test.sh fixtures/reexport_enum_alias_ctor_test.vibe fixtures/reexport_enum_alias_isolation_test.vibe \
       fixtures/reexport_enum_alias_chain_test.vibe fixtures/reexport_enum_alias_aggregate_test.vibe \
+      fixtures/reexport_enum_alias_local_shadow_test.vibe \
       >"$ROOT_DIR/_build/_gate_reexport_enum_alias.log" 2>&1; then
     echo "[compiler-gate] FAIL: re-exported enum alias constructor on $enum_alias_lane (#3173)" >&2
     tail -20 "$ROOT_DIR/_build/_gate_reexport_enum_alias.log" >&2

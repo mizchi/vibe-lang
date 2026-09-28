@@ -533,6 +533,33 @@ test "a later plain enum re-export replaces an earlier alias" {
   inspect(Array::length(renames), "0")
 }
 
+test "an enum re-export chain is not limited to sixteen hops" {
+  let paths: Array[String] = ["/virtual/provider.vibe"]
+  let stmts_list: Array[Array[Stmt]] = [
+    parse_program(lex("export enum Choice { First }"))
+  ]
+  let mut previous = "provider"
+  let mut public_name = "Choice"
+  let mut i = 0
+  while i < 18 {
+    let facade = "f" + Int::to_string(i)
+    let next_name = "A" + Int::to_string(i)
+    Array::push(paths, "/virtual/" + facade + ".vibe")
+    Array::push(stmts_list, parse_program(lex("export ./" + previous + ".vibe { " + public_name + " as " + next_name + " }")))
+    previous = facade
+    public_name = next_name
+    i = i + 1
+  }
+  let entry = parse_program(lex("import ./" + previous + ".vibe { " + public_name + " }\nlet answer = " + public_name + "::First"))
+  let entry_path = "/virtual/entry.vibe"
+  Array::push(paths, entry_path)
+  Array::push(stmts_list, entry)
+  let plan = build_export_rename_plan(paths, stmts_list, entry_path)
+  let renames = collect_import_value_renames(plan, entry_path, entry)
+  inspect(Array::length(renames), "1")
+  inspect(Array::get(renames, 0).1, "Choice")
+}
+
 //# #2348: a WAT body's `call $name` survives the merge rename
 
 /// The name a top-level value statement binds, however it is spelled.
