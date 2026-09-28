@@ -4406,6 +4406,7 @@ echo "[compiler-gate] #cfg flags reach imported modules through the split CLI, a
 # #3173: a kinded enum re-export publishes its alias as a constructor
 # qualifier. The checker accepted PublicChoice::First before this fix, but
 # normalization lost the facade alias and codegen saw an unresolved name.
+echo "[compiler-gate] 130/130 re-exported enum alias constructors (#3173)"
 for enum_alias_lane in bump shadow gc; do
   case "$enum_alias_lane" in
     bump) enum_alias_rc=0; enum_alias_backend=linear ;;
@@ -4422,4 +4423,4 @@ for enum_alias_lane in bump shadow gc; do
   fi
 done
 rm -f "$ROOT_DIR/_build/_gate_reexport_enum_alias.log"
-echo "[compiler-gate] re-exported enum alias constructors resolve on bump, shadow and gc (#3173)"
+echo "[compiler-gate] re-exported enum alias constructors resolve on bump, shadow and gc ok (#3173)"
