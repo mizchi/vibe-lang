@@ -86,7 +86,7 @@ VIBE
 for case_name in dead dead_wat baseline iterator_import reexport_chain contract dead_export live_stream live_wat live_future; do
   out="$out_dir/$case_name.wasm"
   rm -f "$out" "$out.diag"
-  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$out_dir/$case_name.vibe" "$out" run >/dev/null 2>&1 || true
   if [ ! -s "$out" ]; then
@@ -98,10 +98,10 @@ done
 
 # The generated flat-source lane serializes each source boundary as a reserved
 # import. Compile it as trusted compiler output to exercise that carrier.
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_EMIT_MERGED_SOURCE=1 \
+VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_EMIT_MERGED_SOURCE=1 \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$out_dir/reexport_chain.vibe" "$out_dir/flat_chain.vibe" run >/dev/null
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_INTERNAL_TRUSTED_SOURCE=1 VIBE_IMPORT_ABI=raw \
+VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_INTERNAL_TRUSTED_SOURCE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$out_dir/flat_chain.vibe" "$out_dir/flat_chain.wasm" run >/dev/null
 if [ ! -s "$out_dir/flat_chain.wasm" ]; then
