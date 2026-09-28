@@ -2453,7 +2453,18 @@ fn passthrough_tail_name(body: Expr, known: Array[(String, Int)], bound: Array[S
       let result = passthrough_tail_name(value, known, bound, aliases)
       let mut valid = result != ""
       for arm in arms {
-        if passthrough_tail_name(arm.1, known, bound, aliases) != result {
+        let mark = Array::length(bound)
+        let alias_mark = Array::length(aliases)
+        pat_names(arm.0, bound)
+        let mut i = mark
+        while i < Array::length(bound) {
+          Array::push(aliases, (Array::get(bound, i), ""))
+          i = i + 1
+        }
+        let next = passthrough_tail_name(arm.1, known, bound, aliases)
+        Array::truncate(bound, mark)
+        Array::truncate(aliases, alias_mark)
+        if next != result {
           valid = false
         }
       }
@@ -2473,8 +2484,44 @@ fn passthrough_return_value_agrees(value: Expr, source: String, known: Array[(St
     return returned == source
   }
   match value {
+    // A bound name with no recorded source can be a pattern payload. It is
+    // not a fresh return and cannot agree with the parameter being tracked.
+    EIdent(name, _) => !array_contains_str_pctx(bound, name),
+    ECall(EIdent(callee, _), args, _) => {
+      if array_contains_str_pctx(bound, callee) {
+        return false
+      }
+      for row in known {
+        if row.0 == callee && row.1 < Array::length(args) {
+          return passthrough_return_value_agrees(Array::get(args, row.1), source, known, bound, aliases)
+        }
+      }
+      true
+    },
     EIf(_, yes, no) => passthrough_return_value_agrees(yes, source, known, bound, aliases) && passthrough_return_value_agrees(no, source, known, bound, aliases),
     EMatch(_, arms) => {
+      for arm in arms {
+        let mark = Array::length(bound)
+        let alias_mark = Array::length(aliases)
+        pat_names(arm.0, bound)
+        let mut i = mark
+        while i < Array::length(bound) {
+          Array::push(aliases, (Array::get(bound, i), ""))
+          i = i + 1
+        }
+        let agrees = passthrough_return_value_agrees(arm.1, source, known, bound, aliases)
+        Array::truncate(bound, mark)
+        Array::truncate(aliases, alias_mark)
+        if !agrees {
+          return false
+        }
+      }
+      true
+    },
+    EHandle(body, arms) => {
+      if !passthrough_return_value_agrees(body, source, known, bound, aliases) {
+        return false
+      }
       for arm in arms {
         let mark = Array::length(bound)
         let alias_mark = Array::length(aliases)
@@ -2575,6 +2622,28 @@ fn passthrough_early_returns_agree(body: Expr, source: String, known: Array[(Str
     },
     EMatch(scrutinee, arms) => {
       if !passthrough_early_returns_agree(scrutinee, source, known, bound, aliases) {
+        return false
+      }
+      for arm in arms {
+        let mark = Array::length(bound)
+        let alias_mark = Array::length(aliases)
+        pat_names(arm.0, bound)
+        let mut i = mark
+        while i < Array::length(bound) {
+          Array::push(aliases, (Array::get(bound, i), ""))
+          i = i + 1
+        }
+        let agrees = passthrough_early_returns_agree(arm.1, source, known, bound, aliases)
+        Array::truncate(bound, mark)
+        Array::truncate(aliases, alias_mark)
+        if !agrees {
+          return false
+        }
+      }
+      true
+    },
+    EHandle(value, arms) => {
+      if !passthrough_early_returns_agree(value, source, known, bound, aliases) {
         return false
       }
       for arm in arms {

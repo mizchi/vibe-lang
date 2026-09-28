@@ -32,6 +32,19 @@ fn pick_early_mut(first: (Int) -> Int, second: (Int) -> Int, choose: Bool) -> (I
   first
 }
 
+effect SelectCallback {
+  Pick((Int) -> Int) -> Unit
+}
+
+fn pick_handler(first: (Int) -> Int, second: (Int) -> Int, choose: Bool) -> (Int) -> Int {
+  handle {
+    if choose {
+      perform SelectCallback::Pick(second)
+    }
+    first
+  } with { SelectCallback::Pick(first) => return first }
+}
+
 fn pick_pattern_shadow(callback: (Int) -> Int, choice: Option[(Int) -> Int]) -> (Int) -> Int {
   let alias = callback
   match choice {
@@ -73,6 +86,17 @@ fn counter_through_early_mut_pick(start: Int) -> (Int) -> Int {
     }
   }
   pick_early_mut(fresh_counter(), go, true)
+}
+
+fn counter_through_handler_pick(start: Int) -> (Int) -> Int {
+  let rec go = (n: Int) -> Int {
+    if n > start {
+      n
+    } else {
+      go(n + 1)
+    }
+  }
+  pick_handler(fresh_counter(), go, true)
 }
 
 fn counter_through_pattern_shadow_pick(start: Int) -> (Int) -> Int {
@@ -355,6 +379,23 @@ test "an early mutable alias releases the unused callback" {
   let before = Profiler::heap_bytes()
   while i < 2200 {
     let f = pick_early_mut(fresh_counter(), fresh_counter(), true)
+    let _ = f(5)
+    i = i + 1
+  }
+  inspect(Profiler::heap_bytes() - before < 1000, content = "true")
+}
+
+test "a handler pattern shadowing an argument keeps the recursive closure alive" {
+  inspect(counter_through_handler_pick(8)(5), content = "9")
+  let mut i = 0
+  while i < 200 {
+    let f = counter_through_handler_pick(8)
+    let _ = f(5)
+    i = i + 1
+  }
+  let before = Profiler::heap_bytes()
+  while i < 2200 {
+    let f = counter_through_handler_pick(8)
     let _ = f(5)
     i = i + 1
   }
