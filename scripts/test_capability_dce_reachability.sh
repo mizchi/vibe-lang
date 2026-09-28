@@ -27,11 +27,12 @@ fn read_stream() -> Int with Async {
 let run: () -> Int with Async = () -> { read_stream() }
 VIBE
 cat >"$out_dir/dead_wat.vibe" <<'VIBE'
-fn dead_stream() -> Int with Async {
-  host_stream_next(host_stream_named("left"))
-}
-fn dead_wat() -> Int = wasm"(call $dead_stream)"
-let run: () -> Int with Async = () -> { 42 }
+fn dead_wat_callee() -> Int = wasm"(i64.const 84)"
+fn dead_wat() -> Int = wasm"(call $dead_wat_callee)"
+let run: () -> Int = () -> { 42 }
+VIBE
+cat >"$out_dir/baseline.vibe" <<'VIBE'
+let run: () -> Int = () -> { 42 }
 VIBE
 cat >"$out_dir/dead_export.vibe" <<'VIBE'
 export fn dead_stream() -> Int with Async {
@@ -52,7 +53,7 @@ fn read_future() -> Int with Async {
 let run: () -> Int with Async = () -> { read_future() }
 VIBE
 
-for case_name in dead dead_wat dead_export live_stream live_wat live_future; do
+for case_name in dead dead_wat baseline dead_export live_stream live_wat live_future; do
   out="$out_dir/$case_name.wasm"
   rm -f "$out" "$out.diag"
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
@@ -95,11 +96,27 @@ function coreModules(bytes) {
   }
   return result;
 }
+function definedFunctions(bytes) {
+  const position = { index: 8 };
+  while (position.index < bytes.length) {
+    const section = readLeb(bytes, position);
+    const length = readLeb(bytes, position);
+    const end = position.index + length;
+    if (section === 3) return readLeb(bytes, position);
+    position.index = end;
+  }
+  return 0;
+}
 function imports(name) {
   return coreModules(readFileSync(join(dir, `${name}.wasm`)))
     .flatMap((module) => WebAssembly.Module.imports(module))
     .filter((entry) => entry.module === 'vibe')
     .map((entry) => entry.name);
+}
+if (definedFunctions(readFileSync(join(dir, 'dead_wat.wasm'))) !==
+    definedFunctions(readFileSync(join(dir, 'baseline.wasm')))) {
+  console.error('[capability-dce] FAIL: an unreachable WAT callee survived');
+  process.exit(1);
 }
 for (const name of ['dead', 'dead_wat', 'dead_export']) {
   const leaked = imports(name).filter((entry) => entry.startsWith('host_stream') || entry.startsWith('host_future'));
