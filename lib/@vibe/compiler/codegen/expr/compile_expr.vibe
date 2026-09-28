@@ -55,6 +55,7 @@ import @vibe/compiler/codegen/common_base {
   emit_i32_sub,
   emit_i64_load,
   emit_i64_store,
+  emit_rc_dup_guarded,
   emit_shift_count_clamp,
   emit_str_ref,
   expr_tag,
@@ -1113,6 +1114,22 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
         emit_i64_load(buf, 3, 0)
       } else {
         emit_local_get(buf, local_idx)
+      }
+      // Mutable slots have path-dependent values. Apply each planned retain
+      // where its owning use runs, after reading the current value.
+      if ctx.enable_rc && array_contains_str(ctx.rc_mut_use_names, name) {
+        let off = get_eident_off(expr)
+        let mut mdi = 0
+        while mdi < Array::length(ctx.rc_dup_names) {
+          if Array::get(ctx.rc_dup_names, mdi) == name && Array::get(ctx.rc_dup_offsets, mdi) == off {
+            emit_rc_dup_guarded(buf, local_idx, ctx.rc_shadow, ctx.rc_dup_func_idx)
+          } else {
+            ()
+          }
+          mdi = mdi + 1
+        }
+      } else {
+        ()
       }
       ce_mark_path_consume(buf, expr, name, ctx)
       next_local

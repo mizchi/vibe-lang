@@ -1425,6 +1425,61 @@ for lr_case in for_named_array loop_owning_call match_binder_nested_loop; do
 done
 rm -rf "$lrdir"
 
+# 40f0i/42. #3219: a mutable slot's planned dups belong to the actual
+# owning uses, and a collected `for` owns the values stored in its result.
+echo "[compiler-gate] 40f0i/42 remaining loop reference reclamation (#3219)"
+rl_dir="_build/_gate_rc_remaining_loops"
+rm -rf "$rl_dir"; mkdir -p "$rl_dir"
+for rl_case in mut_restore_loop mut_shadowed_use for_collect_named_array; do
+  case "$rl_case" in
+    mut_restore_loop) rl_want=8002000 ;;
+    mut_shadowed_use) rl_want=6001000 ;;
+    for_collect_named_array) rl_want=4000000 ;;
+  esac
+  for rl_lane in bump rc shadow gc; do
+    # #3223: wasm-gc mishandles this shadowed binding independently of RC.
+    if [ "$rl_case" = mut_shadowed_use ] && [ "$rl_lane" = gc ]; then
+      continue
+    fi
+    rm -f "$rl_dir/rl.wasm" "$rl_dir/rl.wasm.diag"
+    case "$rl_lane" in
+      bump) rl_env="" ;;
+      rc) rl_env=1 ;;
+      shadow) rl_env=shadow ;;
+      gc) rl_env=gc ;;
+    esac
+    if [ "$rl_lane" = gc ]; then
+      env VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+        bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+        "fixtures/rc_${rl_case}_bounded_test.vibe" "$rl_dir/rl.wasm" main >/dev/null 2>&1 || true
+    else
+      env VIBE_RC="$rl_env" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+        bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+        "fixtures/rc_${rl_case}_bounded_test.vibe" "$rl_dir/rl.wasm" main >/dev/null 2>&1 || true
+    fi
+    if [ ! -s "$rl_dir/rl.wasm" ]; then
+      echo "[compiler-gate] FAIL: rc_${rl_case}_bounded did not compile on $rl_lane" >&2
+      cat "$rl_dir/rl.wasm.diag" >&2 2>/dev/null || true
+      exit 1
+    fi
+    rl_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$rl_dir/rl.wasm" 2>&1 | tail -1)"
+    if [ "$rl_out" != "$rl_want" ]; then
+      echo "[compiler-gate] FAIL: rc_${rl_case}_bounded got '$rl_out' on $rl_lane (want $rl_want)" >&2
+      exit 1
+    fi
+    if [ "$rl_lane" = rc ]; then
+      rl_json="$(node scripts/measure_heap.mjs "$rl_dir/rl.wasm" main 2>/dev/null)"
+      rl_used="$(printf '%s' "$rl_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+      if [ -z "$rl_used" ] || [ "$rl_used" -ge 20000 ]; then
+        echo "[compiler-gate] FAIL: rc_${rl_case}_bounded heap_used=$rl_used >= 20000 (#3219)" >&2
+        exit 1
+      fi
+      echo "[compiler-gate] rc_${rl_case}_bounded heap_used=$rl_used B"
+    fi
+  done
+done
+rm -rf "$rl_dir"
+
 # 40f0j. #3135: a `Double` is a heap box on the RC lane, but the plan counted
 #        a bare name as an OWNING use when it was an operand of a comparison
 #        or of arithmetic, and a `Double` parameter as scalar -- so an
