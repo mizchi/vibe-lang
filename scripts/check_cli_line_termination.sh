@@ -133,11 +133,15 @@ rm -f "$WORK/none"
 env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_ESCAPES=1 \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$STAGE2" \
   "$WORK/clean.vibe" "$WORK/none" >/dev/null 2>&1 || true
-empty_bytes="$(wc -c < "$WORK/none" 2>/dev/null || echo 0)"
-if [ "$empty_bytes" != "0" ]; then
-  bad "a clean file's escapes output is $empty_bytes bytes, want 0 -- 'empty output = clean' must stay byte-empty"
+if [ ! -f "$WORK/none" ]; then
+  bad "a clean file's escapes output was not created"
 else
-  note "a clean file answers with zero bytes, not a blank record"
+  empty_bytes="$(wc -c < "$WORK/none")"
+  if [ "$empty_bytes" -ne 0 ]; then
+    bad "a clean file's escapes output is $empty_bytes bytes, want 0 -- 'empty output = clean' must stay byte-empty"
+  else
+    note "a clean file answers with zero bytes, not a blank record"
+  fi
 fi
 
 [ "$fails" -eq 0 ] || exit 1

@@ -722,9 +722,11 @@ boundary_effectset_defs() { # <file> -- emits `NAME MEMBER`, one pair per line
 boundary_expand_effectsets() { # <file> -- expands aliases in the tokens on stdin
   local defs
   defs="$(boundary_effectset_defs "$1")" || true
-  awk -v defs="$defs" '
+  # BSD awk rejects a literal newline in a -v assignment. The definition
+  # list is multiline, so pass it through the environment instead.
+  BOUNDARY_EFFECTSET_DEFS="$defs" awk '
     BEGIN {
-      n = split(defs, lines, "\n")
+      n = split(ENVIRON["BOUNDARY_EFFECTSET_DEFS"], lines, "\n")
       for (i = 1; i <= n; i++) {
         if (lines[i] == "") { continue }
         split(lines[i], kv, " ")

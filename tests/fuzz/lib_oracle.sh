@@ -47,7 +47,9 @@ else
   # runtime hang as RUN_TRAP (#2955 review). Allocated once, here, so an
   # invalid or unwritable TMPDIR is refused before any campaign begins rather
   # than per seed in the middle of one.
-  WATCHDOG_DIR="$(mktemp -d 2>/dev/null || true)"
+  # BSD mktemp -d may ignore TMPDIR without an explicit template. Keep the
+  # marker directory inside the selected temporary root on every host.
+  WATCHDOG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/vibe-fuzz-watchdog.XXXXXXXX" 2>/dev/null || true)"
   # Removed by the process that made it. tests/fuzz/reduce.py starts a fresh
   # classify.sh per oracle call and allows 4000 of them by default, so one
   # reduction would otherwise leave thousands of empty directories behind
