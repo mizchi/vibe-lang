@@ -2664,6 +2664,43 @@ fn passthrough_early_returns_agree(body: Expr, source: String, known: Array[(Str
       }
       true
     },
+    EForIn(value_name, index_opt, iterable, loop_body) => {
+      if !passthrough_early_returns_agree(iterable, source, known, bound, aliases) {
+        return false
+      }
+      let mark = Array::length(bound)
+      let alias_mark = Array::length(aliases)
+      Array::push(bound, value_name)
+      Array::push(aliases, (value_name, ""))
+      match index_opt {
+        Some(index_name) => {
+          Array::push(bound, index_name)
+          Array::push(aliases, (index_name, ""))
+        },
+        None => ()
+      }
+      let agrees = passthrough_early_returns_agree(loop_body, source, known, bound, aliases)
+      Array::truncate(bound, mark)
+      Array::truncate(aliases, alias_mark)
+      agrees
+    },
+    ELoop(params, loop_body) => {
+      let mark = Array::length(bound)
+      let alias_mark = Array::length(aliases)
+      for param in params {
+        if !passthrough_early_returns_agree(param.1, source, known, bound, aliases) {
+          Array::truncate(bound, mark)
+          Array::truncate(aliases, alias_mark)
+          return false
+        }
+        Array::push(bound, param.0)
+        Array::push(aliases, (param.0, ""))
+      }
+      let agrees = passthrough_early_returns_agree(loop_body, source, known, bound, aliases)
+      Array::truncate(bound, mark)
+      Array::truncate(aliases, alias_mark)
+      agrees
+    },
     _ => {
       for child in expr_children(body) {
         if !passthrough_early_returns_agree(child, source, known, bound, aliases) {
