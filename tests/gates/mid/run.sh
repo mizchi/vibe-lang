@@ -1652,6 +1652,76 @@ done
 rm -f "$ROOT_DIR/_build/_gate_rc_local_closure_capture.log"
 echo "[compiler-gate] RC local capture and self-reading array release ok (6003000 on all lanes, rc heap_used=$cl_used B; view control alive on rc + shadow)"
 
+# #3199: a discarded call result owns its freshly returned enum and array.
+# A wasm drop left 112 B per call live before the RC release (223996 B here).
+echo "[compiler-gate] 132/132 RC discarded sequence result release (#3199)"
+sqdir="_build/_gate_rc_seq_discard"
+rm -rf "$sqdir"; mkdir -p "$sqdir"
+for sq_lane in bump rc shadow gc; do
+  rm -f "$sqdir/sq.wasm" "$sqdir/sq.wasm.diag"
+  case "$sq_lane" in
+    bump) sq_env="VIBE_RC=0" ;;
+    rc) sq_env="VIBE_RC=1" ;;
+    shadow) sq_env="VIBE_RC=shadow" ;;
+    gc) sq_env="VIBE_BACKEND=gc" ;;
+  esac
+  env "$sq_env" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    fixtures/rc_seq_discard_bounded_test.vibe "$sqdir/sq.wasm" main >/dev/null 2>&1 || true
+  if [ ! -s "$sqdir/sq.wasm" ]; then
+    echo "[compiler-gate] FAIL: rc_seq_discard_bounded did not compile on $sq_lane (#3199)" >&2
+    cat "$sqdir/sq.wasm.diag" >&2 2>/dev/null || true
+    exit 1
+  fi
+  sq_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$sqdir/sq.wasm" 2>&1 | tail -1)"
+  if [ "$sq_out" != "4000" ]; then
+    echo "[compiler-gate] FAIL: rc_seq_discard_bounded got '$sq_out' on $sq_lane (want 4000; #3199)" >&2
+    exit 1
+  fi
+  if [ "$sq_lane" = rc ]; then
+    sq_json="$(node scripts/measure_heap.mjs "$sqdir/sq.wasm" main 2>/dev/null)"
+    sq_used="$(printf '%s' "$sq_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+    if [ -z "$sq_used" ] || [ "$sq_used" -ge 20000 ]; then
+      echo "[compiler-gate] FAIL: rc_seq_discard_bounded heap_used=$sq_used >= 20000 (#3199; before: 223996 B)" >&2
+      exit 1
+    fi
+  fi
+  rm -f "$sqdir/extended.wasm" "$sqdir/extended.wasm.diag"
+  env "$sq_env" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    fixtures/rc_seq_discard_extended_test.vibe "$sqdir/extended.wasm" main >/dev/null 2>&1 || true
+  if [ ! -s "$sqdir/extended.wasm" ]; then
+    echo "[compiler-gate] FAIL: rc_seq_discard_extended did not compile on $sq_lane (#3199)" >&2
+    cat "$sqdir/extended.wasm.diag" >&2 2>/dev/null || true
+    exit 1
+  fi
+  sq_extended_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$sqdir/extended.wasm" 2>&1 | tail -1)"
+  if [ "$sq_extended_out" != "52000" ]; then
+    echo "[compiler-gate] FAIL: rc_seq_discard_extended got '$sq_extended_out' on $sq_lane (want 52000; #3199)" >&2
+    exit 1
+  fi
+  if [ "$sq_lane" = rc ]; then
+    sq_extended_json="$(node scripts/measure_heap.mjs "$sqdir/extended.wasm" main 2>/dev/null)"
+    sq_extended_used="$(printf '%s' "$sq_extended_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+    if [ -z "$sq_extended_used" ] || [ "$sq_extended_used" -ge 20000 ]; then
+      echo "[compiler-gate] FAIL: rc_seq_discard_extended heap_used=$sq_extended_used >= 20000 (#3199; before: 576084 B)" >&2
+      exit 1
+    fi
+  fi
+done
+rm -rf "$sqdir"
+for sq_lane in 1 shadow; do
+  if ! VIBE_RC="$sq_lane" VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+      bash scripts/vibe_test.sh fixtures/rc_seq_discard_bounded_test.vibe fixtures/rc_seq_discard_extended_test.vibe fixtures/rc_seq_discard_borrow_test.vibe \
+      >"$ROOT_DIR/_build/_gate_rc_seq_discard.log" 2>&1; then
+    echo "[compiler-gate] FAIL: a discarded value leaked or released its owner on VIBE_RC=$sq_lane (#3199):" >&2
+    tail -20 "$ROOT_DIR/_build/_gate_rc_seq_discard.log" >&2
+    exit 1
+  fi
+done
+rm -f "$ROOT_DIR/_build/_gate_rc_seq_discard.log"
+echo "[compiler-gate] RC discarded sequence result ok (4000 + 52000 on all lanes, rc heap_used=$sq_used/$sq_extended_used B; borrows alive on rc + shadow)"
+
 # 40f1a. #2427: the shadow table must not overlap the heap it describes.
 #        40f above proves the marks catch a real dup/drop-of-freed; this
 #        proves they are marks at all. The table sat at a FIXED 256 MiB while

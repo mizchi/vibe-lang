@@ -7845,7 +7845,19 @@ fn compile_call_core(buf: Bytes, callee: Expr, raw_args: Array[Expr], local_name
       ci = ci + 1
     }
     emit_closure_call_tail(buf, env_local, slot_local, 9, num_args)
-    nl
+    if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && is_efn(callee) {
+      // An immediately invoked lambda creates an owning closure value. The
+      // call consumes its arguments, but it does not consume the callee.
+      let result_local = nl
+      Array::push(local_names, "__immediate_call_result")
+      emit_local_set(buf, result_local)
+      emit_local_get(buf, fn_val_local)
+      emit_call(buf, ctx.rc_drop_func_idx)
+      emit_local_get(buf, result_local)
+      nl + 1
+    } else {
+      nl
+    }
   }
 }
 
