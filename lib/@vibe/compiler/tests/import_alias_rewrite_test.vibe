@@ -529,6 +529,45 @@ test "a re-exported transparent alias reaches its enum constructors" {
   inspect(Array::get(renames, 0).1, "Color")
 }
 
+test "a re-exported parameterized alias reaches its enum constructors" {
+  let provider = parse_program(lex("export enum Attempt[T] { Good(T); Bad }\nexport type Att[T] = Attempt[T]"))
+  let facade = parse_program(lex("export ./provider.vibe { Att as PublicAtt, Good, Bad }"))
+  let entry = parse_program(lex("import ./facade.vibe { PublicAtt, Good, Bad }\nlet answer = PublicAtt::Good(1)"))
+  let paths = [
+    "/virtual/provider.vibe",
+    "/virtual/facade.vibe",
+    "/virtual/entry.vibe"
+  ]
+  let plan = build_export_rename_plan(paths, [provider, facade, entry], "/virtual/entry.vibe")
+  let renames = collect_import_value_renames(plan, "/virtual/entry.vibe", entry)
+  assert(Array::length(renames) >= 1)
+  inspect(Array::get(renames, 0).0, "PublicAtt")
+  inspect(Array::get(renames, 0).1, "Attempt")
+}
+
+test "a re-exported alias follows an imported enum head" {
+  let dependency = parse_program(lex("export enum Color { Red; Blue }"))
+  let provider = parse_program(lex("import ./dependency.vibe { enum Color as Shade }\nexport type Alias = Shade"))
+  let facade = parse_program(lex("export ./provider.vibe { Alias as PublicAlias }"))
+  let entry = parse_program(lex("import ./facade.vibe { PublicAlias }\nlet answer = PublicAlias::Red"))
+  let paths = [
+    "/virtual/dependency.vibe",
+    "/virtual/provider.vibe",
+    "/virtual/facade.vibe",
+    "/virtual/entry.vibe"
+  ]
+  let plan = build_export_rename_plan(paths, [
+    dependency,
+    provider,
+    facade,
+    entry
+  ], "/virtual/entry.vibe")
+  let renames = collect_import_value_renames(plan, "/virtual/entry.vibe", entry)
+  inspect(Array::length(renames), "1")
+  inspect(Array::get(renames, 0).0, "PublicAlias")
+  inspect(Array::get(renames, 0).1, "Color")
+}
+
 test "a later plain enum re-export replaces an earlier alias" {
   // The checker rejects importing two distinct enums under PublicChoice, but
   // the merge planner must still avoid retaining the earlier alias mapping.
