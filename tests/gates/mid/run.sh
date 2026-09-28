@@ -4440,11 +4440,12 @@ for private_pat_lane in bump shadow gc; do
     fixtures/reexport_enum_alias_private_same_target_test.vibe \
     fixtures/reexport_enum_alias_private_qualified_payload_test.vibe \
     fixtures/reexport_enum_alias_private_local_type_alias_test.vibe \
+    fixtures/reexport_enum_alias_private_applied_type_alias_test.vibe \
     fixtures/reexport_enum_alias_private_handler_or_test.vibe; do
     # GC does not lower algebraic handlers; its merged checker also checks a
     # local alias against the private enum's mangled variant before this
     # source-level pattern rewrite. Both cases are pinned on the linear lanes.
-    if [ "$private_pat_lane" = gc ] && { [ "$private_pat_fixture" = fixtures/reexport_enum_alias_private_local_type_alias_test.vibe ] || [ "$private_pat_fixture" = fixtures/reexport_enum_alias_private_handler_or_test.vibe ]; }; then
+    if [ "$private_pat_lane" = gc ] && { [ "$private_pat_fixture" = fixtures/reexport_enum_alias_private_local_type_alias_test.vibe ] || [ "$private_pat_fixture" = fixtures/reexport_enum_alias_private_applied_type_alias_test.vibe ] || [ "$private_pat_fixture" = fixtures/reexport_enum_alias_private_handler_or_test.vibe ]; }; then
       continue
     fi
     if ! VIBE_RC="$private_pat_rc" VIBE_TEST_BACKEND="$private_pat_backend" \

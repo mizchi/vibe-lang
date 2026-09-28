@@ -1973,6 +1973,28 @@ fn normalize_local_alias_target(target: TypeExpr, aliases: Array[(String, Array[
   normalize_local_alias_target_with_fuel(target, aliases, Array::length(aliases) + 1)
 }
 
+/// Pattern qualification needs the nominal head, even when a local alias
+/// applies type arguments that the constructor pattern does not spell.
+fn local_pattern_qualifier_head(name: String, aliases: Array[(String, Array[String], TypeExpr)], fuel: Int) -> String {
+  if fuel <= 0 {
+    name
+  } else match lookup_local_type_alias(aliases, name) {
+    Some(alias) => {
+      let next = match alias.1 {
+        TyName(head) => head,
+        TyApp(head, _) => head,
+        _ => name
+      }
+      if next == name {
+        name
+      } else {
+        local_pattern_qualifier_head(next, aliases, fuel - 1)
+      }
+    },
+    None => name
+  }
+}
+
 fn collect_local_impl_method_owner_aliases(stmts: Array[Stmt], aliases: Array[(String, Array[String], TypeExpr)]) -> Array[(String, String)] {
   let out = empty_aliases()
   let mut i = 0
@@ -4987,9 +5009,8 @@ fn private_alias_pattern_renames(stmts: Array[Stmt], extra_renames: Array[(Strin
       SQualifiedPatternRefs(rows) => for row in rows {
         let qualifier = if row.0 == "" {
           ""
-        } else match normalize_local_alias_target(TyName(row.0), local_type_aliases) {
-          TyName(name) => name,
-          _ => row.0
+        } else {
+          local_pattern_qualifier_head(row.0, local_type_aliases, Array::length(local_type_aliases) + 1)
         }
         Array::push(refs, (qualifier, row.1))
       },
