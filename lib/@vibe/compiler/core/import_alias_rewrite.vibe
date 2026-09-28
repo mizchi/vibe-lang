@@ -3401,37 +3401,35 @@ fn collect_reexport_edges_into(path: String, stmts: Array[Stmt], known_paths: Ar
   }
 }
 
+/// Follow the last published edge at each facade until it reaches a declared
+/// enum. A missing edge or a cycle supplies no constructor rewrite.
+fn reexport_enum_origin(path: String, name: String, edge_tpath: Array[String], edge_tname: Array[String], edge_last_idx: MutMap[String, Int], enum_defs: MutMap[String, Bool]) -> Option[String] {
+  let mut cur_path = path
+  let mut cur_name = name
+  let mut depth = 0
+  let mut done = false
+  let mut origin: Option[String] = None
+  while depth < 16 && !done {
+    let key = plan_rename_key(cur_path, cur_name)
+    if MutMap::has(enum_defs, key) {
+      origin = Some(cur_name)
+      done = true
+    } else {
+      match MutMap::get(edge_last_idx, key) {
+        Some(next) => {
+          cur_path = Array::get(edge_tpath, next)
+          cur_name = Array::get(edge_tname, next)
+        },
+        None => done = true
+      }
+    }
+    depth = depth + 1
+  }
+  origin
+}
+
 export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array[Stmt]], entry_path: String) -> ExportRenamePlan {
   let file_count = Array::length(paths)
-  let enum_alias_idx: MutMap[String, String] = MutMap::new_string()
-  let mut enum_alias_count = 0
-  let mut afi = 0
-  while afi < file_count {
-    let path = Array::get(paths, afi)
-    let stmts = Array::get(stmts_list, afi)
-    let mut asi = 0
-    while asi < Array::length(stmts) {
-      match Array::get(stmts, asi) {
-        SReExport(_, items) => {
-          let mut aii = 0
-          while aii < Array::length(items) {
-            let item = Array::get(items, aii)
-            match (item.kind, item.alias) {
-              (Some(ImportEnum), Some(alias)) => {
-                MutMap::set(enum_alias_idx, plan_rename_key(path, alias), item.name)
-                enum_alias_count = enum_alias_count + 1
-              },
-              _ => ()
-            }
-            aii = aii + 1
-          }
-        },
-        _ => ()
-      }
-      asi = asi + 1
-    }
-    afi = afi + 1
-  }
   let def_names_list = array_empty()
   let mut fi = 0
   while fi < file_count {
@@ -3477,6 +3475,58 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
       ()
     }
     ei2 = ei2 + 1
+  }
+  // The value-rename index above preserves its historical first edge. Enum
+  // publication follows the checker's later-binding-wins rule, including an
+  // aggregate `import { E as A }; export { A }` facade. Resolve every last
+  // edge through the graph so a second facade does not leave an intermediate
+  // alias as a constructor qualifier.
+  let enum_defs: MutMap[String, Bool] = MutMap::new_string()
+  let mut dfi = 0
+  while dfi < file_count {
+    let path = Array::get(paths, dfi)
+    let stmts = Array::get(stmts_list, dfi)
+    let mut dsi = 0
+    while dsi < Array::length(stmts) {
+      match Array::get(stmts, dsi) {
+        SEnum(_, name, _, _, _) => MutMap::set(enum_defs, plan_rename_key(path, name), true),
+        _ => ()
+      }
+      dsi = dsi + 1
+    }
+    dfi = dfi + 1
+  }
+  let edge_last_idx: MutMap[String, Int] = MutMap::new_string()
+  let mut eli = 0
+  while eli < Array::length(edge_from) {
+    MutMap::set(edge_last_idx, plan_rename_key(Array::get(edge_from, eli), Array::get(edge_pub, eli)), eli)
+    eli = eli + 1
+  }
+  let enum_alias_idx: MutMap[String, String] = MutMap::new_string()
+  let mut enum_alias_count = 0
+  let mut eai = 0
+  while eai < Array::length(edge_from) {
+    let key = plan_rename_key(Array::get(edge_from, eai), Array::get(edge_pub, eai))
+    match MutMap::get(edge_last_idx, key) {
+      // This lookup asks which edge won, not whether any edge has this key.
+      Some(last) => {
+        if last == eai {
+          match reexport_enum_origin(Array::get(edge_tpath, eai), Array::get(edge_tname, eai), edge_tpath, edge_tname, edge_last_idx, enum_defs) {
+            Some(origin) => if origin != Array::get(edge_pub, eai) {
+              MutMap::set(enum_alias_idx, key, origin)
+              enum_alias_count = enum_alias_count + 1
+            } else {
+              ()
+            },
+            None => ()
+          }
+        } else {
+          ()
+        }
+      },
+      None => ()
+    }
+    eai = eai + 1
   }
   let excluded_idx: MutMap[String, Bool] = MutMap::new_string()
   let file_idx_of: (String) -> Int = (path) -> {

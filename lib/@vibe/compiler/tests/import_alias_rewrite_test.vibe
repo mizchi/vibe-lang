@@ -512,6 +512,27 @@ test "an enum re-export alias rewrites only its importer" {
   assert(String::contains(after, "other = Local"))
 }
 
+test "a later plain enum re-export replaces an earlier alias" {
+  // The checker rejects importing two distinct enums under PublicChoice, but
+  // the merge planner must still avoid retaining the earlier alias mapping.
+  let first = parse_program(lex("export enum Choice { First }"))
+  let later = parse_program(lex("export enum PublicChoice { Local }"))
+  let facade = parse_program(lex("export ./first.vibe { enum Choice as PublicChoice }\nexport ./later.vibe { enum PublicChoice }"))
+  let entry = parse_program(lex("import ./facade.vibe { PublicChoice }\nlet answer = PublicChoice::Local"))
+  let first_path = "/virtual/first.vibe"
+  let later_path = "/virtual/later.vibe"
+  let facade_path = "/virtual/facade.vibe"
+  let entry_path = "/virtual/entry.vibe"
+  let plan = build_export_rename_plan([
+    first_path,
+    later_path,
+    facade_path,
+    entry_path
+  ], [first, later, facade, entry], entry_path)
+  let renames = collect_import_value_renames(plan, entry_path, entry)
+  inspect(Array::length(renames), "0")
+}
+
 //# #2348: a WAT body's `call $name` survives the merge rename
 
 /// The name a top-level value statement binds, however it is spelled.
