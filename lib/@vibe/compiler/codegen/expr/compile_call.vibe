@@ -8079,7 +8079,9 @@ fn rc_exit_fresh_independent_closure(e: Expr, name: String, local_names: Array[S
 
 /// A recursive binder may be transferred on one return branch and abandoned
 /// on the other. The planner merges their counts, so compare the returned
-/// pointer with the binder only for a direct closure result on both paths.
+/// pointer with the binder only when the result is the binder or a known
+/// passthrough of it. Result wrappers are followed only while their earlier
+/// expressions cannot consume the binder.
 fn rc_exit_passthrough_rec_result(e: Expr, name: String, local_names: Array[String], shadowed: Array[String], ctx: CompileCtx) -> Bool {
   if array_contains_str(shadowed, name) {
     return false
@@ -8109,6 +8111,19 @@ fn rc_exit_passthrough_rec_result(e: Expr, name: String, local_names: Array[Stri
       }
       false
     },
+    ELet(bound, value, tail, _) => if bound == name || rc_exit_mentions_name(value, name) {
+      false
+    } else {
+      rc_exit_passthrough_rec_result(tail, name, local_names, shadowed, ctx)
+    },
+    ELetMut(bound, value, tail, _) => if bound == name || rc_exit_mentions_name(value, name) {
+      false
+    } else {
+      rc_exit_passthrough_rec_result(tail, name, local_names, shadowed, ctx)
+    },
+    ESeq(head, tail) => !rc_exit_mentions_name(head, name) && rc_exit_passthrough_rec_result(tail, name, local_names, shadowed, ctx),
+    EAssign(target, value, tail) => target != name && !rc_exit_mentions_name(value, name) && rc_exit_passthrough_rec_result(tail, name, local_names, shadowed, ctx),
+    EAssignOp(target, _, value, tail) => target != name && !rc_exit_mentions_name(value, name) && rc_exit_passthrough_rec_result(tail, name, local_names, shadowed, ctx),
     _ => false
   }
 }

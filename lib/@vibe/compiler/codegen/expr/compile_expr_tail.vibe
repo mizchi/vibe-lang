@@ -3826,7 +3826,8 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
       // the assignment replaces one owned reference with another: compute the
       // new value first -- it may read the cell -- then store it and release
       // the old payload, which no longer has an owner.
-      let vnl = compile_expr(buf, value, local_names, next_local, ctx, ld)
+      let vnl = compile_expr(buf, rc_mut_rec_transfer_value(value, local_names, ctx, [
+      ]), local_names, next_local, ctx, ld)
       // Expression compilation can reserve unnamed scratch slots; claim two
       // past them, the way the lambda-return marker does.
       let new_l = vnl
@@ -3848,7 +3849,11 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     } else if array_contains_str(ctx.ref_cell_names, name) {
       emit_local_get(buf, idx)
       emit_i32_wrap_i64(buf)
-      let nl = compile_expr(buf, value, local_names, next_local, ctx, ld)
+      let nl = compile_expr(buf, if ctx.enable_rc {
+        rc_mut_rec_transfer_value(value, local_names, ctx, [])
+      } else {
+        value
+      }, local_names, next_local, ctx, ld)
       emit_i64_store(buf, 3, 0)
       compile_expr(buf, body, local_names, nl, ctx, ld)
     } else {
@@ -3957,7 +3962,12 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         } else {
           ()
         }
-        let nl = compile_expr(buf, value, local_names, next_local, ctx, ld)
+        let value_for_compile = if ctx.enable_rc && slot_owning {
+          rc_mut_rec_transfer_value(value, local_names, ctx, [])
+        } else {
+          value
+        }
+        let nl = compile_expr(buf, value_for_compile, local_names, next_local, ctx, ld)
         while sm_removed > 0 {
           Array::push(ctx.loop_borrowed_names, name)
           sm_removed = sm_removed - 1
