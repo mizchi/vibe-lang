@@ -66,6 +66,11 @@ fn pass_explicit(callback: (Int) -> Int) -> (Int) -> Int {
   return callback
 }
 
+fn pass_via_alias(callback: (Int) -> Int) -> (Int) -> Int {
+  let alias = callback
+  alias
+}
+
 fn pass2(callback: (Int) -> Int) -> (Int) -> Int {
   borrow_callback(callback)
 }
@@ -109,6 +114,17 @@ fn make_counter_via_early_helper(start: Int) -> (Int) -> Int {
     }
   }
   return borrow_callback(go)
+}
+
+fn make_counter_via_pass_alias(start: Int) -> (Int) -> Int {
+  let rec go = (n: Int) -> Int {
+    if n > start {
+      n
+    } else {
+      go(n + 1)
+    }
+  }
+  pass_via_alias(go)
 }
 
 fn make_counter_via_chain(start: Int) -> (Int) -> Int {
@@ -376,6 +392,26 @@ fn make_counter_via_bound_early_branch(start: Int, choose: Bool) -> (Int) -> Int
       make_fresh_counter()
     }
     result
+  }
+}
+
+fn make_counter_via_aliased_early_branch(start: Int, choose: Bool) -> (Int) -> Int {
+  let rec go = (n: Int) -> Int {
+    if n > start {
+      n
+    } else {
+      go(n + 1)
+    }
+  }
+  return {
+    let result = if choose {
+      go
+    } else {
+      make_fresh_counter()
+    }
+    let alias = result
+    let second = alias
+    second
   }
 }
 
@@ -784,6 +820,29 @@ test "a mutable fresh return releases an unselected recursive closure" {
   let before = Profiler::heap_bytes()
   while i < 2200 {
     let f = make_counter_via_mutable_fresh_branch(8, false)
+    let _ = f(5)
+    i = i + 1
+  }
+  inspect(Profiler::heap_bytes() - before < 1000, content = "true")
+}
+
+test "a helper returning a local alias keeps the recursive closure alive" {
+  let escaped = make_counter_via_pass_alias(8)
+  inspect(escaped(5), content = "9")
+}
+
+test "a chained alias in an early return releases an unselected recursive closure" {
+  let forwarded = make_counter_via_aliased_early_branch(8, true)
+  inspect(forwarded(5), content = "9")
+  let mut i = 0
+  while i < 200 {
+    let f = make_counter_via_aliased_early_branch(8, false)
+    let _ = f(5)
+    i = i + 1
+  }
+  let before = Profiler::heap_bytes()
+  while i < 2200 {
+    let f = make_counter_via_aliased_early_branch(8, false)
     let _ = f(5)
     i = i + 1
   }

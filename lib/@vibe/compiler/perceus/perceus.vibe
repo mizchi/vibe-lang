@@ -2339,14 +2339,25 @@ export fn compute_borrow_returning_names(stmts: Array[Stmt]) -> Array[String] {
 /// identity functions are owning passthroughs at ordinary call sites, but an
 /// enclosing recursive binder still needs to retain an escaping result before
 /// its own scope-end drop.
-fn passthrough_tail_name(body: Expr, known: Array[(String, Int)], bound: Array[String]) -> String {
+fn passthrough_alias_source(name: String, bound: Array[String], aliases: Array[(String, String)]) -> String {
+  if !array_contains_str_pctx(bound, name) {
+    return name
+  }
+  let mut i = Array::length(aliases) - 1
+  while i >= 0 {
+    let row = Array::get(aliases, i)
+    if row.0 == name {
+      return row.1
+    }
+    i = i - 1
+  }
+  ""
+}
+
+fn passthrough_tail_name(body: Expr, known: Array[(String, Int)], bound: Array[String], aliases: Array[(String, String)]) -> String {
   match body {
-    EIdent(name, _) => if array_contains_str_pctx(bound, name) {
-      ""
-    } else {
-      name
-    },
-    EReturn(value) => passthrough_tail_name(value, known, bound),
+    EIdent(name, _) => passthrough_alias_source(name, bound, aliases),
+    EReturn(value) => passthrough_tail_name(value, known, bound, aliases),
     ECall(EIdent(callee, _), args, _) => {
       if array_contains_str_pctx(bound, callee) {
         return ""
@@ -2354,33 +2365,32 @@ fn passthrough_tail_name(body: Expr, known: Array[(String, Int)], bound: Array[S
       for row in known {
         if row.0 == callee && row.1 < Array::length(args) {
           match Array::get(args, row.1) {
-            EIdent(arg, _) => if !array_contains_str_pctx(bound, arg) {
-              return arg
-            } else {
-              return ""
-            },
+            EIdent(arg, _) => return passthrough_alias_source(arg, bound, aliases),
             _ => return ""
           }
         }
       }
       ""
     },
-    ELet(name, _, tail, _) => {
+    ELet(name, value, tail, _) => {
+      let source = passthrough_tail_name(value, known, bound, aliases)
       let mark = Array::length(bound)
+      let alias_mark = Array::length(aliases)
       Array::push(bound, name)
-      let returned = passthrough_tail_name(tail, known, bound)
+      Array::push(aliases, (name, source))
+      let returned = passthrough_tail_name(tail, known, bound, aliases)
       Array::truncate(bound, mark)
-      if returned == name {
-        ""
-      } else {
-        returned
-      }
+      Array::truncate(aliases, alias_mark)
+      returned
     },
     ELetMut(name, _, tail, _) => {
       let mark = Array::length(bound)
+      let alias_mark = Array::length(aliases)
       Array::push(bound, name)
-      let returned = passthrough_tail_name(tail, known, bound)
+      Array::push(aliases, (name, ""))
+      let returned = passthrough_tail_name(tail, known, bound, aliases)
       Array::truncate(bound, mark)
+      Array::truncate(aliases, alias_mark)
       if returned == name {
         ""
       } else {
@@ -2389,21 +2399,24 @@ fn passthrough_tail_name(body: Expr, known: Array[(String, Int)], bound: Array[S
     },
     ELetRec(name, _, tail) => {
       let mark = Array::length(bound)
+      let alias_mark = Array::length(aliases)
       Array::push(bound, name)
-      let returned = passthrough_tail_name(tail, known, bound)
+      Array::push(aliases, (name, ""))
+      let returned = passthrough_tail_name(tail, known, bound, aliases)
       Array::truncate(bound, mark)
+      Array::truncate(aliases, alias_mark)
       if returned == name {
         ""
       } else {
         returned
       }
     },
-    ESeq(_, tail) => passthrough_tail_name(tail, known, bound),
-    EAssign(_, _, tail) => passthrough_tail_name(tail, known, bound),
-    EAssignOp(_, _, _, tail) => passthrough_tail_name(tail, known, bound),
+    ESeq(_, tail) => passthrough_tail_name(tail, known, bound, aliases),
+    EAssign(_, _, tail) => passthrough_tail_name(tail, known, bound, aliases),
+    EAssignOp(_, _, _, tail) => passthrough_tail_name(tail, known, bound, aliases),
     EIf(_, yes, no) => {
-      let y = passthrough_tail_name(yes, known, bound)
-      if y != "" && y == passthrough_tail_name(no, known, bound) {
+      let y = passthrough_tail_name(yes, known, bound, aliases)
+      if y != "" && y == passthrough_tail_name(no, known, bound, aliases) {
         y
       } else {
         ""
@@ -2415,7 +2428,7 @@ fn passthrough_tail_name(body: Expr, known: Array[(String, Int)], bound: Array[S
       for arm in arms {
         let mark = Array::length(bound)
         pat_names(arm.0, bound)
-        let next = passthrough_tail_name(arm.1, known, bound)
+        let next = passthrough_tail_name(arm.1, known, bound, aliases)
         Array::truncate(bound, mark)
         if next == "" || (result != "" && result != next) {
           valid = false
@@ -2430,10 +2443,10 @@ fn passthrough_tail_name(body: Expr, known: Array[(String, Int)], bound: Array[S
       }
     },
     EHandle(value, arms) => {
-      let result = passthrough_tail_name(value, known, bound)
+      let result = passthrough_tail_name(value, known, bound, aliases)
       let mut valid = result != ""
       for arm in arms {
-        if passthrough_tail_name(arm.1, known, bound) != result {
+        if passthrough_tail_name(arm.1, known, bound, aliases) != result {
           valid = false
         }
       }
@@ -2456,7 +2469,7 @@ export fn compute_passthrough_returning(stmts: Array[Stmt]) -> Array[(String, In
     while i < Array::length(stmts) {
       match Array::get(stmts, i) {
         SLet(_, _, name, _, EFn(_, _, params, _, _, body)) => {
-          let returned = passthrough_tail_name(body, out, [])
+          let returned = passthrough_tail_name(body, out, [], [])
           if returned != "" {
             let mut p = 0
             while p < Array::length(params) {
