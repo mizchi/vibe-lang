@@ -4422,6 +4422,7 @@ for enum_alias_lane in bump shadow gc; do
       fixtures/reexport_enum_alias_sibling_private_test.vibe \
       fixtures/reexport_enum_alias_local_effect_test.vibe \
       fixtures/reexport_enum_alias_effect_aggregate_test.vibe \
+      fixtures/reexport_enum_alias_private_origin_test.vibe \
       >"$ROOT_DIR/_build/_gate_reexport_enum_alias.log" 2>&1; then
     echo "[compiler-gate] FAIL: re-exported enum alias constructor on $enum_alias_lane (#3173)" >&2
     tail -20 "$ROOT_DIR/_build/_gate_reexport_enum_alias.log" >&2
@@ -4461,7 +4462,7 @@ for enum_alias_lane in bump shadow gc; do
     echo "[compiler-gate] FAIL: a duplicate enum origin compiled on $enum_alias_lane (#3173)" >&2
     exit 1
   fi
-  if [ "$(rg -c 'rename one of the enums named `Choice`' "$ROOT_DIR/_build/_gate_reexport_enum_alias_refused.log" || true)" != 2 ]; then
+  if [ "$(grep -c 'rename one of the enums named `Choice`' "$ROOT_DIR/_build/_gate_reexport_enum_alias_refused.log" || true)" != 2 ]; then
     echo "[compiler-gate] FAIL: duplicate enum origins lacked the actionable refusal on $enum_alias_lane (#3173)" >&2
     tail -20 "$ROOT_DIR/_build/_gate_reexport_enum_alias_refused.log" >&2
     exit 1
