@@ -1484,6 +1484,8 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
       THash => {
         // #cfg directive: on any malformed directive fall through to the
         // recovery machinery below by treating it like a failed statement.
+        let ref_mark = pattern_ref_mark()
+        let mut cfg_error_pos = pos
         let cfg_res = handle {
           let (dname, flag, dnext) = parse_cfg_directive(tokens, pos + 1)
           if dname == "zero_alloc" {
@@ -1498,7 +1500,6 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
           } else if dname == "deprecated" || dname == "cfg_enable" || cfg_flag_active(cfg_active, flag) {
             dnext
           } else {
-            let ref_mark = pattern_ref_mark()
             let dn = match peek(tokens, dnext) {
               TImpl => {
                 let (simpl_d, hp_d) = parse_impl_stmt_dispatch(tokens, dnext + 1)
@@ -1513,12 +1514,25 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
             restore_pattern_refs(ref_mark)
             dn
           }
-        } with { Exception::Throw(_) => 0 - 1 }
+        } with { Exception::Throw(msg) => {
+          restore_pattern_refs(ref_mark)
+          let anchor = extract_err_token_pos(msg, pos).0
+          if anchor > pos && anchor < n {
+            cfg_error_pos = anchor
+          }
+          0 - 1
+        } }
         if cfg_res >= 0 {
           pos = cfg_res
         } else {
-          // resync: skip to the next recovery point (mirrors the stmt path).
-          let mut rp = pos + 1
+          // Resume after the discarded statement's parsed prefix. Scanning
+          // from `#` can reinterpret a nested `let` as a top-level statement
+          // and add its pattern references again.
+          let mut rp = if cfg_error_pos > pos && is_recovery_point(peek(tokens, cfg_error_pos)) {
+            cfg_error_pos
+          } else {
+            cfg_error_pos + 1
+          }
           while rp < n && !is_recovery_point(Array::get(tokens, rp)) {
             rp = rp + 1
           }
@@ -1527,6 +1541,7 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
       },
       _ => {
         let start_pos = pos
+        let ref_mark = pattern_ref_mark()
         let res = handle {
           let (stmts, next) = match peek(tokens, pos) {
             TImpl => {
@@ -1540,6 +1555,7 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
           }
           Some((stmts, next))
         } with { Exception::Throw(msg) => {
+          restore_pattern_refs(ref_mark)
           let err_pos = extract_err_token_pos(msg, start_pos).0
           let anchor_pos = if err_pos >= start_pos && err_pos < Array::length(starts) {
             err_pos
