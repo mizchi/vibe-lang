@@ -8062,8 +8062,43 @@ fn rc_exit_independent_scalar_arg(e: Expr, name: String, local_names: Array[Stri
   }
 }
 
+/// Follow active immutable let sources before treating a returned binding as
+/// independent of the recursive owner. A parameter has no source row; an
+/// alias or a closure that captures the owner does.
+fn rc_exit_source_mentions_name(e: Expr, name: String, sources: Array[(String, Expr)], limit: Int) -> Bool {
+  match e {
+    EIdent(n, _) => {
+      if n == name {
+        return true
+      }
+      let mut i = limit - 1
+      while i >= 0 {
+        let row = Array::get(sources, i)
+        if row.0 == n {
+          return rc_exit_source_mentions_name(row.1, name, sources, i)
+        }
+        i = i - 1
+      }
+      false
+    },
+    EStringInterp(_) => true,
+    _ => {
+      for child in expr_children(e) {
+        if rc_exit_source_mentions_name(child, name, sources, limit) {
+          return true
+        }
+      }
+      false
+    }
+  }
+}
+
 fn rc_exit_fresh_independent_closure(e: Expr, name: String, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
   match e {
+    EIdent(n, _) => {
+      let kind = rc_exit_owner_kind(ctx, local_names, n)
+      n != name && kind >= 0 && kind <= 2 && !rc_exit_source_mentions_name(e, name, ctx.rc_exit_result_stores, Array::length(ctx.rc_exit_result_stores))
+    },
     EFn(_, _, _, _, _, _) => !rc_exit_mentions_name(e, name),
     ECall(EIdent("__lambda_return_owned", off), args, _) => if off < 0 && Array::length(args) == 1 {
       rc_exit_fresh_independent_closure(Array::get(args, 0), name, local_names, ctx)

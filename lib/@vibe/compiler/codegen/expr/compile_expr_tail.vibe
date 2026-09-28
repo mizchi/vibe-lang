@@ -1991,6 +1991,30 @@ fn rc_mut_rec_result_is_name(e: Expr, name: String) -> Bool {
   }
 }
 
+fn rc_mut_rec_retain_passthrough_source(e: Expr, local_names: Array[String], ctx: CompileCtx, shadowed: Array[String]) -> Expr {
+  match e {
+    EIdent(name, _) => if !array_contains_str(shadowed, name) && array_contains_str(ctx.rc_exit_lets, name) && rc_mut_rec_owner_slot(name, local_names, ctx) {
+      ECall(EIdent("__loop_tail_retain", -1), [e], -1)
+    } else {
+      e
+    },
+    EIf(cond, yes, no) => EIf(cond, rc_mut_rec_retain_passthrough_source(yes, local_names, ctx, shadowed), rc_mut_rec_retain_passthrough_source(no, local_names, ctx, shadowed)),
+    EMatch(scrutinee, arms) => EMatch(scrutinee, for arm in arms {
+      let mark = Array::length(shadowed)
+      let _ = collect_pattern_bindings(arm.0, shadowed)
+      let next = rc_mut_rec_retain_passthrough_source(arm.1, local_names, ctx, shadowed)
+      Array::truncate(shadowed, mark)
+      (arm.0, next)
+    }),
+    ELet(name, value, body, off) => if rc_mut_rec_result_is_name(body, name) {
+      ELet(name, rc_mut_rec_retain_passthrough_source(value, local_names, ctx, shadowed), body, off)
+    } else {
+      e
+    },
+    _ => e
+  }
+}
+
 fn rc_mut_rec_transfer_value(e: Expr, local_names: Array[String], ctx: CompileCtx, shadowed: Array[String]) -> Expr {
   match e {
     ECall(EIdent("__lambda_return_owned", off), args, call_off) => if off < 0 && Array::length(args) == 1 {
@@ -2006,23 +2030,18 @@ fn rc_mut_rec_transfer_value(e: Expr, local_names: Array[String], ctx: CompileCt
       }
       for row in ctx.passthrough_ret_params {
         if row.0 == callee && row.1 < Array::length(args) {
-          match Array::get(args, row.1) {
-            EIdent(name, _) => if !array_contains_str(shadowed, name) && array_contains_str(ctx.rc_exit_lets, name) && rc_mut_rec_owner_slot(name, local_names, ctx) {
-              let next_args: Array[Expr] = []
-              let mut i = 0
-              while i < Array::length(args) {
-                let arg = Array::get(args, i)
-                Array::push(next_args, if i == row.1 {
-                  ECall(EIdent("__loop_tail_retain", -1), [arg], -1)
-                } else {
-                  arg
-                })
-                i = i + 1
-              }
-              return ECall(EIdent(callee, off), next_args, call_off)
-            },
-            _ => ()
+          let next_args: Array[Expr] = []
+          let mut i = 0
+          while i < Array::length(args) {
+            let arg = Array::get(args, i)
+            Array::push(next_args, if i == row.1 {
+              rc_mut_rec_retain_passthrough_source(arg, local_names, ctx, shadowed)
+            } else {
+              arg
+            })
+            i = i + 1
           }
+          return ECall(EIdent(callee, off), next_args, call_off)
         }
       }
       e
