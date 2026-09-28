@@ -2413,6 +2413,8 @@ ur_refused() {
 ur_refused fixtures/err_interp_unrenderable_bytes_refused.vibe 'cannot interpolate a `Bytes` value' 'Bytes::to_array(b)' linear 'fixtures/err_interp_unrenderable_bytes_refused.vibe: line 7:17'
 ur_refused fixtures/err_interp_unrenderable_field_refused.vibe 'cannot interpolate field `tags`' 'bind it with a type annotation' linear 'fixtures/err_interp_unrenderable_field_refused.vibe: line 10:17'
 ur_refused fixtures/err_interp_unrenderable_shadow_refused.vibe 'cannot interpolate `shadowed`' 'bind it with a type annotation' linear 'fixtures/err_interp_unrenderable_shadow_refused.vibe: line 14:23'
+ur_refused fixtures/err_interp_iterator_map_refused.vibe 'cannot interpolate `mapped`' 'bind it with a type annotation' linear 'fixtures/err_interp_iterator_map_refused.vibe: line 11:30'
+ur_refused fixtures/err_interp_iterator_filter_refused.vibe 'cannot interpolate `filtered`' 'bind it with a type annotation' linear 'fixtures/err_interp_iterator_filter_refused.vibe: line 10:30'
 # #3068: an `Option[Int]` from `Int::parse`, inline and through a name.
 ur_refused fixtures/err_interp_unrenderable_parse_call_refused.vibe 'cannot interpolate the result of `Int::parse`' 'bind it with a type annotation' linear 'fixtures/err_interp_unrenderable_parse_call_refused.vibe: line 7:14'
 ur_refused fixtures/err_interp_unrenderable_parse_bound_refused.vibe 'cannot interpolate `p`' 'bind it with a type annotation' linear 'fixtures/err_interp_unrenderable_parse_bound_refused.vibe: line 6:14'
