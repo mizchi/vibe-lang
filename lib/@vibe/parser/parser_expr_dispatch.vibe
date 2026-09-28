@@ -527,8 +527,41 @@ fn qualify_handle_arm_pattern(effect_name: String, pat: Pat, qualifier: (Int, In
 fn handler_payload_has_bare_ctor(tokens: Array[Token], root_pos: Int, end: Int, variant: String) -> Bool {
   let mut i = root_pos + 1
   let mut found = false
+  let mut brace_depth = 0
+  let mut paren_depth = 0
+  let mut bracket_depth = 0
+  let record_braces = [false]
+  let record_field_starts = [false]
+  let record_parens = [0]
+  let record_brackets = [0]
   while i < end {
     match peek(tokens, i) {
+      TLParen => paren_depth = paren_depth + 1,
+      TRParen => paren_depth = paren_depth - 1,
+      TLBracket => bracket_depth = bracket_depth + 1,
+      TRBracket => bracket_depth = bracket_depth - 1,
+      TLBrace => {
+        brace_depth = brace_depth + 1
+        let is_record = i > root_pos && match peek(tokens, i - 1) {
+          TIdent("record") => true,
+          _ => false
+        }
+        if Array::length(record_braces) <= brace_depth {
+          Array::push(record_braces, is_record)
+          Array::push(record_field_starts, is_record)
+          Array::push(record_parens, paren_depth)
+          Array::push(record_brackets, bracket_depth)
+        } else {
+          Array::set(record_braces, brace_depth, is_record)
+          Array::set(record_field_starts, brace_depth, is_record)
+          Array::set(record_parens, brace_depth, paren_depth)
+          Array::set(record_brackets, brace_depth, bracket_depth)
+        }
+      },
+      TRBrace => brace_depth = brace_depth - 1,
+      TComma => if brace_depth > 0 && Array::get(record_braces, brace_depth) && paren_depth == Array::get(record_parens, brace_depth) && bracket_depth == Array::get(record_brackets, brace_depth) {
+        Array::set(record_field_starts, brace_depth, true)
+      },
       // `Type::{ field }` binds a field; the current struct-pattern grammar
       // accepts no constructor patterns inside its braces.
       TDoubleColon => match peek(tokens, i + 1) {
@@ -547,17 +580,23 @@ fn handler_payload_has_bare_ctor(tokens: Array[Token], root_pos: Int, end: Int, 
         },
         _ => ()
       },
-      TIdent(name) => if name == variant {
-        let previous_qualified = i > 0 && match peek(tokens, i - 1) {
-          TDoubleColon => true,
-          _ => false
+      TIdent(name) => {
+        let is_record_field = brace_depth > 0 && Array::get(record_braces, brace_depth) && Array::get(record_field_starts, brace_depth) && paren_depth == Array::get(record_parens, brace_depth) && bracket_depth == Array::get(record_brackets, brace_depth)
+        if is_record_field {
+          Array::set(record_field_starts, brace_depth, false)
         }
-        let next_qualified = match peek(tokens, i + 1) {
-          TDoubleColon => true,
-          _ => false
-        }
-        if !previous_qualified && !next_qualified {
-          found = true
+        if name == variant && !is_record_field {
+          let previous_qualified = i > 0 && match peek(tokens, i - 1) {
+            TDoubleColon => true,
+            _ => false
+          }
+          let next_qualified = match peek(tokens, i + 1) {
+            TDoubleColon => true,
+            _ => false
+          }
+          if !previous_qualified && !next_qualified {
+            found = true
+          }
         }
       },
       _ => ()

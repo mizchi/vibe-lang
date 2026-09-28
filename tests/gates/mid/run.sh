@@ -4443,9 +4443,10 @@ for private_pat_lane in bump shadow gc; do
     fixtures/reexport_enum_alias_private_applied_type_alias_test.vibe \
     fixtures/reexport_enum_alias_private_dependency_type_alias_test.vibe \
     fixtures/reexport_enum_alias_private_handler_or_test.vibe \
-    fixtures/reexport_enum_alias_private_struct_payload_test.vibe; do
+    fixtures/reexport_enum_alias_private_struct_payload_test.vibe \
+    fixtures/reexport_enum_alias_private_record_payload_test.vibe; do
     # GC does not lower algebraic effect handlers.
-    if [ "$private_pat_lane" = gc ] && { [ "$private_pat_fixture" = fixtures/reexport_enum_alias_private_handler_or_test.vibe ] || [ "$private_pat_fixture" = fixtures/reexport_enum_alias_private_struct_payload_test.vibe ]; }; then
+    if [ "$private_pat_lane" = gc ] && { [ "$private_pat_fixture" = fixtures/reexport_enum_alias_private_handler_or_test.vibe ] || [ "$private_pat_fixture" = fixtures/reexport_enum_alias_private_struct_payload_test.vibe ] || [ "$private_pat_fixture" = fixtures/reexport_enum_alias_private_record_payload_test.vibe ]; }; then
       continue
     fi
     if ! VIBE_RC="$private_pat_rc" VIBE_TEST_BACKEND="$private_pat_backend" \
