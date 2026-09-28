@@ -306,12 +306,12 @@ export fn compile_expr_tail3(buf: Bytes, expr: Expr, local_names: Array[String],
       EBreak(Some(v)) => v,
       _ => EUnit
     }
-    rc_exit_release(buf, ctx, local_names, 1, brk_operand)
+    rc_exit_release(buf, ctx, local_names, 1, brk_operand, 0 - 1)
     emit_br(buf, ld + 1)
     emit_i64_const(buf, 0)
     next_local
   } else if __tag == 21 {
-    rc_exit_release(buf, ctx, local_names, 2, EUnit)
+    rc_exit_release(buf, ctx, local_names, 2, EUnit, 0 - 1)
     emit_br(buf, ld)
     emit_i64_const(buf, 0)
     next_local
@@ -328,9 +328,25 @@ export fn compile_expr_tail3(buf: Bytes, expr: Expr, local_names: Array[String],
       ret_expr
     }
     let nl = compile_expr(buf, owned_ret, local_names, next_local, ctx, ld)
+    let needs_result_local = ctx.enable_rc && match ret_expr {
+      EIf(_, _, _) => true,
+      _ => false
+    }
+    if needs_result_local {
+      emit_local_tee(buf, nl)
+      while Array::length(local_names) <= nl {
+        Array::push(local_names, "")
+      }
+    } else {
+      ()
+    }
     // #3141: the value is on the stack; release every scope the `return`
     // leaves before it transfers.
-    rc_exit_release(buf, ctx, local_names, 0, ret_expr)
+    rc_exit_release(buf, ctx, local_names, 0, ret_expr, if needs_result_local {
+      nl
+    } else {
+      0 - 1
+    })
     // #1696: the exported entry's result is untagged, but that untag is emitted
     // AFTER the body -- and `return` branches out of the function, past it. So
     // the same untag has to happen here, or `return 777` hands the host 1554.
@@ -342,7 +358,11 @@ export fn compile_expr_tail3(buf: Bytes, expr: Expr, local_names: Array[String],
       ()
     }
     emit_return(buf)
-    nl
+    if needs_result_local {
+      nl + 1
+    } else {
+      nl
+    }
   } else {
     compile_expr_tail4(buf, expr, local_names, next_local, ctx, ld, compile_expr)
   }

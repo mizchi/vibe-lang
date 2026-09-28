@@ -169,6 +169,46 @@ fn make_counter_via_mixed_branch(start: Int, choose: Bool) -> (Int) -> Int {
   }
 }
 
+fn make_counter_via_early_mixed_branch(start: Int, choose: Bool) -> (Int) -> Int {
+  let rec go = (n: Int) -> Int {
+    if n > start {
+      n
+    } else {
+      go(n + 1)
+    }
+  }
+  return if choose {
+    go
+  } else {
+    let offset = [1]
+    (n: Int) -> Int {
+      n + Array::get(offset, 0)
+    }
+  }
+}
+
+fn make_fresh_counter() -> (Int) -> Int {
+  let offset = [1]
+  (n: Int) -> Int {
+    n + Array::get(offset, 0)
+  }
+}
+
+fn make_counter_via_early_mixed_call(start: Int, choose: Bool) -> (Int) -> Int {
+  let rec go = (n: Int) -> Int {
+    if n > start {
+      n
+    } else {
+      go(n + 1)
+    }
+  }
+  return if choose {
+    go
+  } else {
+    make_fresh_counter()
+  }
+}
+
 fn make_counter_via_match(start: Int, choose: Bool) -> (Int) -> Int {
   let rec go = (n: Int) -> Int {
     if n > start {
@@ -276,6 +316,50 @@ test "the non-owner branch does not retain a fresh closure" {
     i = i + 1
   }
   inspect(Profiler::heap_bytes() - before < 1000, content = "true")
+}
+
+test "an early return releases the recursive owner on its fresh branch" {
+  let escaped = make_counter_via_early_mixed_branch(8, true)
+  inspect(escaped(5), content = "9")
+  let mut i = 0
+  while i < 200 {
+    let f = make_counter_via_early_mixed_branch(8, false)
+    let _ = f(5)
+    i = i + 1
+  }
+  let before = Profiler::heap_bytes()
+  while i < 2200 {
+    let f = make_counter_via_early_mixed_branch(8, false)
+    let _ = f(5)
+    i = i + 1
+  }
+  inspect(Profiler::heap_bytes() - before < 1000, content = "true")
+  let mut j = 0
+  while j < 200 {
+    let f = make_counter_via_early_mixed_branch(8, true)
+    let _ = f(5)
+    j = j + 1
+  }
+  let owner_before = Profiler::heap_bytes()
+  while j < 2200 {
+    let f = make_counter_via_early_mixed_branch(8, true)
+    let _ = f(5)
+    j = j + 1
+  }
+  inspect(Profiler::heap_bytes() - owner_before < 1000, content = "true")
+  let mut k = 0
+  while k < 200 {
+    let f = make_counter_via_early_mixed_call(8, false)
+    let _ = f(5)
+    k = k + 1
+  }
+  let call_before = Profiler::heap_bytes()
+  while k < 2200 {
+    let f = make_counter_via_early_mixed_call(8, false)
+    let _ = f(5)
+    k = k + 1
+  }
+  inspect(Profiler::heap_bytes() - call_before < 1000, content = "true")
 }
 
 test "recursive closures returned through a borrow helper are released" {
