@@ -21,6 +21,7 @@ import @vibe/compiler/core {
   bytebuf_push_vec_header,
   bytebuf_to_bytes,
   canonical_builtin_name,
+  expr_children,
   is_borrow_ret_builtin,
   is_exception_operation_name,
   is_exception_throw_operation,
@@ -8014,17 +8015,64 @@ fn rc_exit_operands_ok(items: Array[Expr], local_names: Array[String], ctx: Comp
   ok
 }
 
-fn rc_exit_fresh_independent_closure(e: Expr, local_names: Array[String]) -> Bool {
+fn rc_exit_mentions_name(e: Expr, name: String) -> Bool {
   match e {
-    EFn(_, _, _, _, _, _) => true,
+    EIdent(n, _) => if n == name {
+      return true
+    },
+    // Interpolation stores source fragments rather than Expr children here.
+    // Treat it as dependent instead of overlooking a captured binder.
+    EStringInterp(_) => return true,
+    _ => ()
+  }
+  for child in expr_children(e) {
+    if rc_exit_mentions_name(child, name) {
+      return true
+    }
+  }
+  false
+}
+
+/// A factory argument may be evaluated before the recursive binder is
+/// released only when it cannot carry a view into that binder.
+fn rc_exit_independent_scalar_arg(e: Expr, name: String, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  match e {
+    EInt(_) => true,
+    EFloat(_) => true,
+    EBool(_) => true,
+    EString(_, _) => true,
+    EUnit => true,
+    EIdent(n, _) => if n == name {
+      false
+    } else {
+      let kind = cc_ident_slot_kind(e, local_names, ctx)
+      kind == 1 || kind == 2 || kind == 3
+    },
+    _ => false
+  }
+}
+
+fn rc_exit_fresh_independent_closure(e: Expr, name: String, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  match e {
+    EFn(_, _, _, _, _, _) => !rc_exit_mentions_name(e, name),
     ECall(EIdent("__lambda_return_owned", off), args, _) => if off < 0 && Array::length(args) == 1 {
-      rc_exit_fresh_independent_closure(Array::get(args, 0), local_names)
+      rc_exit_fresh_independent_closure(Array::get(args, 0), name, local_names, ctx)
     } else {
       false
     },
-    ECall(EIdent(name, _), args, _) => Array::length(args) == 0 && find_local_slot(local_names, name) < 0,
-    ELet(_, _, tail, _) => rc_exit_fresh_independent_closure(tail, local_names),
-    ESeq(_, tail) => rc_exit_fresh_independent_closure(tail, local_names),
+    ECall(EIdent(callee, _), args, _) => {
+      if find_local_slot(local_names, callee) >= 0 || cc_callee_may_return_view(callee, ctx) {
+        return false
+      }
+      for arg in args {
+        if !rc_exit_independent_scalar_arg(arg, name, local_names, ctx) {
+          return false
+        }
+      }
+      true
+    },
+    ELet(_, value, tail, _) => !rc_exit_mentions_name(value, name) && rc_exit_fresh_independent_closure(tail, name, local_names, ctx),
+    ESeq(head, tail) => !rc_exit_mentions_name(head, name) && rc_exit_fresh_independent_closure(tail, name, local_names, ctx),
     _ => false
   }
 }
@@ -8065,10 +8113,10 @@ fn rc_exit_passthrough_rec_result(e: Expr, name: String, local_names: Array[Stri
   }
 }
 
-fn rc_exit_conditional_rec_transfer(e: Expr, name: String, local_names: Array[String], ctx: CompileCtx) -> Bool {
+fn rc_exit_conditional_rec_transfer(e: Expr, name: String, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
   match e {
-    EIf(_, yes, no) => rc_exit_passthrough_rec_result(yes, name, local_names, [], ctx) && rc_exit_fresh_independent_closure(no, local_names) || rc_exit_passthrough_rec_result(no, name, local_names, [
-    ], ctx) && rc_exit_fresh_independent_closure(yes, local_names),
+    EIf(_, yes, no) => rc_exit_passthrough_rec_result(yes, name, local_names, [], ctx) && rc_exit_fresh_independent_closure(no, name, local_names, ctx) || rc_exit_passthrough_rec_result(no, name, local_names, [
+    ], ctx) && rc_exit_fresh_independent_closure(yes, name, local_names, ctx),
     EMatch(_, arms) => {
       let mut seen_rec = false
       let mut safe = Array::length(arms) > 0
@@ -8077,7 +8125,7 @@ fn rc_exit_conditional_rec_transfer(e: Expr, name: String, local_names: Array[St
         let _ = collect_pattern_bindings(arm.0, binds)
         if rc_exit_passthrough_rec_result(arm.1, name, local_names, binds, ctx) {
           seen_rec = true
-        } else if !rc_exit_fresh_independent_closure(arm.1, local_names) {
+        } else if !rc_exit_fresh_independent_closure(arm.1, name, local_names, ctx) {
           safe = false
         }
       }

@@ -1947,30 +1947,6 @@ fn rc_scope_borrow_arg_root(e: Expr, local_names: Array[String], ctx: CompileCtx
   }
 }
 
-/// A mutable slot takes the result of an owning passthrough call. Give the
-/// callee its own reference to a recursive local before it can return that
-/// reference or release it on another exit.
-fn rc_mut_rec_passthrough_arg(e: Expr, local_names: Array[String], ctx: CompileCtx) -> String {
-  match cl_return_operand(e) {
-    ECall(EIdent(callee, _), args, _) => if find_local_slot(local_names, callee) < 0 {
-      for row in ctx.passthrough_ret_params {
-        if row.0 == callee && row.1 < Array::length(args) {
-          match Array::get(args, row.1) {
-            EIdent(name, _) => if array_contains_str(ctx.rc_exit_lets, name) && rc_mut_rec_owner_slot(name, local_names, ctx) {
-              return name
-            },
-            _ => ()
-          }
-        }
-      }
-      ""
-    } else {
-      ""
-    },
-    _ => ""
-  }
-}
-
 fn rc_mut_rec_owner_slot(name: String, local_names: Array[String], ctx: CompileCtx) -> Bool {
   let slot = find_local_slot(local_names, name)
   let mut i = Array::length(ctx.rc_exit_stack_names) - 1
@@ -1981,6 +1957,66 @@ fn rc_mut_rec_owner_slot(name: String, local_names: Array[String], ctx: CompileC
     i = i - 1
   }
   false
+}
+
+/// A mutable slot receives an owning passthrough result. Retain its recursive
+/// argument at the selected call, so either a forwarded result or an early
+/// fresh return can consume that reference without consuming the binder's.
+fn rc_mut_rec_transfer_value(e: Expr, local_names: Array[String], ctx: CompileCtx, shadowed: Array[String]) -> Expr {
+  match e {
+    ECall(EIdent("__lambda_return_owned", off), args, call_off) => if off < 0 && Array::length(args) == 1 {
+      ECall(EIdent("__lambda_return_owned", off), [
+        rc_mut_rec_transfer_value(Array::get(args, 0), local_names, ctx, shadowed)
+      ], call_off)
+    } else {
+      e
+    },
+    ECall(EIdent(callee, off), args, call_off) => {
+      if find_local_slot(local_names, callee) >= 0 {
+        return e
+      }
+      for row in ctx.passthrough_ret_params {
+        if row.0 == callee && row.1 < Array::length(args) {
+          match Array::get(args, row.1) {
+            EIdent(name, _) => if !array_contains_str(shadowed, name) && array_contains_str(ctx.rc_exit_lets, name) && rc_mut_rec_owner_slot(name, local_names, ctx) {
+              let next_args: Array[Expr] = []
+              let mut i = 0
+              while i < Array::length(args) {
+                let arg = Array::get(args, i)
+                Array::push(next_args, if i == row.1 {
+                  ECall(EIdent("__loop_tail_retain", -1), [arg], -1)
+                } else {
+                  arg
+                })
+                i = i + 1
+              }
+              return ECall(EIdent(callee, off), next_args, call_off)
+            },
+            _ => ()
+          }
+        }
+      }
+      e
+    },
+    EIf(cond, yes, no) => EIf(cond, rc_mut_rec_transfer_value(yes, local_names, ctx, shadowed), rc_mut_rec_transfer_value(no, local_names, ctx, shadowed)),
+    EMatch(scrutinee, arms) => EMatch(scrutinee, for arm in arms {
+      let mark = Array::length(shadowed)
+      let _ = collect_pattern_bindings(arm.0, shadowed)
+      let next = rc_mut_rec_transfer_value(arm.1, local_names, ctx, shadowed)
+      Array::truncate(shadowed, mark)
+      (arm.0, next)
+    }),
+    ELet(name, value, body, off) => {
+      let next_value = rc_mut_rec_transfer_value(value, local_names, ctx, shadowed)
+      let mark = Array::length(shadowed)
+      Array::push(shadowed, name)
+      let next_body = rc_mut_rec_transfer_value(body, local_names, ctx, shadowed)
+      Array::truncate(shadowed, mark)
+      ELet(name, next_value, next_body, off)
+    },
+    ESeq(head, tail) => ESeq(rc_mut_rec_transfer_value(head, local_names, ctx, shadowed), rc_mut_rec_transfer_value(tail, local_names, ctx, shadowed)),
+    _ => e
+  }
 }
 
 fn rc_scope_tail_borrows_name(e: Expr, owner: String, local_names: Array[String], ctx: CompileCtx) -> Bool {
@@ -3495,15 +3531,6 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     } else if slot_is_intish(ctx, local_idx) || slot_is_stringish(ctx, local_idx) {
       Array::push(ctx.int_local_slots, local_idx * 4)
     }
-    if ctx.enable_rc && ctx.rc_dup_func_idx >= 0 {
-      let rec_arg = rc_mut_rec_passthrough_arg(value, local_names, ctx)
-      if rec_arg != "" {
-        let rec_slot = find_local_slot(local_names, rec_arg)
-        if rec_slot >= 0 {
-          emit_rc_dup_guarded(buf, rec_slot, ctx.rc_shadow, ctx.rc_dup_func_idx)
-        }
-      }
-    }
     if mut_needs_ref_cell(body, name) {
       Array::push(ctx.ref_cell_names, name)
       if ctx.enable_rc && ctx.rc_alloc_func_idx >= 0 && ctx.rc_drop_func_idx >= 0 {
@@ -3556,7 +3583,11 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         emit_local_set(buf, local_idx)
         emit_local_get(buf, local_idx)
         emit_i32_wrap_i64(buf)
-        let nl = compile_expr(buf, value, local_names, next_local + 1, ctx, ld)
+        let nl = compile_expr(buf, if ctx.enable_rc {
+          rc_mut_rec_transfer_value(value, local_names, ctx, [])
+        } else {
+          value
+        }, local_names, next_local + 1, ctx, ld)
         Array::set(local_names, local_idx, name)
         emit_i64_store(buf, 3, 0)
         // #3141: the scope end below drops the cell on every path, so an
@@ -3581,7 +3612,11 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         emit_heap_grow_after_heap_set(buf, ctx)
         emit_local_get(buf, local_idx)
         emit_i32_wrap_i64(buf)
-        let nl = compile_expr(buf, value, local_names, next_local + 1, ctx, ld)
+        let nl = compile_expr(buf, if ctx.enable_rc {
+          rc_mut_rec_transfer_value(value, local_names, ctx, [])
+        } else {
+          value
+        }, local_names, next_local + 1, ctx, ld)
         Array::set(local_names, local_idx, name)
         emit_i64_store(buf, 3, 0)
         let nl2 = compile_expr(buf, body, local_names, nl, ctx, ld)
@@ -3593,7 +3628,12 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
       // (`let_retain_store_dup_tails`), read by the ownership classifiers
       // below as the ELet arm reads it.
       let value_sd = let_retain_store_dup_tails(value, local_names, ctx)
-      let nl = compile_expr(buf, retain_wrap_let_value(value_sd, name, local_names, ctx), local_names, next_local + 1, ctx, ld)
+      let value_for_compile = retain_wrap_let_value(value_sd, name, local_names, ctx)
+      let nl = compile_expr(buf, if ctx.enable_rc {
+        rc_mut_rec_transfer_value(value_for_compile, local_names, ctx, [])
+      } else {
+        value_for_compile
+      }, local_names, next_local + 1, ctx, ld)
       emit_local_set(buf, local_idx)
       // #791: classify AFTER the value is compiled + stored (local_idx now
       // holds it), matching ELet's ordering -- classify_let_value_heap's
