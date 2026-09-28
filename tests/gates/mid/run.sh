@@ -648,6 +648,7 @@ echo "[compiler-gate] 131/131 local let-rec closure release (#3110)"
 for rec_lane in 1 shadow; do
   if ! VIBE_RC="$rec_lane" VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
       bash scripts/vibe_test.sh fixtures/rc_letrec_self_cycle_bounded_test.vibe \
+      fixtures/rc_letrec_mut_alias_test.vibe \
       >"$ROOT_DIR/_build/_gate_rc_letrec_self_cycle.log" 2>&1; then
     echo "[compiler-gate] FAIL: local let rec leak or escaped closure on VIBE_RC=$rec_lane (#3110):" >&2
     tail -20 "$ROOT_DIR/_build/_gate_rc_letrec_self_cycle.log" >&2

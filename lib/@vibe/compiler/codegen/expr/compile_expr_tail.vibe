@@ -1947,6 +1947,42 @@ fn rc_scope_borrow_arg_root(e: Expr, local_names: Array[String], ctx: CompileCtx
   }
 }
 
+/// A mutable slot takes the result of an owning passthrough call. Give the
+/// callee its own reference to a recursive local before it can return that
+/// reference or release it on another exit.
+fn rc_mut_rec_passthrough_arg(e: Expr, local_names: Array[String], ctx: CompileCtx) -> String {
+  match cl_return_operand(e) {
+    ECall(EIdent(callee, _), args, _) => if find_local_slot(local_names, callee) < 0 {
+      for row in ctx.passthrough_ret_params {
+        if row.0 == callee && row.1 < Array::length(args) {
+          match Array::get(args, row.1) {
+            EIdent(name, _) => if array_contains_str(ctx.rc_exit_lets, name) && rc_mut_rec_owner_slot(name, local_names, ctx) {
+              return name
+            },
+            _ => ()
+          }
+        }
+      }
+      ""
+    } else {
+      ""
+    },
+    _ => ""
+  }
+}
+
+fn rc_mut_rec_owner_slot(name: String, local_names: Array[String], ctx: CompileCtx) -> Bool {
+  let slot = find_local_slot(local_names, name)
+  let mut i = Array::length(ctx.rc_exit_stack_names) - 1
+  while i >= 0 {
+    if Array::get(ctx.rc_exit_stack_names, i) == name {
+      return Array::get(ctx.rc_exit_stack_info, i * 3) == 6 && Array::get(ctx.rc_exit_stack_info, i * 3 + 1) == slot
+    }
+    i = i - 1
+  }
+  false
+}
+
 fn rc_scope_tail_borrows_name(e: Expr, owner: String, local_names: Array[String], ctx: CompileCtx) -> Bool {
   let operand = cl_return_operand(e)
   match operand {
@@ -3458,6 +3494,15 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
       Array::push(ctx.int_local_slots, local_idx * 4 + 2)
     } else if slot_is_intish(ctx, local_idx) || slot_is_stringish(ctx, local_idx) {
       Array::push(ctx.int_local_slots, local_idx * 4)
+    }
+    if ctx.enable_rc && ctx.rc_dup_func_idx >= 0 {
+      let rec_arg = rc_mut_rec_passthrough_arg(value, local_names, ctx)
+      if rec_arg != "" {
+        let rec_slot = find_local_slot(local_names, rec_arg)
+        if rec_slot >= 0 {
+          emit_rc_dup_guarded(buf, rec_slot, ctx.rc_shadow, ctx.rc_dup_func_idx)
+        }
+      }
     }
     if mut_needs_ref_cell(body, name) {
       Array::push(ctx.ref_cell_names, name)
