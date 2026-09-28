@@ -481,19 +481,35 @@ test "later aliased re-export blocks an earlier import reference rename" {
   assert(Array::length(renames) == 0)
 }
 
-test "an enum re-export alias survives the merge for constructor normalization" {
+test "an enum re-export alias rewrites only its importer" {
   let provider = parse_program(lex("export enum Choice { First; Second }"))
   let facade = parse_program(lex("export ./provider.vibe { enum Choice as PublicChoice }"))
   let entry = parse_program(lex("import ./facade.vibe { PublicChoice }\nlet answer = PublicChoice::First"))
+  let other = parse_program(lex("export enum PublicChoice { Local }\nlet other = PublicChoice::Local"))
+  let paths = [
+    "/virtual/provider.vibe",
+    "/virtual/facade.vibe",
+    "/virtual/entry.vibe",
+    "/virtual/other.vibe"
+  ]
+  let plan = build_export_rename_plan(paths, [provider, facade, entry, other], "/virtual/entry.vibe")
+  let renames = collect_import_value_renames(plan, "/virtual/entry.vibe", entry)
+  assert(Array::length(renames) == 1)
+  inspect(Array::get(renames, 0).0, "PublicChoice")
+  inspect(Array::get(renames, 0).1, "Choice")
   let merged: Array[Stmt] = []
   append_import_alias_rewritten_non_import_stmts(merged, provider)
   append_import_alias_rewritten_non_import_stmts(merged, facade)
-  append_import_alias_rewritten_non_import_stmts(merged, entry)
+  append_import_alias_rewritten_non_import_stmts_with_renames(merged, entry, [], renames)
+  append_import_alias_rewritten_non_import_stmts(merged, other)
   let before = print_program(merged)
-  assert(String::contains(before, "type PublicChoice = Choice"))
+  assert(!String::contains(before, "type PublicChoice = Choice"))
+  assert(String::contains(before, "answer = Choice::First"))
+  assert(String::contains(before, "other = PublicChoice::Local"))
   desugar_trait_dicts(merged)
   let after = print_program(merged)
   assert(String::contains(after, "answer = First"))
+  assert(String::contains(after, "other = Local"))
 }
 
 //# #2348: a WAT body's `call $name` survives the merge rename
