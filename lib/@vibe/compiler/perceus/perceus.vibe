@@ -2972,8 +2972,24 @@ fn inferred_double_expr(body: Expr, double_names: Array[String]) -> Bool {
   }
 }
 
+fn inferred_bound_owns(bound: Array[String], name: String) -> Int {
+  let mut i = Array::length(bound) - 1
+  while i >= 0 {
+    let entry = Array::get(bound, i)
+    if entry == "+" + name {
+      return 1
+    }
+    if entry == name {
+      return 0
+    }
+    i = i - 1
+  }
+  -1
+}
+
 fn inferred_heap_result_spine(body: Expr, ctor_names: Array[String], heap_names: Array[String], bound: Array[String], double_names: Array[String]) -> Bool {
   match body {
+    EIdent(name, _) => inferred_bound_owns(bound, name) == 1,
     EArray(_) => true,
     ETuple(_) => true,
     ERecord(_, _, _) => true,
@@ -2983,7 +2999,7 @@ fn inferred_heap_result_spine(body: Expr, ctor_names: Array[String], heap_names:
     ECall(EIdent(name, off), args, _) => if name == "__lambda_return_owned" && off < 0 && Array::length(args) == 1 {
       true
     } else {
-      !array_contains_str_pctx(bound, name) && (array_contains_str_pctx(ctor_names, name) || array_contains_str_pctx(heap_names, name))
+      inferred_bound_owns(bound, name) < 0 && (array_contains_str_pctx(ctor_names, name) || array_contains_str_pctx(heap_names, name))
     },
     EBinOp(_, _, _, _) => inferred_double_expr(body, double_names),
     EUnaryOp(_, _) => inferred_double_expr(body, double_names),
@@ -3005,12 +3021,17 @@ fn inferred_heap_result_spine(body: Expr, ctor_names: Array[String], heap_names:
     ELet(name, value, tail, _) => {
       let bmark = Array::length(bound)
       let dmark = Array::length(double_names)
+      let value_owned = inferred_heap_result_spine(value, ctor_names, heap_names, bound, double_names)
       if inferred_double_expr(value, double_names) {
         Array::push(double_names, name)
       } else {
         Array::push(double_names, "!" + name)
       }
-      Array::push(bound, name)
+      Array::push(bound, if value_owned {
+        "+" + name
+      } else {
+        name
+      })
       let owned = inferred_heap_result_spine(tail, ctor_names, heap_names, bound, double_names)
       Array::truncate(bound, bmark)
       Array::truncate(double_names, dmark)
