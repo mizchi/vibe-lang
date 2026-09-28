@@ -14,8 +14,10 @@ import @vibe/compiler/core {
   builtin_iterator_serialized_boundary_markers,
   collect_export_def_value_names,
   collect_import_value_renames,
+  export_plan_fingerprint_text,
   export_plan_renames_for,
   namespace_exported_name,
+  namespace_private_name,
   namespace_private_value_stmts,
   trait_import_local_operation_renames
 }
@@ -479,6 +481,278 @@ test "later aliased re-export blocks an earlier import reference rename" {
   ], main_path)
   let renames = collect_import_value_renames(plan, facade_path, facade_stmts)
   assert(Array::length(renames) == 0)
+}
+
+test "an enum re-export alias rewrites only its importer" {
+  let provider = parse_program(lex("export enum Choice { First; Second }"))
+  let facade = parse_program(lex("export ./provider.vibe { enum Choice as PublicChoice }"))
+  let entry = parse_program(lex("import ./facade.vibe { PublicChoice }\nlet answer = PublicChoice::First"))
+  let other = parse_program(lex("export enum PublicChoice { Local }\nlet other = PublicChoice::Local"))
+  let paths = [
+    "/virtual/provider.vibe",
+    "/virtual/facade.vibe",
+    "/virtual/entry.vibe",
+    "/virtual/other.vibe"
+  ]
+  let plan = build_export_rename_plan(paths, [provider, facade, entry, other], "/virtual/entry.vibe")
+  let renames = collect_import_value_renames(plan, "/virtual/entry.vibe", entry)
+  assert(Array::length(renames) == 1)
+  inspect(Array::get(renames, 0).0, "PublicChoice")
+  inspect(Array::get(renames, 0).1, "Choice")
+  let merged: Array[Stmt] = []
+  append_import_alias_rewritten_non_import_stmts(merged, provider)
+  append_import_alias_rewritten_non_import_stmts(merged, facade)
+  append_import_alias_rewritten_non_import_stmts_with_renames(merged, entry, [], renames)
+  append_import_alias_rewritten_non_import_stmts(merged, other)
+  let before = print_program(merged)
+  assert(!String::contains(before, "type PublicChoice = Choice"))
+  assert(String::contains(before, "answer = Choice::First"))
+  assert(String::contains(before, "other = PublicChoice::Local"))
+  desugar_trait_dicts(merged)
+  let after = print_program(merged)
+  assert(String::contains(after, "answer = First"))
+  assert(String::contains(after, "other = Local"))
+}
+
+test "a re-exported transparent alias reaches its enum constructors" {
+  let provider = parse_program(lex("export enum Color { Red; Blue }\nexport type Shade = Color"))
+  let facade = parse_program(lex("export ./provider.vibe { Shade as PublicShade }"))
+  let entry = parse_program(lex("import ./facade.vibe { PublicShade }\nlet answer = PublicShade::Red"))
+  let paths = [
+    "/virtual/provider.vibe",
+    "/virtual/facade.vibe",
+    "/virtual/entry.vibe"
+  ]
+  let plan = build_export_rename_plan(paths, [provider, facade, entry], "/virtual/entry.vibe")
+  let renames = collect_import_value_renames(plan, "/virtual/entry.vibe", entry)
+  inspect(Array::length(renames), "1")
+  inspect(Array::get(renames, 0).0, "PublicShade")
+  inspect(Array::get(renames, 0).1, "Color")
+}
+
+test "a re-exported parameterized alias reaches its enum constructors" {
+  let provider = parse_program(lex("export enum Attempt[T] { Good(T); Bad }\nexport type Att[T] = Attempt[T]"))
+  let facade = parse_program(lex("export ./provider.vibe { Att as PublicAtt, Good, Bad }"))
+  let entry = parse_program(lex("import ./facade.vibe { PublicAtt, Good, Bad }\nlet answer = PublicAtt::Good(1)"))
+  let paths = [
+    "/virtual/provider.vibe",
+    "/virtual/facade.vibe",
+    "/virtual/entry.vibe"
+  ]
+  let plan = build_export_rename_plan(paths, [provider, facade, entry], "/virtual/entry.vibe")
+  let renames = collect_import_value_renames(plan, "/virtual/entry.vibe", entry)
+  assert(Array::length(renames) >= 1)
+  inspect(Array::get(renames, 0).0, "PublicAtt")
+  inspect(Array::get(renames, 0).1, "Attempt")
+}
+
+test "a re-exported alias follows an imported enum head" {
+  let dependency = parse_program(lex("export enum Color { Red; Blue }"))
+  let provider = parse_program(lex("import ./dependency.vibe { enum Color as Shade }\nexport type Alias = Shade"))
+  let facade = parse_program(lex("export ./provider.vibe { Alias as PublicAlias }"))
+  let entry = parse_program(lex("import ./facade.vibe { PublicAlias }\nlet answer = PublicAlias::Red"))
+  let paths = [
+    "/virtual/dependency.vibe",
+    "/virtual/provider.vibe",
+    "/virtual/facade.vibe",
+    "/virtual/entry.vibe"
+  ]
+  let plan = build_export_rename_plan(paths, [
+    dependency,
+    provider,
+    facade,
+    entry
+  ], "/virtual/entry.vibe")
+  let renames = collect_import_value_renames(plan, "/virtual/entry.vibe", entry)
+  inspect(Array::length(renames), "1")
+  inspect(Array::get(renames, 0).0, "PublicAlias")
+  inspect(Array::get(renames, 0).1, "Color")
+}
+
+test "a later plain enum re-export replaces an earlier alias" {
+  // The checker rejects importing two distinct enums under PublicChoice, but
+  // the merge planner must still avoid retaining the earlier alias mapping.
+  let first = parse_program(lex("export enum Choice { First }"))
+  let later = parse_program(lex("export enum PublicChoice { Local }"))
+  let facade = parse_program(lex("export ./first.vibe { enum Choice as PublicChoice }\nexport ./later.vibe { enum PublicChoice }"))
+  let entry = parse_program(lex("import ./facade.vibe { PublicChoice }\nlet answer = PublicChoice::Local"))
+  let first_path = "/virtual/first.vibe"
+  let later_path = "/virtual/later.vibe"
+  let facade_path = "/virtual/facade.vibe"
+  let entry_path = "/virtual/entry.vibe"
+  let plan = build_export_rename_plan([
+    first_path,
+    later_path,
+    facade_path,
+    entry_path
+  ], [first, later, facade, entry], entry_path)
+  let renames = collect_import_value_renames(plan, entry_path, entry)
+  inspect(Array::length(renames), "0")
+}
+
+test "an enum re-export chain is not limited to sixteen hops" {
+  let paths: Array[String] = ["/virtual/provider.vibe"]
+  let stmts_list: Array[Array[Stmt]] = [
+    parse_program(lex("export enum Choice { First }"))
+  ]
+  let mut previous = "provider"
+  let mut public_name = "Choice"
+  let mut i = 0
+  while i < 18 {
+    let facade = "f" + Int::to_string(i)
+    let next_name = "A" + Int::to_string(i)
+    Array::push(paths, "/virtual/" + facade + ".vibe")
+    Array::push(stmts_list, parse_program(lex("export ./" + previous + ".vibe { " + public_name + " as " + next_name + " }")))
+    previous = facade
+    public_name = next_name
+    i = i + 1
+  }
+  let entry = parse_program(lex("import ./" + previous + ".vibe { " + public_name + " }\nlet answer = " + public_name + "::First"))
+  let entry_path = "/virtual/entry.vibe"
+  Array::push(paths, entry_path)
+  Array::push(stmts_list, entry)
+  let plan = build_export_rename_plan(paths, stmts_list, entry_path)
+  let renames = collect_import_value_renames(plan, entry_path, entry)
+  inspect(Array::length(renames), "1")
+  inspect(Array::get(renames, 0).1, "Choice")
+}
+
+test "an enum alias change invalidates the export plan fingerprint" {
+  let provider = parse_program(lex("export enum Old { First }\nexport enum New { First }"))
+  let old_facade = parse_program(lex("export ./provider.vibe { enum Old as Public }"))
+  let new_facade = parse_program(lex("export ./provider.vibe { enum New as Public }"))
+  let entry = parse_program(lex("import ./facade.vibe { Public }\nlet result = Public::First"))
+  let paths = [
+    "/virtual/provider.vibe",
+    "/virtual/facade.vibe",
+    "/virtual/entry.vibe"
+  ]
+  let old_plan = build_export_rename_plan(paths, [provider, old_facade, entry], "/virtual/entry.vibe")
+  let new_plan = build_export_rename_plan(paths, [provider, new_facade, entry], "/virtual/entry.vibe")
+  inspect(export_plan_fingerprint_text(old_plan) == export_plan_fingerprint_text(new_plan), "false")
+}
+
+test "a new exported same-name enum invalidates the export plan fingerprint" {
+  let provider = parse_program(lex("export enum Choice { First }"))
+  let facade = parse_program(lex("export ./provider.vibe { enum Choice as PublicChoice }"))
+  let sibling_before = parse_program(lex("export enum Other { Rival }"))
+  let sibling_after = parse_program(lex("export enum Choice { Rival }"))
+  let entry = parse_program(lex("import ./facade.vibe { PublicChoice }\nimport ./sibling.vibe { Rival }\nlet result = PublicChoice::First"))
+  let paths = [
+    "/virtual/provider.vibe",
+    "/virtual/facade.vibe",
+    "/virtual/sibling.vibe",
+    "/virtual/entry.vibe"
+  ]
+  let old_plan = build_export_rename_plan(paths, [
+    provider,
+    facade,
+    sibling_before,
+    entry
+  ], "/virtual/entry.vibe")
+  let new_plan = build_export_rename_plan(paths, [
+    provider,
+    facade,
+    sibling_after,
+    entry
+  ], "/virtual/entry.vibe")
+  inspect(export_plan_fingerprint_text(old_plan) == export_plan_fingerprint_text(new_plan), "false")
+}
+
+test "an alias formal does not follow a same-spelled imported enum" {
+  let hue = parse_program(lex("export enum Hue { Red }"))
+  let provider = parse_program(lex("import ./hue.vibe { enum Hue as T }\nexport type Box[T] = T"))
+  let facade = parse_program(lex("export ./provider.vibe { Box as PublicBox }"))
+  let entry = parse_program(lex("import ./facade.vibe { PublicBox }"))
+  let paths = [
+    "/virtual/hue.vibe",
+    "/virtual/provider.vibe",
+    "/virtual/facade.vibe",
+    "/virtual/entry.vibe"
+  ]
+  let plan = build_export_rename_plan(paths, [hue, provider, facade, entry], "/virtual/entry.vibe")
+  inspect(Array::length(collect_import_value_renames(plan, "/virtual/entry.vibe", entry)), "0")
+}
+
+test "a higher-kinded alias formal does not follow a same-spelled enum" {
+  let enum_f = parse_program(lex("export enum F { Red }"))
+  let provider = parse_program(lex("import ./enum_f.vibe { enum F }\nexport type Apply[F[_], A] = F[A]"))
+  let facade = parse_program(lex("export ./provider.vibe { Apply as PublicApply }"))
+  let entry = parse_program(lex("import ./facade.vibe { PublicApply }"))
+  let paths = [
+    "/virtual/enum_f.vibe",
+    "/virtual/provider.vibe",
+    "/virtual/facade.vibe",
+    "/virtual/entry.vibe"
+  ]
+  let plan = build_export_rename_plan(paths, [enum_f, provider, facade, entry], "/virtual/entry.vibe")
+  inspect(Array::length(collect_import_value_renames(plan, "/virtual/entry.vibe", entry)), "0")
+}
+
+test "a local effect head blocks an imported enum alias rewrite" {
+  let provider = parse_program(lex("export enum Choice { First }"))
+  let facade = parse_program(lex("export ./provider.vibe { enum Choice as PublicChoice }"))
+  let entry = parse_program(lex("import ./facade.vibe { PublicChoice }\neffect PublicChoice { Emit() -> Unit }\nfn run() -> Unit with PublicChoice { perform PublicChoice::Emit() }"))
+  let paths = [
+    "/virtual/provider.vibe",
+    "/virtual/facade.vibe",
+    "/virtual/entry.vibe"
+  ]
+  let plan = build_export_rename_plan(paths, [provider, facade, entry], "/virtual/entry.vibe")
+  inspect(Array::length(collect_import_value_renames(plan, "/virtual/entry.vibe", entry)), "0")
+}
+
+test "an aggregate export of a local effect does not re-export an imported enum" {
+  let provider = parse_program(lex("export enum Choice { First }"))
+  let facade = parse_program(lex("import ./provider.vibe { enum Choice as PublicChoice }\neffect PublicChoice { Emit() -> Unit }\nexport { PublicChoice }"))
+  let entry = parse_program(lex("import ./facade.vibe { effect PublicChoice }\nfn run() -> Unit with PublicChoice { perform PublicChoice::Emit() }"))
+  let paths = [
+    "/virtual/provider.vibe",
+    "/virtual/facade.vibe",
+    "/virtual/entry.vibe"
+  ]
+  let plan = build_export_rename_plan(paths, [provider, facade, entry], "/virtual/entry.vibe")
+  inspect(Array::length(collect_import_value_renames(plan, "/virtual/entry.vibe", entry)), "0")
+}
+
+test "a provider-local struct stops an imported enum origin" {
+  let dependency = parse_program(lex("export enum X { First }"))
+  let provider = parse_program(lex("import ./dependency.vibe { enum X }\nstruct X { value: Int }\nexport type Alias = X"))
+  let facade = parse_program(lex("export ./provider.vibe { Alias as PublicAlias }"))
+  let entry = parse_program(lex("import ./facade.vibe { PublicAlias }"))
+  let paths = [
+    "/virtual/dependency.vibe",
+    "/virtual/provider.vibe",
+    "/virtual/facade.vibe",
+    "/virtual/entry.vibe"
+  ]
+  let plan = build_export_rename_plan(paths, [
+    dependency,
+    provider,
+    facade,
+    entry
+  ], "/virtual/entry.vibe")
+  inspect(Array::length(collect_import_value_renames(plan, "/virtual/entry.vibe", entry)), "0")
+}
+
+test "a public alias preserves a private enum origin" {
+  let provider = parse_program(lex("enum Hidden { A; B }\nexport type Public = Hidden"))
+  let facade = parse_program(lex("export ./provider.vibe { Public as Api }"))
+  let entry = parse_program(lex("import ./facade.vibe { Api }"))
+  let paths = [
+    "/virtual/provider.vibe",
+    "/virtual/facade.vibe",
+    "/virtual/entry.vibe"
+  ]
+  let plan = build_export_rename_plan(paths, [provider, facade, entry], "/virtual/entry.vibe")
+  let renames = collect_import_value_renames(plan, "/virtual/entry.vibe", entry)
+  inspect(Array::length(renames), "3")
+  inspect(Array::get(renames, 0).0, "Api")
+  inspect(Array::get(renames, 0).1, "Public")
+  inspect(Array::get(renames, 1).0, "Api::A")
+  inspect(Array::get(renames, 1).1, namespace_private_name("/virtual/provider.vibe", "A"))
+  inspect(Array::get(renames, 2).0, "Api::B")
+  inspect(Array::get(renames, 2).1, namespace_private_name("/virtual/provider.vibe", "B"))
 }
 
 //# #2348: a WAT body's `call $name` survives the merge rename
