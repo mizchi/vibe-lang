@@ -2748,7 +2748,49 @@ export fn compute_passthrough_returning(stmts: Array[Stmt]) -> Array[(String, In
       i = i + 1
     }
   }
+  // An early call can look fresh before a later declaration joins `out`.
+  // Recheck every candidate against the completed set, and keep removing
+  // candidates whose own dependencies were invalidated by that recheck.
+  let mut stable = false
+  while !stable {
+    stable = true
+    let kept: Array[(String, Int)] = []
+    for row in out {
+      if passthrough_row_agrees(stmts, row, out) {
+        Array::push(kept, row)
+      } else {
+        stable = false
+      }
+    }
+    Array::truncate(out, 0)
+    for row in kept {
+      Array::push(out, row)
+    }
+  }
   out
+}
+
+fn passthrough_row_agrees(stmts: Array[Stmt], row: (String, Int), known: Array[(String, Int)]) -> Bool {
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, name, _, EFn(_, _, params, _, _, body)) => if name == row.0 && row.1 < Array::length(params) {
+        let (raw_name, _) = Array::get(params, row.1)
+        let len = String::length(raw_name)
+        let param_name = if len > 0 && (String::char_code_at(raw_name, len - 1) == '~' || String::char_code_at(raw_name, len - 1) == '?') {
+          raw_name[0: len - 1]
+        } else {
+          raw_name
+        }
+        let returned = passthrough_tail_name(body, known, [], [])
+        return returned == param_name && passthrough_early_returns_agree(body, returned, known, [
+        ], [])
+      } else {
+        ()
+      },
+      _ => ()
+    }
+  }
+  false
 }
 
 fn bound_passthrough_names(rows: Array[(String, Int)]) -> Array[String] {
