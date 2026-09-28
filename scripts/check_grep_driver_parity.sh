@@ -92,7 +92,7 @@ run_launcher() { # <chunk-or-empty> <budget-or-empty> <json:0|1> <stdout>
   [ -n "$chunk" ] && extra+=("VIBE_GREP_CHUNK_FILES=$chunk")
   [ -n "$budget" ] && extra+=("VIBE_GREP_MEMORY_BUDGET_MB=$budget")
   [ "$json" = "1" ] && set -- --json || set --
-  env VIBE_CLI_WASM="$STAGE2" VIBE_RUNNER="$RUNNER" VIBE_BUILD_CACHE_DIR="$cache" "${extra[@]}" \
+  env VIBE_CLI_WASM="$STAGE2" VIBE_RUNNER="$RUNNER" VIBE_BUILD_CACHE_DIR="$cache" "${extra[@]+"${extra[@]}"}" \
       "$LAUNCHER" grep "$@" \
       --pattern "$PATTERN" --where "$WHERE" "$CORPUS" >"$out" 2>"$out.err" || status=$?
   rm -rf "$cache"
@@ -104,7 +104,7 @@ run_bin() { # <chunk-or-empty> <json:0|1> <stdout>
   cache="$(mktemp -d)"
   [ -n "$chunk" ] && extra+=("VIBE_GREP_CHUNK_FILES=$chunk")
   [ "$json" = "1" ] && set -- --json || set --
-  env VIBE_CLI_WASM="$STAGE2" VIBE_BUILD_CACHE_DIR="$cache" "${extra[@]}" \
+  env VIBE_CLI_WASM="$STAGE2" VIBE_BUILD_CACHE_DIR="$cache" "${extra[@]+"${extra[@]}"}" \
       bash "$ROOT_DIR/scripts/vibe_grep_bin.sh" grep "$@" \
       --pattern "$PATTERN" --where "$WHERE" "$CORPUS" >"$out" 2>"$out.err" || status=$?
   rm -rf "$cache"
