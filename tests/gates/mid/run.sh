@@ -4505,11 +4505,12 @@ for private_pat_lane in bump shadow gc; do
   if VIBE_RC="$private_pat_rc" VIBE_TEST_BACKEND="$private_pat_backend" \
       VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
       bash scripts/vibe_test.sh fixtures/reexport_enum_alias_private_pattern_collision_refused.vibe \
+      fixtures/reexport_enum_alias_private_handler_nested_collision_refused.vibe \
       >"$ROOT_DIR/_build/_gate_private_enum_pattern_refused.log" 2>&1; then
     echo "[compiler-gate] FAIL: ambiguous private enum alias pattern compiled on $private_pat_lane (#3238)" >&2
     exit 1
   fi
-  if ! grep -q 'rename one of the variants named `A`' "$ROOT_DIR/_build/_gate_private_enum_pattern_refused.log"; then
+  if [ "$(grep -c 'rename one of the variants named `A`' "$ROOT_DIR/_build/_gate_private_enum_pattern_refused.log" || true)" != 2 ]; then
     echo "[compiler-gate] FAIL: ambiguous private enum alias pattern lacked an actionable refusal on $private_pat_lane (#3238)" >&2
     tail -20 "$ROOT_DIR/_build/_gate_private_enum_pattern_refused.log" >&2
     exit 1
