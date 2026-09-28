@@ -2339,13 +2339,55 @@ export fn compute_borrow_returning_names(stmts: Array[Stmt]) -> Array[String] {
 /// identity functions are owning passthroughs at ordinary call sites, but an
 /// enclosing recursive binder still needs to retain an escaping result before
 /// its own scope-end drop.
+fn passthrough_tail_name(body: Expr) -> String {
+  match body {
+    EIdent(name, _) => name,
+    EReturn(value) => passthrough_tail_name(value),
+    ELet(name, _, tail, _) => {
+      let returned = passthrough_tail_name(tail)
+      if returned == name {
+        ""
+      } else {
+        returned
+      }
+    },
+    ELetMut(name, _, tail, _) => {
+      let returned = passthrough_tail_name(tail)
+      if returned == name {
+        ""
+      } else {
+        returned
+      }
+    },
+    ELetRec(name, _, tail) => {
+      let returned = passthrough_tail_name(tail)
+      if returned == name {
+        ""
+      } else {
+        returned
+      }
+    },
+    ESeq(_, tail) => passthrough_tail_name(tail),
+    EIf(_, yes, no) => {
+      let y = passthrough_tail_name(yes)
+      if y != "" && y == passthrough_tail_name(no) {
+        y
+      } else {
+        ""
+      }
+    },
+    _ => ""
+  }
+}
+
 export fn compute_passthrough_returning(stmts: Array[Stmt]) -> Array[(String, Int)] {
   let out: Array[(String, Int)] = []
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SLet(_, _, name, _, EFn(_, _, params, _, _, body)) => match body {
-        EIdent(returned, _) => {
+      SLet(_, _, name, _, EFn(_, _, params, _, _, body)) => {
+        let returned = passthrough_tail_name(body)
+        if returned != "" {
           let mut p = 0
           while p < Array::length(params) {
             let (param_name, _) = Array::get(params, p)
@@ -2354,8 +2396,9 @@ export fn compute_passthrough_returning(stmts: Array[Stmt]) -> Array[(String, In
             }
             p = p + 1
           }
-        },
-        _ => ()
+        } else {
+          ()
+        }
       },
       _ => ()
     }

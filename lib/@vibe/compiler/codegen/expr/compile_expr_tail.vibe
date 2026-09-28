@@ -1947,25 +1947,38 @@ fn rc_scope_borrow_arg_root(e: Expr, local_names: Array[String], ctx: CompileCtx
   }
 }
 
-fn rc_scope_tail_borrow_root(e: Expr, local_names: Array[String], ctx: CompileCtx) -> String {
+fn rc_scope_tail_borrows_name(e: Expr, owner: String, local_names: Array[String], ctx: CompileCtx) -> Bool {
   let operand = cl_return_operand(e)
   match operand {
     ELet(n, value, body, _) => {
-      let inner = rc_scope_tail_borrow_root(body, local_names, ctx)
-      if inner == "" && scope_tail_ident(body) == n {
-        rc_scope_borrow_arg_root(value, local_names, ctx)
-      } else {
-        inner
-      }
+      rc_scope_tail_borrows_name(body, owner, local_names, ctx) || (rc_scope_borrow_arg_root(value, local_names, ctx) == owner && rc_scope_tail_borrows_name(body, n, local_names, ctx))
     },
-    ELetMut(_, _, body, _) => rc_scope_tail_borrow_root(body, local_names, ctx),
-    ELetRec(_, _, body) => rc_scope_tail_borrow_root(body, local_names, ctx),
-    ESeq(_, body) => rc_scope_tail_borrow_root(body, local_names, ctx),
-    EAssign(_, _, body) => rc_scope_tail_borrow_root(body, local_names, ctx),
-    EAssignOp(_, _, _, body) => rc_scope_tail_borrow_root(body, local_names, ctx),
-    EDot(_, _, _, _) => proj_root_ident(operand),
-    ECall(_, _, _) => rc_scope_borrow_arg_root(operand, local_names, ctx),
-    _ => ""
+    ELetMut(_, _, body, _) => rc_scope_tail_borrows_name(body, owner, local_names, ctx),
+    ELetRec(_, _, body) => rc_scope_tail_borrows_name(body, owner, local_names, ctx),
+    ESeq(_, body) => rc_scope_tail_borrows_name(body, owner, local_names, ctx),
+    EAssign(_, _, body) => rc_scope_tail_borrows_name(body, owner, local_names, ctx),
+    EAssignOp(_, _, _, body) => rc_scope_tail_borrows_name(body, owner, local_names, ctx),
+    EReturn(value) => rc_scope_tail_borrows_name(value, owner, local_names, ctx),
+    EIf(_, yes, no) => rc_scope_tail_borrows_name(yes, owner, local_names, ctx) || rc_scope_tail_borrows_name(no, owner, local_names, ctx),
+    EMatch(_, arms) => {
+      let mut found = false
+      for arm in arms {
+        if rc_scope_tail_borrows_name(arm.1, owner, local_names, ctx) {
+          found = true
+        }
+      }
+      found
+    },
+    EHandle(body, arms) => {
+      let mut found = rc_scope_tail_borrows_name(body, owner, local_names, ctx)
+      for arm in arms {
+        if rc_scope_tail_borrows_name(arm.1, owner, local_names, ctx) {
+          found = true
+        }
+      }
+      found
+    },
+    _ => rc_scope_borrow_arg_root(operand, local_names, ctx) == owner
   }
 }
 
@@ -3383,9 +3396,16 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
       ()
     }
     if owns_closure && ctx.rc_drop_func_idx >= 0 && array_contains_str(ctx.rc_drop_names, name) {
-      if scope_tail_ident(body) == name || rc_scope_tail_borrow_root(body, local_names, ctx) == name {
+      if scope_tail_ident(body) == name || rc_scope_tail_borrows_name(body, name, local_names, ctx) {
         emit_local_set(buf, nl2)
+        // A branch can return this closure on only one path. Retain the
+        // result only when it is the binder about to be released.
+        emit_local_get(buf, nl2)
+        emit_local_get(buf, local_idx)
+        emit_i64_eq(buf)
+        emit_if_void(buf)
         emit_rc_dup_guarded(buf, nl2, ctx.rc_shadow, ctx.rc_dup_func_idx)
+        emit_end(buf)
         emit_local_get(buf, local_idx)
         emit_call(buf, ctx.rc_drop_func_idx)
         emit_local_get(buf, nl2)
