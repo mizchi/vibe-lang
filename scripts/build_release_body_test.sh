@@ -93,8 +93,8 @@ MD
 rc="$(run "$WORK/g4" v0.1.0-rc.0 "$WORK/g4/rc.md")"
 check "exit" "$rc" "0"
 contains "$WORK/g4/rc.md" "release candidate (rc.0), not 0.1.0"
-contains "$WORK/g4/rc.md" "release validation and promotion are not complete"
-absent "$WORK/g4/rc.md" "bug hunt that promotes it is not finished"
+contains "$WORK/g4/rc.md" "may differ from the final 0.1.0 release"
+absent "$WORK/g4/rc.md" "release validation and promotion are not complete"
 # The banner must lead: a reader who stops after the first line still knows.
 check "banner is first" "$(head -1 "$WORK/g4/rc.md" | cut -c1-2)" "> "
 rc="$(run "$WORK/g4" v0.1.0 "$WORK/g4/rel.md")"

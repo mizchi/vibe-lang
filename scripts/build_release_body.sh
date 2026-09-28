@@ -131,10 +131,10 @@ if pre:
     release = version.partition("-")[0]
     body = (
         f"> **This is a release candidate ({pre}), not {release}.**\n"
-        f"> The notes below describe {release}. A candidate carries that content "
-        f"under a number saying release validation and promotion are not complete, "
-        f"so it is published as a pre-release and is not what the installer's "
-        f"\"latest\" resolves to. Use it to find problems; use {release} to depend on.\n"
+        f"> The notes below describe {release}. This pre-release may differ "
+        f"from the final {release} release and is not what the installer's "
+        f"\"latest\" resolves to. Use it to find problems; pin its exact "
+        f"version if you use it.\n"
         "\n"
     ) + body
 
