@@ -2005,6 +2005,15 @@ fn rc_mut_rec_result_is_name(e: Expr, name: String) -> Bool {
   }
 }
 
+fn rc_mut_rec_prefix_reads_owner(e: Expr, local_names: Array[String], ctx: CompileCtx, shadowed: Array[String]) -> Bool {
+  for owner in ctx.rc_exit_lets {
+    if !array_contains_str(shadowed, owner) && rc_mut_rec_owner_slot(owner, local_names, ctx) && assign_value_mentions(e, owner) {
+      return true
+    }
+  }
+  false
+}
+
 fn rc_mut_rec_retain_passthrough_source(e: Expr, local_names: Array[String], ctx: CompileCtx, shadowed: Array[String]) -> Expr {
   match e {
     EIdent(name, _) => if !array_contains_str(shadowed, name) && array_contains_str(ctx.rc_exit_lets, name) && rc_mut_rec_owner_slot(name, local_names, ctx) {
@@ -2022,8 +2031,47 @@ fn rc_mut_rec_retain_passthrough_source(e: Expr, local_names: Array[String], ctx
     }),
     ELet(name, value, body, off) => if rc_mut_rec_result_is_name(body, name) {
       ELet(name, rc_mut_rec_retain_passthrough_source(value, local_names, ctx, shadowed), body, off)
-    } else {
+    } else if rc_mut_rec_prefix_reads_owner(value, local_names, ctx, shadowed) {
       e
+    } else {
+      let mark = Array::length(shadowed)
+      Array::push(shadowed, name)
+      let next_body = rc_mut_rec_retain_passthrough_source(body, local_names, ctx, shadowed)
+      Array::truncate(shadowed, mark)
+      ELet(name, value, next_body, off)
+    },
+    ELetMut(name, value, body, off) => if rc_mut_rec_prefix_reads_owner(value, local_names, ctx, shadowed) {
+      e
+    } else {
+      let mark = Array::length(shadowed)
+      Array::push(shadowed, name)
+      let next_body = rc_mut_rec_retain_passthrough_source(body, local_names, ctx, shadowed)
+      Array::truncate(shadowed, mark)
+      ELetMut(name, value, next_body, off)
+    },
+    ELetRec(name, value, body) => if rc_mut_rec_prefix_reads_owner(value, local_names, ctx, shadowed) {
+      e
+    } else {
+      let mark = Array::length(shadowed)
+      Array::push(shadowed, name)
+      let next_body = rc_mut_rec_retain_passthrough_source(body, local_names, ctx, shadowed)
+      Array::truncate(shadowed, mark)
+      ELetRec(name, value, next_body)
+    },
+    ESeq(head, tail) => if rc_mut_rec_prefix_reads_owner(head, local_names, ctx, shadowed) {
+      e
+    } else {
+      ESeq(head, rc_mut_rec_retain_passthrough_source(tail, local_names, ctx, shadowed))
+    },
+    EAssign(target, value, tail) => if rc_mut_rec_prefix_reads_owner(value, local_names, ctx, shadowed) || rc_mut_rec_owner_slot(target, local_names, ctx) {
+      e
+    } else {
+      EAssign(target, value, rc_mut_rec_retain_passthrough_source(tail, local_names, ctx, shadowed))
+    },
+    EAssignOp(target, op, value, tail) => if rc_mut_rec_prefix_reads_owner(value, local_names, ctx, shadowed) || rc_mut_rec_owner_slot(target, local_names, ctx) {
+      e
+    } else {
+      EAssignOp(target, op, value, rc_mut_rec_retain_passthrough_source(tail, local_names, ctx, shadowed))
     },
     _ => e
   }
