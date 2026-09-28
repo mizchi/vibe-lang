@@ -5,8 +5,9 @@
 
 ## Version ladder
 
-The repository has published **exactly one** version tag: `v0.0.1`
-(2026-04-14, from the retired MoonBit host). Every other number that appears in
+The repository has published one stable version tag: `v0.0.1`
+(2026-04-14, from the retired MoonBit host), and one pre-release:
+`v0.1.0-rc.1` (2026-09-21). Every other number that appears in
 older documents — "0.1.0 sign-off", "0.2.0", "0.3.0 GA" — was a label in a
 document, never a release. The ladder below numbers releases by what actually
 ships.
@@ -16,7 +17,7 @@ ships.
 | `v0.0.1` | The one historical release (MoonBit host era) | tagged 2026-04-14 |
 | `0.0.x` | Everything since: the selfhost cutover and all development, including the content once prepared as "0.3.0 GA" ([archive/release-notes-0.3.0.md](../../archive/release-notes-0.3.0.md)) | never released |
 | `0.1.0-rc.1` | The first candidate to publish assets. Its bug hunt came back clean | published 2026-09-21 as a pre-release; superseded |
-| **`0.1.0-rc.2`** | **The candidate.** Everything 0.1.0 promises is implemented and its acceptance evidence is recorded; what has not happened yet is a bug hunt against THIS tree | current target |
+| **`0.1.0-rc.2`** | **The candidate.** The merged compiler tree passed its generative bug hunt; one pre-existing mutation diagnostic is tracked as #3226 | current target, awaiting the tag and install checks |
 | `0.1.0` | **The first release usable by anyone but the author** | after the rc clears §"What promotes an rc to the release"; see [release-notes-0.1.0.md](../../user/getting-started/release-notes-0.1.0.md) |
 | `0.2.0` | Structured concurrency, a type system aimed at formalization, a dedicated agent harness | after 0.1.0 |
 | `1.0.0` | Maturity. Not a synonym for the first public release | unscheduled |

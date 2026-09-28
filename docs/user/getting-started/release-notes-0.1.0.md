@@ -5,9 +5,10 @@
 > release *is*, as opposed to what changed in it, is
 > [spec/0-1.md](../../spec/0-1.md).
 
-The previous and only published release is `v0.0.1` (2026-04-14). Between it and
-0.1.0 the language was rewritten in itself, so these notes describe a different
-compiler rather than a list of fixes. The work once prepared under the name
+The previous stable release is `v0.0.1` (2026-04-14); `v0.1.0-rc.1` was
+published as a pre-release. Between `v0.0.1` and 0.1.0 the language was
+rewritten in itself, so these notes describe a different compiler rather than
+a list of fixes. The work once prepared under the name
 "0.3.0 GA" is part of this release; the record of that intermediate state is
 [archive/release-notes-0.3.0.md](../../archive/release-notes-0.3.0.md).
 
@@ -196,6 +197,10 @@ the edit that fixes them rather than an internal pass name.
 - Everything in §6 of [spec/stable-surface.md](../reference/stable-surface.md) is
   outside the SemVer promise, most notably async/structured concurrency and the
   capability authorization surface.
+- An assignment to an unbound name is rejected but can be reported as an
+  immutable-binding error without a source location (#3226). The 0.1.0-rc.2
+  mutation campaign found this on invalid input; the committed seed has the
+  same behavior. Valid program results are unaffected.
 
 ## Release checklist (owner)
 
@@ -204,11 +209,11 @@ release scope and [#2834](https://github.com/mizchi/vibe-lang/issues/2834)
 holds the detailed candidate acceptance checklist. These notes remain a draft
 until that candidate is verified.
 
-- [x] Complete or explicitly reschedule every open 0.1.0 milestone item,
-      including public contract decisions, and update these notes accordingly.
-      The milestone is 37 closed and one open — #2834, the acceptance
-      checklist itself. #1962 was rescheduled to 0.2.0 with a written scope
-      reason after its first rung landed.
+- [x] Complete or explicitly reschedule every implementation issue in the
+      0.1.0 milestone, including public contract decisions. #3193 and #3223
+      are closed, and #2984's audit children are all closed. #2834 remains
+      open for release acceptance. #1962 was rescheduled to 0.2.0 with a
+      written scope reason after its first rung landed.
 - [ ] Verify clean-machine installation and package publication/fetch/install
       against the release candidate, using only shipped artifacts. The package
       half is verified (`tests/integration/install/install_test.sh`: add /
@@ -227,26 +232,21 @@ until that candidate is verified.
       rebuilding forbidden fetching it from the release. The manifest asset's
       `name` field named the previous seed; corrected for future bumps in
       #2924.
-- [ ] Set `VIBE_VERSION` to `0.1.0` for the separately authorized release tag;
-      the release asset build requires the version and tag to agree, and the
-      bump has to be IN the tagged commit. `check_version_ladder.sh` strips the
-      prerelease, so `0.1.0-dev` and `0.1.0` both resolve to this file — the
-      bump does not move that gate.
-- [x] Verify Apache-2.0 license, book parity, stable surface and
-      `pkf run release-check` on the release candidate. `LICENSE` is
-      Apache-2.0 and both published integration packages declare it;
-      `check-tutorial-translation-parity`, `check-book-{links,order,
-      skip-blocks,console}` and `check-freeze-surface` pass;
-      `pkf run release-check` is green (94 tasks, 45m23s, zero failures,
-      with `test-wasm-validate-parity` actually running rather than skipping
-      for a missing `wasm-tools`). In CI, `ci-required` (38 jobs) and
-      `cli-install` (7 jobs) are green on the same tree.
-- [ ] Publish the `0.1.0` tag/assets and verify installation from that release.
-      `.github/workflows/release.yml` triggers on the `v*` tag push alone —
-      there is no `workflow_dispatch` — and builds the per-target runners,
-      publishes, and runs the clean-machine install above. So the whole step is
-      `git tag v0.1.0 && git push origin v0.1.0` on the commit carrying the
-      version bump. One decision to make BEFORE tagging, because an immutable
-      release cannot be re-bodied afterwards: that workflow publishes with
-      `generate_release_notes: true`, so the release body is generated from
-      commits rather than being this document.
+- [x] Set `VIBE_VERSION` to `0.1.0-rc.2` for the candidate tag; the release
+      asset build requires the version and tag to agree. Before the final
+      `v0.1.0` tag, commit a separate bump to `0.1.0`.
+- [ ] Verify Apache-2.0 license, book parity, stable surface and
+      `pkf run release-check` on the rc.2 tree. `LICENSE` is Apache-2.0.
+      #3225's merged tree passed 39 CI checks with two expected skips, and
+      its local full unit battery passed 1502/1502; rc.2's release check and
+      tag verification still need to run. The differential fuzz campaign on
+      that exact compiler tree completed 750/750 generated programs without
+      a finding. Its 300 mutation seeds produced one pre-existing diagnostic
+      issue, #3226, recorded above.
+- [ ] Publish `v0.1.0-rc.2` and verify its assets and clean-machine installs.
+      `.github/workflows/release.yml` triggers on a `v*` tag push, builds the
+      per-target runners, publishes this document as the release body, and runs
+      `release-install` on Ubuntu and macOS. The body builder checks and
+      absolutizes its relative links before publication. A later, separately
+      authorized `v0.1.0` tag needs the `0.1.0` version bump in its tagged
+      commit and the same post-publication checks.
