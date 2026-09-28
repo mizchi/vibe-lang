@@ -316,6 +316,25 @@ fn emit_assignop_rc_tag_fix(buf: Bytes, enable_rc: Bool, op: String) -> Unit {
   }
 }
 
+/// A sequence discards its first result. Only fresh values with a reference
+/// of their own may be released here: the Perceus walk treats a bare name or
+/// a projection in this position as a borrow, leaving its owner to drop it.
+/// A named call uses the same declared-return and view checks as the owned
+/// path classifier; an unknown result keeps the previous conservative drop.
+fn seq_discard_owns_result(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  match e {
+    ECall(EIdent(n, _), _, _) => find_local_slot(local_names, n) < 0 && (is_ctor_call(e, ctx.ctor_table) || (bsearch_leftmost(ctx.heap_ret_names, n) >= 0 && !is_borrow_ret_builtin(n) && bsearch_leftmost(ctx.borrow_ret_names, n) < 0 && bsearch_leftmost(ctx.borrow_view_ret, n) < 0)),
+    EArray(_) => true,
+    ETuple(_) => true,
+    ERecord(_, _, _) => true,
+    EMap(_) => true,
+    EFloat(_) => true,
+    EBinOp(op, _, _, _) => (op == "+" || op == "-" || op == "*" || op == "/") && expr_is_floatish(e, local_names, ctx),
+    EUnaryOp("-", _) => expr_is_floatish(e, local_names, ctx),
+    _ => false
+  }
+}
+
 /// #3126: guard an `Int` `/` or `%` whose divisor may be zero. Called with the
 /// dividend and the divisor on the stack, right before the division; leaves
 /// them there. A zero divisor calls `__rt_div_zero_abort`, which prints
@@ -3723,7 +3742,11 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     } else {
       compile_expr(buf, first, local_names, next_local, ctx, ld)
     }
-    emit_drop(buf)
+    if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && seq_discard_owns_result(first, local_names, ctx) {
+      emit_call(buf, ctx.rc_drop_func_idx)
+    } else {
+      emit_drop(buf)
+    }
     compile_expr(buf, second, local_names, nl, ctx, ld)
   } else {
     compile_expr_tail2(buf, expr, local_names, next_local, ctx, ld, compile_expr)
