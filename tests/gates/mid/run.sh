@@ -4470,3 +4470,34 @@ for enum_alias_lane in bump shadow gc; do
 done
 rm -f "$ROOT_DIR/_build/_gate_reexport_enum_alias_refused.log"
 echo "[compiler-gate] duplicate enum origins refuse on bump, shadow and gc ok (#3173)"
+
+echo "[compiler-gate] 134/134 private enum alias patterns (#3238)"
+for private_pat_lane in bump shadow gc; do
+  case "$private_pat_lane" in
+    bump) private_pat_rc=0; private_pat_backend=linear ;;
+    shadow) private_pat_rc=shadow; private_pat_backend=linear ;;
+    gc) private_pat_rc=0; private_pat_backend=gc ;;
+  esac
+  if ! VIBE_RC="$private_pat_rc" VIBE_TEST_BACKEND="$private_pat_backend" \
+      VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+      bash scripts/vibe_test.sh fixtures/reexport_enum_alias_private_origin_test.vibe \
+      >"$ROOT_DIR/_build/_gate_private_enum_pattern.log" 2>&1; then
+    echo "[compiler-gate] FAIL: private enum alias pattern on $private_pat_lane (#3238)" >&2
+    tail -20 "$ROOT_DIR/_build/_gate_private_enum_pattern.log" >&2
+    exit 1
+  fi
+  if VIBE_RC="$private_pat_rc" VIBE_TEST_BACKEND="$private_pat_backend" \
+      VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+      bash scripts/vibe_test.sh fixtures/reexport_enum_alias_private_pattern_collision_refused.vibe \
+      >"$ROOT_DIR/_build/_gate_private_enum_pattern_refused.log" 2>&1; then
+    echo "[compiler-gate] FAIL: ambiguous private enum alias pattern compiled on $private_pat_lane (#3238)" >&2
+    exit 1
+  fi
+  if ! grep -q 'rename one of the variants named `A`' "$ROOT_DIR/_build/_gate_private_enum_pattern_refused.log"; then
+    echo "[compiler-gate] FAIL: ambiguous private enum alias pattern lacked an actionable refusal on $private_pat_lane (#3238)" >&2
+    tail -20 "$ROOT_DIR/_build/_gate_private_enum_pattern_refused.log" >&2
+    exit 1
+  fi
+done
+rm -f "$ROOT_DIR/_build/_gate_private_enum_pattern.log" "$ROOT_DIR/_build/_gate_private_enum_pattern_refused.log"
+echo "[compiler-gate] private enum alias patterns resolve or refuse safely on bump, shadow and gc ok (#3238)"

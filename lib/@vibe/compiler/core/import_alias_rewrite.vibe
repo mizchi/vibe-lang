@@ -913,6 +913,7 @@ struct AliasIdx {
   entries: Array[(String, String)];
   idx: MutMap[String, String];
   shadow_keys: MutSet[String];
+  pattern_ctors: Array[(String, String)];
   // #3132: rename every identifier EXCEPT a compiler-synthesized builtin
   // reference (`builtin_ref`, offset `builtin_ref_offset()`), keeping its
   // offset, and never rewrite a qualified head. Only
@@ -927,7 +928,24 @@ fn aliasidx_build(entries: Array[(String, String)]) -> AliasIdx {
 /// The same index over `entries`, in `am`'s mode -- what the binder
 /// reductions (`aliasidx_without_*`) rebuild with.
 fn aliasidx_rebuild(am: AliasIdx, entries: Array[(String, String)]) -> AliasIdx {
-  aliasidx_build_mode(entries, am.user_refs_only)
+  let rebuilt = aliasidx_build_mode(entries, am.user_refs_only)
+  AliasIdx::{
+    entries: rebuilt.entries,
+    idx: rebuilt.idx,
+    shadow_keys: rebuilt.shadow_keys,
+    pattern_ctors: am.pattern_ctors,
+    user_refs_only: rebuilt.user_refs_only
+  }
+}
+
+fn aliasidx_with_pattern_ctors(am: AliasIdx, pattern_ctors: Array[(String, String)]) -> AliasIdx {
+  AliasIdx::{
+    entries: am.entries,
+    idx: am.idx,
+    shadow_keys: am.shadow_keys,
+    pattern_ctors: pattern_ctors,
+    user_refs_only: am.user_refs_only
+  }
 }
 
 fn aliasidx_build_mode(entries: Array[(String, String)], user_refs_only: Bool) -> AliasIdx {
@@ -963,6 +981,7 @@ fn aliasidx_build_mode(entries: Array[(String, String)], user_refs_only: Bool) -
     entries: entries,
     idx: idx,
     shadow_keys: shadow_keys,
+    pattern_ctors: [],
     user_refs_only: user_refs_only
   }
 }
@@ -1042,6 +1061,31 @@ fn rewrite_alias_named_exprs_ix(fields: Array[(String, Expr)], am: AliasIdx) -> 
 
 /// `match` / `handle` arms, each body under the map minus its pattern's
 /// binders, same sharing as `rewrite_alias_exprs_ix`.
+fn rewrite_alias_pattern_ctor(pat: Pat, am: AliasIdx) -> Pat {
+  match pat {
+    PCtor(name, args) => {
+      let renamed = match lookup_alias(am.pattern_ctors, name) {
+        Some(next) => {
+          Array::set(alias_rewrite_marks, 0, alias_marks() + 1)
+          next
+        },
+        None => name
+      }
+      PCtor(renamed, for arg in args {
+        rewrite_alias_pattern_ctor(arg, am)
+      })
+    },
+    PTuple(args) => PTuple(for arg in args {
+      rewrite_alias_pattern_ctor(arg, am)
+    }),
+    POr(left, right) => POr(rewrite_alias_pattern_ctor(left, am), rewrite_alias_pattern_ctor(right, am)),
+    PStruct(name, fields) => PStruct(name, for field in fields {
+      (field.0, rewrite_alias_pattern_ctor(field.1, am))
+    }),
+    _ => pat
+  }
+}
+
 fn rewrite_alias_arms_ix(arms: Array[(Pat, Expr)], am: AliasIdx) -> Array[(Pat, Expr)] {
   let mut out = arms
   let mut copied = false
@@ -1049,12 +1093,17 @@ fn rewrite_alias_arms_ix(arms: Array[(Pat, Expr)], am: AliasIdx) -> Array[(Pat, 
   while i < Array::length(arms) {
     let (pat, body) = Array::get(arms, i)
     let m = alias_marks()
+    let next_pat = if Array::length(am.pattern_ctors) > 0 {
+      rewrite_alias_pattern_ctor(pat, am)
+    } else {
+      pat
+    }
     let r = rewrite_alias_expr_ix(body, aliasidx_without_pat(am, pat))
     if copied {
-      Array::push(out, (pat, r))
+      Array::push(out, (next_pat, r))
     } else if alias_marks() != m {
       out = Array::slice(arms, 0, i)
-      Array::push(out, (pat, r))
+      Array::push(out, (next_pat, r))
       copied = true
     } else {
       ()
@@ -1339,7 +1388,7 @@ fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
   // immutable; `None => expr` below already shares subtrees). #2386: with a
   // map, an arm rewrites its children first and constructs a node only when
   // `alias_marks` moved while it did -- see the counter's note above.
-  if Array::length(am.entries) == 0 {
+  if Array::length(am.entries) == 0 && Array::length(am.pattern_ctors) == 0 {
     expr
   } else {
     match expr {
@@ -1954,6 +2003,10 @@ fn rewrite_local_alias_impl_stmt(stmt: Stmt, aliases: Array[(String, Array[Strin
 }
 
 export fn rewrite_import_alias_stmts(stmts: Array[Stmt], aliases: Array[(String, String)]) -> Array[Stmt] {
+  rewrite_import_alias_stmts_with_pattern_ctors(stmts, aliases, [])
+}
+
+fn rewrite_import_alias_stmts_with_pattern_ctors(stmts: Array[Stmt], aliases: Array[(String, String)], pattern_ctors: Array[(String, String)]) -> Array[Stmt] {
   let owner_aliases = collect_impl_method_owner_aliases(stmts, aliases)
   let combined = empty_aliases()
   let mut ai = 0
@@ -2011,7 +2064,7 @@ export fn rewrite_import_alias_stmts(stmts: Array[Stmt], aliases: Array[(String,
     }
     bi = bi + 1
   }
-  let am = aliasidx_build(combined)
+  let am = aliasidx_with_pattern_ctors(aliasidx_build(combined), pattern_ctors)
   let imported = for stmt in stmts {
     rewrite_alias_stmt_ix(rewrite_impl_method_binding(stmt, owner_aliases), am)
   }
@@ -2029,7 +2082,11 @@ fn rewrite_alias_stmt_ix(stmt: Stmt, am: AliasIdx) -> Stmt {
     STest(name, body) => STest(name, rewrite_alias_expr_ix(body, am)),
     SBench(name, body) => SBench(name, rewrite_alias_expr_ix(body, am)),
     SExpr(body) => SExpr(rewrite_alias_expr_ix(body, am)),
-    SLetPat(pat, body) => SLetPat(pat, rewrite_alias_expr_ix(body, am)),
+    SLetPat(pat, body) => SLetPat(if Array::length(am.pattern_ctors) > 0 {
+      rewrite_alias_pattern_ctor(pat, am)
+    } else {
+      pat
+    }, rewrite_alias_expr_ix(body, am)),
     SModule(exported, name, stmts) => {
       SModule(exported, name, rewrite_import_alias_stmts(stmts, collect_import_aliases(stmts)))
     },
@@ -4922,7 +4979,53 @@ fn builtin_shadow_rename_listed(renames: Array[(String, String)], name: String) 
 /// extra (local -> mangled) import-value renames applied in the same pass.
 /// Locals covered by `extra_renames` are removed from the legacy alias map
 /// (which would rewrite alias -> original instead).
-export fn append_import_alias_rewritten_non_import_stmts_with_renames(merged: Array[Stmt], stmts: Array[Stmt], skipped_locals: Array[String], extra_renames: Array[(String, String)]) -> Unit {
+fn private_alias_pattern_renames(stmts: Array[Stmt], extra_renames: Array[(String, String)]) -> Array[(String, String)] with Exception {
+  let refs: Array[(String, String)] = []
+  for stmt in stmts {
+    match stmt {
+      SQualifiedPatternRefs(rows) => for row in rows {
+        Array::push(refs, row)
+      },
+      _ => ()
+    }
+  }
+  let out = empty_aliases()
+  for rename in extra_renames {
+    let (local, target) = rename
+    let split = String::index_of(local, "::")
+    if split > 0 {
+      let head = local[0: split]
+      let variant = local[split + 2: String::length(local)]
+      if String::starts_with(target, variant + "_dep_") {
+        let mut matching = false
+        let mut competing = false
+        for row in refs {
+          if row.1 == variant {
+            if row.0 == head {
+              matching = true
+            } else {
+              competing = true
+            }
+          }
+        }
+        if matching {
+          if competing {
+            throw("rename one of the variants named `" + variant + "` or place its match in a separate module: qualified and other patterns with that constructor name cannot be distinguished after parsing")
+          }
+          match lookup_alias(out, variant) {
+            Some(previous) => if previous != target {
+              throw("rename one of the variants named `" + variant + "` or place its match in a separate module: two private enum aliases need different constructors")
+            },
+            None => Array::push(out, (variant, target))
+          }
+        }
+      }
+    }
+  }
+  out
+}
+
+export fn append_import_alias_rewritten_non_import_stmts_with_renames(merged: Array[Stmt], stmts: Array[Stmt], skipped_locals: Array[String], extra_renames: Array[(String, String)]) -> Unit with Exception {
   let legacy = alias_map_without_names(alias_map_without_names(collect_import_aliases(stmts), skipped_locals), import_value_rename_locals(extra_renames))
   let combined = empty_aliases()
   let mut li = 0
@@ -4935,7 +5038,7 @@ export fn append_import_alias_rewritten_non_import_stmts_with_renames(merged: Ar
     Array::push(combined, Array::get(extra_renames, xi))
     xi = xi + 1
   }
-  let rewritten = rewrite_import_alias_stmts(stmts, combined)
+  let rewritten = rewrite_import_alias_stmts_with_pattern_ctors(stmts, combined, private_alias_pattern_renames(stmts, extra_renames))
   let mut i = 0
   while i < Array::length(stmts) {
     let stmt = Array::get(stmts, i)
