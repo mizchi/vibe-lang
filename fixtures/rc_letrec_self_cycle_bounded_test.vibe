@@ -58,6 +58,21 @@ fn make_counter_early(start: Int) -> (Int) -> Int {
   go
 }
 
+fn borrow_callback(callback: (Int) -> Int) -> (Int) -> Int {
+  callback
+}
+
+fn make_counter_via_borrow(start: Int) -> (Int) -> Int {
+  let rec go = (n: Int) -> Int {
+    if n > start {
+      n
+    } else {
+      go(n + 1)
+    }
+  }
+  borrow_callback(go)
+}
+
 test "a local recursive closure is released after its scope" {
   inspect(run(200), content = "2400")
   let before = Profiler::heap_bytes()
@@ -90,6 +105,28 @@ test "an early return releases the recursive closure" {
 test "an early returned recursive closure stays alive" {
   let counter = make_counter_early(8)
   inspect(counter(5), content = "9")
+}
+
+test "a recursive closure returned through a borrow helper stays alive" {
+  let counter = make_counter_via_borrow(8)
+  inspect(counter(5), content = "9")
+  inspect(counter(12), content = "12")
+}
+
+test "recursive closures returned through a borrow helper are released" {
+  let mut i = 0
+  while i < 200 {
+    let counter = make_counter_via_borrow(8)
+    let _ = counter(5)
+    i = i + 1
+  }
+  let before = Profiler::heap_bytes()
+  while i < 2200 {
+    let counter = make_counter_via_borrow(8)
+    let _ = counter(5)
+    i = i + 1
+  }
+  inspect(Profiler::heap_bytes() - before < 1000, content = "true")
 }
 
 test "a non-function let rec borrowing an array element keeps its owner" {

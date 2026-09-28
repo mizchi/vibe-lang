@@ -1914,6 +1914,61 @@ fn call_returns_borrow(value: Expr, local_names: Array[String], ctx: CompileCtx)
   }
 }
 
+/// Resolve an escaping borrow through user helpers as well as builtins. The
+/// returned name identifies the owner whose scope-end drop needs a retain.
+fn rc_scope_borrow_arg_root(e: Expr, local_names: Array[String], ctx: CompileCtx) -> String {
+  let operand = cl_return_operand(e)
+  match operand {
+    EIdent(_, _) => proj_root_ident(operand),
+    EDot(_, _, _, _) => proj_root_ident(operand),
+    ECall(EIdent(callee, _), args, _) => {
+      let mut source_idx = if call_returns_borrow(operand, local_names, ctx) {
+        0
+      } else {
+        -1
+      }
+      if source_idx < 0 && find_local_slot(local_names, callee) < 0 {
+        let mut i = 0
+        while i < Array::length(ctx.passthrough_ret_params) {
+          let (name, param_idx) = Array::get(ctx.passthrough_ret_params, i)
+          if name == callee {
+            source_idx = param_idx
+          }
+          i = i + 1
+        }
+      }
+      if source_idx >= 0 && source_idx < Array::length(args) {
+        rc_scope_borrow_arg_root(Array::get(args, source_idx), local_names, ctx)
+      } else {
+        ""
+      }
+    },
+    _ => ""
+  }
+}
+
+fn rc_scope_tail_borrow_root(e: Expr, local_names: Array[String], ctx: CompileCtx) -> String {
+  let operand = cl_return_operand(e)
+  match operand {
+    ELet(n, value, body, _) => {
+      let inner = rc_scope_tail_borrow_root(body, local_names, ctx)
+      if inner == "" && scope_tail_ident(body) == n {
+        rc_scope_borrow_arg_root(value, local_names, ctx)
+      } else {
+        inner
+      }
+    },
+    ELetMut(_, _, body, _) => rc_scope_tail_borrow_root(body, local_names, ctx),
+    ELetRec(_, _, body) => rc_scope_tail_borrow_root(body, local_names, ctx),
+    ESeq(_, body) => rc_scope_tail_borrow_root(body, local_names, ctx),
+    EAssign(_, _, body) => rc_scope_tail_borrow_root(body, local_names, ctx),
+    EAssignOp(_, _, _, body) => rc_scope_tail_borrow_root(body, local_names, ctx),
+    EDot(_, _, _, _) => proj_root_ident(operand),
+    ECall(_, _, _) => rc_scope_borrow_arg_root(operand, local_names, ctx),
+    _ => ""
+  }
+}
+
 /// #3184: does the name `n`, stored into a slot that owns what it holds, name
 /// a VIEW -- a binding holding no reference of its own, whose value a
 /// container or scrutinee owns? The `let` lowering marks every such binding
@@ -3328,7 +3383,7 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
       ()
     }
     if owns_closure && ctx.rc_drop_func_idx >= 0 && array_contains_str(ctx.rc_drop_names, name) {
-      if scope_tail_ident(body) == name || scope_tail_proj_root(body) == name {
+      if scope_tail_ident(body) == name || rc_scope_tail_borrow_root(body, local_names, ctx) == name {
         emit_local_set(buf, nl2)
         emit_rc_dup_guarded(buf, nl2, ctx.rc_shadow, ctx.rc_dup_func_idx)
         emit_local_get(buf, local_idx)
