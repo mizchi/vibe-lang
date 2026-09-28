@@ -3245,6 +3245,14 @@ run_test_block_fixtures_gc "aggregate Double equality (gc)" fixtures/tuple_doubl
 run_test_block_fixtures_rc "aggregate Double equality (linear, RC)" fixtures/tuple_double_eq_test.vibe
 echo '[compiler-gate] aggregate Double equality ok'
 
+# #3201/#3202: a named Double field must select f64 ordering, and a Double
+# compound assignment must reuse f64 arithmetic and the ordinary RC store.
+echo "[compiler-gate] 133/133 Double field ordering and compound assignment (#3201/#3202)"
+run_test_block_fixtures "Double field and assignment (linear, bump)" fixtures/double_field_compare_test.vibe fixtures/double_compound_assignop_test.vibe
+run_test_block_fixtures_gc "Double field and assignment (gc)" fixtures/double_field_compare_test.vibe fixtures/double_compound_assignop_test.vibe
+run_test_block_fixtures_rc "Double field and assignment (linear, RC)" fixtures/double_field_compare_test.vibe fixtures/double_compound_assignop_test.vibe
+echo '[compiler-gate] Double field and assignment ok'
+
 # 15b-5. #3071: a function that performs a user effect with no handler reaching
 #        it keeps its raw `perform` -- a function nobody calls, or an exported
 #        callee whose every call site took the suspend-lowered clone. The linear

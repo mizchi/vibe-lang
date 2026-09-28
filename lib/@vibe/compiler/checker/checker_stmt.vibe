@@ -10029,6 +10029,24 @@ fn irc_push_binder_key(name: String, value: Expr, body: Expr, out: Array[Int], w
 }
 
 fn irc_collect_expr(e: Expr, out: Array[Int], want: Int, shims: Int) -> Unit {
+  // A projected field can be a Double operand of an ordinary arithmetic or
+  // ordering expression, not only of a render call. The typed occurrence
+  // agreement check below admits the key only when every claimant is Double.
+  if want == 4 {
+    match e {
+      EDot(_, _, _, _) => {
+        let off = typed_lowering_float_key(e)
+        if off >= 0 {
+          Array::push(out, off)
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+  } else {
+    ()
+  }
   match e {
     ECall(callee, args, _) => match callee {
       EIdent(cn, _) => if irc_is_render_callee(cn, shims) {
@@ -10082,10 +10100,10 @@ fn irc_collect_stmts(stmts: Array[Stmt], out: Array[Int], want: Int, shims: Int)
   }
 }
 
-/// Insertion-sorted unique copy. The candidate set is one entry per render or
-/// `eq` argument in the module, so it is small enough for an insertion sort
-/// and the sort is what keeps the scan below off a quadratic path: one binary
-/// search per typed occurrence instead of one linear membership test.
+/// Insertion-sorted unique copy. The candidate set contains render/`eq`
+/// arguments and, for the Double channel, field projections. Sorting keeps
+/// the scan below off a quadratic path: one binary search per typed occurrence
+/// instead of one linear membership test.
 fn irc_sorted_unique(xs: Array[Int]) -> Array[Int] {
   let out: Array[Int] = []
   let mut i = 0
@@ -10484,7 +10502,10 @@ export fn checked_bool_render_offsets(checked: CheckedProgram) -> Array[Int] {
   irc_render_arg_offsets(checked, 5)
 }
 
-/// #2424 tag 4: the Double half of the same question.
+/// #2424 tag 4: the Double half of the same question. #3201 also proposes
+/// every field projection as a candidate, then keeps only keys whose typed
+/// occurrences all resolve to Double. This covers ordinary field arithmetic
+/// and ordering outside a render/`eq` call.
 ///
 /// Split out from tag 3 rather than folded into it because the two answers go
 /// to DIFFERENT consumers -- `ts_known_int` / `bc_expr_is_intish` read one and
