@@ -361,6 +361,42 @@ fn make_counter_via_handler_return(start: Int, choose: Bool) -> (Int) -> Int {
   } with { Ping::Ping() => return make_fresh_counter() }
 }
 
+fn make_counter_via_bound_early_branch(start: Int, choose: Bool) -> (Int) -> Int {
+  let rec go = (n: Int) -> Int {
+    if n > start {
+      n
+    } else {
+      go(n + 1)
+    }
+  }
+  return {
+    let result = if choose {
+      go
+    } else {
+      make_fresh_counter()
+    }
+    result
+  }
+}
+
+fn make_counter_via_mutable_fresh_branch(start: Int, choose: Bool) -> (Int) -> Int {
+  let rec go = (n: Int) -> Int {
+    if n > start {
+      n
+    } else {
+      go(n + 1)
+    }
+  }
+  return if choose {
+    go
+  } else {
+    let mut offset = 1
+    (n: Int) -> Int {
+      n + offset
+    }
+  }
+}
+
 fn make_counter_via_early_mixed_pass(start: Int, choose: Bool) -> (Int) -> Int {
   let rec go = (n: Int) -> Int {
     if n > start {
@@ -712,6 +748,42 @@ test "a handler return does not drop the recursive owner twice" {
   let before = Profiler::heap_bytes()
   while i < 2200 {
     let f = make_counter_via_handler_return(8, true)
+    let _ = f(5)
+    i = i + 1
+  }
+  inspect(Profiler::heap_bytes() - before < 1000, content = "true")
+}
+
+test "a bound early return releases an unselected recursive closure" {
+  let forwarded = make_counter_via_bound_early_branch(8, true)
+  inspect(forwarded(5), content = "9")
+  let mut i = 0
+  while i < 200 {
+    let f = make_counter_via_bound_early_branch(8, false)
+    let _ = f(5)
+    i = i + 1
+  }
+  let before = Profiler::heap_bytes()
+  while i < 2200 {
+    let f = make_counter_via_bound_early_branch(8, false)
+    let _ = f(5)
+    i = i + 1
+  }
+  inspect(Profiler::heap_bytes() - before < 1000, content = "true")
+}
+
+test "a mutable fresh return releases an unselected recursive closure" {
+  let forwarded = make_counter_via_mutable_fresh_branch(8, true)
+  inspect(forwarded(5), content = "9")
+  let mut i = 0
+  while i < 200 {
+    let f = make_counter_via_mutable_fresh_branch(8, false)
+    let _ = f(5)
+    i = i + 1
+  }
+  let before = Profiler::heap_bytes()
+  while i < 2200 {
+    let f = make_counter_via_mutable_fresh_branch(8, false)
     let _ = f(5)
     i = i + 1
   }
