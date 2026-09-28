@@ -5026,6 +5026,22 @@ fn builtin_shadow_rename_listed(renames: Array[(String, String)], name: String) 
   found
 }
 
+fn private_alias_pattern_collides_with_local_ctor(stmts: Array[Stmt], variant: String, imported_ctor: String) -> Bool {
+  for stmt in stmts {
+    let ctors = match stmt {
+      SEnum(false, _, _, members, _) => members,
+      SSuberror(false, _, members) => members,
+      _ => []
+    }
+    for ctor in ctors {
+      if ctor.0 != imported_ctor && String::starts_with(ctor.0, variant + "_dep_") {
+        return true
+      }
+    }
+  }
+  false
+}
+
 /// Like append_import_alias_rewritten_non_import_stmts_skipping, but with
 /// extra (local -> mangled) import-value renames applied in the same pass.
 /// Locals covered by `extra_renames` are removed from the legacy alias map
@@ -5076,6 +5092,9 @@ fn private_alias_pattern_renames(stmts: Array[Stmt], extra_renames: Array[(Strin
           }
         }
         if matching {
+          if private_alias_pattern_collides_with_local_ctor(stmts, variant, target) {
+            throw("rename this module's private variant `" + variant + "` or move the imported `" + local + "` match to a separate module: constructor patterns with this spelling cannot be distinguished after parsing")
+          }
           if competing {
             throw("rename one of the variants named `" + variant + "` or place its match in a separate module: qualified and other patterns with that constructor name cannot be distinguished after parsing")
           }

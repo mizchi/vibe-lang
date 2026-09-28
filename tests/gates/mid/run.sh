@@ -4530,6 +4530,18 @@ for private_pat_lane in bump shadow gc; do
     tail -20 "$ROOT_DIR/_build/_gate_private_enum_pattern_refused.log" >&2
     exit 1
   fi
+  if VIBE_RC="$private_pat_rc" VIBE_TEST_BACKEND="$private_pat_backend" \
+      VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+      bash scripts/vibe_test.sh fixtures/reexport_enum_alias_private_local_variant_refused.vibe \
+      >"$ROOT_DIR/_build/_gate_private_enum_pattern_local_refused.log" 2>&1; then
+    echo "[compiler-gate] FAIL: imported pattern collided with a dependency-local private variant on $private_pat_lane (#3238)" >&2
+    exit 1
+  fi
+  if ! grep -q 'rename this module.s private variant `A`' "$ROOT_DIR/_build/_gate_private_enum_pattern_local_refused.log"; then
+    echo "[compiler-gate] FAIL: imported/local private variant collision lacked an actionable refusal on $private_pat_lane (#3238)" >&2
+    tail -20 "$ROOT_DIR/_build/_gate_private_enum_pattern_local_refused.log" >&2
+    exit 1
+  fi
 done
-rm -f "$ROOT_DIR/_build/_gate_private_enum_pattern.log" "$ROOT_DIR/_build/_gate_private_enum_pattern_refused.log"
+rm -f "$ROOT_DIR/_build/_gate_private_enum_pattern.log" "$ROOT_DIR/_build/_gate_private_enum_pattern_refused.log" "$ROOT_DIR/_build/_gate_private_enum_pattern_local_refused.log"
 echo "[compiler-gate] private enum alias patterns resolve or refuse safely on bump, shadow and gc ok (#3238)"
