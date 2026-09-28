@@ -2166,9 +2166,9 @@ fn rc_mut_rec_transfer_value(e: Expr, local_names: Array[String], ctx: CompileCt
 }
 
 /// Known borrow and passthrough sources already receive their own retain at
-/// the call. An unclassified mutable initializer can also return the owner;
-/// let the scope-end pointer comparison decide whether it actually did.
-fn rc_scope_unknown_mut_result_may_be_owner(value: Expr, owner: String, local_names: Array[String], ctx: CompileCtx) -> Bool {
+/// the call. An unclassified call or mutable initializer can also return the
+/// owner; let the scope-end pointer comparison decide whether it did.
+fn rc_scope_unknown_result_may_be_owner(value: Expr, owner: String, local_names: Array[String], ctx: CompileCtx) -> Bool {
   assign_value_mentions(value, owner) && !rc_scope_borrow_arg_reaches_owner(value, owner, local_names, ctx)
 }
 
@@ -2178,7 +2178,7 @@ fn rc_scope_tail_borrows_name(e: Expr, owner: String, local_names: Array[String]
     ELet(n, value, body, _) => {
       rc_scope_tail_borrows_name(body, owner, local_names, ctx) || (rc_scope_borrow_arg_reaches_owner(value, owner, local_names, ctx) && rc_scope_tail_borrows_name(body, n, local_names, ctx))
     },
-    ELetMut(n, value, body, _) => rc_scope_tail_borrows_name(body, owner, local_names, ctx) || (rc_scope_unknown_mut_result_may_be_owner(value, owner, local_names, ctx) && rc_scope_tail_borrows_name(body, n, local_names, ctx)),
+    ELetMut(n, value, body, _) => rc_scope_tail_borrows_name(body, owner, local_names, ctx) || (rc_scope_unknown_result_may_be_owner(value, owner, local_names, ctx) && rc_scope_tail_borrows_name(body, n, local_names, ctx)),
     ELetRec(_, _, body) => rc_scope_tail_borrows_name(body, owner, local_names, ctx),
     ESeq(_, body) => rc_scope_tail_borrows_name(body, owner, local_names, ctx),
     EAssign(_, _, body) => rc_scope_tail_borrows_name(body, owner, local_names, ctx),
@@ -2203,6 +2203,7 @@ fn rc_scope_tail_borrows_name(e: Expr, owner: String, local_names: Array[String]
       }
       found
     },
+    ECall(_, _, _) => rc_scope_borrow_arg_reaches_owner(operand, owner, local_names, ctx) || rc_scope_unknown_result_may_be_owner(operand, owner, local_names, ctx),
     _ => rc_scope_borrow_arg_reaches_owner(operand, owner, local_names, ctx)
   }
 }

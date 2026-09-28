@@ -7938,6 +7938,13 @@ fn rc_exit_operand_ok(e: Expr, local_names: Array[String], ctx: CompileCtx, keep
     // captures may be views of an owner this exit releases.
     EMap(entries) => rc_exit_record_fields_ok(entries, local_names, ctx, keep),
     EIf(_, t, f) => rc_exit_operand_ok(t, local_names, ctx, keep) && rc_exit_operand_ok(f, local_names, ctx, keep),
+    // Return normalization may wrap the tail in the internal owning marker.
+    // A mutable binding whose entire tail returns itself has no intervening
+    // write, so the exit can inspect the initializer's ownership instead.
+    ELetMut(name, value, tail, _) => match cl_return_operand(tail) {
+      EIdent(result, _) => result == name && rc_exit_operand_ok(value, local_names, ctx, keep),
+      _ => false
+    },
     EDot(_, _, _, _) => {
       let root = proj_root_ident(e)
       if root == "" {
