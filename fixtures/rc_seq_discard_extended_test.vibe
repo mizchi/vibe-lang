@@ -11,6 +11,14 @@ let make_owned_binding = (n: Int) -> {
   xs
 }
 
+let make_early_fresh = (n: Int) -> {
+  if n < 0 {
+    return [0]
+  } else {
+    [n]
+  }
+}
+
 let make_inferred_block = (n: Int) -> {
   let next = n + 1
   [next]
@@ -113,6 +121,39 @@ fn discard_immediate_borrowed_lambda_result(n: Int) -> Int {
   } else {
     0
   }
+}
+
+fn discard_immediate_capturing_lambda_result(n: Int) -> Int {
+  let xss = [[n]]
+  (() -> Array[Int] {
+    Array::get(xss, 0)
+  })()
+  if Array::get(Array::get(xss, 0), 0) == n {
+    1
+  } else {
+    0
+  }
+}
+
+fn discard_allocating_builtin_results(xs: Array[Int]) -> Int {
+  Array::slice(xs, 0, 1)
+  1
+}
+
+fn discard_early_fresh_result(n: Int) -> Int {
+  make_early_fresh(n)
+  1
+}
+
+fn discard_match_resuming_handler_result(n: Int) -> Int {
+  handle {
+    let k = perform Probe::Ask()
+    [k]
+  } with { Probe::Ask() => match n {
+    0 => resume(n),
+    _ => resume(n)
+  } }
+  1
 }
 
 fn discard_result_after_exiting_branch(n: Int) -> Int {
@@ -224,6 +265,10 @@ test "discarded closure, local call and handle leave the following value" {
   inspect(discard_generic_callback_result(make_inferred, 7), "1")
   inspect(discard_immediate_lambda_result(7), "1")
   inspect(discard_immediate_borrowed_lambda_result(7), "1")
+  inspect(discard_immediate_capturing_lambda_result(7), "1")
+  inspect(discard_allocating_builtin_results([7, 8]), "1")
+  inspect(discard_early_fresh_result(7), "1")
+  inspect(discard_match_resuming_handler_result(7), "1")
   inspect(discard_result_after_exiting_branch(7), "1")
   inspect(discard_result_after_exiting_branch(-1), "0")
   inspect(discard_local_borrowed_lambda_result(7), "1")
@@ -240,6 +285,7 @@ test "discarded closure, local call and handle leave the following value" {
 }
 
 export fn main() -> Int {
+  let slice_source = [7, 8]
   let mut i = 0
   let mut total = 0
   while i < 2000 {
@@ -253,6 +299,10 @@ export fn main() -> Int {
     total = total + discard_generic_callback_result(make_inferred, i)
     total = total + discard_immediate_lambda_result(i)
     total = total + discard_immediate_borrowed_lambda_result(i)
+    total = total + discard_immediate_capturing_lambda_result(i)
+    total = total + discard_allocating_builtin_results(slice_source)
+    total = total + discard_early_fresh_result(0 - i - 1)
+    total = total + discard_match_resuming_handler_result(i)
     total = total + discard_result_after_exiting_branch(i)
     total = total + discard_local_borrowed_lambda_result(i)
     total = total + discard_mutable_lambda_result(i)

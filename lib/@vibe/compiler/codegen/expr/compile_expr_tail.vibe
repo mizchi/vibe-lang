@@ -6,6 +6,7 @@ import @vibe/compiler/core {
   Stmt,
   TypeExpr,
   bsearch_leftmost,
+  builtin_allocates,
   bytebuf_length,
   bytebuf_new,
   bytebuf_push,
@@ -15,6 +16,7 @@ import @vibe/compiler/core {
   is_borrow_ret_builtin,
   leb128_encode_s64,
   leb128_encode_u32,
+  registry_builtin_arity,
   typed_lowering_arg_offset,
   typed_lowering_float_key
 }
@@ -321,14 +323,45 @@ fn emit_assignop_rc_tag_fix(buf: Bytes, enable_rc: Bool, op: String) -> Unit {
 /// a projection in this position as a borrow, leaving its owner to drop it.
 /// A named call uses the same declared-return and view checks as the owned
 /// path classifier; an unknown result keeps the previous conservative drop.
-fn seq_handler_resumes(e: Expr) -> Bool {
+fn seq_handler_resumes(e: Expr, local_names: Array[String], bound: Array[String]) -> Bool with Exception {
   match e {
-    ECall(EIdent("resume", _), _, _) => true,
-    ELet(_, _, body, _) => seq_handler_resumes(body),
-    ELetMut(_, _, body, _) => seq_handler_resumes(body),
-    ELetRec(_, _, body) => seq_handler_resumes(body),
-    ESeq(_, body) => seq_handler_resumes(body),
-    EIf(_, then_body, else_body) => seq_handler_resumes(then_body) && seq_handler_resumes(else_body),
+    ECall(EIdent("resume", _), _, _) => find_local_slot(local_names, "resume") < 0 && seq_bound_call_result(bound, "resume") < 0,
+    ELet(name, _, body, _) => {
+      let mark = Array::length(bound)
+      Array::push(bound, name)
+      let resumes = seq_handler_resumes(body, local_names, bound)
+      Array::truncate(bound, mark)
+      resumes
+    },
+    ELetMut(name, _, body, _) => {
+      let mark = Array::length(bound)
+      Array::push(bound, name)
+      let resumes = seq_handler_resumes(body, local_names, bound)
+      Array::truncate(bound, mark)
+      resumes
+    },
+    ELetRec(name, _, body) => {
+      let mark = Array::length(bound)
+      Array::push(bound, name)
+      let resumes = seq_handler_resumes(body, local_names, bound)
+      Array::truncate(bound, mark)
+      resumes
+    },
+    ESeq(_, body) => seq_handler_resumes(body, local_names, bound),
+    EIf(_, then_body, else_body) => seq_handler_resumes(then_body, local_names, bound) && seq_handler_resumes(else_body, local_names, bound),
+    EMatch(_, arms) => if Array::length(arms) == 0 {
+      false
+    } else {
+      let mut all_resume = true
+      for arm in arms {
+        let mark = Array::length(bound)
+        if !seq_push_pattern_binds(arm.0, bound) || !seq_handler_resumes(arm.1, local_names, bound) {
+          all_resume = false
+        }
+        Array::truncate(bound, mark)
+      }
+      all_resume
+    },
     _ => false
   }
 }
@@ -430,7 +463,7 @@ fn seq_discard_owns_result_in(e: Expr, local_names: Array[String], bound: Array[
       } else if slot >= 0 {
         seq_local_call_owns_result(ctx, slot)
       } else {
-        is_ctor_call(e, ctx.ctor_table) || (bsearch_leftmost(ctx.heap_ret_names, n) >= 0 && !is_borrow_ret_builtin(n) && bsearch_leftmost(ctx.borrow_ret_names, n) < 0 && bsearch_leftmost(ctx.borrow_view_ret, n) < 0)
+        is_ctor_call(e, ctx.ctor_table) || ((bsearch_leftmost(ctx.heap_ret_names, n) >= 0 || (registry_builtin_arity(n) >= 0 && builtin_allocates(n) && func_table_user_index_of(ctx.func_table, n, ctx.num_user_funcs) < 0)) && !is_borrow_ret_builtin(n) && bsearch_leftmost(ctx.borrow_ret_names, n) < 0 && bsearch_leftmost(ctx.borrow_view_ret, n) < 0)
       }
     },
     ECall(_, _, _) => true,
@@ -467,7 +500,7 @@ fn seq_discard_owns_result_in(e: Expr, local_names: Array[String], bound: Array[
       while i < Array::length(arms) {
         let (pat, arm_body) = Array::get(arms, i)
         let mark = Array::length(bound)
-        if !seq_push_pattern_binds(pat, bound) || !(seq_discard_owns_result_in(arm_body, local_names, bound, ctx) || seq_discard_exits(arm_body, local_names, bound) || seq_handler_resumes(arm_body)) {
+        if !seq_push_pattern_binds(pat, bound) || !(seq_discard_owns_result_in(arm_body, local_names, bound, ctx) || seq_discard_exits(arm_body, local_names, bound) || seq_handler_resumes(arm_body, local_names, bound)) {
           owned = false
         }
         Array::truncate(bound, mark)
