@@ -3032,17 +3032,30 @@ fn namespace_private_type_ctor_stage(path: String, value_renamed: Array[Stmt], n
   if Array::length(type_renames) == 0 && Array::length(ctor_renames) == 0 {
     value_renamed
   } else {
+    let private_enum_heads = empty_strings()
+    for stmt in value_renamed {
+      match stmt {
+        SEnum(false, name, _, _, _) => if !string_array_contains(exported, name) {
+          Array::push(private_enum_heads, name)
+        },
+        SSuberror(false, name, _) => if !string_array_contains(exported, name) {
+          Array::push(private_enum_heads, name)
+        },
+        _ => ()
+      }
+    }
+    let local_type_aliases = collect_local_type_aliases(value_renamed)
     let owner_aliases = collect_impl_method_owner_aliases(value_renamed, type_renames)
     let owner_renamed = for stmt in value_renamed {
       rewrite_impl_method_binding(stmt, owner_aliases)
     }
     for stmt in owner_renamed {
-      namespace_private_type_ctor_stmt(stmt, type_renames, ctor_renames)
+      namespace_private_type_ctor_stmt(stmt, type_renames, ctor_renames, private_enum_heads, local_type_aliases)
     }
   }
 }
 
-fn namespace_private_type_ctor_stmt(stmt: Stmt, type_renames: Array[(String, String)], ctor_renames: Array[(String, String)]) -> Stmt {
+fn namespace_private_type_ctor_stmt(stmt: Stmt, type_renames: Array[(String, String)], ctor_renames: Array[(String, String)], private_enum_heads: Array[String], local_type_aliases: Array[(String, Array[String], TypeExpr)]) -> Stmt {
   match stmt {
     SLet(exported, is_rec, name, ty, body) => SLet(exported, is_rec, name, rewrite_private_type_opt(ty, type_renames), rewrite_private_type_ctor_expr(body, type_renames, alias_map_without_name(ctor_renames, name))),
     SLetMut(name, ty, body) => SLetMut(name, rewrite_private_type_opt(ty, type_renames), rewrite_private_type_ctor_expr(body, type_renames, alias_map_without_name(ctor_renames, name))),
@@ -3124,7 +3137,16 @@ fn namespace_private_type_ctor_stmt(stmt: Stmt, type_renames: Array[(String, Str
         Some(renamed) => renamed,
         None => row.0
       }
-      (qualifier, row.1)
+      let head = local_pattern_qualifier_head(row.0, local_type_aliases, Array::length(local_type_aliases) + 1)
+      let variant = if string_array_contains(private_enum_heads, head) {
+        match lookup_alias(ctor_renames, row.1) {
+          Some(renamed) => renamed,
+          None => row.1
+        }
+      } else {
+        row.1
+      }
+      (qualifier, variant)
     }),
     SImpl(tparams, bounds, trait_name, target) => SImpl(tparams, bounds, trait_name, rewrite_private_type_expr(target, alias_map_without_names(type_renames, tparams))),
     SExternLet(name, ty) => SExternLet(name, rewrite_private_type_expr(ty, type_renames)),
