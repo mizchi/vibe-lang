@@ -8183,8 +8183,13 @@ fn rc_exit_result_is_name(e: Expr, name: String) -> Bool {
   }
 }
 
-fn rc_exit_follow_value_source(e: Expr, sources: Array[(String, Expr)], limit: Int) -> Expr {
+export fn rc_exit_follow_value_source(e: Expr, sources: Array[(String, Expr)], limit: Int) -> Expr {
   match e {
+    ECall(EIdent("__lambda_return_owned", off), args, _) => if off < 0 && Array::length(args) == 1 {
+      rc_exit_follow_value_source(Array::get(args, 0), sources, limit)
+    } else {
+      e
+    },
     EIdent(name, _) => {
       let mut i = limit - 1
       while i >= 0 {
@@ -8283,6 +8288,14 @@ fn rc_exit_conditional_rec_transfer(e: Expr, name: String, local_names: Array[St
       for row in ctx.passthrough_ret_params {
         if row.0 == callee && row.1 < Array::length(args) {
           return rc_exit_conditional_rec_transfer(Array::get(args, row.1), name, local_names, ctx)
+        }
+      }
+      // A helper with more than one parameter-returning exit has no single
+      // passthrough source. Compare its actual result with the recursive
+      // owner before deciding whether the exit may release that owner.
+      for arg in args {
+        if rc_exit_mentions_name(arg, name) {
+          return true
         }
       }
       false
@@ -8499,7 +8512,7 @@ export fn rc_exit_release(buf: Bytes, ctx: CompileCtx, local_names: Array[String
           ri = ri - 1
         }
       }
-    } else if kind == 3 {
+    } else if kind == 0 || kind == 3 {
       exit_result = (result_local, rc_exit_follow_value_source(operand, ctx.rc_exit_result_stores, Array::length(ctx.rc_exit_result_stores)))
     }
     let ord = Array::get(ctx.rc_exit_state, 0)

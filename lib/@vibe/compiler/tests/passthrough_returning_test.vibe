@@ -57,6 +57,31 @@ test "a helper with an early fresh return still takes ownership of its argument"
   inspect(Array::length(compute_passthrough_returning(stmts)), "1")
 }
 
+test "an early return of the same parameter remains a passthrough" {
+  let stmts = parse_program(lex("fn pick(callback: (Int) -> Int, choose: Bool) -> (Int) -> Int { if choose { return callback }; callback }"))
+  inspect(Array::length(compute_passthrough_returning(stmts)), "1")
+}
+
+test "an early return of another parameter is not a passthrough" {
+  let stmts = parse_program(lex("fn pick(first: (Int) -> Int, second: (Int) -> Int, choose: Bool) -> (Int) -> Int { if choose { return second }; first }"))
+  inspect(Array::length(compute_passthrough_returning(stmts)), "0")
+}
+
+test "a nested early return of another parameter is not a passthrough" {
+  let stmts = parse_program(lex("fn pick(first: (Int) -> Int, second: (Int) -> Int, choose: Bool, other: Bool) -> (Int) -> Int { if choose { return if other { second } else { make_fresh() } }; first }"))
+  inspect(Array::length(compute_passthrough_returning(stmts)), "0")
+}
+
+test "a pattern binder shadows the source of an outer alias" {
+  let stmts = parse_program(lex("fn pick(callback: (Int) -> Int, opt: Option[(Int) -> Int]) -> (Int) -> Int { let alias = callback; match opt { Some(alias) => alias; None => alias } }"))
+  inspect(Array::length(compute_passthrough_returning(stmts)), "0")
+}
+
+test "an unrelated pattern binder preserves the outer alias source" {
+  let stmts = parse_program(lex("fn pick(callback: (Int) -> Int, opt: Option[Int]) -> (Int) -> Int { let alias = callback; match opt { Some(value) => alias; None => alias } }"))
+  inspect(Array::length(compute_passthrough_returning(stmts)), "1")
+}
+
 test "an assignment continuation preserves a returned parameter" {
   let stmts = parse_program(lex("fn pass(callback: (Int) -> Int) -> (Int) -> Int { let mut n = 0; n = 1; callback }"))
   inspect(Array::length(compute_passthrough_returning(stmts)), "1")

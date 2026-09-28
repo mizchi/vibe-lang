@@ -16,6 +16,57 @@ fn pass_or_fresh(callback: (Int) -> Int, choose: Bool) -> (Int) -> Int {
   callback
 }
 
+fn pick_early(first: (Int) -> Int, second: (Int) -> Int, choose: Bool) -> (Int) -> Int {
+  if choose {
+    return second
+  }
+  first
+}
+
+fn pick_pattern_shadow(callback: (Int) -> Int, choice: Option[(Int) -> Int]) -> (Int) -> Int {
+  let alias = callback
+  match choice {
+    Some(alias) => alias,
+    None => alias
+  }
+}
+
+fn counter_through_early_pick(start: Int, choose: Bool) -> (Int) -> Int {
+  let rec go = (n: Int) -> Int {
+    if n > start {
+      n
+    } else {
+      go(n + 1)
+    }
+  }
+  let mut out = pick_early(fresh_counter(), go, choose)
+  out
+}
+
+fn counter_through_early_pick_return(start: Int, choose: Bool) -> (Int) -> Int {
+  let rec go = (n: Int) -> Int {
+    if n > start {
+      n
+    } else {
+      go(n + 1)
+    }
+  }
+  let mut out = pick_early(fresh_counter(), go, choose)
+  return out
+}
+
+fn counter_through_pattern_shadow_pick(start: Int) -> (Int) -> Int {
+  let rec go = (n: Int) -> Int {
+    if n > start {
+      n
+    } else {
+      go(n + 1)
+    }
+  }
+  let mut out = pick_pattern_shadow(fresh_counter(), Some(go))
+  out
+}
+
 fn counter_through_mutable_alias(start: Int, replace: Bool) -> (Int) -> Int {
   let rec go = (n: Int) -> Int {
     if n > start {
@@ -224,6 +275,75 @@ fn counter_through_aliased_mutable_pass_result(start: Int) -> (Int) -> Int {
 test "a mutable passthrough result keeps the recursive closure alive" {
   let escaped = counter_through_mutable_alias(8, false)
   inspect(escaped(5), content = "9")
+}
+
+test "an early return of a different parameter keeps the recursive closure alive" {
+  inspect(counter_through_early_pick(8, true)(5), content = "9")
+  inspect(counter_through_early_pick(8, false)(5), content = "6")
+  let mut i = 0
+  while i < 200 {
+    let f = counter_through_early_pick(8, true)
+    let _ = f(5)
+    i = i + 1
+  }
+  let before = Profiler::heap_bytes()
+  while i < 2200 {
+    let f = counter_through_early_pick(8, true)
+    let _ = f(5)
+    i = i + 1
+  }
+  inspect(Profiler::heap_bytes() - before < 1000, content = "true")
+  let mut j = 0
+  while j < 200 {
+    let f = counter_through_early_pick(8, false)
+    let _ = f(5)
+    j = j + 1
+  }
+  let fresh_before = Profiler::heap_bytes()
+  while j < 2200 {
+    let f = counter_through_early_pick(8, false)
+    let _ = f(5)
+    j = j + 1
+  }
+  inspect(Profiler::heap_bytes() - fresh_before < 1000, content = "true")
+}
+
+test "a pattern binder shadowing an alias keeps the recursive closure alive" {
+  inspect(counter_through_pattern_shadow_pick(8)(5), content = "9")
+}
+
+test "an explicit return keeps an ambiguous mutable result alive" {
+  inspect(counter_through_early_pick_return(8, true)(5), content = "9")
+  inspect(counter_through_early_pick_return(8, false)(5), content = "6")
+  let mut i = 0
+  while i < 200 {
+    let f = counter_through_early_pick_return(8, true)
+    let _ = f(5)
+    i = i + 1
+  }
+  let before = Profiler::heap_bytes()
+  while i < 2200 {
+    let f = counter_through_early_pick_return(8, true)
+    let _ = f(5)
+    i = i + 1
+  }
+  inspect(Profiler::heap_bytes() - before < 1000, content = "true")
+}
+
+test "a helper with fresh callbacks returns its selected callback" {
+  let mut i = 0
+  while i < 200 {
+    let f = pick_early(fresh_counter(), fresh_counter(), true)
+    let _ = f(5)
+    i = i + 1
+  }
+  let before = Profiler::heap_bytes()
+  while i < 2200 {
+    let f = pick_early(fresh_counter(), fresh_counter(), true)
+    let _ = f(5)
+    i = i + 1
+  }
+  inspect(Profiler::heap_bytes() - before < 1000, content = "true")
 }
 
 test "replacing the mutable alias releases the recursive closure" {

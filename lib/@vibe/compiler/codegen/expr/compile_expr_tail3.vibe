@@ -204,7 +204,7 @@ import @vibe/compiler/codegen/wasm_emit {
 }
 
 import ./compile_call.vibe {
-  cc_operands_floatish, compile_call, rc_exit_passthrough_rec_result, rc_exit_release
+  cc_operands_floatish, compile_call, rc_exit_follow_value_source, rc_exit_passthrough_rec_result, rc_exit_release
 }
 
 import ./compile_expr_tail4.vibe {
@@ -243,7 +243,8 @@ fn return_result_is_name(e: Expr, name: String) -> Bool {
 }
 
 fn return_result_has_branch(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool {
-  match cl_return_operand(e) {
+  let resolved = rc_exit_follow_value_source(cl_return_operand(e), ctx.rc_exit_result_stores, Array::length(ctx.rc_exit_result_stores))
+  match resolved {
     EIf(_, _, _) => true,
     EMatch(_, _) => true,
     ECall(EIdent(callee, _), args, _) => {
@@ -253,6 +254,11 @@ fn return_result_has_branch(e: Expr, local_names: Array[String], ctx: CompileCtx
       for row in ctx.passthrough_ret_params {
         if row.0 == callee && row.1 < Array::length(args) {
           return return_result_has_branch(Array::get(args, row.1), local_names, ctx)
+        }
+      }
+      for owner in ctx.rc_exit_lets {
+        if return_result_mentions(resolved, owner) {
+          return true
         }
       }
       false
