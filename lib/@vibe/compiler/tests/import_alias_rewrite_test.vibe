@@ -513,6 +513,22 @@ test "an enum re-export alias rewrites only its importer" {
   assert(String::contains(after, "other = Local"))
 }
 
+test "a re-exported transparent alias reaches its enum constructors" {
+  let provider = parse_program(lex("export enum Color { Red; Blue }\nexport type Shade = Color"))
+  let facade = parse_program(lex("export ./provider.vibe { Shade as PublicShade }"))
+  let entry = parse_program(lex("import ./facade.vibe { PublicShade }\nlet answer = PublicShade::Red"))
+  let paths = [
+    "/virtual/provider.vibe",
+    "/virtual/facade.vibe",
+    "/virtual/entry.vibe"
+  ]
+  let plan = build_export_rename_plan(paths, [provider, facade, entry], "/virtual/entry.vibe")
+  let renames = collect_import_value_renames(plan, "/virtual/entry.vibe", entry)
+  inspect(Array::length(renames), "1")
+  inspect(Array::get(renames, 0).0, "PublicShade")
+  inspect(Array::get(renames, 0).1, "Color")
+}
+
 test "a later plain enum re-export replaces an earlier alias" {
   // The checker rejects importing two distinct enums under PublicChoice, but
   // the merge planner must still avoid retaining the earlier alias mapping.

@@ -3406,17 +3406,22 @@ fn collect_reexport_edges_into(path: String, stmts: Array[Stmt], known_paths: Ar
 
 /// Follow the last published edge at each facade until it reaches a declared
 /// enum. A missing edge or a cycle supplies no constructor rewrite.
-fn reexport_enum_origin(path: String, name: String, edge_tpath: Array[String], edge_tname: Array[String], edge_last_idx: MutMap[String, Int], enum_defs: MutMap[String, Bool]) -> Option[String] {
+fn reexport_enum_origin(path: String, name: String, edge_tpath: Array[String], edge_tname: Array[String], edge_last_idx: MutMap[String, Int], enum_defs: MutMap[String, Bool], enum_type_aliases: MutMap[String, String]) -> Option[String] {
   let mut cur_path = path
   let mut cur_name = name
   let mut depth = 0
   let mut done = false
   let mut origin: Option[String] = None
-  while depth <= Array::length(edge_tpath) && !done {
+  while depth <= Array::length(edge_tpath) + MutMap::size(enum_type_aliases) && !done {
     let key = plan_rename_key(cur_path, cur_name)
     if MutMap::has(enum_defs, key) {
       origin = Some(cur_name)
       done = true
+    } else if MutMap::has(enum_type_aliases, key) {
+      match MutMap::get(enum_type_aliases, key) {
+        Some(next_name) => cur_name = next_name,
+        None => done = true
+      }
     } else {
       match MutMap::get(edge_last_idx, key) {
         Some(next) => {
@@ -3485,6 +3490,7 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
   // edge through the graph so a second facade does not leave an intermediate
   // alias as a constructor qualifier.
   let enum_defs: MutMap[String, Bool] = MutMap::new_string()
+  let enum_type_aliases: MutMap[String, String] = MutMap::new_string()
   let mut dfi = 0
   while dfi < file_count {
     let path = Array::get(paths, dfi)
@@ -3493,6 +3499,12 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
     while dsi < Array::length(stmts) {
       match Array::get(stmts, dsi) {
         SEnum(_, name, _, _, _) => MutMap::set(enum_defs, plan_rename_key(path, name), true),
+        STypeAlias(_, name, params, target) => if Array::length(params) == 0 {
+          match target {
+            TyName(head) => MutMap::set(enum_type_aliases, plan_rename_key(path, name), head),
+            _ => ()
+          }
+        },
         _ => ()
       }
       dsi = dsi + 1
@@ -3517,7 +3529,7 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
       // This lookup asks which edge won, not whether any edge has this key.
       Some(last) => {
         if last == eai {
-          match reexport_enum_origin(Array::get(edge_tpath, eai), Array::get(edge_tname, eai), edge_tpath, edge_tname, edge_last_idx, enum_defs) {
+          match reexport_enum_origin(Array::get(edge_tpath, eai), Array::get(edge_tname, eai), edge_tpath, edge_tname, edge_last_idx, enum_defs, enum_type_aliases) {
             Some(origin) => if origin != Array::get(edge_pub, eai) {
               MutMap::set(enum_alias_idx, key, origin)
               Array::push(enum_alias_paths, Array::get(edge_from, eai))
