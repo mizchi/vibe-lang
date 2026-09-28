@@ -16,5 +16,5 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ADAPTER="${1:-$ROOT/lib/@vibe/compiler/cli_adapter.vibe}"
 grep -oE 'Env::get\("VIBE_[A-Z_]+"\) == "(1|gc)"' "$ADAPTER" \
-  | sed 's/Env::get("//;s/") == "\(1\|gc\)"//' \
+  | sed -E 's/^Env::get\("([A-Z_]+)"\) == "(1|gc)"$/\1/' \
   | awk '!seen[$0]++ && $0 != "VIBE_RC"'
