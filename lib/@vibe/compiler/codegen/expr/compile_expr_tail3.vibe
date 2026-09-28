@@ -211,7 +211,7 @@ import ./compile_expr_tail4.vibe {
 }
 
 import ./compile_lambda.vibe {
-  cl_own_return, compile_lambda
+  cl_own_return, cl_return_operand, compile_lambda
 }
 
 import ./compile_match.vibe {
@@ -219,6 +219,20 @@ import ./compile_match.vibe {
 }
 
 //# Functions
+
+fn return_result_has_branch(e: Expr) -> Bool {
+  match cl_return_operand(e) {
+    EIf(_, _, _) => true,
+    EMatch(_, _) => true,
+    ELet(_, _, body, _) => return_result_has_branch(body),
+    ELetMut(_, _, body, _) => return_result_has_branch(body),
+    ELetRec(_, _, body) => return_result_has_branch(body),
+    ESeq(_, tail) => return_result_has_branch(tail),
+    EAssign(_, _, tail) => return_result_has_branch(tail),
+    EAssignOp(_, _, _, tail) => return_result_has_branch(tail),
+    _ => false
+  }
+}
 
 export fn compile_expr_tail3(buf: Bytes, expr: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
   let __tag = expr_tag(expr)
@@ -328,11 +342,7 @@ export fn compile_expr_tail3(buf: Bytes, expr: Expr, local_names: Array[String],
       ret_expr
     }
     let nl = compile_expr(buf, owned_ret, local_names, next_local, ctx, ld)
-    let needs_result_local = ctx.enable_rc && match ret_expr {
-      EIf(_, _, _) => true,
-      EMatch(_, _) => true,
-      _ => false
-    }
+    let needs_result_local = ctx.enable_rc && return_result_has_branch(ret_expr)
     if needs_result_local {
       emit_local_tee(buf, nl)
       while Array::length(local_names) <= nl {
