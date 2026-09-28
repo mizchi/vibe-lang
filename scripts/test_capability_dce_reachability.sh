@@ -34,6 +34,26 @@ VIBE
 cat >"$out_dir/baseline.vibe" <<'VIBE'
 let run: () -> Int = () -> { 42 }
 VIBE
+cat >"$out_dir/iterator_import.vibe" <<'VIBE'
+import @vibe/builtin { trait Iterator }
+fn dead_stream() -> Int with Async {
+  host_stream_next(host_stream_named("left"))
+}
+let run: () -> Int with Async = () -> { 42 }
+VIBE
+cat >"$out_dir/provider.vibe" <<'VIBE'
+export fn answer() -> Int { 42 }
+VIBE
+cat >"$out_dir/facade.vibe" <<'VIBE'
+export ./provider.vibe { answer as choose }
+VIBE
+cat >"$out_dir/reexport_chain.vibe" <<'VIBE'
+import ./facade.vibe { choose }
+fn dead_stream() -> Int with Async {
+  host_stream_next(host_stream_named("left"))
+}
+let run: () -> Int with Async = () -> { choose() }
+VIBE
 cat >"$out_dir/dead_export.vibe" <<'VIBE'
 export fn dead_stream() -> Int with Async {
   host_stream_next(host_stream_named("left"))
@@ -53,7 +73,7 @@ fn read_future() -> Int with Async {
 let run: () -> Int with Async = () -> { read_future() }
 VIBE
 
-for case_name in dead dead_wat baseline dead_export live_stream live_wat live_future; do
+for case_name in dead dead_wat baseline iterator_import reexport_chain dead_export live_stream live_wat live_future; do
   out="$out_dir/$case_name.wasm"
   rm -f "$out" "$out.diag"
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
@@ -118,7 +138,7 @@ if (definedFunctions(readFileSync(join(dir, 'dead_wat.wasm'))) !==
   console.error('[capability-dce] FAIL: an unreachable WAT callee survived');
   process.exit(1);
 }
-for (const name of ['dead', 'dead_wat', 'dead_export']) {
+for (const name of ['dead', 'dead_wat', 'iterator_import', 'reexport_chain', 'dead_export']) {
   const leaked = imports(name).filter((entry) => entry.startsWith('host_stream') || entry.startsWith('host_future'));
   if (leaked.length > 0) {
     console.error(`[capability-dce] FAIL: ${name} retained ${leaked.join(', ')}`);
@@ -141,6 +161,11 @@ NODE
 wat_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke run "$out_dir/live_wat.wasm" 2>&1 | tail -1)"
 if [ "$wat_result" != 42 ]; then
   echo "[capability-dce] FAIL: reachable inline WAT callee returned '$wat_result' (want 42)" >&2
+  exit 1
+fi
+reexport_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke run "$out_dir/reexport_chain.wasm" 2>&1 | tail -1)"
+if [ "$reexport_result" != 42 ]; then
+  echo "[capability-dce] FAIL: reachable re-export returned '$reexport_result' (want 42)" >&2
   exit 1
 fi
 echo "[capability-dce] reachable imports kept; dead imports removed"

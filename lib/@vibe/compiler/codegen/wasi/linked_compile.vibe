@@ -7,6 +7,7 @@ import @vibe/compiler/core {
   TypeExpr,
   apply_top_level_fn_alias_renames,
   bsearch_leftmost,
+  builtin_iterator_namespace_from_marker,
   builtin_registry,
   builtin_shadow_entry_name,
   builtin_shadow_source_name,
@@ -9191,6 +9192,18 @@ fn lc_fn_alias_name(renames: Array[(String, String)], name: String) -> Bool {
   false
 }
 
+fn lc_boundary_has_reexport(locals: Array[String]) -> Bool {
+  let mut i = 0
+  while i < Array::length(locals) {
+    match builtin_iterator_namespace_from_marker(Array::get(locals, i)) {
+      Some(_) => (),
+      None => return true
+    }
+    i = i + 1
+  }
+  false
+}
+
 fn lc_late_dce_roots(stmts: Array[Stmt], entry_name: String, keep_source_defs: Bool) -> Array[String] {
   let roots = lc_fresh_string_array()
   let derive_names = lc_derive_helper_names(stmts)
@@ -9199,28 +9212,25 @@ fn lc_late_dce_roots(stmts: Array[Stmt], entry_name: String, keep_source_defs: B
   let mut scan = 0
   while scan < Array::length(stmts) {
     match Array::get(stmts, scan) {
-      // A re-export can bind a renamed imported definition. Keep the source
-      // set when its final spelling is not available in this root snapshot.
+      // An unmerged re-export can bind a renamed imported definition.
       SReExport(_, _) => keep_all = true,
-      // FS merges replace SReExport with a boundary carrier. The local
-      // spelling can differ from its resolved definition after import renames.
-      SReExportSourceBoundary(locals, _) => if Array::length(locals) > 0 {
-        keep_all = true
-      } else {
-        ()
-      },
       _ => ()
     }
     scan = scan + 1
   }
   Array::push(roots, entry_name)
+  // FS merges put a boundary before each source. A re-export in a dependency
+  // preserves that source's definitions, not unrelated definitions in the
+  // entry source (which can include dead capability helpers).
+  let mut keep_segment = keep_all
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
+      SReExportSourceBoundary(locals, _) => keep_segment = keep_source_defs || lc_boundary_has_reexport(locals),
       // Keep ordinary value initializers available to the direct codegen
       // lane's diagnostics. Function values are the definitions whose dead
       // bodies can safely be removed before they commit host imports.
-      SLet(exported, _, name, _, value) => if (keep_all || (exported && lc_export_is_root(name, entry_name)) || match value {
+      SLet(exported, _, name, _, value) => if (keep_segment || (exported && lc_export_is_root(name, entry_name)) || match value {
         EFn(_, _, _, _, _, _) => false,
         EIdent(_, _) => !lc_fn_alias_name(fn_aliases, name),
         _ => true
@@ -9229,7 +9239,7 @@ fn lc_late_dce_roots(stmts: Array[Stmt], entry_name: String, keep_source_defs: B
       } else {
         ()
       },
-      SFnDecl(exported, name, _, _, _) => if (keep_all || (exported && lc_export_is_root(name, entry_name))) && !lc_is_derive_helper_name(derive_names, name) {
+      SFnDecl(exported, name, _, _, _) => if (keep_segment || (exported && lc_export_is_root(name, entry_name))) && !lc_is_derive_helper_name(derive_names, name) {
         Array::push(roots, name)
       } else {
         ()
