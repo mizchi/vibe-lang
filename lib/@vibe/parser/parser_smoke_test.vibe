@@ -401,6 +401,20 @@ test "a qualified handler operation leaves its qualified payload reference" {
   assert(!contains_ref(refs, "::A"))
 }
 
+test "named handler operation alternatives leave no enum references" {
+  let src = "enum Api { A }\neffect Logger { A -> Int; B -> Int }\nfn f() -> Int { handle { 1 } with Logger { A | B => resume(2) } }\nfn g() -> Int { match Api::A { Api::A => 1 } }"
+  let refs = qualified_pattern_refs_of(parse_program(lex(src)))
+  assert(contains_ref(refs, "Api::A"))
+  assert(!contains_ref(refs, "::A"))
+}
+
+test "a handler alternative keeps a bare payload in another branch" {
+  let src = "enum Api { A }\neffect Logger { A -> Int; B(Api) -> Int }\nfn f() -> Int { handle { 1 } with Logger { A | B(A) => resume(2) } }\nfn g() -> Int { match Api::A { Api::A => 1 } }"
+  let refs = qualified_pattern_refs_of(parse_program(lex(src)))
+  assert(contains_ref(refs, "Api::A"))
+  assert(contains_ref(refs, "::A"))
+}
+
 test "a failed parse does not leak bare constructors into the next parse" {
   let error = handle {
     let _ = parse_program(lex("fn bad() -> Int { match 0 { A => 1 }"))

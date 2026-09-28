@@ -549,21 +549,63 @@ fn handler_payload_has_bare_ctor(tokens: Array[Token], root_pos: Int, end: Int, 
   found
 }
 
-fn parse_handle_arm(tokens: Array[Token], starts: Array[Int], pos: Int, effect_name: String, qualifier: (Int, Int), parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> ((Pat, Expr), Int) with Exception {
-  let ref_mark = pattern_ref_mark()
-  let (pat, pat_next) = parse_pattern_with_binder_context(tokens, pos, context)
-  match source_pat(pat) {
-    PCtor(name, _) => match peek(tokens, pos + 1) {
-      TDoubleColon => match peek(tokens, pos) {
-        TIdent(head) => discard_handler_operation_ref(ref_mark, head, name),
+fn discard_handler_operation_segment_ref(mark: (Int, Int), tokens: Array[Token], start: Int, segments: Array[(Int, Int)]) -> Unit {
+  match peek(tokens, start) {
+    TIdent(head) => match peek(tokens, start + 1) {
+      TDoubleColon => match peek(tokens, start + 2) {
+        TIdent(variant) => discard_handler_operation_ref(mark, head, variant),
         _ => ()
       },
-      _ => if !handler_payload_has_bare_ctor(tokens, pos, pat_next, name) {
-        discard_handler_operation_ref(ref_mark, "", name)
+      _ => {
+        let mut has_payload = false
+        for segment in segments {
+          if handler_payload_has_bare_ctor(tokens, segment.0, segment.1, head) {
+            has_payload = true
+          }
+        }
+        if !has_payload {
+          discard_handler_operation_ref(mark, "", head)
+        }
       }
     },
     _ => ()
   }
+}
+
+/// Each top-level alternative is an effect operation, not an enum pattern.
+/// Inspect every payload before removing a deduplicated bare reference.
+fn discard_handler_operation_refs(mark: (Int, Int), tokens: Array[Token], start: Int, end: Int) -> Unit {
+  let segments: Array[(Int, Int)] = []
+  let mut segment_start = start
+  let mut depth = 0
+  let mut i = start
+  while i < end {
+    match peek(tokens, i) {
+      TLParen => depth = depth + 1,
+      TLBrace => depth = depth + 1,
+      TLBracket => depth = depth + 1,
+      TRParen => depth = depth - 1,
+      TRBrace => depth = depth - 1,
+      TRBracket => depth = depth - 1,
+      TBitOr => if depth == 0 {
+        Array::push(segments, (segment_start, i))
+        segment_start = i + 1
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  Array::push(segments, (segment_start, end))
+  for segment in segments {
+    discard_handler_operation_segment_ref(mark, tokens, segment.0, segments)
+  }
+  ()
+}
+
+fn parse_handle_arm(tokens: Array[Token], starts: Array[Int], pos: Int, effect_name: String, qualifier: (Int, Int), parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> ((Pat, Expr), Int) with Exception {
+  let ref_mark = pattern_ref_mark()
+  let (pat, pat_next) = parse_pattern_with_binder_context(tokens, pos, context)
+  discard_handler_operation_refs(ref_mark, tokens, pos, pat_next)
   let qualified_pat = qualify_handle_arm_pattern(effect_name, pat, qualifier, context)
   let arrow_pos = expect_tk(tokens, pat_next, "=>")
   // #2197: a handler body is an arm body too -- same bare-assignment tail,
