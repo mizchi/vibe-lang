@@ -7941,14 +7941,50 @@ fn rc_exit_operand_ok(e: Expr, local_names: Array[String], ctx: CompileCtx, keep
       }
     },
     ECall(callee, args, _) => match callee {
-      EIdent(f, off) => if f == "__lambda_return_owned" && off < 0 {
-        true
+      EIdent(f, off) => if f == "__lambda_return_owned" && off < 0 && Array::length(args) == 1 {
+        let inner = Array::get(args, 0)
+        let mut inspect_inner = true
+        match inner {
+          ECall(EIdent(inner_name, _), _, _) => {
+            inspect_inner = false
+            if find_local_slot(local_names, inner_name) < 0 {
+              for row in ctx.passthrough_ret_params {
+                if row.0 == inner_name {
+                  inspect_inner = true
+                }
+              }
+            }
+          },
+          _ => ()
+        }
+        if inspect_inner {
+          rc_exit_operand_ok(inner, local_names, ctx, keep)
+        } else {
+          true
+        }
       } else if find_local_slot(local_names, f) >= 0 {
         false
       } else if is_ctor_call(e, ctx.ctor_table) {
         rc_exit_operands_ok(args, local_names, ctx, keep)
       } else {
-        !cc_callee_may_return_view(f, ctx)
+        let mut source = -1
+        for row in ctx.passthrough_ret_params {
+          if row.0 == f {
+            source = row.1
+          }
+        }
+        if source >= 0 && source < Array::length(args) {
+          let arg = Array::get(args, source)
+          let root = proj_root_ident(arg)
+          if root != "" && array_contains_str(ctx.rc_exit_lets, root) {
+            Array::push(keep, root)
+            true
+          } else {
+            rc_exit_operand_ok(arg, local_names, ctx, keep)
+          }
+        } else {
+          !cc_callee_may_return_view(f, ctx)
+        }
       },
       _ => false
     },
