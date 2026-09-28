@@ -1,0 +1,176 @@
+import @vibe/parser {
+  lex, parse_program
+}
+import @vibe/compiler/perceus {
+  compute_passthrough_returning
+}
+
+test "a direct callback return identifies its source parameter" {
+  let stmts = parse_program(lex("fn borrow_callback(callback: (Int) -> Int) -> (Int) -> Int { callback }"))
+  let rows = compute_passthrough_returning(stmts)
+  inspect(Array::length(rows), "1")
+  inspect(Array::get(rows, 0).0, "borrow_callback")
+  inspect(Array::get(rows, 0).1, "0")
+}
+
+test "an explicit callback return identifies its source parameter" {
+  let stmts = parse_program(lex("fn pass_explicit(callback: (Int) -> Int) -> (Int) -> Int { return callback }"))
+  let rows = compute_passthrough_returning(stmts)
+  inspect(Array::length(rows), "1")
+  inspect(Array::get(rows, 0).0, "pass_explicit")
+  inspect(Array::get(rows, 0).1, "0")
+}
+
+test "matching return branches identify one passthrough parameter" {
+  let stmts = parse_program(lex("fn pass_match(callback: (Int) -> Int, choose: Bool) -> (Int) -> Int { match choose { true => return callback; false => return callback } }"))
+  let rows = compute_passthrough_returning(stmts)
+  inspect(Array::length(rows), "1")
+  inspect(Array::get(rows, 0).0, "pass_match")
+  inspect(Array::get(rows, 0).1, "0")
+}
+
+test "a labeled parameter is matched by its body spelling" {
+  let stmts = parse_program(lex("fn pass_labeled(callback~: (Int) -> Int) -> (Int) -> Int { callback }"))
+  let rows = compute_passthrough_returning(stmts)
+  inspect(Array::length(rows), "1")
+  inspect(Array::get(rows, 0).0, "pass_labeled")
+  inspect(Array::get(rows, 0).1, "0")
+}
+
+test "a chain of helper calls keeps the original source parameter" {
+  let stmts = parse_program(lex("fn pass1(callback: (Int) -> Int) -> (Int) -> Int { callback } fn pass2(callback: (Int) -> Int) -> (Int) -> Int { pass1(callback) } fn pass3(callback: (Int) -> Int) -> (Int) -> Int { pass2(callback) }"))
+  let rows = compute_passthrough_returning(stmts)
+  inspect(Array::length(rows), "3")
+  inspect(Array::get(rows, 2).0, "pass3")
+  inspect(Array::get(rows, 2).1, "0")
+}
+
+test "a pattern binder cannot stand in for the parameter it shadows" {
+  let direct = parse_program(lex("fn pass(callback: (Int) -> Int, opt: Option[(Int) -> Int]) -> (Int) -> Int { match opt { Some(callback) => callback; None => callback } }"))
+  inspect(Array::length(compute_passthrough_returning(direct)), "0")
+  let forwarded = parse_program(lex("fn identity(callback: (Int) -> Int) -> (Int) -> Int { callback } fn pass(callback: (Int) -> Int, opt: Option[(Int) -> Int]) -> (Int) -> Int { match opt { Some(callback) => identity(callback); None => identity(callback) } }"))
+  inspect(Array::length(compute_passthrough_returning(forwarded)), "1")
+}
+
+test "an unproven zero-argument early call cannot certify freshness" {
+  let stmts = parse_program(lex("fn pass_or_fresh(callback: (Int) -> Int, choose: Bool) -> (Int) -> Int { if choose { return make_fresh() }; callback }"))
+  inspect(Array::length(compute_passthrough_returning(stmts)), "0")
+}
+
+test "a zero-argument helper that allocates a closure permits a fresh early return" {
+  let stmts = parse_program(lex("fn pick(callback: (Int) -> Int, choose: Bool) -> (Int) -> Int { if choose { return fresh() }; callback } fn fresh() -> (Int) -> Int { let offset = [1]; (n: Int) -> Int { n + Array::get(offset, 0) } }"))
+  inspect(Array::length(compute_passthrough_returning(stmts)), "1")
+}
+
+test "a zero-argument helper returning a global callback is not fresh" {
+  let stmts = parse_program(lex("let global = (n: Int) -> Int { n } fn pick(callback: (Int) -> Int, choose: Bool) -> (Int) -> Int { if choose { return later() }; callback } fn later() -> (Int) -> Int { global }"))
+  inspect(Array::length(stmts), "3")
+  let rows = compute_passthrough_returning(stmts)
+  inspect(Array::length(rows), "1")
+  inspect(Array::get(rows, 0).0, "global")
+}
+
+test "an early closure literal remains independently fresh" {
+  let stmts = parse_program(lex("fn pass_or_fresh(callback: (Int) -> Int, choose: Bool) -> (Int) -> Int { if choose { return (n: Int) -> Int { n + 1 } }; callback }"))
+  inspect(Array::length(compute_passthrough_returning(stmts)), "1")
+}
+
+test "a forward passthrough call on an early exit invalidates the first parameter" {
+  let stmts = parse_program(lex("fn pick(first: (Int) -> Int, second: (Int) -> Int, choose: Bool) -> (Int) -> Int { if choose { return later(second) }; first } fn later(value: (Int) -> Int) -> (Int) -> Int { value }"))
+  let rows = compute_passthrough_returning(stmts)
+  inspect(Array::length(rows), "1")
+  inspect(Array::get(rows, 0).0, "later")
+}
+
+test "an unclassified helper call cannot certify a fresh early return" {
+  let stmts = parse_program(lex("fn pick(first: (Int) -> Int, second: (Int) -> Int, choose: Bool) -> (Int) -> Int { if choose { return later(second) }; first } fn later(callback: (Int) -> Int) -> (Int) -> Int { let mut selected = callback; selected }"))
+  inspect(Array::length(compute_passthrough_returning(stmts)), "0")
+}
+
+test "an early return of the same parameter remains a passthrough" {
+  let stmts = parse_program(lex("fn pick(callback: (Int) -> Int, choose: Bool) -> (Int) -> Int { if choose { return callback }; callback }"))
+  inspect(Array::length(compute_passthrough_returning(stmts)), "1")
+}
+
+test "an early return of another parameter is not a passthrough" {
+  let stmts = parse_program(lex("fn pick(first: (Int) -> Int, second: (Int) -> Int, choose: Bool) -> (Int) -> Int { if choose { return second }; first }"))
+  inspect(Array::length(compute_passthrough_returning(stmts)), "0")
+}
+
+test "an early mutable alias of another parameter is not a passthrough" {
+  let stmts = parse_program(lex("fn pick(first: (Int) -> Int, second: (Int) -> Int, choose: Bool) -> (Int) -> Int { if choose { return { let mut selected = second; selected } }; first }"))
+  inspect(Array::length(compute_passthrough_returning(stmts)), "0")
+}
+
+test "a nested early return of another parameter is not a passthrough" {
+  let stmts = parse_program(lex("fn pick(first: (Int) -> Int, second: (Int) -> Int, choose: Bool, other: Bool) -> (Int) -> Int { if choose { return if other { second } else { make_fresh() } }; first }"))
+  inspect(Array::length(compute_passthrough_returning(stmts)), "0")
+}
+
+test "a return block must inspect nested exits before its tail" {
+  let stmts = parse_program(lex("fn pick(first: (Int) -> Int, second: (Int) -> Int, choose: Bool) -> (Int) -> Int { return { if choose { return second }; first } }"))
+  inspect(Array::length(compute_passthrough_returning(stmts)), "0")
+}
+
+test "a pattern binder shadows the source of an outer alias" {
+  let stmts = parse_program(lex("fn pick(callback: (Int) -> Int, opt: Option[(Int) -> Int]) -> (Int) -> Int { let alias = callback; match opt { Some(alias) => alias; None => alias } }"))
+  inspect(Array::length(compute_passthrough_returning(stmts)), "0")
+}
+
+test "an unrelated pattern binder preserves the outer alias source" {
+  let stmts = parse_program(lex("fn pick(callback: (Int) -> Int, opt: Option[Int]) -> (Int) -> Int { let alias = callback; match opt { Some(value) => alias; None => alias } }"))
+  inspect(Array::length(compute_passthrough_returning(stmts)), "1")
+}
+
+test "a handler pattern binder cannot stand in for the parameter it shadows" {
+  let stmts = parse_program(lex("fn pick(callback: (Int) -> Int) -> (Int) -> Int { handle { callback } with { Choose::Pick(callback) => callback } }"))
+  inspect(Array::length(compute_passthrough_returning(stmts)), "0")
+}
+
+test "an unrelated handler pattern binder preserves the parameter source" {
+  let stmts = parse_program(lex("fn pick(callback: (Int) -> Int) -> (Int) -> Int { handle { callback } with { Choose::Pick(value) => callback } }"))
+  inspect(Array::length(compute_passthrough_returning(stmts)), "1")
+}
+
+test "an early handler return cannot use a shadowed parameter source" {
+  let stmts = parse_program(lex("fn pick(callback: (Int) -> Int) -> (Int) -> Int { handle { () } with { Choose::Pick(callback) => return callback }; callback }"))
+  inspect(Array::length(compute_passthrough_returning(stmts)), "0")
+}
+
+test "a for-loop value binder cannot stand in for a callback parameter" {
+  let stmts = parse_program(lex("fn pick(callback: (Int) -> Int, xs: Array[(Int) -> Int]) -> (Int) -> Int { for callback in xs { return callback }; callback }"))
+  inspect(Array::length(compute_passthrough_returning(stmts)), "0")
+}
+
+test "a for-loop index binder cannot stand in for an integer parameter" {
+  let stmts = parse_program(lex("fn pick(index: Int, xs: Array[Int]) -> Int { for value, index in xs { return index }; index }"))
+  inspect(Array::length(compute_passthrough_returning(stmts)), "0")
+}
+
+test "unrelated for-loop binders preserve a callback parameter source" {
+  let stmts = parse_program(lex("fn pick(callback: (Int) -> Int, xs: Array[Int]) -> (Int) -> Int { for value, index in xs { if index > 0 { return callback } }; callback }"))
+  inspect(Array::length(compute_passthrough_returning(stmts)), "1")
+}
+
+test "a loop-carried binder cannot stand in for a callback parameter" {
+  let stmts = parse_program(lex("fn pick(callback: (Int) -> Int) -> (Int) -> Int { loop (callback = fresh()) { return callback }; callback }"))
+  inspect(Array::length(compute_passthrough_returning(stmts)), "0")
+}
+
+test "an assignment continuation preserves a returned parameter" {
+  let stmts = parse_program(lex("fn pass(callback: (Int) -> Int) -> (Int) -> Int { let mut n = 0; n = 1; callback }"))
+  inspect(Array::length(compute_passthrough_returning(stmts)), "1")
+}
+
+test "a local alias chain preserves a returned parameter" {
+  let stmts = parse_program(lex("fn pass(callback: (Int) -> Int) -> (Int) -> Int { let first = callback; let second = first; second }"))
+  let rows = compute_passthrough_returning(stmts)
+  inspect(Array::length(rows), "1")
+  inspect(Array::get(rows, 0).0, "pass")
+  inspect(Array::get(rows, 0).1, "0")
+}
+
+test "a shadowed local does not become a parameter passthrough" {
+  let stmts = parse_program(lex("fn pass(callback: (Int) -> Int) -> (Int) -> Int { let alias = callback; let alias = make_fresh(); alias }"))
+  inspect(Array::length(compute_passthrough_returning(stmts)), "0")
+}

@@ -36,6 +36,7 @@ import @vibe/compiler/codegen/common_base {
   emit_i64_store,
   emit_str_ref,
   expr_tag,
+  find_local_slot,
   get_arm_body,
   get_arm_pat,
   get_ebinop_op,
@@ -203,7 +204,7 @@ import @vibe/compiler/codegen/wasm_emit {
 }
 
 import ./compile_call.vibe {
-  cc_operands_floatish, compile_call, rc_exit_release
+  cc_operands_floatish, compile_call, rc_exit_follow_value_source, rc_exit_passthrough_rec_result, rc_exit_release
 }
 
 import ./compile_expr_tail4.vibe {
@@ -211,7 +212,7 @@ import ./compile_expr_tail4.vibe {
 }
 
 import ./compile_lambda.vibe {
-  cl_own_return, compile_lambda
+  cl_own_return, cl_return_operand, compile_lambda
 }
 
 import ./compile_match.vibe {
@@ -219,6 +220,61 @@ import ./compile_match.vibe {
 }
 
 //# Functions
+
+fn return_result_mentions(e: Expr, name: String) -> Bool {
+  array_contains_str(collect_free_vars(e, [], []), name)
+}
+
+fn return_result_is_name(e: Expr, name: String) -> Bool {
+  match cl_return_operand(e) {
+    EIdent(result, _) => result == name,
+    ELet(bound, value, tail, _) => bound != name && (if return_result_is_name(tail, bound) {
+      return_result_is_name(value, name)
+    } else {
+      !return_result_mentions(value, name) && return_result_is_name(tail, name)
+    }),
+    ELetMut(bound, value, tail, _) => bound != name && !return_result_mentions(value, name) && return_result_is_name(tail, name),
+    ELetRec(bound, value, tail) => bound != name && !return_result_mentions(value, name) && return_result_is_name(tail, name),
+    ESeq(head, tail) => !return_result_mentions(head, name) && return_result_is_name(tail, name),
+    EAssign(target, value, tail) => target != name && !return_result_mentions(value, name) && return_result_is_name(tail, name),
+    EAssignOp(target, _, value, tail) => target != name && !return_result_mentions(value, name) && return_result_is_name(tail, name),
+    _ => false
+  }
+}
+
+fn return_result_has_branch(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool {
+  let resolved = rc_exit_follow_value_source(cl_return_operand(e), ctx.rc_exit_result_stores, Array::length(ctx.rc_exit_result_stores))
+  match resolved {
+    EIf(_, _, _) => true,
+    EMatch(_, _) => true,
+    ECall(EIdent(callee, _), args, _) => {
+      if find_local_slot(local_names, callee) >= 0 {
+        return false
+      }
+      for row in ctx.passthrough_ret_params {
+        if row.0 == callee && row.1 < Array::length(args) {
+          return return_result_has_branch(Array::get(args, row.1), local_names, ctx)
+        }
+      }
+      for owner in ctx.rc_exit_lets {
+        if return_result_mentions(resolved, owner) {
+          return true
+        }
+      }
+      false
+    },
+    ELet(name, value, body, _) => return_result_has_branch(body, local_names, ctx) || (return_result_is_name(body, name) || rc_exit_passthrough_rec_result(body, name, local_names, [
+    ], ctx)) && return_result_has_branch(value, local_names, ctx),
+    ELetMut(name, value, body, _) => return_result_has_branch(body, local_names, ctx) || (return_result_is_name(body, name) || rc_exit_passthrough_rec_result(body, name, local_names, [
+    ], ctx)) && return_result_has_branch(value, local_names, ctx),
+    ELetRec(name, value, body) => return_result_has_branch(body, local_names, ctx) || (return_result_is_name(body, name) || rc_exit_passthrough_rec_result(body, name, local_names, [
+    ], ctx)) && return_result_has_branch(value, local_names, ctx),
+    ESeq(_, tail) => return_result_has_branch(tail, local_names, ctx),
+    EAssign(_, _, tail) => return_result_has_branch(tail, local_names, ctx),
+    EAssignOp(_, _, _, tail) => return_result_has_branch(tail, local_names, ctx),
+    _ => false
+  }
+}
 
 export fn compile_expr_tail3(buf: Bytes, expr: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
   let __tag = expr_tag(expr)
@@ -306,12 +362,12 @@ export fn compile_expr_tail3(buf: Bytes, expr: Expr, local_names: Array[String],
       EBreak(Some(v)) => v,
       _ => EUnit
     }
-    rc_exit_release(buf, ctx, local_names, 1, brk_operand)
+    rc_exit_release(buf, ctx, local_names, 1, brk_operand, 0 - 1)
     emit_br(buf, ld + 1)
     emit_i64_const(buf, 0)
     next_local
   } else if __tag == 21 {
-    rc_exit_release(buf, ctx, local_names, 2, EUnit)
+    rc_exit_release(buf, ctx, local_names, 2, EUnit, 0 - 1)
     emit_br(buf, ld)
     emit_i64_const(buf, 0)
     next_local
@@ -328,9 +384,22 @@ export fn compile_expr_tail3(buf: Bytes, expr: Expr, local_names: Array[String],
       ret_expr
     }
     let nl = compile_expr(buf, owned_ret, local_names, next_local, ctx, ld)
+    let needs_result_local = ctx.enable_rc && return_result_has_branch(ret_expr, local_names, ctx)
+    if needs_result_local {
+      emit_local_tee(buf, nl)
+      while Array::length(local_names) <= nl {
+        Array::push(local_names, "")
+      }
+    } else {
+      ()
+    }
     // #3141: the value is on the stack; release every scope the `return`
     // leaves before it transfers.
-    rc_exit_release(buf, ctx, local_names, 0, ret_expr)
+    rc_exit_release(buf, ctx, local_names, 0, ret_expr, if needs_result_local {
+      nl
+    } else {
+      0 - 1
+    })
     // #1696: the exported entry's result is untagged, but that untag is emitted
     // AFTER the body -- and `return` branches out of the function, past it. So
     // the same untag has to happen here, or `return 777` hands the host 1554.
@@ -342,7 +411,11 @@ export fn compile_expr_tail3(buf: Bytes, expr: Expr, local_names: Array[String],
       ()
     }
     emit_return(buf)
-    nl
+    if needs_result_local {
+      nl + 1
+    } else {
+      nl
+    }
   } else {
     compile_expr_tail4(buf, expr, local_names, next_local, ctx, ld, compile_expr)
   }

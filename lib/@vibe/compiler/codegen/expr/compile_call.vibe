@@ -21,6 +21,7 @@ import @vibe/compiler/core {
   bytebuf_push_vec_header,
   bytebuf_to_bytes,
   canonical_builtin_name,
+  expr_children,
   is_borrow_ret_builtin,
   is_exception_operation_name,
   is_exception_throw_operation,
@@ -36,6 +37,7 @@ import @vibe/compiler/core {
 
 import @vibe/compiler/codegen/common_analysis {
   collect_free_vars,
+  collect_pattern_bindings,
   collect_strings_stmts,
   emit_closure_call_tail,
   emit_closure_resolve,
@@ -4403,11 +4405,21 @@ fn compile_call_core(buf: Bytes, callee: Expr, raw_args: Array[Expr], local_name
         } else {
           emit_i64_const(buf, 0)
         }
+        let thrown_local = if ctx.enable_rc {
+          emit_local_tee(buf, enl)
+          enl
+        } else {
+          0 - 1
+        }
         // #3141: the throw leaves every scope up to the innermost `handle`.
-        rc_exit_release(buf, ctx, local_names, 3, thrown)
+        rc_exit_release(buf, ctx, local_names, 3, thrown, thrown_local)
         bytebuf_push(buf, 8)
         bytebuf_push(buf, 2)
-        enl
+        if thrown_local >= 0 {
+          enl + 1
+        } else {
+          enl
+        }
       } else if is_exception_operation_name(op_head) {
         throw(String::concat("perform ", String::concat(op_head, ": the abortive Exception alias has a single operation, Throw (#1279)")))
       } else {
@@ -7900,7 +7912,7 @@ fn rc_exit_operand_ok(e: Expr, local_names: Array[String], ctx: CompileCtx, keep
       true
     } else {
       let kind = rc_exit_owner_kind(ctx, local_names, n)
-      if kind == 4 {
+      if kind == 4 || kind == 6 {
         Array::push(keep, n)
         true
       } else if kind >= 0 && kind <= 2 {
@@ -7926,6 +7938,13 @@ fn rc_exit_operand_ok(e: Expr, local_names: Array[String], ctx: CompileCtx, keep
     // captures may be views of an owner this exit releases.
     EMap(entries) => rc_exit_record_fields_ok(entries, local_names, ctx, keep),
     EIf(_, t, f) => rc_exit_operand_ok(t, local_names, ctx, keep) && rc_exit_operand_ok(f, local_names, ctx, keep),
+    // Return normalization may wrap the tail in the internal owning marker.
+    // A mutable binding whose entire tail returns itself has no intervening
+    // write, so the exit can inspect the initializer's ownership instead.
+    ELetMut(name, value, tail, _) => match cl_return_operand(tail) {
+      EIdent(result, _) => result == name && rc_exit_operand_ok(value, local_names, ctx, keep),
+      _ => false
+    },
     EDot(_, _, _, _) => {
       let root = proj_root_ident(e)
       if root == "" {
@@ -7941,14 +7960,50 @@ fn rc_exit_operand_ok(e: Expr, local_names: Array[String], ctx: CompileCtx, keep
       }
     },
     ECall(callee, args, _) => match callee {
-      EIdent(f, off) => if f == "__lambda_return_owned" && off < 0 {
-        true
+      EIdent(f, off) => if f == "__lambda_return_owned" && off < 0 && Array::length(args) == 1 {
+        let inner = Array::get(args, 0)
+        let mut inspect_inner = false
+        match inner {
+          ECall(EIdent(inner_name, _), _, _) => {
+            inspect_inner = false
+            if find_local_slot(local_names, inner_name) < 0 {
+              for row in ctx.passthrough_ret_params {
+                if row.0 == inner_name {
+                  inspect_inner = true
+                }
+              }
+            }
+          },
+          _ => ()
+        }
+        if inspect_inner {
+          rc_exit_operand_ok(inner, local_names, ctx, keep)
+        } else {
+          true
+        }
       } else if find_local_slot(local_names, f) >= 0 {
         false
       } else if is_ctor_call(e, ctx.ctor_table) {
         rc_exit_operands_ok(args, local_names, ctx, keep)
       } else {
-        !cc_callee_may_return_view(f, ctx)
+        let mut source = -1
+        for row in ctx.passthrough_ret_params {
+          if row.0 == f {
+            source = row.1
+          }
+        }
+        if source >= 0 && source < Array::length(args) {
+          let arg = Array::get(args, source)
+          let root = proj_root_ident(arg)
+          if root != "" && array_contains_str(ctx.rc_exit_lets, root) {
+            Array::push(keep, root)
+            true
+          } else {
+            rc_exit_operand_ok(arg, local_names, ctx, keep)
+          }
+        } else {
+          !cc_callee_may_return_view(f, ctx)
+        }
       },
       _ => false
     },
@@ -7975,6 +8030,354 @@ fn rc_exit_operands_ok(items: Array[Expr], local_names: Array[String], ctx: Comp
     i = i + 1
   }
   ok
+}
+
+fn rc_exit_mentions_name(e: Expr, name: String) -> Bool {
+  match e {
+    EIdent(n, _) => if n == name {
+      return true
+    },
+    // Interpolation stores source fragments rather than Expr children here.
+    // Treat it as dependent instead of overlooking a captured binder.
+    EStringInterp(_) => return true,
+    _ => ()
+  }
+  for child in expr_children(e) {
+    if rc_exit_mentions_name(child, name) {
+      return true
+    }
+  }
+  false
+}
+
+/// A factory argument may be evaluated before the recursive binder is
+/// released only when it cannot carry a view into that binder.
+fn rc_exit_independent_scalar_arg(e: Expr, name: String, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  match e {
+    EInt(_) => true,
+    EFloat(_) => true,
+    EBool(_) => true,
+    EString(_, _) => true,
+    EUnit => true,
+    EIdent(n, _) => if n == name {
+      false
+    } else {
+      let kind = cc_ident_slot_kind(e, local_names, ctx)
+      kind == 1 || kind == 2 || kind == 3
+    },
+    _ => false
+  }
+}
+
+/// Follow active immutable let sources before treating a returned binding as
+/// independent of the recursive owner. A parameter has no source row; an
+/// alias or a closure that captures the owner does.
+fn rc_exit_source_mentions_name(e: Expr, name: String, sources: Array[(String, Expr)], limit: Int) -> Bool {
+  match e {
+    EIdent(n, _) => {
+      if n == name {
+        return true
+      }
+      let mut i = limit - 1
+      while i >= 0 {
+        let row = Array::get(sources, i)
+        if row.0 == n {
+          return rc_exit_source_mentions_name(row.1, name, sources, i)
+        }
+        i = i - 1
+      }
+      false
+    },
+    EStringInterp(_) => true,
+    _ => {
+      for child in expr_children(e) {
+        if rc_exit_source_mentions_name(child, name, sources, limit) {
+          return true
+        }
+      }
+      false
+    }
+  }
+}
+
+/// A pattern-bound fallback is independent when its scrutinee is a scalar or
+/// a parameter. Parameters exist before this local recursive owner can be
+/// allocated; a mutable local or computed scrutinee may hold a view of it.
+fn rc_exit_independent_pattern_source(e: Expr, name: String, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  if rc_exit_independent_scalar_arg(e, name, local_names, ctx) {
+    return true
+  }
+  match e {
+    EIdent(n, _) => {
+      let slot = find_local_slot(local_names, n)
+      n != name && slot >= 0 && slot < ctx.rc_exit_param_count && !rc_exit_source_mentions_name(e, name, ctx.rc_exit_result_stores, Array::length(ctx.rc_exit_result_stores))
+    },
+    _ => false
+  }
+}
+
+fn rc_exit_fresh_independent_closure(e: Expr, name: String, local_names: Array[String], ctx: CompileCtx, shadowed: Array[String]) -> Bool with Exception {
+  match e {
+    EIdent(n, _) => {
+      let kind = rc_exit_owner_kind(ctx, local_names, n)
+      if array_contains_str(shadowed, n) {
+        true
+      } else {
+        n != name && kind >= 0 && kind <= 2 && !rc_exit_source_mentions_name(e, name, ctx.rc_exit_result_stores, Array::length(ctx.rc_exit_result_stores))
+      }
+    },
+    EFn(_, _, _, _, _, _) => !rc_exit_mentions_name(e, name),
+    ECall(EIdent("__lambda_return_owned", off), args, _) => if off < 0 && Array::length(args) == 1 {
+      rc_exit_fresh_independent_closure(Array::get(args, 0), name, local_names, ctx, shadowed)
+    } else {
+      false
+    },
+    ECall(EIdent(callee, _), args, _) => {
+      if find_local_slot(local_names, callee) >= 0 || cc_callee_may_return_view(callee, ctx) {
+        return false
+      }
+      for arg in args {
+        if !rc_exit_independent_scalar_arg(arg, name, local_names, ctx) {
+          return false
+        }
+      }
+      true
+    },
+    ELet(bound, value, tail, _) => {
+      if rc_exit_mentions_name(value, name) {
+        return false
+      }
+      let mark = Array::length(shadowed)
+      Array::push(shadowed, bound)
+      let fresh = rc_exit_fresh_independent_closure(tail, name, local_names, ctx, shadowed)
+      Array::truncate(shadowed, mark)
+      fresh
+    },
+    ELetMut(bound, value, tail, _) => {
+      if rc_exit_mentions_name(value, name) {
+        return false
+      }
+      let mark = Array::length(shadowed)
+      Array::push(shadowed, bound)
+      let fresh = rc_exit_fresh_independent_closure(tail, name, local_names, ctx, shadowed)
+      Array::truncate(shadowed, mark)
+      fresh
+    },
+    ELetRec(bound, value, tail) => {
+      if rc_exit_mentions_name(value, name) {
+        return false
+      }
+      let mark = Array::length(shadowed)
+      Array::push(shadowed, bound)
+      let fresh = rc_exit_fresh_independent_closure(tail, name, local_names, ctx, shadowed)
+      Array::truncate(shadowed, mark)
+      fresh
+    },
+    ESeq(head, tail) => !rc_exit_mentions_name(head, name) && rc_exit_fresh_independent_closure(tail, name, local_names, ctx, shadowed),
+    EAssign(target, value, tail) => target != name && !rc_exit_mentions_name(value, name) && rc_exit_fresh_independent_closure(tail, name, local_names, ctx, shadowed),
+    EAssignOp(target, _, value, tail) => target != name && !rc_exit_mentions_name(value, name) && rc_exit_fresh_independent_closure(tail, name, local_names, ctx, shadowed),
+    EIf(cond, yes, no) => !rc_exit_source_mentions_name(cond, name, ctx.rc_exit_result_stores, Array::length(ctx.rc_exit_result_stores)) && rc_exit_fresh_independent_closure(yes, name, local_names, ctx, shadowed) && rc_exit_fresh_independent_closure(no, name, local_names, ctx, shadowed),
+    EMatch(scrutinee, arms) => {
+      if rc_exit_source_mentions_name(scrutinee, name, ctx.rc_exit_result_stores, Array::length(ctx.rc_exit_result_stores)) || Array::length(arms) == 0 {
+        return false
+      }
+      let independent_source = rc_exit_independent_pattern_source(scrutinee, name, local_names, ctx)
+      for arm in arms {
+        let arm_shadowed: Array[String] = []
+        for bound in shadowed {
+          Array::push(arm_shadowed, bound)
+        }
+        if independent_source {
+          let _ = collect_pattern_bindings(arm.0, arm_shadowed)
+        }
+        if !rc_exit_fresh_independent_closure(arm.1, name, local_names, ctx, arm_shadowed) {
+          return false
+        }
+      }
+      true
+    },
+    _ => false
+  }
+}
+
+fn rc_exit_result_is_name(e: Expr, name: String) -> Bool {
+  match e {
+    EIdent(result, _) => result == name,
+    ELet(bound, value, tail, _) => bound != name && (if rc_exit_result_is_name(tail, bound) {
+      rc_exit_result_is_name(value, name)
+    } else {
+      !rc_exit_mentions_name(value, name) && rc_exit_result_is_name(tail, name)
+    }),
+    ELetMut(bound, value, tail, _) => bound != name && !rc_exit_mentions_name(value, name) && rc_exit_result_is_name(tail, name),
+    ELetRec(bound, value, tail) => bound != name && !rc_exit_mentions_name(value, name) && rc_exit_result_is_name(tail, name),
+    ESeq(head, tail) => !rc_exit_mentions_name(head, name) && rc_exit_result_is_name(tail, name),
+    EAssign(target, value, tail) => target != name && !rc_exit_mentions_name(value, name) && rc_exit_result_is_name(tail, name),
+    EAssignOp(target, _, value, tail) => target != name && !rc_exit_mentions_name(value, name) && rc_exit_result_is_name(tail, name),
+    _ => false
+  }
+}
+
+export fn rc_exit_follow_value_source(e: Expr, sources: Array[(String, Expr)], limit: Int) -> Expr {
+  match e {
+    ECall(EIdent("__lambda_return_owned", off), args, _) => if off < 0 && Array::length(args) == 1 {
+      rc_exit_follow_value_source(Array::get(args, 0), sources, limit)
+    } else {
+      e
+    },
+    EIdent(name, _) => {
+      let mut i = limit - 1
+      while i >= 0 {
+        let row = Array::get(sources, i)
+        if row.0 == name {
+          return rc_exit_follow_value_source(row.1, sources, i)
+        }
+        i = i - 1
+      }
+      e
+    },
+    _ => e
+  }
+}
+
+/// A recursive binder may be transferred on one return branch and abandoned
+/// on the other. The planner merges their counts, so compare the returned
+/// pointer with the binder only when the result is the binder or a known
+/// passthrough of it. Result wrappers are followed only while their earlier
+/// expressions cannot consume the binder.
+export fn rc_exit_passthrough_rec_result(e: Expr, name: String, local_names: Array[String], shadowed: Array[String], ctx: CompileCtx) -> Bool {
+  if array_contains_str(shadowed, name) {
+    return false
+  }
+  match e {
+    EIdent(n, _) => n == name,
+    // Named owning-return normalization can wrap the branch's call before
+    // this exit sees it. The marker preserves pointer identity.
+    ECall(EIdent("__lambda_return_owned", off), args, _) => if off < 0 && Array::length(args) == 1 {
+      rc_exit_passthrough_rec_result(Array::get(args, 0), name, local_names, shadowed, ctx)
+    } else {
+      false
+    },
+    ECall(EIdent(callee, _), args, _) => {
+      if find_local_slot(local_names, callee) >= 0 {
+        return false
+      }
+      for row in ctx.passthrough_ret_params {
+        if row.0 == callee && row.1 < Array::length(args) {
+          if rc_exit_passthrough_rec_result(Array::get(args, row.1), name, local_names, shadowed, ctx) {
+            return true
+          }
+        }
+      }
+      false
+    },
+    ELet(bound, value, tail, _) => if bound == name {
+      false
+    } else if rc_exit_result_is_name(tail, bound) || rc_exit_passthrough_rec_result(tail, bound, local_names, shadowed, ctx) {
+      rc_exit_passthrough_rec_result(value, name, local_names, shadowed, ctx)
+    } else if rc_exit_mentions_name(value, name) {
+      false
+    } else {
+      rc_exit_passthrough_rec_result(tail, name, local_names, shadowed, ctx)
+    },
+    ELetMut(bound, value, tail, _) => if bound == name || rc_exit_mentions_name(value, name) {
+      false
+    } else {
+      rc_exit_passthrough_rec_result(tail, name, local_names, shadowed, ctx)
+    },
+    ESeq(head, tail) => !rc_exit_mentions_name(head, name) && rc_exit_passthrough_rec_result(tail, name, local_names, shadowed, ctx),
+    EAssign(target, value, tail) => target != name && !rc_exit_mentions_name(value, name) && rc_exit_passthrough_rec_result(tail, name, local_names, shadowed, ctx),
+    EAssignOp(target, _, value, tail) => target != name && !rc_exit_mentions_name(value, name) && rc_exit_passthrough_rec_result(tail, name, local_names, shadowed, ctx),
+    EIf(cond, yes, no) => !rc_exit_mentions_name(cond, name) && rc_exit_passthrough_rec_result(yes, name, local_names, shadowed, ctx) && rc_exit_passthrough_rec_result(no, name, local_names, shadowed, ctx),
+    EMatch(scrutinee, arms) => {
+      if rc_exit_mentions_name(scrutinee, name) || Array::length(arms) == 0 {
+        return false
+      }
+      for arm in arms {
+        let arm_shadowed: Array[String] = []
+        for bound in shadowed {
+          Array::push(arm_shadowed, bound)
+        }
+        let _ = collect_pattern_bindings(arm.0, arm_shadowed)
+        if !rc_exit_passthrough_rec_result(arm.1, name, local_names, arm_shadowed, ctx) {
+          return false
+        }
+      }
+      true
+    },
+    _ => false
+  }
+}
+
+fn rc_exit_conditional_rec_transfer(e: Expr, name: String, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  match e {
+    ECall(EIdent("__lambda_return_owned", off), args, _) => if off < 0 && Array::length(args) == 1 {
+      rc_exit_conditional_rec_transfer(Array::get(args, 0), name, local_names, ctx)
+    } else {
+      false
+    },
+    ECall(EIdent(callee, _), args, _) => {
+      if find_local_slot(local_names, callee) >= 0 {
+        return false
+      }
+      for row in ctx.passthrough_ret_params {
+        if row.0 == callee && row.1 < Array::length(args) {
+          return rc_exit_conditional_rec_transfer(Array::get(args, row.1), name, local_names, ctx)
+        }
+      }
+      // A helper with more than one parameter-returning exit has no single
+      // passthrough source. Compare its actual result with the recursive
+      // owner before deciding whether the exit may release that owner.
+      for arg in args {
+        if rc_exit_mentions_name(arg, name) {
+          return true
+        }
+      }
+      false
+    },
+    ELet(bound, value, tail, _) => bound != name && (if rc_exit_result_is_name(tail, bound) || rc_exit_passthrough_rec_result(tail, bound, local_names, [
+    ], ctx) {
+      rc_exit_conditional_rec_transfer(value, name, local_names, ctx)
+    } else {
+      !rc_exit_mentions_name(value, name) && rc_exit_conditional_rec_transfer(tail, name, local_names, ctx)
+    }),
+    ELetMut(bound, value, tail, _) => bound != name && (if rc_exit_result_is_name(tail, bound) || rc_exit_passthrough_rec_result(tail, bound, local_names, [
+    ], ctx) {
+      rc_exit_conditional_rec_transfer(value, name, local_names, ctx)
+    } else {
+      !rc_exit_mentions_name(value, name) && rc_exit_conditional_rec_transfer(tail, name, local_names, ctx)
+    }),
+    ELetRec(bound, value, tail) => bound != name && (if rc_exit_result_is_name(tail, bound) || rc_exit_passthrough_rec_result(tail, bound, local_names, [
+    ], ctx) {
+      rc_exit_conditional_rec_transfer(value, name, local_names, ctx)
+    } else {
+      !rc_exit_mentions_name(value, name) && rc_exit_conditional_rec_transfer(tail, name, local_names, ctx)
+    }),
+    ESeq(head, tail) => !rc_exit_mentions_name(head, name) && rc_exit_conditional_rec_transfer(tail, name, local_names, ctx),
+    EAssign(target, value, tail) => target != name && !rc_exit_mentions_name(value, name) && rc_exit_conditional_rec_transfer(tail, name, local_names, ctx),
+    EAssignOp(target, _, value, tail) => target != name && !rc_exit_mentions_name(value, name) && rc_exit_conditional_rec_transfer(tail, name, local_names, ctx),
+    EIf(_, yes, no) => rc_exit_passthrough_rec_result(yes, name, local_names, [], ctx) && rc_exit_fresh_independent_closure(no, name, local_names, ctx, [
+    ]) || rc_exit_passthrough_rec_result(no, name, local_names, [], ctx) && rc_exit_fresh_independent_closure(yes, name, local_names, ctx, [
+    ]),
+    EMatch(scrutinee, arms) => {
+      let mut seen_rec = false
+      let mut safe = Array::length(arms) > 0
+      for arm in arms {
+        let binds: Array[String] = []
+        let _ = collect_pattern_bindings(arm.0, binds)
+        if rc_exit_passthrough_rec_result(arm.1, name, local_names, binds, ctx) {
+          seen_rec = true
+        } else if !rc_exit_fresh_independent_closure(arm.1, name, local_names, ctx, if rc_exit_independent_pattern_source(scrutinee, name, local_names, ctx) {
+          binds
+        } else {
+          []
+        }) {
+          safe = false
+        }
+      }
+      safe && seen_rec
+    },
+    _ => false
+  }
 }
 
 /// The kind of the innermost release-stack entry named `n`, or -1 -- and -1
@@ -8068,6 +8471,45 @@ fn rc_exit_name_shared(names: Array[String], info: Array[Int], lo: Int, i: Int) 
   shared
 }
 
+/// A break result that is either a recursive owner or a fresh closure already
+/// has one owned reference on each path. The exit compares the stored pointer
+/// with the recursive owner and releases only the unselected owner.
+export fn rc_exit_break_result_owns_rec(value: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  if Array::length(ctx.rc_exit_state) < 3 || Array::get(ctx.rc_exit_state, 1) != 0 || Array::get(ctx.rc_exit_state, 2) != 0 {
+    return false
+  }
+  let nlets = Array::length(ctx.rc_exit_lets)
+  let inner = if nlets > 0 {
+    Array::get(ctx.rc_exit_lets, nlets - 1)
+  } else {
+    ""
+  }
+  if !rc_exit_site_matches(ctx, Array::get(ctx.rc_exit_state, 0), 1, perceus_exit_fingerprint(EUnit), inner) {
+    return false
+  }
+  let names = ctx.rc_exit_stack_names
+  let info = ctx.rc_exit_stack_info
+  let mut lo = 0
+  let mut j = Array::length(names) - 1
+  while j >= 0 {
+    if Array::get(info, j * 3) == 100 {
+      lo = j + 1
+      j = 0 - 1
+    } else {
+      j = j - 1
+    }
+  }
+  let mut i = lo
+  while i < Array::length(names) {
+    let name = Array::get(names, i)
+    if Array::get(info, i * 3) == 6 && !rc_exit_name_shared(names, info, lo, i) && find_local_slot(local_names, name) == Array::get(info, i * 3 + 1) && rc_exit_conditional_rec_transfer(value, name, local_names, ctx) {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
 /// #3141: release what an early exit leaves, right before the exit's own
 /// transfer (`return`, `br`, `throw`); the operand, when there is one, is
 /// already on the wasm stack and stays there (`rc_drop` returns nothing).
@@ -8090,8 +8532,23 @@ fn rc_exit_name_shared(names: Array[String], info: Array[Int], lo: Int, i: Int) 
 /// leaves into a slot that outlives it -- `break v` of a parameterized loop
 /// is `__loop_result = v; break`, and `continue(a)` assigns the loop's
 /// parameters. Those values are held to the operand's test too.
-export fn rc_exit_release(buf: Bytes, ctx: CompileCtx, local_names: Array[String], kind: Int, operand: Expr) -> Unit with Exception {
+export fn rc_exit_release(buf: Bytes, ctx: CompileCtx, local_names: Array[String], kind: Int, operand: Expr, result_local: Int) -> Unit with Exception {
   if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && Array::length(ctx.rc_exit_state) >= 3 {
+    let mut exit_result = (result_local, operand)
+    if kind == 1 {
+      let mut ri = Array::length(ctx.rc_exit_result_stores) - 1
+      while ri >= 0 {
+        let row = Array::get(ctx.rc_exit_result_stores, ri)
+        if row.0 == "__loop_result" || (String::starts_with(row.0, "__shadow_") && String::ends_with(row.0, "___loop_result")) {
+          exit_result = (find_local_slot(local_names, row.0), row.1)
+          ri = 0 - 1
+        } else {
+          ri = ri - 1
+        }
+      }
+    } else if kind == 0 || kind == 3 {
+      exit_result = (result_local, rc_exit_follow_value_source(operand, ctx.rc_exit_result_stores, Array::length(ctx.rc_exit_result_stores)))
+    }
     let ord = Array::get(ctx.rc_exit_state, 0)
     Array::set(ctx.rc_exit_state, 0, ord + 1)
     let nlets = Array::length(ctx.rc_exit_lets)
@@ -8111,7 +8568,11 @@ export fn rc_exit_release(buf: Bytes, ctx: CompileCtx, local_names: Array[String
         Array::push(keep, Array::get(ctx.rc_exit_keep, ki))
         ki = ki + 1
       }
-      if Array::get(ctx.rc_exit_state, 2) == 0 && rc_exit_operand_ok(operand, local_names, ctx, keep) {
+      // A branch-local fresh closure can make the general operand walk fail.
+      // Keep that conservative result for other owners; the direct recursive
+      // closure comparison below is safe independently of those owners.
+      let operand_ok = rc_exit_operand_ok(operand, local_names, ctx, keep)
+      if Array::get(ctx.rc_exit_state, 2) == 0 {
         let names = ctx.rc_exit_stack_names
         let info = ctx.rc_exit_stack_info
         // The range the exit leaves: down to the boundary it stops at. A
@@ -8139,7 +8600,10 @@ export fn rc_exit_release(buf: Bytes, ctx: CompileCtx, local_names: Array[String
             let ek = Array::get(info, i * 3)
             let local = Array::get(info, i * 3 + 1)
             let flag = Array::get(info, i * 3 + 2)
-            let count = if ek >= 100 || array_contains_str(keep, n) || rc_exit_name_shared(names, info, lo, i) || find_local_slot(local_names, n) != local {
+            let conditional_rec = exit_result.0 >= 0 && ek == 6 && !rc_exit_name_shared(names, info, lo, i) && find_local_slot(local_names, n) == local && rc_exit_conditional_rec_transfer(exit_result.1, n, local_names, ctx)
+            let count = if conditional_rec {
+              1
+            } else if !operand_ok || ek >= 100 || array_contains_str(keep, n) || rc_exit_name_shared(names, info, lo, i) || find_local_slot(local_names, n) != local {
               0
             } else if ek == 4 || ek == 5 {
               1
@@ -8157,12 +8621,21 @@ export fn rc_exit_release(buf: Bytes, ctx: CompileCtx, local_names: Array[String
                 }
               } else if ek == 2 {
                 planned - 1
+              } else if ek == 6 && planned > 1 {
+                // A local recursive binder owns one closure reference. The
+                // weak self edge cannot add another release at this exit.
+                1
               } else {
                 planned
               }
             }
             if count > 0 {
-              if flag >= 0 {
+              if conditional_rec {
+                emit_local_get(buf, exit_result.0)
+                emit_local_get(buf, local)
+                emit_i64_ne(buf)
+                emit_if_void(buf)
+              } else if flag >= 0 {
                 emit_local_get(buf, flag)
                 emit_i64_eqz(buf)
                 emit_if_void(buf)
@@ -8184,7 +8657,7 @@ export fn rc_exit_release(buf: Bytes, ctx: CompileCtx, local_names: Array[String
                 emit_call(buf, ctx.rc_drop_func_idx)
                 c = c + 1
               }
-              if flag >= 0 {
+              if conditional_rec || flag >= 0 {
                 emit_end(buf)
               } else {
                 ()

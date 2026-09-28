@@ -2137,6 +2137,7 @@ export struct CompileCtx {
   // Most recent slot*2+flag classifies a local lambda's return as fresh heap.
   // A reused slot is explicitly cleared by the next let binding.
   seq_owned_return_slots: Array[Int];
+  passthrough_ret_params: Array[(String, Int)];
   float_local_slots: Array[Int];
   // #678: append-only log of `slot*2 + flag` entries, the integer dual of
   // float_local_slots. flag 1 marks a `let`/`let mut` slot whose value is
@@ -2330,6 +2331,12 @@ export struct CompileCtx {
   rc_exit_plan_info: Array[Int];
   rc_exit_state: Array[Int];
   rc_exit_keep: Array[String];
+  // User parameters occupy these first local slots before a local `let rec`
+  // can be allocated. A parameter cannot contain that later recursive owner.
+  rc_exit_param_count: Int;
+  // Active immutable bindings and loop-result assignments. Keep their value
+  // expressions so a throw or break can release an unselected recursive owner.
+  rc_exit_result_stores: Array[(String, Expr)];
   // #3184: the plan's `PaStoreDup` rows (`perceus_store_dup_rows`), aligned:
   // the source name and source offset of each store -- an assignment, a
   // `let mut` initializer, or (#3190) a branch or block tail of either or of
@@ -3393,6 +3400,8 @@ export fn agg_ret_lookup_indexed(sorted: Array[String], pos: Array[Int], infos: 
 ///   2  a borrowed parameter: one fewer (its caller keeps the initial one)
 ///   4  a captured `let mut` cell: once (its scope end drops it on every path)
 ///   5  a #2837 view pin: once (the pin is a reference of its own)
+///   6  an owned `let rec`: the plan's count, except its own returned value
+///      transfers the binding's reference to the caller
 ///   100 a loop body starts (`break` / `continue` stop here)
 ///   101 a `handle` body starts (`throw` stops here)
 ///

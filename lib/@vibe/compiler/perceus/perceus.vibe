@@ -2334,6 +2334,531 @@ export fn compute_borrow_returning_names(stmts: Array[Stmt]) -> Array[String] {
   known
 }
 
+/// A direct return of a parameter transfers that parameter's value without
+/// creating a second reference. Keep this separate from borrow_ret_names:
+/// identity functions are owning passthroughs at ordinary call sites, but an
+/// enclosing recursive binder still needs to retain an escaping result before
+/// its own scope-end drop.
+fn passthrough_alias_source(name: String, bound: Array[String], aliases: Array[(String, String)]) -> String {
+  if !array_contains_str_pctx(bound, name) {
+    return name
+  }
+  let mut i = Array::length(aliases) - 1
+  while i >= 0 {
+    let row = Array::get(aliases, i)
+    if row.0 == name {
+      return row.1
+    }
+    i = i - 1
+  }
+  ""
+}
+
+fn passthrough_tail_name(body: Expr, known: Array[(String, Int)], bound: Array[String], aliases: Array[(String, String)]) -> String {
+  match body {
+    EIdent(name, _) => passthrough_alias_source(name, bound, aliases),
+    EReturn(value) => passthrough_tail_name(value, known, bound, aliases),
+    ECall(EIdent(callee, _), args, _) => {
+      if array_contains_str_pctx(bound, callee) {
+        return ""
+      }
+      for row in known {
+        if row.0 == callee && row.1 < Array::length(args) {
+          match Array::get(args, row.1) {
+            EIdent(arg, _) => return passthrough_alias_source(arg, bound, aliases),
+            _ => return ""
+          }
+        }
+      }
+      ""
+    },
+    ELet(name, value, tail, _) => {
+      let source = passthrough_tail_name(value, known, bound, aliases)
+      let mark = Array::length(bound)
+      let alias_mark = Array::length(aliases)
+      Array::push(bound, name)
+      Array::push(aliases, (name, source))
+      let returned = passthrough_tail_name(tail, known, bound, aliases)
+      Array::truncate(bound, mark)
+      Array::truncate(aliases, alias_mark)
+      returned
+    },
+    ELetMut(name, _, tail, _) => {
+      let mark = Array::length(bound)
+      let alias_mark = Array::length(aliases)
+      Array::push(bound, name)
+      Array::push(aliases, (name, ""))
+      let returned = passthrough_tail_name(tail, known, bound, aliases)
+      Array::truncate(bound, mark)
+      Array::truncate(aliases, alias_mark)
+      if returned == name {
+        ""
+      } else {
+        returned
+      }
+    },
+    ELetRec(name, _, tail) => {
+      let mark = Array::length(bound)
+      let alias_mark = Array::length(aliases)
+      Array::push(bound, name)
+      Array::push(aliases, (name, ""))
+      let returned = passthrough_tail_name(tail, known, bound, aliases)
+      Array::truncate(bound, mark)
+      Array::truncate(aliases, alias_mark)
+      if returned == name {
+        ""
+      } else {
+        returned
+      }
+    },
+    ESeq(_, tail) => passthrough_tail_name(tail, known, bound, aliases),
+    EAssign(_, _, tail) => passthrough_tail_name(tail, known, bound, aliases),
+    EAssignOp(_, _, _, tail) => passthrough_tail_name(tail, known, bound, aliases),
+    EIf(_, yes, no) => {
+      let y = passthrough_tail_name(yes, known, bound, aliases)
+      if y != "" && y == passthrough_tail_name(no, known, bound, aliases) {
+        y
+      } else {
+        ""
+      }
+    },
+    EMatch(_, arms) => {
+      let mut result = ""
+      let mut valid = Array::length(arms) > 0
+      for arm in arms {
+        let mark = Array::length(bound)
+        let alias_mark = Array::length(aliases)
+        pat_names(arm.0, bound)
+        let mut i = mark
+        while i < Array::length(bound) {
+          Array::push(aliases, (Array::get(bound, i), ""))
+          i = i + 1
+        }
+        let next = passthrough_tail_name(arm.1, known, bound, aliases)
+        Array::truncate(bound, mark)
+        Array::truncate(aliases, alias_mark)
+        if next == "" || (result != "" && result != next) {
+          valid = false
+        } else {
+          result = next
+        }
+      }
+      if valid {
+        result
+      } else {
+        ""
+      }
+    },
+    EHandle(value, arms) => {
+      let result = passthrough_tail_name(value, known, bound, aliases)
+      let mut valid = result != ""
+      for arm in arms {
+        let mark = Array::length(bound)
+        let alias_mark = Array::length(aliases)
+        pat_names(arm.0, bound)
+        let mut i = mark
+        while i < Array::length(bound) {
+          Array::push(aliases, (Array::get(bound, i), ""))
+          i = i + 1
+        }
+        let next = passthrough_tail_name(arm.1, known, bound, aliases)
+        Array::truncate(bound, mark)
+        Array::truncate(aliases, alias_mark)
+        if next != result {
+          valid = false
+        }
+      }
+      if valid {
+        result
+      } else {
+        ""
+      }
+    },
+    _ => ""
+  }
+}
+
+fn passthrough_return_value_agrees(value: Expr, source: String, known: Array[(String, Int)], fresh_noarg: Array[String], bound: Array[String], aliases: Array[(String, String)]) -> Bool {
+  let returned = passthrough_tail_name(value, known, bound, aliases)
+  if returned != "" {
+    return returned == source
+  }
+  match value {
+    // A bound name with no recorded source can be a pattern payload. It is
+    // not a fresh return and cannot agree with the parameter being tracked.
+    EIdent(name, _) => !array_contains_str_pctx(bound, name),
+    ECall(EIdent(callee, _), args, _) => {
+      if array_contains_str_pctx(bound, callee) {
+        return false
+      }
+      for row in known {
+        if row.0 == callee && row.1 < Array::length(args) {
+          return passthrough_return_value_agrees(Array::get(args, row.1), source, known, fresh_noarg, bound, aliases)
+        }
+      }
+      // Only a top-level helper proven to allocate a closure can certify a
+      // fresh early return. An unclassified call may return any argument.
+      Array::length(args) == 0 && array_contains_str_pctx(fresh_noarg, callee)
+    },
+    ECall(_, _, _) => false,
+    EIf(_, yes, no) => passthrough_return_value_agrees(yes, source, known, fresh_noarg, bound, aliases) && passthrough_return_value_agrees(no, source, known, fresh_noarg, bound, aliases),
+    EMatch(_, arms) => {
+      for arm in arms {
+        let mark = Array::length(bound)
+        let alias_mark = Array::length(aliases)
+        pat_names(arm.0, bound)
+        let mut i = mark
+        while i < Array::length(bound) {
+          Array::push(aliases, (Array::get(bound, i), ""))
+          i = i + 1
+        }
+        let agrees = passthrough_return_value_agrees(arm.1, source, known, fresh_noarg, bound, aliases)
+        Array::truncate(bound, mark)
+        Array::truncate(aliases, alias_mark)
+        if !agrees {
+          return false
+        }
+      }
+      true
+    },
+    EHandle(body, arms) => {
+      if !passthrough_return_value_agrees(body, source, known, fresh_noarg, bound, aliases) {
+        return false
+      }
+      for arm in arms {
+        let mark = Array::length(bound)
+        let alias_mark = Array::length(aliases)
+        pat_names(arm.0, bound)
+        let mut i = mark
+        while i < Array::length(bound) {
+          Array::push(aliases, (Array::get(bound, i), ""))
+          i = i + 1
+        }
+        let agrees = passthrough_return_value_agrees(arm.1, source, known, fresh_noarg, bound, aliases)
+        Array::truncate(bound, mark)
+        Array::truncate(aliases, alias_mark)
+        if !agrees {
+          return false
+        }
+      }
+      true
+    },
+    ELet(name, head, tail, _) => {
+      let value_source = passthrough_tail_name(head, known, bound, aliases)
+      let mark = Array::length(bound)
+      let alias_mark = Array::length(aliases)
+      Array::push(bound, name)
+      Array::push(aliases, (name, value_source))
+      let agrees = passthrough_return_value_agrees(tail, source, known, fresh_noarg, bound, aliases)
+      Array::truncate(bound, mark)
+      Array::truncate(aliases, alias_mark)
+      agrees
+    },
+    // A mutable result may alias a parameter at initialization or after an
+    // assignment. Without a source for every write, it cannot certify the
+    // single parameter required by the owning passthrough rewrite.
+    ELetMut(_, _, _, _) => false,
+    ELetRec(name, _, tail) => {
+      let mark = Array::length(bound)
+      let alias_mark = Array::length(aliases)
+      Array::push(bound, name)
+      Array::push(aliases, (name, ""))
+      let agrees = passthrough_return_value_agrees(tail, source, known, fresh_noarg, bound, aliases)
+      Array::truncate(bound, mark)
+      Array::truncate(aliases, alias_mark)
+      agrees
+    },
+    ESeq(_, tail) => passthrough_return_value_agrees(tail, source, known, fresh_noarg, bound, aliases),
+    EAssign(_, _, tail) => passthrough_return_value_agrees(tail, source, known, fresh_noarg, bound, aliases),
+    EAssignOp(_, _, _, tail) => passthrough_return_value_agrees(tail, source, known, fresh_noarg, bound, aliases),
+    EReturn(inner) => passthrough_return_value_agrees(inner, source, known, fresh_noarg, bound, aliases),
+    _ => true
+  }
+}
+
+/// A tail parameter is a passthrough only when every explicit return that
+/// names a parameter names that same source. A fresh early return has no
+/// parameter source and does not change the owning-return classification.
+fn passthrough_early_returns_agree(body: Expr, source: String, known: Array[(String, Int)], fresh_noarg: Array[String], bound: Array[String], aliases: Array[(String, String)]) -> Bool {
+  match body {
+    EReturn(value) => passthrough_early_returns_agree(value, source, known, fresh_noarg, bound, aliases) && passthrough_return_value_agrees(value, source, known, fresh_noarg, bound, aliases),
+    EFn(_, _, _, _, _, _) => true,
+    ELet(name, value, tail, _) => {
+      if !passthrough_early_returns_agree(value, source, known, fresh_noarg, bound, aliases) {
+        return false
+      }
+      let value_source = passthrough_tail_name(value, known, bound, aliases)
+      let mark = Array::length(bound)
+      let alias_mark = Array::length(aliases)
+      Array::push(bound, name)
+      Array::push(aliases, (name, value_source))
+      let agrees = passthrough_early_returns_agree(tail, source, known, fresh_noarg, bound, aliases)
+      Array::truncate(bound, mark)
+      Array::truncate(aliases, alias_mark)
+      agrees
+    },
+    ELetMut(name, value, tail, _) => {
+      if !passthrough_early_returns_agree(value, source, known, fresh_noarg, bound, aliases) {
+        return false
+      }
+      let mark = Array::length(bound)
+      let alias_mark = Array::length(aliases)
+      Array::push(bound, name)
+      Array::push(aliases, (name, ""))
+      let agrees = passthrough_early_returns_agree(tail, source, known, fresh_noarg, bound, aliases)
+      Array::truncate(bound, mark)
+      Array::truncate(aliases, alias_mark)
+      agrees
+    },
+    ELetRec(name, value, tail) => {
+      if !passthrough_early_returns_agree(value, source, known, fresh_noarg, bound, aliases) {
+        return false
+      }
+      let mark = Array::length(bound)
+      let alias_mark = Array::length(aliases)
+      Array::push(bound, name)
+      Array::push(aliases, (name, ""))
+      let agrees = passthrough_early_returns_agree(tail, source, known, fresh_noarg, bound, aliases)
+      Array::truncate(bound, mark)
+      Array::truncate(aliases, alias_mark)
+      agrees
+    },
+    EMatch(scrutinee, arms) => {
+      if !passthrough_early_returns_agree(scrutinee, source, known, fresh_noarg, bound, aliases) {
+        return false
+      }
+      for arm in arms {
+        let mark = Array::length(bound)
+        let alias_mark = Array::length(aliases)
+        pat_names(arm.0, bound)
+        let mut i = mark
+        while i < Array::length(bound) {
+          Array::push(aliases, (Array::get(bound, i), ""))
+          i = i + 1
+        }
+        let agrees = passthrough_early_returns_agree(arm.1, source, known, fresh_noarg, bound, aliases)
+        Array::truncate(bound, mark)
+        Array::truncate(aliases, alias_mark)
+        if !agrees {
+          return false
+        }
+      }
+      true
+    },
+    EHandle(value, arms) => {
+      if !passthrough_early_returns_agree(value, source, known, fresh_noarg, bound, aliases) {
+        return false
+      }
+      for arm in arms {
+        let mark = Array::length(bound)
+        let alias_mark = Array::length(aliases)
+        pat_names(arm.0, bound)
+        let mut i = mark
+        while i < Array::length(bound) {
+          Array::push(aliases, (Array::get(bound, i), ""))
+          i = i + 1
+        }
+        let agrees = passthrough_early_returns_agree(arm.1, source, known, fresh_noarg, bound, aliases)
+        Array::truncate(bound, mark)
+        Array::truncate(aliases, alias_mark)
+        if !agrees {
+          return false
+        }
+      }
+      true
+    },
+    EForIn(value_name, index_opt, iterable, loop_body) => {
+      if !passthrough_early_returns_agree(iterable, source, known, fresh_noarg, bound, aliases) {
+        return false
+      }
+      let mark = Array::length(bound)
+      let alias_mark = Array::length(aliases)
+      Array::push(bound, value_name)
+      Array::push(aliases, (value_name, ""))
+      match index_opt {
+        Some(index_name) => {
+          Array::push(bound, index_name)
+          Array::push(aliases, (index_name, ""))
+        },
+        None => ()
+      }
+      let agrees = passthrough_early_returns_agree(loop_body, source, known, fresh_noarg, bound, aliases)
+      Array::truncate(bound, mark)
+      Array::truncate(aliases, alias_mark)
+      agrees
+    },
+    ELoop(params, loop_body) => {
+      let mark = Array::length(bound)
+      let alias_mark = Array::length(aliases)
+      for param in params {
+        if !passthrough_early_returns_agree(param.1, source, known, fresh_noarg, bound, aliases) {
+          Array::truncate(bound, mark)
+          Array::truncate(aliases, alias_mark)
+          return false
+        }
+        Array::push(bound, param.0)
+        Array::push(aliases, (param.0, ""))
+      }
+      let agrees = passthrough_early_returns_agree(loop_body, source, known, fresh_noarg, bound, aliases)
+      Array::truncate(bound, mark)
+      Array::truncate(aliases, alias_mark)
+      agrees
+    },
+    _ => {
+      for child in expr_children(body) {
+        if !passthrough_early_returns_agree(child, source, known, fresh_noarg, bound, aliases) {
+          return false
+        }
+      }
+      true
+    }
+  }
+}
+
+fn passthrough_fresh_closure_tail(body: Expr) -> Bool {
+  match body {
+    EFn(_, _, _, _, _, _) => true,
+    EReturn(value) => passthrough_fresh_closure_tail(value),
+    ELet(_, _, tail, _) => passthrough_fresh_closure_tail(tail),
+    ELetMut(_, _, tail, _) => passthrough_fresh_closure_tail(tail),
+    ELetRec(_, _, tail) => passthrough_fresh_closure_tail(tail),
+    ESeq(_, tail) => passthrough_fresh_closure_tail(tail),
+    EIf(_, yes, no) => passthrough_fresh_closure_tail(yes) && passthrough_fresh_closure_tail(no),
+    EMatch(_, arms) => {
+      if Array::length(arms) == 0 {
+        return false
+      }
+      for arm in arms {
+        if !passthrough_fresh_closure_tail(arm.1) {
+          return false
+        }
+      }
+      true
+    },
+    _ => false
+  }
+}
+
+fn passthrough_fresh_closure_early_returns(body: Expr) -> Bool {
+  match body {
+    EFn(_, _, _, _, _, _) => true,
+    EReturn(value) => passthrough_fresh_closure_tail(value),
+    _ => {
+      for child in expr_children(body) {
+        if !passthrough_fresh_closure_early_returns(child) {
+          return false
+        }
+      }
+      true
+    }
+  }
+}
+
+fn passthrough_fresh_noarg_names(stmts: Array[Stmt]) -> Array[String] {
+  let names: Array[String] = []
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, name, _, EFn(_, _, params, _, _, body)) => if Array::length(params) == 0 && passthrough_fresh_closure_tail(body) && passthrough_fresh_closure_early_returns(body) {
+        Array::push(names, name)
+      } else {
+        ()
+      },
+      _ => ()
+    }
+  }
+  names
+}
+
+export fn compute_passthrough_returning(stmts: Array[Stmt]) -> Array[(String, Int)] {
+  let out: Array[(String, Int)] = []
+  let fresh_noarg = passthrough_fresh_noarg_names(stmts)
+  let mut changed = true
+  while changed {
+    changed = false
+    let mut i = 0
+    while i < Array::length(stmts) {
+      match Array::get(stmts, i) {
+        SLet(_, _, name, _, EFn(_, _, params, _, _, body)) => {
+          let returned = passthrough_tail_name(body, out, [], [])
+          if returned != "" && passthrough_early_returns_agree(body, returned, out, fresh_noarg, [
+          ], []) {
+            let mut p = 0
+            while p < Array::length(params) {
+              let (raw_name, _) = Array::get(params, p)
+              let len = String::length(raw_name)
+              let param_name = if len > 0 && (String::char_code_at(raw_name, len - 1) == '~' || String::char_code_at(raw_name, len - 1) == '?') {
+                raw_name[0: len - 1]
+              } else {
+                raw_name
+              }
+              if param_name == returned && !array_contains_str_pctx(bound_passthrough_names(out), name) {
+                Array::push(out, (name, p))
+                changed = true
+              }
+              p = p + 1
+            }
+          } else {
+            ()
+          }
+        },
+        _ => ()
+      }
+      i = i + 1
+    }
+  }
+  // An early call can look fresh before a later declaration joins `out`.
+  // Recheck every candidate against the completed set, and keep removing
+  // candidates whose own dependencies were invalidated by that recheck.
+  let mut stable = false
+  while !stable {
+    stable = true
+    let kept: Array[(String, Int)] = []
+    for row in out {
+      if passthrough_row_agrees(stmts, row, out, fresh_noarg) {
+        Array::push(kept, row)
+      } else {
+        stable = false
+      }
+    }
+    Array::truncate(out, 0)
+    for row in kept {
+      Array::push(out, row)
+    }
+  }
+  out
+}
+
+fn passthrough_row_agrees(stmts: Array[Stmt], row: (String, Int), known: Array[(String, Int)], fresh_noarg: Array[String]) -> Bool {
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, name, _, EFn(_, _, params, _, _, body)) => if name == row.0 && row.1 < Array::length(params) {
+        let (raw_name, _) = Array::get(params, row.1)
+        let len = String::length(raw_name)
+        let param_name = if len > 0 && (String::char_code_at(raw_name, len - 1) == '~' || String::char_code_at(raw_name, len - 1) == '?') {
+          raw_name[0: len - 1]
+        } else {
+          raw_name
+        }
+        let returned = passthrough_tail_name(body, known, [], [])
+        return returned == param_name && passthrough_early_returns_agree(body, returned, known, fresh_noarg, [
+        ], [])
+      } else {
+        ()
+      },
+      _ => ()
+    }
+  }
+  false
+}
+
+fn bound_passthrough_names(rows: Array[(String, Int)]) -> Array[String] {
+  let names: Array[String] = []
+  for row in rows {
+    Array::push(names, row.0)
+  }
+  names
+}
+
 /// #2638: this module's half of the borrow-returning SEED -- the two bits
 /// saying whether the program's own source shadows a shadowable borrow-ret
 /// builtin. The whole program's answer is the OR, so a module publishes its
@@ -3666,9 +4191,28 @@ fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
     },
     ELetRec(name, value, body) => {
       let id = pe_declare(ctx, name)
+      let owns_closure = match value {
+        EFn(_, _, _, _, _, _) => true,
+        _ => false
+      }
+      if owns_closure {
+        pe_flag_or(ctx, id, pf_exit_owner)
+      } else {
+        ()
+      }
       let s2 = PsBind(name, id, scope)
       pc_emit(ctx, s2, value)
+      if owns_closure {
+        Array::push(ctx.let_stack, name)
+      } else {
+        ()
+      }
       pc_emit(ctx, s2, body)
+      if owns_closure {
+        Array::truncate(ctx.let_stack, Array::length(ctx.let_stack) - 1)
+      } else {
+        ()
+      }
       pe_scope_end(ctx, id, name)
     },
     EAssign(name, value, body) => {
