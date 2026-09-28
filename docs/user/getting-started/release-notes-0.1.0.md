@@ -5,8 +5,11 @@
 > release *is*, as opposed to what changed in it, is
 > [spec/0-1.md](../../spec/0-1.md).
 
-The previous stable release is `v0.0.1` (2026-04-14); `v0.1.0-rc.1` was
-published as a pre-release. Between `v0.0.1` and 0.1.0 the language was
+The previous stable release is `v0.0.1` (2026-04-14); `v0.1.0-rc.1` and
+`v0.1.0-rc.2` were published as pre-releases. The final candidate also fixes
+RC ownership of store views and local closure captures (#3215, #3203),
+and closes the remaining iterator interpolation and `await` shadowing
+regressions (#3212, #3206). Between `v0.0.1` and 0.1.0 the language was
 rewritten in itself, so these notes describe a different compiler rather than
 a list of fixes. The work once prepared under the name
 "0.3.0 GA" is part of this release; the record of that intermediate state is
