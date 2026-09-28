@@ -17,6 +17,7 @@ fn dead_stream() -> Int with Async {
 fn dead_future() -> Int with Async {
   await(host_future_named("price"))
 }
+let unused_alias = dead_stream
 let run: () -> Int with Async = () -> { 42 }
 VIBE
 cat >"$out_dir/live_stream.vibe" <<'VIBE'

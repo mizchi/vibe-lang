@@ -9179,9 +9179,22 @@ fn lc_export_is_root(name: String, entry_name: String) -> Bool {
   !executable_exports_stripped() || executable_export_kept(name, entry_name)
 }
 
+fn lc_fn_alias_name(renames: Array[(String, String)], name: String) -> Bool {
+  let mut i = 0
+  while i < Array::length(renames) {
+    let (alias, _) = Array::get(renames, i)
+    if alias == name {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
 fn lc_late_dce_roots(stmts: Array[Stmt], entry_name: String, keep_source_defs: Bool) -> Array[String] {
   let roots = lc_fresh_string_array()
   let derive_names = lc_derive_helper_names(stmts)
+  let fn_aliases = collect_top_level_fn_alias_renames(stmts)
   let mut keep_all = keep_source_defs
   let mut scan = 0
   while scan < Array::length(stmts) {
@@ -9189,6 +9202,13 @@ fn lc_late_dce_roots(stmts: Array[Stmt], entry_name: String, keep_source_defs: B
       // A re-export can bind a renamed imported definition. Keep the source
       // set when its final spelling is not available in this root snapshot.
       SReExport(_, _) => keep_all = true,
+      // FS merges replace SReExport with a boundary carrier. The local
+      // spelling can differ from its resolved definition after import renames.
+      SReExportSourceBoundary(locals, _) => if Array::length(locals) > 0 {
+        keep_all = true
+      } else {
+        ()
+      },
       _ => ()
     }
     scan = scan + 1
@@ -9202,6 +9222,7 @@ fn lc_late_dce_roots(stmts: Array[Stmt], entry_name: String, keep_source_defs: B
       // bodies can safely be removed before they commit host imports.
       SLet(exported, _, name, _, value) => if (keep_all || (exported && lc_export_is_root(name, entry_name)) || match value {
         EFn(_, _, _, _, _, _) => false,
+        EIdent(_, _) => !lc_fn_alias_name(fn_aliases, name),
         _ => true
       }) && !lc_is_derive_helper_name(derive_names, name) {
         Array::push(roots, name)

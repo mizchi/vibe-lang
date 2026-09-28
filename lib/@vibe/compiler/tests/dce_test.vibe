@@ -156,6 +156,25 @@ test "SBench expression refs are kept" {
   assert(eq(Array::length(result), 2))
 }
 
+test "top-level destructuring initializer keeps its callee" {
+  let stmts = [
+    SLet(false, false, "helper", no_ty(), EInt(42)),
+    SLetPat(PTuple([PBind("a"), PBind("b")]), ECall(EIdent("helper", -1), array_empty(), -1))
+  ]
+  assert(eq(Array::length(dce_stmts(stmts, array_empty())), 2))
+}
+
+test "struct pattern binder does not retain a matching top-level name" {
+  let stmts = [
+    SLet(false, false, "dead_cap", no_ty(), EInt(42)),
+    SLet(false, false, "main", no_ty(), EMatch(EInt(1), [
+      (PStruct("P", [("value", PBind("dead_cap"))]), EIdent("dead_cap", -1))
+    ]))
+  ]
+  let result = dce_stmts(stmts, ["main"])
+  assert(eq(Array::length(result), 1))
+}
+
 //# #2348: a WAT body's `call $name` edges
 
 /// The parser's inline-wasm marker: `fn <name>(...) = wasm "<wat>"` reaches
