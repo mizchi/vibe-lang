@@ -36,6 +36,7 @@ import @vibe/compiler/codegen/common_base {
   emit_i64_store,
   emit_str_ref,
   expr_tag,
+  find_local_slot,
   get_arm_body,
   get_arm_pat,
   get_ebinop_op,
@@ -203,7 +204,7 @@ import @vibe/compiler/codegen/wasm_emit {
 }
 
 import ./compile_call.vibe {
-  cc_operands_floatish, compile_call, rc_exit_release
+  cc_operands_floatish, compile_call, rc_exit_passthrough_rec_result, rc_exit_release
 }
 
 import ./compile_expr_tail4.vibe {
@@ -241,16 +242,30 @@ fn return_result_is_name(e: Expr, name: String) -> Bool {
   }
 }
 
-fn return_result_has_branch(e: Expr) -> Bool {
+fn return_result_has_branch(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool {
   match cl_return_operand(e) {
     EIf(_, _, _) => true,
     EMatch(_, _) => true,
-    ELet(name, value, body, _) => return_result_has_branch(body) || return_result_is_name(body, name) && return_result_has_branch(value),
-    ELetMut(name, value, body, _) => return_result_has_branch(body) || return_result_is_name(body, name) && return_result_has_branch(value),
-    ELetRec(name, value, body) => return_result_has_branch(body) || return_result_is_name(body, name) && return_result_has_branch(value),
-    ESeq(_, tail) => return_result_has_branch(tail),
-    EAssign(_, _, tail) => return_result_has_branch(tail),
-    EAssignOp(_, _, _, tail) => return_result_has_branch(tail),
+    ECall(EIdent(callee, _), args, _) => {
+      if find_local_slot(local_names, callee) >= 0 {
+        return false
+      }
+      for row in ctx.passthrough_ret_params {
+        if row.0 == callee && row.1 < Array::length(args) {
+          return return_result_has_branch(Array::get(args, row.1), local_names, ctx)
+        }
+      }
+      false
+    },
+    ELet(name, value, body, _) => return_result_has_branch(body, local_names, ctx) || (return_result_is_name(body, name) || rc_exit_passthrough_rec_result(body, name, local_names, [
+    ], ctx)) && return_result_has_branch(value, local_names, ctx),
+    ELetMut(name, value, body, _) => return_result_has_branch(body, local_names, ctx) || (return_result_is_name(body, name) || rc_exit_passthrough_rec_result(body, name, local_names, [
+    ], ctx)) && return_result_has_branch(value, local_names, ctx),
+    ELetRec(name, value, body) => return_result_has_branch(body, local_names, ctx) || (return_result_is_name(body, name) || rc_exit_passthrough_rec_result(body, name, local_names, [
+    ], ctx)) && return_result_has_branch(value, local_names, ctx),
+    ESeq(_, tail) => return_result_has_branch(tail, local_names, ctx),
+    EAssign(_, _, tail) => return_result_has_branch(tail, local_names, ctx),
+    EAssignOp(_, _, _, tail) => return_result_has_branch(tail, local_names, ctx),
     _ => false
   }
 }
@@ -363,7 +378,7 @@ export fn compile_expr_tail3(buf: Bytes, expr: Expr, local_names: Array[String],
       ret_expr
     }
     let nl = compile_expr(buf, owned_ret, local_names, next_local, ctx, ld)
-    let needs_result_local = ctx.enable_rc && return_result_has_branch(ret_expr)
+    let needs_result_local = ctx.enable_rc && return_result_has_branch(ret_expr, local_names, ctx)
     if needs_result_local {
       emit_local_tee(buf, nl)
       while Array::length(local_names) <= nl {

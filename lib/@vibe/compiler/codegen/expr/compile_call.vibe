@@ -8234,17 +8234,36 @@ export fn rc_exit_passthrough_rec_result(e: Expr, name: String, local_names: Arr
 
 fn rc_exit_conditional_rec_transfer(e: Expr, name: String, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
   match e {
-    ELet(bound, value, tail, _) => bound != name && (if rc_exit_result_is_name(tail, bound) {
+    ECall(EIdent("__lambda_return_owned", off), args, _) => if off < 0 && Array::length(args) == 1 {
+      rc_exit_conditional_rec_transfer(Array::get(args, 0), name, local_names, ctx)
+    } else {
+      false
+    },
+    ECall(EIdent(callee, _), args, _) => {
+      if find_local_slot(local_names, callee) >= 0 {
+        return false
+      }
+      for row in ctx.passthrough_ret_params {
+        if row.0 == callee && row.1 < Array::length(args) {
+          return rc_exit_conditional_rec_transfer(Array::get(args, row.1), name, local_names, ctx)
+        }
+      }
+      false
+    },
+    ELet(bound, value, tail, _) => bound != name && (if rc_exit_result_is_name(tail, bound) || rc_exit_passthrough_rec_result(tail, bound, local_names, [
+    ], ctx) {
       rc_exit_conditional_rec_transfer(value, name, local_names, ctx)
     } else {
       !rc_exit_mentions_name(value, name) && rc_exit_conditional_rec_transfer(tail, name, local_names, ctx)
     }),
-    ELetMut(bound, value, tail, _) => bound != name && (if rc_exit_result_is_name(tail, bound) {
+    ELetMut(bound, value, tail, _) => bound != name && (if rc_exit_result_is_name(tail, bound) || rc_exit_passthrough_rec_result(tail, bound, local_names, [
+    ], ctx) {
       rc_exit_conditional_rec_transfer(value, name, local_names, ctx)
     } else {
       !rc_exit_mentions_name(value, name) && rc_exit_conditional_rec_transfer(tail, name, local_names, ctx)
     }),
-    ELetRec(bound, value, tail) => bound != name && (if rc_exit_result_is_name(tail, bound) {
+    ELetRec(bound, value, tail) => bound != name && (if rc_exit_result_is_name(tail, bound) || rc_exit_passthrough_rec_result(tail, bound, local_names, [
+    ], ctx) {
       rc_exit_conditional_rec_transfer(value, name, local_names, ctx)
     } else {
       !rc_exit_mentions_name(value, name) && rc_exit_conditional_rec_transfer(tail, name, local_names, ctx)
