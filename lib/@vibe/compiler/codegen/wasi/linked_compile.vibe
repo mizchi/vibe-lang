@@ -7,6 +7,8 @@ import @vibe/compiler/core {
   TypeExpr,
   apply_top_level_fn_alias_renames,
   bsearch_leftmost,
+  builtin_iterator_namespace_from_marker,
+  builtin_iterator_serialized_boundary_markers,
   builtin_registry,
   builtin_shadow_entry_name,
   builtin_shadow_source_name,
@@ -18,8 +20,10 @@ import @vibe/compiler/core {
   bytebuf_push_vec_header,
   bytebuf_to_bytes,
   collect_top_level_fn_alias_renames,
+  dce_keep_flags,
   dce_stmts,
   exception_effect_labels_equal,
+  executable_export_kept,
   executable_export_kept_bytes,
   executable_exports_stripped,
   expr_child_at,
@@ -37,7 +41,8 @@ import @vibe/compiler/core {
   rewrite_import_alias_expr,
   rewrite_top_level_fn_alias_refs,
   sorted_names_of,
-  verify_lane_builtins
+  verify_lane_builtins,
+  wat_callee_names
 }
 
 import @vibe/ast {
@@ -9172,29 +9177,145 @@ fn lc_is_derive_helper_name(derive_names: Array[String], name: String) -> Bool {
   String::starts_with(name, "__arr_equals__") || String::starts_with(name, "__arr_to_string__") || array_contains_str(derive_names, name)
 }
 
-fn lc_late_dce_roots(stmts: Array[Stmt], entry_name: String) -> Array[String] {
+fn lc_export_is_root(name: String, entry_name: String) -> Bool {
+  !executable_exports_stripped() || executable_export_kept(name, entry_name)
+}
+
+fn lc_fn_alias_name(renames: Array[(String, String)], name: String) -> Bool {
+  let mut i = 0
+  while i < Array::length(renames) {
+    let (alias, _) = Array::get(renames, i)
+    if alias == name {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+fn lc_boundary_has_reexport(locals: Array[String]) -> Bool {
+  let mut i = 0
+  while i < Array::length(locals) {
+    match builtin_iterator_namespace_from_marker(Array::get(locals, i)) {
+      Some(_) => (),
+      None => return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+fn lc_late_dce_roots(stmts: Array[Stmt], entry_name: String, keep_source_defs: Bool) -> Array[String] {
   let roots = lc_fresh_string_array()
   let derive_names = lc_derive_helper_names(stmts)
+  let fn_aliases = collect_top_level_fn_alias_renames(stmts)
+  let mut keep_all = keep_source_defs
+  let mut scan = 0
+  while scan < Array::length(stmts) {
+    match Array::get(stmts, scan) {
+      // An unmerged re-export can bind a renamed imported definition.
+      SReExport(_, _) => keep_all = true,
+      _ => ()
+    }
+    scan = scan + 1
+  }
   Array::push(roots, entry_name)
+  // FS merges put a boundary before each source. A re-export in a dependency
+  // preserves that source's definitions, not unrelated definitions in the
+  // entry source (which can include dead capability helpers).
+  let mut keep_segment = keep_all
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SLet(_, _, name, _, _) => if !lc_is_derive_helper_name(derive_names, name) {
+      SReExportSourceBoundary(locals, _) => keep_segment = keep_source_defs || lc_boundary_has_reexport(locals),
+      SImport(_, _) => match builtin_iterator_serialized_boundary_markers(Array::get(stmts, i)) {
+        Some(locals) => keep_segment = keep_source_defs || lc_boundary_has_reexport(locals),
+        None => ()
+      },
+      // Keep ordinary value initializers available to the direct codegen
+      // lane's diagnostics. Function values are the definitions whose dead
+      // bodies can safely be removed before they commit host imports.
+      SLet(exported, _, name, _, value) => if (keep_segment || (exported && lc_export_is_root(name, entry_name)) || match value {
+        EFn(_, _, _, _, _, _) => false,
+        EIdent(_, _) => !lc_fn_alias_name(fn_aliases, name),
+        _ => true
+      }) && !lc_is_derive_helper_name(derive_names, name) {
         Array::push(roots, name)
       } else {
         ()
       },
-      SFnDecl(_, name, _, _, _) => if !lc_is_derive_helper_name(derive_names, name) {
+      SFnDecl(exported, name, _, _, _) => if (keep_segment || (exported && lc_export_is_root(name, entry_name))) && !lc_is_derive_helper_name(derive_names, name) {
         Array::push(roots, name)
       } else {
         ()
       },
-      SLetMut(name, _, _) => Array::push(roots, name),
+      SLetMut(name, _, _) => {
+        Array::push(roots, name)
+      },
+      SExport(names) => {
+        let mut j = 0
+        while j < Array::length(names) {
+          let name = Array::get(names, j)
+          if lc_export_is_root(name, entry_name) {
+            Array::push(roots, name)
+          } else {
+            ()
+          }
+          j = j + 1
+        }
+      },
+      STest(name, _) => Array::push(roots, String::concat("__test_", name)),
+      SBench(name, _) => Array::push(roots, String::concat("__bench_", name)),
       _ => ()
     }
     i = i + 1
   }
   roots
+}
+
+fn lc_late_dce_wat_roots(roots: Array[String], stmts: Array[Stmt], iw_names: Array[String], iw_wats: Array[String]) -> Unit {
+  // The prelude replaces each inline-WAT body with EInt(0), so the ordinary
+  // DCE walk cannot see its call edges. Add an edge only when the WAT owner is
+  // reachable; iterate because a WAT callee can reach another WAT body.
+  let mut changed = Array::length(iw_names) > 0
+  while changed {
+    changed = false
+    let kept = dce_keep_flags(stmts, roots)
+    let mut i = 0
+    while i < Array::length(iw_names) {
+      let owner = Array::get(iw_names, i)
+      let mut owner_live = false
+      let mut si = 0
+      while si < Array::length(stmts) {
+        match Array::get(stmts, si) {
+          SLet(_, _, name, _, _) => if name == owner && Array::get(kept, si) {
+            owner_live = true
+          } else {
+            ()
+          },
+          _ => ()
+        }
+        si = si + 1
+      }
+      if owner_live {
+        let callees = wat_callee_names(Array::get(iw_wats, i))
+        let mut j = 0
+        while j < Array::length(callees) {
+          let callee = Array::get(callees, j)
+          if !array_contains_str(roots, callee) {
+            Array::push(roots, callee)
+            changed = true
+          } else {
+            ()
+          }
+          j = j + 1
+        }
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+  }
 }
 
 /// #2158: every linked compile, with the CHECKER's Double call-result offsets
@@ -9406,7 +9527,7 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
   // effect_lowering_prelude (shared verbatim with `vibe check`); a first
   // error there is exactly the throw each pass used to raise inline here.
   let late_dce_has_entry = lc_defines_top_level(stmts, entry_name)
-  let late_dce_roots = lc_late_dce_roots(stmts, entry_name)
+  let late_dce_roots = lc_late_dce_roots(stmts, entry_name, library_mode || coverage || debug_trace || debug_break || rc_shadow)
   let iw_names = lc_fresh_string_array()
   let iw_wats = lc_fresh_string_array()
   // #2388 step 2: everything the prelude APPENDS past this length is
@@ -9589,6 +9710,7 @@ export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], 
     } else {
       fold_const_bool_params(stmts, entry_name, iw_wats)
     }
+    lc_late_dce_wat_roots(late_dce_roots, stmts, iw_names, iw_wats)
     let dce_pruned = dce_stmts(stmts, late_dce_roots)
     // `stmts` is threaded onward by reference, so the pruned program has to
     // replace its contents rather than rebind the name. `dce_stmts` builds a

@@ -5748,3 +5748,5 @@ echo "[compiler-gate] multi-feature end-to-end smoke ok (10/153/6/111/11111/321/
 
 echo "[compiler-gate] GC guest future refusal (#3188)"
 VIBE_STAGE2_WASM="$stage2_wasm" bash scripts/test_gc_future_refusal.sh
+echo "[compiler-gate] capability DCE reachability (#3193)"
+VIBE_STAGE2_WASM="$stage2_wasm" bash scripts/test_capability_dce_reachability.sh

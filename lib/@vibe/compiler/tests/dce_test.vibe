@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, ImportItem, Pat, Stmt, TypeExpr, dce_stmts, dce_stmts_before_trait_desugar, wat_callee_names
+  Expr, ImportItem, Pat, Stmt, TypeExpr, dce_keep_flags, dce_stmts, dce_stmts_before_trait_desugar, wat_callee_names
 }
 
 import @vibe/core {
@@ -154,6 +154,39 @@ test "SBench expression refs are kept" {
   ]
   let result = dce_stmts(stmts, array_empty())
   assert(eq(Array::length(result), 2))
+}
+
+test "top-level destructuring initializer keeps its callee" {
+  let stmts = [
+    SLet(false, false, "helper", no_ty(), EInt(42)),
+    SLetPat(PTuple([PBind("a"), PBind("b")]), ECall(EIdent("helper", -1), array_empty(), -1))
+  ]
+  assert(eq(Array::length(dce_stmts(stmts, array_empty())), 2))
+}
+
+test "struct pattern binder does not retain a matching top-level name" {
+  let stmts = [
+    SLet(false, false, "dead_cap", no_ty(), EInt(42)),
+    SLet(false, false, "main", no_ty(), EMatch(EInt(1), [
+      (PStruct("P", [("value", PBind("dead_cap"))]), EIdent("dead_cap", -1))
+    ]))
+  ]
+  let result = dce_stmts(stmts, ["main"])
+  assert(eq(Array::length(result), 1))
+}
+
+test "contract parameters and result do not retain matching top-level names" {
+  let stmts = [
+    SLet(false, false, "dead_cap", no_ty(), EInt(42)),
+    SLet(false, false, "result", no_ty(), EInt(99)),
+    SLet(false, false, "live_check", no_ty(), EInt(1)),
+    SFnDecl(false, "checked", EFn(array_empty(), array_empty(), [
+      ("dead_cap", None)
+    ], no_ty(), None, EInt(0)), [
+      ECall(EIdent("live_check", -1), [EIdent("dead_cap", -1)], -1)
+    ], [EIdent("result", -1)])
+  ]
+  assert(eq(Array::length(dce_stmts(stmts, ["checked"])), 2))
 }
 
 //# #2348: a WAT body's `call $name` edges
@@ -310,4 +343,43 @@ test "3111: an impl of a trait declared elsewhere keeps its owner's bindings" {
     SLet(false, false, "main", no_ty(), EInt(0))
   ]
   inspect(kept_names(dce_stmts_before_trait_desugar(stmts, ["main"])), "Qt::go main ")
+}
+
+test "#3193: break and continue payloads keep their callees" {
+  let helper = SLet(false, false, "helper", no_ty(), EInt(7))
+  let break_main = SLet(false, false, "main", no_ty(), ELoop([], EBreak(Some(ECall(EIdent("helper", -1), [
+  ], -1)))))
+  let continue_main = SLet(false, false, "main", no_ty(), ELoop([], EContinue([
+    ECall(EIdent("helper", -1), [], -1)
+  ])))
+  inspect(Array::length(dce_stmts([helper, break_main], ["main"])), "2")
+  inspect(Array::length(dce_stmts([helper, continue_main], ["main"])), "2")
+}
+
+test "#3193: a live interpolation with unresolved text keeps definitions" {
+  let helper = SLet(false, false, "helper", no_ty(), EInt(7))
+  let main = SLet(false, false, "main", no_ty(), EStringInterp([
+    "",
+    "helper()",
+    ""
+  ]))
+  inspect(Array::length(dce_stmts([helper, main], ["main"])), "2")
+  let flags = dce_keep_flags([helper, main], ["main"])
+  inspect(Array::get(flags, 0), "true")
+}
+
+test "#3193: a live function contract keeps its callees" {
+  let helper = SLet(false, false, "helper", no_ty(), EInt(7))
+  let body = EFn([], [], [], no_ty(), None, EInt(1))
+  let main = SFnDecl(false, "main", body, [ECall(EIdent("helper", -1), [], -1)], [
+  ])
+  inspect(Array::length(dce_stmts([helper, main], ["main"])), "2")
+}
+
+test "#3193: assignment targets keep top-level mutable bindings" {
+  let counter = SLetMut("counter", no_ty(), EInt(0))
+  let direct = SLet(false, false, "main", no_ty(), EAssign("counter", EInt(1), EInt(0)))
+  let compound = SLet(false, false, "main", no_ty(), EAssignOp("counter", "+", EInt(1), EInt(0)))
+  inspect(Array::length(dce_stmts([counter, direct], ["main"])), "2")
+  inspect(Array::length(dce_stmts([counter, compound], ["main"])), "2")
 }

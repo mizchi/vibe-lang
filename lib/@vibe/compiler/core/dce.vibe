@@ -66,6 +66,9 @@ struct DceGraph {
   generation: Array[Int];
   def_next: Array[Int];
   def_refs: Array[Array[Int]];
+  def_opaque: Array[Bool];
+  mut opaque_now: Bool;
+  mut opaque_live: Bool;
   stmt_ids: Array[Int]
 }
 
@@ -78,6 +81,9 @@ fn dce_graph_new(capacity: Int) -> DceGraph {
     generation: [0],
     def_next: array_empty(),
     def_refs: array_empty(),
+    def_opaque: array_empty(),
+    opaque_now: false,
+    opaque_live: false,
     // #2554: `capacity` IS this array's final length -- dce_reachable_graph
     // pushes exactly once per statement, on BOTH arms of the `stmt_name`
     // match (an unnamed statement pushes -1). So this is an exact
@@ -154,7 +160,15 @@ fn collect_pat_bindings(pat: Pat, bound: Array[String]) -> Int {
       collect_pat_bindings(p2, bound)
       0
     },
-    PStruct(_, _) => 0
+    PStruct(_, fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, field_pat) = Array::get(fields, i)
+        collect_pat_bindings(field_pat, bound)
+        i = i + 1
+      }
+      0
+    }
   }
 }
 
@@ -196,8 +210,18 @@ fn collect_refs_into(graph: DceGraph, expr: Expr, bound: Array[String], out: Arr
     EString(_, _) => 0,
     EBool(_) => 0,
     EUnit => 0,
-    EBreak(_) => 0,
-    EContinue(_) => 0,
+    EBreak(value) => match value {
+      Some(e) => collect_refs_into(graph, e, bound, out),
+      None => 0
+    },
+    EContinue(args) => {
+      let mut i = 0
+      while i < Array::length(args) {
+        collect_refs_into(graph, Array::get(args, i), bound, out)
+        i = i + 1
+      }
+      0
+    },
     EReturn(e) => collect_refs_into(graph, e, bound, out),
     EUnaryOp(_, e) => collect_refs_into(graph, e, bound, out),
     ETuple(items) => {
@@ -276,12 +300,14 @@ fn collect_refs_into(graph: DceGraph, expr: Expr, bound: Array[String], out: Arr
       Array::truncate(bound, mark)
       0
     },
-    EAssign(_, val, body) => {
+    EAssign(name, val, body) => {
+      add_ref(graph, out, bound, name)
       collect_refs_into(graph, val, bound, out)
       collect_refs_into(graph, body, bound, out)
       0
     },
-    EAssignOp(_, _, val, body) => {
+    EAssignOp(name, _, val, body) => {
+      add_ref(graph, out, bound, name)
       collect_refs_into(graph, val, bound, out)
       collect_refs_into(graph, body, bound, out)
       0
@@ -380,11 +406,17 @@ fn collect_refs_into(graph: DceGraph, expr: Expr, bound: Array[String], out: Arr
       collect_refs_into(graph, e, bound, out)
       0
     },
-    EStringInterp(_) => 0
+    // Holes are still raw source text here. Their call edges cannot be read
+    // from this AST, so a reachable interpolation disables pruning.
+    EStringInterp(_) => {
+      graph.opaque_now = true
+      0
+    }
   }
 }
 
 fn collect_refs(graph: DceGraph, expr: Expr, bound: Array[String]) -> Array[Int] {
+  graph.opaque_now = false
   dce_refs_begin(graph)
   let out = array_empty()
   collect_refs_into(graph, expr, bound, out)
@@ -401,10 +433,12 @@ fn enqueue_reachable(graph: DceGraph, queue: Array[Int], id: Int) -> Unit {
 }
 
 fn collect_structural_refs_into_queue(graph: DceGraph, stmt: Stmt, bound: Array[String], queue: Array[Int]) -> Unit {
+  graph.opaque_now = false
   let refs = match stmt {
     STest(_, expr) => collect_refs(graph, expr, bound),
     SBench(_, expr) => collect_refs(graph, expr, bound),
     SExpr(expr) => collect_refs(graph, expr, bound),
+    SLetPat(_, expr) => collect_refs(graph, expr, bound),
     _ => array_empty()
   }
   let mut i = 0
@@ -446,19 +480,34 @@ fn dce_definition_refs(graph: DceGraph, stmt: Stmt, bound: Array[String]) -> Arr
     SLetMut(_, _, expr) => collect_refs(graph, expr, bound),
     // Contract conditions execute after lowering; their callees stay live.
     SFnDecl(_, _, fn_value, reqs, enss) => {
+      graph.opaque_now = false
       dce_refs_begin(graph)
       let out = array_empty()
       let _ = collect_refs_into(graph, fn_value, bound, out)
+      let mark = Array::length(bound)
+      match fn_value {
+        EFn(_, _, params, _, _, _) => {
+          let mut p = 0
+          while p < Array::length(params) {
+            let (name, _) = Array::get(params, p)
+            Array::push(bound, name)
+            p = p + 1
+          }
+        },
+        _ => ()
+      }
       let mut i = 0
       while i < Array::length(reqs) {
         let _ = collect_refs_into(graph, Array::get(reqs, i), bound, out)
         i = i + 1
       }
+      Array::push(bound, "result")
       let mut j = 0
       while j < Array::length(enss) {
         let _ = collect_refs_into(graph, Array::get(enss, j), bound, out)
         j = j + 1
       }
+      Array::truncate(bound, mark)
       out
     },
     _ => array_empty()
@@ -480,7 +529,9 @@ fn dce_reachable_graph(stmts: Array[Stmt], entry_names: Array[String]) -> DceGra
         // even if that spelling was first interned by a forward reference.
         Array::push(graph.def_next, Array::get(graph.heads, id))
         Array::set(graph.heads, id, di)
+        graph.opaque_now = false
         Array::push(graph.def_refs, dce_definition_refs(graph, stmt, bound))
+        Array::push(graph.def_opaque, graph.opaque_now)
       },
       None => Array::push(graph.stmt_ids, -1)
     }
@@ -495,6 +546,9 @@ fn dce_reachable_graph(stmts: Array[Stmt], entry_names: Array[String]) -> DceGra
   let mut sj = 0
   while sj < Array::length(stmts) {
     collect_structural_refs_into_queue(graph, Array::get(stmts, sj), bound, queue)
+    if graph.opaque_now {
+      graph.opaque_live = true
+    }
     sj = sj + 1
   }
   let mut qi = 0
@@ -503,6 +557,9 @@ fn dce_reachable_graph(stmts: Array[Stmt], entry_names: Array[String]) -> DceGra
     qi = qi + 1
     let mut di = Array::get(graph.heads, id)
     while di >= 0 {
+      if Array::get(graph.def_opaque, di) {
+        graph.opaque_live = true
+      }
       let refs = Array::get(graph.def_refs, di)
       let mut r = 0
       while r < Array::length(refs) {
@@ -520,6 +577,9 @@ export fn dce_stmts(stmts: Array[Stmt], entry_names: Array[String]) -> Array[Stm
     Array::slice(stmts, 0, 0)
   } else {
     let graph = dce_reachable_graph(stmts, entry_names)
+    if graph.opaque_live {
+      return Array::slice(stmts, 0, Array::length(stmts))
+    }
     let result = array_empty()
     let mut i = 0
     while i < Array::length(stmts) {
@@ -721,7 +781,7 @@ export fn dce_keep_flags_via(stmts: Array[Stmt], reach_stmts: Array[Stmt], entry
     let graph = dce_reachable_graph(reach_stmts, roots)
     let mut m = 0
     while m < Array::length(stmts) {
-      Array::push(flags, dce_keep_stmt(Array::get(stmts, m), graph))
+      Array::push(flags, graph.opaque_live || dce_keep_stmt(Array::get(stmts, m), graph))
       m = m + 1
     }
     flags
