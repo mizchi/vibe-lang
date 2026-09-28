@@ -2435,6 +2435,7 @@ export fn collect_declared_type_names(stmts: Array[Stmt]) -> Array[String] {
       STrait(_, name, _, _, _, _) => Array::push(names, name),
       STypeAlias(_, name, _, _) => Array::push(names, name),
       SSuberror(_, name, _) => Array::push(names, name),
+      SEffectDef(_, name, _, _) => Array::push(names, name),
       _ => ()
     }
     i = i + 1
@@ -3417,7 +3418,7 @@ fn collect_reexport_edges_into(path: String, stmts: Array[Stmt], known_paths: Ar
 
 /// Follow the last published edge at each facade until it reaches a declared
 /// enum. A missing edge or a cycle supplies no constructor rewrite.
-fn reexport_enum_origin(path: String, name: String, edge_tpath: Array[String], edge_tname: Array[String], edge_last_idx: MutMap[String, Int], enum_defs: MutMap[String, Bool], enum_type_aliases: MutMap[String, String], enum_import_paths: MutMap[String, String], enum_import_names: MutMap[String, String]) -> Option[String] {
+fn reexport_enum_origin(path: String, name: String, edge_tpath: Array[String], edge_tname: Array[String], edge_last_idx: MutMap[String, Int], enum_defs: MutMap[String, Bool], enum_type_aliases: MutMap[String, String], local_type_heads: MutMap[String, Bool], enum_import_paths: MutMap[String, String], enum_import_names: MutMap[String, String]) -> Option[String] {
   let mut cur_path = path
   let mut cur_name = name
   let mut depth = 0
@@ -3433,6 +3434,8 @@ fn reexport_enum_origin(path: String, name: String, edge_tpath: Array[String], e
         Some(next_name) => cur_name = next_name,
         None => done = true
       }
+    } else if MutMap::has(local_type_heads, key) {
+      done = true
     } else if MutMap::has(enum_import_paths, key) {
       match (MutMap::get(enum_import_paths, key), MutMap::get(enum_import_names, key)) {
         (Some(next_path), Some(next_name)) => {
@@ -3513,6 +3516,9 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
   let enum_origin_ambiguous: MutMap[String, Bool] = MutMap::new_string()
   let enum_origin_ambiguous_names: Array[String] = []
   let enum_type_aliases: MutMap[String, String] = MutMap::new_string()
+  // Local non-enum heads stop provenance before an earlier import of the
+  // same spelling. Eligible type aliases are followed first below.
+  let local_type_heads: MutMap[String, Bool] = MutMap::new_string()
   let enum_import_paths: MutMap[String, String] = MutMap::new_string()
   let enum_import_names: MutMap[String, String] = MutMap::new_string()
   let mut dfi = 0
@@ -3537,15 +3543,22 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
             ()
           }
         },
-        STypeAlias(_, name, params, target) => match target {
-          TyName(head) => if !enum_alias_target_is_formal(params, head) {
-            MutMap::set(enum_type_aliases, plan_rename_key(path, name), head)
-          },
-          TyApp(head, _) => if !enum_alias_target_is_formal(params, head) {
-            MutMap::set(enum_type_aliases, plan_rename_key(path, name), head)
-          },
-          _ => ()
+        STypeAlias(_, name, params, target) => {
+          MutMap::set(local_type_heads, plan_rename_key(path, name), true)
+          match target {
+            TyName(head) => if !enum_alias_target_is_formal(params, head) {
+              MutMap::set(enum_type_aliases, plan_rename_key(path, name), head)
+            },
+            TyApp(head, _) => if !enum_alias_target_is_formal(params, head) {
+              MutMap::set(enum_type_aliases, plan_rename_key(path, name), head)
+            },
+            _ => ()
+          }
         },
+        SStruct(_, name, _, _, _, _) => MutMap::set(local_type_heads, plan_rename_key(path, name), true),
+        STrait(_, name, _, _, _, _) => MutMap::set(local_type_heads, plan_rename_key(path, name), true),
+        SSuberror(_, name, _) => MutMap::set(local_type_heads, plan_rename_key(path, name), true),
+        SEffectDef(_, name, _, _) => MutMap::set(local_type_heads, plan_rename_key(path, name), true),
         SImport(raw_path, items) => {
           let resolved = resolve_known_import_path(paths, dir_of_path(path), raw_path, path)
           let mut imi = 0
@@ -3585,7 +3598,7 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
       // This lookup asks which edge won, not whether any edge has this key.
       Some(last) => {
         if last == eai {
-          match reexport_enum_origin(Array::get(edge_tpath, eai), Array::get(edge_tname, eai), edge_tpath, edge_tname, edge_last_idx, enum_defs, enum_type_aliases, enum_import_paths, enum_import_names) {
+          match reexport_enum_origin(Array::get(edge_tpath, eai), Array::get(edge_tname, eai), edge_tpath, edge_tname, edge_last_idx, enum_defs, enum_type_aliases, local_type_heads, enum_import_paths, enum_import_names) {
             Some(origin) => if origin != Array::get(edge_pub, eai) {
               MutMap::set(enum_alias_idx, key, origin)
               Array::push(enum_alias_paths, Array::get(edge_from, eai))
