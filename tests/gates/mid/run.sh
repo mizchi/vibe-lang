@@ -642,6 +642,20 @@ if ! VIBE_RC=shadow VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_N
 fi
 rm -f "$ROOT_DIR/_build/_gate_rc_branch_letrec.log"
 echo "[compiler-gate] let-rec / handle branch-tail borrow retain ok on shadow"
+# #3110: the let-rec self capture is weak, so the binder's reference must be
+# released at scope end. A returned closure must keep a reference of its own.
+echo "[compiler-gate] 131/131 local let-rec closure release (#3110)"
+for rec_lane in 1 shadow; do
+  if ! VIBE_RC="$rec_lane" VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+      bash scripts/vibe_test.sh fixtures/rc_letrec_self_cycle_bounded_test.vibe \
+      >"$ROOT_DIR/_build/_gate_rc_letrec_self_cycle.log" 2>&1; then
+    echo "[compiler-gate] FAIL: local let rec leak or escaped closure on VIBE_RC=$rec_lane (#3110):" >&2
+    tail -20 "$ROOT_DIR/_build/_gate_rc_letrec_self_cycle.log" >&2
+    exit 1
+  fi
+done
+rm -f "$ROOT_DIR/_build/_gate_rc_letrec_self_cycle.log"
+echo "[compiler-gate] local let-rec closure bounded and returned closure alive on rc/shadow ok (#3110)"
 # 40f-b3. #3113: a captured `let mut` cell owns its payload. The cell's drop
 #         releases what it holds, so every store into it must be an owned
 #         reference and every read that leaves for an owning place a

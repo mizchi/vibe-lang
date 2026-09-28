@@ -39,6 +39,7 @@ import @vibe/compiler/codegen/common_analysis {
   md_self_reassign_move_arg,
   mut_needs_ref_cell,
   proj_root_ident,
+  scope_tail_ident,
   scope_tail_proj_root
 }
 
@@ -3304,8 +3305,40 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     } else {
       0
     }
+    // Perceus plans the recursive binding as an owner, but unlike ELet this
+    // arm used to leave its final reference alive. Its self capture is weak;
+    // releasing the binder at scope end therefore also frees the closure.
+    let exit_mark = Array::length(ctx.rc_exit_stack_names)
+    if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && array_contains_str(ctx.rc_drop_names, name) {
+      Array::push(ctx.rc_exit_lets, name)
+      rc_exit_push(ctx.rc_exit_stack_names, ctx.rc_exit_stack_info, name, 6, local_idx, 0 - 1)
+    } else {
+      ()
+    }
     let nl2 = compile_expr(buf, body, local_names, nl, ctx, ld)
-    nl2
+    if Array::length(ctx.rc_exit_stack_names) > exit_mark {
+      rc_exit_truncate(ctx, exit_mark)
+      Array::truncate(ctx.rc_exit_lets, Array::length(ctx.rc_exit_lets) - 1)
+    } else {
+      ()
+    }
+    if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && array_contains_str(ctx.rc_drop_names, name) {
+      if scope_tail_ident(body) == name || scope_tail_proj_root(body) == name {
+        emit_local_set(buf, nl2)
+        emit_rc_dup_guarded(buf, nl2, ctx.rc_shadow, ctx.rc_dup_func_idx)
+        emit_local_get(buf, local_idx)
+        emit_call(buf, ctx.rc_drop_func_idx)
+        emit_local_get(buf, nl2)
+        cet_record_local_slot(local_names, nl2)
+        nl2 + 1
+      } else {
+        emit_local_get(buf, local_idx)
+        emit_call(buf, ctx.rc_drop_func_idx)
+        nl2
+      }
+    } else {
+      nl2
+    }
   } else if __tag == 11 {
     let name = get_eletmut_name(expr)
     let value = get_eletmut_val(expr)
