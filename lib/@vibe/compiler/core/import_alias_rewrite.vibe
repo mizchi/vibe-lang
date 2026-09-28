@@ -3215,6 +3215,7 @@ export struct ExportRenamePlan {
   enum_alias_names: Array[String];
   enum_alias_origins: Array[String];
   enum_origin_ambiguous: MutMap[String, Bool];
+  enum_origin_ambiguous_names: Array[String];
   enum_alias_count: Int
 }
 
@@ -3501,6 +3502,7 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
   let enum_defs: MutMap[String, Bool] = MutMap::new_string()
   let enum_origin_first_path: MutMap[String, String] = MutMap::new_string()
   let enum_origin_ambiguous: MutMap[String, Bool] = MutMap::new_string()
+  let enum_origin_ambiguous_names: Array[String] = []
   let enum_type_aliases: MutMap[String, String] = MutMap::new_string()
   let enum_import_paths: MutMap[String, String] = MutMap::new_string()
   let enum_import_names: MutMap[String, String] = MutMap::new_string()
@@ -3508,16 +3510,22 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
   while dfi < file_count {
     let path = Array::get(paths, dfi)
     let stmts = Array::get(stmts_list, dfi)
+    let exported_names = collect_exported_value_names(stmts)
     let mut dsi = 0
     while dsi < Array::length(stmts) {
       match Array::get(stmts, dsi) {
-        SEnum(_, name, _, _, _) => {
+        SEnum(exported, name, _, _, _) => {
           MutMap::set(enum_defs, plan_rename_key(path, name), true)
-          match MutMap::get(enum_origin_first_path, name) {
-            Some(first_path) => if first_path != path {
-              MutMap::set(enum_origin_ambiguous, name, true)
-            },
-            None => MutMap::set(enum_origin_first_path, name, path)
+          if exported || string_array_contains(exported_names, name) {
+            match MutMap::get(enum_origin_first_path, name) {
+              Some(first_path) => if first_path != path && !MutMap::has(enum_origin_ambiguous, name) {
+                MutMap::set(enum_origin_ambiguous, name, true)
+                Array::push(enum_origin_ambiguous_names, name)
+              },
+              None => MutMap::set(enum_origin_first_path, name, path)
+            }
+          } else {
+            ()
           }
         },
         STypeAlias(_, name, _, target) => match target {
@@ -3808,6 +3816,7 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
     enum_alias_names: enum_alias_names,
     enum_alias_origins: enum_alias_origins,
     enum_origin_ambiguous: enum_origin_ambiguous,
+    enum_origin_ambiguous_names: enum_origin_ambiguous_names,
     enum_alias_count: enum_alias_count
   }
 }
@@ -3901,6 +3910,10 @@ export fn export_plan_fingerprint_text(plan: ExportRenamePlan) -> String {
     StringBuilder::push(buf, ">")
     StringBuilder::push(buf, Array::get(plan.enum_alias_origins, ai))
     ai = ai + 1
+  }
+  for name in plan.enum_origin_ambiguous_names {
+    StringBuilder::push(buf, "|enum-ambiguous>")
+    StringBuilder::push(buf, name)
   }
   StringBuilder::freeze(buf)
 }
