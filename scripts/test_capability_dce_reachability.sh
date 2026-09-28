@@ -62,7 +62,7 @@ fn checked(dead_stream: Int) -> Int where {
   requires: dead_stream > 0,
   ensures: result > 0,
 } { dead_stream }
-let run: () -> Int = () -> { checked(42) }
+let run: () -> Int with Async = () -> { checked(42) }
 VIBE
 cat >"$out_dir/dead_export.vibe" <<'VIBE'
 export fn dead_stream() -> Int with Async {
