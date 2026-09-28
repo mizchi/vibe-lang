@@ -4429,6 +4429,22 @@ for enum_alias_lane in bump shadow gc; do
     exit 1
   fi
 done
+for private_pat_lane in bump shadow gc; do
+  case "$private_pat_lane" in
+    bump) private_pat_rc=0; private_pat_backend=linear ;;
+    shadow) private_pat_rc=shadow; private_pat_backend=linear ;;
+    gc) private_pat_rc=0; private_pat_backend=gc ;;
+  esac
+  if ! VIBE_RC="$private_pat_rc" VIBE_TEST_BACKEND="$private_pat_backend" \
+      VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+      bash scripts/vibe_test.sh fixtures/reexport_enum_alias_private_effect_pattern_test.vibe \
+      >"$ROOT_DIR/_build/_gate_private_enum_effect_pattern.log" 2>&1; then
+    echo "[compiler-gate] FAIL: effect operation and private enum pattern on $private_pat_lane (#3238)" >&2
+    tail -20 "$ROOT_DIR/_build/_gate_private_enum_effect_pattern.log" >&2
+    exit 1
+  fi
+done
+rm -f "$ROOT_DIR/_build/_gate_private_enum_effect_pattern.log"
 # The GC backend currently rejects the provider's nominal struct return
 # through a type alias; the rename-plan unit test pins this origin, and the
 # executable fixture covers the linear lanes.

@@ -25,6 +25,7 @@ import ./parser_base.vibe {
   _no_tp,
   binder_name_error,
   collect_row_item_targs,
+  discard_handler_operation_ref,
   empty_arms,
   empty_exprs,
   expect_tk,
@@ -33,6 +34,7 @@ import ./parser_base.vibe {
   parse_struct_stmt_with_binder_context,
   parse_type_impl,
   parse_type_param_kind,
+  pattern_ref_mark,
   peek,
   reject_retired_effect_label,
   skip_semi,
@@ -520,7 +522,18 @@ fn qualify_handle_arm_pattern(effect_name: String, pat: Pat, qualifier: (Int, In
 }
 
 fn parse_handle_arm(tokens: Array[Token], starts: Array[Int], pos: Int, effect_name: String, qualifier: (Int, Int), parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> ((Pat, Expr), Int) with Exception {
+  let ref_mark = pattern_ref_mark()
   let (pat, pat_next) = parse_pattern_with_binder_context(tokens, pos, context)
+  match source_pat(pat) {
+    PCtor(name, _) => match peek(tokens, pos + 1) {
+      TDoubleColon => match peek(tokens, pos) {
+        TIdent(head) => discard_handler_operation_ref(ref_mark, head, name),
+        _ => ()
+      },
+      _ => discard_handler_operation_ref(ref_mark, "", name)
+    },
+    _ => ()
+  }
   let qualified_pat = qualify_handle_arm_pattern(effect_name, pat, qualifier, context)
   let arrow_pos = expect_tk(tokens, pat_next, "=>")
   // #2197: a handler body is an arm body too -- same bare-assignment tail,
@@ -558,7 +571,9 @@ fn parse_qualified_handle_arm(tokens: Array[Token], starts: Array[Int], pos: Int
     },
     _ => throw("handler-set arms must name a fully qualified operation such as `Exception::Throw(_)`")
   }
+  let ref_mark = pattern_ref_mark()
   let (pat, pat_next) = parse_pattern_with_binder_context(tokens, operation_pos, context)
+  discard_handler_operation_ref(ref_mark, "", operation_name)
   let qualified_pat = match source_pat(pat) {
     PCtor(name, args) => if name == operation_name {
       PCtor(intern_qualified(effect_label, operation_name), args)

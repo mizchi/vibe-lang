@@ -44,9 +44,11 @@ import ./parser_base.vibe {
   parse_type,
   parse_type_alias_stmt,
   parse_type_alias_stmt_with_binder_context,
+  pattern_ref_mark,
   peek,
   peek_is_allows,
   record_test_effect_row,
+  restore_pattern_refs,
   skip_derive,
   take_qualified_pattern_refs,
   take_test_effect_rows,
@@ -1019,6 +1021,7 @@ export fn parse_program_preserving(tokens: Array[Token]) -> Array[Stmt] with Exc
           pos = dnext
         } else {
           // Inactive #cfg: parse the guarded statement and discard it.
+          let ref_mark = pattern_ref_mark()
           match peek(tokens, dnext) {
             TImpl => {
               let (simpl_d, hp_d) = parse_impl_stmt_dispatch(tokens, dnext + 1)
@@ -1030,6 +1033,7 @@ export fn parse_program_preserving(tokens: Array[Token]) -> Array[Stmt] with Exc
               pos = dn
             }
           }
+          restore_pattern_refs(ref_mark)
         }
       },
       TImpl => {
@@ -1084,7 +1088,8 @@ fn preserving_cfg_directive(tokens: Array[Token], starts: Array[Int], pos: Int, 
   } else if dname == "deprecated" || dname == "cfg_enable" || cfg_flag_active(cfg_active, flag) {
     dnext
   } else {
-    match peek(tokens, dnext) {
+    let ref_mark = pattern_ref_mark()
+    let dn = match peek(tokens, dnext) {
       TImpl => {
         let (simpl_d, hp_d) = parse_impl_stmt_dispatch(tokens, dnext + 1)
         let (_dropped, dn) = parse_impl_methods(tokens, hp_d, simpl_d, None)
@@ -1095,6 +1100,8 @@ fn preserving_cfg_directive(tokens: Array[Token], starts: Array[Int], pos: Int, 
         dn
       }
     }
+    restore_pattern_refs(ref_mark)
+    dn
   }
 }
 
@@ -1346,6 +1353,7 @@ fn parse_program_located_with_context_impl(tokens: Array[Token], starts: Array[I
           } else {
             let capture_mark = binder_capture_mark(context)
             let eligibility_mark = binder_capture_eligibility_mark(context)
+            let ref_mark = pattern_ref_mark()
             let dn = match peek(tokens, dnext) {
               TImpl => {
                 let (simpl_d, hp_d) = parse_impl_stmt_dispatch_with_binder_context(tokens, dnext + 1, context)
@@ -1359,6 +1367,7 @@ fn parse_program_located_with_context_impl(tokens: Array[Token], starts: Array[I
             }
             binder_capture_discard_from(context, capture_mark)
             binder_capture_restore_eligibility(context, eligibility_mark)
+            restore_pattern_refs(ref_mark)
             dn
           }
         } with { Exception::Throw(msg) => {
@@ -1485,7 +1494,8 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
           } else if dname == "deprecated" || dname == "cfg_enable" || cfg_flag_active(cfg_active, flag) {
             dnext
           } else {
-            match peek(tokens, dnext) {
+            let ref_mark = pattern_ref_mark()
+            let dn = match peek(tokens, dnext) {
               TImpl => {
                 let (simpl_d, hp_d) = parse_impl_stmt_dispatch(tokens, dnext + 1)
                 let (_dropped, dn) = parse_impl_methods(tokens, hp_d, simpl_d, None)
@@ -1496,6 +1506,8 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
                 dn
               }
             }
+            restore_pattern_refs(ref_mark)
+            dn
           }
         } with { Exception::Throw(_) => 0 - 1 }
         if cfg_res >= 0 {
@@ -1663,9 +1675,15 @@ export fn parse_program_spans(tokens: Array[Token], starts: Array[Int], ends: Ar
         // `parse_program` does: brace balancing accepted malformed method
         // syntax and never terminated at EOF.
         let st = Array::get(starts, pos)
+        let ref_mark = if drop_next {
+          pattern_ref_mark()
+        } else {
+          (0, 0)
+        }
         let (simpl, hp) = parse_impl_stmt_dispatch(tokens, pos + 1)
         let (_impl_stmts, next) = parse_impl_methods(tokens, hp, simpl, None)
         if drop_next {
+          restore_pattern_refs(ref_mark)
           drop_next = false
         } else {
           ArrayBuilder::push(b, simpl)
@@ -1676,8 +1694,14 @@ export fn parse_program_spans(tokens: Array[Token], starts: Array[Int], ends: Ar
       },
       _ => {
         let st = Array::get(starts, pos)
+        let ref_mark = if drop_next {
+          pattern_ref_mark()
+        } else {
+          (0, 0)
+        }
         let (stmt, next) = parse_stmt(tokens, starts, pos)
         if drop_next {
+          restore_pattern_refs(ref_mark)
           drop_next = false
         } else {
           ArrayBuilder::push(b, stmt)

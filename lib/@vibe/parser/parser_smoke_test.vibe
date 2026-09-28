@@ -364,6 +364,35 @@ test "a bare namesake is recorded alongside a qualified pattern" {
   assert(!contains_ref(refs, "::Green"))
 }
 
+test "an effect operation does not compete with an enum pattern" {
+  let src = "enum Color { A }\neffect Logger { A() -> Int }\nfn f(c: Color) -> Int { let n = match c { Color::A => 1 }; handle { n } with Logger { A() => 2 } }"
+  let refs = qualified_pattern_refs_of(parse_program(lex(src)))
+  assert(contains_ref(refs, "Color::A"))
+  assert(!contains_ref(refs, "::A"))
+  assert(!contains_ref(refs, "Logger::A"))
+}
+
+test "a qualified handler-set operation does not add a bare constructor" {
+  let src = "enum Color { A }\neffect Logger { A -> Int }\nfn f(c: Color) -> Int { let n = match c { Color::A => 1 }; handle { n } with { Logger::A => resume(2) } }"
+  let refs = qualified_pattern_refs_of(parse_program(lex(src)))
+  assert(contains_ref(refs, "Color::A"))
+  assert(!contains_ref(refs, "::A"))
+}
+
+test "a qualified operation in a named handler is not an enum pattern" {
+  let src = "enum Color { A }\neffect Logger { A -> Int }\nfn f(c: Color) -> Int { let n = match c { Color::A => 1 }; handle { n } with Logger { Logger::A => 2 } }"
+  let refs = qualified_pattern_refs_of(parse_program(lex(src)))
+  assert(contains_ref(refs, "Color::A"))
+  assert(!contains_ref(refs, "Logger::A"))
+}
+
+test "inactive cfg patterns do not enter the active pattern log" {
+  let src = "enum Color { A }\n#cfg(disabled) fn hidden(c: Color) -> Int { match c { A => 0 } }\nfn f(c: Color) -> Int { match c { Color::A => 1 } }"
+  let refs = qualified_pattern_refs_of(parse_program(lex(src)))
+  assert(contains_ref(refs, "Color::A"))
+  assert(!contains_ref(refs, "::A"))
+}
+
 // #1461 retired `Error` as an effect spelling; #1501 extended the rejection
 // from row items to the handled-effect name. Before #1501 the two positions
 // disagreed -- `with Error` in a signature was a parse error while
