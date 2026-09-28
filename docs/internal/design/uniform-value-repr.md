@@ -361,8 +361,8 @@ arithmetic / comparison / bitop / shift / float / nested-data case under
 3. **Stage 3 — generic recursive `rc_drop`. ✅ IMPLEMENTED.** Two parts landed:
    - **Stage 2c (uniform drop-class byte).** Every headered RC block carries a
      drop-class id in the **high byte of the rc_count word** (`block+7` =
-     `value-1`), set at construction: tuple/record/ctor/closure = `1`
-     (field-vector), array = `5`. rc lives in the low 24 bits, so `rc--`
+     `value-1`), set at construction: tuple/record/ctor = `1`
+     (field-vector), array = `5`, capturing closure = `7`. rc lives in the low 24 bits, so `rc--`
      (full-word `-1`) preserves the byte and the zero-test becomes
      `(rc_word * 256) == 0` (the `*256` shifts the class byte out of the 32-bit
      word — chosen because the selfhost emitter has `i32.mul`/`load8_u`/`store8`
@@ -387,14 +387,10 @@ arithmetic / comparison / bitop / shift / float / nested-data case under
    inner blocks freed each iteration; without recursion the 64 B/iter of inner
    blocks would leak).
 
-   **Known gap (latent, opt-in RC only):** captured closures are odd pointers
-   that share the heap tag but are **not** yet headered (value = block_start, no
-   rc_count/class byte), so a captured closure stored in a *dropped* container
-   would be misclassified by the recursion. No opt-in RC test/benchmark stores a
-   closure in a dropped container, but this must be closed (header closures like
-   `array_new`) before RC is sound for general higher-order programs — track
-   with the Stage 4 escape work. Floats-in-heap-fields are likewise unsound
-   until boxed.
+   Capturing closures are headered class-7 blocks. Recursive drop reads their
+   capture count and releases owned captures, skipping the weak self capture of
+   a `let rec` closure. An aggregate can therefore release a closure payload
+   using the same tagged-pointer dispatch as any other owned heap value.
 4. **Stage 4 — escape ownership (analysis). ◐ PARTIAL (the safety-critical slice
    landed).** Stage 3's recursive drop turned an *escaping projection* from a
    benign leak into a **use-after-free**: `let pick = (i) -> { let t = ((i,i+1),
@@ -498,13 +494,13 @@ arithmetic / comparison / bitop / shift / float / nested-data case under
    reclaim case.
 
    **Closures with captures are RC-managed (landed).** A capturing closure's env
-   block is now a headered, drop-class-1 (field-vector) block allocated via
+   block is now a headered, drop-class-7 block allocated via
    `__rc_alloc`: the value points at `block_start+8` (past the 8-byte header), so
    the call path's value-relative offsets (slot@value+0, captures@value+8) and the
    `& -4` / `& -2` untags line up exactly as in the unheadered default layout —
    the calling convention is unchanged. Capturing a value consumes it (the env
    takes its reference, no dup), the closure `let` binding is classified heap, and
-   its scope-end drop runs `__rc_drop` (drop-class 1 → recurse the captures, free
+   its scope-end drop runs `__rc_drop` (drop-class 7 → recurse the owned captures, free
    the env). A capture-less closure stays an immediate (`(slot<<2)|2`, even → the
    drop skips it). So a closure capturing a heap value, called once or many times
    (the call borrows it), or returned (escaping — captures survive until the
@@ -551,9 +547,10 @@ arithmetic / comparison / bitop / shift / float / nested-data case under
    the body tail. The tail drop carries the same projection-escape guard (dup the
    result first when it is a projection rooted at a dropped param — `fst(p) → p.0`).
    Heap-ness is read from the param's type (`type_expr_is_heap`): tuple / array /
-   record / enum / concrete struct, but **never** a type containing a function
-   (closures are unheadered — the recursive `__rc_drop` would misread one) nor a
-   type variable / unannotated param (may be a closure → safe, no drop). A
+   record / enum / concrete struct, including aggregates with closure elements.
+   Capturing closures have a header and class-7 recursive drop, while
+   capture-less closures are immediate values that drop ignores. A type variable
+   or unannotated param without body evidence is not classified as heap. A
    top-level fn's param types live on its *signature* (`let f: (A,B) → R`), not on
    the lambda params, so they are read from the SLet annotation; a single tuple
    param prints `((A,B)) → R` but parses as multiple args (the outer parens are
