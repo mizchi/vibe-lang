@@ -2150,6 +2150,21 @@ fn append_stdin_provider_import_alias_markers(merged: Array[Stmt], items: Array[
   }
 }
 
+// Keep a kinded enum re-export's public qualifier in the merged AST. Imports
+// and re-exports otherwise disappear before constructor normalization, which
+// leaves `PublicChoice::First` unresolved even though the checker accepted it.
+fn append_reexport_enum_aliases(merged: Array[Stmt], items: Array[ImportItem]) -> Unit {
+  let mut i = 0
+  while i < Array::length(items) {
+    let item = Array::get(items, i)
+    match (item.kind, item.alias) {
+      (Some(ImportEnum), Some(alias)) => Array::push(merged, STypeAlias(false, alias, array_empty(), TyName(item.name))),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
 export fn append_non_import_stmts_without_alias_rewrite(merged: Array[Stmt], stmts: Array[Stmt]) -> Unit {
   // Even an import-free file needs impl owners normalized through its local
   // transparent aliases. The empty import map keeps every ordinary name
@@ -2164,7 +2179,7 @@ export fn append_non_import_stmts_without_alias_rewrite(merged: Array[Stmt], stm
       } else {
         append_stdin_provider_import_alias_markers(merged, items)
       },
-      SReExport(_, _) => (),
+      SReExport(_, items) => append_reexport_enum_aliases(merged, items),
       SAliasDecl(_, _) => (),
       _ => Array::push(merged, Array::get(rewritten, i))
     }
@@ -2184,7 +2199,7 @@ export fn append_import_alias_rewritten_non_import_stmts_skipping(merged: Array[
       } else {
         append_stdin_provider_import_alias_markers(merged, items)
       },
-      SReExport(_, _) => (),
+      SReExport(_, items) => append_reexport_enum_aliases(merged, items),
       SAliasDecl(_, _) => (),
       _ => Array::push(merged, Array::get(rewritten, i))
     }
@@ -4684,7 +4699,7 @@ export fn append_import_alias_rewritten_non_import_stmts_with_renames(merged: Ar
       } else {
         append_stdin_provider_import_alias_markers(merged, items)
       },
-      SReExport(_, _) => (),
+      SReExport(_, items) => append_reexport_enum_aliases(merged, items),
       SAliasDecl(_, _) => (),
       _ => Array::push(merged, Array::get(rewritten, i))
     }

@@ -4402,3 +4402,24 @@ if [ -s "$cfsdir/b.wasm" ]; then
 fi
 rm -rf "$cfsdir"
 echo "[compiler-gate] #cfg flags reach imported modules through the split CLI, and a flag switch is a cache miss ok (#2513)"
+
+# #3173: a kinded enum re-export publishes its alias as a constructor
+# qualifier. The checker accepted PublicChoice::First before this fix, but
+# normalization lost the facade alias and codegen saw an unresolved name.
+for enum_alias_lane in bump shadow gc; do
+  case "$enum_alias_lane" in
+    bump) enum_alias_rc=0; enum_alias_backend=linear ;;
+    shadow) enum_alias_rc=shadow; enum_alias_backend=linear ;;
+    gc) enum_alias_rc=0; enum_alias_backend=gc ;;
+  esac
+  if ! VIBE_RC="$enum_alias_rc" VIBE_TEST_BACKEND="$enum_alias_backend" \
+      VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+      bash scripts/vibe_test.sh fixtures/reexport_enum_alias_ctor_test.vibe \
+      >"$ROOT_DIR/_build/_gate_reexport_enum_alias.log" 2>&1; then
+    echo "[compiler-gate] FAIL: re-exported enum alias constructor on $enum_alias_lane (#3173)" >&2
+    tail -20 "$ROOT_DIR/_build/_gate_reexport_enum_alias.log" >&2
+    exit 1
+  fi
+done
+rm -f "$ROOT_DIR/_build/_gate_reexport_enum_alias.log"
+echo "[compiler-gate] re-exported enum alias constructors resolve on bump, shadow and gc (#3173)"
