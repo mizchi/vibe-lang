@@ -1436,6 +1436,44 @@ fn is_recovery_point(t: Token) -> Bool {
   }
 }
 
+/// A failed inactive `#cfg` statement must be discarded as one unit. Recovery
+/// keywords inside its parameters or body are still part of that statement.
+fn recover_after_inactive_cfg_stmt(tokens: Array[Token], start: Int) -> Int {
+  let n = Array::length(tokens)
+  let mut depth = 0
+  let mut i = start
+  while i < n {
+    let t = peek(tokens, i)
+    if i > start && depth == 0 {
+      if is_recovery_point(t) {
+        return i
+      }
+      match t {
+        TFn => return i,
+        _ => ()
+      }
+    }
+    match t {
+      TLParen => depth = depth + 1,
+      TLBrace => depth = depth + 1,
+      TLBracket => depth = depth + 1,
+      TRParen => if depth > 0 {
+        depth = depth - 1
+      },
+      TRBrace => if depth > 0 {
+        depth = depth - 1
+      },
+      TRBracket => if depth > 0 {
+        depth = depth - 1
+      },
+      TEof => return i,
+      _ => ()
+    }
+    i = i + 1
+  }
+  n - 1
+}
+
 /// Like `parse_program_located`, but NEVER rethrows. On a per-statement syntax
 /// error it records the located (`line:col`) message into a diagnostics array,
 /// then resynchronizes by advancing `pos` to the next top-level statement start
@@ -1485,7 +1523,7 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
         // #cfg directive: on any malformed directive fall through to the
         // recovery machinery below by treating it like a failed statement.
         let ref_mark = pattern_ref_mark()
-        let mut cfg_error_pos = pos
+        let mut cfg_stmt_start = 0 - 1
         let cfg_res = handle {
           let (dname, flag, dnext) = parse_cfg_directive(tokens, pos + 1)
           if dname == "zero_alloc" {
@@ -1500,6 +1538,7 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
           } else if dname == "deprecated" || dname == "cfg_enable" || cfg_flag_active(cfg_active, flag) {
             dnext
           } else {
+            cfg_stmt_start = dnext
             let dn = match peek(tokens, dnext) {
               TImpl => {
                 let (simpl_d, hp_d) = parse_impl_stmt_dispatch(tokens, dnext + 1)
@@ -1514,25 +1553,17 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
             restore_pattern_refs(ref_mark)
             dn
           }
-        } with { Exception::Throw(msg) => {
+        } with { Exception::Throw(_) => {
           restore_pattern_refs(ref_mark)
-          let anchor = extract_err_token_pos(msg, pos).0
-          if anchor > pos && anchor < n {
-            cfg_error_pos = anchor
-          }
           0 - 1
         } }
         if cfg_res >= 0 {
           pos = cfg_res
+        } else if cfg_stmt_start >= 0 {
+          pos = recover_after_inactive_cfg_stmt(tokens, cfg_stmt_start)
         } else {
-          // Resume after the discarded statement's parsed prefix. Scanning
-          // from `#` can reinterpret a nested `let` as a top-level statement
-          // and add its pattern references again.
-          let mut rp = if cfg_error_pos > pos && is_recovery_point(peek(tokens, cfg_error_pos)) {
-            cfg_error_pos
-          } else {
-            cfg_error_pos + 1
-          }
+          // A malformed directive has no guarded statement to skip.
+          let mut rp = pos + 1
           while rp < n && !is_recovery_point(Array::get(tokens, rp)) {
             rp = rp + 1
           }

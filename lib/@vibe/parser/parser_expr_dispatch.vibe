@@ -549,7 +549,38 @@ fn handler_payload_has_bare_ctor(tokens: Array[Token], root_pos: Int, end: Int, 
   found
 }
 
-fn discard_handler_operation_segment_ref(mark: (Int, Int), tokens: Array[Token], start: Int, segments: Array[(Int, Int)]) -> Unit {
+fn handler_operation_segment_is_group(tokens: Array[Token], start: Int, end: Int) -> Bool {
+  if start >= end {
+    return false
+  }
+  let mut depth = 0
+  let mut i = start
+  while i < end {
+    match peek(tokens, i) {
+      TLParen => depth = depth + 1,
+      TRParen => depth = depth - 1,
+      _ => ()
+    }
+    if depth == 0 && i < end - 1 {
+      return false
+    }
+    i = i + 1
+  }
+  if depth != 0 {
+    false
+  } else {
+    match peek(tokens, start) {
+      TLParen => true,
+      _ => false
+    }
+  }
+}
+
+fn discard_handler_operation_segment_ref(mark: (Int, Int), tokens: Array[Token], start: Int, end: Int, segments: Array[(Int, Int)]) -> Unit {
+  if handler_operation_segment_is_group(tokens, start, end) {
+    discard_handler_operation_refs(mark, tokens, start + 1, end - 1)
+    return
+  }
   match peek(tokens, start) {
     TIdent(head) => match peek(tokens, start + 1) {
       TDoubleColon => match peek(tokens, start + 2) {
@@ -597,7 +628,7 @@ fn discard_handler_operation_refs(mark: (Int, Int), tokens: Array[Token], start:
   }
   Array::push(segments, (segment_start, end))
   for segment in segments {
-    discard_handler_operation_segment_ref(mark, tokens, segment.0, segments)
+    discard_handler_operation_segment_ref(mark, tokens, segment.0, segment.1, segments)
   }
   ()
 }
