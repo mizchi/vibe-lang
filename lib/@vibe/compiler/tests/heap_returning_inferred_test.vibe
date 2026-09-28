@@ -4,6 +4,9 @@ import @vibe/parser {
 import @vibe/compiler/perceus {
   compute_heap_returning
 }
+import @vibe/compiler/codegen/expr {
+  cl_own_return_stmts
+}
 
 fn contains(names: Array[String], target: String) -> Bool {
   let mut found = false
@@ -23,4 +26,18 @@ test "fresh inferred return spines enter the heap call index" {
   inspect(contains(names, "branch"), "true")
   inspect(contains(names, "mixed"), "false")
   inspect(contains(names, "borrowed"), "false")
+}
+
+test "inferred enum and Double results enter the heap call index" {
+  let stmts = parse_program(lex("enum Parcel { Packed(Array[Int]) }\nlet make = (n: Int) -> { Packed([n]) }\nlet calc = (x: Double) -> { x + 1.0 }\nlet shadow = (x: Double) -> { let x = 1; x + 1 }"))
+  let names = compute_heap_returning(stmts)
+  inspect(contains(names, "make"), "true")
+  inspect(contains(names, "calc"), "true")
+  inspect(contains(names, "shadow"), "false")
+}
+
+test "a normalized borrowed tail enters the owned-result index" {
+  let stmts = parse_program(lex("let get = (xss: Array[Array[Int]]) -> { Array::get(xss, 0) }\nlet held = get"))
+  cl_own_return_stmts(stmts)
+  inspect(contains(compute_heap_returning(stmts), "get"), "true")
 }

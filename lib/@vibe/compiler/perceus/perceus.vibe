@@ -2947,7 +2947,32 @@ export fn type_expr_is_heap(ot: Option[TypeExpr]) -> Bool {
 /// existing "any ECall is heap by default" over-approximation when a callee
 /// isn't found here (unannotated function, local closure, shadowed name),
 /// so this is a precision refinement, not a completeness requirement.
-fn inferred_heap_result_spine(body: Expr) -> Bool {
+fn inferred_double_name(double_names: Array[String], name: String) -> Bool {
+  let mut i = Array::length(double_names) - 1
+  let mut found = false
+  let mut answer = false
+  while i >= 0 && !found {
+    let entry = Array::get(double_names, i)
+    if entry == name || entry == "!" + name {
+      answer = entry == name
+      found = true
+    }
+    i = i - 1
+  }
+  answer
+}
+
+fn inferred_double_expr(body: Expr, double_names: Array[String]) -> Bool {
+  match body {
+    EFloat(_) => true,
+    EIdent(name, _) => inferred_double_name(double_names, name),
+    EBinOp(op, left, right, _) => (op == "+" || op == "-" || op == "*" || op == "/") && (inferred_double_expr(left, double_names) || inferred_double_expr(right, double_names)),
+    EUnaryOp("-", value) => inferred_double_expr(value, double_names),
+    _ => false
+  }
+}
+
+fn inferred_heap_result_spine(body: Expr, ctor_names: Array[String], bound: Array[String], double_names: Array[String]) -> Bool {
   match body {
     EArray(_) => true,
     ETuple(_) => true,
@@ -2955,35 +2980,77 @@ fn inferred_heap_result_spine(body: Expr) -> Bool {
     EMap(_) => true,
     EFloat(_) => true,
     EFn(_, _, _, _, _, _) => true,
-    EIf(_, yes, no) => inferred_heap_result_spine(yes) && inferred_heap_result_spine(no),
+    ECall(EIdent(name, off), args, _) => if name == "__lambda_return_owned" && off < 0 && Array::length(args) == 1 {
+      true
+    } else {
+      !array_contains_str_pctx(bound, name) && array_contains_str_pctx(ctor_names, name)
+    },
+    EBinOp(_, _, _, _) => inferred_double_expr(body, double_names),
+    EUnaryOp(_, _) => inferred_double_expr(body, double_names),
+    EIf(_, yes, no) => inferred_heap_result_spine(yes, ctor_names, bound, double_names) && inferred_heap_result_spine(no, ctor_names, bound, double_names),
     EMatch(_, arms) => if Array::length(arms) == 0 {
       false
     } else {
       let mut all_fresh = true
       for arm in arms {
-        if !inferred_heap_result_spine(arm.1) {
+        let mark = Array::length(bound)
+        pat_names(arm.0, bound)
+        if !inferred_heap_result_spine(arm.1, ctor_names, bound, double_names) {
           all_fresh = false
         }
+        Array::truncate(bound, mark)
       }
       all_fresh
     },
-    ELet(_, _, tail, _) => inferred_heap_result_spine(tail),
-    ELetMut(_, _, tail, _) => inferred_heap_result_spine(tail),
-    ELetRec(_, _, tail) => inferred_heap_result_spine(tail),
-    ESeq(_, tail) => inferred_heap_result_spine(tail),
-    EAssign(_, _, tail) => inferred_heap_result_spine(tail),
-    EAssignOp(_, _, _, tail) => inferred_heap_result_spine(tail),
+    ELet(name, value, tail, _) => {
+      let bmark = Array::length(bound)
+      let dmark = Array::length(double_names)
+      if inferred_double_expr(value, double_names) {
+        Array::push(double_names, name)
+      } else {
+        Array::push(double_names, "!" + name)
+      }
+      Array::push(bound, name)
+      let owned = inferred_heap_result_spine(tail, ctor_names, bound, double_names)
+      Array::truncate(bound, bmark)
+      Array::truncate(double_names, dmark)
+      owned
+    },
+    ELetMut(name, _, tail, _) => {
+      let mark = Array::length(bound)
+      let dmark = Array::length(double_names)
+      Array::push(bound, name)
+      Array::push(double_names, "!" + name)
+      let owned = inferred_heap_result_spine(tail, ctor_names, bound, double_names)
+      Array::truncate(bound, mark)
+      Array::truncate(double_names, dmark)
+      owned
+    },
+    ELetRec(name, _, tail) => {
+      let mark = Array::length(bound)
+      let dmark = Array::length(double_names)
+      Array::push(bound, name)
+      Array::push(double_names, "!" + name)
+      let owned = inferred_heap_result_spine(tail, ctor_names, bound, double_names)
+      Array::truncate(bound, mark)
+      Array::truncate(double_names, dmark)
+      owned
+    },
+    ESeq(_, tail) => inferred_heap_result_spine(tail, ctor_names, bound, double_names),
+    EAssign(_, _, tail) => inferred_heap_result_spine(tail, ctor_names, bound, double_names),
+    EAssignOp(_, _, _, tail) => inferred_heap_result_spine(tail, ctor_names, bound, double_names),
     _ => false
   }
 }
 
 export fn compute_heap_returning(stmts: Array[Stmt]) -> Array[String] {
   let out: Array[String] = []
+  let ctor_names = collect_ctor_names(stmts)
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       SLet(_, _, name, ann, value) => match value {
-        EFn(_, _, _, fn_ret, _, body) => {
+        EFn(_, _, params, fn_ret, _, body) => {
           let ret = match ann {
             Some(at) => match at {
               TyFn(_, r, _) => Some(r),
@@ -2993,7 +3060,18 @@ export fn compute_heap_returning(stmts: Array[Stmt]) -> Array[String] {
           }
           // Follow only result spines whose every leaf allocates. A borrowed
           // name or call remains unknown without a declared return type.
-          let direct_fresh_result = inferred_heap_result_spine(body)
+          let bound: Array[String] = []
+          let double_names: Array[String] = []
+          for param in params {
+            Array::push(bound, param.0)
+            match param.1 {
+              Some(TyName(ty)) => if ty == "Double" || ty == "Float" || ty == "f64" || ty == "f32" {
+                Array::push(double_names, param.0)
+              },
+              _ => ()
+            }
+          }
+          let direct_fresh_result = inferred_heap_result_spine(body, ctor_names, bound, double_names)
           if type_expr_is_heap(ret) || (match ret {
             None => direct_fresh_result,
             Some(_) => false
