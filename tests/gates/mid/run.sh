@@ -4429,6 +4429,37 @@ for enum_alias_lane in bump shadow gc; do
     exit 1
   fi
 done
+for private_pat_lane in bump shadow gc; do
+  case "$private_pat_lane" in
+    bump) private_pat_rc=0; private_pat_backend=linear ;;
+    shadow) private_pat_rc=shadow; private_pat_backend=linear ;;
+    gc) private_pat_rc=0; private_pat_backend=gc ;;
+  esac
+  for private_pat_fixture in \
+    fixtures/reexport_enum_alias_private_effect_pattern_test.vibe \
+    fixtures/reexport_enum_alias_private_same_target_test.vibe \
+    fixtures/reexport_enum_alias_private_qualified_payload_test.vibe \
+    fixtures/reexport_enum_alias_private_local_type_alias_test.vibe \
+    fixtures/reexport_enum_alias_private_applied_type_alias_test.vibe \
+    fixtures/reexport_enum_alias_private_dependency_type_alias_test.vibe \
+    fixtures/reexport_enum_alias_private_handler_or_test.vibe \
+    fixtures/reexport_enum_alias_private_struct_payload_test.vibe \
+    fixtures/reexport_enum_alias_private_record_payload_test.vibe; do
+    # GC does not lower algebraic effect handlers.
+    if [ "$private_pat_lane" = gc ] && { [ "$private_pat_fixture" = fixtures/reexport_enum_alias_private_handler_or_test.vibe ] || [ "$private_pat_fixture" = fixtures/reexport_enum_alias_private_struct_payload_test.vibe ] || [ "$private_pat_fixture" = fixtures/reexport_enum_alias_private_record_payload_test.vibe ]; }; then
+      continue
+    fi
+    if ! VIBE_RC="$private_pat_rc" VIBE_TEST_BACKEND="$private_pat_backend" \
+        VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+        bash scripts/vibe_test.sh "$private_pat_fixture" \
+        >"$ROOT_DIR/_build/_gate_private_enum_effect_pattern.log" 2>&1; then
+      echo "[compiler-gate] FAIL: $private_pat_fixture on $private_pat_lane (#3238)" >&2
+      tail -20 "$ROOT_DIR/_build/_gate_private_enum_effect_pattern.log" >&2
+      exit 1
+    fi
+  done
+done
+rm -f "$ROOT_DIR/_build/_gate_private_enum_effect_pattern.log"
 # The GC backend currently rejects the provider's nominal struct return
 # through a type alias; the rename-plan unit test pins this origin, and the
 # executable fixture covers the linear lanes.
@@ -4470,3 +4501,49 @@ for enum_alias_lane in bump shadow gc; do
 done
 rm -f "$ROOT_DIR/_build/_gate_reexport_enum_alias_refused.log"
 echo "[compiler-gate] duplicate enum origins refuse on bump, shadow and gc ok (#3173)"
+
+echo "[compiler-gate] 134/134 private enum alias patterns (#3238)"
+for private_pat_lane in bump shadow gc; do
+  case "$private_pat_lane" in
+    bump) private_pat_rc=0; private_pat_backend=linear ;;
+    shadow) private_pat_rc=shadow; private_pat_backend=linear ;;
+    gc) private_pat_rc=0; private_pat_backend=gc ;;
+  esac
+  if ! VIBE_RC="$private_pat_rc" VIBE_TEST_BACKEND="$private_pat_backend" \
+      VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+      bash scripts/vibe_test.sh fixtures/reexport_enum_alias_private_origin_test.vibe \
+      fixtures/reexport_enum_alias_private_prefixed_variant_test.vibe \
+      fixtures/reexport_enum_alias_private_entry_local_variant_test.vibe \
+      >"$ROOT_DIR/_build/_gate_private_enum_pattern.log" 2>&1; then
+    echo "[compiler-gate] FAIL: private enum alias pattern on $private_pat_lane (#3238)" >&2
+    tail -20 "$ROOT_DIR/_build/_gate_private_enum_pattern.log" >&2
+    exit 1
+  fi
+  if VIBE_RC="$private_pat_rc" VIBE_TEST_BACKEND="$private_pat_backend" \
+      VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+      bash scripts/vibe_test.sh fixtures/reexport_enum_alias_private_pattern_collision_refused.vibe \
+      fixtures/reexport_enum_alias_private_handler_nested_collision_refused.vibe \
+      >"$ROOT_DIR/_build/_gate_private_enum_pattern_refused.log" 2>&1; then
+    echo "[compiler-gate] FAIL: ambiguous private enum alias pattern compiled on $private_pat_lane (#3238)" >&2
+    exit 1
+  fi
+  if [ "$(grep -c 'rename one of the variants named `A`' "$ROOT_DIR/_build/_gate_private_enum_pattern_refused.log" || true)" != 2 ]; then
+    echo "[compiler-gate] FAIL: ambiguous private enum alias pattern lacked an actionable refusal on $private_pat_lane (#3238)" >&2
+    tail -20 "$ROOT_DIR/_build/_gate_private_enum_pattern_refused.log" >&2
+    exit 1
+  fi
+  if VIBE_RC="$private_pat_rc" VIBE_TEST_BACKEND="$private_pat_backend" \
+      VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+      bash scripts/vibe_test.sh fixtures/reexport_enum_alias_private_local_variant_refused.vibe \
+      >"$ROOT_DIR/_build/_gate_private_enum_pattern_local_refused.log" 2>&1; then
+    echo "[compiler-gate] FAIL: imported pattern collided with a dependency-local private variant on $private_pat_lane (#3238)" >&2
+    exit 1
+  fi
+  if ! grep -q 'rename this module.s private variant `A`' "$ROOT_DIR/_build/_gate_private_enum_pattern_local_refused.log"; then
+    echo "[compiler-gate] FAIL: imported/local private variant collision lacked an actionable refusal on $private_pat_lane (#3238)" >&2
+    tail -20 "$ROOT_DIR/_build/_gate_private_enum_pattern_local_refused.log" >&2
+    exit 1
+  fi
+done
+rm -f "$ROOT_DIR/_build/_gate_private_enum_pattern.log" "$ROOT_DIR/_build/_gate_private_enum_pattern_refused.log" "$ROOT_DIR/_build/_gate_private_enum_pattern_local_refused.log"
+echo "[compiler-gate] private enum alias patterns resolve or refuse safely on bump, shadow and gc ok (#3238)"

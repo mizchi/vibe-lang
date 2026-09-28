@@ -356,6 +356,161 @@ test "#1455: a program with no qualified pattern carries no marker" {
   assert_eq(Array::length(refs), 0)
 }
 
+test "a bare namesake is recorded alongside a qualified pattern" {
+  let src = "enum Color { Red; Green }\nfn f(c: Color) -> Int { match c { Red => 0, Color::Red => 1, Color::Green => 2 } }"
+  let refs = qualified_pattern_refs_of(parse_program(lex(src)))
+  assert(contains_ref(refs, "Color::Red"))
+  assert(contains_ref(refs, "::Red"))
+  assert(!contains_ref(refs, "::Green"))
+}
+
+test "an effect operation does not compete with an enum pattern" {
+  let src = "enum Color { A }\neffect Logger { A() -> Int }\nfn f(c: Color) -> Int { let n = match c { Color::A => 1 }; handle { n } with Logger { A() => 2 } }"
+  let refs = qualified_pattern_refs_of(parse_program(lex(src)))
+  assert(contains_ref(refs, "Color::A"))
+  assert(!contains_ref(refs, "::A"))
+  assert(!contains_ref(refs, "Logger::A"))
+}
+
+test "a qualified handler-set operation does not add a bare constructor" {
+  let src = "enum Color { A }\neffect Logger { A -> Int }\nfn f(c: Color) -> Int { let n = match c { Color::A => 1 }; handle { n } with { Logger::A => resume(2) } }"
+  let refs = qualified_pattern_refs_of(parse_program(lex(src)))
+  assert(contains_ref(refs, "Color::A"))
+  assert(!contains_ref(refs, "::A"))
+}
+
+test "a qualified operation in a named handler is not an enum pattern" {
+  let src = "enum Color { A }\neffect Logger { A -> Int }\nfn f(c: Color) -> Int { let n = match c { Color::A => 1 }; handle { n } with Logger { Logger::A => 2 } }"
+  let refs = qualified_pattern_refs_of(parse_program(lex(src)))
+  assert(contains_ref(refs, "Color::A"))
+  assert(!contains_ref(refs, "Logger::A"))
+}
+
+test "a grouped named-handler operation is not an enum pattern" {
+  let src = "enum Api { A }\neffect Logger { A -> Int }\nfn f(c: Api) -> Int { let n = match c { Api::A => 1 }; handle { n } with Logger { (A) => resume(7) } }"
+  let refs = qualified_pattern_refs_of(parse_program(lex(src)))
+  assert(contains_ref(refs, "Api::A"))
+  assert(!contains_ref(refs, "::A"))
+}
+
+test "grouped handler alternatives discard each operation reference" {
+  let src = "enum Api { A }\neffect Logger { A -> Int; B -> Int }\nfn f() -> Int { handle { match Api::A { Api::A => 1 } } with Logger { (A | B) => resume(7) } }"
+  let refs = qualified_pattern_refs_of(parse_program(lex(src)))
+  assert(contains_ref(refs, "Api::A"))
+  assert(!contains_ref(refs, "::A"))
+}
+
+test "a handler keeps a same-named nested constructor reference" {
+  let src = "enum Payload { A }\neffect Logger { A(Payload) -> Int }\nfn f() -> Int { handle { 1 } with Logger { A(A) => 2 } }\nfn g() -> Int { match Payload::A { Payload::A => 1 } }"
+  let refs = qualified_pattern_refs_of(parse_program(lex(src)))
+  assert(contains_ref(refs, "Payload::A"))
+  assert(contains_ref(refs, "::A"))
+}
+
+test "a struct payload field does not preserve a handler operation reference" {
+  let src = "enum Api { A }\nstruct Payload { A: Int }\neffect Logger { A(Payload) -> Int }\nfn f() -> Int { handle { 1 } with Logger { A(Payload::{ A }) => 2 } }\nfn g() -> Int { match Api::A { Api::A => 1 } }"
+  let refs = qualified_pattern_refs_of(parse_program(lex(src)))
+  assert(contains_ref(refs, "Api::A"))
+  assert(!contains_ref(refs, "::A"))
+}
+
+test "an anonymous record payload label does not preserve a handler operation reference" {
+  let src = "enum Api { A }\neffect Logger { A(Int) -> Int }\nfn f() -> Int { handle { 1 } with Logger { A(record { A: value }) => 2 } }\nfn g() -> Int { match Api::A { Api::A => 1 } }"
+  let refs = qualified_pattern_refs_of(parse_program(lex(src)))
+  assert(contains_ref(refs, "Api::A"))
+  assert(!contains_ref(refs, "::A"))
+}
+
+test "an anonymous record payload shorthand field does not preserve a handler operation reference" {
+  let src = "enum Api { A }\neffect Logger { A(Int) -> Int }\nfn f() -> Int { handle { 1 } with Logger { A(record { A }) => 2 } }\nfn g() -> Int { match Api::A { Api::A => 1 } }"
+  let refs = qualified_pattern_refs_of(parse_program(lex(src)))
+  assert(contains_ref(refs, "Api::A"))
+  assert(!contains_ref(refs, "::A"))
+}
+
+test "an anonymous record payload retains a nested bare constructor reference" {
+  let src = "enum Api { A }\neffect Logger { A(Int) -> Int }\nfn f() -> Int { handle { 1 } with Logger { A(record { value: A }) => 2 } }\nfn g() -> Int { match Api::A { Api::A => 1 } }"
+  let refs = qualified_pattern_refs_of(parse_program(lex(src)))
+  assert(contains_ref(refs, "Api::A"))
+  assert(contains_ref(refs, "::A"))
+}
+
+test "a qualified handler operation leaves its qualified payload reference" {
+  let src = "enum Api { A }\neffect Logger { A(Api) -> Int }\nfn f() -> Int { handle { 1 } with Logger { Logger::A(Api::A) => 2 } }"
+  let refs = qualified_pattern_refs_of(parse_program(lex(src)))
+  assert(contains_ref(refs, "Api::A"))
+  assert(!contains_ref(refs, "Logger::A"))
+  assert(!contains_ref(refs, "::A"))
+}
+
+test "named handler operation alternatives leave no enum references" {
+  let src = "enum Api { A }\neffect Logger { A -> Int; B -> Int }\nfn f() -> Int { handle { 1 } with Logger { A | B => resume(2) } }\nfn g() -> Int { match Api::A { Api::A => 1 } }"
+  let refs = qualified_pattern_refs_of(parse_program(lex(src)))
+  assert(contains_ref(refs, "Api::A"))
+  assert(!contains_ref(refs, "::A"))
+}
+
+test "a handler alternative keeps a bare payload in another branch" {
+  let src = "enum Api { A }\neffect Logger { A -> Int; B(Api) -> Int }\nfn f() -> Int { handle { 1 } with Logger { A | B(A) => resume(2) } }\nfn g() -> Int { match Api::A { Api::A => 1 } }"
+  let refs = qualified_pattern_refs_of(parse_program(lex(src)))
+  assert(contains_ref(refs, "Api::A"))
+  assert(contains_ref(refs, "::A"))
+}
+
+test "a failed parse does not leak bare constructors into the next parse" {
+  let error = handle {
+    let _ = parse_program(lex("fn bad() -> Int { match 0 { A => 1 }"))
+    "OK"
+  } with { Exception::Throw(msg) => msg }
+  assert(error != "OK")
+  let refs = qualified_pattern_refs_of(parse_program(lex("enum Color { A }\nfn f(c: Color) -> Int { match c { Color::A => 1 } }")))
+  assert(contains_ref(refs, "Color::A"))
+  assert(!contains_ref(refs, "::A"))
+}
+
+test "inactive cfg patterns do not enter the active pattern log" {
+  let src = "enum Color { A }\n#cfg(disabled) fn hidden(c: Color) -> Int { match c { A => 0 } }\nfn f(c: Color) -> Int { match c { Color::A => 1 } }"
+  let refs = qualified_pattern_refs_of(parse_program(lex(src)))
+  assert(contains_ref(refs, "Color::A"))
+  assert(!contains_ref(refs, "::A"))
+}
+
+test "recovering parse discards bare patterns from failed statements" {
+  let src = "enum Color { A }\nfn good(c: Color) -> Int { match c { Color::A => 1 } }\nfn bad(c: Color) -> Int { match c { A => 0 }"
+  let (tokens, starts, _) = lex_with_offsets(src)
+  let (stmts, diags) = parse_program_recovering(tokens, starts, src)
+  assert(Array::length(diags) > 0)
+  let refs = qualified_pattern_refs_of(stmts)
+  assert(contains_ref(refs, "Color::A"))
+  assert(!contains_ref(refs, "::A"))
+}
+
+test "recovering parse discards bare patterns from failed inactive cfg statements" {
+  let src = "enum Color { A }\nfn good(c: Color) -> Int { match c { Color::A => 1 } }\n#cfg(disabled) fn bad(c: Color) -> Int { let x = match c { A => 0 }; let y = }"
+  let (tokens, starts, _) = lex_with_offsets(src)
+  let (stmts, _diags) = parse_program_recovering(tokens, starts, src)
+  let refs = qualified_pattern_refs_of(stmts)
+  assert(contains_ref(refs, "Color::A"))
+  assert(!contains_ref(refs, "::A"))
+  assert_eq(print_program(stmts), "enum Color { A }\nlet rec good = (c: Color) -> Int { match c { A => 1 } }")
+}
+
+test "recovering parse discards all pattern refs from a failed inactive cfg statement" {
+  let src = "enum Color { A }\n#cfg(disabled) fn bad(c: Color) -> Int { let x = match c { Color::A => 1, A => 0 }; let y = }"
+  let (tokens, starts, _) = lex_with_offsets(src)
+  let (stmts, _diags) = parse_program_recovering(tokens, starts, src)
+  assert_eq(Array::length(qualified_pattern_refs_of(stmts)), 0)
+  assert_eq(print_program(stmts), "enum Color { A }")
+}
+
+test "recovering parse does not reopen a nested let in failed inactive cfg" {
+  let src = "enum Api { A }\n#cfg(disabled) fn bad(let leaked = match Api::A { A => 0 }) -> Int { 0 }\nfn good() -> Int { 1 }"
+  let (tokens, starts, _) = lex_with_offsets(src)
+  let (stmts, _diags) = parse_program_recovering(tokens, starts, src)
+  assert(!recovered_let_named(stmts, "leaked"))
+  assert_eq(Array::length(qualified_pattern_refs_of(stmts)), 0)
+}
+
 // #1461 retired `Error` as an effect spelling; #1501 extended the rejection
 // from row items to the handled-effect name. Before #1501 the two positions
 // disagreed -- `with Error` in a signature was a parse error while

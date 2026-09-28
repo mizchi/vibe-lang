@@ -233,6 +233,68 @@ fn empty_pats() -> Array[Pat] {
 /// produces byte-identical to before this channel existed, and leaves the
 /// membership check to the checker, which already builds the enum table.
 let qualified_pattern_refs: Array[(String, String)] = Array::slice([("", "")], 0, 0)
+let bare_pattern_refs: Array[String] = []
+
+export fn pattern_ref_mark() -> (Int, Int) {
+  (Array::length(qualified_pattern_refs), Array::length(bare_pattern_refs))
+}
+
+export fn restore_pattern_refs(mark: (Int, Int)) -> Unit {
+  Array::truncate(qualified_pattern_refs, mark.0)
+  Array::truncate(bare_pattern_refs, mark.1)
+}
+
+/// A handler's operation pattern is qualified in the AST itself. Its parser
+/// side-channel row would falsely compete with an enum constructor pattern.
+/// Keep any nested constructor refs in the operation's payload.
+export fn discard_handler_operation_ref(mark: (Int, Int), qualifier: String, variant: String) -> Unit {
+  if qualifier == "" {
+    let mut i = mark.1
+    let n = Array::length(bare_pattern_refs)
+    while i < n {
+      if Array::get(bare_pattern_refs, i) == variant {
+        let mut j = i
+        while j + 1 < n {
+          Array::set(bare_pattern_refs, j, Array::get(bare_pattern_refs, j + 1))
+          j = j + 1
+        }
+        Array::truncate(bare_pattern_refs, n - 1)
+        i = n
+      } else {
+        i = i + 1
+      }
+    }
+  } else {
+    let mut i = mark.0
+    let n = Array::length(qualified_pattern_refs)
+    while i < n {
+      let row = Array::get(qualified_pattern_refs, i)
+      if row.0 == qualifier && row.1 == variant {
+        let mut j = i
+        while j + 1 < n {
+          Array::set(qualified_pattern_refs, j, Array::get(qualified_pattern_refs, j + 1))
+          j = j + 1
+        }
+        Array::truncate(qualified_pattern_refs, n - 1)
+        i = n
+      } else {
+        i = i + 1
+      }
+    }
+  }
+}
+
+fn note_bare_pattern_ref(variant: String) -> Unit {
+  let mut seen = false
+  for name in bare_pattern_refs {
+    if name == variant {
+      seen = true
+    }
+  }
+  if !seen {
+    Array::push(bare_pattern_refs, variant)
+  }
+}
 
 /// Record one `qualifier::variant` pattern occurrence.
 ///
@@ -321,7 +383,19 @@ export fn take_test_effect_rows() -> Array[(String, String)] {
 export fn take_qualified_pattern_refs() -> Array[(String, String)] {
   let n = Array::length(qualified_pattern_refs)
   let out = Array::slice(qualified_pattern_refs, 0, n)
+  for bare in bare_pattern_refs {
+    let mut shares_variant = false
+    for row in qualified_pattern_refs {
+      if row.1 == bare {
+        shares_variant = true
+      }
+    }
+    if shares_variant {
+      Array::push(out, ("", bare))
+    }
+  }
   Array::truncate(qualified_pattern_refs, 0)
+  Array::truncate(bare_pattern_refs, 0)
   out
 }
 
@@ -334,7 +408,12 @@ export fn take_qualified_pattern_refs() -> Array[(String, String)] {
 /// back to +-0 once callers check this first and skip the drain).
 #zero_alloc
 export fn has_qualified_pattern_refs() -> Bool {
-  Array::length(qualified_pattern_refs) > 0
+  if Array::length(qualified_pattern_refs) > 0 {
+    true
+  } else {
+    Array::truncate(bare_pattern_refs, 0)
+    false
+  }
 }
 
 let mode_block = 20
@@ -504,6 +583,7 @@ export fn parse_pattern_with_binder_context(tokens: Array[Token], pos: Int, cont
           match peek(tokens, pos + 1) {
             TLParen => {
               let (args, end) = parse_pats_until_rparen(tokens, pos + 2, context);
+              note_bare_pattern_ref(name)
               (PCtor(name, args), end)
             },
             TDoubleColon => match peek(tokens, pos + 2) {
@@ -559,12 +639,19 @@ export fn parse_pattern_with_binder_context(tokens: Array[Token], pos: Int, cont
                     _ => (PCtor(vname, empty_pats()), pos + 3)
                   }
                 } else {
+                  note_bare_pattern_ref(name)
                   (PCtor(name, empty_pats()), pos + 1)
                 }
               },
-              _ => (PCtor(name, empty_pats()), pos + 1)
+              _ => {
+                note_bare_pattern_ref(name)
+                (PCtor(name, empty_pats()), pos + 1)
+              }
             },
-            _ => (PCtor(name, empty_pats()), pos + 1)
+            _ => {
+              note_bare_pattern_ref(name)
+              (PCtor(name, empty_pats()), pos + 1)
+            }
           }
         } else {
           binder_capture_source(context, name, pos, pos)

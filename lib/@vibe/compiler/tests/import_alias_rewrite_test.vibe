@@ -786,6 +786,50 @@ test "#2348 merge: a WAT callee is renamed together with its definition" {
   assert(!String::contains(printed, "call $helper "))
 }
 
+test "a dependency-private qualified pattern tracks its renamed constructor" {
+  let source = "enum Hidden { A; B }\nexport fn selected(x: Hidden) -> Int { match x { Hidden::A => 1, Hidden::B => 2 } }"
+  let renamed = namespace_private_value_stmts("dep.vibe", parse_program(lex(source)))
+  let mut enum_name = ""
+  let mut ctor_name = ""
+  let mut ref_qualifier = ""
+  let mut ref_variant = ""
+  for stmt in renamed {
+    match stmt {
+      SEnum(_, name, _, ctors, _) => {
+        enum_name = name
+        let (name, _) = Array::get(ctors, 0)
+        ctor_name = name
+      },
+      SQualifiedPatternRefs(rows) => {
+        let (qualifier, variant) = Array::get(rows, 0)
+        ref_qualifier = qualifier
+        ref_variant = variant
+      },
+      _ => ()
+    }
+  }
+  assert(enum_name != "" && enum_name != "Hidden")
+  assert(ctor_name != "" && ctor_name != "A")
+  assert_eq(ref_qualifier, enum_name)
+  assert_eq(ref_variant, ctor_name)
+}
+
+test "a local alias of a public enum keeps its public constructor spelling" {
+  let source = "export enum Public { A }\nenum Hidden { A }\ntype Local = Public\nexport fn selected(x: Local) -> Int { match x { Local::A => 1 } }"
+  let renamed = namespace_private_value_stmts("dep.vibe", parse_program(lex(source)))
+  let mut ref_variant = ""
+  for stmt in renamed {
+    match stmt {
+      SQualifiedPatternRefs(rows) => {
+        let (_, variant) = Array::get(rows, 0)
+        ref_variant = variant
+      },
+      _ => ()
+    }
+  }
+  assert_eq(ref_variant, "A")
+}
+
 test "#2348 merge: a local spelled like a private fn is left alone" {
   // The rewrite keys on the `call` keyword, not on `$name` anywhere, so a
   // local or label that happens to share a renamed fn's name keeps its

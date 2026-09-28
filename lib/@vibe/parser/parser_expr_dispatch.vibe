@@ -25,6 +25,7 @@ import ./parser_base.vibe {
   _no_tp,
   binder_name_error,
   collect_row_item_targs,
+  discard_handler_operation_ref,
   empty_arms,
   empty_exprs,
   expect_tk,
@@ -33,6 +34,7 @@ import ./parser_base.vibe {
   parse_struct_stmt_with_binder_context,
   parse_type_impl,
   parse_type_param_kind,
+  pattern_ref_mark,
   peek,
   reject_retired_effect_label,
   skip_semi,
@@ -519,8 +521,179 @@ fn qualify_handle_arm_pattern(effect_name: String, pat: Pat, qualifier: (Int, In
   }
 }
 
+/// The operation's own bare name is recorded after its arguments. Preserve a
+/// same-named bare payload constructor, but not a qualified `Api::A` payload:
+/// that one has a separate `(Api, A)` row and the operation row can be removed.
+fn handler_payload_has_bare_ctor(tokens: Array[Token], root_pos: Int, end: Int, variant: String) -> Bool {
+  let mut i = root_pos + 1
+  let mut found = false
+  let mut brace_depth = 0
+  let mut paren_depth = 0
+  let mut bracket_depth = 0
+  let record_braces = [false]
+  let record_field_starts = [false]
+  let record_parens = [0]
+  let record_brackets = [0]
+  while i < end {
+    match peek(tokens, i) {
+      TLParen => paren_depth = paren_depth + 1,
+      TRParen => paren_depth = paren_depth - 1,
+      TLBracket => bracket_depth = bracket_depth + 1,
+      TRBracket => bracket_depth = bracket_depth - 1,
+      TLBrace => {
+        brace_depth = brace_depth + 1
+        let is_record = i > root_pos && match peek(tokens, i - 1) {
+          TIdent("record") => true,
+          _ => false
+        }
+        if Array::length(record_braces) <= brace_depth {
+          Array::push(record_braces, is_record)
+          Array::push(record_field_starts, is_record)
+          Array::push(record_parens, paren_depth)
+          Array::push(record_brackets, bracket_depth)
+        } else {
+          Array::set(record_braces, brace_depth, is_record)
+          Array::set(record_field_starts, brace_depth, is_record)
+          Array::set(record_parens, brace_depth, paren_depth)
+          Array::set(record_brackets, brace_depth, bracket_depth)
+        }
+      },
+      TRBrace => brace_depth = brace_depth - 1,
+      TComma => if brace_depth > 0 && Array::get(record_braces, brace_depth) && paren_depth == Array::get(record_parens, brace_depth) && bracket_depth == Array::get(record_brackets, brace_depth) {
+        Array::set(record_field_starts, brace_depth, true)
+      },
+      // `Type::{ field }` binds a field; the current struct-pattern grammar
+      // accepts no constructor patterns inside its braces.
+      TDoubleColon => match peek(tokens, i + 1) {
+        TLBrace => {
+          let mut depth = 1
+          i = i + 2
+          while i < end && depth > 0 {
+            match peek(tokens, i) {
+              TLBrace => depth = depth + 1,
+              TRBrace => depth = depth - 1,
+              _ => ()
+            }
+            i = i + 1
+          }
+          i = i - 1
+        },
+        _ => ()
+      },
+      TIdent(name) => {
+        let is_record_field = brace_depth > 0 && Array::get(record_braces, brace_depth) && Array::get(record_field_starts, brace_depth) && paren_depth == Array::get(record_parens, brace_depth) && bracket_depth == Array::get(record_brackets, brace_depth)
+        if is_record_field {
+          Array::set(record_field_starts, brace_depth, false)
+        }
+        if name == variant && !is_record_field {
+          let previous_qualified = i > 0 && match peek(tokens, i - 1) {
+            TDoubleColon => true,
+            _ => false
+          }
+          let next_qualified = match peek(tokens, i + 1) {
+            TDoubleColon => true,
+            _ => false
+          }
+          if !previous_qualified && !next_qualified {
+            found = true
+          }
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn handler_operation_segment_is_group(tokens: Array[Token], start: Int, end: Int) -> Bool {
+  if start >= end {
+    return false
+  }
+  let mut depth = 0
+  let mut i = start
+  while i < end {
+    match peek(tokens, i) {
+      TLParen => depth = depth + 1,
+      TRParen => depth = depth - 1,
+      _ => ()
+    }
+    if depth == 0 && i < end - 1 {
+      return false
+    }
+    i = i + 1
+  }
+  if depth != 0 {
+    false
+  } else {
+    match peek(tokens, start) {
+      TLParen => true,
+      _ => false
+    }
+  }
+}
+
+fn discard_handler_operation_segment_ref(mark: (Int, Int), tokens: Array[Token], start: Int, end: Int, segments: Array[(Int, Int)]) -> Unit {
+  if handler_operation_segment_is_group(tokens, start, end) {
+    discard_handler_operation_refs(mark, tokens, start + 1, end - 1)
+    return
+  }
+  match peek(tokens, start) {
+    TIdent(head) => match peek(tokens, start + 1) {
+      TDoubleColon => match peek(tokens, start + 2) {
+        TIdent(variant) => discard_handler_operation_ref(mark, head, variant),
+        _ => ()
+      },
+      _ => {
+        let mut has_payload = false
+        for segment in segments {
+          if handler_payload_has_bare_ctor(tokens, segment.0, segment.1, head) {
+            has_payload = true
+          }
+        }
+        if !has_payload {
+          discard_handler_operation_ref(mark, "", head)
+        }
+      }
+    },
+    _ => ()
+  }
+}
+
+/// Each top-level alternative is an effect operation, not an enum pattern.
+/// Inspect every payload before removing a deduplicated bare reference.
+fn discard_handler_operation_refs(mark: (Int, Int), tokens: Array[Token], start: Int, end: Int) -> Unit {
+  let segments: Array[(Int, Int)] = []
+  let mut segment_start = start
+  let mut depth = 0
+  let mut i = start
+  while i < end {
+    match peek(tokens, i) {
+      TLParen => depth = depth + 1,
+      TLBrace => depth = depth + 1,
+      TLBracket => depth = depth + 1,
+      TRParen => depth = depth - 1,
+      TRBrace => depth = depth - 1,
+      TRBracket => depth = depth - 1,
+      TBitOr => if depth == 0 {
+        Array::push(segments, (segment_start, i))
+        segment_start = i + 1
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  Array::push(segments, (segment_start, end))
+  for segment in segments {
+    discard_handler_operation_segment_ref(mark, tokens, segment.0, segment.1, segments)
+  }
+  ()
+}
+
 fn parse_handle_arm(tokens: Array[Token], starts: Array[Int], pos: Int, effect_name: String, qualifier: (Int, Int), parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> ((Pat, Expr), Int) with Exception {
+  let ref_mark = pattern_ref_mark()
   let (pat, pat_next) = parse_pattern_with_binder_context(tokens, pos, context)
+  discard_handler_operation_refs(ref_mark, tokens, pos, pat_next)
   let qualified_pat = qualify_handle_arm_pattern(effect_name, pat, qualifier, context)
   let arrow_pos = expect_tk(tokens, pat_next, "=>")
   // #2197: a handler body is an arm body too -- same bare-assignment tail,
@@ -558,7 +731,11 @@ fn parse_qualified_handle_arm(tokens: Array[Token], starts: Array[Int], pos: Int
     },
     _ => throw("handler-set arms must name a fully qualified operation such as `Exception::Throw(_)`")
   }
+  let ref_mark = pattern_ref_mark()
   let (pat, pat_next) = parse_pattern_with_binder_context(tokens, operation_pos, context)
+  if !handler_payload_has_bare_ctor(tokens, operation_pos, pat_next, operation_name) {
+    discard_handler_operation_ref(ref_mark, "", operation_name)
+  }
   let qualified_pat = match source_pat(pat) {
     PCtor(name, args) => if name == operation_name {
       PCtor(intern_qualified(effect_label, operation_name), args)

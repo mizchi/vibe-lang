@@ -44,9 +44,11 @@ import ./parser_base.vibe {
   parse_type,
   parse_type_alias_stmt,
   parse_type_alias_stmt_with_binder_context,
+  pattern_ref_mark,
   peek,
   peek_is_allows,
   record_test_effect_row,
+  restore_pattern_refs,
   skip_derive,
   take_qualified_pattern_refs,
   take_test_effect_rows,
@@ -996,6 +998,7 @@ fn parse_preserving_top_stmt(tokens: Array[Token], starts: Array[Int], pos: Int)
 /// logs already drained; the markers were appended last here and the
 /// lowerings keep statement order, so they stay last.
 export fn parse_program_preserving(tokens: Array[Token]) -> Array[Stmt] with Exception {
+  restore_pattern_refs((0, 0))
   let cfg_active = cfg_scan_enabled(tokens)
   let b = ArrayBuilder::new()
   let mut pos = 0
@@ -1019,6 +1022,7 @@ export fn parse_program_preserving(tokens: Array[Token]) -> Array[Stmt] with Exc
           pos = dnext
         } else {
           // Inactive #cfg: parse the guarded statement and discard it.
+          let ref_mark = pattern_ref_mark()
           match peek(tokens, dnext) {
             TImpl => {
               let (simpl_d, hp_d) = parse_impl_stmt_dispatch(tokens, dnext + 1)
@@ -1030,6 +1034,7 @@ export fn parse_program_preserving(tokens: Array[Token]) -> Array[Stmt] with Exc
               pos = dn
             }
           }
+          restore_pattern_refs(ref_mark)
         }
       },
       TImpl => {
@@ -1084,7 +1089,8 @@ fn preserving_cfg_directive(tokens: Array[Token], starts: Array[Int], pos: Int, 
   } else if dname == "deprecated" || dname == "cfg_enable" || cfg_flag_active(cfg_active, flag) {
     dnext
   } else {
-    match peek(tokens, dnext) {
+    let ref_mark = pattern_ref_mark()
+    let dn = match peek(tokens, dnext) {
       TImpl => {
         let (simpl_d, hp_d) = parse_impl_stmt_dispatch(tokens, dnext + 1)
         let (_dropped, dn) = parse_impl_methods(tokens, hp_d, simpl_d, None)
@@ -1095,10 +1101,13 @@ fn preserving_cfg_directive(tokens: Array[Token], starts: Array[Int], pos: Int, 
         dn
       }
     }
+    restore_pattern_refs(ref_mark)
+    dn
   }
 }
 
 fn parse_program_preserving_impl(tokens: Array[Token], starts: Array[Int], source: String, located: Bool) -> Array[Stmt] with Exception {
+  restore_pattern_refs((0, 0))
   if located {
     remember_parse_source(source)
   } else {
@@ -1312,6 +1321,7 @@ fn locate_parse_error(msg: String, fallback_pos: Int, starts: Array[Int], source
 }
 
 fn parse_program_located_with_context_impl(tokens: Array[Token], starts: Array[Int], source: String, context: Option[ParserBinderContext]) -> (Array[Stmt], Int) with Exception {
+  restore_pattern_refs((0, 0))
   remember_parse_source(source)
   let cfg_active = cfg_scan_enabled_located(tokens, starts, source)
   let b = ArrayBuilder::new()
@@ -1346,6 +1356,7 @@ fn parse_program_located_with_context_impl(tokens: Array[Token], starts: Array[I
           } else {
             let capture_mark = binder_capture_mark(context)
             let eligibility_mark = binder_capture_eligibility_mark(context)
+            let ref_mark = pattern_ref_mark()
             let dn = match peek(tokens, dnext) {
               TImpl => {
                 let (simpl_d, hp_d) = parse_impl_stmt_dispatch_with_binder_context(tokens, dnext + 1, context)
@@ -1359,6 +1370,7 @@ fn parse_program_located_with_context_impl(tokens: Array[Token], starts: Array[I
             }
             binder_capture_discard_from(context, capture_mark)
             binder_capture_restore_eligibility(context, eligibility_mark)
+            restore_pattern_refs(ref_mark)
             dn
           }
         } with { Exception::Throw(msg) => {
@@ -1424,6 +1436,44 @@ fn is_recovery_point(t: Token) -> Bool {
   }
 }
 
+/// A failed inactive `#cfg` statement must be discarded as one unit. Recovery
+/// keywords inside its parameters or body are still part of that statement.
+fn recover_after_inactive_cfg_stmt(tokens: Array[Token], start: Int) -> Int {
+  let n = Array::length(tokens)
+  let mut depth = 0
+  let mut i = start
+  while i < n {
+    let t = peek(tokens, i)
+    if i > start && depth == 0 {
+      if is_recovery_point(t) {
+        return i
+      }
+      match t {
+        TFn => return i,
+        _ => ()
+      }
+    }
+    match t {
+      TLParen => depth = depth + 1,
+      TLBrace => depth = depth + 1,
+      TLBracket => depth = depth + 1,
+      TRParen => if depth > 0 {
+        depth = depth - 1
+      },
+      TRBrace => if depth > 0 {
+        depth = depth - 1
+      },
+      TRBracket => if depth > 0 {
+        depth = depth - 1
+      },
+      TEof => return i,
+      _ => ()
+    }
+    i = i + 1
+  }
+  n - 1
+}
+
 /// Like `parse_program_located`, but NEVER rethrows. On a per-statement syntax
 /// error it records the located (`line:col`) message into a diagnostics array,
 /// then resynchronizes by advancing `pos` to the next top-level statement start
@@ -1451,6 +1501,7 @@ export fn parse_program_located_with_binder_context(tokens: Array[Token], starts
 }
 
 export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], source: String) -> (Array[Stmt], Array[String]) with Exception {
+  restore_pattern_refs((0, 0))
   remember_parse_source(source)
   let cfg_active = handle {
     cfg_scan_enabled(tokens)
@@ -1471,6 +1522,8 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
       THash => {
         // #cfg directive: on any malformed directive fall through to the
         // recovery machinery below by treating it like a failed statement.
+        let ref_mark = pattern_ref_mark()
+        let mut cfg_stmt_start = 0 - 1
         let cfg_res = handle {
           let (dname, flag, dnext) = parse_cfg_directive(tokens, pos + 1)
           if dname == "zero_alloc" {
@@ -1485,7 +1538,8 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
           } else if dname == "deprecated" || dname == "cfg_enable" || cfg_flag_active(cfg_active, flag) {
             dnext
           } else {
-            match peek(tokens, dnext) {
+            cfg_stmt_start = dnext
+            let dn = match peek(tokens, dnext) {
               TImpl => {
                 let (simpl_d, hp_d) = parse_impl_stmt_dispatch(tokens, dnext + 1)
                 let (_dropped, dn) = parse_impl_methods(tokens, hp_d, simpl_d, None)
@@ -1496,12 +1550,19 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
                 dn
               }
             }
+            restore_pattern_refs(ref_mark)
+            dn
           }
-        } with { Exception::Throw(_) => 0 - 1 }
+        } with { Exception::Throw(_) => {
+          restore_pattern_refs(ref_mark)
+          0 - 1
+        } }
         if cfg_res >= 0 {
           pos = cfg_res
+        } else if cfg_stmt_start >= 0 {
+          pos = recover_after_inactive_cfg_stmt(tokens, cfg_stmt_start)
         } else {
-          // resync: skip to the next recovery point (mirrors the stmt path).
+          // A malformed directive has no guarded statement to skip.
           let mut rp = pos + 1
           while rp < n && !is_recovery_point(Array::get(tokens, rp)) {
             rp = rp + 1
@@ -1511,6 +1572,7 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
       },
       _ => {
         let start_pos = pos
+        let ref_mark = pattern_ref_mark()
         let res = handle {
           let (stmts, next) = match peek(tokens, pos) {
             TImpl => {
@@ -1524,6 +1586,7 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
           }
           Some((stmts, next))
         } with { Exception::Throw(msg) => {
+          restore_pattern_refs(ref_mark)
           let err_pos = extract_err_token_pos(msg, start_pos).0
           let anchor_pos = if err_pos >= start_pos && err_pos < Array::length(starts) {
             err_pos
@@ -1596,6 +1659,7 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
 /// `lex_with_offsets`. start = first token's start offset; end = last token's
 /// end offset. The three returned arrays are parallel (one entry per stmt).
 export fn parse_program_spans(tokens: Array[Token], starts: Array[Int], ends: Array[Int]) -> (Array[Stmt], Array[Int], Array[Int]) with Exception {
+  restore_pattern_refs((0, 0))
   let cfg_active = cfg_scan_enabled(tokens)
   let b = ArrayBuilder::new()
   let span_start = ArrayBuilder::new()
@@ -1663,9 +1727,15 @@ export fn parse_program_spans(tokens: Array[Token], starts: Array[Int], ends: Ar
         // `parse_program` does: brace balancing accepted malformed method
         // syntax and never terminated at EOF.
         let st = Array::get(starts, pos)
+        let ref_mark = if drop_next {
+          pattern_ref_mark()
+        } else {
+          (0, 0)
+        }
         let (simpl, hp) = parse_impl_stmt_dispatch(tokens, pos + 1)
         let (_impl_stmts, next) = parse_impl_methods(tokens, hp, simpl, None)
         if drop_next {
+          restore_pattern_refs(ref_mark)
           drop_next = false
         } else {
           ArrayBuilder::push(b, simpl)
@@ -1676,8 +1746,14 @@ export fn parse_program_spans(tokens: Array[Token], starts: Array[Int], ends: Ar
       },
       _ => {
         let st = Array::get(starts, pos)
+        let ref_mark = if drop_next {
+          pattern_ref_mark()
+        } else {
+          (0, 0)
+        }
         let (stmt, next) = parse_stmt(tokens, starts, pos)
         if drop_next {
+          restore_pattern_refs(ref_mark)
           drop_next = false
         } else {
           ArrayBuilder::push(b, stmt)
