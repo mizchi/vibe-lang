@@ -374,6 +374,52 @@ fn seq_push_pattern_binds(pat: Pat, bound: Array[String]) -> Bool with Exception
   true
 }
 
+fn seq_discard_exits(e: Expr, local_names: Array[String], bound: Array[String]) -> Bool with Exception {
+  match e {
+    EReturn(_) => true,
+    EBreak(_) => true,
+    EContinue(_) => true,
+    ECall(EIdent("throw", _), _, _) => find_local_slot(local_names, "throw") < 0 && seq_bound_call_result(bound, "throw") < 0,
+    ELet(name, _, body, _) => {
+      let mark = Array::length(bound)
+      Array::push(bound, name)
+      let exits = seq_discard_exits(body, local_names, bound)
+      Array::truncate(bound, mark)
+      exits
+    },
+    ELetMut(name, _, body, _) => {
+      let mark = Array::length(bound)
+      Array::push(bound, name)
+      let exits = seq_discard_exits(body, local_names, bound)
+      Array::truncate(bound, mark)
+      exits
+    },
+    ELetRec(name, _, body) => {
+      let mark = Array::length(bound)
+      Array::push(bound, name)
+      let exits = seq_discard_exits(body, local_names, bound)
+      Array::truncate(bound, mark)
+      exits
+    },
+    ESeq(head, body) => seq_discard_exits(head, local_names, bound) || seq_discard_exits(body, local_names, bound),
+    EIf(_, yes, no) => seq_discard_exits(yes, local_names, bound) && seq_discard_exits(no, local_names, bound),
+    EMatch(_, arms) => if Array::length(arms) == 0 {
+      false
+    } else {
+      let mut all_exit = true
+      for arm in arms {
+        let mark = Array::length(bound)
+        if !seq_push_pattern_binds(arm.0, bound) || !seq_discard_exits(arm.1, local_names, bound) {
+          all_exit = false
+        }
+        Array::truncate(bound, mark)
+      }
+      all_exit
+    },
+    _ => false
+  }
+}
+
 fn seq_discard_owns_result_in(e: Expr, local_names: Array[String], bound: Array[String], ctx: CompileCtx) -> Bool with Exception {
   match e {
     ECall(EIdent(n, _), _, _) => {
@@ -387,6 +433,7 @@ fn seq_discard_owns_result_in(e: Expr, local_names: Array[String], bound: Array[
         is_ctor_call(e, ctx.ctor_table) || (bsearch_leftmost(ctx.heap_ret_names, n) >= 0 && !is_borrow_ret_builtin(n) && bsearch_leftmost(ctx.borrow_ret_names, n) < 0 && bsearch_leftmost(ctx.borrow_view_ret, n) < 0)
       }
     },
+    ECall(_, _, _) => true,
     EArray(_) => true,
     ETuple(_) => true,
     ERecord(_, _, _) => true,
@@ -395,7 +442,7 @@ fn seq_discard_owns_result_in(e: Expr, local_names: Array[String], bound: Array[
     EFn(_, _, _, _, _, _) => true,
     EBinOp(op, _, _, _) => (op == "+" || op == "-" || op == "*" || op == "/") && expr_is_floatish(e, local_names, ctx),
     EUnaryOp("-", _) => expr_is_floatish(e, local_names, ctx),
-    EIf(_, then_body, else_body) => seq_discard_owns_result_in(then_body, local_names, bound, ctx) && seq_discard_owns_result_in(else_body, local_names, bound, ctx),
+    EIf(_, then_body, else_body) => (seq_discard_owns_result_in(then_body, local_names, bound, ctx) || seq_discard_exits(then_body, local_names, bound)) && (seq_discard_owns_result_in(else_body, local_names, bound, ctx) || seq_discard_exits(else_body, local_names, bound)),
     EMatch(_, arms) => if Array::length(arms) == 0 {
       false
     } else {
@@ -404,7 +451,7 @@ fn seq_discard_owns_result_in(e: Expr, local_names: Array[String], bound: Array[
       while i < Array::length(arms) {
         let (pat, body) = Array::get(arms, i)
         let mark = Array::length(bound)
-        if !seq_push_pattern_binds(pat, bound) || !seq_discard_owns_result_in(body, local_names, bound, ctx) {
+        if !seq_push_pattern_binds(pat, bound) || !(seq_discard_owns_result_in(body, local_names, bound, ctx) || seq_discard_exits(body, local_names, bound)) {
           owned = false
         }
         Array::truncate(bound, mark)
@@ -412,7 +459,7 @@ fn seq_discard_owns_result_in(e: Expr, local_names: Array[String], bound: Array[
       }
       owned
     },
-    EHandle(body, arms) => if !seq_discard_owns_result_in(body, local_names, bound, ctx) {
+    EHandle(body, arms) => if !(seq_discard_owns_result_in(body, local_names, bound, ctx) || seq_discard_exits(body, local_names, bound)) {
       false
     } else {
       let mut owned = true
@@ -420,7 +467,7 @@ fn seq_discard_owns_result_in(e: Expr, local_names: Array[String], bound: Array[
       while i < Array::length(arms) {
         let (pat, arm_body) = Array::get(arms, i)
         let mark = Array::length(bound)
-        if !seq_push_pattern_binds(pat, bound) || !(seq_discard_owns_result_in(arm_body, local_names, bound, ctx) || seq_handler_resumes(arm_body)) {
+        if !seq_push_pattern_binds(pat, bound) || !(seq_discard_owns_result_in(arm_body, local_names, bound, ctx) || seq_discard_exits(arm_body, local_names, bound) || seq_handler_resumes(arm_body)) {
           owned = false
         }
         Array::truncate(bound, mark)

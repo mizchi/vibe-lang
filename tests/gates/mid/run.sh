@@ -1696,8 +1696,8 @@ for sq_lane in bump rc shadow gc; do
     exit 1
   fi
   sq_extended_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$sqdir/extended.wasm" 2>&1 | tail -1)"
-  if [ "$sq_extended_out" != "38000" ]; then
-    echo "[compiler-gate] FAIL: rc_seq_discard_extended got '$sq_extended_out' on $sq_lane (want 38000; #3199)" >&2
+  if [ "$sq_extended_out" != "44000" ]; then
+    echo "[compiler-gate] FAIL: rc_seq_discard_extended got '$sq_extended_out' on $sq_lane (want 44000; #3199)" >&2
     exit 1
   fi
   if [ "$sq_lane" = rc ]; then
@@ -1720,7 +1720,7 @@ for sq_lane in 1 shadow; do
   fi
 done
 rm -f "$ROOT_DIR/_build/_gate_rc_seq_discard.log"
-echo "[compiler-gate] RC discarded sequence result ok (4000 + 38000 on all lanes, rc heap_used=$sq_used/$sq_extended_used B; borrows alive on rc + shadow)"
+echo "[compiler-gate] RC discarded sequence result ok (4000 + 44000 on all lanes, rc heap_used=$sq_used/$sq_extended_used B; borrows alive on rc + shadow)"
 
 # 40f1a. #2427: the shadow table must not overlap the heap it describes.
 #        40f above proves the marks catch a real dup/drop-of-freed; this
