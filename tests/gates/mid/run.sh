@@ -4547,3 +4547,14 @@ for private_pat_lane in bump shadow gc; do
 done
 rm -f "$ROOT_DIR/_build/_gate_private_enum_pattern.log" "$ROOT_DIR/_build/_gate_private_enum_pattern_refused.log" "$ROOT_DIR/_build/_gate_private_enum_pattern_local_refused.log"
 echo "[compiler-gate] private enum alias patterns resolve or refuse safely on bump, shadow and gc ok (#3238)"
+
+echo "[compiler-gate] 135/135 Option closure payload ownership (#3240)"
+if ! VIBE_RC=shadow VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+    bash scripts/vibe_test.sh fixtures/rc_option_payload_return_test.vibe \
+    >"$ROOT_DIR/_build/_gate_option_payload_rc.log" 2>&1; then
+  echo "[compiler-gate] FAIL: Option closure payload was not released after its callback escaped (#3240)" >&2
+  tail -20 "$ROOT_DIR/_build/_gate_option_payload_rc.log" >&2
+  exit 1
+fi
+rm -f "$ROOT_DIR/_build/_gate_option_payload_rc.log"
+echo "[compiler-gate] Option closure payload stays live and bounded in shadow RC ok (#3240)"
