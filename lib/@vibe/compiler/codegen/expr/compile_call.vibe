@@ -4405,11 +4405,21 @@ fn compile_call_core(buf: Bytes, callee: Expr, raw_args: Array[Expr], local_name
         } else {
           emit_i64_const(buf, 0)
         }
+        let thrown_local = if ctx.enable_rc {
+          emit_local_tee(buf, enl)
+          enl
+        } else {
+          0 - 1
+        }
         // #3141: the throw leaves every scope up to the innermost `handle`.
-        rc_exit_release(buf, ctx, local_names, 3, thrown, 0 - 1)
+        rc_exit_release(buf, ctx, local_names, 3, thrown, thrown_local)
         bytebuf_push(buf, 8)
         bytebuf_push(buf, 2)
-        enl
+        if thrown_local >= 0 {
+          enl + 1
+        } else {
+          enl
+        }
       } else if is_exception_operation_name(op_head) {
         throw(String::concat("perform ", String::concat(op_head, ": the abortive Exception alias has a single operation, Throw (#1279)")))
       } else {
@@ -8098,6 +8108,23 @@ fn rc_exit_result_is_name(e: Expr, name: String) -> Bool {
   }
 }
 
+fn rc_exit_follow_value_source(e: Expr, sources: Array[(String, Expr)], limit: Int) -> Expr {
+  match e {
+    EIdent(name, _) => {
+      let mut i = limit - 1
+      while i >= 0 {
+        let row = Array::get(sources, i)
+        if row.0 == name {
+          return rc_exit_follow_value_source(row.1, sources, i)
+        }
+        i = i - 1
+      }
+      e
+    },
+    _ => e
+  }
+}
+
 /// A recursive binder may be transferred on one return branch and abandoned
 /// on the other. The planner merges their counts, so compare the returned
 /// pointer with the binder only when the result is the binder or a known
@@ -8280,6 +8307,45 @@ fn rc_exit_name_shared(names: Array[String], info: Array[Int], lo: Int, i: Int) 
   shared
 }
 
+/// A break result that is either a recursive owner or a fresh closure already
+/// has one owned reference on each path. The exit compares the stored pointer
+/// with the recursive owner and releases only the unselected owner.
+export fn rc_exit_break_result_owns_rec(value: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  if Array::length(ctx.rc_exit_state) < 3 || Array::get(ctx.rc_exit_state, 1) != 0 || Array::get(ctx.rc_exit_state, 2) != 0 {
+    return false
+  }
+  let nlets = Array::length(ctx.rc_exit_lets)
+  let inner = if nlets > 0 {
+    Array::get(ctx.rc_exit_lets, nlets - 1)
+  } else {
+    ""
+  }
+  if !rc_exit_site_matches(ctx, Array::get(ctx.rc_exit_state, 0), 1, perceus_exit_fingerprint(EUnit), inner) {
+    return false
+  }
+  let names = ctx.rc_exit_stack_names
+  let info = ctx.rc_exit_stack_info
+  let mut lo = 0
+  let mut j = Array::length(names) - 1
+  while j >= 0 {
+    if Array::get(info, j * 3) == 100 {
+      lo = j + 1
+      j = 0 - 1
+    } else {
+      j = j - 1
+    }
+  }
+  let mut i = lo
+  while i < Array::length(names) {
+    let name = Array::get(names, i)
+    if Array::get(info, i * 3) == 6 && !rc_exit_name_shared(names, info, lo, i) && find_local_slot(local_names, name) == Array::get(info, i * 3 + 1) && rc_exit_conditional_rec_transfer(value, name, local_names, ctx) {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
 /// #3141: release what an early exit leaves, right before the exit's own
 /// transfer (`return`, `br`, `throw`); the operand, when there is one, is
 /// already on the wasm stack and stays there (`rc_drop` returns nothing).
@@ -8304,6 +8370,21 @@ fn rc_exit_name_shared(names: Array[String], info: Array[Int], lo: Int, i: Int) 
 /// parameters. Those values are held to the operand's test too.
 export fn rc_exit_release(buf: Bytes, ctx: CompileCtx, local_names: Array[String], kind: Int, operand: Expr, result_local: Int) -> Unit with Exception {
   if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && Array::length(ctx.rc_exit_state) >= 3 {
+    let mut exit_result = (result_local, operand)
+    if kind == 1 {
+      let mut ri = Array::length(ctx.rc_exit_result_stores) - 1
+      while ri >= 0 {
+        let row = Array::get(ctx.rc_exit_result_stores, ri)
+        if row.0 == "__loop_result" || (String::starts_with(row.0, "__shadow_") && String::ends_with(row.0, "___loop_result")) {
+          exit_result = (find_local_slot(local_names, row.0), row.1)
+          ri = 0 - 1
+        } else {
+          ri = ri - 1
+        }
+      }
+    } else if kind == 3 {
+      exit_result = (result_local, rc_exit_follow_value_source(operand, ctx.rc_exit_result_stores, Array::length(ctx.rc_exit_result_stores)))
+    }
     let ord = Array::get(ctx.rc_exit_state, 0)
     Array::set(ctx.rc_exit_state, 0, ord + 1)
     let nlets = Array::length(ctx.rc_exit_lets)
@@ -8355,7 +8436,7 @@ export fn rc_exit_release(buf: Bytes, ctx: CompileCtx, local_names: Array[String
             let ek = Array::get(info, i * 3)
             let local = Array::get(info, i * 3 + 1)
             let flag = Array::get(info, i * 3 + 2)
-            let conditional_rec = kind == 0 && result_local >= 0 && ek == 6 && !rc_exit_name_shared(names, info, lo, i) && find_local_slot(local_names, n) == local && rc_exit_conditional_rec_transfer(operand, n, local_names, ctx)
+            let conditional_rec = exit_result.0 >= 0 && ek == 6 && !rc_exit_name_shared(names, info, lo, i) && find_local_slot(local_names, n) == local && rc_exit_conditional_rec_transfer(exit_result.1, n, local_names, ctx)
             let count = if conditional_rec {
               1
             } else if !operand_ok || ek >= 100 || array_contains_str(keep, n) || rc_exit_name_shared(names, info, lo, i) || find_local_slot(local_names, n) != local {
@@ -8386,7 +8467,7 @@ export fn rc_exit_release(buf: Bytes, ctx: CompileCtx, local_names: Array[String
             }
             if count > 0 {
               if conditional_rec {
-                emit_local_get(buf, result_local)
+                emit_local_get(buf, exit_result.0)
                 emit_local_get(buf, local)
                 emit_i64_ne(buf)
                 emit_if_void(buf)

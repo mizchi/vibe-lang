@@ -257,6 +257,7 @@ import ./compile_call.vibe {
   cc_expr_is_stringish,
   cc_fn_returns_float,
   compile_call,
+  rc_exit_break_result_owns_rec,
   rc_exit_end_store,
   rc_exit_note_store,
   rc_exit_value_owned
@@ -1914,13 +1915,14 @@ fn call_returns_borrow(value: Expr, local_names: Array[String], ctx: CompileCtx)
   }
 }
 
-/// Resolve an escaping borrow through user helpers as well as builtins. The
-/// returned name identifies the owner whose scope-end drop needs a retain.
-fn rc_scope_borrow_arg_root(e: Expr, local_names: Array[String], ctx: CompileCtx) -> String {
+/// Find a path that can return this owner through a borrow or passthrough
+/// helper. The caller compares the actual result pointer with the owner, so
+/// a fresh branch does not retain an owner it did not return.
+fn rc_scope_borrow_arg_reaches_owner(e: Expr, owner: String, local_names: Array[String], ctx: CompileCtx) -> Bool {
   let operand = cl_return_operand(e)
   match operand {
-    EIdent(_, _) => proj_root_ident(operand),
-    EDot(_, _, _, _) => proj_root_ident(operand),
+    EIdent(_, _) => proj_root_ident(operand) == owner,
+    EDot(_, _, _, _) => proj_root_ident(operand) == owner,
     ECall(EIdent(callee, _), args, _) => {
       let mut source_idx = if call_returns_borrow(operand, local_names, ctx) {
         0
@@ -1938,12 +1940,22 @@ fn rc_scope_borrow_arg_root(e: Expr, local_names: Array[String], ctx: CompileCtx
         }
       }
       if source_idx >= 0 && source_idx < Array::length(args) {
-        rc_scope_borrow_arg_root(Array::get(args, source_idx), local_names, ctx)
+        rc_scope_borrow_arg_reaches_owner(Array::get(args, source_idx), owner, local_names, ctx)
       } else {
-        ""
+        false
       }
     },
-    _ => ""
+    EIf(_, yes, no) => rc_scope_borrow_arg_reaches_owner(yes, owner, local_names, ctx) || rc_scope_borrow_arg_reaches_owner(no, owner, local_names, ctx),
+    EMatch(_, arms) => {
+      let mut found = false
+      for arm in arms {
+        if rc_scope_borrow_arg_reaches_owner(arm.1, owner, local_names, ctx) {
+          found = true
+        }
+      }
+      found
+    },
+    _ => false
   }
 }
 
@@ -1965,7 +1977,11 @@ fn rc_mut_rec_owner_slot(name: String, local_names: Array[String], ctx: CompileC
 fn rc_mut_rec_result_is_name(e: Expr, name: String) -> Bool {
   match cl_return_operand(e) {
     EIdent(result, _) => result == name,
-    ELet(bound, value, tail, _) => bound != name && !assign_value_mentions(value, name) && rc_mut_rec_result_is_name(tail, name),
+    ELet(bound, value, tail, _) => bound != name && (if rc_mut_rec_result_is_name(tail, bound) {
+      rc_mut_rec_result_is_name(value, name)
+    } else {
+      !assign_value_mentions(value, name) && rc_mut_rec_result_is_name(tail, name)
+    }),
     ELetMut(bound, value, tail, _) => bound != name && !assign_value_mentions(value, name) && rc_mut_rec_result_is_name(tail, name),
     ELetRec(bound, value, tail) => bound != name && !assign_value_mentions(value, name) && rc_mut_rec_result_is_name(tail, name),
     ESeq(head, tail) => !assign_value_mentions(head, name) && rc_mut_rec_result_is_name(tail, name),
@@ -2063,7 +2079,7 @@ fn rc_scope_tail_borrows_name(e: Expr, owner: String, local_names: Array[String]
   let operand = cl_return_operand(e)
   match operand {
     ELet(n, value, body, _) => {
-      rc_scope_tail_borrows_name(body, owner, local_names, ctx) || (rc_scope_borrow_arg_root(value, local_names, ctx) == owner && rc_scope_tail_borrows_name(body, n, local_names, ctx))
+      rc_scope_tail_borrows_name(body, owner, local_names, ctx) || (rc_scope_borrow_arg_reaches_owner(value, owner, local_names, ctx) && rc_scope_tail_borrows_name(body, n, local_names, ctx))
     },
     ELetMut(_, _, body, _) => rc_scope_tail_borrows_name(body, owner, local_names, ctx),
     ELetRec(_, _, body) => rc_scope_tail_borrows_name(body, owner, local_names, ctx),
@@ -2090,7 +2106,7 @@ fn rc_scope_tail_borrows_name(e: Expr, owner: String, local_names: Array[String]
       }
       found
     },
-    _ => rc_scope_borrow_arg_root(operand, local_names, ctx) == owner
+    _ => rc_scope_borrow_arg_reaches_owner(operand, owner, local_names, ctx)
   }
 }
 
@@ -3324,7 +3340,12 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     } else {
       ()
     }
+    let source_mark = Array::length(ctx.rc_exit_result_stores)
+    if ctx.enable_rc {
+      Array::push(ctx.rc_exit_result_stores, (name, value))
+    }
     let nl2 = compile_expr(buf, body, local_names, nl_body, ctx, ld)
+    Array::truncate(ctx.rc_exit_result_stores, source_mark)
     if ctx.enable_rc {
       rc_exit_truncate(ctx, xmark)
       Array::truncate(ctx.rc_exit_lets, Array::length(ctx.rc_exit_lets) - 1)
@@ -4126,7 +4147,8 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         // A value the exit operand's test cannot vouch for as owned -- a
         // borrowed `let` alias, a pattern binder, a `for` element -- is
         // retained, the direction that can only leak.
-        let slot_retain = is_heap_mut && !replacement_unowned && !store_retain && !tails_retained && array_contains_str(ctx.rc_loop_result_slots, name) && !rc_exit_value_owned(ctx, local_names, value)
+        let conditional_break_rec = is_loop_result_slot(name) && rc_exit_break_result_owns_rec(get_eassign_val(expr), local_names, ctx)
+        let slot_retain = is_heap_mut && !replacement_unowned && !store_retain && !tails_retained && array_contains_str(ctx.rc_loop_result_slots, name) && !conditional_break_rec && !rc_exit_value_owned(ctx, local_names, value)
         if replacement_unowned || slot_retain {
           emit_rc_dup_guarded(buf, idx, ctx.rc_shadow, ctx.rc_dup_func_idx)
         } else {
@@ -4199,7 +4221,12 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         } else {
           rc_exit_note_store(ctx, local_names, value)
         }
+        let result_store_mark = Array::length(ctx.rc_exit_result_stores)
+        if ctx.enable_rc && is_loop_result_slot(name) {
+          Array::push(ctx.rc_exit_result_stores, (name, get_eassign_val(expr)))
+        }
         let rnl = compile_expr(buf, body, local_names, nl_after, ctx, ld)
+        Array::truncate(ctx.rc_exit_result_stores, result_store_mark)
         rc_exit_end_store(ctx, xtok)
         rnl
       }
