@@ -96,6 +96,20 @@ for case_name in dead dead_wat baseline iterator_import reexport_chain contract 
   fi
 done
 
+# The generated flat-source lane serializes each source boundary as a reserved
+# import. Compile it as trusted compiler output to exercise that carrier.
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_EMIT_MERGED_SOURCE=1 \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$out_dir/reexport_chain.vibe" "$out_dir/flat_chain.vibe" run >/dev/null
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_INTERNAL_TRUSTED_SOURCE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$out_dir/flat_chain.vibe" "$out_dir/flat_chain.wasm" run >/dev/null
+if [ ! -s "$out_dir/flat_chain.wasm" ]; then
+  echo "[capability-dce] FAIL: trusted flat re-export chain did not compile" >&2
+  cat "$out_dir/flat_chain.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+
 node - "$out_dir" <<'NODE'
 const { readFileSync } = require('node:fs');
 const { join } = require('node:path');
@@ -148,7 +162,7 @@ if (definedFunctions(readFileSync(join(dir, 'dead_wat.wasm'))) !==
   console.error('[capability-dce] FAIL: an unreachable WAT callee survived');
   process.exit(1);
 }
-for (const name of ['dead', 'dead_wat', 'iterator_import', 'reexport_chain', 'contract', 'dead_export']) {
+for (const name of ['dead', 'dead_wat', 'iterator_import', 'reexport_chain', 'flat_chain', 'contract', 'dead_export']) {
   const leaked = imports(name).filter((entry) => entry.startsWith('host_stream') || entry.startsWith('host_future'));
   if (leaked.length > 0) {
     console.error(`[capability-dce] FAIL: ${name} retained ${leaked.join(', ')}`);
