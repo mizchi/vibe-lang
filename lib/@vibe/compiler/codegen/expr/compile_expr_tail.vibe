@@ -1740,21 +1740,22 @@ fn spine_leaf_ident_view(value: Expr, local_names: Array[String], ctx: CompileCt
 /// a projection, or a view name (`assign_name_is_view`). An owned tail -- a
 /// fresh value, an owned binding's transfer, a pattern binder the match
 /// lowering already retained for its consume -- is left alone, so each path
-/// stores exactly one reference. Names the value binds on the way are locals
-/// of the branch, not the outer bindings of the same spelling, and are left
-/// alone too: the tail a match arm hands back from its own binder is one the
-/// arm's bind already retained.
-fn assign_retain_view_tails(e: Expr, local_names: Array[String], inner: Array[String], ctx: CompileCtx) -> Expr with Exception {
+/// stores exactly one reference. `inner_owned` distinguishes a borrowed `let`
+/// alias from a match binder that the arm already retained.
+fn assign_retain_view_tails(e: Expr, local_names: Array[String], inner: Array[String], inner_owned: Array[Int], ctx: CompileCtx) -> Expr with Exception {
   match e {
     ECall(_, _, _) => if call_returns_borrow(e, local_names, ctx) && !callee_bound_in(e, inner) {
       ECall(EIdent("__loop_tail_retain", -1), [e], -1)
     } else {
       e
     },
-    EIdent(x, _) => if !array_contains_str(inner, x) && assign_name_is_view(x, local_names, ctx) {
-      ECall(EIdent("__loop_tail_retain", -1), [e], -1)
-    } else {
-      e
+    EIdent(x, _) => {
+      let bi = find_local_slot(inner, x)
+      if (bi >= 0 && Array::get(inner_owned, bi) == 0) || (bi < 0 && assign_name_is_view(x, local_names, ctx)) {
+        ECall(EIdent("__loop_tail_retain", -1), [e], -1)
+      } else {
+        e
+      }
     },
     EDot(_, _, _, _) => {
       let root = proj_root_ident(e)
@@ -1764,13 +1765,16 @@ fn assign_retain_view_tails(e: Expr, local_names: Array[String], inner: Array[St
         e
       }
     },
-    EIf(c, t, el) => EIf(c, assign_retain_view_tails(t, local_names, inner, ctx), assign_retain_view_tails(el, local_names, inner, ctx)),
+    EIf(c, t, el) => EIf(c, assign_retain_view_tails(t, local_names, inner, inner_owned, ctx), assign_retain_view_tails(el, local_names, inner, inner_owned, ctx)),
     EMatch(scrut, arms) => {
       let out = array_empty()
       let mut ai = 0
       while ai < Array::length(arms) {
         let (apat, abody) = Array::get(arms, ai)
-        Array::push(out, (apat, assign_retain_view_tails(abody, local_names, with_pattern_binders(inner, apat), ctx)))
+        let arm_inner = with_pattern_binders(inner, apat)
+        let arm_owned = Array::slice(inner_owned, 0, Array::length(inner_owned))
+        let _ = vsb_pad_owned(arm_inner, arm_owned, 1)
+        Array::push(out, (apat, assign_retain_view_tails(abody, local_names, arm_inner, arm_owned, ctx)))
         ai = ai + 1
       }
       EMatch(scrut, out)
@@ -1780,17 +1784,42 @@ fn assign_retain_view_tails(e: Expr, local_names: Array[String], inner: Array[St
       let mut ai = 0
       while ai < Array::length(harms) {
         let (apat, abody) = Array::get(harms, ai)
-        Array::push(out, (apat, assign_retain_view_tails(abody, local_names, with_pattern_binders(inner, apat), ctx)))
+        let arm_inner = with_pattern_binders(inner, apat)
+        let arm_owned = Array::slice(inner_owned, 0, Array::length(inner_owned))
+        let _ = vsb_pad_owned(arm_inner, arm_owned, 1)
+        Array::push(out, (apat, assign_retain_view_tails(abody, local_names, arm_inner, arm_owned, ctx)))
         ai = ai + 1
       }
-      EHandle(assign_retain_view_tails(hb, local_names, inner, ctx), out)
+      EHandle(assign_retain_view_tails(hb, local_names, inner, inner_owned, ctx), out)
     },
-    ELet(n, v, b, soff) => ELet(n, v, assign_retain_view_tails(b, local_names, with_name(inner, n), ctx), soff),
-    ELetMut(n, v, b, soff) => ELetMut(n, v, assign_retain_view_tails(b, local_names, with_name(inner, n), ctx), soff),
-    ELetRec(n, v, b) => ELetRec(n, v, assign_retain_view_tails(b, local_names, with_name(inner, n), ctx)),
-    ESeq(a, b) => ESeq(a, assign_retain_view_tails(b, local_names, inner, ctx)),
-    EAssign(n, v, b) => EAssign(n, v, assign_retain_view_tails(b, local_names, inner, ctx)),
-    EAssignOp(n, op, v, b) => EAssignOp(n, op, v, assign_retain_view_tails(b, local_names, inner, ctx)),
+    ELet(n, v, b, soff) => {
+      let borrowed = !is_edot(v) && value_spine_borrowed(v, local_names, inner, inner_owned, ctx)
+      let next_owned = Array::slice(inner_owned, 0, Array::length(inner_owned))
+      Array::push(next_owned, if borrowed {
+        0
+      } else {
+        1
+      })
+      ELet(n, v, assign_retain_view_tails(b, local_names, with_name(inner, n), next_owned, ctx), soff)
+    },
+    ELetMut(n, v, b, soff) => {
+      let next_owned = Array::slice(inner_owned, 0, Array::length(inner_owned))
+      Array::push(next_owned, 1)
+      ELetMut(n, v, assign_retain_view_tails(b, local_names, with_name(inner, n), next_owned, ctx), soff)
+    },
+    ELetRec(n, v, b) => {
+      let borrowed = !is_edot(v) && value_spine_borrowed(v, local_names, inner, inner_owned, ctx)
+      let next_owned = Array::slice(inner_owned, 0, Array::length(inner_owned))
+      Array::push(next_owned, if borrowed {
+        0
+      } else {
+        1
+      })
+      ELetRec(n, v, assign_retain_view_tails(b, local_names, with_name(inner, n), next_owned, ctx))
+    },
+    ESeq(a, b) => ESeq(a, assign_retain_view_tails(b, local_names, inner, inner_owned, ctx)),
+    EAssign(n, v, b) => EAssign(n, v, assign_retain_view_tails(b, local_names, inner, inner_owned, ctx)),
+    EAssignOp(n, op, v, b) => EAssignOp(n, op, v, assign_retain_view_tails(b, local_names, inner, inner_owned, ctx)),
     _ => e
   }
 }
@@ -3382,8 +3411,8 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         } else {
           value
         }
-        let value = if slot_owning && !is_self && is_branching_value(value) {
-          assign_retain_view_tails(value, local_names, array_empty(), ctx)
+        let value = if slot_owning && !is_self && is_branching_value(mib_spine_leaf(value, array_empty())) {
+          assign_retain_view_tails(value, local_names, array_empty(), array_empty(), ctx)
         } else {
           value
         }

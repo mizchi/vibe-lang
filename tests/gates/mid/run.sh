@@ -1324,7 +1324,8 @@ echo "[compiler-gate] early exit release guard ok (2049000 on bump/rc/shadow/gc,
 #        under rc. #3190: so did a `let` / `let mut` in a loop initialized
 #        from a conditional, a match or a block handing back an owned
 #        binding from outside the loop, on a stage2 from the #3184 branch
-#        (40d32fe86). The answer (82000) is checked on bump, rc, shadow and gc,
+#        (40d32fe86). #3215 adds two more view-store shapes. The answer
+#        (88000) is checked on bump, rc, shadow and gc,
 #        and the rc lane's heap growth is bounded, so the retains the fix adds
 #        are each released again; rc_mut_store_view_test.vibe then checks, on
 #        rc and shadow, that what each slot holds is alive where it is read.
@@ -1345,8 +1346,8 @@ for ms_lane in bump rc shadow gc; do
     exit 1
   fi
   ms_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$msdir/ms.wasm" 2>&1 | tail -1)"
-  if [ "$ms_out" != "82000" ]; then
-    echo "[compiler-gate] FAIL: rc_mut_store_view_bounded got '$ms_out' on the $ms_lane lane (want 82000). A trap, or fewer than 41 per round, means a let or let mut held a value some other binding released (#3184, #3190)." >&2
+  if [ "$ms_out" != "88000" ]; then
+    echo "[compiler-gate] FAIL: rc_mut_store_view_bounded got '$ms_out' on the $ms_lane lane (want 88000). A trap, or fewer than 44 per round, means a let or let mut held a value some other binding released (#3184, #3190, #3215)." >&2
     exit 1
   fi
   if [ "$ms_lane" = rc ]; then
@@ -1371,7 +1372,7 @@ for ms_lane in 1 shadow; do
   fi
 done
 rm -f "$ROOT_DIR/_build/_gate_rc_mut_store_view.log"
-echo "[compiler-gate] let mut store ownership guard ok (82000 on bump/rc/shadow/gc, rc heap_used=$ms_used B; stored values alive on rc + shadow)"
+echo "[compiler-gate] let mut store ownership guard ok (88000 on bump/rc/shadow/gc, rc heap_used=$ms_used B; stored values alive on rc + shadow)"
 
 # 40f0i/41. #3191: each of these loop forms previously kept one reference
 # per round. Check both the answer and the RC heap so a compensating retain

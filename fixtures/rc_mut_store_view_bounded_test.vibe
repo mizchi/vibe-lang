@@ -9,7 +9,7 @@
 // `kid_walk` below).
 //
 // Each shape returns 1 when the value it stored is still the one it stored,
-// and each round runs all 41, so `main` answers 2000 * 41 = 82000. The gate
+// and each round runs all 44, so `main` answers 2000 * 44 = 88000. The gate
 // (tests/gates/mid/run.sh, 40f0i) checks that answer on the bump, rc, shadow
 // and gc lanes -- on a stage2 from the #3181 branch (9159d7a76) the rc lane
 // answered with the blocks that reused the freed ones and the shadow lane
@@ -159,6 +159,53 @@ fn cond_view(n: Int) -> Int {
   check(hold(cur), n + 2)
 }
 
+fn wrapped_cond_view(n: Int) -> Int {
+  let mut cur = A([0, 0])
+  let mut i = 0
+  while i < 3 {
+    let xs = [A([8, n + i])]
+    let v = Array::get(xs, 0)
+    cur = {
+      let _ignored = n + i
+      if i >= 0 {
+        v
+      } else {
+        A([0, 0])
+      }
+    }
+    i = i + 1
+  }
+  check(hold(cur), n + 2)
+}
+
+fn branch_local_view(n: Int) -> Int {
+  let mut cur = A([0, 0])
+  let mut i = 0
+  while i < 3 {
+    let xs = [A([8, n + i])]
+    cur = if i >= 0 {
+      let v = Array::get(xs, 0)
+      v
+    } else {
+      A([0, 0])
+    }
+    i = i + 1
+  }
+  check(hold(cur), n + 2)
+}
+
+fn match_binder_store(n: Int) -> Int {
+  let mut cur = A([0, 0])
+  let mut i = 0
+  while i < 3 {
+    cur = match A([8, n + i]) {
+      d => d
+    }
+    i = i + 1
+  }
+  check(hold(cur), n + 2)
+}
+
 fn cond_proj(n: Int) -> Int {
   let mut cur = A([0, 0])
   let mut i = 0
@@ -212,7 +259,7 @@ fn break_view(n: Int) -> Int {
     if i == 2 {
       break v
     }
-    continue(i + 1)
+    continue (i + 1)
   }
   check(hold(d), n + 2)
 }
@@ -228,7 +275,7 @@ fn continue_view(n: Int) -> Int {
     }
     let xs = [A([13, n + i])]
     let v = Array::get(xs, 0)
-    continue(v, i + 1)
+    continue (v, i + 1)
   }
   check(hold(d), n + 2)
 }
@@ -342,7 +389,10 @@ fn init_call_store_view(n: Int) -> Int {
 }
 
 fn kid_walk_cond(n: Int) -> Int {
-  let mut cur = Node::{ tag: 0, kids: [Node::{ tag: 1, kids: [Node::{ tag: n, kids: [] }] }] }
+  let mut cur = Node::{
+    tag: 0,
+    kids: [Node::{ tag: 1, kids: [Node::{ tag: n, kids: [] }] }]
+  }
   let mut d = 0
   while d < 2 {
     let k = Array::get(cur.kids, 0)
@@ -357,7 +407,10 @@ fn kid_walk_cond(n: Int) -> Int {
 }
 
 fn kid_walk(n: Int) -> Int {
-  let mut cur = Node::{ tag: 0, kids: [Node::{ tag: 1, kids: [Node::{ tag: n, kids: [] }] }] }
+  let mut cur = Node::{
+    tag: 0,
+    kids: [Node::{ tag: 1, kids: [Node::{ tag: n, kids: [] }] }]
+  }
   let mut d = 0
   while d < 2 {
     let k = Array::get(cur.kids, 0)
@@ -682,7 +735,7 @@ fn cached_last_mut(n: Int) -> Int {
 
 fn round(i: Int) -> Int {
   let views = while_view(i) + branch_view(i) + owner_outlives(i) + view_outside_loop(i) + alias_view(i) + block_view(i) + wrapper_view(i)
-  let conds = cond_view(i) + cond_proj(i) + cond_call(i) + cond_fresh(i) + kid_walk(i) + kid_walk_cond(i)
+  let conds = cond_view(i) + wrapped_cond_view(i) + branch_local_view(i) + match_binder_store(i) + cond_proj(i) + cond_call(i) + cond_fresh(i) + kid_walk(i) + kid_walk_cond(i)
   let loops = break_view(i) + continue_view(i) + loop_carried(i) + loop_carried_used(i) + cond_loop_carried(i) + block_loop_carried(i) + param_loop(i)
   let inits = init_view(i) + init_loop_carried(i) + init_call_store_view(i)
   let tail_inits = init_cond_loop_carried(i) + init_match_loop_carried(i) + init_block_loop_carried(i) + let_cond_loop_carried(i) + let_match_loop_carried(i) + let_block_loop_carried(i) + init_cond_read(i)
