@@ -435,15 +435,11 @@ fn seq_discard_owns_result(e: Expr, local_names: Array[String], ctx: CompileCtx)
 
 fn seq_lambda_returns_owned(value: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
   if is_efn(value) {
-    let bound = array_empty()
-    let params = get_efn_params(value)
-    let mut i = 0
-    while i < Array::length(params) {
-      let (name, _) = Array::get(params, i)
-      Array::push(bound, name)
-      i = i + 1
-    }
-    seq_discard_owns_result_in(get_efn_body(value), local_names, bound, ctx)
+    // compile_lambda normalizes every heap return through cl_own_return.
+    // Borrowed leaves acquire a reference at that marker, and fresh leaves
+    // already own one. The indirect call therefore returns an owned value
+    // even when the source body ends in a projection or borrowed call.
+    true
   } else if is_eident(value) {
     let slot = find_local_slot(local_names, get_eident_name(value))
     slot >= 0 && seq_local_call_owns_result(ctx, slot)
@@ -3135,6 +3131,11 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     }
     let nl = compile_expr(buf, value, local_names, next_local + 1, ctx, ld)
     emit_local_set(buf, local_idx)
+    if seq_lambda_returns_owned(value, local_names, ctx) {
+      Array::push(ctx.seq_owned_return_slots, local_idx * 2 + 1)
+    } else if seq_local_call_owns_result(ctx, local_idx) {
+      Array::push(ctx.seq_owned_return_slots, local_idx * 2)
+    }
     if is_efn(value) {
       let params = get_efn_params(value)
       let fn_body = get_efn_body(value)
@@ -3197,6 +3198,11 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     // markers (cl_own_cell_stmts). They change who owns the value, never its
     // representation, so the slot is classified from the unwrapped value.
     let class_value = cet_strip_owned_markers(value)
+    if seq_lambda_returns_owned(class_value, local_names, ctx) {
+      Array::push(ctx.seq_owned_return_slots, local_idx * 2 + 1)
+    } else if seq_local_call_owns_result(ctx, local_idx) {
+      Array::push(ctx.seq_owned_return_slots, local_idx * 2)
+    }
     if expr_is_floatish(class_value, local_names, ctx) {
       Array::push(ctx.float_local_slots, local_idx * 2 + 1)
     } else if slot_is_floatish(ctx, local_idx) {
@@ -3487,6 +3493,11 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     let value = get_eassign_val(expr)
     let body = get_eassign_body(expr)
     let idx = resolve_local(local_names, name, "assign")
+    if seq_lambda_returns_owned(cet_strip_owned_markers(value), local_names, ctx) {
+      Array::push(ctx.seq_owned_return_slots, idx * 2 + 1)
+    } else if seq_local_call_owns_result(ctx, idx) {
+      Array::push(ctx.seq_owned_return_slots, idx * 2)
+    }
     if array_contains_str(ctx.ref_cell_names, name) && ctx.enable_rc && ctx.rc_drop_func_idx >= 0 {
       // #3113: the RC cell owns its payload (its drop releases it), and
       // cl_own_cell_stmts has already made the stored value an owned one. So

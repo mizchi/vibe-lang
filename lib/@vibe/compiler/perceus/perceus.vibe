@@ -2947,6 +2947,36 @@ export fn type_expr_is_heap(ot: Option[TypeExpr]) -> Bool {
 /// existing "any ECall is heap by default" over-approximation when a callee
 /// isn't found here (unannotated function, local closure, shadowed name),
 /// so this is a precision refinement, not a completeness requirement.
+fn inferred_heap_result_spine(body: Expr) -> Bool {
+  match body {
+    EArray(_) => true,
+    ETuple(_) => true,
+    ERecord(_, _, _) => true,
+    EMap(_) => true,
+    EFloat(_) => true,
+    EFn(_, _, _, _, _, _) => true,
+    EIf(_, yes, no) => inferred_heap_result_spine(yes) && inferred_heap_result_spine(no),
+    EMatch(_, arms) => if Array::length(arms) == 0 {
+      false
+    } else {
+      let mut all_fresh = true
+      for arm in arms {
+        if !inferred_heap_result_spine(arm.1) {
+          all_fresh = false
+        }
+      }
+      all_fresh
+    },
+    ELet(_, _, tail, _) => inferred_heap_result_spine(tail),
+    ELetMut(_, _, tail, _) => inferred_heap_result_spine(tail),
+    ELetRec(_, _, tail) => inferred_heap_result_spine(tail),
+    ESeq(_, tail) => inferred_heap_result_spine(tail),
+    EAssign(_, _, tail) => inferred_heap_result_spine(tail),
+    EAssignOp(_, _, _, tail) => inferred_heap_result_spine(tail),
+    _ => false
+  }
+}
+
 export fn compute_heap_returning(stmts: Array[Stmt]) -> Array[String] {
   let out: Array[String] = []
   let mut i = 0
@@ -2961,18 +2991,9 @@ export fn compute_heap_returning(stmts: Array[Stmt]) -> Array[String] {
             },
             None => fn_ret
           }
-          // An inferred signature has no declared return to scan. A direct
-          // allocation tail still proves an owned result without resolving
-          // names or guessing through early returns and borrowed views.
-          let direct_fresh_result = match body {
-            EArray(_) => true,
-            ETuple(_) => true,
-            ERecord(_, _, _) => true,
-            EMap(_) => true,
-            EFloat(_) => true,
-            EFn(_, _, _, _, _, _) => true,
-            _ => false
-          }
+          // Follow only result spines whose every leaf allocates. A borrowed
+          // name or call remains unknown without a declared return type.
+          let direct_fresh_result = inferred_heap_result_spine(body)
           if type_expr_is_heap(ret) || (match ret {
             None => direct_fresh_result,
             Some(_) => false
