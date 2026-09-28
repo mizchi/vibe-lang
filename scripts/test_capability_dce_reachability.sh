@@ -62,27 +62,67 @@ for case_name in dead dead_wat dead_export live_stream live_wat live_future; do
     cat "$out.diag" >&2 2>/dev/null || true
     exit 1
   fi
-  wasm-tools print "$out" >"$out_dir/$case_name.wat"
 done
 
-if rg -q '\(import "vibe" "(host_stream|host_future)' "$out_dir/dead.wat" "$out_dir/dead_wat.wat" "$out_dir/dead_export.wat"; then
-  echo "[capability-dce] FAIL: unreachable helpers retained host imports" >&2
-  rg '\(import "vibe" "(host_stream|host_future)' "$out_dir/dead.wat" "$out_dir/dead_wat.wat" "$out_dir/dead_export.wat" >&2
-  exit 1
-fi
-if ! rg -q '\(import "vibe" "host_stream_get\$left"' "$out_dir/live_stream.wat" ||
-   ! rg -q '\(import "vibe" "host_stream_read"' "$out_dir/live_stream.wat"; then
-  echo "[capability-dce] FAIL: reachable stream read lost its host imports" >&2
-  exit 1
-fi
+node - "$out_dir" <<'NODE'
+const { readFileSync } = require('node:fs');
+const { join } = require('node:path');
+const dir = process.argv[2];
+function readLeb(bytes, position) {
+  let value = 0;
+  let shift = 0;
+  let byte;
+  do {
+    byte = bytes[position.index++];
+    value += (byte & 0x7f) * 2 ** shift;
+    shift += 7;
+  } while (byte & 0x80);
+  return value;
+}
+function coreModules(bytes) {
+  const version = bytes.readUInt32LE(4);
+  if (version === 1) return [new WebAssembly.Module(bytes)];
+  if (version !== 0x0001000d) throw new Error(`unexpected wasm version: ${version}`);
+  const result = [];
+  const position = { index: 8 };
+  while (position.index < bytes.length) {
+    const section = readLeb(bytes, position);
+    const length = readLeb(bytes, position);
+    const end = position.index + length;
+    if (section === 1) result.push(new WebAssembly.Module(bytes.subarray(position.index, end)));
+    position.index = end;
+  }
+  return result;
+}
+function imports(name) {
+  return coreModules(readFileSync(join(dir, `${name}.wasm`)))
+    .flatMap((module) => WebAssembly.Module.imports(module))
+    .filter((entry) => entry.module === 'vibe')
+    .map((entry) => entry.name);
+}
+for (const name of ['dead', 'dead_wat', 'dead_export']) {
+  const leaked = imports(name).filter((entry) => entry.startsWith('host_stream') || entry.startsWith('host_future'));
+  if (leaked.length > 0) {
+    console.error(`[capability-dce] FAIL: ${name} retained ${leaked.join(', ')}`);
+    process.exit(1);
+  }
+}
+for (const [name, expected] of [
+  ['live_stream', ['host_stream_get$left', 'host_stream_read']],
+  ['live_future', ['host_future_get$price', 'host_future_wait']],
+]) {
+  const actual = imports(name);
+  for (const entry of expected) {
+    if (!actual.includes(entry)) {
+      console.error(`[capability-dce] FAIL: ${name} lost ${entry}; found ${actual.join(', ')}`);
+      process.exit(1);
+    }
+  }
+}
+NODE
 wat_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke run "$out_dir/live_wat.wasm" 2>&1 | tail -1)"
 if [ "$wat_result" != 42 ]; then
   echo "[capability-dce] FAIL: reachable inline WAT callee returned '$wat_result' (want 42)" >&2
-  exit 1
-fi
-if ! rg -q '\(import "vibe" "host_future_get\$price"' "$out_dir/live_future.wat" ||
-   ! rg -q '\(import "vibe" "host_future_wait"' "$out_dir/live_future.wat"; then
-  echo "[capability-dce] FAIL: reachable future await lost its host imports" >&2
   exit 1
 fi
 echo "[capability-dce] reachable imports kept; dead imports removed"
