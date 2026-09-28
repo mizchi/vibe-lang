@@ -8093,15 +8093,35 @@ fn rc_exit_source_mentions_name(e: Expr, name: String, sources: Array[(String, E
   }
 }
 
-fn rc_exit_fresh_independent_closure(e: Expr, name: String, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+/// A pattern-bound fallback is independent when its scrutinee is a scalar or
+/// a parameter. Parameters exist before this local recursive owner can be
+/// allocated; a mutable local or computed scrutinee may hold a view of it.
+fn rc_exit_independent_pattern_source(e: Expr, name: String, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  if rc_exit_independent_scalar_arg(e, name, local_names, ctx) {
+    return true
+  }
+  match e {
+    EIdent(n, _) => {
+      let slot = find_local_slot(local_names, n)
+      n != name && slot >= 0 && slot < ctx.rc_exit_param_count && !rc_exit_source_mentions_name(e, name, ctx.rc_exit_result_stores, Array::length(ctx.rc_exit_result_stores))
+    },
+    _ => false
+  }
+}
+
+fn rc_exit_fresh_independent_closure(e: Expr, name: String, local_names: Array[String], ctx: CompileCtx, shadowed: Array[String]) -> Bool with Exception {
   match e {
     EIdent(n, _) => {
       let kind = rc_exit_owner_kind(ctx, local_names, n)
-      n != name && kind >= 0 && kind <= 2 && !rc_exit_source_mentions_name(e, name, ctx.rc_exit_result_stores, Array::length(ctx.rc_exit_result_stores))
+      if array_contains_str(shadowed, n) {
+        true
+      } else {
+        n != name && kind >= 0 && kind <= 2 && !rc_exit_source_mentions_name(e, name, ctx.rc_exit_result_stores, Array::length(ctx.rc_exit_result_stores))
+      }
     },
     EFn(_, _, _, _, _, _) => !rc_exit_mentions_name(e, name),
     ECall(EIdent("__lambda_return_owned", off), args, _) => if off < 0 && Array::length(args) == 1 {
-      rc_exit_fresh_independent_closure(Array::get(args, 0), name, local_names, ctx)
+      rc_exit_fresh_independent_closure(Array::get(args, 0), name, local_names, ctx, shadowed)
     } else {
       false
     },
@@ -8116,12 +8136,12 @@ fn rc_exit_fresh_independent_closure(e: Expr, name: String, local_names: Array[S
       }
       true
     },
-    ELet(_, value, tail, _) => !rc_exit_mentions_name(value, name) && rc_exit_fresh_independent_closure(tail, name, local_names, ctx),
-    ELetMut(_, value, tail, _) => !rc_exit_mentions_name(value, name) && rc_exit_fresh_independent_closure(tail, name, local_names, ctx),
-    ELetRec(_, value, tail) => !rc_exit_mentions_name(value, name) && rc_exit_fresh_independent_closure(tail, name, local_names, ctx),
-    ESeq(head, tail) => !rc_exit_mentions_name(head, name) && rc_exit_fresh_independent_closure(tail, name, local_names, ctx),
-    EAssign(target, value, tail) => target != name && !rc_exit_mentions_name(value, name) && rc_exit_fresh_independent_closure(tail, name, local_names, ctx),
-    EAssignOp(target, _, value, tail) => target != name && !rc_exit_mentions_name(value, name) && rc_exit_fresh_independent_closure(tail, name, local_names, ctx),
+    ELet(_, value, tail, _) => !rc_exit_mentions_name(value, name) && rc_exit_fresh_independent_closure(tail, name, local_names, ctx, shadowed),
+    ELetMut(_, value, tail, _) => !rc_exit_mentions_name(value, name) && rc_exit_fresh_independent_closure(tail, name, local_names, ctx, shadowed),
+    ELetRec(_, value, tail) => !rc_exit_mentions_name(value, name) && rc_exit_fresh_independent_closure(tail, name, local_names, ctx, shadowed),
+    ESeq(head, tail) => !rc_exit_mentions_name(head, name) && rc_exit_fresh_independent_closure(tail, name, local_names, ctx, shadowed),
+    EAssign(target, value, tail) => target != name && !rc_exit_mentions_name(value, name) && rc_exit_fresh_independent_closure(tail, name, local_names, ctx, shadowed),
+    EAssignOp(target, _, value, tail) => target != name && !rc_exit_mentions_name(value, name) && rc_exit_fresh_independent_closure(tail, name, local_names, ctx, shadowed),
     _ => false
   }
 }
@@ -8231,9 +8251,10 @@ fn rc_exit_conditional_rec_transfer(e: Expr, name: String, local_names: Array[St
     ESeq(head, tail) => !rc_exit_mentions_name(head, name) && rc_exit_conditional_rec_transfer(tail, name, local_names, ctx),
     EAssign(target, value, tail) => target != name && !rc_exit_mentions_name(value, name) && rc_exit_conditional_rec_transfer(tail, name, local_names, ctx),
     EAssignOp(target, _, value, tail) => target != name && !rc_exit_mentions_name(value, name) && rc_exit_conditional_rec_transfer(tail, name, local_names, ctx),
-    EIf(_, yes, no) => rc_exit_passthrough_rec_result(yes, name, local_names, [], ctx) && rc_exit_fresh_independent_closure(no, name, local_names, ctx) || rc_exit_passthrough_rec_result(no, name, local_names, [
-    ], ctx) && rc_exit_fresh_independent_closure(yes, name, local_names, ctx),
-    EMatch(_, arms) => {
+    EIf(_, yes, no) => rc_exit_passthrough_rec_result(yes, name, local_names, [], ctx) && rc_exit_fresh_independent_closure(no, name, local_names, ctx, [
+    ]) || rc_exit_passthrough_rec_result(no, name, local_names, [], ctx) && rc_exit_fresh_independent_closure(yes, name, local_names, ctx, [
+    ]),
+    EMatch(scrutinee, arms) => {
       let mut seen_rec = false
       let mut safe = Array::length(arms) > 0
       for arm in arms {
@@ -8241,7 +8262,11 @@ fn rc_exit_conditional_rec_transfer(e: Expr, name: String, local_names: Array[St
         let _ = collect_pattern_bindings(arm.0, binds)
         if rc_exit_passthrough_rec_result(arm.1, name, local_names, binds, ctx) {
           seen_rec = true
-        } else if !rc_exit_fresh_independent_closure(arm.1, name, local_names, ctx) {
+        } else if !rc_exit_fresh_independent_closure(arm.1, name, local_names, ctx, if rc_exit_independent_pattern_source(scrutinee, name, local_names, ctx) {
+          binds
+        } else {
+          []
+        }) {
           safe = false
         }
       }

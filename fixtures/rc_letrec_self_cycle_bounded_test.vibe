@@ -258,6 +258,20 @@ fn make_counter_via_recursive_alias_fallback(start: Int, choose: Bool) -> (Int) 
   }
 }
 
+fn make_counter_via_pattern_fallback(start: Int, fallback: Option[(Int) -> Int]) -> (Int) -> Int {
+  let rec go = (n: Int) -> Int {
+    if n > start {
+      n
+    } else {
+      go(n + 1)
+    }
+  }
+  return match fallback {
+    None => go,
+    Some(go) => go
+  }
+}
+
 fn make_counter_via_chain(start: Int) -> (Int) -> Int {
   let rec go = (n: Int) -> Int {
     if n > start {
@@ -1085,4 +1099,22 @@ test "a fallback local releases the unselected recursive closure" {
 test "a recursive alias is never treated as an independent fallback" {
   inspect(make_counter_via_recursive_alias_fallback(8, true)(5), content = "9")
   inspect(make_counter_via_recursive_alias_fallback(8, false)(5), content = "9")
+}
+
+test "a pattern-bound fallback releases the unselected recursive closure" {
+  inspect(make_counter_via_pattern_fallback(8, None)(5), content = "9")
+  let fallback = Some(fallback_counter)
+  let mut i = 0
+  while i < 200 {
+    let f = make_counter_via_pattern_fallback(8, fallback)
+    let _ = f(5)
+    i = i + 1
+  }
+  let before = Profiler::heap_bytes()
+  while i < 2200 {
+    let f = make_counter_via_pattern_fallback(8, fallback)
+    let _ = f(5)
+    i = i + 1
+  }
+  inspect(Profiler::heap_bytes() - before < 1000, content = "true")
 }
