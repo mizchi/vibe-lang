@@ -281,7 +281,7 @@ export fn expr_any_node(expr: Expr, pred: (Expr) -> Bool) -> Bool {
 /// key, and an outer `let rec` whose value opens with an inner one would
 /// otherwise share it. Should two bindings still share a key, the query
 /// refuses it rather than answer for the wrong binding.
-export fn let_rec_value_anchor(value: Expr) -> Int {
+fn let_rec_anchor_walk(value: Expr, skip_nested_rec: Bool) -> Int {
   let stack = Array::slice([value], 0, 1)
   let mut first = -1
   while Array::length(stack) > 0 {
@@ -309,11 +309,33 @@ export fn let_rec_value_anchor(value: Expr) -> Int {
       ()
     }
     match expr {
-      ELetRec(_, _, body) => Array::push(stack, body),
+      ELetRec(_, _, body) => if skip_nested_rec {
+        ()
+      } else {
+        Array::push(stack, body)
+      },
       _ => expr_children_into(expr, stack)
     }
   }
   first
+}
+
+export fn let_rec_value_anchor(value: Expr) -> Int {
+  let_rec_anchor_walk(value, false)
+}
+
+/// A callee-only recursive closure can have an offset-free value (for example
+/// `() -> Int { 1 }`). Its continuation still carries the call's offset. Use
+/// that only when the value has no anchor. Do not take the offset from a nested
+/// `let rec`'s continuation: that key belongs to the inner binding. The query
+/// still rejects any key shared by two bindings.
+export fn let_rec_binding_anchor(value: Expr, body: Expr) -> Int {
+  let value_anchor = let_rec_value_anchor(value)
+  if value_anchor >= 0 {
+    value_anchor
+  } else {
+    let_rec_anchor_walk(body, true)
+  }
 }
 
 /// Append `expr`'s immediate children to `out`, in the order
