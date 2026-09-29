@@ -8420,6 +8420,64 @@ fn dh_mutable_alias_outer_call(body: Expr, ename: String, aliases: Array[(String
   hit
 }
 
+/// An ascription around a named function only passes its value through an
+/// identity shim. The shim's parameter row is not an effect performed while
+/// evaluating the binding.
+fn dh_named_alias_ascription(val: Expr, ov_names: Array[String], ov_effs: Array[Array[String]], fn_index: MutMap[String, Int]) -> Bool {
+  match afe_ascribed_name_type(val) {
+    Some(TyFn(_, _, _)) => match local_alias_target(val, ov_names, ov_effs, fn_index) {
+      Some(_) => true,
+      None => false
+    },
+    _ => false
+  }
+}
+
+/// A widened annotation remains the call's type, but only the target's row
+/// can establish that this handler may actually receive the effect.
+fn dh_overlay_call_may_reach(name: String, ename: String, ov_names: Array[String], ov_effs: Array[Array[String]], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int]) -> Bool {
+  match lookup_fn_effs(ov_names, ov_effs, name) {
+    Some(declared) => match overlay_alias_target(ov_names, ov_effs, name) {
+      Some(target) => match lookup_program_fn_effs(fn_index, fn_effs, target) {
+        Some(actual) => dh_labels_may_be(actual, ename),
+        None => dh_labels_may_be(declared, ename)
+      },
+      None => dh_labels_may_be(declared, ename)
+    },
+    None => false
+  }
+}
+
+fn dh_widened_only_alias_call(body: Expr, ename: String, ov_names: Array[String], ov_effs: Array[Array[String]], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int]) -> Bool {
+  let seen: Array[String] = []
+  let mut found = false
+  for name in ov_names {
+    if !found && !str_list_has(seen, name) {
+      Array::push(seen, name)
+      match overlay_alias_target(ov_names, ov_effs, name) {
+        Some(target) => match lookup_program_fn_effs(fn_index, fn_effs, target) {
+          Some(actual) => match lookup_fn_effs(ov_names, ov_effs, name) {
+            Some(declared) => if dh_labels_may_be(declared, ename) && !dh_labels_may_be(actual, ename) {
+              match dh_call_to_binding(body, name) {
+                Some(_) => found = true,
+                None => ()
+              }
+            } else {
+              ()
+            },
+            None => ()
+          },
+          None => ()
+        },
+        None => ()
+      }
+    } else {
+      ()
+    }
+  }
+  found
+}
+
 /// Can this expression statically reach a `perform` of `ename`? Conservative
 /// in the "yes" direction: anything unresolved answers true, so a false here
 /// really does mean the handler is dead.
@@ -8436,10 +8494,7 @@ fn dh_may_reach(expr: Expr, ename: String, fn_names: Array[String], fn_effs: Arr
       // callee is its own `f: () -> T with Async + Exception` parameter.
       ECall(EIdent(nm, _), _, _) => match lookup_program_fn_effs(fn_index, fn_effs, nm) {
         Some(effs) => dh_labels_may_be(effs, ename),
-        None => match lookup_fn_effs(ov_names, ov_effs, nm) {
-          Some(effs) => dh_labels_may_be(effs, ename),
-          None => false
-        }
+        None => dh_overlay_call_may_reach(nm, ename, ov_names, ov_effs, fn_effs, fn_index)
       },
       // A closure LITERAL whose row carries the effect: it may be invoked
       // from anywhere inside this body, including through a value this walk
@@ -8465,7 +8520,7 @@ fn dh_may_reach(expr: Expr, ename: String, fn_names: Array[String], fn_effs: Arr
       // seed too, so the false positive predates the row fix -- it was just
       // unreachable while the row was never required).
       ELet(lname, lval, lbody, _) => match overlay_bind_local(ov_names, ov_effs, lname, lval, fn_names, fn_effs, fn_index) {
-        (bn, be) => dh_may_reach(lval, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs) || dh_may_reach(lbody, ename, fn_names, fn_effs, fn_index, bn, be)
+        (bn, be) => (!dh_named_alias_ascription(lval, ov_names, ov_effs, fn_index) && dh_may_reach(lval, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs)) || dh_may_reach(lbody, ename, fn_names, fn_effs, fn_index, bn, be)
       },
       // Assignment can change this callee after initialization. Only the
       // immutable form can supply handler evidence through its row.
@@ -8481,6 +8536,13 @@ fn dh_may_reach(expr: Expr, ename: String, fn_names: Array[String], fn_effs: Arr
     }
     if direct {
       true
+    } else if match expr {
+      ELet(_, _, _, _) => true,
+      ELetMut(_, _, _, _) => true,
+      ELetRec(_, _, _) => true,
+      _ => false
+    } {
+      false
     } else {
       let children = expr_children(expr)
       let mut i = 0
@@ -8888,7 +8950,8 @@ fn dh_check_expr(expr: Expr, declared: Array[String], performed: Array[String], 
           Some((cname, coff)) => Array::push(errors, EEHandleMutableAlias(eff, cname, coff)),
           None => ()
         }
-        if mutable_call == None && effect_row_has_label(Some(declared), eff) && effect_row_has_label(Some(performed), eff) && !dh_may_reach(body, eff, fn_names, fn_effs, fn_index, ov_names, ov_effs) && dh_has_opaque_call(body, fn_names, fn_index) {
+        let known_dead_alias = dh_widened_only_alias_call(body, eff, ov_names, ov_effs, fn_effs, fn_index)
+        if mutable_call == None && ((effect_row_has_label(Some(declared), eff) && effect_row_has_label(Some(performed), eff)) || known_dead_alias) && !dh_may_reach(body, eff, fn_names, fn_effs, fn_index, ov_names, ov_effs) && dh_has_opaque_call(body, fn_names, fn_index) {
           // #3180: the handle is refused either way, but when the opaque call
           // is a local closure with no effect row that DOES perform `eff`,
           // "reaches no perform" is false -- it reaches one this handle
