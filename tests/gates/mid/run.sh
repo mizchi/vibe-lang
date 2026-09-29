@@ -2733,6 +2733,53 @@ if ! grep -qF 'using this handler owner as a value cannot safely select the clos
   cat "$nhvdir/test_owner_alias.wasm.diag" >&2 2>/dev/null || true
   exit 1
 fi
+for dormant_fixture in \
+  fixtures/fnvalue_nested_handle_dormant_owner_alias.vibe \
+  fixtures/fnvalue_nested_handle_dormant_option.vibe \
+  fixtures/fnvalue_nested_handle_dormant_enum.vibe; do
+  rm -f "$nhvdir/dormant.wasm" "$nhvdir/dormant.wasm.diag"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$dormant_fixture" "$nhvdir/dormant.wasm" main >/dev/null 2>&1 || true
+  if [ ! -s "$nhvdir/dormant.wasm" ]; then
+    echo "[compiler-gate] FAIL: dormant owner use refused the live entry: $dormant_fixture (#3195)" >&2
+    cat "$nhvdir/dormant.wasm.diag" >&2 2>/dev/null || true
+    exit 1
+  fi
+  dormant_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$nhvdir/dormant.wasm" 2>/dev/null | tr -dc '0-9')"
+  if [ "$dormant_result" != "1" ]; then
+    echo "[compiler-gate] FAIL: dormant owner use changed the live result: $dormant_fixture ($dormant_result, want 1, #3195)" >&2
+    exit 1
+  fi
+done
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/err_fnvalue_nested_handle_eager_constructor_argument.vibe "$nhvdir/eager_constructor_argument.wasm" main >/dev/null 2>&1 || true
+if [ -s "$nhvdir/eager_constructor_argument.wasm" ] || ! grep -qF 'pass an explicitly row-annotated closure that calls `inner_handled`' "$nhvdir/eager_constructor_argument.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: an eager constructor argument bypassed the nested-handler refusal (#3195)" >&2
+  exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/fnvalue_nested_handle_retained_export.vibe "$nhvdir/stripped_export.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$nhvdir/stripped_export.wasm" ]; then
+  echo "[compiler-gate] FAIL: a stripped bad export rejected the clean entry (#3195)" >&2
+  exit 1
+fi
+VIBE_WASM_KEEP_EXPORTS=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/fnvalue_nested_handle_retained_export.vibe "$nhvdir/retained_export.wasm" main >/dev/null 2>&1 || true
+if [ -s "$nhvdir/retained_export.wasm" ] || ! grep -qF 'pass an explicitly row-annotated closure that calls `inner_handled`' "$nhvdir/retained_export.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: a retained export bypassed the nested-handler refusal (#3195)" >&2
+  exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/fnvalue_nested_handle_retained_export.vibe "$nhvdir/library_export.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ -s "$nhvdir/library_export.wasm" ] || ! grep -qF 'pass an explicitly row-annotated closure that calls `inner_handled`' "$nhvdir/library_export.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: a library export bypassed the nested-handler refusal (#3195)" >&2
+  exit 1
+fi
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   fixtures/fnvalue_nested_handle_dead.vibe "$nhvdir/dead.wasm" main >/dev/null 2>&1 || true

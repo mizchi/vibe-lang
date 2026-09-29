@@ -465,6 +465,10 @@ fn emf_performed_expr(expr: Expr, out: Array[String]) -> Unit {
 }
 
 export fn evidence_dict_pass(stmts: Array[Stmt], entry_name: String) -> Array[String] {
+  evidence_dict_pass_with_roots(stmts, [entry_name])
+}
+
+export fn evidence_dict_pass_with_roots(stmts: Array[Stmt], roots: Array[String]) -> Array[String] {
   let errs = empty_str_array()
   // #3176: a call spelled like an audited pure builtin reaches the program's
   // own function when the program declares one; judge it by that row.
@@ -580,7 +584,7 @@ export fn evidence_dict_pass(stmts: Array[Stmt], entry_name: String) -> Array[St
   edp_es_collect_into(stmts, edp_es_names, edp_es_members_list)
   let fn_row_labels = edp_fn_row_label_table(fn_defs, edp_es_names, edp_es_members_list)
   let edp_renamed = edp_alpha_rename_shadowed(stmts, effect_defs, fn_defs, user_edpsh, fn_row_labels)
-  let keep = dce_keep_flags(stmts, [entry_name])
+  let keep = dce_keep_flags(stmts, roots)
   let plans = edp_plan_migrations(stmts, effect_defs, fn_defs, keep, errs, fn_row_labels)
   let mut pi = 0
   while pi < Array::length(plans) {
@@ -6005,16 +6009,18 @@ fn edp_count_safe_closure_bindings(expr: Expr, xname: String, ename: String, nee
 /// edp_closure_param_universally_safe treats its presence, anywhere in the
 /// result, as an unconditional "not safe" for the whole position.
 fn edp_collect_ecall_arg_idents_with_keep(stmts: Array[Stmt], gname: String, argpos: Int, keep: Array[Bool]) -> Array[String] {
+  let ctors: Array[String] = []
+  edp_append_ctor_inert_names(stmts, ctors)
   let out = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
     if Array::length(keep) == 0 || (i < Array::length(keep) && Array::get(keep, i)) {
       match Array::get(stmts, i) {
-        SLet(_, _, _, _, expr) => edp_collect_ecall_arg_idents_expr(expr, gname, argpos, out),
-        SLetMut(_, _, expr) => edp_collect_ecall_arg_idents_expr(expr, gname, argpos, out),
-        SExpr(expr) => edp_collect_ecall_arg_idents_expr(expr, gname, argpos, out),
-        STest(_, expr) => edp_collect_ecall_arg_idents_expr(expr, gname, argpos, out),
-        SBench(_, expr) => edp_collect_ecall_arg_idents_expr(expr, gname, argpos, out),
+        SLet(_, _, _, _, expr) => edp_collect_ecall_arg_idents_expr(expr, gname, argpos, out, ctors),
+        SLetMut(_, _, expr) => edp_collect_ecall_arg_idents_expr(expr, gname, argpos, out, ctors),
+        SExpr(expr) => edp_collect_ecall_arg_idents_expr(expr, gname, argpos, out, ctors),
+        STest(_, expr) => edp_collect_ecall_arg_idents_expr(expr, gname, argpos, out, ctors),
+        SBench(_, expr) => edp_collect_ecall_arg_idents_expr(expr, gname, argpos, out, ctors),
         _ => ()
       }
     } else {
@@ -6029,60 +6035,123 @@ fn edp_collect_ecall_arg_idents(stmts: Array[Stmt], gname: String, argpos: Int) 
   edp_collect_ecall_arg_idents_with_keep(stmts, gname, argpos, array_empty())
 }
 
+/// A local binder hides a constructor of the same name in its scope.
+fn edp_usage_ctor_mask(ctors: Array[String], name: String) -> Array[String] {
+  if !edp_str_array_contains(ctors, name) {
+    ctors
+  } else {
+    let out: Array[String] = []
+    for ctor in ctors {
+      if ctor != name {
+        Array::push(out, ctor)
+      } else {
+        ()
+      }
+    }
+    out
+  }
+}
+
+fn edp_usage_ctor_params(ctors: Array[String], params: Array[(String, Option[TypeExpr])]) -> Array[String] {
+  let mut out = ctors
+  for param in params {
+    let (name, _) = param
+    out = edp_usage_ctor_mask(out, edp_strip_tilde(name))
+  }
+  out
+}
+
+fn edp_usage_ctor_loop(ctors: Array[String], pairs: Array[(String, Expr)]) -> Array[String] {
+  let mut out = ctors
+  for pair in pairs {
+    let (name, _) = pair
+    out = edp_usage_ctor_mask(out, name)
+  }
+  out
+}
+
+fn edp_usage_ctor_for(ctors: Array[String], name: String, index_name: Option[String]) -> Array[String] {
+  let out = edp_usage_ctor_mask(ctors, name)
+  match index_name {
+    Some(index) => edp_usage_ctor_mask(out, index),
+    None => out
+  }
+}
+
+fn edp_usage_ctor_pat(ctors: Array[String], pat: Pat) -> Array[String] {
+  let bound: Array[String] = []
+  edp_pat_binds(pat, bound)
+  let mut out = ctors
+  for name in bound {
+    out = edp_usage_ctor_mask(out, name)
+  }
+  out
+}
+
 /// An unused binding still evaluates its initializer. Value constructors
 /// store closure literals without invoking them; other forms keep the normal
 /// conservative scan so an eager call cannot disappear from eligibility.
-fn edp_collect_ecall_arg_idents_unused_value(expr: Expr, gname: String, argpos: Int, out: Array[String]) -> Unit {
+fn edp_collect_ecall_arg_idents_unused_value(expr: Expr, gname: String, argpos: Int, out: Array[String], ctors: Array[String]) -> Unit {
   match expr {
     EFn(_, _, _, _, _, _) => (),
+    ECall(EIdent(name, _), args, _) => if edp_str_array_contains(ctors, name) {
+      for arg in args {
+        edp_collect_ecall_arg_idents_unused_value(arg, gname, argpos, out, ctors)
+      }
+    } else {
+      edp_collect_ecall_arg_idents_expr(expr, gname, argpos, out, ctors)
+    },
     EArray(items) => for item in items {
-      edp_collect_ecall_arg_idents_unused_value(item, gname, argpos, out)
+      edp_collect_ecall_arg_idents_unused_value(item, gname, argpos, out, ctors)
     },
     ETuple(items) => for item in items {
-      edp_collect_ecall_arg_idents_unused_value(item, gname, argpos, out)
+      edp_collect_ecall_arg_idents_unused_value(item, gname, argpos, out, ctors)
     },
     ERecord(_, fields, _) => for field in fields {
       let (_, value) = field
-      edp_collect_ecall_arg_idents_unused_value(value, gname, argpos, out)
+      edp_collect_ecall_arg_idents_unused_value(value, gname, argpos, out, ctors)
     },
     EMap(fields) => for field in fields {
       let (_, value) = field
-      edp_collect_ecall_arg_idents_unused_value(value, gname, argpos, out)
+      edp_collect_ecall_arg_idents_unused_value(value, gname, argpos, out, ctors)
     },
-    _ => edp_collect_ecall_arg_idents_expr(expr, gname, argpos, out)
+    _ => edp_collect_ecall_arg_idents_expr(expr, gname, argpos, out, ctors)
   }
 }
 
 /// Only references to this particular binding make its closure reachable.
 /// A later binder with the same spelling owns its continuation's uses.
-fn edp_binding_used_in(expr: Expr, name: String) -> Bool {
+fn edp_binding_used_in(expr: Expr, name: String, ctors: Array[String]) -> Bool {
   match expr {
     EIdent(nm, _) => nm == name,
     ELet(nm, value, body, _) => {
-      let in_value = if nm == name || edp_binding_used_in(body, nm) {
-        edp_binding_used_in(value, name)
+      let inner = edp_usage_ctor_mask(ctors, nm)
+      let in_value = if nm == name || edp_binding_used_in(body, nm, inner) {
+        edp_binding_used_in(value, name, ctors)
       } else {
-        edp_binding_used_in_unused_value(value, name)
+        edp_binding_used_in_unused_value(value, name, ctors)
       }
-      in_value || (nm != name && edp_binding_used_in(body, name))
+      in_value || (nm != name && edp_binding_used_in(body, name, inner))
     },
     ELetMut(nm, value, body, _) => {
-      let in_value = if nm == name || edp_binding_used_in(body, nm) {
-        edp_binding_used_in(value, name)
+      let inner = edp_usage_ctor_mask(ctors, nm)
+      let in_value = if nm == name || edp_binding_used_in(body, nm, inner) {
+        edp_binding_used_in(value, name, ctors)
       } else {
-        edp_binding_used_in_unused_value(value, name)
+        edp_binding_used_in_unused_value(value, name, ctors)
       }
-      in_value || (nm != name && edp_binding_used_in(body, name))
+      in_value || (nm != name && edp_binding_used_in(body, name, inner))
     },
     ELetRec(nm, value, body) => if nm == name {
       false
     } else {
-      let in_value = if edp_binding_used_in(body, nm) {
-        edp_binding_used_in(value, name)
+      let inner = edp_usage_ctor_mask(ctors, nm)
+      let in_value = if edp_binding_used_in(body, nm, inner) {
+        edp_binding_used_in(value, name, inner)
       } else {
-        edp_binding_used_in_unused_value(value, name)
+        edp_binding_used_in_unused_value(value, name, inner)
       }
-      in_value || edp_binding_used_in(body, name)
+      in_value || edp_binding_used_in(body, name, inner)
     },
     EFn(_, _, params, _, _, body) => {
       let mut shadows = false
@@ -6094,38 +6163,43 @@ fn edp_binding_used_in(expr: Expr, name: String) -> Bool {
           ()
         }
       }
-      !shadows && edp_binding_used_in(body, name)
+      !shadows && edp_binding_used_in(body, name, edp_usage_ctor_params(ctors, params))
     },
-    EMatch(scrutinee, arms) => edp_binding_used_in(scrutinee, name) || edp_binding_used_in_arms(arms, name),
-    EHandle(body, arms) => edp_binding_used_in(body, name) || edp_binding_used_in_arms(arms, name),
-    EForIn(nm, idx, iter, body) => edp_binding_used_in(iter, name) || (nm != name && idx != Some(name) && edp_binding_used_in(body, name)),
+    EMatch(scrutinee, arms) => edp_binding_used_in(scrutinee, name, ctors) || edp_binding_used_in_arms(arms, name, ctors),
+    EHandle(body, arms) => edp_binding_used_in(body, name, ctors) || edp_binding_used_in_arms(arms, name, ctors),
+    EForIn(nm, idx, iter, body) => edp_binding_used_in(iter, name, ctors) || (nm != name && idx != Some(name) && edp_binding_used_in(body, name, edp_usage_ctor_for(ctors, nm, idx))),
     ELoop(pairs, body) => {
       let mut used = false
       let mut shadows = false
       for pair in pairs {
         let (pn, value) = pair
-        used = used || edp_binding_used_in(value, name)
+        used = used || edp_binding_used_in(value, name, ctors)
         shadows = shadows || pn == name
       }
-      used || (!shadows && edp_binding_used_in(body, name))
+      used || (!shadows && edp_binding_used_in(body, name, edp_usage_ctor_loop(ctors, pairs)))
     },
-    _ => edp_binding_used_in_exprs(expr_children(expr), name)
+    _ => edp_binding_used_in_exprs(expr_children(expr), name, ctors)
   }
 }
 
 /// A dormant value constructor evaluates its fields but does not enter a
 /// closure body stored in one of them.
-fn edp_binding_used_in_unused_value(expr: Expr, name: String) -> Bool {
+fn edp_binding_used_in_unused_value(expr: Expr, name: String, ctors: Array[String]) -> Bool {
   match expr {
     EFn(_, _, _, _, _, _) => false,
     EIdent(_, _) => false,
-    EArray(items) => edp_binding_used_in_unused_exprs(items, name),
-    ETuple(items) => edp_binding_used_in_unused_exprs(items, name),
+    ECall(EIdent(ctor, _), args, _) => if edp_str_array_contains(ctors, ctor) {
+      edp_binding_used_in_unused_exprs(args, name, ctors)
+    } else {
+      edp_binding_used_in(expr, name, ctors)
+    },
+    EArray(items) => edp_binding_used_in_unused_exprs(items, name, ctors),
+    ETuple(items) => edp_binding_used_in_unused_exprs(items, name, ctors),
     ERecord(_, fields, _) => {
       let mut used = false
       for field in fields {
         let (_, value) = field
-        used = used || edp_binding_used_in_unused_value(value, name)
+        used = used || edp_binding_used_in_unused_value(value, name, ctors)
       }
       used
     },
@@ -6133,33 +6207,33 @@ fn edp_binding_used_in_unused_value(expr: Expr, name: String) -> Bool {
       let mut used = false
       for field in fields {
         let (_, value) = field
-        used = used || edp_binding_used_in_unused_value(value, name)
+        used = used || edp_binding_used_in_unused_value(value, name, ctors)
       }
       used
     },
-    _ => edp_binding_used_in(expr, name)
+    _ => edp_binding_used_in(expr, name, ctors)
   }
 }
 
-fn edp_binding_used_in_unused_exprs(exprs: Array[Expr], name: String) -> Bool {
+fn edp_binding_used_in_unused_exprs(exprs: Array[Expr], name: String, ctors: Array[String]) -> Bool {
   let mut used = false
   for expr in exprs {
-    used = used || edp_binding_used_in_unused_value(expr, name)
+    used = used || edp_binding_used_in_unused_value(expr, name, ctors)
   }
   used
 }
 
-fn edp_binding_used_in_exprs(exprs: Array[Expr], name: String) -> Bool {
+fn edp_binding_used_in_exprs(exprs: Array[Expr], name: String, ctors: Array[String]) -> Bool {
   let mut used = false
   let mut i = 0
   while !used && i < Array::length(exprs) {
-    used = edp_binding_used_in(Array::get(exprs, i), name)
+    used = edp_binding_used_in(Array::get(exprs, i), name, ctors)
     i = i + 1
   }
   used
 }
 
-fn edp_binding_used_in_arms(arms: Array[(Pat, Expr)], name: String) -> Bool {
+fn edp_binding_used_in_arms(arms: Array[(Pat, Expr)], name: String, ctors: Array[String]) -> Bool {
   let mut used = false
   let mut i = 0
   while !used && i < Array::length(arms) {
@@ -6167,7 +6241,7 @@ fn edp_binding_used_in_arms(arms: Array[(Pat, Expr)], name: String) -> Bool {
     let bound: Array[String] = []
     edp_pat_binds(pat, bound)
     if !edp_str_array_contains(bound, name) {
-      used = edp_binding_used_in(body, name)
+      used = edp_binding_used_in(body, name, edp_usage_ctor_pat(ctors, pat))
     } else {
       ()
     }
@@ -6176,7 +6250,7 @@ fn edp_binding_used_in_arms(arms: Array[(Pat, Expr)], name: String) -> Bool {
   used
 }
 
-fn edp_collect_ecall_arg_idents_expr(expr: Expr, gname: String, argpos: Int, out: Array[String]) -> Unit {
+fn edp_collect_ecall_arg_idents_expr(expr: Expr, gname: String, argpos: Int, out: Array[String], ctors: Array[String]) -> Unit {
   match expr {
     ECall(callee, args, _) => {
       match callee {
@@ -6194,8 +6268,8 @@ fn edp_collect_ecall_arg_idents_expr(expr: Expr, gname: String, argpos: Int, out
         },
         _ => ()
       }
-      edp_collect_ecall_arg_idents_expr(callee, gname, argpos, out)
-      edp_collect_ecall_arg_idents_exprs(args, gname, argpos, out)
+      edp_collect_ecall_arg_idents_expr(callee, gname, argpos, out, ctors)
+      edp_collect_ecall_arg_idents_exprs(args, gname, argpos, out, ctors)
     },
     EFn(_, _, params, _, _, body) => {
       let mut shadows = false
@@ -6204,32 +6278,32 @@ fn edp_collect_ecall_arg_idents_expr(expr: Expr, gname: String, argpos: Int, out
         shadows = shadows || edp_strip_tilde(pn) == gname
       }
       if !shadows {
-        edp_collect_ecall_arg_idents_expr(body, gname, argpos, out)
+        edp_collect_ecall_arg_idents_expr(body, gname, argpos, out, edp_usage_ctor_params(ctors, params))
       } else {
         ()
       }
     },
     EHandle(body, arms) => {
-      edp_collect_ecall_arg_idents_expr(body, gname, argpos, out)
-      edp_collect_ecall_arg_idents_arms(arms, gname, argpos, out)
+      edp_collect_ecall_arg_idents_expr(body, gname, argpos, out, ctors)
+      edp_collect_ecall_arg_idents_arms(arms, gname, argpos, out, ctors)
     },
     EIf(c, t, e) => {
-      edp_collect_ecall_arg_idents_expr(c, gname, argpos, out)
-      edp_collect_ecall_arg_idents_expr(t, gname, argpos, out)
-      edp_collect_ecall_arg_idents_expr(e, gname, argpos, out)
+      edp_collect_ecall_arg_idents_expr(c, gname, argpos, out, ctors)
+      edp_collect_ecall_arg_idents_expr(t, gname, argpos, out, ctors)
+      edp_collect_ecall_arg_idents_expr(e, gname, argpos, out, ctors)
     },
     EMatch(s, arms) => {
-      edp_collect_ecall_arg_idents_expr(s, gname, argpos, out)
-      edp_collect_ecall_arg_idents_arms(arms, gname, argpos, out)
+      edp_collect_ecall_arg_idents_expr(s, gname, argpos, out, ctors)
+      edp_collect_ecall_arg_idents_arms(arms, gname, argpos, out, ctors)
     },
     EWhile(c, b) => {
-      edp_collect_ecall_arg_idents_expr(c, gname, argpos, out)
-      edp_collect_ecall_arg_idents_expr(b, gname, argpos, out)
+      edp_collect_ecall_arg_idents_expr(c, gname, argpos, out, ctors)
+      edp_collect_ecall_arg_idents_expr(b, gname, argpos, out, ctors)
     },
     EForIn(name, index_name, it, b) => {
-      edp_collect_ecall_arg_idents_expr(it, gname, argpos, out)
+      edp_collect_ecall_arg_idents_expr(it, gname, argpos, out, ctors)
       if name != gname && index_name != Some(gname) {
-        edp_collect_ecall_arg_idents_expr(b, gname, argpos, out)
+        edp_collect_ecall_arg_idents_expr(b, gname, argpos, out, edp_usage_ctor_for(ctors, name, index_name))
       } else {
         ()
       }
@@ -6239,90 +6313,89 @@ fn edp_collect_ecall_arg_idents_expr(expr: Expr, gname: String, argpos: Int, out
       let mut shadows = false
       while i < Array::length(pairs) {
         let (name, v) = Array::get(pairs, i)
-        if !shadows {
-          edp_collect_ecall_arg_idents_expr(v, gname, argpos, out)
-        } else {
-          ()
-        }
+        edp_collect_ecall_arg_idents_expr(v, gname, argpos, out, ctors)
         shadows = shadows || name == gname
         i = i + 1
       }
       if !shadows {
-        edp_collect_ecall_arg_idents_expr(b, gname, argpos, out)
+        edp_collect_ecall_arg_idents_expr(b, gname, argpos, out, edp_usage_ctor_loop(ctors, pairs))
       } else {
         ()
       }
     },
     ELet(name, v, b, _) => {
+      let inner = edp_usage_ctor_mask(ctors, name)
       // A closure literal with no use in its continuation cannot call the
       // owner. Do not let its body refuse a live call with another argument.
-      if !edp_binding_used_in(b, name) {
-        edp_collect_ecall_arg_idents_unused_value(v, gname, argpos, out)
+      if !edp_binding_used_in(b, name, inner) {
+        edp_collect_ecall_arg_idents_unused_value(v, gname, argpos, out, ctors)
       } else {
-        edp_collect_ecall_arg_idents_expr(v, gname, argpos, out)
+        edp_collect_ecall_arg_idents_expr(v, gname, argpos, out, ctors)
       }
       if name != gname {
-        edp_collect_ecall_arg_idents_expr(b, gname, argpos, out)
+        edp_collect_ecall_arg_idents_expr(b, gname, argpos, out, inner)
       } else {
         ()
       }
     },
     ELetMut(name, v, b, _) => {
-      if !edp_binding_used_in(b, name) {
-        edp_collect_ecall_arg_idents_unused_value(v, gname, argpos, out)
+      let inner = edp_usage_ctor_mask(ctors, name)
+      if !edp_binding_used_in(b, name, inner) {
+        edp_collect_ecall_arg_idents_unused_value(v, gname, argpos, out, ctors)
       } else {
-        edp_collect_ecall_arg_idents_expr(v, gname, argpos, out)
+        edp_collect_ecall_arg_idents_expr(v, gname, argpos, out, ctors)
       }
       if name != gname {
-        edp_collect_ecall_arg_idents_expr(b, gname, argpos, out)
+        edp_collect_ecall_arg_idents_expr(b, gname, argpos, out, inner)
       } else {
         ()
       }
     },
     ELetRec(name, v, b) => {
       if name != gname {
-        if !edp_binding_used_in(b, name) {
-          edp_collect_ecall_arg_idents_unused_value(v, gname, argpos, out)
+        let inner = edp_usage_ctor_mask(ctors, name)
+        if !edp_binding_used_in(b, name, inner) {
+          edp_collect_ecall_arg_idents_unused_value(v, gname, argpos, out, inner)
         } else {
-          edp_collect_ecall_arg_idents_expr(v, gname, argpos, out)
+          edp_collect_ecall_arg_idents_expr(v, gname, argpos, out, inner)
         }
-        edp_collect_ecall_arg_idents_expr(b, gname, argpos, out)
+        edp_collect_ecall_arg_idents_expr(b, gname, argpos, out, inner)
       } else {
         ()
       }
     },
     ESeq(a, b) => {
-      edp_collect_ecall_arg_idents_expr(a, gname, argpos, out)
-      edp_collect_ecall_arg_idents_expr(b, gname, argpos, out)
+      edp_collect_ecall_arg_idents_expr(a, gname, argpos, out, ctors)
+      edp_collect_ecall_arg_idents_expr(b, gname, argpos, out, ctors)
     },
     EBinOp(_, l, r, _) => {
-      edp_collect_ecall_arg_idents_expr(l, gname, argpos, out)
-      edp_collect_ecall_arg_idents_expr(r, gname, argpos, out)
+      edp_collect_ecall_arg_idents_expr(l, gname, argpos, out, ctors)
+      edp_collect_ecall_arg_idents_expr(r, gname, argpos, out, ctors)
     },
-    EUnaryOp(_, e2) => edp_collect_ecall_arg_idents_expr(e2, gname, argpos, out),
+    EUnaryOp(_, e2) => edp_collect_ecall_arg_idents_expr(e2, gname, argpos, out, ctors),
     EAssign(_, v, c) => {
-      edp_collect_ecall_arg_idents_expr(v, gname, argpos, out)
-      edp_collect_ecall_arg_idents_expr(c, gname, argpos, out)
+      edp_collect_ecall_arg_idents_expr(v, gname, argpos, out, ctors)
+      edp_collect_ecall_arg_idents_expr(c, gname, argpos, out, ctors)
     },
     EAssignOp(_, _, v, c) => {
-      edp_collect_ecall_arg_idents_expr(v, gname, argpos, out)
-      edp_collect_ecall_arg_idents_expr(c, gname, argpos, out)
+      edp_collect_ecall_arg_idents_expr(v, gname, argpos, out, ctors)
+      edp_collect_ecall_arg_idents_expr(c, gname, argpos, out, ctors)
     },
-    EDot(o, _, _, _) => edp_collect_ecall_arg_idents_expr(o, gname, argpos, out),
-    ELabeledArg(_, _, v) => edp_collect_ecall_arg_idents_expr(v, gname, argpos, out),
-    EReturn(e2) => edp_collect_ecall_arg_idents_expr(e2, gname, argpos, out),
+    EDot(o, _, _, _) => edp_collect_ecall_arg_idents_expr(o, gname, argpos, out, ctors),
+    ELabeledArg(_, _, v) => edp_collect_ecall_arg_idents_expr(v, gname, argpos, out, ctors),
+    EReturn(e2) => edp_collect_ecall_arg_idents_expr(e2, gname, argpos, out, ctors),
     EBreak(opt) => match opt {
-      Some(e2) => edp_collect_ecall_arg_idents_expr(e2, gname, argpos, out),
+      Some(e2) => edp_collect_ecall_arg_idents_expr(e2, gname, argpos, out, ctors),
       None => ()
     },
-    EContinue(args) => edp_collect_ecall_arg_idents_exprs(args, gname, argpos, out),
-    ETuple(elems) => edp_collect_ecall_arg_idents_exprs(elems, gname, argpos, out),
-    EArray(elems) => edp_collect_ecall_arg_idents_exprs(elems, gname, argpos, out),
+    EContinue(args) => edp_collect_ecall_arg_idents_exprs(args, gname, argpos, out, ctors),
+    ETuple(elems) => edp_collect_ecall_arg_idents_exprs(elems, gname, argpos, out, ctors),
+    EArray(elems) => edp_collect_ecall_arg_idents_exprs(elems, gname, argpos, out, ctors),
     ERecord(_, fields, _) => {
       let mut i = 0
       while i < Array::length(fields) {
         let (_, v) = Array::get(fields, i)
-        edp_collect_ecall_arg_idents_expr(v, gname, argpos, out)
+        edp_collect_ecall_arg_idents_expr(v, gname, argpos, out, ctors)
         i = i + 1
       }
     },
@@ -6330,31 +6403,31 @@ fn edp_collect_ecall_arg_idents_expr(expr: Expr, gname: String, argpos: Int, out
       let mut i = 0
       while i < Array::length(fields) {
         let (_, v) = Array::get(fields, i)
-        edp_collect_ecall_arg_idents_expr(v, gname, argpos, out)
+        edp_collect_ecall_arg_idents_expr(v, gname, argpos, out, ctors)
         i = i + 1
       }
     },
-    ESpread(e2) => edp_collect_ecall_arg_idents_expr(e2, gname, argpos, out),
+    ESpread(e2) => edp_collect_ecall_arg_idents_expr(e2, gname, argpos, out, ctors),
     _ => ()
   }
 }
 
-fn edp_collect_ecall_arg_idents_exprs(exprs: Array[Expr], gname: String, argpos: Int, out: Array[String]) -> Unit {
+fn edp_collect_ecall_arg_idents_exprs(exprs: Array[Expr], gname: String, argpos: Int, out: Array[String], ctors: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(exprs) {
-    edp_collect_ecall_arg_idents_expr(Array::get(exprs, i), gname, argpos, out)
+    edp_collect_ecall_arg_idents_expr(Array::get(exprs, i), gname, argpos, out, ctors)
     i = i + 1
   }
 }
 
-fn edp_collect_ecall_arg_idents_arms(arms: Array[(Pat, Expr)], gname: String, argpos: Int, out: Array[String]) -> Unit {
+fn edp_collect_ecall_arg_idents_arms(arms: Array[(Pat, Expr)], gname: String, argpos: Int, out: Array[String], ctors: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(arms) {
     let (pat, ex) = Array::get(arms, i)
     let bound: Array[String] = []
     edp_pat_binds(pat, bound)
     if !edp_str_array_contains(bound, gname) {
-      edp_collect_ecall_arg_idents_expr(ex, gname, argpos, out)
+      edp_collect_ecall_arg_idents_expr(ex, gname, argpos, out, edp_usage_ctor_pat(ctors, pat))
     } else {
       ()
     }
@@ -6459,66 +6532,133 @@ fn edp_count_direct_calls(expr: Expr, name: String) -> Int {
 
 /// Guard (1): a reference to this top-level binding as a value, excluding
 /// direct calls and occurrences owned by a lexical binder of the same name.
-fn edp_fn_value_used_in(expr: Expr, fname: String) -> Bool {
+fn edp_fn_value_used_in(expr: Expr, fname: String, ctors: Array[String]) -> Bool {
   match expr {
     EIdent(name, _) => name == fname,
-    ECall(EIdent(_, _), args, _) => edp_fn_value_used_in_exprs(args, fname),
-    ELet(name, value, body, _) => edp_fn_value_used_in(value, fname) || (name != fname && edp_fn_value_used_in(body, fname)),
-    ELetMut(name, value, body, _) => edp_fn_value_used_in(value, fname) || (name != fname && edp_fn_value_used_in(body, fname)),
-    ELetRec(name, value, body) => name != fname && (edp_fn_value_used_in(value, fname) || edp_fn_value_used_in(body, fname)),
+    ECall(EIdent(_, _), args, _) => edp_fn_value_used_in_exprs(args, fname, ctors),
+    ELet(name, value, body, _) => {
+      let inner = edp_usage_ctor_mask(ctors, name)
+      let in_value = if edp_binding_used_in(body, name, inner) {
+        edp_fn_value_used_in(value, fname, ctors)
+      } else {
+        edp_fn_value_used_in_unused_value(value, fname, ctors)
+      }
+      in_value || (name != fname && edp_fn_value_used_in(body, fname, inner))
+    },
+    ELetMut(name, value, body, _) => {
+      let inner = edp_usage_ctor_mask(ctors, name)
+      let in_value = if edp_binding_used_in(body, name, inner) {
+        edp_fn_value_used_in(value, fname, ctors)
+      } else {
+        edp_fn_value_used_in_unused_value(value, fname, ctors)
+      }
+      in_value || (name != fname && edp_fn_value_used_in(body, fname, inner))
+    },
+    ELetRec(name, value, body) => if name == fname {
+      false
+    } else {
+      let inner = edp_usage_ctor_mask(ctors, name)
+      let in_value = if edp_binding_used_in(body, name, inner) {
+        edp_fn_value_used_in(value, fname, inner)
+      } else {
+        edp_fn_value_used_in_unused_value(value, fname, inner)
+      }
+      in_value || edp_fn_value_used_in(body, fname, inner)
+    },
     EFn(_, _, params, _, _, body) => {
       let mut shadowed = false
       for param in params {
         let (name, _) = param
         shadowed = shadowed || edp_strip_tilde(name) == fname
       }
-      !shadowed && edp_fn_value_used_in(body, fname)
+      !shadowed && edp_fn_value_used_in(body, fname, edp_usage_ctor_params(ctors, params))
     },
-    EMatch(scrutinee, arms) => edp_fn_value_used_in(scrutinee, fname) || edp_fn_value_used_in_arms(arms, fname),
-    EHandle(body, arms) => edp_fn_value_used_in(body, fname) || edp_fn_value_used_in_arms(arms, fname),
-    EForIn(name, index_name, iter, body) => edp_fn_value_used_in(iter, fname) || (name != fname && index_name != Some(fname) && edp_fn_value_used_in(body, fname)),
+    EMatch(scrutinee, arms) => edp_fn_value_used_in(scrutinee, fname, ctors) || edp_fn_value_used_in_arms(arms, fname, ctors),
+    EHandle(body, arms) => edp_fn_value_used_in(body, fname, ctors) || edp_fn_value_used_in_arms(arms, fname, ctors),
+    EForIn(name, index_name, iter, body) => edp_fn_value_used_in(iter, fname, ctors) || (name != fname && index_name != Some(fname) && edp_fn_value_used_in(body, fname, edp_usage_ctor_for(ctors, name, index_name))),
     ELoop(pairs, body) => {
       let mut found = false
       let mut shadowed = false
       for pair in pairs {
         let (name, value) = pair
-        found = found || edp_fn_value_used_in(value, fname)
+        found = found || edp_fn_value_used_in(value, fname, ctors)
         shadowed = shadowed || name == fname
       }
-      found || (!shadowed && edp_fn_value_used_in(body, fname))
+      found || (!shadowed && edp_fn_value_used_in(body, fname, edp_usage_ctor_loop(ctors, pairs)))
     },
-    _ => edp_fn_value_used_in_exprs(expr_children(expr), fname)
+    _ => edp_fn_value_used_in_exprs(expr_children(expr), fname, ctors)
   }
 }
 
-fn edp_fn_value_used_in_exprs(exprs: Array[Expr], fname: String) -> Bool {
+fn edp_fn_value_used_in_unused_value(expr: Expr, fname: String, ctors: Array[String]) -> Bool {
+  match expr {
+    EFn(_, _, _, _, _, _) => false,
+    EIdent(_, _) => false,
+    ECall(EIdent(name, _), args, _) => if edp_str_array_contains(ctors, name) {
+      edp_fn_value_used_in_unused_exprs(args, fname, ctors)
+    } else {
+      edp_fn_value_used_in(expr, fname, ctors)
+    },
+    EArray(items) => edp_fn_value_used_in_unused_exprs(items, fname, ctors),
+    ETuple(items) => edp_fn_value_used_in_unused_exprs(items, fname, ctors),
+    ERecord(_, fields, _) => {
+      let mut found = false
+      for field in fields {
+        let (_, value) = field
+        found = found || edp_fn_value_used_in_unused_value(value, fname, ctors)
+      }
+      found
+    },
+    EMap(fields) => {
+      let mut found = false
+      for field in fields {
+        let (_, value) = field
+        found = found || edp_fn_value_used_in_unused_value(value, fname, ctors)
+      }
+      found
+    },
+    _ => edp_fn_value_used_in(expr, fname, ctors)
+  }
+}
+
+fn edp_fn_value_used_in_unused_exprs(exprs: Array[Expr], fname: String, ctors: Array[String]) -> Bool {
   let mut found = false
   for expr in exprs {
-    found = found || edp_fn_value_used_in(expr, fname)
+    found = found || edp_fn_value_used_in_unused_value(expr, fname, ctors)
   }
   found
 }
 
-fn edp_fn_value_used_in_arms(arms: Array[(Pat, Expr)], fname: String) -> Bool {
+fn edp_fn_value_used_in_exprs(exprs: Array[Expr], fname: String, ctors: Array[String]) -> Bool {
+  let mut found = false
+  for expr in exprs {
+    found = found || edp_fn_value_used_in(expr, fname, ctors)
+  }
+  found
+}
+
+fn edp_fn_value_used_in_arms(arms: Array[(Pat, Expr)], fname: String, ctors: Array[String]) -> Bool {
   let mut found = false
   for arm in arms {
     let (pat, body) = arm
     let bound: Array[String] = []
     edp_pat_binds(pat, bound)
-    found = found || (!edp_str_array_contains(bound, fname) && edp_fn_value_used_in(body, fname))
+    found = found || (!edp_str_array_contains(bound, fname) && edp_fn_value_used_in(body, fname, edp_usage_ctor_pat(ctors, pat)))
   }
   found
 }
 
 fn edp_fn_used_as_value(stmts: Array[Stmt], fname: String) -> Bool {
+  let ctors: Array[String] = []
+  edp_append_ctor_inert_names(stmts, ctors)
   let mut found = false
   for stmt in stmts {
     match stmt {
-      SLet(_, _, _, _, expr) => found = found || edp_fn_value_used_in(expr, fname),
-      SLetMut(_, _, expr) => found = found || edp_fn_value_used_in(expr, fname),
-      SExpr(expr) => found = found || edp_fn_value_used_in(expr, fname),
-      STest(_, expr) => found = found || edp_fn_value_used_in(expr, fname),
-      SBench(_, expr) => found = found || edp_fn_value_used_in(expr, fname),
+      SLet(_, _, _, _, expr) => found = found || edp_fn_value_used_in(expr, fname, ctors),
+      SLetMut(_, _, expr) => found = found || edp_fn_value_used_in(expr, fname, ctors),
+      SExpr(expr) => found = found || edp_fn_value_used_in(expr, fname, ctors),
+      STest(_, expr) => found = found || edp_fn_value_used_in(expr, fname, ctors),
+      SBench(_, expr) => found = found || edp_fn_value_used_in(expr, fname, ctors),
       _ => ()
     }
   }
