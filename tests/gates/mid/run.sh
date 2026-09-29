@@ -2801,6 +2801,19 @@ if [ "$dormant_reference_result" != "1" ]; then
 fi
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/fnvalue_nested_handle_dormant_array_reference.vibe "$nhvdir/dormant_array_reference.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$nhvdir/dormant_array_reference.wasm" ]; then
+  echo "[compiler-gate] FAIL: a function reference in an unused array made a dormant closure reachable (#3195)" >&2
+  cat "$nhvdir/dormant_array_reference.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+dormant_array_reference_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$nhvdir/dormant_array_reference.wasm" 2>/dev/null | tr -dc '0-9')"
+if [ "$dormant_array_reference_result" != "1" ]; then
+  echo "[compiler-gate] FAIL: reachable owner with dormant array reference returned '$dormant_array_reference_result' (want 1, #3195)" >&2
+  exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   fixtures/fnvalue_nested_handle_shadowed_owner.vibe "$nhvdir/shadowed_owner.wasm" main >/dev/null 2>&1 || true
 if [ ! -s "$nhvdir/shadowed_owner.wasm" ]; then
   echo "[compiler-gate] FAIL: a local shadow of the handler owner was mistaken for the top-level owner (#3195)" >&2
