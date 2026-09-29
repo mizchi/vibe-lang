@@ -96,13 +96,14 @@ row = rows[0]
 assert 'unknown name: accI' in row['message'], row
 assert 'immutable' not in row['message'], row
 assert row['range']['start'] == {'line': 1, 'character': 2}, row
+assert row['range']['end'] == {'line': 1, 'character': 6}, row
 assert row['data'] is None, row
 PY
 for lane in fs single-file; do
   if [ "$lane" = single-file ]; then set -- --single-file; else set --; fi
   plain="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" --invoke cli_main "$STAGE2" check "$@" "$WORK/assign_unknown.vibe" 2>&1 || true)"
   case "$plain" in
-    *'line 2:3: unknown name: accI'*) ;;
+    *'line 2:3-7: unknown name: accI'*) ;;
     *) bad "assign_unknown: plain $lane diagnostic is missing the target position: $plain" ;;
   esac
 done
@@ -112,6 +113,25 @@ probe assign_op_unknown 1
 if ! grep -qF '"message":"unknown name: accI"' "$WORK/assign_op_unknown.fs.json"; then
   bad "assign_op_unknown: compound assignment lost the unbound-target diagnostic"
 fi
+python3 - "$WORK/assign_op_unknown.fs.json" <<'PY' || bad "assign_op_unknown: wrong target range"
+import json, sys
+row, = json.load(open(sys.argv[1]))
+assert row['range'] == {'start': {'line': 1, 'character': 2}, 'end': {'line': 1, 'character': 6}}, row
+PY
+
+# An earlier comment, parameter and `let` declaration use the same spelling.
+# None is the assignment target. The range must cover the target token itself.
+printf '// accI is mentioned here\nfn prior(accI: Int) -> Int { accI }\nfn older() -> Int { let accI = 1; accI }\nexport fn main() -> Int {\n  accI = 1\n  0\n}\n' > "$WORK/assign_target_span.vibe"
+probe assign_target_span 1
+python3 - "$WORK/assign_target_span.fs.json" <<'PY' || bad "assign_target_span: wrong target range"
+import json, sys
+rows = json.load(open(sys.argv[1]))
+assert len(rows) == 1, rows
+row = rows[0]
+assert row['message'] == 'unknown name: accI', row
+assert row['range'] == {'start': {'line': 4, 'character': 2}, 'end': {'line': 4, 'character': 6}}, row
+assert row['data'] is None, row
+PY
 
 printf 'export fn main() -> Int {\n  let acc = 0\n  acc = 1\n  0\n}\n' > "$WORK/assign_immutable.vibe"
 probe assign_immutable 1
@@ -181,4 +201,4 @@ if grep -qF 'unlocated.vibe' "$WORK/unlocated.fs.json" 2>/dev/null; then
 fi
 
 [ "$fails" -eq 0 ] || exit 1
-echo "[check-json-parity] ok (9 probes: both lanes agree on diagnostics, exit code, and UTF-16 offsets)"
+echo "[check-json-parity] ok (10 probes: both lanes agree on diagnostics, exit code, and UTF-16 offsets)"
