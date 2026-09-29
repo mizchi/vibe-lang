@@ -43,11 +43,17 @@ for char_lane in fs single-file; do
   char_diag="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
     --invoke cli_main "$stage2_wasm" check "$@" fixtures/err_nonascii_char_literal.vibe 2>&1 || true)"
   case "$char_diag" in
-    *'line 2:11: char literal must contain one ASCII character or escape; use a String for text or an Int code point for non-ASCII'*) ;;
+    *'line 2:11: use a String for text or an Int code point for non-ASCII'*) ;;
     *) echo "[compiler-gate] FAIL: $char_lane non-ASCII char diagnostic lacks its location or edit: $char_diag" >&2; exit 1 ;;
   esac
+  missing_quote="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke cli_main "$stage2_wasm" check "$@" fixtures/err_unclosed_char_literal.vibe 2>&1 || true)"
+  case "$missing_quote" in
+    *'line 2:11: add a closing quote to the char literal'*) ;;
+    *) echo "[compiler-gate] FAIL: $char_lane missing char quote diagnostic suggests the wrong edit: $missing_quote" >&2; exit 1 ;;
+  esac
 done
-echo "[compiler-gate] non-ASCII char diagnostic located with an edit (#3213)"
+echo "[compiler-gate] char diagnostics locate invalid width and missing quotes with distinct edits (#3213)"
 
 # Keep complete checked-module transport aligned with the real FS output and
 # diagnostics corpus, including compiler-sized input and hostile cache repair.
