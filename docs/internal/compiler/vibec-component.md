@@ -52,8 +52,10 @@ The request protocol is the same as `cli_direct_component_entry.vibe`'s:
 | `probe-main-source-len` | length of the main source |
 | `len-mode:<mode>:<entry>` | compile, return the byte length (the result is cached) |
 | `hex-chunk-mode:<mode>:<entry>:<n>` | the n-th 1024-byte hex chunk |
+| `error-mode:<mode>:<entry>` | return a compile error, or the empty string on success |
 
-Every error is `""`; an Error is discharged internally.
+The byte and chunk requests return `""` on error. The browser playground uses
+`error-mode` after a failed length request to show the compiler's message.
 
 ## vfs callback surface (implemented in #1109-2)
 

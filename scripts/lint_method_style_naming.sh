@@ -115,12 +115,14 @@ for vpkg in "${vpkgs[@]}"; do
     esac
     checked=$((checked + 1))
     is_gap=1
-    for want in "${qualified[@]}"; do
-      if [ "$want" = "${recv_type}::${fn_name}" ]; then
-        is_gap=0
-        break
-      fi
-    done
+    if [ "${#qualified[@]}" -gt 0 ]; then
+      for want in "${qualified[@]}"; do
+        if [ "$want" = "${recv_type}::${fn_name}" ]; then
+          is_gap=0
+          break
+        fi
+      done
+    fi
     if [ "$is_gap" -eq 1 ]; then
       if is_allowed "$vpkg" "$fn_name"; then
         known_debt=$((known_debt + 1))

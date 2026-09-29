@@ -99,7 +99,8 @@ world vibec {
   ///   "probe-main-source-len"                -> length of the main source
   ///   "len-mode:<mode>:<entry>"              -> compiled byte length
   ///   "hex-chunk-mode:<mode>:<entry>:<n>"    -> n-th 1024-byte hex chunk
-  /// Returns "" on any error.
+  ///   "error-mode:<mode>:<entry>"            -> compiler error, or "" on success
+  /// Length and chunk requests return "" on error.
   export compile: func(source: string, request: string) -> string;
 }
 EOF

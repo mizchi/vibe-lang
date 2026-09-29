@@ -52,11 +52,13 @@ fail() {
 }
 
 run_sweep() { # <chunk-or-empty> <json:0|1> <stdout-file>
-  local chunk="$1" json="$2" out="$3" status=0 cache extra=()
+  local chunk="$1" json="$2" out="$3" status=0 cache
   cache="$(mktemp -d)"
-  [ -n "$chunk" ] && extra+=("VIBE_GREP_CHUNK_FILES=$chunk")
   [ "$json" = "1" ] && set -- --json || set --
-  env VIBE_CLI_WASM="$STAGE2" VIBE_BUILD_CACHE_DIR="$cache" "${extra[@]}" \
+  # The driver treats an empty value as its default chunk size. Pass it
+  # explicitly: Bash 3.2 raises an unbound-variable error for an empty array
+  # expansion under set -u.
+  env VIBE_CLI_WASM="$STAGE2" VIBE_BUILD_CACHE_DIR="$cache" VIBE_GREP_CHUNK_FILES="$chunk" \
       bash "$ROOT_DIR/scripts/vibe_grep_bin.sh" grep "$@" \
       --pattern "$PATTERN" "$CORPUS" >"$out" 2>"$out.err" || status=$?
   rm -rf "$cache"

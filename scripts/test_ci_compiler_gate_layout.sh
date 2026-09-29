@@ -63,6 +63,7 @@ require 'COMPILER_GATE_SKIP_STAGE2_ORACLES: "1"' "$workflow"
 require_job_block compiler-stage2-oracles "wasmtime: 'true'"
 require_job_block compiler-docs "wasmtime: 'true'"
 require_job_block compiler-playground "wasmtime: 'true'"
+require_job_block compiler-playground 'pnpm/action-setup@v4'
 require_job_block compiler-examples "wasmtime: 'true'"
 require_job_block review-regressions "wasmtime: 'true'"
 

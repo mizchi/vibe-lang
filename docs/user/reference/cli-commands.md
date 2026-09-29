@@ -219,15 +219,17 @@ cache under `$VIBE_HOME/cache/pkg/` or from the pinned source, hash-verified
 either way.
 
 ```
-vibe add github:owner/repo[/dir]@<ref>
-vibe add git:<url>@<ref>[#<dir>]
+vibe add github:owner/repo[/dir]@<ref> [#pkg:b3:<64hex>]
+vibe add git:<url>@<ref>[#<dir>] [#pkg:b3:<64hex>]
 vibe fetch
 ```
 
 A `<ref>` may be a semver constraint (`^1.2`, `~1.2.3`, `>=1.0`, `1.x`); it
 resolves to the highest matching tag before the fetch. There is no
 `vibe verify`, no `vibe update-lock` and no lock file: the build verifies the
-store copy against the pin every time.
+store copy against the pin every time. An optional content hash makes the
+initial `add` verify the fetched package before installing it. A full commit
+hash can be used as `<ref>` instead of a tag.
 
 ### Formatting (no `vibe fmt`)
 

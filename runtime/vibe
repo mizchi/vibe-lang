@@ -123,7 +123,8 @@
 #                                         and manifest) and a .gitignore
 #   vibe root                             print the project root
 #   vibe clean   [--all]                  remove .vibe/build (--all: .vibe/store too)
-#   vibe add     <source-spec>            fetch a package into .vibe/store/ and
+#   vibe add     <source-spec> [#pkg:b3:<64hex>]
+#                                         fetch a package into .vibe/store/ and
 #                                         pin it in the root index.vpkg
 #                                         (github:owner/repo[/dir]@<ref> or
 #                                         git:<url>@<ref>[#<dir>]; a semver
@@ -1489,8 +1490,15 @@ case "$cmd" in
     esac
     ;;
   add)
-    [ "$#" -eq 1 ] || die "usage: vibe add <source-spec>   (github:owner/repo[/dir]@<ref> | git:<url>@<ref>[#<dir>])"
+    [ "$#" -ge 1 ] && [ "$#" -le 2 ] || die "usage: vibe add <source-spec> [#pkg:b3:<64hex>]   (github:owner/repo[/dir]@<ref> | git:<url>@<ref>[#<dir>])"
     aspec="$1"; case "$aspec" in -*) die "usage: vibe add <source-spec>" ;; esac
+    apinned="${2:-}"
+    if [ -n "$apinned" ]; then
+      case "$apinned" in
+        \#pkg:b3:*|\#pkg:sha1:*) ;;
+        *) die "vibe add: expected a #pkg:b3:<64hex> content hash, got $apinned" ;;
+      esac
+    fi
     # The manifest, the store and vibe_pkg.sh's paths are the PROJECT's, so
     # this arm runs from the root whatever directory it was invoked in.
     cd "$PROJECT_ROOT"
@@ -1527,8 +1535,10 @@ case "$cmd" in
     fi
     pkg_sh="$(find_pkg_sh)" || exit 1
     cli="$(pick_cli)"; aout="$(mktemp -t vibe-add-XXXXXX)"
+    if [ -n "$apinned" ]; then set -- "$aspec" "$apinned" --store
+    else set -- "$aspec" --store; fi
     if ! env VIBE_PKG_RUNNER="$RUNNER" VIBE_PKG_CLI_WASM="$cli" VIBE_HOME="$VIBE_HOME" \
-        bash "$pkg_sh" add "$aspec" --store > "$aout"; then
+        bash "$pkg_sh" add "$@" > "$aout"; then
       grep -v $'^added\t' "$aout" || true; rm -f "$aout"; die "vibe add: fetch failed for $aspec"
     fi
     grep -v $'^added\t' "$aout" || true

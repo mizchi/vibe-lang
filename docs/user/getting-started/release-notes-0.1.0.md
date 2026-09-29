@@ -110,7 +110,9 @@ read, and every feature below is one the compiler itself depends on.
   a dependency is pinned by content hash in the root `index.vpkg`
   (`require @scope/name x.y.z = #pkg:b3:<hex> from <source>@<commit>`) and
   installed under `.vibe/store/`; a semver constraint in the ref resolves to a
-  tag at add time (#2676). The registry slice is file-based with an
+  tag at add time, a full commit hash can be used as the ref, and an optional
+  `#pkg:b3:<hex>` argument verifies the content before installation (#2676).
+  The registry slice is file-based with an
   RFC6962-shaped transparency log.
 - Six packages ship with the toolchain: `@vibe/core`, `@vibe/ast`,
   `@vibe/parser`, `@vibe/builtin`, `@vibe/console`, `@vibe/wit_runtime`. The
@@ -215,3 +217,7 @@ the edit that fixes them rather than an internal pass name.
 The [0.1.0 milestone](https://github.com/mizchi/vibe-lang/milestone/2) defines
 the release scope. [#2834](https://github.com/mizchi/vibe-lang/issues/2834)
 records the release acceptance evidence.
+
+The browser playground builds its compiler component from the candidate
+stage2. CI opens the production page in Chromium and checks that all four
+presets compile and run, including the shared URL round trip.
