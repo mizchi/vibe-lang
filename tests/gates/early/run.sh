@@ -36,6 +36,19 @@ if [ "$fsres" != "42" ]; then
 fi
 echo "[compiler-gate] multi-file FS-compile ok (42)"
 
+# #3213: the byte-indexed char lexer rejects a multi-byte character. Both
+# checker lanes must locate the opening quote and name the usable syntax.
+for char_lane in fs single-file; do
+  if [ "$char_lane" = single-file ]; then set -- --single-file; else set --; fi
+  char_diag="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke cli_main "$stage2_wasm" check "$@" fixtures/err_nonascii_char_literal.vibe 2>&1 || true)"
+  case "$char_diag" in
+    *'line 2:11: char literal must contain one ASCII character or escape; use a String for text or an Int code point for non-ASCII'*) ;;
+    *) echo "[compiler-gate] FAIL: $char_lane non-ASCII char diagnostic lacks its location or edit: $char_diag" >&2; exit 1 ;;
+  esac
+done
+echo "[compiler-gate] non-ASCII char diagnostic located with an edit (#3213)"
+
 # Keep complete checked-module transport aligned with the real FS output and
 # diagnostics corpus, including compiler-sized input and hostile cache repair.
 echo "[compiler-gate] checked-module cache parity (#2505)"

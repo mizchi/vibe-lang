@@ -876,8 +876,7 @@ CLI:
 - `vibe shell [file.vibe]` is a compiled REPL (ADR-0034, no interpreter): the
   session is a buffer of top-level declarations, and every line recompiles it
   through the same path as `vibe run`.
-- `pkf run component-run -- script.vibe` builds a stdio-capable component and runs it via wasmtime (`--invoke 'run()'`).
-- `pkf run component-run-moonix -- script.vibe` builds the same component and runs it via moonix.
+- `vibe build --component script.vibe` builds a command component from `export fn vibe_command(args: String) -> String`; `viberun --commands` loads it from a command manifest.
 - `bash install/install.sh` installs the CLI (see `docs/user/getting-started/install.md` for the toolchain layout; `VIBE_HOME` / `VIBE_BIN_DIR` choose where).
 - Imports are loaded recursively (imports of imports) for hashing and import-rename resolution.
 

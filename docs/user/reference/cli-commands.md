@@ -64,8 +64,9 @@ naming the flag: `--wasm-gc`, `--wasm-js-string`, `--component`,
 `--component-string-lift`, `--wit-component`, `--wac`, `--compose-p3`,
 `--adapter`, `--coverage`, `--library`. The wasm-gc backend is reached through
 `VIBE_TEST_BACKEND=gc` / `VIBE_BENCH_BACKEND=gc` for pure tests and benches
-([cheatsheet](cheatsheet.md)); a component is produced by `vibe serve` (below)
-and by `pkf run component-run -- <file.vibe>` from a checkout.
+([cheatsheet](cheatsheet.md)). Use `vibe build --component <file.vibe>` for a
+command component exporting `vibe_command(args: String) -> String`, or
+`vibe serve` (below) for an HTTP component.
 
 ### When to use `build` vs `compile`
 
