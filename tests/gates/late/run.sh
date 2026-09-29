@@ -3649,6 +3649,53 @@ echo "[compiler-gate] ADR-0091 #zero_alloc allocation check ok"
 # stream reads beside such tasks compile too, and tasks park on them
 # (test_named_hostfutures_component_gate.sh / test_named_hoststreams_component_gate.sh
 # run them).
+echo "[compiler-gate] spawn_suspend refuses a named plain task closure (#3194)"
+ssldir="_build/_gate_spawn_suspend_local"
+rm -rf "$ssldir"; mkdir -p "$ssldir"
+cat > "$ssldir/reject.vibe" <<'VIBE'
+import @vibe/concurrent/experimental { TaskGroup, TaskHandle }
+fn main() -> Int allows Async + Exception {
+  TaskGroup::run((g) -> {
+    let p = () -> Int with Async + Exception { 5 }
+    let h = TaskGroup::spawn_suspend(g, p)
+    TaskGroup::pump_all(g)
+    TaskHandle::join(h) + 1
+  })
+}
+VIBE
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$ssldir/reject.vibe" "$ssldir/reject.wasm" main >/dev/null 2>&1 || true
+if [ -s "$ssldir/reject.wasm" ] || ! grep -qF 'pass the task closure inline at `TaskGroup::spawn_suspend`' "$ssldir/reject.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: a named plain task closure compiled or lacked the inline edit (#3194)" >&2
+  cat "$ssldir/reject.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+cat > "$ssldir/inline.vibe" <<'VIBE'
+import @vibe/concurrent/experimental { TaskGroup, TaskHandle }
+fn main() -> Int allows Async + Exception {
+  TaskGroup::run((g) -> {
+    let h = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception { 5 })
+    TaskGroup::pump_all(g)
+    TaskHandle::join(h) + 1
+  })
+}
+VIBE
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$ssldir/inline.vibe" "$ssldir/inline.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$ssldir/inline.wasm" ]; then
+  echo "[compiler-gate] FAIL: the inline task closure did not compile (#3194)" >&2
+  cat "$ssldir/inline.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+ssl_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$ssldir/inline.wasm" 2>/dev/null | tail -1)"
+if [ "$ssl_result" != "6" ]; then
+  echo "[compiler-gate] FAIL: the inline task closure returned '$ssl_result' instead of 6 (#3194)" >&2
+  exit 1
+fi
+rm -rf "$ssldir"
+
 echo "[compiler-gate] 77/77 ADR-0089 D1 async sleep boundary (#1218)"
 asb89dir="_build/_gate_async_sleep89"
 rm -rf "$asb89dir"; mkdir -p "$asb89dir"
