@@ -8274,25 +8274,123 @@ fn dh_lc_shadow_params(lc: Array[(String, Option[Expr])], params: Array[(String,
   out
 }
 
-/// Once an earlier expression may have assigned a tracked closure, its old
-/// initializer cannot explain a later call. Branches are conservative: an
-/// assignment on either path hides it. A nested function body has not run.
-fn dh_lc_after_assigns(expr: Expr, lc: Array[(String, Option[Expr])]) -> Array[(String, Option[Expr])] {
+fn dh_shadow_add(shadowed: Array[String], name: String) -> Array[String] {
+  let out = Array::slice(shadowed, 0, Array::length(shadowed))
+  Array::push(out, name)
+  out
+}
+
+fn dh_shadow_has(shadowed: Array[String], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(shadowed) {
+    found = Array::get(shadowed, i) == name
+    i = i + 1
+  }
+  found
+}
+
+/// An earlier assignment replaces the tracked closure. Inside a branch the
+/// assignment might not run, so only its invalidation is retained. Bindings
+/// introduced inside the expression hide the outer name without changing it.
+fn dh_lc_after_assigns_scoped(expr: Expr, lc: Array[(String, Option[Expr])], shadowed: Array[String], certain: Bool) -> Array[(String, Option[Expr])] {
   match expr {
     EFn(_, _, _, _, _, _) => lc,
-    EAssign(name, value, body) => dh_lc_after_assigns(body, dh_lc_after_assigns(value, dh_lc_with(lc, name, None))),
-    EAssignOp(name, _, value, body) => dh_lc_after_assigns(body, dh_lc_after_assigns(value, dh_lc_with(lc, name, None))),
+    EAssign(name, value, body) => {
+      let before = dh_lc_after_assigns_scoped(value, lc, shadowed, certain)
+      let after = if dh_shadow_has(shadowed, name) {
+        before
+      } else if certain {
+        dh_lc_bind(before, name, value)
+      } else {
+        dh_lc_with(before, name, None)
+      }
+      dh_lc_after_assigns_scoped(body, after, shadowed, certain)
+    },
+    EAssignOp(name, _, value, body) => {
+      let before = dh_lc_after_assigns_scoped(value, lc, shadowed, certain)
+      let after = if dh_shadow_has(shadowed, name) {
+        before
+      } else {
+        dh_lc_with(before, name, None)
+      }
+      dh_lc_after_assigns_scoped(body, after, shadowed, certain)
+    },
+    ELet(name, value, body, _) => dh_lc_after_assigns_scoped(body, dh_lc_after_assigns_scoped(value, lc, shadowed, certain), dh_shadow_add(shadowed, name), certain),
+    ELetMut(name, value, body, _) => dh_lc_after_assigns_scoped(body, dh_lc_after_assigns_scoped(value, lc, shadowed, certain), dh_shadow_add(shadowed, name), certain),
+    ELetRec(name, value, body) => {
+      let inner = dh_shadow_add(shadowed, name)
+      dh_lc_after_assigns_scoped(body, dh_lc_after_assigns_scoped(value, lc, inner, certain), inner, certain)
+    },
+    ESeq(first, rest) => dh_lc_after_assigns_scoped(rest, dh_lc_after_assigns_scoped(first, lc, shadowed, certain), shadowed, certain),
+    EIf(cond, then_body, else_body) => {
+      let after_cond = dh_lc_after_assigns_scoped(cond, lc, shadowed, certain)
+      let after_then = dh_lc_after_assigns_scoped(then_body, after_cond, shadowed, false)
+      dh_lc_after_assigns_scoped(else_body, after_then, shadowed, false)
+    },
+    EMatch(scrutinee, arms) => {
+      let mut out = dh_lc_after_assigns_scoped(scrutinee, lc, shadowed, certain)
+      for arm in arms {
+        let (pat, body) = arm
+        let names: Array[String] = []
+        collect_pat_binds_into(pat, names)
+        let mut arm_shadow = shadowed
+        for name in names {
+          arm_shadow = dh_shadow_add(arm_shadow, name)
+        }
+        out = dh_lc_after_assigns_scoped(body, out, arm_shadow, false)
+      }
+      out
+    },
+    EHandle(body, arms) => {
+      let mut out = dh_lc_after_assigns_scoped(body, lc, shadowed, false)
+      for arm in arms {
+        let (pat, arm_body) = arm
+        let names: Array[String] = []
+        collect_pat_binds_into(pat, names)
+        let mut arm_shadow = dh_shadow_add(shadowed, "resume")
+        for name in names {
+          arm_shadow = dh_shadow_add(arm_shadow, name)
+        }
+        out = dh_lc_after_assigns_scoped(arm_body, out, arm_shadow, false)
+      }
+      out
+    },
+    EWhile(cond, body) => dh_lc_after_assigns_scoped(body, dh_lc_after_assigns_scoped(cond, lc, shadowed, false), shadowed, false),
+    EForIn(name, index_name, iter, body) => {
+      let after_iter = dh_lc_after_assigns_scoped(iter, lc, shadowed, certain)
+      let inner = dh_shadow_add(shadowed, name)
+      let inner2 = match index_name {
+        Some(idx) => dh_shadow_add(inner, idx),
+        None => inner
+      }
+      dh_lc_after_assigns_scoped(body, after_iter, inner2, false)
+    },
+    ELoop(pairs, body) => {
+      let mut out = lc
+      let mut inner = shadowed
+      for pair in pairs {
+        let (name, value) = pair
+        out = dh_lc_after_assigns_scoped(value, out, shadowed, false)
+        inner = dh_shadow_add(inner, name)
+      }
+      dh_lc_after_assigns_scoped(body, out, inner, false)
+    },
     _ => {
       let mut out = lc
       let children = expr_children(expr)
       let mut i = 0
       while i < Array::length(children) {
-        out = dh_lc_after_assigns(Array::get(children, i), out)
+        out = dh_lc_after_assigns_scoped(Array::get(children, i), out, shadowed, false)
         i = i + 1
       }
       out
     }
   }
+}
+
+fn dh_lc_after_assigns(expr: Expr, lc: Array[(String, Option[Expr])]) -> Array[(String, Option[Expr])] {
+  dh_lc_after_assigns_scoped(expr, lc, [], true)
 }
 
 fn dh_for_names(name: String, index_name: Option[String]) -> Array[String] {
@@ -8492,7 +8590,7 @@ fn dh_rowless_closure_call(expr: Expr, ename: String, lc: Array[(String, Option[
     },
     EAssign(name, val, body) => match dh_rowless_closure_call(val, ename, lc, fn_names, fn_effs, fn_index, depth) {
       Some(hit) => Some(hit),
-      None => dh_rowless_closure_call(body, ename, dh_lc_with(lc, name, None), fn_names, fn_effs, fn_index, depth)
+      None => dh_rowless_closure_call(body, ename, dh_lc_bind(lc, name, val), fn_names, fn_effs, fn_index, depth)
     },
     EAssignOp(name, _, val, body) => match dh_rowless_closure_call(val, ename, lc, fn_names, fn_effs, fn_index, depth) {
       Some(hit) => Some(hit),
@@ -8601,7 +8699,7 @@ fn dh_check_expr(expr: Expr, declared: Array[String], performed: Array[String], 
     },
     EAssign(name, val, body) => {
       dh_check_expr(val, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, lc, errors)
-      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, dh_lc_with(lc, name, None), errors)
+      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, dh_lc_bind(lc, name, val), errors)
     },
     EAssignOp(name, _, val, body) => {
       dh_check_expr(val, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, lc, errors)
