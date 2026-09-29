@@ -95,7 +95,10 @@ echo "[ensure-viberun] building ($want)"
 # The stamp goes FIRST, so an interrupted build cannot leave a stamp vouching
 # for a binary that was never linked.
 rm -f "$STAMP"
-cargo build --release --manifest-path "$CRATE/Cargo.toml"
+# The validated binary path is fixed above. Pin Cargo's output there even if
+# CARGO_TARGET_DIR or build.target-dir points elsewhere; otherwise a successful
+# build could leave the stale checkout binary in place and stamp it as current.
+cargo build --release --target-dir "$CRATE/target" --manifest-path "$CRATE/Cargo.toml"
 if [ ! -x "$BIN" ]; then
   echo "[ensure-viberun] FAIL: cargo reported success but produced no $BIN" >&2
   exit 1

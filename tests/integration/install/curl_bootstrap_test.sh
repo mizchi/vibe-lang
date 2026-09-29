@@ -75,24 +75,31 @@ prebuilt="$repo/runtime/viberun/target/release/viberun"
 mkdir -p "$(dirname "$prebuilt")"
 cp "$runner" "$prebuilt"
 printf '# stale runner\n' >> "$prebuilt"
-cat > "$repo/scripts/ensure_viberun.sh" <<'ENSURE'
+mkdir -p "$repo/runtime/viberun/src" "$WORK/fake-cargo-bin"
+printf 'fn main() {}\n' > "$repo/runtime/viberun/src/main.rs"
+printf '[package]\nname = "viberun"\nversion = "0.0.0"\n' > "$repo/runtime/viberun/Cargo.toml"
+cp "$ROOT_DIR/scripts/ensure_viberun.sh" "$repo/scripts/ensure_viberun.sh"
+cat > "$WORK/fake-cargo-bin/cargo" <<'CARGO'
 #!/usr/bin/env bash
 set -euo pipefail
-cp "$VIBE_TEST_FRESH_RUNNER" "$VIBE_TEST_PREBUILT"
-printf 'called\n' > "$VIBE_TEST_ENSURE_MARKER"
-ENSURE
-VIBE_TEST_FRESH_RUNNER="$runner" VIBE_TEST_PREBUILT="$prebuilt" \
-  VIBE_TEST_ENSURE_MARKER="$WORK/ensure-called" \
-  VIBE_HOME="$WORK/fresh-runner-home" \
+target="$CARGO_TARGET_DIR"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --target-dir) target="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+mkdir -p "$target/release"
+cp "$VIBE_TEST_FRESH_RUNNER" "$target/release/viberun"
+CARGO
+chmod +x "$WORK/fake-cargo-bin/cargo"
+PATH="$WORK/fake-cargo-bin:$PATH" CARGO_TARGET_DIR="$WORK/external-target" \
+  VIBE_TEST_FRESH_RUNNER="$runner" VIBE_HOME="$WORK/fresh-runner-home" \
   bash "$repo/install/install.sh" --__vibe-install-root "$repo" \
     --toolchain fresh-runner --cli-wasm "$WORK/compiler.wasm" \
     --no-stdlib --no-modify-path --no-link >/dev/null
-[ -s "$WORK/ensure-called" ] || {
-  echo "checkout install did not check whether the cached runner was current" >&2
-  exit 1
-}
 cmp "$runner" "$WORK/fresh-runner-home/toolchains/fresh-runner/bin/viberun" || {
-  echo "checkout install shipped the stale runner" >&2
+  echo "checkout install shipped the stale runner with CARGO_TARGET_DIR set" >&2
   exit 1
 }
 
