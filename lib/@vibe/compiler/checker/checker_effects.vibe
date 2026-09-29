@@ -8322,7 +8322,14 @@ fn dh_lc_after_assigns_scoped(expr: Expr, lc: Array[(String, Option[Expr])], sha
       let inner = dh_shadow_add(shadowed, name)
       dh_lc_after_assigns_scoped(body, dh_lc_after_assigns_scoped(value, lc, inner, certain), inner, certain)
     },
-    ESeq(first, rest) => dh_lc_after_assigns_scoped(rest, dh_lc_after_assigns_scoped(first, lc, shadowed, certain), shadowed, certain),
+    ESeq(first, rest) => {
+      let after_first = dh_lc_after_assigns_scoped(first, lc, shadowed, certain)
+      if dh_direct_abortive_transfer(first) {
+        after_first
+      } else {
+        dh_lc_after_assigns_scoped(rest, after_first, shadowed, certain)
+      }
+    },
     EIf(cond, then_body, else_body) => {
       let after_cond = dh_lc_after_assigns_scoped(cond, lc, shadowed, certain)
       let after_then = dh_lc_after_assigns_scoped(then_body, after_cond, shadowed, false)
@@ -8397,6 +8404,25 @@ fn dh_lc_after_assigns(expr: Expr, lc: Array[(String, Option[Expr])]) -> Array[(
   dh_lc_after_assigns_scoped(expr, lc, [], true)
 }
 
+/// A direct throw cannot reach the next statement. A surrounding handle is
+/// processed separately because its arm may return normally.
+fn dh_direct_abortive_transfer(expr: Expr) -> Bool {
+  match expr {
+    ECall(EIdent(name, _), args, _) => if name == "throw" {
+      true
+    } else if name == "perform" && Array::length(args) == 1 {
+      match Array::get(args, 0) {
+        ECall(EIdent(op, _), _, _) => is_exception_throw_operation(op),
+        EIdent(op, _) => is_exception_throw_operation(op),
+        _ => false
+      }
+    } else {
+      false
+    },
+    _ => false
+  }
+}
+
 fn dh_for_names(name: String, index_name: Option[String]) -> Array[String] {
   let names: Array[String] = [name]
   match index_name {
@@ -8425,21 +8451,30 @@ fn dh_lc_bind(lc: Array[(String, Option[Expr])], name: String, val: Expr) -> Arr
 /// same spelling must not become the replacement's recursive callee.
 fn dh_lc_assign(lc: Array[(String, Option[Expr])], name: String, val: Expr) -> Array[(String, Option[Expr])] {
   let closure = dh_lc_closure(val)
+  let old_index = dh_lc_index(lc, name)
   let needed = match closure {
     Some(_) => true,
-    None => dh_lc_index(lc, name) >= 0
+    None => old_index >= 0
   }
   if !needed {
     lc
   } else {
-    let out: Array[(String, Option[Expr])] = [(name, closure), (name, None)]
+    let out: Array[(String, Option[Expr])] = []
+    if old_index < 0 {
+      Array::push(out, (name, closure))
+      Array::push(out, (name, None))
+    } else {
+      ()
+    }
+    let mut i = 0
     for entry in lc {
-      let (old_name, _) = entry
-      if old_name != name {
-        Array::push(out, entry)
+      if i == old_index {
+        Array::push(out, (name, closure))
+        Array::push(out, (name, None))
       } else {
-        ()
+        Array::push(out, entry)
       }
+      i = i + 1
     }
     out
   }
