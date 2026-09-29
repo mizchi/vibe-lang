@@ -8182,8 +8182,72 @@ fn dh_call_to_binding(expr: Expr, name: String) -> Option[Int] {
         dh_call_to_binding(body, name)
       }
     },
+    EMatch(scrutinee, arms) => match dh_call_to_binding(scrutinee, name) {
+      Some(off) => Some(off),
+      None => dh_call_to_binding_arms(arms, name)
+    },
+    EHandle(body, arms) => match dh_call_to_binding(body, name) {
+      Some(off) => Some(off),
+      None => dh_call_to_binding_arms(arms, name)
+    },
+    EForIn(nm, index_name, iter, body) => match dh_call_to_binding(iter, name) {
+      Some(off) => Some(off),
+      None => if nm == name || index_name == Some(name) {
+        None
+      } else {
+        dh_call_to_binding(body, name)
+      }
+    },
+    ELoop(pairs, body) => {
+      let mut hit: Option[Int] = None
+      let mut shadows = false
+      for pair in pairs {
+        let (pn, value) = pair
+        match hit {
+          Some(_) => (),
+          None => {
+            hit = dh_call_to_binding(value, name)
+          }
+        }
+        if pn == name {
+          shadows = true
+        } else {
+          ()
+        }
+      }
+      match hit {
+        Some(_) => hit,
+        None => if shadows {
+          None
+        } else {
+          dh_call_to_binding(body, name)
+        }
+      }
+    },
     _ => dh_call_to_binding_in(expr_children(expr), name)
   }
+}
+
+fn dh_call_to_binding_arms(arms: Array[(Pat, Expr)], name: String) -> Option[Int] {
+  let mut hit: Option[Int] = None
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (pat, body) = Array::get(arms, i)
+    let bound: Array[String] = []
+    collect_pat_binds_into(pat, bound)
+    if !str_list_has(bound, name) {
+      match hit {
+        Some(_) => (),
+        None => {
+          hit = dh_call_to_binding(body, name)
+        }
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
 }
 
 fn dh_call_to_binding_in(exprs: Array[Expr], name: String) -> Option[Int] {
