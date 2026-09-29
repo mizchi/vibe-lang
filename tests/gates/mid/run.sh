@@ -4577,19 +4577,24 @@ echo "[compiler-gate] Option closure payload stays live and bounded in shadow RC
 # The callback parameter shadows the effectful top-level `ask_once`. The
 # entry lane's independent opaque-call rule still rejects `f()`, but the
 # mutable-alias diagnostic must not attribute it to the top-level function.
-shadowed_callback_diag="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
-  --invoke cli_main "$stage2_wasm" check fixtures/handle_callee_mutable_shadowed_callback_opaque_reject.vibe 2>&1 || true)"
-case "$shadowed_callback_diag" in
-  *"handle of effect 'Ask' cannot be compiled here"*) ;;
-  *) echo "[compiler-gate] FAIL: shadowed callback changed the independent opaque-call diagnostic (#3196): $shadowed_callback_diag" >&2; exit 1 ;;
-esac
-case "$shadowed_callback_diag" in
-  *'cannot compile a call through mutable local'*) echo "[compiler-gate] FAIL: callback parameter was attributed to a top-level effectful function (#3196)" >&2; exit 1 ;;
-  *) ;;
-esac
-shadowed_callback_flat="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
-  --invoke cli_main "$stage2_wasm" check --single-file fixtures/handle_callee_mutable_shadowed_callback_opaque_reject.vibe 2>&1 || true)"
-if [ -n "$shadowed_callback_flat" ]; then
-  echo "[compiler-gate] FAIL: flat checker rejected the shadowed pure callback (#3196): $shadowed_callback_flat" >&2
-  exit 1
-fi
+for shadowed_callback in \
+    handle_callee_mutable_shadowed_callback_opaque_reject \
+    handle_callee_mutable_shadowed_labeled_callback_opaque_reject \
+    handle_callee_mutable_shadowed_labeled_alias_opaque_reject; do
+  shadowed_callback_diag="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke cli_main "$stage2_wasm" check "fixtures/$shadowed_callback.vibe" 2>&1 || true)"
+  case "$shadowed_callback_diag" in
+    *"handle of effect 'Ask' cannot be compiled here"*) ;;
+    *) echo "[compiler-gate] FAIL: $shadowed_callback changed the independent opaque-call diagnostic (#3196): $shadowed_callback_diag" >&2; exit 1 ;;
+  esac
+  case "$shadowed_callback_diag" in
+    *'cannot compile a call through mutable local'*) echo "[compiler-gate] FAIL: $shadowed_callback was attributed to a top-level effectful function (#3196)" >&2; exit 1 ;;
+    *) ;;
+  esac
+  shadowed_callback_flat="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke cli_main "$stage2_wasm" check --single-file "fixtures/$shadowed_callback.vibe" 2>&1 || true)"
+  if [ -n "$shadowed_callback_flat" ]; then
+    echo "[compiler-gate] FAIL: flat checker rejected $shadowed_callback (#3196): $shadowed_callback_flat" >&2
+    exit 1
+  fi
+done
