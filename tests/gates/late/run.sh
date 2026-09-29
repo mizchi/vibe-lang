@@ -3694,6 +3694,19 @@ if [ "$ssl_result" != "6" ]; then
   echo "[compiler-gate] FAIL: the inline task closure returned '$ssl_result' instead of 6 (#3194)" >&2
   exit 1
 fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/spawn_suspend_user_defined_named.vibe "$ssldir/user_defined.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$ssldir/user_defined.wasm" ]; then
+  echo "[compiler-gate] FAIL: user-defined qualified spawn_suspend was mistaken for the builtin (#3194)" >&2
+  cat "$ssldir/user_defined.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+ssl_user_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$ssldir/user_defined.wasm" 2>/dev/null | tail -1)"
+if [ "$ssl_user_result" != "5" ]; then
+  echo "[compiler-gate] FAIL: user-defined spawn_suspend returned '$ssl_user_result' instead of 5 (#3194)" >&2
+  exit 1
+fi
 rm -rf "$ssldir"
 
 echo "[compiler-gate] 77/77 ADR-0089 D1 async sleep boundary (#1218)"

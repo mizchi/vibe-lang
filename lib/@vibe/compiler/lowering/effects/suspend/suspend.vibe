@@ -7118,6 +7118,18 @@ fn scps_prepass_callee_params(scope: Array[(String, Int)], name: String, ctx: (A
   }
 }
 
+fn scps_second_param_needs_async_step(scope: Array[(String, Int)], name: String, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> Bool {
+  match scps_prepass_callee_params(scope, name, ctx) {
+    Some(params) => if Array::length(params) >= 2 {
+      let (_, ty) = Array::get(params, 1)
+      scps_row_contains(ctx, scps_ty_row(ty), "Async")
+    } else {
+      false
+    },
+    None => false
+  }
+}
+
 /// Step-split one literal for `eff`. Pushes errors on ineligibility;
 /// returns the literal unchanged in that case (the error is fatal anyway).
 fn scps_split_literal(tps: Array[String], tbs: Array[(String, Array[String])], params: Array[(String, Option[TypeExpr])], b: Expr, ecfg: (String, Array[String], Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), st: (Array[Int], Array[String], Array[String], Array[String], Array[String], Array[Stmt], Array[String])) -> Expr {
@@ -7238,7 +7250,10 @@ fn scps_prepass_expr(e: Expr, ecfgs: Array[(String, Array[String], Array[String]
       // scps_prepass_expr in the same change.
       match rcallee {
         EIdent(fname, _) => {
-          if fname == "TaskGroup::spawn_suspend" && Array::length(rargs) == 2 {
+          // A source function can use the same qualified spelling with a
+          // plain closure parameter. Read the resolved parameter row rather
+          // than treating the name alone as the concurrent builtin.
+          if fname == "TaskGroup::spawn_suspend" && scps_second_param_needs_async_step(scope, fname, ctx) && Array::length(rargs) == 2 {
             match Array::get(rargs, 1) {
               EIdent(task_name, _) => if scps_local_class(scope, task_name) == 1 {
                 Array::push(scps_st_errs(st), String::concat("pass the task closure inline at `TaskGroup::spawn_suspend` instead of passing `", String::concat(task_name, "`: this local closure has the plain call convention")))
