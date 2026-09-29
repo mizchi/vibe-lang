@@ -3687,6 +3687,16 @@ if [ -s "$ssldir/ascribed.wasm" ] || ! grep -qF 'pass the task closure inline at
   cat "$ssldir/ascribed.wasm.diag" >&2 2>/dev/null || true
   exit 1
 fi
+for rebound_case in rebound_plain wrapper_rebound_plain; do
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "fixtures/err_spawn_suspend_${rebound_case}.vibe" "$ssldir/${rebound_case}.wasm" main >/dev/null 2>&1 || true
+  if [ -s "$ssldir/${rebound_case}.wasm" ] || ! grep -qF 'no impl `Spawnable` for closure `q`' "$ssldir/${rebound_case}.wasm.diag" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: a rebound plain task closure escaped Spawnable (#3194, $rebound_case)" >&2
+    cat "$ssldir/${rebound_case}.wasm.diag" >&2 2>/dev/null || true
+    exit 1
+  fi
+done
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   fixtures/err_spawn_suspend_wrapper_plain.vibe "$ssldir/wrapper.wasm" main >/dev/null 2>&1 || true
