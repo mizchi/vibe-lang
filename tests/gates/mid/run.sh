@@ -2788,6 +2788,19 @@ if [ "$shadowed_dead_local_result" != "3" ]; then
 fi
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/fnvalue_nested_handle_dormant_reference.vibe "$nhvdir/dormant_reference.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$nhvdir/dormant_reference.wasm" ]; then
+  echo "[compiler-gate] FAIL: a reference inside another unused closure made a dormant closure reachable (#3195)" >&2
+  cat "$nhvdir/dormant_reference.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+dormant_reference_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$nhvdir/dormant_reference.wasm" 2>/dev/null | tr -dc '0-9')"
+if [ "$dormant_reference_result" != "1" ]; then
+  echo "[compiler-gate] FAIL: reachable owner with dormant reference returned '$dormant_reference_result' (want 1, #3195)" >&2
+  exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   fixtures/err_fnvalue_nested_handle_unused_eager_array.vibe "$nhvdir/eager_array.wasm" main >/dev/null 2>&1 || true
 if [ -s "$nhvdir/eager_array.wasm" ] || ! grep -qF 'pass an explicitly row-annotated closure that calls `inner_handled`' "$nhvdir/eager_array.wasm.diag" 2>/dev/null; then
   echo "[compiler-gate] FAIL: an eager call in an unused array escaped the refusal (#3195)" >&2

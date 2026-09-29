@@ -6058,9 +6058,32 @@ fn edp_collect_ecall_arg_idents_unused_value(expr: Expr, gname: String, argpos: 
 fn edp_binding_used_in(expr: Expr, name: String) -> Bool {
   match expr {
     EIdent(nm, _) => nm == name,
-    ELet(nm, value, body, _) => edp_binding_used_in(value, name) || (nm != name && edp_binding_used_in(body, name)),
-    ELetMut(nm, value, body, _) => edp_binding_used_in(value, name) || (nm != name && edp_binding_used_in(body, name)),
-    ELetRec(nm, value, body) => nm != name && (edp_binding_used_in(value, name) || edp_binding_used_in(body, name)),
+    ELet(nm, value, body, _) => {
+      let in_value = if nm == name || edp_binding_used_in(body, nm) {
+        edp_binding_used_in(value, name)
+      } else {
+        edp_binding_used_in_unused_value(value, name)
+      }
+      in_value || (nm != name && edp_binding_used_in(body, name))
+    },
+    ELetMut(nm, value, body, _) => {
+      let in_value = if nm == name || edp_binding_used_in(body, nm) {
+        edp_binding_used_in(value, name)
+      } else {
+        edp_binding_used_in_unused_value(value, name)
+      }
+      in_value || (nm != name && edp_binding_used_in(body, name))
+    },
+    ELetRec(nm, value, body) => if nm == name {
+      false
+    } else {
+      let in_value = if edp_binding_used_in(body, nm) {
+        edp_binding_used_in(value, name)
+      } else {
+        edp_binding_used_in_unused_value(value, name)
+      }
+      in_value || edp_binding_used_in(body, name)
+    },
     EFn(_, _, params, _, _, body) => {
       let mut shadows = false
       for param in params {
@@ -6088,6 +6111,41 @@ fn edp_binding_used_in(expr: Expr, name: String) -> Bool {
     },
     _ => edp_binding_used_in_exprs(expr_children(expr), name)
   }
+}
+
+/// A dormant value constructor evaluates its fields but does not enter a
+/// closure body stored in one of them.
+fn edp_binding_used_in_unused_value(expr: Expr, name: String) -> Bool {
+  match expr {
+    EFn(_, _, _, _, _, _) => false,
+    EArray(items) => edp_binding_used_in_unused_exprs(items, name),
+    ETuple(items) => edp_binding_used_in_unused_exprs(items, name),
+    ERecord(_, fields, _) => {
+      let mut used = false
+      for field in fields {
+        let (_, value) = field
+        used = used || edp_binding_used_in_unused_value(value, name)
+      }
+      used
+    },
+    EMap(fields) => {
+      let mut used = false
+      for field in fields {
+        let (_, value) = field
+        used = used || edp_binding_used_in_unused_value(value, name)
+      }
+      used
+    },
+    _ => edp_binding_used_in(expr, name)
+  }
+}
+
+fn edp_binding_used_in_unused_exprs(exprs: Array[Expr], name: String) -> Bool {
+  let mut used = false
+  for expr in exprs {
+    used = used || edp_binding_used_in_unused_value(expr, name)
+  }
+  used
 }
 
 fn edp_binding_used_in_exprs(exprs: Array[Expr], name: String) -> Bool {
