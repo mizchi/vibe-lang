@@ -113,10 +113,14 @@ for char_lane in fs single-file; do
     *) echo "[compiler-gate] FAIL: $char_lane apostrophe inside a later block string changed the char edit: $block_string" >&2; exit 1 ;;
   esac
   for closed_delimiter in comma semicolon followed_literal slashes adjacent_literal; do
+    closed_column=11
+    if [ "$closed_delimiter" = adjacent_literal ]; then
+      closed_column=15
+    fi
     closed_diag="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
       --invoke cli_main "$stage2_wasm" check "$@" "fixtures/err_multichar_char_${closed_delimiter}.vibe" 2>&1 || true)"
     case "$closed_diag" in
-      *'line 2:11: use a String for text or an Int code point for non-ASCII'*) ;;
+      *"line 2:${closed_column}: use a String for text or an Int code point for non-ASCII"*) ;;
       *) echo "[compiler-gate] FAIL: $char_lane closed literal containing $closed_delimiter suggests a missing quote: $closed_diag" >&2; exit 1 ;;
     esac
   done
