@@ -8380,6 +8380,46 @@ fn dh_mutable_alias_call_in(exprs: Array[Expr], ename: String, fn_names: Array[S
   hit
 }
 
+/// Mutable aliases are tracked separately from the effect overlay: their row
+/// identifies an unsafe indirect call, but cannot justify a handler.
+fn dh_mutable_alias_with(aliases: Array[(String, Array[String])], name: String, labels: Array[String]) -> Array[(String, Array[String])] {
+  let out: Array[(String, Array[String])] = [(name, labels)]
+  for entry in aliases {
+    Array::push(out, entry)
+  }
+  out
+}
+
+fn dh_mutable_alias_shadow_names(aliases: Array[(String, Array[String])], names: Array[String]) -> Array[(String, Array[String])] {
+  let mut out = aliases
+  for name in names {
+    out = dh_mutable_alias_with(out, name, [])
+  }
+  out
+}
+
+fn dh_mutable_alias_outer_call(body: Expr, ename: String, aliases: Array[(String, Array[String])]) -> Option[(String, Int)] {
+  let seen: Array[String] = []
+  let mut hit: Option[(String, Int)] = None
+  for entry in aliases {
+    let (name, labels) = entry
+    if hit == None && !str_list_has(seen, name) {
+      Array::push(seen, name)
+      if dh_labels_may_be(labels, ename) {
+        match dh_call_to_binding(body, name) {
+          Some(off) => hit = Some((name, off)),
+          None => ()
+        }
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+  }
+  hit
+}
+
 /// Can this expression statically reach a `perform` of `ename`? Conservative
 /// in the "yes" direction: anything unresolved answers true, so a false here
 /// really does mean the handler is dead.
@@ -8833,14 +8873,17 @@ fn dh_rowless_closure_call(expr: Expr, ename: String, lc: Array[(String, Option[
 /// same notion of "this callee's declared row" the row checker itself uses.
 /// `lc` is the #3180 scope of local closures, used only to say WHICH call a
 /// dead-looking handle reaches its perform through.
-fn dh_check_expr(expr: Expr, declared: Array[String], performed: Array[String], fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], ov_names: Array[String], ov_effs: Array[Array[String]], lc: Array[(String, Option[Expr])], errors: Array[EffectError]) -> Unit {
+fn dh_check_expr(expr: Expr, declared: Array[String], performed: Array[String], fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], ov_names: Array[String], ov_effs: Array[Array[String]], mutable_aliases: Array[(String, Array[String])], lc: Array[(String, Option[Expr])], errors: Array[EffectError]) -> Unit {
   match expr {
     EHandle(body, arms) => {
       let handled = collect_handle_effects(arms)
       let mut i = 0
       while i < Array::length(handled) {
         let eff = Array::get(handled, i)
-        let mutable_call = dh_mutable_alias_call(body, eff, fn_names, fn_effs, fn_index, ov_names, ov_effs)
+        let mutable_call = match dh_mutable_alias_call(body, eff, fn_names, fn_effs, fn_index, ov_names, ov_effs) {
+          Some(hit) => Some(hit),
+          None => dh_mutable_alias_outer_call(body, eff, mutable_aliases)
+        }
         match mutable_call {
           Some((cname, coff)) => Array::push(errors, EEHandleMutableAlias(eff, cname, coff)),
           None => ()
@@ -8859,43 +8902,59 @@ fn dh_check_expr(expr: Expr, declared: Array[String], performed: Array[String], 
         }
         i = i + 1
       }
-      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, lc, errors)
+      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, mutable_aliases, lc, errors)
       let mut ai = 0
       while ai < Array::length(arms) {
         let (pat, arm_body) = Array::get(arms, ai)
-        dh_check_expr(arm_body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, dh_lc_shadow_arm(lc, pat), errors)
+        let names: Array[String] = []
+        collect_pat_binds_into(pat, names)
+        Array::push(names, "resume")
+        dh_check_expr(arm_body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, dh_mutable_alias_shadow_names(mutable_aliases, names), dh_lc_shadow_arm(lc, pat), errors)
         ai = ai + 1
       }
     },
     EFn(_, _, params, _, _, body) => {
       let (bn, be) = dh_overlay_with_params(ov_names, ov_effs, params, fn_names, fn_index)
-      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, bn, be, dh_lc_shadow_params(lc, params), errors)
+      let names = for param in params {
+        let (name, _) = param
+        effect_param_base_name(name)
+      }
+      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, bn, be, dh_mutable_alias_shadow_names(mutable_aliases, names), dh_lc_shadow_params(lc, params), errors)
     },
     ELet(name, val, body, _) => {
-      dh_check_expr(val, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, lc, errors)
+      dh_check_expr(val, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, mutable_aliases, lc, errors)
       let (bn, be) = overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs, fn_index)
-      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, bn, be, dh_lc_bind(lc, name, val), errors)
+      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, bn, be, dh_mutable_alias_with(mutable_aliases, name, [
+      ]), dh_lc_bind(lc, name, val), errors)
     },
     ELetMut(name, val, body, _) => {
-      dh_check_expr(val, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, lc, errors)
+      dh_check_expr(val, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, mutable_aliases, lc, errors)
+      let (an, ae) = overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs, fn_index)
+      let labels = match lookup_fn_effs(an, ae, name) {
+        Some(effs) => effs,
+        None => []
+      }
       let (bn, be) = overlay_bind_empty(ov_names, ov_effs, name, fn_names, fn_index)
-      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, bn, be, dh_lc_bind(lc, name, val), errors)
+      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, bn, be, dh_mutable_alias_with(mutable_aliases, name, labels), dh_lc_bind(lc, name, val), errors)
     },
     ELetRec(name, val, body) => {
       let (rn, re) = overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs, fn_index)
       let rlc = dh_lc_bind(lc, name, val)
-      dh_check_expr(val, declared, performed, fn_names, fn_effs, fn_index, rn, re, rlc, errors)
-      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, rn, re, rlc, errors)
+      let ras = dh_mutable_alias_with(mutable_aliases, name, [])
+      dh_check_expr(val, declared, performed, fn_names, fn_effs, fn_index, rn, re, ras, rlc, errors)
+      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, rn, re, ras, rlc, errors)
     },
     // The three binders the generic walk below cannot see: a pattern, a loop
     // variable and a `for` variable each hide an outer closure of the same
     // spelling. Same children, in the same order, as `expr_children`.
     EMatch(scrutinee, arms) => {
-      dh_check_expr(scrutinee, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, lc, errors)
+      dh_check_expr(scrutinee, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, mutable_aliases, lc, errors)
       let mut ai = 0
       while ai < Array::length(arms) {
         let (pat, arm_body) = Array::get(arms, ai)
-        dh_check_expr(arm_body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, dh_lc_shadow_pat(lc, pat), errors)
+        let names: Array[String] = []
+        collect_pat_binds_into(pat, names)
+        dh_check_expr(arm_body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, dh_mutable_alias_shadow_names(mutable_aliases, names), dh_lc_shadow_pat(lc, pat), errors)
         ai = ai + 1
       }
     },
@@ -8904,21 +8963,22 @@ fn dh_check_expr(expr: Expr, declared: Array[String], performed: Array[String], 
       let mut pi = 0
       while pi < Array::length(params) {
         let (pname, init) = Array::get(params, pi)
-        dh_check_expr(init, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, lc, errors)
+        dh_check_expr(init, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, mutable_aliases, lc, errors)
         Array::push(names, pname)
         pi = pi + 1
       }
-      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, dh_lc_shadow_names(lc, names), errors)
+      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, dh_mutable_alias_shadow_names(mutable_aliases, names), dh_lc_shadow_names(lc, names), errors)
     },
     EForIn(name, index_name, iter, body) => {
-      dh_check_expr(iter, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, lc, errors)
-      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, dh_lc_shadow_names(lc, dh_for_names(name, index_name)), errors)
+      dh_check_expr(iter, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, mutable_aliases, lc, errors)
+      let names = dh_for_names(name, index_name)
+      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, dh_mutable_alias_shadow_names(mutable_aliases, names), dh_lc_shadow_names(lc, names), errors)
     },
     _ => {
       let children = expr_children(expr)
       let mut c = 0
       while c < Array::length(children) {
-        dh_check_expr(Array::get(children, c), declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, lc, errors)
+        dh_check_expr(Array::get(children, c), declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, mutable_aliases, lc, errors)
         c = c + 1
       }
     }
@@ -8971,9 +9031,11 @@ fn dh_check_binding(ty: Option[TypeExpr], body: Expr, declared: Array[String], p
     // EFn node, is where a separately-typed signature keeps its rows).
     EFn(_, _, params, _, _, fbody) => {
       let (n, e) = dh_overlay_with_params(no_str_labels(), no_ov_effs(), merge_param_types_with_sig(ty, params), fn_names, fn_index)
-      dh_check_expr(fbody, declared, performed, fn_names, fn_effs, fn_index, n, e, dh_lc_shadow_params(no_lc(), params), errors)
+      dh_check_expr(fbody, declared, performed, fn_names, fn_effs, fn_index, n, e, [
+      ], dh_lc_shadow_params(no_lc(), params), errors)
     },
-    _ => dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, no_str_labels(), no_ov_effs(), no_lc(), errors)
+    _ => dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, no_str_labels(), no_ov_effs(), [
+    ], no_lc(), errors)
   }
 }
 

@@ -624,6 +624,7 @@ for bb_lane in rc shadow; do
     exit 1
   fi
 done
+
 rm -rf "$bbdir"
 echo "[compiler-gate] branch-tail borrow let retain ok (334444 on rc/shadow)"
 # 40f-b2. #3108 review: the follow-ups of the same retain on the shadow
@@ -4598,3 +4599,11 @@ for shadowed_callback in \
     exit 1
   fi
 done
+
+outer_mutable_diag="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke cli_main "$stage2_wasm" check --single-file \
+  fixtures/typecheck/handle_callee_mutable_outer_with_direct_perform_reject.vibe 2>&1 || true)"
+case "$outer_mutable_diag" in
+  *'cannot compile a call through mutable local `f`'*) ;;
+  *) echo "[compiler-gate] FAIL: an outer mutable alias was lost inside a nested handle (#3196): $outer_mutable_diag" >&2; exit 1 ;;
+esac
