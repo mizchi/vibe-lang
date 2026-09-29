@@ -110,9 +110,14 @@ fn lex_end() -> Int {
   Array::get(lex_end_cell, 0)
 }
 
-/// A later quote on this line means the literal contains extra bytes. Without
-/// one, the reader only needs to close the otherwise valid character.
-fn char_close_error(s: String, len: Int, close: Int) -> String {
+/// A multibyte first character needs a different literal. For ASCII, a later
+/// quote before a comment or newline means extra bytes; otherwise add the
+/// missing close after the valid character.
+fn char_close_error(s: String, len: Int, start: Int, close: Int) -> String {
+  // A multi-byte first character stays invalid after adding a quote.
+  if String::byte_at(s, start) >= 128 {
+    return "use a String for text or an Int code point for non-ASCII: a char literal contains one ASCII character or escape"
+  }
   let mut pos = close
   let mut found_quote = false
   let mut scanning = true
@@ -121,7 +126,7 @@ fn char_close_error(s: String, len: Int, close: Int) -> String {
     if c == '\'' {
       found_quote = true
       scanning = false
-    } else if c == '\n' {
+    } else if c == '\n' || (c == '/' && pos + 1 < len && String::char_code_at(s, pos + 1) == '/') {
       scanning = false
     } else {
       pos = pos + 1
@@ -167,13 +172,13 @@ fn lex_char(s: String, len: Int, i: Int) -> Token with Exception {
     else throw("invalid char escape")
     let close = esc_pos + 1
     if close >= len || String::char_code_at(s, close) != '\'' {
-      throw(char_close_error(s, len, close))
+      throw(char_close_error(s, len, start, close))
     };
     lex_ret(TInt(val), close + 1)
   } else {
     let close = start + 1
     if close >= len || String::char_code_at(s, close) != '\'' {
-      throw(char_close_error(s, len, close))
+      throw(char_close_error(s, len, start, close))
     };
     lex_ret(TInt(c), close + 1)
   }
