@@ -32,21 +32,43 @@ export async function compileAndRun(source: string): Promise<string> {
   const bytes = compiledBytes(sourcePayload(source));
   let instance: WebAssembly.Instance | undefined;
   let stdout = "";
+  const decoder = new TextDecoder();
+  function memory(): WebAssembly.Memory {
+    const exported = instance?.exports.memory;
+    if (!(exported instanceof WebAssembly.Memory)) {
+      throw new Error("Program memory is unavailable to the stdout host.");
+    }
+    return exported;
+  }
   const imports = {
     wasi_snapshot_preview1: {
       fd_write(_fd: number, iovs: number, count: number, _written: number): number {
-        if (!instance) throw new Error("Program wrote output before initialization.");
-        const memory = instance.exports.memory as WebAssembly.Memory;
-        const view = new DataView(memory.buffer);
+        const exported = memory();
+        const view = new DataView(exported.buffer);
         let written = 0;
         for (let index = 0; index < count; index++) {
           const pointer = view.getUint32(iovs + index * 8, true);
           const length = view.getUint32(iovs + index * 8 + 4, true);
-          stdout += new TextDecoder().decode(new Uint8Array(memory.buffer, pointer, length));
+          stdout += decoder.decode(new Uint8Array(exported.buffer, pointer, length));
           written += length;
         }
         view.setUint32(_written, written, true);
         return 0;
+      },
+    },
+    vibe: {
+      stdout_write_stream(packed: bigint): void {
+        const bits = BigInt.asUintN(64, packed);
+        const pointer = Number(bits >> 32n);
+        const length = Number(bits & 0xffffffffn);
+        const bytes = new Uint8Array(memory().buffer);
+        if (pointer + length > bytes.length) {
+          throw new Error(`Program stdout string is out of bounds: ${pointer}+${length}.`);
+        }
+        stdout += decoder.decode(bytes.subarray(pointer, pointer + length));
+      },
+      stdout_write_char(code: bigint): void {
+        stdout += String.fromCharCode(Number(code & 0xffffn));
       },
     },
   };

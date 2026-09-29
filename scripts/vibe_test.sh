@@ -356,6 +356,12 @@ vt_fail_detail() {
       }
       return line
     }
+    function normalize_reason(line) {
+      sub(/^[[:space:]]+/, "", line)
+      sub(/^[0-9]+: /, "", line)
+      sub(/^viberun: /, "", line)
+      return line
+    }
     # First __test_<name> stack frame = the failing test. Quoted names
     # keep spaces and Unicode in the wasm name section; some frames
     # percent-encode those bytes (`has%20spaces`). Cut at the frame
@@ -427,10 +433,17 @@ vt_fail_detail() {
     # Snapshot values can contain newlines. Keep continuation lines under
     # their actual/expected heading; the updater still reads untouched stdout.
     in_inspect && inspect_part > 0 && __blk == 0 &&
-      $0 !~ /RuntimeError:|wasm trap:/ && $0 != "assert failed: aborting" {
+      $0 != "assert failed: aborting" {
       __blk = 1
       ndiag++
       diags[ndiag] = "         | " $0
+      # An ordinary program can print text that resembles an inspect block
+      # before a real trap. Keep the last trap-looking line as a fallback if
+      # no assertion terminator follows; otherwise it is snapshot content.
+      if ($0 ~ /RuntimeError:|wasm trap:/) {
+        fallback_reason = normalize_reason($0)
+        fallback_diag_end = ndiag - 1
+      }
     }
     # #2199: an OOB abort prints its operation plus the index and length
     # before trapping; keep that line in the condensed report -- it is the
@@ -457,11 +470,14 @@ vt_fail_detail() {
     # has been reading.
     $0 == "assert failed: aborting" {
       __blk = 1
+      in_inspect = 0
+      inspect_part = 0
+      fallback_reason = ""
       pending_abort = 1
     }
     # First trap-reason line (backtrace frames never contain these markers;
     # strip anyhow chain numbering / runner prefixes).
-    !seen_reason && /RuntimeError:|wasm trap:/ {
+    !seen_reason && !in_inspect && /RuntimeError:|wasm trap:/ {
       __blk = 1
       in_inspect = 0
       seen_reason = 1
@@ -472,10 +488,7 @@ vt_fail_detail() {
       # checked on its own rather than assumed identical. What is left here is
       # the marker, with adjacency enforced by the reset rule below.
       assert_abort = (pending_abort == 1)
-      reason = $0
-      sub(/^[[:space:]]+/, "", reason)
-      sub(/^[0-9]+: /, "", reason)
-      sub(/^viberun: /, "", reason)
+      reason = normalize_reason($0)
     }
     # Any other non-blank, non-crash-debug line between the block/marker and
     # the trap breaks the adjacency: the trap is then not the assert abort.
@@ -499,6 +512,10 @@ vt_fail_detail() {
       }
     }
     END {
+      if (reason == "" && fallback_reason != "") {
+        reason = fallback_reason
+        ndiag = fallback_diag_end
+      }
       if (failing != "") print "       failing test: " pct_decode(failing)
       for (i = 1; i <= ndiag; i++) print diags[i]
       # An assert failure aborts via a deliberate `unreachable` trap; once the

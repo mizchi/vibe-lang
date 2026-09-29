@@ -14,17 +14,26 @@ if bash scripts/vibe_test.sh tests/integration/test_report/multiline_failure.vib
 fi
 if ! grep -q 'actual:   line one' "$out" ||
    ! grep -q 'expected: line one' "$out" ||
-   ! grep -q 'line two' "$out" ||
-   ! grep -q 'line TWO' "$out"; then
+   ! grep -q '| RuntimeError: actual line' "$out" ||
+   ! grep -q '| RuntimeError: expected line' "$out" ||
+   ! grep -q '| wasm trap: actual detail' "$out" ||
+   ! grep -q '| wasm trap: expected detail' "$out"; then
   echo "multiline inspect: report hid the differing lines" >&2
   cat "$out" >&2
   exit 1
 fi
 cp tests/integration/test_report/multiline_failure.vibe "$updated"
 if ! bash scripts/vibe_test.sh --update "$updated" >"$out" 2>&1 ||
-   grep -q 'line TWO' "$updated"; then
+   grep -q 'RuntimeError: expected line' "$updated"; then
   echo "multiline inspect: snapshot updater did not repair the full value" >&2
   cat "$out" >&2
   exit 1
 fi
-echo "multiline inspect: differing lines are visible and --update repairs the snapshot"
+if bash scripts/vibe_test.sh tests/integration/test_report/inspect_lookalike_trap.vibe >"$out" 2>&1 ||
+   ! grep -q '       trap: RuntimeError:' "$out" ||
+   grep -q 'trap: RuntimeError: fake' "$out"; then
+  echo "multiline inspect: a lookalike report hid the real trap" >&2
+  cat "$out" >&2
+  exit 1
+fi
+echo "multiline inspect: snapshot lines and real traps are visible; --update repairs the snapshot"

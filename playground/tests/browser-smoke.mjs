@@ -49,6 +49,22 @@ try {
   if (await page.locator("#preset-select").inputValue() !== "suberror") {
     throw new Error("The shared URL did not restore the selected source");
   }
+  const withStdout = Buffer.from(
+    'export let _start = () -> Int with Console { println("hello, vibe"); Console::write_char(33); 0 }\n',
+  ).toString("base64url");
+  await page.goto(`${url}#code=${withStdout}`);
+  await page.reload();
+  await page.getByText("Ready", { exact: true }).waitFor({ timeout: 30000 });
+  await page.getByRole("button", { name: "Run", exact: true }).click();
+  try {
+    await page.waitForFunction(
+      () => document.querySelector("#output")?.textContent === "hello, vibe\n!0\n",
+      null,
+      { timeout: 5000 },
+    );
+  } catch (error) {
+    throw new Error(`Stdout result was ${JSON.stringify(await page.locator("#output").textContent())}`, { cause: error });
+  }
   const invalid = Buffer.from("export let _start = () -> Int { missing_name }\n").toString("base64url");
   await page.goto(`${url}#code=${invalid}`);
   await page.reload();
@@ -63,7 +79,7 @@ try {
   } catch (error) {
     throw new Error(`Compile diagnostic was ${JSON.stringify(await page.locator("#output").textContent())}`, { cause: error });
   }
-  console.log("playground: four presets, shared URL, and compile diagnostic passed in Chromium");
+  console.log("playground: four presets, stdout, shared URL, and compile diagnostic passed in Chromium");
 } finally {
   await browser?.close();
   server.kill("SIGTERM");
