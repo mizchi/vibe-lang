@@ -14038,12 +14038,21 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       // (previously unchecked — `y = "s"` for `let mut y = 1` was accepted).
       let s1b = match env_lookup(env, name) {
         Some(var_ty) => check_assignable_for(var_ty, subst_apply(s1, vt), s1, errors, "assignment type mismatch for ", name, tail_expr_off(val)),
-        None => s1
+        // The mutability pass only knows which bindings are mutable. Letting
+        // an absent target reach it reports the misleading `let mut` edit.
+        None => {
+          Array::push(errors, String::concat("unknown name: ", name))
+          s1
+        }
       }
       check_expr_capture(body, env, defs, s1b, c1, errors, tytab, capture, lane)
     },
-    EAssignOp(_, _, val, body) => {
+    EAssignOp(name, _, val, body) => {
       let (_, s1, c1) = check_expr_capture(val, env, defs, s, c, errors, tytab, capture, lane)
+      match env_lookup(env, name) {
+        Some(_) => (),
+        None => Array::push(errors, String::concat("unknown name: ", name))
+      }
       check_expr_capture(body, env, defs, s1, c1, errors, tytab, capture, lane)
     },
     EMatch(scrutinee, arms) => {

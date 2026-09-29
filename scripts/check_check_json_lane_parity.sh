@@ -83,6 +83,42 @@ probe clean 0
 printf 'let a: Int = "not an int"\n' > "$WORK/mismatch.vibe"
 probe mismatch 1
 
+# #3226: an assignment target with no binding is an unknown name, with the
+# target's real source position in both lanes. An existing immutable binding
+# still gets the separate `let mut` edit.
+printf 'export fn main() -> Int {\n  accI = 1\n  0\n}\n' > "$WORK/assign_unknown.vibe"
+probe assign_unknown 1
+python3 - "$WORK/assign_unknown.fs.json" <<'PY' || bad "assign_unknown: expected an unbound target at line 2"
+import json, sys
+rows = json.load(open(sys.argv[1]))
+assert len(rows) == 1, rows
+row = rows[0]
+assert 'unknown name: accI' in row['message'], row
+assert 'immutable' not in row['message'], row
+assert row['range']['start'] == {'line': 1, 'character': 2}, row
+assert row['data'] is None, row
+PY
+for lane in fs single-file; do
+  if [ "$lane" = single-file ]; then set -- --single-file; else set --; fi
+  plain="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" --invoke cli_main "$STAGE2" check "$@" "$WORK/assign_unknown.vibe" 2>&1 || true)"
+  case "$plain" in
+    *'line 2:3: unknown name: accI'*) ;;
+    *) bad "assign_unknown: plain $lane diagnostic is missing the target position: $plain" ;;
+  esac
+done
+
+printf 'export fn main() -> Int {\n  accI += 1\n  0\n}\n' > "$WORK/assign_op_unknown.vibe"
+probe assign_op_unknown 1
+if ! grep -qF '"message":"unknown name: accI"' "$WORK/assign_op_unknown.fs.json"; then
+  bad "assign_op_unknown: compound assignment lost the unbound-target diagnostic"
+fi
+
+printf 'export fn main() -> Int {\n  let acc = 0\n  acc = 1\n  0\n}\n' > "$WORK/assign_immutable.vibe"
+probe assign_immutable 1
+if ! grep -qF 'cannot assign to immutable binding `acc` (declare it with `let mut`)' "$WORK/assign_immutable.fs.json"; then
+  bad "assign_immutable: lost the let mut edit"
+fi
+
 # The conversion case. 20 bytes, 8 UTF-16 code units.
 printf 'let a: Int = "\xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e\xe3\x81\xa7\xe3\x81\x99\xe3\x82\x88"\n' > "$WORK/multibyte.vibe"
 probe multibyte 1
@@ -145,4 +181,4 @@ if grep -qF 'unlocated.vibe' "$WORK/unlocated.fs.json" 2>/dev/null; then
 fi
 
 [ "$fails" -eq 0 ] || exit 1
-echo "[check-json-parity] ok (6 probes: both lanes agree on diagnostics, exit code, and UTF-16 offsets)"
+echo "[check-json-parity] ok (9 probes: both lanes agree on diagnostics, exit code, and UTF-16 offsets)"
