@@ -6109,6 +6109,10 @@ fn local_alias_target(val: Expr, ov_names: Array[String], ov_effs: Array[Array[S
         None
       }
     },
+    ECall(_, args, _) => match afe_ascribed_name_type(val) {
+      Some(_) => local_alias_target(Array::get(args, 0), ov_names, ov_effs, fn_index),
+      None => None
+    },
     _ => None
   }
 }
@@ -6131,7 +6135,28 @@ fn local_fn_overlay_labels(val: Expr, ov_names: Array[String], ov_effs: Array[Ar
     // A local annotation is lowered to `((__asc: T) -> __asc)(value)`.
     // Its declared function row is the contract at calls through the binding.
     _ => match afe_ascribed_name_type(val) {
-      Some(TyFn(_, _, eff)) => effect_row_labels(effect_row_parse(eff)),
+      Some(TyFn(_, _, eff)) => match local_alias_target(val, ov_names, ov_effs, fn_index) {
+        Some(target) => {
+          let declared = effect_row_labels(effect_row_parse(eff))
+          let actual = alias_fn_overlay_labels(target, ov_names, ov_effs, fn_names, fn_effs, fn_index)
+          let mut carried = true
+          let mut i = 0
+          while i < Array::length(declared) {
+            if !effect_row_has_label(Some(actual), Array::get(declared, i)) {
+              carried = false
+            } else {
+              ()
+            }
+            i = i + 1
+          }
+          if carried {
+            declared
+          } else {
+            no_str_labels()
+          }
+        },
+        None => no_str_labels()
+      },
       _ => no_str_labels()
     }
   }
