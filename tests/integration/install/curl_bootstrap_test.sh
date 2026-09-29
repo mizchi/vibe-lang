@@ -91,13 +91,24 @@ while [ "$#" -gt 0 ]; do
     *) shift ;;
   esac
 done
+[ "$target" = "$VIBE_TEST_EXPECT_TARGET" ] || {
+  echo "fake cargo: expected native target $VIBE_TEST_EXPECT_TARGET, got $target" >&2
+  exit 1
+}
 if [ -n "$target" ]; then target_dir="$target_dir/$target"; fi
 mkdir -p "$target_dir/release"
 cp "$VIBE_TEST_FRESH_RUNNER" "$target_dir/release/viberun"
 CARGO
 chmod +x "$WORK/fake-cargo-bin/cargo"
+cat > "$WORK/fake-rustc" <<'RUSTC'
+#!/usr/bin/env bash
+[ "$1" = -vV ] || exit 2
+printf 'rustc 1.0.0 (test toolchain)\nhost: configured-native-target\n'
+RUSTC
+chmod +x "$WORK/fake-rustc"
 PATH="$WORK/fake-cargo-bin:$PATH" CARGO_TARGET_DIR="$WORK/external-target" \
   CARGO_BUILD_TARGET=configured-target \
+  RUSTC="$WORK/fake-rustc" VIBE_TEST_EXPECT_TARGET=configured-native-target \
   VIBE_TEST_FRESH_RUNNER="$runner" VIBE_HOME="$WORK/fresh-runner-home" \
   bash "$repo/install/install.sh" --__vibe-install-root "$repo" \
     --toolchain fresh-runner --cli-wasm "$WORK/compiler.wasm" \

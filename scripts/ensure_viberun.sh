@@ -27,6 +27,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CRATE="$ROOT_DIR/runtime/viberun"
 BIN="$CRATE/target/release/viberun"
 STAMP="$CRATE/target/release/.viberun_srchash"
+RUSTC_CMD="${RUSTC:-rustc}"
 
 MODE="ensure"
 for arg in "$@"; do
@@ -73,7 +74,7 @@ src_hash() {
       # The toolchain and native host are inputs too. -vV also changes the
       # prior stamp format, so a stale binary incorrectly stamped by the old
       # build-target handling cannot be accepted as current.
-      rustc -vV 2>/dev/null || echo "no rustc"
+      "$RUSTC_CMD" -vV 2>/dev/null || echo "no rustc"
     } | hash_stdin
   )
 }
@@ -98,7 +99,7 @@ rm -f "$STAMP"
 # Pin both Cargo controls: target-dir changes the root, while --target changes
 # the release binary's subdirectory. Build for this host and copy the actual
 # output to the stable path consumed by the checkout installer and gate scripts.
-host_triple="$(rustc -vV | sed -n 's/^host: //p')"
+host_triple="$("$RUSTC_CMD" -vV | sed -n 's/^host: //p')"
 [ -n "$host_triple" ] || { echo "[ensure-viberun] FAIL: rustc reported no host triple" >&2; exit 1; }
 cargo build --release --target "$host_triple" --target-dir "$CRATE/target" --manifest-path "$CRATE/Cargo.toml"
 built_bin="$CRATE/target/$host_triple/release/viberun"
