@@ -8136,6 +8136,17 @@ fn dh_params_may_be(params: Array[(String, Option[TypeExpr])], ename: String) ->
   found
 }
 
+fn dh_value_aliases_binding(value: Expr, name: String) -> Bool {
+  match value {
+    EIdent(source, _) => source == name,
+    ECall(_, args, _) => match afe_ascribed_name_type(value) {
+      Some(_) => dh_value_aliases_binding(Array::get(args, 0), name),
+      None => false
+    },
+    _ => false
+  }
+}
+
 fn dh_call_to_binding(expr: Expr, name: String) -> Option[Int] {
   match expr {
     ECall(EIdent(nm, off), _, _) => if nm == name {
@@ -8145,10 +8156,20 @@ fn dh_call_to_binding(expr: Expr, name: String) -> Option[Int] {
     },
     ELet(nm, value, body, _) => match dh_call_to_binding(value, name) {
       Some(off) => Some(off),
-      None => if nm == name {
-        None
-      } else {
-        dh_call_to_binding(body, name)
+      None => {
+        let through_alias = if dh_value_aliases_binding(value, name) {
+          dh_call_to_binding(body, nm)
+        } else {
+          None
+        }
+        match through_alias {
+          Some(off) => Some(off),
+          None => if nm == name {
+            None
+          } else {
+            dh_call_to_binding(body, name)
+          }
+        }
       }
     },
     ELetMut(nm, value, body, _) => match dh_call_to_binding(value, name) {
@@ -8164,7 +8185,14 @@ fn dh_call_to_binding(expr: Expr, name: String) -> Option[Int] {
     } else {
       match dh_call_to_binding(value, name) {
         Some(off) => Some(off),
-        None => dh_call_to_binding(body, name)
+        None => match if dh_value_aliases_binding(value, name) {
+          dh_call_to_binding(body, nm)
+        } else {
+          None
+        } {
+          Some(off) => Some(off),
+          None => dh_call_to_binding(body, name)
+        }
       }
     },
     EFn(_, _, params, _, _, body) => {
@@ -8448,32 +8476,72 @@ fn dh_overlay_call_may_reach(name: String, ename: String, ov_names: Array[String
   }
 }
 
-fn dh_widened_only_alias_call(body: Expr, ename: String, ov_names: Array[String], ov_effs: Array[Array[String]], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int]) -> Bool {
-  let seen: Array[String] = []
-  let mut found = false
-  for name in ov_names {
-    if !found && !str_list_has(seen, name) {
-      Array::push(seen, name)
-      match overlay_alias_target(ov_names, ov_effs, name) {
-        Some(target) => match lookup_program_fn_effs(fn_index, fn_effs, target) {
-          Some(actual) => match lookup_fn_effs(ov_names, ov_effs, name) {
-            Some(declared) => if dh_labels_may_be(declared, ename) && !dh_labels_may_be(actual, ename) {
-              match dh_call_to_binding(body, name) {
-                Some(_) => found = true,
-                None => ()
-              }
-            } else {
-              ()
-            },
-            None => ()
-          },
-          None => ()
+fn dh_widened_only_alias_call(body: Expr, ename: String, fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], ov_names: Array[String], ov_effs: Array[Array[String]]) -> Bool {
+  match body {
+    ECall(EIdent(name, _), args, _) => {
+      let widened = match overlay_alias_target(ov_names, ov_effs, name) {
+        Some(target) => match (lookup_program_fn_effs(fn_index, fn_effs, target), lookup_fn_effs(ov_names, ov_effs, name)) {
+          (Some(actual), Some(declared)) => dh_labels_may_be(declared, ename) && !dh_labels_may_be(actual, ename),
+          _ => false
         },
-        None => ()
+        None => false
       }
-    } else {
-      ()
-    }
+      widened || dh_widened_only_alias_in(args, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs)
+    },
+    ELet(name, value, continuation, _) => {
+      let (bn, be) = overlay_bind_local(ov_names, ov_effs, name, value, fn_names, fn_effs, fn_index)
+      (!dh_named_alias_ascription(value, ov_names, ov_effs, fn_index) && dh_widened_only_alias_call(value, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs)) || dh_widened_only_alias_call(continuation, ename, fn_names, fn_effs, fn_index, bn, be)
+    },
+    ELetMut(name, value, continuation, _) => {
+      let (bn, be) = overlay_bind_empty(ov_names, ov_effs, name, fn_names, fn_index)
+      dh_widened_only_alias_call(value, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs) || dh_widened_only_alias_call(continuation, ename, fn_names, fn_effs, fn_index, bn, be)
+    },
+    ELetRec(name, value, continuation) => {
+      let (bn, be) = overlay_bind_local(ov_names, ov_effs, name, value, fn_names, fn_effs, fn_index)
+      (!dh_named_alias_ascription(value, bn, be, fn_index) && dh_widened_only_alias_call(value, ename, fn_names, fn_effs, fn_index, bn, be)) || dh_widened_only_alias_call(continuation, ename, fn_names, fn_effs, fn_index, bn, be)
+    },
+    EFn(_, _, _, _, _, _) => false,
+    EMatch(scrutinee, arms) => dh_widened_only_alias_call(scrutinee, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs) || dh_widened_only_alias_arms(arms, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs),
+    EHandle(inner, arms) => dh_widened_only_alias_call(inner, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs) || dh_widened_only_alias_arms(arms, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs),
+    EForIn(name, index_name, iter, continuation) => {
+      let (bn, be) = overlay_bind_empty_names(ov_names, ov_effs, [name], fn_names, fn_index)
+      let (bn2, be2) = match index_name {
+        Some(index) => overlay_bind_empty_names(bn, be, [index], fn_names, fn_index),
+        None => (bn, be)
+      }
+      dh_widened_only_alias_call(iter, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs) || dh_widened_only_alias_call(continuation, ename, fn_names, fn_effs, fn_index, bn2, be2)
+    },
+    ELoop(pairs, continuation) => {
+      let bound: Array[String] = []
+      let values: Array[Expr] = []
+      for pair in pairs {
+        let (name, value) = pair
+        Array::push(bound, name)
+        Array::push(values, value)
+      }
+      let (bn, be) = overlay_bind_empty_names(ov_names, ov_effs, bound, fn_names, fn_index)
+      dh_widened_only_alias_in(values, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs) || dh_widened_only_alias_call(continuation, ename, fn_names, fn_effs, fn_index, bn, be)
+    },
+    _ => dh_widened_only_alias_in(expr_children(body), ename, fn_names, fn_effs, fn_index, ov_names, ov_effs)
+  }
+}
+
+fn dh_widened_only_alias_in(exprs: Array[Expr], ename: String, fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], ov_names: Array[String], ov_effs: Array[Array[String]]) -> Bool {
+  let mut found = false
+  for expr in exprs {
+    found = found || dh_widened_only_alias_call(expr, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs)
+  }
+  found
+}
+
+fn dh_widened_only_alias_arms(arms: Array[(Pat, Expr)], ename: String, fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], ov_names: Array[String], ov_effs: Array[Array[String]]) -> Bool {
+  let mut found = false
+  for arm in arms {
+    let (pat, body) = arm
+    let bound: Array[String] = []
+    collect_pat_binds_into(pat, bound)
+    let (bn, be) = overlay_bind_empty_names(ov_names, ov_effs, bound, fn_names, fn_index)
+    found = found || dh_widened_only_alias_call(body, ename, fn_names, fn_effs, fn_index, bn, be)
   }
   found
 }
@@ -8950,7 +9018,7 @@ fn dh_check_expr(expr: Expr, declared: Array[String], performed: Array[String], 
           Some((cname, coff)) => Array::push(errors, EEHandleMutableAlias(eff, cname, coff)),
           None => ()
         }
-        let known_dead_alias = dh_widened_only_alias_call(body, eff, ov_names, ov_effs, fn_effs, fn_index)
+        let known_dead_alias = dh_widened_only_alias_call(body, eff, fn_names, fn_effs, fn_index, ov_names, ov_effs)
         if mutable_call == None && ((effect_row_has_label(Some(declared), eff) && effect_row_has_label(Some(performed), eff)) || known_dead_alias) && !dh_may_reach(body, eff, fn_names, fn_effs, fn_index, ov_names, ov_effs) && dh_has_opaque_call(body, fn_names, fn_index) {
           // #3180: the handle is refused either way, but when the opaque call
           // is a local closure with no effect row that DOES perform `eff`,
