@@ -472,15 +472,19 @@ runner_stage=""
 if [ -z "$RUNNER_SRC" ]; then
   command -v cargo >/dev/null 2>&1 || die "cargo not found; pass a prebuilt runner with --runner"
   runner_stage="$(mktemp -d "$TC_DIR/.runner-stage.XXXXXX")"
+  runner_stage="$(cd "$runner_stage" && pwd)"
   trap 'rm -rf -- "$runner_stage"' EXIT
   # Let Cargo select its configured compiler, but override a cross-build target
   # with Cargo's native host. Cargo can reuse its dependency build cache;
   # its installed executable, not target/release/viberun, is what we copy.
-  native_target="$(cargo -vV | sed -n 's/^host: //p')"
-  [ -n "$native_target" ] || die "cargo reported no host target; pass a native runner with --runner"
-  cargo install --locked --path "$ROOT_DIR/runtime/viberun" --root "$runner_stage" \
-    --force --no-track --target "$native_target" \
-    --target-dir "$ROOT_DIR/runtime/viberun/target" >/dev/null
+  (
+    cd "$ROOT_DIR/runtime/viberun"
+    native_target="$(cargo -vV | sed -n 's/^host: //p')"
+    [ -n "$native_target" ] || die "cargo reported no host target; pass a native runner with --runner"
+    cargo install --locked --path . --root "$runner_stage" \
+      --force --no-track --target "$native_target" \
+      --target-dir "$ROOT_DIR/runtime/viberun/target" >/dev/null
+  )
   RUNNER_SRC="$runner_stage/bin/viberun"
 fi
 [ -x "$RUNNER_SRC" ] || die "runner not executable: $RUNNER_SRC"

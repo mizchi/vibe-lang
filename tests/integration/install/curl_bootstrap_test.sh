@@ -83,6 +83,10 @@ cat > "$WORK/fake-cargo-bin/cargo" <<'CARGO'
 set -euo pipefail
 action="$1"
 shift
+[ "$PWD" = "$VIBE_TEST_CARGO_CWD" ] || {
+  echo "fake cargo: invoked from $PWD, expected $VIBE_TEST_CARGO_CWD" >&2
+  exit 2
+}
 [ "$action" != -vV ] || { printf 'cargo 1.0.0\nhost: test-native-target\n'; exit 0; }
 root=""
 locked=0
@@ -112,6 +116,7 @@ chmod +x "$WORK/fake-cargo-bin/cargo"
 PATH="$WORK/fake-cargo-bin:$PATH" CARGO_TARGET_DIR="$WORK/external-target" \
   CARGO_BUILD_TARGET=configured-target \
   RUSTC="$WORK/compiler-selected-by-cargo" \
+  VIBE_TEST_CARGO_CWD="$repo/runtime/viberun" \
   VIBE_TEST_TARGET_DIR="$repo/runtime/viberun/target" \
   VIBE_TEST_CARGO_INSTALL_CALLED="$WORK/cargo-install-called" \
   VIBE_TEST_FRESH_RUNNER="$runner" VIBE_HOME="$WORK/fresh-runner-home" \
