@@ -108,6 +108,25 @@ for lane in fs single-file; do
   esac
 done
 
+# Build and run use the compile diagnostic adapters, not the checker CLI's
+# JSON printer. Internal location markers must never escape into a .diag file.
+for compile_lane in fs single-file; do
+  rm -f "$WORK/assign_unknown.$compile_lane.wasm" "$WORK/assign_unknown.$compile_lane.wasm.diag"
+  if [ "$compile_lane" = fs ]; then compile_fs=1; else compile_fs=0; fi
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE="$compile_fs" VIBE_IMPORT_ABI=raw \
+    bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" --invoke cli_main "$STAGE2" \
+    "$WORK/assign_unknown.vibe" "$WORK/assign_unknown.$compile_lane.wasm" main >/dev/null 2>&1 || true
+  if [ -s "$WORK/assign_unknown.$compile_lane.wasm" ]; then
+    bad "assign_unknown: $compile_lane build accepted the unknown assignment"
+  fi
+  if ! grep -qF 'unknown name: accI' "$WORK/assign_unknown.$compile_lane.wasm.diag" 2>/dev/null; then
+    bad "assign_unknown: $compile_lane build lost the unbound-target diagnostic"
+  fi
+  if grep -qF '[@assign-target]' "$WORK/assign_unknown.$compile_lane.wasm.diag" 2>/dev/null; then
+    bad "assign_unknown: $compile_lane build leaked an internal marker"
+  fi
+done
+
 printf 'export fn main() -> Int {\n  accI += 1\n  0\n}\n' > "$WORK/assign_op_unknown.vibe"
 probe assign_op_unknown 1
 if ! grep -qF '"message":"unknown name: accI"' "$WORK/assign_op_unknown.fs.json"; then
@@ -117,6 +136,16 @@ python3 - "$WORK/assign_op_unknown.fs.json" <<'PY' || bad "assign_op_unknown: wr
 import json, sys
 row, = json.load(open(sys.argv[1]))
 assert row['range'] == {'start': {'line': 1, 'character': 2}, 'end': {'line': 1, 'character': 6}}, row
+PY
+
+# A raw identifier's token spelling is longer than the normalized name.
+printf 'export fn main() -> Int {\n  r#loop = 1\n  0\n}\n' > "$WORK/assign_raw_target.vibe"
+probe assign_raw_target 1
+python3 - "$WORK/assign_raw_target.fs.json" <<'PY' || bad "assign_raw_target: wrong raw-token range"
+import json, sys
+row, = json.load(open(sys.argv[1]))
+assert row['message'] == 'unknown name: loop', row
+assert row['range'] == {'start': {'line': 1, 'character': 2}, 'end': {'line': 1, 'character': 8}}, row
 PY
 
 # An earlier comment, parameter and `let` declaration use the same spelling.
@@ -201,4 +230,4 @@ if grep -qF 'unlocated.vibe' "$WORK/unlocated.fs.json" 2>/dev/null; then
 fi
 
 [ "$fails" -eq 0 ] || exit 1
-echo "[check-json-parity] ok (10 probes: both lanes agree on diagnostics, exit code, and UTF-16 offsets)"
+echo "[check-json-parity] ok (11 probes: both lanes agree on diagnostics, exit code, and UTF-16 offsets)"
