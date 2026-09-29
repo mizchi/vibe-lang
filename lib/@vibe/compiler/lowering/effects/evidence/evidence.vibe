@@ -6874,6 +6874,33 @@ fn edp_apply_migration(stmts: Array[Stmt], ename: String, ops: Array[(String, Ar
     // cannot select a runtime call convention, so it cannot justify refusing
     // an otherwise live entry program.
     if hsi1 < Array::length(keep) && Array::get(keep, hsi1) {
+      // A self-discharging owner used as a value cannot widen its closure
+      // parameter. A live call through that value may still pass a plain
+      // self-discharging function, which would trap at the indirect call.
+      if Array::length(hcps) == 0 && !edp_str_array_contains(needing, howner) {
+        match Array::get(stmts, hsi1) {
+          SLet(_, _, _, _, EFn(_, _, params, _, _, body)) => {
+            let mut pi = 0
+            while pi < Array::length(params) {
+              let (pname, pty) = Array::get(params, pi)
+              if edp_type_is_fn_row_exactly(pty, ename, es_names, es_members_list) && edp_param_uses_confined_to_handle_calls(body, edp_strip_tilde(pname), ename) && edp_fn_used_as_value(stmts, howner) {
+                let msg = String::concat("call `", String::concat(howner, String::concat("` directly: it handles `", String::concat(ename, "` while calling an effectful function parameter, so using this handler owner as a value cannot safely select the closure call convention"))))
+                if !edp_str_array_contains(errs, msg) {
+                  Array::push(errs, msg)
+                } else {
+                  ()
+                }
+              } else {
+                ()
+              }
+              pi = pi + 1
+            }
+          },
+          _ => ()
+        }
+      } else {
+        ()
+      }
       let mut hcpi = 0
       while hcpi < Array::length(hcps) {
         let (_, ppos) = Array::get(hcps, hcpi)

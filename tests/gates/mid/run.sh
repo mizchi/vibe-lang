@@ -2814,6 +2814,19 @@ if [ "$dormant_array_reference_result" != "1" ]; then
 fi
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/fnvalue_nested_handle_shadowed_local_row.vibe "$nhvdir/shadowed_local_row.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$nhvdir/shadowed_local_row.wasm" ]; then
+  echo "[compiler-gate] FAIL: a local row-annotated closure was confused with a self-discharging top-level function (#3195)" >&2
+  cat "$nhvdir/shadowed_local_row.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+shadowed_local_row_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$nhvdir/shadowed_local_row.wasm" 2>/dev/null | tr -dc '0-9')"
+if [ "$shadowed_local_row_result" != "1" ]; then
+  echo "[compiler-gate] FAIL: shadowed local row returned '$shadowed_local_row_result' (want 1, #3195)" >&2
+  exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   fixtures/fnvalue_nested_handle_shadowed_owner.vibe "$nhvdir/shadowed_owner.wasm" main >/dev/null 2>&1 || true
 if [ ! -s "$nhvdir/shadowed_owner.wasm" ]; then
   echo "[compiler-gate] FAIL: a local shadow of the handler owner was mistaken for the top-level owner (#3195)" >&2
@@ -2831,6 +2844,14 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
 if [ -s "$nhvdir/eager_array.wasm" ] || ! grep -qF 'pass an explicitly row-annotated closure that calls `inner_handled`' "$nhvdir/eager_array.wasm.diag" 2>/dev/null; then
   echo "[compiler-gate] FAIL: an eager call in an unused array escaped the refusal (#3195)" >&2
   cat "$nhvdir/eager_array.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/err_fnvalue_nested_handle_loop_initializer.vibe "$nhvdir/loop_initializer.wasm" main >/dev/null 2>&1 || true
+if [ -s "$nhvdir/loop_initializer.wasm" ] || ! grep -qF 'call `outer` directly' "$nhvdir/loop_initializer.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: a handler owner used as a loop value escaped the call-convention refusal (#3195)" >&2
+  cat "$nhvdir/loop_initializer.wasm.diag" >&2 2>/dev/null || true
   exit 1
 fi
 VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh fixtures/fnvalue_nested_handle_inline_test.vibe
