@@ -2716,7 +2716,7 @@ if [ -s "$nhvdir/rej.wasm" ]; then
   echo "[compiler-gate] FAIL: named self-discharging function value compiled and can trap at an indirect call (#3195)" >&2
   exit 1
 fi
-if ! grep -qF 'pass an explicitly row-annotated closure that calls it' "$nhvdir/rej.wasm.diag" 2>/dev/null; then
+if ! grep -qF 'pass an explicitly row-annotated closure that calls `inner_handled`' "$nhvdir/rej.wasm.diag" 2>/dev/null; then
   echo "[compiler-gate] FAIL: nested-handler function value refusal lacks the working edit (#3195)" >&2
   cat "$nhvdir/rej.wasm.diag" >&2 2>/dev/null || true
   exit 1
