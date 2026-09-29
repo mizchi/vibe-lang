@@ -4575,13 +4575,14 @@ fi
 rm -f "$ROOT_DIR/_build/_gate_option_payload_rc.log"
 echo "[compiler-gate] Option closure payload stays live and bounded in shadow RC ok (#3240)"
 
-# The callback parameter shadows the effectful top-level `ask_once`. The
-# entry lane's independent opaque-call rule still rejects `f()`, but the
-# mutable-alias diagnostic must not attribute it to the top-level function.
+# A callback parameter or immutable rebinding shadows an effectful source.
+# The entry lane's independent opaque-call rule still rejects these calls,
+# but the mutable-alias diagnostic must not attribute them to that source.
 for shadowed_callback in \
     handle_callee_mutable_shadowed_callback_opaque_reject \
     handle_callee_mutable_shadowed_labeled_callback_opaque_reject \
-    handle_callee_mutable_shadowed_labeled_alias_opaque_reject; do
+    handle_callee_mutable_shadowed_labeled_alias_opaque_reject \
+    handle_callee_mutable_outer_copied_shadowed_opaque_reject; do
   shadowed_callback_diag="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
     --invoke cli_main "$stage2_wasm" check "fixtures/$shadowed_callback.vibe" 2>&1 || true)"
   case "$shadowed_callback_diag" in
@@ -4600,10 +4601,16 @@ for shadowed_callback in \
   fi
 done
 
-outer_mutable_diag="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
-  --invoke cli_main "$stage2_wasm" check --single-file \
-  fixtures/typecheck/handle_callee_mutable_outer_with_direct_perform_reject.vibe 2>&1 || true)"
-case "$outer_mutable_diag" in
-  *'cannot compile a call through mutable local `f`'*) ;;
-  *) echo "[compiler-gate] FAIL: an outer mutable alias was lost inside a nested handle (#3196): $outer_mutable_diag" >&2; exit 1 ;;
-esac
+for outer_mutable_fixture in \
+    handle_callee_mutable_outer_with_direct_perform_reject \
+    handle_callee_mutable_outer_copied_alias_reject \
+    handle_callee_mutable_outer_annotated_chain_reject \
+    handle_callee_mutable_outer_recursive_alias_reject; do
+  outer_mutable_diag="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke cli_main "$stage2_wasm" check --single-file \
+    "fixtures/typecheck/$outer_mutable_fixture.vibe" 2>&1 || true)"
+  case "$outer_mutable_diag" in
+    *'cannot compile a call through mutable local `f`'*) ;;
+    *) echo "[compiler-gate] FAIL: $outer_mutable_fixture lost its mutable source inside a nested handle (#3196): $outer_mutable_diag" >&2; exit 1 ;;
+  esac
+done

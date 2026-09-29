@@ -8136,14 +8136,21 @@ fn dh_params_may_be(params: Array[(String, Option[TypeExpr])], ename: String) ->
   found
 }
 
-fn dh_value_aliases_binding(value: Expr, name: String) -> Bool {
+fn dh_value_alias_name(value: Expr) -> Option[String] {
   match value {
-    EIdent(source, _) => source == name,
+    EIdent(source, _) => Some(source),
     ECall(_, args, _) => match afe_ascribed_name_type(value) {
-      Some(_) => dh_value_aliases_binding(Array::get(args, 0), name),
-      None => false
+      Some(_) => dh_value_alias_name(Array::get(args, 0)),
+      None => None
     },
-    _ => false
+    _ => None
+  }
+}
+
+fn dh_value_aliases_binding(value: Expr, name: String) -> Bool {
+  match dh_value_alias_name(value) {
+    Some(source) => source == name,
+    None => false
   }
 }
 
@@ -8410,15 +8417,39 @@ fn dh_mutable_alias_call_in(exprs: Array[Expr], ename: String, fn_names: Array[S
 
 /// Mutable aliases are tracked separately from the effect overlay: their row
 /// identifies an unsafe indirect call, but cannot justify a handler.
-fn dh_mutable_alias_with(aliases: Array[(String, Array[String])], name: String, labels: Array[String]) -> Array[(String, Array[String])] {
-  let out: Array[(String, Array[String])] = [(name, labels)]
+/// Each entry carries its spelling, labels, and original mutable binding.
+fn dh_mutable_alias_with_source(aliases: Array[(String, Array[String], String)], name: String, labels: Array[String], source: String) -> Array[(String, Array[String], String)] {
+  let out: Array[(String, Array[String], String)] = [(name, labels, source)]
   for entry in aliases {
     Array::push(out, entry)
   }
   out
 }
 
-fn dh_mutable_alias_shadow_names(aliases: Array[(String, Array[String])], names: Array[String]) -> Array[(String, Array[String])] {
+fn dh_mutable_alias_with(aliases: Array[(String, Array[String], String)], name: String, labels: Array[String]) -> Array[(String, Array[String], String)] {
+  dh_mutable_alias_with_source(aliases, name, labels, name)
+}
+
+fn dh_mutable_alias_bind(aliases: Array[(String, Array[String], String)], name: String, value: Expr, recursive: Bool) -> Array[(String, Array[String], String)] {
+  match dh_value_alias_name(value) {
+    Some(target) => if !recursive || target != name {
+      for entry in aliases {
+        let (bound, labels, source) = entry
+        if bound == target {
+          return dh_mutable_alias_with_source(aliases, name, labels, source)
+        } else {
+          ()
+        }
+      }
+    } else {
+      ()
+    },
+    None => ()
+  }
+  dh_mutable_alias_with(aliases, name, [])
+}
+
+fn dh_mutable_alias_shadow_names(aliases: Array[(String, Array[String], String)], names: Array[String]) -> Array[(String, Array[String], String)] {
   let mut out = aliases
   for name in names {
     out = dh_mutable_alias_with(out, name, [])
@@ -8426,16 +8457,16 @@ fn dh_mutable_alias_shadow_names(aliases: Array[(String, Array[String])], names:
   out
 }
 
-fn dh_mutable_alias_outer_call(body: Expr, ename: String, aliases: Array[(String, Array[String])]) -> Option[(String, Int)] {
+fn dh_mutable_alias_outer_call(body: Expr, ename: String, aliases: Array[(String, Array[String], String)]) -> Option[(String, Int)] {
   let seen: Array[String] = []
   let mut hit: Option[(String, Int)] = None
   for entry in aliases {
-    let (name, labels) = entry
+    let (name, labels, source) = entry
     if hit == None && !str_list_has(seen, name) {
       Array::push(seen, name)
       if dh_labels_may_be(labels, ename) {
         match dh_call_to_binding(body, name) {
-          Some(off) => hit = Some((name, off)),
+          Some(off) => hit = Some((source, off)),
           None => ()
         }
       } else {
@@ -9003,7 +9034,7 @@ fn dh_rowless_closure_call(expr: Expr, ename: String, lc: Array[(String, Option[
 /// same notion of "this callee's declared row" the row checker itself uses.
 /// `lc` is the #3180 scope of local closures, used only to say WHICH call a
 /// dead-looking handle reaches its perform through.
-fn dh_check_expr(expr: Expr, declared: Array[String], performed: Array[String], fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], ov_names: Array[String], ov_effs: Array[Array[String]], mutable_aliases: Array[(String, Array[String])], lc: Array[(String, Option[Expr])], errors: Array[EffectError]) -> Unit {
+fn dh_check_expr(expr: Expr, declared: Array[String], performed: Array[String], fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], ov_names: Array[String], ov_effs: Array[Array[String]], mutable_aliases: Array[(String, Array[String], String)], lc: Array[(String, Option[Expr])], errors: Array[EffectError]) -> Unit {
   match expr {
     EHandle(body, arms) => {
       let handled = collect_handle_effects(arms)
@@ -9055,8 +9086,7 @@ fn dh_check_expr(expr: Expr, declared: Array[String], performed: Array[String], 
     ELet(name, val, body, _) => {
       dh_check_expr(val, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, mutable_aliases, lc, errors)
       let (bn, be) = overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs, fn_index)
-      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, bn, be, dh_mutable_alias_with(mutable_aliases, name, [
-      ]), dh_lc_bind(lc, name, val), errors)
+      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, bn, be, dh_mutable_alias_bind(mutable_aliases, name, val, false), dh_lc_bind(lc, name, val), errors)
     },
     ELetMut(name, val, body, _) => {
       dh_check_expr(val, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, mutable_aliases, lc, errors)
@@ -9071,7 +9101,7 @@ fn dh_check_expr(expr: Expr, declared: Array[String], performed: Array[String], 
     ELetRec(name, val, body) => {
       let (rn, re) = overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs, fn_index)
       let rlc = dh_lc_bind(lc, name, val)
-      let ras = dh_mutable_alias_with(mutable_aliases, name, [])
+      let ras = dh_mutable_alias_bind(mutable_aliases, name, val, true)
       dh_check_expr(val, declared, performed, fn_names, fn_effs, fn_index, rn, re, ras, rlc, errors)
       dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, rn, re, ras, rlc, errors)
     },
