@@ -585,7 +585,7 @@ export fn evidence_dict_pass(stmts: Array[Stmt], entry_name: String) -> Array[St
   let mut pi = 0
   while pi < Array::length(plans) {
     let (ename, ops, needing, handle_sites) = Array::get(plans, pi)
-    edp_apply_migration(stmts, ename, ops, needing, handle_sites, fn_defs, fn_row_labels, errs)
+    edp_apply_migration(stmts, ename, ops, needing, handle_sites, fn_defs, fn_row_labels, keep, errs)
     pi = pi + 1
   }
   // V2 step 3: the replay frontier is gone from codegen, so any non-Error
@@ -6576,7 +6576,7 @@ fn edp_migrate_closure_binding_expr(expr: Expr, xname: String, ename: String, di
 
 // --- applying an eligible migration.
 
-fn edp_apply_migration(stmts: Array[Stmt], ename: String, ops: Array[(String, Array[TypeExpr], TypeExpr)], needing: Array[String], handle_sites: Array[(Expr, Array[(Pat, Expr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], row_labels: Array[Array[String]], errs: Array[String]) -> Unit {
+fn edp_apply_migration(stmts: Array[Stmt], ename: String, ops: Array[(String, Array[TypeExpr], TypeExpr)], needing: Array[String], handle_sites: Array[(Expr, Array[(Pat, Expr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], row_labels: Array[Array[String]], keep: Array[Bool], errs: Array[String]) -> Unit {
   edp_set_declared_op_order(ename, ops)
   let dict_pname = edp_dict_param_name(ename)
   let dict_tyname = edp_dict_struct_name(ename)
@@ -6658,36 +6658,41 @@ fn edp_apply_migration(stmts: Array[Stmt], ename: String, ops: Array[(String, Ar
   let mut hsi1 = 0
   while hsi1 < Array::length(hcp_by_stmt) {
     let (howner, hcps) = Array::get(hcp_by_stmt, hsi1)
-    let mut hcpi = 0
-    while hcpi < Array::length(hcps) {
-      let (_, ppos) = Array::get(hcps, hcpi)
-      let hc_candidates = edp_collect_ecall_arg_idents(stmts, howner, ppos)
-      let mut hci = 0
-      while hci < Array::length(hc_candidates) {
-        let xn = Array::get(hc_candidates, hci)
-        // A candidate that is ALSO a needing top-level function (a
-        // capture-free closure literal hoisted by dlh_hoist_expr with its
-        // row backfilled -- 追記20 -- becomes exactly that) must NOT be
-        // migrated here: the needing-function rewrite loop below performs
-        // the IDENTICAL migration (same dict param, same body rewrite),
-        // and running both would prepend the dict parameter twice --
-        // caught live by gate 40al (effect_inline_lambda_literal_hof_arg,
-        // whose with_log argument hoists to a top-level needing fn).
-        if xn == "##edp_unsafe##" || edp_str_array_contains(needing, xn) {
-          ()
-        } else if edp_fn_is_self_discharging_inert(stmts, fn_defs, xn, ename, pure_fns) {
-          let msg = String::concat("pass an explicitly row-annotated closure that calls `", String::concat(xn, String::concat("` when passing it to a handled function parameter; `", String::concat(xn, String::concat("` handles `", String::concat(ename, "` itself and has the plain call convention"))))))
-          if edp_str_array_contains(errs, msg) {
+    // `keep` indexes the original statement list. A dead owner's call site
+    // cannot select a runtime call convention, so it cannot justify refusing
+    // an otherwise live entry program.
+    if hsi1 < Array::length(keep) && Array::get(keep, hsi1) {
+      let mut hcpi = 0
+      while hcpi < Array::length(hcps) {
+        let (_, ppos) = Array::get(hcps, hcpi)
+        let hc_candidates = edp_collect_ecall_arg_idents(stmts, howner, ppos)
+        let mut hci = 0
+        while hci < Array::length(hc_candidates) {
+          let xn = Array::get(hc_candidates, hci)
+          // A candidate that is ALSO a needing top-level function (a
+          // capture-free closure literal hoisted by dlh_hoist_expr with its
+          // row backfilled -- 追記20 -- becomes exactly that) must NOT be
+          // migrated here: the needing-function rewrite loop below performs
+          // the IDENTICAL migration (same dict param, same body rewrite),
+          // and running both would prepend the dict parameter twice --
+          // caught live by gate 40al (effect_inline_lambda_literal_hof_arg,
+          // whose with_log argument hoists to a top-level needing fn).
+          if xn == "##edp_unsafe##" || edp_str_array_contains(needing, xn) {
             ()
+          } else if edp_fn_is_self_discharging_inert(stmts, fn_defs, xn, ename, pure_fns) {
+            let msg = String::concat("pass an explicitly row-annotated closure that calls `", String::concat(xn, String::concat("` when passing it to a handled function parameter; `", String::concat(xn, String::concat("` handles `", String::concat(ename, "` itself and has the plain call convention"))))))
+            if edp_str_array_contains(errs, msg) {
+              ()
+            } else {
+              Array::push(errs, msg)
+            }
           } else {
-            Array::push(errs, msg)
+            edp_migrate_closure_binding_stmts(stmts, xn, ename, dict_pname, needing, pure_fns, es_names, es_members_list)
           }
-        } else {
-          edp_migrate_closure_binding_stmts(stmts, xn, ename, dict_pname, needing, pure_fns, es_names, es_members_list)
+          hci = hci + 1
         }
-        hci = hci + 1
+        hcpi = hcpi + 1
       }
-      hcpi = hcpi + 1
     }
     hsi1 = hsi1 + 1
   }

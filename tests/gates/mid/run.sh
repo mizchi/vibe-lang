@@ -2721,6 +2721,19 @@ if ! grep -qF 'pass an explicitly row-annotated closure that calls `inner_handle
   cat "$nhvdir/rej.wasm.diag" >&2 2>/dev/null || true
   exit 1
 fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/fnvalue_nested_handle_dead.vibe "$nhvdir/dead.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$nhvdir/dead.wasm" ]; then
+  echo "[compiler-gate] FAIL: unreachable nested-handler call rejected the live entry (#3195)" >&2
+  cat "$nhvdir/dead.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+dead_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$nhvdir/dead.wasm" 2>/dev/null | tr -dc '0-9')"
+if [ "$dead_result" != "42" ]; then
+  echo "[compiler-gate] FAIL: reachable entry returned '$dead_result' with an unreachable nested-handler call (#3195)" >&2
+  exit 1
+fi
 VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh fixtures/fnvalue_nested_handle_inline_test.vibe
 rm -rf "$nhvdir"
 echo "[compiler-gate] nested-handler function value refusal and inline closure ok (#3195)"
