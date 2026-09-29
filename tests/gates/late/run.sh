@@ -3679,6 +3679,14 @@ if [ -s "$ssldir/alias.wasm" ] || ! grep -qF 'pass the task closure inline at `T
   cat "$ssldir/alias.wasm.diag" >&2 2>/dev/null || true
   exit 1
 fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/err_spawn_suspend_ascribed_plain.vibe "$ssldir/ascribed.wasm" main >/dev/null 2>&1 || true
+if [ -s "$ssldir/ascribed.wasm" ] || ! grep -qF 'pass the task closure inline at `TaskGroup::spawn_suspend`' "$ssldir/ascribed.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: an ascribed plain task closure bypassed the named task closure guard (#3194)" >&2
+  cat "$ssldir/ascribed.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
 cat > "$ssldir/inline.vibe" <<'VIBE'
 import @vibe/concurrent/experimental { TaskGroup, TaskHandle }
 fn main() -> Int allows Async + Exception {
