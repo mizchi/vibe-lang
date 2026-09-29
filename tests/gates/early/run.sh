@@ -76,6 +76,12 @@ for char_lane in fs single-file; do
     *'line 2:11: add a closing quote to the char literal'*) ;;
     *) echo "[compiler-gate] FAIL: $char_lane escaped next literal changed the missing-quote edit: $next_escaped_literal" >&2; exit 1 ;;
   esac
+  next_operator_literal="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke cli_main "$stage2_wasm" check "$@" fixtures/err_unclosed_char_next_literal_operator.vibe 2>&1 || true)"
+  case "$next_operator_literal" in
+    *'line 2:14: add a closing quote to the char literal'*) ;;
+    *) echo "[compiler-gate] FAIL: $char_lane operator-separated literal changed the missing-quote edit: $next_operator_literal" >&2; exit 1 ;;
+  esac
   following_string="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
     --invoke cli_main "$stage2_wasm" check "$@" fixtures/err_unclosed_char_following_string.vibe 2>&1 || true)"
   case "$following_string" in
