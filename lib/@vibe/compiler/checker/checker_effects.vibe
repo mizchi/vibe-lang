@@ -8212,15 +8212,16 @@ fn dh_has_opaque_call(expr: Expr, fn_names: Array[String], fn_index: MutMap[Stri
 /// with no effect row, and `None` otherwise; a `None` entry only shadows. A
 /// parameter, a pattern, a loop variable and a `let` of any other value all
 /// hide an outer closure of the same spelling, so a call is attributed to a
-/// closure only when that closure is what the name means at the call.
-fn no_lc() -> Array[(String, Option[Expr])] {
+/// closure only when that closure is what the name means at the call. A
+/// positive cell ID identifies a mutable binding across assignment captures.
+fn no_lc() -> Array[(String, Option[Expr], Int)] {
   array_empty()
 }
 
 /// `lc` with `name` bound innermost. A shadowing entry is only recorded when
 /// it hides something: every other binder leaves the scope as it is, so a
 /// body with no rowless closure in scope never copies it.
-fn dh_lc_with(lc: Array[(String, Option[Expr])], name: String, closure: Option[Expr]) -> Array[(String, Option[Expr])] {
+fn dh_lc_with_id(lc: Array[(String, Option[Expr], Int)], name: String, closure: Option[Expr], cell_id: Int) -> Array[(String, Option[Expr], Int)] {
   let hides = match closure {
     Some(_) => true,
     None => dh_lc_index(lc, name) >= 0
@@ -8228,7 +8229,7 @@ fn dh_lc_with(lc: Array[(String, Option[Expr])], name: String, closure: Option[E
   if !hides {
     lc
   } else {
-    let out: Array[(String, Option[Expr])] = [(name, closure)]
+    let out: Array[(String, Option[Expr], Int)] = [(name, closure, cell_id)]
     let mut i = 0
     while i < Array::length(lc) {
       Array::push(out, Array::get(lc, i))
@@ -8238,7 +8239,24 @@ fn dh_lc_with(lc: Array[(String, Option[Expr])], name: String, closure: Option[E
   }
 }
 
-fn dh_lc_shadow_names(lc: Array[(String, Option[Expr])], names: Array[String]) -> Array[(String, Option[Expr])] {
+fn dh_lc_with(lc: Array[(String, Option[Expr], Int)], name: String, closure: Option[Expr]) -> Array[(String, Option[Expr], Int)] {
+  dh_lc_with_id(lc, name, closure, 0)
+}
+
+fn dh_lc_next_cell_id(lc: Array[(String, Option[Expr], Int)]) -> Int {
+  let mut next = 1
+  for entry in lc {
+    let (_, _, id) = entry
+    if id >= next {
+      next = id + 1
+    } else {
+      ()
+    }
+  }
+  next
+}
+
+fn dh_lc_shadow_names(lc: Array[(String, Option[Expr], Int)], names: Array[String]) -> Array[(String, Option[Expr], Int)] {
   let mut out = lc
   let mut i = 0
   while i < Array::length(names) {
@@ -8248,7 +8266,7 @@ fn dh_lc_shadow_names(lc: Array[(String, Option[Expr])], names: Array[String]) -
   out
 }
 
-fn dh_lc_shadow_pat(lc: Array[(String, Option[Expr])], pat: Pat) -> Array[(String, Option[Expr])] {
+fn dh_lc_shadow_pat(lc: Array[(String, Option[Expr], Int)], pat: Pat) -> Array[(String, Option[Expr], Int)] {
   if Array::length(lc) == 0 {
     lc
   } else {
@@ -8259,11 +8277,11 @@ fn dh_lc_shadow_pat(lc: Array[(String, Option[Expr])], pat: Pat) -> Array[(Strin
 }
 
 /// A handler arm binds its pattern's names and `resume`.
-fn dh_lc_shadow_arm(lc: Array[(String, Option[Expr])], pat: Pat) -> Array[(String, Option[Expr])] {
+fn dh_lc_shadow_arm(lc: Array[(String, Option[Expr], Int)], pat: Pat) -> Array[(String, Option[Expr], Int)] {
   dh_lc_with(dh_lc_shadow_pat(lc, pat), "resume", None)
 }
 
-fn dh_lc_shadow_params(lc: Array[(String, Option[Expr])], params: Array[(String, Option[TypeExpr])]) -> Array[(String, Option[Expr])] {
+fn dh_lc_shadow_params(lc: Array[(String, Option[Expr], Int)], params: Array[(String, Option[TypeExpr])]) -> Array[(String, Option[Expr], Int)] {
   let mut out = lc
   let mut i = 0
   while Array::length(out) > 0 && i < Array::length(params) {
@@ -8293,7 +8311,7 @@ fn dh_shadow_has(shadowed: Array[String], name: String) -> Bool {
 /// An earlier assignment replaces the tracked closure. Inside a branch the
 /// assignment might not run, so only its invalidation is retained. Bindings
 /// introduced inside the expression hide the outer name without changing it.
-fn dh_lc_after_assigns_scoped(expr: Expr, lc: Array[(String, Option[Expr])], shadowed: Array[String], certain: Bool) -> Array[(String, Option[Expr])] {
+fn dh_lc_after_assigns_scoped(expr: Expr, lc: Array[(String, Option[Expr], Int)], shadowed: Array[String], certain: Bool) -> Array[(String, Option[Expr], Int)] {
   match expr {
     EFn(_, _, _, _, _, _) => lc,
     EAssign(name, value, body) => {
@@ -8400,7 +8418,7 @@ fn dh_lc_after_assigns_scoped(expr: Expr, lc: Array[(String, Option[Expr])], sha
   }
 }
 
-fn dh_lc_after_assigns(expr: Expr, lc: Array[(String, Option[Expr])]) -> Array[(String, Option[Expr])] {
+fn dh_lc_after_assigns(expr: Expr, lc: Array[(String, Option[Expr], Int)]) -> Array[(String, Option[Expr], Int)] {
   dh_lc_after_assigns_scoped(expr, lc, [], true)
 }
 
@@ -8417,10 +8435,20 @@ fn dh_direct_abortive_transfer(expr: Expr) -> Bool {
         _ => false
       }
     } else {
-      false
+      dh_direct_abortive_transfer_in(args)
     },
+    ECall(callee, args, _) => dh_direct_abortive_transfer(callee) || dh_direct_abortive_transfer_in(args),
+    ELabeledArg(_, _, value) => dh_direct_abortive_transfer(value),
     _ => false
   }
+}
+
+fn dh_direct_abortive_transfer_in(exprs: Array[Expr]) -> Bool {
+  let mut found = false
+  for expr in exprs {
+    found = found || dh_direct_abortive_transfer(expr)
+  }
+  found
 }
 
 fn dh_for_names(name: String, index_name: Option[String]) -> Array[String] {
@@ -8443,13 +8471,17 @@ fn dh_lc_closure(val: Expr) -> Option[Expr] {
   }
 }
 
-fn dh_lc_bind(lc: Array[(String, Option[Expr])], name: String, val: Expr) -> Array[(String, Option[Expr])] {
+fn dh_lc_bind(lc: Array[(String, Option[Expr], Int)], name: String, val: Expr) -> Array[(String, Option[Expr], Int)] {
   dh_lc_with(lc, name, dh_lc_closure(val))
+}
+
+fn dh_lc_bind_mut(lc: Array[(String, Option[Expr], Int)], name: String, val: Expr) -> Array[(String, Option[Expr], Int)] {
+  dh_lc_with_id(lc, name, dh_lc_closure(val), dh_lc_next_cell_id(lc))
 }
 
 /// Assignment replaces the current mutable cell. A previous closure of the
 /// same spelling must not become the replacement's recursive callee.
-fn dh_lc_assign(lc: Array[(String, Option[Expr])], name: String, val: Expr) -> Array[(String, Option[Expr])] {
+fn dh_lc_assign(lc: Array[(String, Option[Expr], Int)], name: String, val: Expr) -> Array[(String, Option[Expr], Int)] {
   let closure = dh_lc_closure(val)
   let old_index = dh_lc_index(lc, name)
   let needed = match closure {
@@ -8459,18 +8491,29 @@ fn dh_lc_assign(lc: Array[(String, Option[Expr])], name: String, val: Expr) -> A
   if !needed {
     lc
   } else {
-    let out: Array[(String, Option[Expr])] = []
+    let out: Array[(String, Option[Expr], Int)] = []
+    let cell_id = if old_index >= 0 {
+      let (_, _, id) = Array::get(lc, old_index)
+      id
+    } else {
+      0
+    }
     if old_index < 0 {
-      dh_lc_append_assignment(out, lc, name, closure, Array::length(lc))
+      dh_lc_append_assignment(out, lc, name, closure, Array::length(lc), 0)
     } else {
       ()
     }
     let mut i = 0
     for entry in lc {
       if i == old_index {
-        dh_lc_append_assignment(out, lc, name, closure, old_index)
+        dh_lc_append_assignment(out, lc, name, closure, old_index, cell_id)
       } else {
-        Array::push(out, entry)
+        let (entry_name, _, entry_id) = entry
+        if cell_id > 0 && entry_id == cell_id {
+          Array::push(out, (entry_name, closure, entry_id))
+        } else {
+          Array::push(out, entry)
+        }
       }
       i = i + 1
     }
@@ -8486,29 +8529,78 @@ fn dh_lc_assignment_end(name: String) -> String {
   String::concat("##dh_capture_end##", name)
 }
 
-fn dh_lc_append_assignment(out: Array[(String, Option[Expr])], lc: Array[(String, Option[Expr])], name: String, closure: Option[Expr], capture_end: Int) -> Unit {
-  Array::push(out, (name, closure))
-  Array::push(out, (name, None))
+fn dh_lc_append_assignment(out: Array[(String, Option[Expr], Int)], lc: Array[(String, Option[Expr], Int)], name: String, closure: Option[Expr], capture_end: Int, cell_id: Int) -> Unit {
+  Array::push(out, (name, closure, cell_id))
+  Array::push(out, (name, None, 0))
   match closure {
     Some(_) => {
-      Array::push(out, (dh_lc_assignment_start(name), None))
+      Array::push(out, (dh_lc_assignment_start(name), None, 0))
       let mut i = 0
       while i < capture_end {
         Array::push(out, Array::get(lc, i))
         i = i + 1
       }
-      Array::push(out, (dh_lc_assignment_end(name), None))
+      Array::push(out, (dh_lc_assignment_end(name), None, 0))
     },
     None => ()
   }
 }
 
+/// Skip a binding and the assignment-site captures attached to it, if any.
+fn dh_lc_cell_chunk_end(lc: Array[(String, Option[Expr], Int)], index: Int, name: String) -> Int {
+  if index + 2 >= Array::length(lc) {
+    index + 1
+  } else {
+    let (marker, _, _) = Array::get(lc, index + 2)
+    if marker != dh_lc_assignment_start(name) {
+      index + 1
+    } else {
+      let mut i = index + 3
+      let mut depth = 1
+      while i < Array::length(lc) && depth > 0 {
+        let (entry_name, _, _) = Array::get(lc, i)
+        if String::starts_with(entry_name, "##dh_capture_start##") {
+          depth = depth + 1
+        } else if String::starts_with(entry_name, "##dh_capture_end##") {
+          depth = depth - 1
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      i
+    }
+  }
+}
+
+/// Capture blocks contain copies of mutable bindings. Find the live cell
+/// outside those blocks so a later assignment supplies its current closure.
+fn dh_lc_live_cell_index(lc: Array[(String, Option[Expr], Int)], cell_id: Int) -> Int {
+  let mut depth = 0
+  let mut found = 0 - 1
+  let mut i = 0
+  while i < Array::length(lc) && found < 0 {
+    let (name, _, id) = Array::get(lc, i)
+    if String::starts_with(name, "##dh_capture_start##") {
+      depth = depth + 1
+    } else if String::starts_with(name, "##dh_capture_end##") {
+      depth = depth - 1
+    } else if depth == 0 && id == cell_id {
+      found = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 /// An assigned closure can see bindings created after its original mutable
 /// cell. Keep those captures local to this closure's analysis so older
 /// closures still see only their own lexical suffix.
-fn dh_lc_capture_scope(lc: Array[(String, Option[Expr])], index: Int, name: String) -> Array[(String, Option[Expr])] {
+fn dh_lc_capture_scope(lc: Array[(String, Option[Expr], Int)], index: Int, name: String) -> Array[(String, Option[Expr], Int)] {
   let assigned = if index + 2 < Array::length(lc) {
-    let (marker, _) = Array::get(lc, index + 2)
+    let (marker, _, _) = Array::get(lc, index + 2)
     marker == dh_lc_assignment_start(name)
   } else {
     false
@@ -8516,15 +8608,30 @@ fn dh_lc_capture_scope(lc: Array[(String, Option[Expr])], index: Int, name: Stri
   if !assigned {
     Array::slice(lc, index + 1, Array::length(lc))
   } else {
-    let scope: Array[(String, Option[Expr])] = [(name, None)]
+    let scope: Array[(String, Option[Expr], Int)] = [(name, None, 0)]
     let mut i = index + 3
     let mut depth = 1
     while i < Array::length(lc) && depth > 0 {
       let entry = Array::get(lc, i)
-      let (entry_name, _) = entry
-      if String::starts_with(entry_name, "##dh_capture_start##") {
+      let (entry_name, _, entry_id) = entry
+      let live_index = if entry_id > 0 {
+        dh_lc_live_cell_index(lc, entry_id)
+      } else {
+        0 - 1
+      }
+      if live_index >= 0 {
+        let (live_name, _, _) = Array::get(lc, live_index)
+        let live_end = dh_lc_cell_chunk_end(lc, live_index, live_name)
+        let mut j = live_index
+        while j < live_end {
+          Array::push(scope, Array::get(lc, j))
+          j = j + 1
+        }
+        i = dh_lc_cell_chunk_end(lc, i, entry_name)
+      } else if String::starts_with(entry_name, "##dh_capture_start##") {
         depth = depth + 1
         Array::push(scope, entry)
+        i = i + 1
       } else if String::starts_with(entry_name, "##dh_capture_end##") {
         depth = depth - 1
         if depth > 0 {
@@ -8532,10 +8639,11 @@ fn dh_lc_capture_scope(lc: Array[(String, Option[Expr])], index: Int, name: Stri
         } else {
           ()
         }
+        i = i + 1
       } else {
         Array::push(scope, entry)
+        i = i + 1
       }
-      i = i + 1
     }
     while i < Array::length(lc) {
       Array::push(scope, Array::get(lc, i))
@@ -8546,11 +8654,11 @@ fn dh_lc_capture_scope(lc: Array[(String, Option[Expr])], index: Int, name: Stri
 }
 
 /// Index of the innermost binding of `name` in `lc`, or -1.
-fn dh_lc_index(lc: Array[(String, Option[Expr])], name: String) -> Int {
+fn dh_lc_index(lc: Array[(String, Option[Expr], Int)], name: String) -> Int {
   let mut found = 0 - 1
   let mut i = 0
   while found < 0 && i < Array::length(lc) {
-    let (n, _) = Array::get(lc, i)
+    let (n, _, _) = Array::get(lc, i)
     if n == name {
       found = i
     } else {
@@ -8626,7 +8734,7 @@ fn dh_expr_performs(expr: Expr, ename: String, fn_effs: Array[Array[String]], fn
 /// Does this rowless closure literal perform `ename` -- in its own body, or
 /// through a call to another such closure in scope where it was bound
 /// (`scope`), up to `depth` closures deep?
-fn dh_closure_performs(closure: Expr, ename: String, scope: Array[(String, Option[Expr])], fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], depth: Int) -> Bool {
+fn dh_closure_performs(closure: Expr, ename: String, scope: Array[(String, Option[Expr], Int)], fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], depth: Int) -> Bool {
   match closure {
     EFn(_, _, params, _, _, body) => {
       let (pn, pe) = dh_overlay_with_params(no_str_labels(), no_ov_effs(), params, fn_names, fn_index)
@@ -8645,7 +8753,7 @@ fn dh_closure_performs(closure: Expr, ename: String, scope: Array[(String, Optio
   }
 }
 
-fn dh_rowless_closure_call_in(exprs: Array[Expr], ename: String, lc: Array[(String, Option[Expr])], fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], depth: Int) -> Option[(String, Int)] {
+fn dh_rowless_closure_call_in(exprs: Array[Expr], ename: String, lc: Array[(String, Option[Expr], Int)], fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], depth: Int) -> Option[(String, Int)] {
   let mut found: Option[(String, Int)] = None
   let mut i = 0
   while i < Array::length(exprs) {
@@ -8660,7 +8768,7 @@ fn dh_rowless_closure_call_in(exprs: Array[Expr], ename: String, lc: Array[(Stri
   found
 }
 
-fn dh_rowless_closure_call_arms(arms: Array[(Pat, Expr)], ename: String, lc: Array[(String, Option[Expr])], fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], depth: Int, handler: Bool) -> Option[(String, Int)] {
+fn dh_rowless_closure_call_arms(arms: Array[(Pat, Expr)], ename: String, lc: Array[(String, Option[Expr], Int)], fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], depth: Int, handler: Bool) -> Option[(String, Int)] {
   let mut found: Option[(String, Int)] = None
   let mut i = 0
   while i < Array::length(arms) {
@@ -8684,14 +8792,14 @@ fn dh_rowless_closure_call_arms(arms: Array[(Pat, Expr)], ename: String, lc: Arr
 /// The first call in `expr` to a rowless local closure that performs
 /// `ename`: the closure's name and the call's source offset. Scoped like
 /// `dh_check_expr`, so the name is resolved to the binding it means there.
-fn dh_rowless_closure_call(expr: Expr, ename: String, lc: Array[(String, Option[Expr])], fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], depth: Int) -> Option[(String, Int)] {
+fn dh_rowless_closure_call(expr: Expr, ename: String, lc: Array[(String, Option[Expr], Int)], fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], depth: Int) -> Option[(String, Int)] {
   match expr {
     ECall(callee, args, _) => {
       let direct = match callee {
         EIdent(nm, off) => {
           let idx = dh_lc_index(lc, nm)
           if idx >= 0 && dh_callee_is_opaque(nm, fn_names, fn_index) {
-            let (_, closure) = Array::get(lc, idx)
+            let (_, closure, _) = Array::get(lc, idx)
             match closure {
               Some(lit) => if dh_closure_performs(lit, ename, dh_lc_capture_scope(lc, idx, nm), fn_names, fn_effs, fn_index, depth) {
                 Some((nm, off))
@@ -8717,7 +8825,7 @@ fn dh_rowless_closure_call(expr: Expr, ename: String, lc: Array[(String, Option[
     },
     ELetMut(name, val, body, _) => match dh_rowless_closure_call(val, ename, lc, fn_names, fn_effs, fn_index, depth) {
       Some(hit) => Some(hit),
-      None => dh_rowless_closure_call(body, ename, dh_lc_bind(lc, name, val), fn_names, fn_effs, fn_index, depth)
+      None => dh_rowless_closure_call(body, ename, dh_lc_bind_mut(lc, name, val), fn_names, fn_effs, fn_index, depth)
     },
     EAssign(name, val, body) => {
       let assigned = dh_lc_assign(lc, name, val)
@@ -8792,7 +8900,7 @@ fn dh_rowless_closure_call(expr: Expr, ename: String, lc: Array[(String, Option[
 /// same notion of "this callee's declared row" the row checker itself uses.
 /// `lc` is the #3180 scope of local closures, used only to say WHICH call a
 /// dead-looking handle reaches its perform through.
-fn dh_check_expr(expr: Expr, declared: Array[String], performed: Array[String], fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], ov_names: Array[String], ov_effs: Array[Array[String]], lc: Array[(String, Option[Expr])], errors: Array[EffectError]) -> Unit {
+fn dh_check_expr(expr: Expr, declared: Array[String], performed: Array[String], fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], ov_names: Array[String], ov_effs: Array[Array[String]], lc: Array[(String, Option[Expr], Int)], errors: Array[EffectError]) -> Unit {
   match expr {
     EHandle(body, arms) => {
       let handled = collect_handle_effects(arms)
@@ -8833,7 +8941,7 @@ fn dh_check_expr(expr: Expr, declared: Array[String], performed: Array[String], 
     ELetMut(name, val, body, _) => {
       dh_check_expr(val, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, lc, errors)
       let (bn, be) = overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs, fn_index)
-      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, bn, be, dh_lc_bind(lc, name, val), errors)
+      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, bn, be, dh_lc_bind_mut(lc, name, val), errors)
     },
     EAssign(name, val, body) => {
       let assigned_lc = dh_lc_assign(lc, name, val)
