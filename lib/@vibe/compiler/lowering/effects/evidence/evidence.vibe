@@ -6196,7 +6196,18 @@ fn edp_collect_ecall_arg_idents_expr(expr: Expr, gname: String, argpos: Int, out
       edp_collect_ecall_arg_idents_expr(callee, gname, argpos, out)
       edp_collect_ecall_arg_idents_exprs(args, gname, argpos, out)
     },
-    EFn(_, _, _, _, _, body) => edp_collect_ecall_arg_idents_expr(body, gname, argpos, out),
+    EFn(_, _, params, _, _, body) => {
+      let mut shadows = false
+      for param in params {
+        let (pn, _) = param
+        shadows = shadows || pn == gname
+      }
+      if !shadows {
+        edp_collect_ecall_arg_idents_expr(body, gname, argpos, out)
+      } else {
+        ()
+      }
+    },
     EHandle(body, arms) => {
       edp_collect_ecall_arg_idents_expr(body, gname, argpos, out)
       edp_collect_ecall_arg_idents_arms(arms, gname, argpos, out)
@@ -6214,18 +6225,32 @@ fn edp_collect_ecall_arg_idents_expr(expr: Expr, gname: String, argpos: Int, out
       edp_collect_ecall_arg_idents_expr(c, gname, argpos, out)
       edp_collect_ecall_arg_idents_expr(b, gname, argpos, out)
     },
-    EForIn(_, _, it, b) => {
+    EForIn(name, index_name, it, b) => {
       edp_collect_ecall_arg_idents_expr(it, gname, argpos, out)
-      edp_collect_ecall_arg_idents_expr(b, gname, argpos, out)
+      if name != gname && index_name != Some(gname) {
+        edp_collect_ecall_arg_idents_expr(b, gname, argpos, out)
+      } else {
+        ()
+      }
     },
     ELoop(pairs, b) => {
       let mut i = 0
+      let mut shadows = false
       while i < Array::length(pairs) {
-        let (_, v) = Array::get(pairs, i)
-        edp_collect_ecall_arg_idents_expr(v, gname, argpos, out)
+        let (name, v) = Array::get(pairs, i)
+        if !shadows {
+          edp_collect_ecall_arg_idents_expr(v, gname, argpos, out)
+        } else {
+          ()
+        }
+        shadows = shadows || name == gname
         i = i + 1
       }
-      edp_collect_ecall_arg_idents_expr(b, gname, argpos, out)
+      if !shadows {
+        edp_collect_ecall_arg_idents_expr(b, gname, argpos, out)
+      } else {
+        ()
+      }
     },
     ELet(name, v, b, _) => {
       // A closure literal with no use in its continuation cannot call the
@@ -6235,7 +6260,11 @@ fn edp_collect_ecall_arg_idents_expr(expr: Expr, gname: String, argpos: Int, out
       } else {
         edp_collect_ecall_arg_idents_expr(v, gname, argpos, out)
       }
-      edp_collect_ecall_arg_idents_expr(b, gname, argpos, out)
+      if name != gname {
+        edp_collect_ecall_arg_idents_expr(b, gname, argpos, out)
+      } else {
+        ()
+      }
     },
     ELetMut(name, v, b, _) => {
       if !edp_binding_used_in(b, name) {
@@ -6243,15 +6272,23 @@ fn edp_collect_ecall_arg_idents_expr(expr: Expr, gname: String, argpos: Int, out
       } else {
         edp_collect_ecall_arg_idents_expr(v, gname, argpos, out)
       }
-      edp_collect_ecall_arg_idents_expr(b, gname, argpos, out)
+      if name != gname {
+        edp_collect_ecall_arg_idents_expr(b, gname, argpos, out)
+      } else {
+        ()
+      }
     },
     ELetRec(name, v, b) => {
-      if !edp_binding_used_in(b, name) {
-        edp_collect_ecall_arg_idents_unused_value(v, gname, argpos, out)
+      if name != gname {
+        if !edp_binding_used_in(b, name) {
+          edp_collect_ecall_arg_idents_unused_value(v, gname, argpos, out)
+        } else {
+          edp_collect_ecall_arg_idents_expr(v, gname, argpos, out)
+        }
+        edp_collect_ecall_arg_idents_expr(b, gname, argpos, out)
       } else {
-        edp_collect_ecall_arg_idents_expr(v, gname, argpos, out)
+        ()
       }
-      edp_collect_ecall_arg_idents_expr(b, gname, argpos, out)
     },
     ESeq(a, b) => {
       edp_collect_ecall_arg_idents_expr(a, gname, argpos, out)
@@ -6312,8 +6349,14 @@ fn edp_collect_ecall_arg_idents_exprs(exprs: Array[Expr], gname: String, argpos:
 fn edp_collect_ecall_arg_idents_arms(arms: Array[(Pat, Expr)], gname: String, argpos: Int, out: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(arms) {
-    let (_, ex) = Array::get(arms, i)
-    edp_collect_ecall_arg_idents_expr(ex, gname, argpos, out)
+    let (pat, ex) = Array::get(arms, i)
+    let bound: Array[String] = []
+    edp_pat_binds(pat, bound)
+    if !edp_str_array_contains(bound, gname) {
+      edp_collect_ecall_arg_idents_expr(ex, gname, argpos, out)
+    } else {
+      ()
+    }
     i = i + 1
   }
 }

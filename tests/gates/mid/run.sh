@@ -2801,6 +2801,19 @@ if [ "$dormant_reference_result" != "1" ]; then
 fi
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/fnvalue_nested_handle_shadowed_owner.vibe "$nhvdir/shadowed_owner.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$nhvdir/shadowed_owner.wasm" ]; then
+  echo "[compiler-gate] FAIL: a local shadow of the handler owner was mistaken for the top-level owner (#3195)" >&2
+  cat "$nhvdir/shadowed_owner.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+shadowed_owner_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$nhvdir/shadowed_owner.wasm" 2>/dev/null | tr -dc '0-9')"
+if [ "$shadowed_owner_result" != "9" ]; then
+  echo "[compiler-gate] FAIL: shadowed handler owner returned '$shadowed_owner_result' (want 9, #3195)" >&2
+  exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   fixtures/err_fnvalue_nested_handle_unused_eager_array.vibe "$nhvdir/eager_array.wasm" main >/dev/null 2>&1 || true
 if [ -s "$nhvdir/eager_array.wasm" ] || ! grep -qF 'pass an explicitly row-annotated closure that calls `inner_handled`' "$nhvdir/eager_array.wasm.diag" 2>/dev/null; then
   echo "[compiler-gate] FAIL: an eager call in an unused array escaped the refusal (#3195)" >&2
