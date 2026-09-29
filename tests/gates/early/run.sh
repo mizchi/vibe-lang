@@ -52,6 +52,12 @@ for char_lane in fs single-file; do
     *'line 2:11: add a closing quote to the char literal'*) ;;
     *) echo "[compiler-gate] FAIL: $char_lane missing char quote diagnostic suggests the wrong edit: $missing_quote" >&2; exit 1 ;;
   esac
+  crlf_quote="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke cli_main "$stage2_wasm" check "$@" fixtures/err_unclosed_char_crlf.vibe 2>&1 || true)"
+  case "$crlf_quote" in
+    *'line 2:11: add a closing quote to the char literal'*) ;;
+    *) echo "[compiler-gate] FAIL: $char_lane CRLF missing quote diagnostic differs from LF: $crlf_quote" >&2; exit 1 ;;
+  esac
   unclosed_multichar="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
     --invoke cli_main "$stage2_wasm" check "$@" fixtures/err_multichar_unclosed_char_literal.vibe 2>&1 || true)"
   case "$unclosed_multichar" in
