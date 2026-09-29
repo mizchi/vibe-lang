@@ -5862,10 +5862,39 @@ fn edp_etawrap_stmts(stmts: Array[Stmt], needing: Array[String], ename: String, 
   }
 }
 
+/// After checking, an ascribed alias of a needing function has the same value
+/// as the bare name. The parser's identity call is a type-checking artifact;
+/// leaving it here makes the escape guard mistake its argument for a row-free
+/// callback slot. Only peel the exact checked identity shape with this row.
+fn edp_ascribed_needing_alias(callee: Expr, args: Array[Expr], needing: Array[String], ename: String, es_names: Array[String], es_members_list: Array[Array[String]]) -> Option[Expr] {
+  if Array::length(args) != 1 {
+    None
+  } else {
+    match (callee, Array::get(args, 0)) {
+      (EFn(tps, _, params, ret, eff, EIdent(body_name, _)), EIdent(alias, _)) => if Array::length(tps) == 0 && Array::length(params) == 1 && ret == None && eff == None && edp_str_array_contains(needing, alias) {
+        let (param_name, pty) = Array::get(params, 0)
+        let is_asc = param_name == "__asc" || (String::starts_with(param_name, "__shadow_") && String::ends_with(param_name, "___asc"))
+        if is_asc && body_name == param_name && edp_type_is_fn_row_exactly(pty, ename, es_names, es_members_list) {
+          Some(Array::get(args, 0))
+        } else {
+          None
+        }
+      } else {
+        None
+      },
+      _ => None
+    }
+  }
+}
+
 fn edp_etawrap_expr(e: Expr, in_scope: Bool, needing: Array[String], ename: String, wc: (Array[Stmt], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]])) -> Expr {
   match e {
     ECall(callee, args, off) => {
       let (wstmts, wfn_defs, wes_names, wes_members) = wc
+      match edp_ascribed_needing_alias(callee, args, needing, ename, wes_names, wes_members) {
+        Some(alias) => return alias,
+        None => ()
+      }
       let callee_nm = match callee {
         EIdent(cn, _) => cn,
         _ => ""

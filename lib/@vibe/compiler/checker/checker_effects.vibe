@@ -6031,11 +6031,9 @@ fn overlay_bind_empty_pat(names: Array[String], effs: Array[Array[String]], pat:
 /// both at once, with the same semantics: the row leaks at the call site unless
 /// the caller declares it or a `handle` discharges it.
 ///
-/// Only a literal `EFn` value is registered. An ANNOTATED local binding
-/// (`let f: () -> T with E = ..`) is desugared to an ascription call
-/// (`((__asc: T) -> __asc)(e)`, ascribe_wrap) before this walk runs, so its row
-/// is not visible here — that shape keeps the old, permissive behavior rather
-/// than being half-checked.
+/// An annotated local binding (`let f: () -> T with E = ..`) is desugared to
+/// an ascription call (`((__asc: T) -> __asc)(e)`, ascribe_wrap). Its function
+/// row joins literal closures and bare-name aliases in this overlay.
 /// #1515: a local binding's row, when the VALUE is a bare NAME rather than a
 /// closure literal — `let f = eff` / `let g = f`, an ALIAS of something that
 /// already carries a row.
@@ -6113,7 +6111,12 @@ fn local_fn_overlay_labels(val: Expr, ov_names: Array[String], ov_effs: Array[Ar
   match val {
     EFn(_, _, _, _, eff, _) => effect_row_labels(effect_row_parse(eff)),
     EIdent(n, _) => alias_fn_overlay_labels(n, ov_names, ov_effs, fn_names, fn_effs, fn_index),
-    _ => no_str_labels()
+    // A local annotation is lowered to `((__asc: T) -> __asc)(value)`.
+    // Its declared function row is the contract at calls through the binding.
+    _ => match afe_ascribed_type(val) {
+      Some(TyFn(_, _, eff)) => effect_row_labels(effect_row_parse(eff)),
+      _ => no_str_labels()
+    }
   }
 }
 
