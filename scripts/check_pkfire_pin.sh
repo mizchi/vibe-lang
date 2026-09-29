@@ -59,7 +59,9 @@ withs=0
 #
 # A missing PyYAML is FATAL, not a pass: a gate that degrades quietly when its
 # dependency is absent is the failure mode this whole file exists to prevent.
-scan="$(python3 - "$want" <<'PYEOF' || echo "__PYFAIL__"
+scan_file="$(mktemp)"
+trap 'rm -f "$scan_file"' EXIT
+if ! python3 - "$want" > "$scan_file" <<'PYEOF'
 import os, sys
 try:
     import yaml
@@ -115,8 +117,7 @@ for root, _, files in os.walk(".github"):
                     verdict = "missing"
                 print(f"{path}:{ref}:{verdict}")
 PYEOF
-)"
-if [ "$scan" = "__PYFAIL__" ]; then
+then
   echo "[pkfire-pin] FAIL: the workflow scan could not run (see above)" >&2
   exit 1
 fi
@@ -134,9 +135,7 @@ while IFS=: read -r file ref verdict; do
     echo "[pkfire-pin] FAIL: $file passes no 'with.version: $want' to mizchi/pkfire" >&2
     rc=1
   fi
-done <<EOF
-$scan
-EOF
+done < "$scan_file"
 
 if [ "$refs" -eq 0 ]; then
   echo "[pkfire-pin] FAIL: found no 'uses: mizchi/pkfire@' at all -- the scan did not run" >&2
