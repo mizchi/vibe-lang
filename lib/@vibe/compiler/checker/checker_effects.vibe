@@ -1545,6 +1545,23 @@ fn afe_ascribed_type(val: Expr) -> Option[TypeExpr] {
   }
 }
 
+/// The evidence planner carries a local row annotation through a named
+/// function value (including a chain of immutable aliases). A conditional or
+/// other computed value still has no corresponding evidence binding.
+fn afe_ascribed_name_type(val: Expr) -> Option[TypeExpr] {
+  match val {
+    ECall(_, args, _) => if Array::length(args) == 1 {
+      match Array::get(args, 0) {
+        EIdent(_, _) => afe_ascribed_type(val),
+        _ => None
+      }
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
 /// #3198 review: `afe_bind_value` with the scope `val` is read in (`outer`)
 /// kept apart from the one `name` is added to (`acc`). A `loop` state's
 /// initial value is read in the enclosing scope while its name joins the
@@ -6113,7 +6130,7 @@ fn local_fn_overlay_labels(val: Expr, ov_names: Array[String], ov_effs: Array[Ar
     EIdent(n, _) => alias_fn_overlay_labels(n, ov_names, ov_effs, fn_names, fn_effs, fn_index),
     // A local annotation is lowered to `((__asc: T) -> __asc)(value)`.
     // Its declared function row is the contract at calls through the binding.
-    _ => match afe_ascribed_type(val) {
+    _ => match afe_ascribed_name_type(val) {
       Some(TyFn(_, _, eff)) => effect_row_labels(effect_row_parse(eff)),
       _ => no_str_labels()
     }
