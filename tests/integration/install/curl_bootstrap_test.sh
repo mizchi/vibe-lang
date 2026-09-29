@@ -99,7 +99,7 @@ while [ "$#" -gt 0 ]; do
 done
 case "$action" in
   install)
-    [ "$locked" = 1 ] && [ -n "$root" ] && [ "$target_dir" = "$root/target" ] \
+    [ "$locked" = 1 ] && [ -n "$root" ] && [ "$target_dir" = "$VIBE_TEST_TARGET_DIR" ] \
       && [ "$target" = test-native-target ] || exit 2
     mkdir -p "$root/bin"
     cp "$VIBE_TEST_FRESH_RUNNER" "$root/bin/viberun"
@@ -112,6 +112,7 @@ chmod +x "$WORK/fake-cargo-bin/cargo"
 PATH="$WORK/fake-cargo-bin:$PATH" CARGO_TARGET_DIR="$WORK/external-target" \
   CARGO_BUILD_TARGET=configured-target \
   RUSTC="$WORK/compiler-selected-by-cargo" \
+  VIBE_TEST_TARGET_DIR="$repo/runtime/viberun/target" \
   VIBE_TEST_CARGO_INSTALL_CALLED="$WORK/cargo-install-called" \
   VIBE_TEST_FRESH_RUNNER="$runner" VIBE_HOME="$WORK/fresh-runner-home" \
   bash "$repo/install/install.sh" --__vibe-install-root "$repo" \
