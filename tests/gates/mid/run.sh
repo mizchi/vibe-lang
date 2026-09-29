@@ -4573,3 +4573,23 @@ if ! VIBE_RC=shadow VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_N
 fi
 rm -f "$ROOT_DIR/_build/_gate_option_payload_rc.log"
 echo "[compiler-gate] Option closure payload stays live and bounded in shadow RC ok (#3240)"
+
+# The callback parameter shadows the effectful top-level `ask_once`. The
+# entry lane's independent opaque-call rule still rejects `f()`, but the
+# mutable-alias diagnostic must not attribute it to the top-level function.
+shadowed_callback_diag="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke cli_main "$stage2_wasm" check fixtures/handle_callee_mutable_shadowed_callback_opaque_reject.vibe 2>&1 || true)"
+case "$shadowed_callback_diag" in
+  *"handle of effect 'Ask' cannot be compiled here"*) ;;
+  *) echo "[compiler-gate] FAIL: shadowed callback changed the independent opaque-call diagnostic (#3196): $shadowed_callback_diag" >&2; exit 1 ;;
+esac
+case "$shadowed_callback_diag" in
+  *'cannot compile a call through mutable local'*) echo "[compiler-gate] FAIL: callback parameter was attributed to a top-level effectful function (#3196)" >&2; exit 1 ;;
+  *) ;;
+esac
+shadowed_callback_flat="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke cli_main "$stage2_wasm" check --single-file fixtures/handle_callee_mutable_shadowed_callback_opaque_reject.vibe 2>&1 || true)"
+if [ -n "$shadowed_callback_flat" ]; then
+  echo "[compiler-gate] FAIL: flat checker rejected the shadowed pure callback (#3196): $shadowed_callback_flat" >&2
+  exit 1
+fi

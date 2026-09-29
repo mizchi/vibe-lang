@@ -8298,8 +8298,70 @@ fn dh_mutable_alias_call(expr: Expr, ename: String, fn_names: Array[String], fn_
         None => dh_mutable_alias_call(body, ename, fn_names, fn_effs, fn_index, bn, be)
       }
     },
+    ELetRec(name, value, body) => {
+      let (bn, be) = overlay_bind_local(ov_names, ov_effs, name, value, fn_names, fn_effs, fn_index)
+      match dh_mutable_alias_call(value, ename, fn_names, fn_effs, fn_index, bn, be) {
+        Some(found) => Some(found),
+        None => dh_mutable_alias_call(body, ename, fn_names, fn_effs, fn_index, bn, be)
+      }
+    },
+    EFn(_, _, params, _, _, body) => {
+      let (bn, be) = dh_overlay_with_params(ov_names, ov_effs, params, fn_names, fn_index)
+      dh_mutable_alias_call(body, ename, fn_names, fn_effs, fn_index, bn, be)
+    },
+    EMatch(scrutinee, arms) => match dh_mutable_alias_call(scrutinee, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs) {
+      Some(found) => Some(found),
+      None => dh_mutable_alias_call_arms(arms, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs)
+    },
+    EHandle(body, arms) => match dh_mutable_alias_call(body, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs) {
+      Some(found) => Some(found),
+      None => dh_mutable_alias_call_arms(arms, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs)
+    },
+    EForIn(name, index_name, iter, body) => match dh_mutable_alias_call(iter, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs) {
+      Some(found) => Some(found),
+      None => {
+        let (bn, be) = overlay_bind_empty_names(ov_names, ov_effs, dh_for_names(name, index_name), fn_names, fn_index)
+        dh_mutable_alias_call(body, ename, fn_names, fn_effs, fn_index, bn, be)
+      }
+    },
+    ELoop(pairs, body) => {
+      let mut hit: Option[(String, Int)] = None
+      let names: Array[String] = []
+      for pair in pairs {
+        let (name, value) = pair
+        match hit {
+          Some(_) => (),
+          None => {
+            hit = dh_mutable_alias_call(value, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs)
+          }
+        }
+        Array::push(names, name)
+      }
+      match hit {
+        Some(_) => hit,
+        None => {
+          let (bn, be) = overlay_bind_empty_names(ov_names, ov_effs, names, fn_names, fn_index)
+          dh_mutable_alias_call(body, ename, fn_names, fn_effs, fn_index, bn, be)
+        }
+      }
+    },
     _ => dh_mutable_alias_call_in(expr_children(expr), ename, fn_names, fn_effs, fn_index, ov_names, ov_effs)
   }
+}
+
+fn dh_mutable_alias_call_arms(arms: Array[(Pat, Expr)], ename: String, fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], ov_names: Array[String], ov_effs: Array[Array[String]]) -> Option[(String, Int)] {
+  let mut hit: Option[(String, Int)] = None
+  for arm in arms {
+    let (pat, body) = arm
+    match hit {
+      Some(_) => (),
+      None => {
+        let (bn, be) = overlay_bind_empty_pat(ov_names, ov_effs, pat, fn_names, fn_index)
+        hit = dh_mutable_alias_call(body, ename, fn_names, fn_effs, fn_index, bn, be)
+      }
+    }
+  }
+  hit
 }
 
 fn dh_mutable_alias_call_in(exprs: Array[Expr], ename: String, fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], ov_names: Array[String], ov_effs: Array[Array[String]]) -> Option[(String, Int)] {
