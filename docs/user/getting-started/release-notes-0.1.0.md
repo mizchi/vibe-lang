@@ -5,8 +5,16 @@
 > release *is*, as opposed to what changed in it, is
 > [spec/0-1.md](../../spec/0-1.md).
 
-The previous stable release is `v0.0.1` (2026-04-14); `v0.1.0-rc.1` was
-published as a pre-release. Between `v0.0.1` and 0.1.0 the language was
+The previous stable release is `v0.0.1` (2026-04-14); `v0.1.0-rc.1` and
+`v0.1.0-rc.2` were published as pre-releases. The final candidate also fixes
+RC ownership of store views, local closure captures, recursive closures, and
+closures returned from `Option` payloads (#3215, #3203, #3110, #3240); makes
+qualified constructor patterns through
+public aliases of private enums resolve or refuse safely (#3173, #3238); and
+closes the remaining iterator interpolation and `await` shadowing regressions
+(#3212, #3206). Checkout installation now takes its native `viberun` from
+Cargo instead of copying a possibly stale runner from `target/release` (#3242).
+Between `v0.0.1` and 0.1.0 the language was
 rewritten in itself, so these notes describe a different compiler rather than
 a list of fixes. The work once prepared under the name
 "0.3.0 GA" is part of this release; the record of that intermediate state is
@@ -102,7 +110,9 @@ read, and every feature below is one the compiler itself depends on.
   a dependency is pinned by content hash in the root `index.vpkg`
   (`require @scope/name x.y.z = #pkg:b3:<hex> from <source>@<commit>`) and
   installed under `.vibe/store/`; a semver constraint in the ref resolves to a
-  tag at add time (#2676). The registry slice is file-based with an
+  tag at add time, a full commit hash can be used as the ref, and an optional
+  `#pkg:b3:<hex>` argument verifies the content before installation (#2676).
+  The registry slice is file-based with an
   RFC6962-shaped transparency log.
 - Six packages ship with the toolchain: `@vibe/core`, `@vibe/ast`,
   `@vibe/parser`, `@vibe/builtin`, `@vibe/console`, `@vibe/wit_runtime`. The
@@ -207,3 +217,7 @@ the edit that fixes them rather than an internal pass name.
 The [0.1.0 milestone](https://github.com/mizchi/vibe-lang/milestone/2) defines
 the release scope. [#2834](https://github.com/mizchi/vibe-lang/issues/2834)
 records the release acceptance evidence.
+
+The browser playground builds its compiler component from the candidate
+stage2. CI opens the production page in Chromium and checks that all four
+presets compile and run, including the shared URL round trip.

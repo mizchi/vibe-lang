@@ -17,13 +17,13 @@ bash scripts/build_vibec.sh "$OUT_DIR"
 # jco is fetched on demand; pin-free npx keeps this a dev-side PoC (the
 # artifact itself has no npm dependency).
 npx --yes @bytecodealliance/jco transpile "$OUT_DIR/vibec.component.wasm" \
-  -o "$OUT_DIR/jco" --no-wasi-shim >/dev/null
+  -o "$OUT_DIR/jco" --no-wasi-shim --bindgen-enable-wasm-exnref >/dev/null
 
 node scripts/vibec_poc_driver.mjs "$OUT_DIR/jco"
 
 # Hosted face (#1109-2): the vfs interface as component imports, driven with
 # an in-memory filesystem (instantiation API so the driver injects the vfs).
 npx --yes @bytecodealliance/jco transpile "$OUT_DIR/vibec.hosted.component.wasm" \
-  -o "$OUT_DIR/jco_hosted" --no-wasi-shim --instantiation async >/dev/null
+  -o "$OUT_DIR/jco_hosted" --no-wasi-shim --instantiation async --bindgen-enable-wasm-exnref >/dev/null
 
 node scripts/vibec_hosted_poc_driver.mjs "$OUT_DIR/jco_hosted"

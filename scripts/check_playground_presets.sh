@@ -8,11 +8,9 @@
 # stayed broken until someone opened the page (#1497). The presets are the first
 # thing a visitor runs, so they are the worst place to leave rot.
 #
-# Scope is a TYPE CHECK, not a build. The page compiles with the wasm-gc
-# backend (`BUILD_TARGET = "src/lib wasm-gc"` in main.ts) through a
-# browser-hosted compiler this script has no way to drive; type checking is
-# backend-independent and catches the failure mode that actually happened here
-# (syntax and type rot), so that is what this gate asserts.
+# This gate checks syntax and types against stage2. The browser E2E in
+# playground/tests/browser-smoke.mjs also compiles and runs every preset with
+# a browser-built vibec component from the same stage2.
 #
 # Environment:
 #   PLAYGROUND_STAGE2  compiler wasm to use. Default: newest

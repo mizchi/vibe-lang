@@ -6,8 +6,8 @@
 ## Version ladder
 
 The repository's first stable version tag was `v0.0.1`
-(2026-04-14, from the retired MoonBit host); `v0.1.0-rc.1` was published as a
-pre-release on 2026-09-21. Older labels such as "0.1.0 sign-off", "0.2.0"
+(2026-04-14, from the retired MoonBit host); `v0.1.0-rc.1` and
+`v0.1.0-rc.2` were published as pre-releases. Older labels such as "0.1.0 sign-off", "0.2.0"
 and "0.3.0 GA" in planning documents did not denote published releases. The
 ladder below numbers releases by what actually ships.
 
@@ -16,8 +16,8 @@ ladder below numbers releases by what actually ships.
 | `v0.0.1` | The one historical release (MoonBit host era) | tagged 2026-04-14 |
 | `0.0.x` | Everything since: the selfhost cutover and all development, including the content once prepared as "0.3.0 GA" ([archive/release-notes-0.3.0.md](../../archive/release-notes-0.3.0.md)) | never released |
 | `0.1.0-rc.1` | The first candidate to publish assets. Its bug hunt came back clean | published 2026-09-21 as a pre-release; superseded |
-| **`0.1.0-rc.2`** | **The candidate.** The merged compiler tree passed its generative bug hunt; one pre-existing mutation diagnostic is tracked as #3226 | release evidence tracked in #2834 |
-| `0.1.0` | **The first release usable by anyone but the author** | after the rc clears §"What promotes an rc to the release"; see [release-notes-0.1.0.md](../../user/getting-started/release-notes-0.1.0.md) |
+| `0.1.0-rc.2` | The second candidate. Its merged compiler tree passed the generative bug hunt; one pre-existing mutation diagnostic is tracked as #3226 | published 2026-09-28 as a pre-release; superseded by milestone fixes |
+| **`0.1.0`** | **The first release usable by anyone but the author** | final publication and verification remain in #2834; see [release-notes-0.1.0.md](../../user/getting-started/release-notes-0.1.0.md) |
 | `0.2.0` | Structured concurrency, a type system aimed at formalization, a dedicated agent harness | after 0.1.0 |
 | `1.0.0` | Maturity. Not a synonym for the first public release | unscheduled |
 
@@ -26,12 +26,12 @@ architecture experiments, repository tooling, stdlib additions — lives in the
 [Backlog (unscheduled) milestone](https://github.com/mizchi/vibe-lang/milestone/4)
 rather than in a version above. It is not a fourth rung of the ladder.
 
-`runtime/vibe` reports `0.1.0-rc.2`.
+`runtime/vibe` reports `0.1.0` on the final release candidate.
 `scripts/build_release_assets.sh` requires `VIBE_VERSION` to equal the tag being
 built, so a candidate cannot be published under the release's own number, and
 `scripts/check_version_ladder.sh` keeps this table, the launcher, and the
 release notes from drifting apart (a pre-release is reduced to the release it
-documents, so `0.1.0-rc.2` is checked against the 0.1.0 notes). `release.yml`
+documents, so a pre-release is checked against the 0.1.0 notes). `release.yml`
 marks any tag carrying a SemVer pre-release suffix as a GitHub **pre-release**,
 so a candidate never becomes the "Latest release" the README's installer
 resolves to.
@@ -98,10 +98,16 @@ does not block promotion; an unexplained divergence between two lanes does.
 
 The merged compiler tree for rc.2 completed the hunt: 750/750 generated
 programs produced no divergence, and 300/300 mutation seeds produced one
-pre-existing diagnostic finding on invalid input, tracked as #3226. Direct RC
-leak and shadowing investigations closed #3193 and #3223. The exact compiler
-identity, commands and triage are recorded in [#2834](https://github.com/mizchi/vibe-lang/issues/2834).
-The tag and published-install evidence is tracked in #2834.
+pre-existing diagnostic finding on invalid input, tracked as #3226. Further
+milestone fixes changed the compiler tree after rc.2. After #3110 merged, the
+final candidate's own stage2 completed 750/750 extended generated programs
+without a finding; 300/300 mutation seeds reproduced only the same #3226
+diagnostic. Direct RC leak and shadowing investigations closed #3193, #3223,
+#3215, #3203, #3110 and #3240. The compiler identity, commands and triage are
+recorded in [#2834](https://github.com/mizchi/vibe-lang/issues/2834).
+The subsequent checkout-installer fix #3242 did not change compiler sources;
+the installed Hello World program now runs with a Cargo-built native runner.
+The final tag and published-install evidence remain in #2834.
 
 The stable surface that the `0.1.0` tag freezes is
 [spec/stable-surface.md](../../user/reference/stable-surface.md) (ADR-0057). While the toolchain
@@ -137,6 +143,10 @@ someone else's first hour, not about compiler internals:
    exists, so a cold checkout does not rebuild the seed from source
    (`scripts/ensure_seed.sh`'s rebuild fallback is for the window inside a
    bump, not for a release).
+9. **The browser playground runs the shipped language.** Build its compiler
+   component from the candidate stage2 and run every preset in Chromium. The
+   browser gate must load the built assets and execute the programs, not only
+   type-check their source.
 
 ### Release work and durable decisions
 

@@ -297,12 +297,12 @@ export -f vt_count_tests
 #     `<out>.funcmap` sidecar the FS compile already writes, same as `vibe run`).
 # Lines are indented so they can never collide with the `ok`/`FAIL` per-file
 # lines that coverage_suite.sh & friends parse.
-#   $1 = stderr capture file, $2 = funcmap path (may be missing),
-#   $3 = source basename, $4 = source path (optional; maps assert_eq at off=N)
+#   $1 = guest stdout, $2 = runner stderr, $3 = funcmap path (may be missing),
+#   $4 = source basename, $5 = source path (optional; maps assert_eq at off=N)
 vt_fail_detail() {
-  local errf="$1" fm="$2" base="$3" srcfile="${4:-}"
-  [ -s "$errf" ] || return 0
-  awk -v base="$base" -v fmfile="$fm" -v srcfile="$srcfile" '
+  local outf="$1" errf="$2" fm="$3" base="$4" srcfile="${5:-}"
+  [ -s "$outf" ] || [ -s "$errf" ] || return 0
+  awk -v base="$base" -v fmfile="$fm" -v srcfile="$srcfile" -v stderrfile="$errf" '
     function hexval(c) {
       if (c >= "0" && c <= "9") return c + 0
       if (c >= "A" && c <= "F") return index("ABCDEF", c) + 9
@@ -356,6 +356,12 @@ vt_fail_detail() {
       }
       return line
     }
+    function normalize_reason(line) {
+      sub(/^[[:space:]]+/, "", line)
+      sub(/^[0-9]+: /, "", line)
+      sub(/^viberun: /, "", line)
+      return line
+    }
     # First __test_<name> stack frame = the failing test. Quoted names
     # keep spaces and Unicode in the wasm name section; some frames
     # percent-encode those bytes (`has%20spaces`). Cut at the frame
@@ -363,14 +369,14 @@ vt_fail_detail() {
     # first non-[A-Za-z0-9_%] character (#1946). Guest stderr can
     # contain `__test_` (e.g. `__test_!!!`); only Node `at ... (wasm:`
     # and wasmtime `<unknown>!` frames count.
-    !seen_test && match($0, /at __test_/) {
+    FILENAME == stderrfile && !seen_test && match($0, /at __test_/) {
       rest = substr($0, RSTART + length("at __test_"))
       if (match(rest, / \(wasm:/)) {
         failing = substr(rest, 1, RSTART - 1)
         if (failing != "") seen_test = 1
       }
     }
-    !seen_test && match($0, /<unknown>!__test_/) {
+    FILENAME == stderrfile && !seen_test && match($0, /<unknown>!__test_/) {
       failing = substr($0, RSTART + length("<unknown>!__test_"))
       sub(/[[:space:]]+$/, "", failing)
       if (failing != "") seen_test = 1
@@ -395,6 +401,11 @@ vt_fail_detail() {
     # trap. The lines below still BUILD the report; they no longer vote on
     # whether the trap belongs to the assert.
     { __blk = 0 }
+    FILENAME == stderrfile { in_inspect = 0; inspect_part = 0 }
+    FILENAME != stderrfile && $0 == "inspect mismatch:" {
+      in_inspect = 1
+      inspect_part = 0
+    }
     $0 == "assert_eq failed" {
       __blk = 1
       ndiag++
@@ -413,13 +424,22 @@ vt_fail_detail() {
     }
     $0 ~ /^  expected:/ {
       __blk = 1
+      if (in_inspect) inspect_part = 2
       ndiag++
       diags[ndiag] = "       " $0
     }
     $0 ~ /^  actual:/ {
       __blk = 1
+      if (in_inspect) inspect_part = 1
       ndiag++
       diags[ndiag] = "       " $0
+    }
+    # Snapshot values can contain newlines. Keep continuation lines under
+    # their actual/expected heading; the updater still reads untouched stdout.
+    in_inspect && inspect_part > 0 && __blk == 0 {
+      __blk = 1
+      ndiag++
+      diags[ndiag] = "         | " $0
     }
     # #2199: an OOB abort prints its operation plus the index and length
     # before trapping; keep that line in the condensed report -- it is the
@@ -444,13 +464,15 @@ vt_fail_detail() {
     # from the report (the block above already told the story). Since #2219 it
     # is the ONLY signal, which is also what the condenser in `runtime/vibe`
     # has been reading.
-    $0 == "assert failed: aborting" {
+    FILENAME != stderrfile && !in_inspect && $0 == "assert failed: aborting" {
       __blk = 1
       pending_abort = 1
     }
-    # First trap-reason line (backtrace frames never contain these markers;
-    # strip anyhow chain numbering / runner prefixes).
-    !seen_reason && /RuntimeError:|wasm trap:/ {
+    # Guest stdout can contain runtime-looking text. Only the runner stderr
+    # carries the trap reason; the two capture files keep that boundary exact.
+    # Backtrace frames never contain these markers; strip chain numbering and
+    # runner prefixes from the first reason line.
+    FILENAME == stderrfile && !seen_reason && /RuntimeError:|wasm trap:/ {
       __blk = 1
       seen_reason = 1
       # #2219: `ablk == 3` (the marker-less block) was the other disjunct.
@@ -460,10 +482,7 @@ vt_fail_detail() {
       # checked on its own rather than assumed identical. What is left here is
       # the marker, with adjacency enforced by the reset rule below.
       assert_abort = (pending_abort == 1)
-      reason = $0
-      sub(/^[[:space:]]+/, "", reason)
-      sub(/^[0-9]+: /, "", reason)
-      sub(/^viberun: /, "", reason)
+      reason = normalize_reason($0)
     }
     # Any other non-blank, non-crash-debug line between the block/marker and
     # the trap breaks the adjacency: the trap is then not the assert abort.
@@ -472,7 +491,7 @@ vt_fail_detail() {
     }
     # Wasm backtrace frames (node: `at <fn> (wasm://...)`, wasmtime:
     # `N: 0x.. - <unknown>!<fn>`), capped, annotated via the funcmap.
-    nframes < 6 {
+    FILENAME == stderrfile && nframes < 6 {
       fn = ""
       if (match($0, /^[[:space:]]+at [A-Za-z0-9_$.]+ \(wasm:/)) {
         fn = $0; sub(/^[[:space:]]+at /, "", fn); sub(/ \(wasm:.*/, "", fn)
@@ -497,7 +516,7 @@ vt_fail_detail() {
       if (reason != "" && !(assert_abort && reason ~ /unreachable/)) print "       trap: " reason
       for (i = 1; i <= nframes; i++) print frames[i]
     }
-  ' "$errf"
+  ' "$outf" "$errf"
 }
 export -f vt_fail_detail
 
@@ -612,14 +631,13 @@ vt_worker() {
   # #948: keep the runner's stderr — it names the failing `__test_` function
   # (previously discarded, leaving a bare `FAIL <file>` with no test name).
   local run_ok=0
-  local run_err="$vt_results/$flat.err"
   # #2886: stdout is kept SEPARATELY as well. `inspect` prints its mismatch
   # diagnostic to stdout, and the compiler's snapshot patcher reads the
   # "expected:" value as everything that follows -- a snapshot may contain
   # newlines. Handing it the merged stream makes the wasm trap's stack frames
   # part of the expected value, which then matches no literal in the file and
-  # the patch silently no-ops. The merged file stays for vt_fail_detail, which
-  # needs the trap (stderr) and the mismatch (stdout) together.
+  # the patch silently no-ops. The report reads both captures separately so
+  # runtime-looking snapshot lines cannot masquerade as a runner trap.
   local run_out="$vt_results/$flat.out"
   local run_errf="$vt_results/$flat.err2"
   if [ "$backend" = "gc" ]; then
@@ -634,7 +652,6 @@ vt_worker() {
       run_ok=1
     fi
   fi
-  cat "$run_out" "$run_errf" > "$run_err"
   if [ "$run_ok" = "1" ]; then
     if [ "$coverage" = "1" ] && [ -s "$cov_out" ]; then
       local f_hit f_total b_hit b_total
@@ -678,7 +695,7 @@ PY
       fi
       printf 'ok 0 0 0 0 0 %s\n' "$n_tests" > "$vt_results/$flat.res"
     fi
-    rm -f "$run_err" "$run_out" "$run_errf"
+    rm -f "$run_out" "$run_errf"
   else
     # #2886 `--update`: before reporting, try to bring the file's stale
     # inspect() snapshots up to date and run it again. The re-run re-enters
@@ -690,7 +707,7 @@ PY
     local _depth="${VIBE_TEST_UPDATE_DEPTH:-0}"
     if [ "$update" = "1" ] && [ "$_depth" -lt 50 ] \
         && vt_try_update_patch "$src_rel" "$flat" "$run_out"; then
-      rm -f "$run_err" "$run_out" "$run_errf"
+      rm -f "$run_out" "$run_errf"
       VIBE_TEST_UPDATE_DEPTH=$((_depth + 1)) \
         VIBE_TEST_UPDATE_PATCHES=$((${VIBE_TEST_UPDATE_PATCHES:-0} + 1)) \
         vt_worker "$src"
@@ -700,7 +717,7 @@ PY
     # interleave inside the block; detail lines are indented, so downstream
     # `^(ok|FAIL) <file>` parsers (coverage_suite.sh) are unaffected.
     local detail
-    detail="$(vt_fail_detail "$run_err" "$ROOT_DIR/$out_rel.funcmap" "$(basename "$src_rel")" "$ROOT_DIR/$src_rel")"
+    detail="$(vt_fail_detail "$run_out" "$run_errf" "$ROOT_DIR/$out_rel.funcmap" "$(basename "$src_rel")" "$ROOT_DIR/$src_rel")"
     # #2886: say so when --update rewrote the file and it STILL fails. Without
     # it the two outcomes -- "nothing here was a stale snapshot" and "snapshots
     # were patched and something else is wrong" -- print identically, and the
@@ -717,7 +734,7 @@ PY
       echo "FAIL $src_rel$fail_note"
     fi
     printf 'fail 0 0 0 0 0 %s\n' "$n_tests" > "$vt_results/$flat.res"
-    rm -f "$run_err" "$run_out" "$run_errf"
+    rm -f "$run_out" "$run_errf"
   fi
   return 0
 }

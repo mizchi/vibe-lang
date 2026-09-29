@@ -201,9 +201,11 @@ granted — it is handled, with `handle`, before it reaches the entry.
 
 ## What denial actually does
 
-`--allow-*` decides the grant set at build time, and a denied capability
-is **const-folded and removed** from the artifact — the code that needed
-it is not in the wasm, not merely unreachable. A program that never gets
+`vibe run --allow-*` and `--deny-*` decide grants before that command compiles
+and runs the program. A denied optional capability is **const-folded and
+removed** from the artifact — the code that needed it is not in the wasm.
+`vibe build` accepts neither flag and compiles optional capabilities as
+`NotGranted`. A program that never gets
 `Http` does not ship networking code, and does not demand a runtime that
 can do networking
 ([feature levels](../../docs/user/reference/feature-levels.md)).
