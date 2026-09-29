@@ -82,24 +82,28 @@ cp "$ROOT_DIR/scripts/ensure_viberun.sh" "$repo/scripts/ensure_viberun.sh"
 cat > "$WORK/fake-cargo-bin/cargo" <<'CARGO'
 #!/usr/bin/env bash
 set -euo pipefail
-target="$CARGO_TARGET_DIR"
+target_dir="$CARGO_TARGET_DIR"
+target="${CARGO_BUILD_TARGET:-}"
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --target-dir) target="$2"; shift 2 ;;
+    --target-dir) target_dir="$2"; shift 2 ;;
+    --target) target="$2"; shift 2 ;;
     *) shift ;;
   esac
 done
-mkdir -p "$target/release"
-cp "$VIBE_TEST_FRESH_RUNNER" "$target/release/viberun"
+if [ -n "$target" ]; then target_dir="$target_dir/$target"; fi
+mkdir -p "$target_dir/release"
+cp "$VIBE_TEST_FRESH_RUNNER" "$target_dir/release/viberun"
 CARGO
 chmod +x "$WORK/fake-cargo-bin/cargo"
 PATH="$WORK/fake-cargo-bin:$PATH" CARGO_TARGET_DIR="$WORK/external-target" \
+  CARGO_BUILD_TARGET=configured-target \
   VIBE_TEST_FRESH_RUNNER="$runner" VIBE_HOME="$WORK/fresh-runner-home" \
   bash "$repo/install/install.sh" --__vibe-install-root "$repo" \
     --toolchain fresh-runner --cli-wasm "$WORK/compiler.wasm" \
     --no-stdlib --no-modify-path --no-link >/dev/null
 cmp "$runner" "$WORK/fresh-runner-home/toolchains/fresh-runner/bin/viberun" || {
-  echo "checkout install shipped the stale runner with CARGO_TARGET_DIR set" >&2
+  echo "checkout install shipped the stale runner with Cargo target overrides" >&2
   exit 1
 }
 
