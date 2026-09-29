@@ -8725,8 +8725,15 @@ fn dh_check_expr(expr: Expr, declared: Array[String], performed: Array[String], 
       dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, bn, be, dh_lc_bind(lc, name, val), errors)
     },
     EAssign(name, val, body) => {
-      dh_check_expr(val, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, lc, errors)
-      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, dh_lc_assign(lc, name, val), errors)
+      let assigned_lc = dh_lc_assign(lc, name, val)
+      // A closure captures the mutable cell and runs after assignment. Its
+      // recursive calls resolve to the replacement, not the old initializer.
+      let value_lc = match dh_lc_closure(val) {
+        Some(_) => assigned_lc,
+        None => lc
+      }
+      dh_check_expr(val, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, value_lc, errors)
+      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, assigned_lc, errors)
     },
     EAssignOp(name, _, val, body) => {
       dh_check_expr(val, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, lc, errors)
