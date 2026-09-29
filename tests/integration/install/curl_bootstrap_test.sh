@@ -83,20 +83,24 @@ cat > "$WORK/fake-cargo-bin/cargo" <<'CARGO'
 set -euo pipefail
 action="$1"
 shift
+[ "$action" != -vV ] || { printf 'cargo 1.0.0\nhost: test-native-target\n'; exit 0; }
 root=""
 locked=0
 target_dir=""
+target=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --root) root="$2"; shift 2 ;;
     --target-dir) target_dir="$2"; shift 2 ;;
+    --target) target="$2"; shift 2 ;;
     --locked) locked=1; shift ;;
     *) shift ;;
   esac
 done
 case "$action" in
   install)
-    [ "$locked" = 1 ] && [ -n "$root" ] && [ "$target_dir" = "$root/target" ] || exit 2
+    [ "$locked" = 1 ] && [ -n "$root" ] && [ "$target_dir" = "$root/target" ] \
+      && [ "$target" = test-native-target ] || exit 2
     mkdir -p "$root/bin"
     cp "$VIBE_TEST_FRESH_RUNNER" "$root/bin/viberun"
     printf 'called\n' > "$VIBE_TEST_CARGO_INSTALL_CALLED"

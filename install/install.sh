@@ -473,11 +473,13 @@ if [ -z "$RUNNER_SRC" ]; then
   command -v cargo >/dev/null 2>&1 || die "cargo not found; pass a prebuilt runner with --runner"
   runner_stage="$(mktemp -d "$TC_DIR/.runner-stage.XXXXXX")"
   trap 'rm -rf -- "$runner_stage"' EXIT
-  # Cargo knows the effective compiler and target from its own configuration.
-  # Build in a fresh target directory so no cached executable or fingerprint
-  # from another checkout can stand in for this source tree.
+  # Let Cargo select its configured compiler, but override a cross-build target
+  # with Cargo's native host. A fresh target directory prevents any cached
+  # executable or fingerprint from standing in for this source tree.
+  native_target="$(cargo -vV | sed -n 's/^host: //p')"
+  [ -n "$native_target" ] || die "cargo reported no host target; pass a native runner with --runner"
   cargo install --locked --path "$ROOT_DIR/runtime/viberun" --root "$runner_stage" \
-    --force --no-track --target-dir "$runner_stage/target" >/dev/null
+    --force --no-track --target "$native_target" --target-dir "$runner_stage/target" >/dev/null
   RUNNER_SRC="$runner_stage/bin/viberun"
 fi
 [ -x "$RUNNER_SRC" ] || die "runner not executable: $RUNNER_SRC"
