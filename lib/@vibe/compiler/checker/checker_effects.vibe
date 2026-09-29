@@ -8301,7 +8301,7 @@ fn dh_lc_after_assigns_scoped(expr: Expr, lc: Array[(String, Option[Expr])], sha
       let after = if dh_shadow_has(shadowed, name) {
         before
       } else if certain {
-        dh_lc_bind(before, name, value)
+        dh_lc_assign(before, name, value)
       } else {
         dh_lc_with(before, name, None)
       }
@@ -8402,8 +8402,8 @@ fn dh_for_names(name: String, index_name: Option[String]) -> Array[String] {
   names
 }
 
-fn dh_lc_bind(lc: Array[(String, Option[Expr])], name: String, val: Expr) -> Array[(String, Option[Expr])] {
-  let closure = match val {
+fn dh_lc_closure(val: Expr) -> Option[Expr] {
+  match val {
     EFn(_, _, _, _, eff, _) => if Array::length(effect_row_labels(effect_row_parse(eff))) == 0 {
       Some(val)
     } else {
@@ -8411,7 +8411,34 @@ fn dh_lc_bind(lc: Array[(String, Option[Expr])], name: String, val: Expr) -> Arr
     },
     _ => None
   }
-  dh_lc_with(lc, name, closure)
+}
+
+fn dh_lc_bind(lc: Array[(String, Option[Expr])], name: String, val: Expr) -> Array[(String, Option[Expr])] {
+  dh_lc_with(lc, name, dh_lc_closure(val))
+}
+
+/// Assignment replaces the current mutable cell. A previous closure of the
+/// same spelling must not become the replacement's recursive callee.
+fn dh_lc_assign(lc: Array[(String, Option[Expr])], name: String, val: Expr) -> Array[(String, Option[Expr])] {
+  let closure = dh_lc_closure(val)
+  let needed = match closure {
+    Some(_) => true,
+    None => dh_lc_index(lc, name) >= 0
+  }
+  if !needed {
+    lc
+  } else {
+    let out: Array[(String, Option[Expr])] = [(name, closure), (name, None)]
+    for entry in lc {
+      let (old_name, _) = entry
+      if old_name != name {
+        Array::push(out, entry)
+      } else {
+        ()
+      }
+    }
+    out
+  }
 }
 
 /// Index of the innermost binding of `name` in `lc`, or -1.
@@ -8590,7 +8617,7 @@ fn dh_rowless_closure_call(expr: Expr, ename: String, lc: Array[(String, Option[
     },
     EAssign(name, val, body) => match dh_rowless_closure_call(val, ename, lc, fn_names, fn_effs, fn_index, depth) {
       Some(hit) => Some(hit),
-      None => dh_rowless_closure_call(body, ename, dh_lc_bind(lc, name, val), fn_names, fn_effs, fn_index, depth)
+      None => dh_rowless_closure_call(body, ename, dh_lc_assign(lc, name, val), fn_names, fn_effs, fn_index, depth)
     },
     EAssignOp(name, _, val, body) => match dh_rowless_closure_call(val, ename, lc, fn_names, fn_effs, fn_index, depth) {
       Some(hit) => Some(hit),
@@ -8699,7 +8726,7 @@ fn dh_check_expr(expr: Expr, declared: Array[String], performed: Array[String], 
     },
     EAssign(name, val, body) => {
       dh_check_expr(val, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, lc, errors)
-      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, dh_lc_bind(lc, name, val), errors)
+      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, dh_lc_assign(lc, name, val), errors)
     },
     EAssignOp(name, _, val, body) => {
       dh_check_expr(val, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, lc, errors)
