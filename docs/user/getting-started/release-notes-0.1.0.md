@@ -12,7 +12,9 @@ closures returned from `Option` payloads (#3215, #3203, #3110, #3240); makes
 qualified constructor patterns through
 public aliases of private enums resolve or refuse safely (#3173, #3238); and
 closes the remaining iterator interpolation and `await` shadowing regressions
-(#3212, #3206). Between `v0.0.1` and 0.1.0 the language was
+(#3212, #3206). Checkout installation now takes its native `viberun` from
+Cargo instead of copying a possibly stale runner from `target/release` (#3242).
+Between `v0.0.1` and 0.1.0 the language was
 rewritten in itself, so these notes describe a different compiler rather than
 a list of fixes. The work once prepared under the name
 "0.3.0 GA" is part of this release; the record of that intermediate state is

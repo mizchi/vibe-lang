@@ -105,6 +105,8 @@ without a finding; 300/300 mutation seeds reproduced only the same #3226
 diagnostic. Direct RC leak and shadowing investigations closed #3193, #3223,
 #3215, #3203, #3110 and #3240. The compiler identity, commands and triage are
 recorded in [#2834](https://github.com/mizchi/vibe-lang/issues/2834).
+The subsequent checkout-installer fix #3242 did not change compiler sources;
+the installed Hello World program now runs with a Cargo-built native runner.
 The final tag and published-install evidence remain in #2834.
 
 The stable surface that the `0.1.0` tag freezes is
