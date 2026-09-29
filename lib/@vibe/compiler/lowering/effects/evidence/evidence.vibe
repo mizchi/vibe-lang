@@ -6004,21 +6004,29 @@ fn edp_count_safe_closure_bindings(expr: Expr, xname: String, ename: String, nee
 /// inline lambda, ...) pushes the sentinel "##edp_unsafe##" instead --
 /// edp_closure_param_universally_safe treats its presence, anywhere in the
 /// result, as an unconditional "not safe" for the whole position.
-fn edp_collect_ecall_arg_idents(stmts: Array[Stmt], gname: String, argpos: Int) -> Array[String] {
+fn edp_collect_ecall_arg_idents_with_keep(stmts: Array[Stmt], gname: String, argpos: Int, keep: Array[Bool]) -> Array[String] {
   let out = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SLet(_, _, _, _, expr) => edp_collect_ecall_arg_idents_expr(expr, gname, argpos, out),
-      SLetMut(_, _, expr) => edp_collect_ecall_arg_idents_expr(expr, gname, argpos, out),
-      SExpr(expr) => edp_collect_ecall_arg_idents_expr(expr, gname, argpos, out),
-      STest(_, expr) => edp_collect_ecall_arg_idents_expr(expr, gname, argpos, out),
-      SBench(_, expr) => edp_collect_ecall_arg_idents_expr(expr, gname, argpos, out),
-      _ => ()
+    if Array::length(keep) == 0 || (i < Array::length(keep) && Array::get(keep, i)) {
+      match Array::get(stmts, i) {
+        SLet(_, _, _, _, expr) => edp_collect_ecall_arg_idents_expr(expr, gname, argpos, out),
+        SLetMut(_, _, expr) => edp_collect_ecall_arg_idents_expr(expr, gname, argpos, out),
+        SExpr(expr) => edp_collect_ecall_arg_idents_expr(expr, gname, argpos, out),
+        STest(_, expr) => edp_collect_ecall_arg_idents_expr(expr, gname, argpos, out),
+        SBench(_, expr) => edp_collect_ecall_arg_idents_expr(expr, gname, argpos, out),
+        _ => ()
+      }
+    } else {
+      ()
     }
     i = i + 1
   }
   out
+}
+
+fn edp_collect_ecall_arg_idents(stmts: Array[Stmt], gname: String, argpos: Int) -> Array[String] {
+  edp_collect_ecall_arg_idents_with_keep(stmts, gname, argpos, array_empty())
 }
 
 fn edp_collect_ecall_arg_idents_expr(expr: Expr, gname: String, argpos: Int, out: Array[String]) -> Unit {
@@ -6665,7 +6673,7 @@ fn edp_apply_migration(stmts: Array[Stmt], ename: String, ops: Array[(String, Ar
       let mut hcpi = 0
       while hcpi < Array::length(hcps) {
         let (_, ppos) = Array::get(hcps, hcpi)
-        let hc_candidates = edp_collect_ecall_arg_idents(stmts, howner, ppos)
+        let hc_candidates = edp_collect_ecall_arg_idents_with_keep(stmts, howner, ppos, keep)
         let mut hci = 0
         while hci < Array::length(hc_candidates) {
           let xn = Array::get(hc_candidates, hci)
