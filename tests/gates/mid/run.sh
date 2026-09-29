@@ -2702,6 +2702,29 @@ fi
 rm -rf "$sdcdir"
 echo "[compiler-gate] self-discharging callee call-inertness ok (#1595/#1591)"
 
+# #3195: a row-typed parameter called under a handler receives an evidence
+# argument. A named top-level function whose own handler discharged that row
+# still has its plain call convention, so passing it directly used to compile
+# and trap at the indirect call. The explicit closure is a working edit.
+echo "[compiler-gate] 40h4c/40 nested-handler function value refuses before an arity trap (#3195)"
+nhvdir="_build/_gate_nested_handle_value"
+rm -rf "$nhvdir"; mkdir -p "$nhvdir"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/err_fnvalue_nested_handle.vibe "$nhvdir/rej.wasm" main >/dev/null 2>&1 || true
+if [ -s "$nhvdir/rej.wasm" ]; then
+  echo "[compiler-gate] FAIL: named self-discharging function value compiled and can trap at an indirect call (#3195)" >&2
+  exit 1
+fi
+if ! grep -qF 'pass an explicitly row-annotated closure that calls it' "$nhvdir/rej.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: nested-handler function value refusal lacks the working edit (#3195)" >&2
+  cat "$nhvdir/rej.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh fixtures/fnvalue_nested_handle_inline_test.vibe
+rm -rf "$nhvdir"
+echo "[compiler-gate] nested-handler function value refusal and inline closure ok (#3195)"
+
 # 40h5. ADR-0076 (#817) gc-backend follow-up: a local closure literal with
 #       NO explicit `with` annotation (its `eff` field is blank in the
 #       AST -- the checker infers the row internally but never writes it
