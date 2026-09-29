@@ -469,16 +469,10 @@ mkdir -p "$TC_DIR/bin" "$TC_DIR/lib" "$VIBE_HOME/bin" "$VIBE_HOME/lib"
 
 # 1. runner ----------------------------------------------------------------
 if [ -z "$RUNNER_SRC" ]; then
-  prebuilt="$ROOT_DIR/runtime/viberun/target/release/viberun"
-  if [ -x "$prebuilt" ]; then
-    RUNNER_SRC="$prebuilt"
-    say "using already-built runner: $RUNNER_SRC"
-  else
-    command -v cargo >/dev/null 2>&1 || die "cargo not found; pass a prebuilt runner with --runner"
-    say "building runner (cargo build --release)..."
-    ( cd "$ROOT_DIR/runtime/viberun" && cargo build --release >/dev/null )
-    RUNNER_SRC="$prebuilt"
-  fi
+  command -v cargo >/dev/null 2>&1 || die "cargo not found; pass a prebuilt runner with --runner"
+  say "ensuring checkout runner is current..."
+  bash "$ROOT_DIR/scripts/ensure_viberun.sh"
+  RUNNER_SRC="$ROOT_DIR/runtime/viberun/target/release/viberun"
 fi
 [ -x "$RUNNER_SRC" ] || die "runner not executable: $RUNNER_SRC"
 install -m 0755 "$RUNNER_SRC" "$TC_DIR/bin/viberun"

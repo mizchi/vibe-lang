@@ -4,7 +4,7 @@
 # Three callers wanted "is the runner current?" and all three asked a question
 # about TIMESTAMPS, which on a CI runner is the wrong question:
 #
-#   install/install.sh        `[ -x "$prebuilt" ]` -- any binary counts as current
+#   install/install.sh        used `[ -x "$prebuilt" ]` -- any binary counted as current
 #   test_gc_heap_accounting   `find src -newer "$RUNNER"` -- rebuild if newer
 #   cargo itself              a local package's fingerprint is mtime+size based
 #

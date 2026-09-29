@@ -68,6 +68,34 @@ PATH="$node_less_bin" VIBE_HOME="$WORK/node-free-home" \
     --no-stdlib --no-modify-path --no-link >/dev/null
 [ -x "$WORK/node-free-home/toolchains/node-free/bin/vibe" ]
 
+# A checkout may retain a runnable target/release/viberun from before a new
+# compiler import was added. The default install must refresh that binary;
+# --runner above remains the explicit way to supply one without Cargo.
+prebuilt="$repo/runtime/viberun/target/release/viberun"
+mkdir -p "$(dirname "$prebuilt")"
+cp "$runner" "$prebuilt"
+printf '# stale runner\n' >> "$prebuilt"
+cat > "$repo/scripts/ensure_viberun.sh" <<'ENSURE'
+#!/usr/bin/env bash
+set -euo pipefail
+cp "$VIBE_TEST_FRESH_RUNNER" "$VIBE_TEST_PREBUILT"
+printf 'called\n' > "$VIBE_TEST_ENSURE_MARKER"
+ENSURE
+VIBE_TEST_FRESH_RUNNER="$runner" VIBE_TEST_PREBUILT="$prebuilt" \
+  VIBE_TEST_ENSURE_MARKER="$WORK/ensure-called" \
+  VIBE_HOME="$WORK/fresh-runner-home" \
+  bash "$repo/install/install.sh" --__vibe-install-root "$repo" \
+    --toolchain fresh-runner --cli-wasm "$WORK/compiler.wasm" \
+    --no-stdlib --no-modify-path --no-link >/dev/null
+[ -s "$WORK/ensure-called" ] || {
+  echo "checkout install did not check whether the cached runner was current" >&2
+  exit 1
+}
+cmp "$runner" "$WORK/fresh-runner-home/toolchains/fresh-runner/bin/viberun" || {
+  echo "checkout install shipped the stale runner" >&2
+  exit 1
+}
+
 assert_no_bootstrap_temp() {
   if find "$WORK/tmp" -maxdepth 1 -name 'vibe-install-*' -print -quit | grep -q .; then
     echo "curl bootstrap left a temporary checkout behind" >&2
@@ -156,4 +184,4 @@ if (
 fi
 assert_no_bootstrap_temp
 
-echo "ok: curl bootstrap pins refs, separates CLI options, rejects unsafe authority, and cleans up"
+echo "ok: curl bootstrap pins refs, refreshes the checkout runner, separates CLI options, rejects unsafe authority, and cleans up"
