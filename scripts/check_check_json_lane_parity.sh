@@ -171,6 +171,13 @@ for compile_lane in fs single-file; do
   if grep -qF '[@assign-target]' "$WORK/assign_many.$compile_lane.wasm.diag" 2>/dev/null; then
     bad "assign_many: $compile_lane build leaked an internal marker"
   fi
+  if [ "$compile_lane" = single-file ]; then
+    for expected in 'line 2:3-4: unknown name: a' 'line 3:3-4: unknown name: b' 'line 4:3-4: unknown name: c'; do
+      if ! grep -qF "$expected" "$WORK/assign_many.$compile_lane.wasm.diag" 2>/dev/null; then
+        bad "assign_many: single-file build lost a diagnostic location: $expected"
+      fi
+    done
+  fi
 done
 
 # An earlier comment, parameter and `let` declaration use the same spelling.
