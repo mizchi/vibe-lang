@@ -8314,6 +8314,19 @@ fn dh_shadow_has(shadowed: Array[String], name: String) -> Bool {
 fn dh_lc_after_assigns_scoped(expr: Expr, lc: Array[(String, Option[Expr], Int)], shadowed: Array[String], certain: Bool) -> Array[(String, Option[Expr], Int)] {
   match expr {
     EFn(_, _, _, _, _, _) => lc,
+    ECall(EFn(_, _, params, _, _, body), args, _) => {
+      let before_body = dh_lc_after_assigns_in_scoped(args, lc, shadowed, certain)
+      if dh_direct_abortive_transfer_in(args) {
+        before_body
+      } else {
+        let mut inner = shadowed
+        for param in params {
+          let (name, _) = param
+          inner = dh_shadow_add(inner, effect_param_base_name(name))
+        }
+        dh_lc_after_assigns_scoped(body, before_body, inner, certain)
+      }
+    },
     EAssign(name, value, body) => {
       let before = dh_lc_after_assigns_scoped(value, lc, shadowed, certain)
       let after = if dh_shadow_has(shadowed, name) {
@@ -8405,17 +8418,21 @@ fn dh_lc_after_assigns_scoped(expr: Expr, lc: Array[(String, Option[Expr], Int)]
       let after_left = dh_lc_after_assigns_scoped(left, lc, shadowed, certain)
       dh_lc_after_assigns_scoped(right, after_left, shadowed, certain && op != "&&" && op != "||")
     },
-    _ => {
-      let mut out = lc
-      let children = expr_children(expr)
-      let mut i = 0
-      while i < Array::length(children) {
-        out = dh_lc_after_assigns_scoped(Array::get(children, i), out, shadowed, certain)
-        i = i + 1
-      }
-      out
-    }
+    _ => dh_lc_after_assigns_in_scoped(expr_children(expr), lc, shadowed, certain)
   }
+}
+
+fn dh_lc_after_assigns_in_scoped(children: Array[Expr], lc: Array[(String, Option[Expr], Int)], shadowed: Array[String], certain: Bool) -> Array[(String, Option[Expr], Int)] {
+  let mut out = lc
+  let mut i = 0
+  let mut aborted = false
+  while i < Array::length(children) && !aborted {
+    let child = Array::get(children, i)
+    out = dh_lc_after_assigns_scoped(child, out, shadowed, certain)
+    aborted = dh_direct_abortive_transfer(child)
+    i = i + 1
+  }
+  out
 }
 
 fn dh_lc_after_assigns(expr: Expr, lc: Array[(String, Option[Expr], Int)]) -> Array[(String, Option[Expr], Int)] {
@@ -8494,12 +8511,16 @@ fn dh_lc_assign(lc: Array[(String, Option[Expr], Int)], name: String, val: Expr)
     let out: Array[(String, Option[Expr], Int)] = []
     let cell_id = if old_index >= 0 {
       let (_, _, id) = Array::get(lc, old_index)
-      id
+      if id > 0 {
+        id
+      } else {
+        dh_lc_next_cell_id(lc)
+      }
     } else {
-      0
+      dh_lc_next_cell_id(lc)
     }
     if old_index < 0 {
-      dh_lc_append_assignment(out, lc, name, closure, Array::length(lc), 0)
+      dh_lc_append_assignment(out, lc, name, closure, Array::length(lc), cell_id)
     } else {
       ()
     }
@@ -8755,11 +8776,16 @@ fn dh_closure_performs(closure: Expr, ename: String, scope: Array[(String, Optio
 
 fn dh_rowless_closure_call_in(exprs: Array[Expr], ename: String, lc: Array[(String, Option[Expr], Int)], fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], depth: Int) -> Option[(String, Int)] {
   let mut found: Option[(String, Int)] = None
+  let mut current = lc
+  let mut aborted = false
   let mut i = 0
-  while i < Array::length(exprs) {
+  while i < Array::length(exprs) && !aborted {
     match found {
       None => {
-        found = dh_rowless_closure_call(Array::get(exprs, i), ename, lc, fn_names, fn_effs, fn_index, depth)
+        let child = Array::get(exprs, i)
+        found = dh_rowless_closure_call(child, ename, current, fn_names, fn_effs, fn_index, depth)
+        current = dh_lc_after_assigns(child, current)
+        aborted = dh_direct_abortive_transfer(child)
       },
       Some(_) => ()
     }
@@ -8854,9 +8880,23 @@ fn dh_rowless_closure_call(expr: Expr, ename: String, lc: Array[(String, Option[
       }
     },
     EFn(_, _, params, _, _, body) => dh_rowless_closure_call(body, ename, dh_lc_shadow_params(lc, params), fn_names, fn_effs, fn_index, depth),
+    EIf(cond, then_body, else_body) => match dh_rowless_closure_call(cond, ename, lc, fn_names, fn_effs, fn_index, depth) {
+      Some(hit) => Some(hit),
+      None => {
+        let after_cond = dh_lc_after_assigns(cond, lc)
+        match dh_rowless_closure_call(then_body, ename, after_cond, fn_names, fn_effs, fn_index, depth) {
+          Some(hit) => Some(hit),
+          None => dh_rowless_closure_call(else_body, ename, after_cond, fn_names, fn_effs, fn_index, depth)
+        }
+      }
+    },
+    EWhile(cond, body) => match dh_rowless_closure_call(cond, ename, lc, fn_names, fn_effs, fn_index, depth) {
+      Some(hit) => Some(hit),
+      None => dh_rowless_closure_call(body, ename, dh_lc_after_assigns(cond, lc), fn_names, fn_effs, fn_index, depth)
+    },
     EMatch(scrutinee, arms) => match dh_rowless_closure_call(scrutinee, ename, lc, fn_names, fn_effs, fn_index, depth) {
       Some(hit) => Some(hit),
-      None => dh_rowless_closure_call_arms(arms, ename, lc, fn_names, fn_effs, fn_index, depth, false)
+      None => dh_rowless_closure_call_arms(arms, ename, dh_lc_after_assigns(scrutinee, lc), fn_names, fn_effs, fn_index, depth, false)
     },
     // A nested handle of the effect answers for its own body.
     EHandle(body, arms) => {
@@ -8883,12 +8923,13 @@ fn dh_rowless_closure_call(expr: Expr, ename: String, lc: Array[(String, Option[
       }
       match dh_rowless_closure_call_in(inits, ename, lc, fn_names, fn_effs, fn_index, depth) {
         Some(hit) => Some(hit),
-        None => dh_rowless_closure_call(body, ename, dh_lc_shadow_names(lc, names), fn_names, fn_effs, fn_index, depth)
+        None => dh_rowless_closure_call(body, ename, dh_lc_shadow_names(dh_lc_after_assigns_in_scoped(inits, lc, [
+        ], true), names), fn_names, fn_effs, fn_index, depth)
       }
     },
     EForIn(name, index_name, iter, body) => match dh_rowless_closure_call(iter, ename, lc, fn_names, fn_effs, fn_index, depth) {
       Some(hit) => Some(hit),
-      None => dh_rowless_closure_call(body, ename, dh_lc_shadow_names(lc, dh_for_names(name, index_name)), fn_names, fn_effs, fn_index, depth)
+      None => dh_rowless_closure_call(body, ename, dh_lc_shadow_names(dh_lc_after_assigns(iter, lc), dh_for_names(name, index_name)), fn_names, fn_effs, fn_index, depth)
     },
     _ => dh_rowless_closure_call_in(expr_children(expr), ename, lc, fn_names, fn_effs, fn_index, depth)
   }
@@ -8962,6 +9003,16 @@ fn dh_check_expr(expr: Expr, declared: Array[String], performed: Array[String], 
       dh_check_expr(first, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, lc, errors)
       dh_check_expr(rest, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, dh_lc_after_assigns(first, lc), errors)
     },
+    EIf(cond, then_body, else_body) => {
+      dh_check_expr(cond, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, lc, errors)
+      let after_cond = dh_lc_after_assigns(cond, lc)
+      dh_check_expr(then_body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, after_cond, errors)
+      dh_check_expr(else_body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, after_cond, errors)
+    },
+    EWhile(cond, body) => {
+      dh_check_expr(cond, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, lc, errors)
+      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, dh_lc_after_assigns(cond, lc), errors)
+    },
     ELetRec(name, val, body) => {
       let (rn, re) = overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs, fn_index)
       let rlc = dh_lc_bind(lc, name, val)
@@ -8973,33 +9024,41 @@ fn dh_check_expr(expr: Expr, declared: Array[String], performed: Array[String], 
     // spelling. Same children, in the same order, as `expr_children`.
     EMatch(scrutinee, arms) => {
       dh_check_expr(scrutinee, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, lc, errors)
+      let after_scrutinee = dh_lc_after_assigns(scrutinee, lc)
       let mut ai = 0
       while ai < Array::length(arms) {
         let (pat, arm_body) = Array::get(arms, ai)
-        dh_check_expr(arm_body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, dh_lc_shadow_pat(lc, pat), errors)
+        dh_check_expr(arm_body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, dh_lc_shadow_pat(after_scrutinee, pat), errors)
         ai = ai + 1
       }
     },
     ELoop(params, body) => {
       let names: Array[String] = []
+      let mut current = lc
       let mut pi = 0
       while pi < Array::length(params) {
         let (pname, init) = Array::get(params, pi)
-        dh_check_expr(init, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, lc, errors)
+        dh_check_expr(init, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, current, errors)
+        current = dh_lc_after_assigns(init, current)
         Array::push(names, pname)
         pi = pi + 1
       }
-      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, dh_lc_shadow_names(lc, names), errors)
+      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, dh_lc_shadow_names(current, names), errors)
     },
     EForIn(name, index_name, iter, body) => {
       dh_check_expr(iter, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, lc, errors)
-      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, dh_lc_shadow_names(lc, dh_for_names(name, index_name)), errors)
+      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, dh_lc_shadow_names(dh_lc_after_assigns(iter, lc), dh_for_names(name, index_name)), errors)
     },
     _ => {
       let children = expr_children(expr)
+      let mut current = lc
+      let mut aborted = false
       let mut c = 0
-      while c < Array::length(children) {
-        dh_check_expr(Array::get(children, c), declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, lc, errors)
+      while c < Array::length(children) && !aborted {
+        let child = Array::get(children, c)
+        dh_check_expr(child, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, current, errors)
+        current = dh_lc_after_assigns(child, current)
+        aborted = dh_direct_abortive_transfer(child)
         c = c + 1
       }
     }
