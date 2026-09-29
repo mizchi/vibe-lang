@@ -52,6 +52,12 @@ for char_lane in fs single-file; do
     *'line 2:11: add a closing quote to the char literal'*) ;;
     *) echo "[compiler-gate] FAIL: $char_lane missing char quote diagnostic suggests the wrong edit: $missing_quote" >&2; exit 1 ;;
   esac
+  unclosed_multichar="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke cli_main "$stage2_wasm" check "$@" fixtures/err_multichar_unclosed_char_literal.vibe 2>&1 || true)"
+  case "$unclosed_multichar" in
+    *'line 2:11: use a String for text or an Int code point for non-ASCII'*) ;;
+    *) echo "[compiler-gate] FAIL: $char_lane unclosed multi-character literal suggests a quote that cannot fix it: $unclosed_multichar" >&2; exit 1 ;;
+  esac
   unclosed_nonascii="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
     --invoke cli_main "$stage2_wasm" check "$@" fixtures/err_nonascii_unclosed_char_literal.vibe 2>&1 || true)"
   case "$unclosed_nonascii" in
