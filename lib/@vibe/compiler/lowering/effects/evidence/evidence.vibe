@@ -6453,33 +6453,72 @@ fn edp_closure_param_names_only(pairs: Array[(String, Int)]) -> Array[String] {
 //     handler arm, a pass-along to another function) would keep the old
 //     arity against a closure that HAS been migrated.
 
-/// Count of `name(args)` calls (ECall whose callee is exactly
-/// EIdent(name)) -- full traversal mirroring edp_count_ident_uses' node
-/// list (an undercounted position could make a value-reference look like
-/// a call, or vice versa; both comparisons below need exact counts).
 fn edp_count_direct_calls(expr: Expr, name: String) -> Int {
   edp_rq_fold(RQDirectCalls(name), expr)
 }
 
-fn edp_count_direct_calls_stmts(stmts: Array[Stmt], name: String) -> Int {
-  let mut total = 0
-  let mut i = 0
-  while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SLet(_, _, _, _, expr) => {
-        total = total + edp_count_direct_calls(expr, name)
-      },
-      _ => ()
-    }
-    i = i + 1
+/// Guard (1): a reference to this top-level binding as a value, excluding
+/// direct calls and occurrences owned by a lexical binder of the same name.
+fn edp_fn_value_used_in(expr: Expr, fname: String) -> Bool {
+  match expr {
+    EIdent(name, _) => name == fname,
+    ECall(EIdent(_, _), args, _) => edp_fn_value_used_in_exprs(args, fname),
+    ELet(name, value, body, _) => edp_fn_value_used_in(value, fname) || (name != fname && edp_fn_value_used_in(body, fname)),
+    ELetMut(name, value, body, _) => edp_fn_value_used_in(value, fname) || (name != fname && edp_fn_value_used_in(body, fname)),
+    ELetRec(name, value, body) => name != fname && (edp_fn_value_used_in(value, fname) || edp_fn_value_used_in(body, fname)),
+    EFn(_, _, params, _, _, body) => {
+      let mut shadowed = false
+      for param in params {
+        let (name, _) = param
+        shadowed = shadowed || edp_strip_tilde(name) == fname
+      }
+      !shadowed && edp_fn_value_used_in(body, fname)
+    },
+    EMatch(scrutinee, arms) => edp_fn_value_used_in(scrutinee, fname) || edp_fn_value_used_in_arms(arms, fname),
+    EHandle(body, arms) => edp_fn_value_used_in(body, fname) || edp_fn_value_used_in_arms(arms, fname),
+    EForIn(name, index_name, iter, body) => edp_fn_value_used_in(iter, fname) || (name != fname && index_name != Some(fname) && edp_fn_value_used_in(body, fname)),
+    ELoop(pairs, body) => {
+      let mut found = false
+      let mut shadowed = false
+      for pair in pairs {
+        let (name, value) = pair
+        found = found || edp_fn_value_used_in(value, fname)
+        shadowed = shadowed || name == fname
+      }
+      found || (!shadowed && edp_fn_value_used_in(body, fname))
+    },
+    _ => edp_fn_value_used_in_exprs(expr_children(expr), fname)
   }
-  total
 }
 
-/// Guard (1): any EIdent occurrence of `fname` that is NOT the callee of a
-/// direct call is a value reference (stored, passed along, returned...).
+fn edp_fn_value_used_in_exprs(exprs: Array[Expr], fname: String) -> Bool {
+  let mut found = false
+  for expr in exprs {
+    found = found || edp_fn_value_used_in(expr, fname)
+  }
+  found
+}
+
+fn edp_fn_value_used_in_arms(arms: Array[(Pat, Expr)], fname: String) -> Bool {
+  let mut found = false
+  for arm in arms {
+    let (pat, body) = arm
+    let bound: Array[String] = []
+    edp_pat_binds(pat, bound)
+    found = found || (!edp_str_array_contains(bound, fname) && edp_fn_value_used_in(body, fname))
+  }
+  found
+}
+
 fn edp_fn_used_as_value(stmts: Array[Stmt], fname: String) -> Bool {
-  edp_count_ident_uses_stmts(stmts, fname) > edp_count_direct_calls_stmts(stmts, fname)
+  let mut found = false
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, _, _, expr) => found = found || edp_fn_value_used_in(expr, fname),
+      _ => ()
+    }
+  }
+  found
 }
 
 fn edp_fn_used_as_value_live(stmts: Array[Stmt], fname: String, keep: Array[Bool]) -> Bool {
