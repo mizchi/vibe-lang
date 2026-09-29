@@ -6053,6 +6053,70 @@ fn edp_collect_ecall_arg_idents_unused_value(expr: Expr, gname: String, argpos: 
   }
 }
 
+/// Only references to this particular binding make its closure reachable.
+/// A later binder with the same spelling owns its continuation's uses.
+fn edp_binding_used_in(expr: Expr, name: String) -> Bool {
+  match expr {
+    EIdent(nm, _) => nm == name,
+    ELet(nm, value, body, _) => edp_binding_used_in(value, name) || (nm != name && edp_binding_used_in(body, name)),
+    ELetMut(nm, value, body, _) => edp_binding_used_in(value, name) || (nm != name && edp_binding_used_in(body, name)),
+    ELetRec(nm, value, body) => nm != name && (edp_binding_used_in(value, name) || edp_binding_used_in(body, name)),
+    EFn(_, _, params, _, _, body) => {
+      let mut shadows = false
+      for param in params {
+        let (pn, _) = param
+        if pn == name {
+          shadows = true
+        } else {
+          ()
+        }
+      }
+      !shadows && edp_binding_used_in(body, name)
+    },
+    EMatch(scrutinee, arms) => edp_binding_used_in(scrutinee, name) || edp_binding_used_in_arms(arms, name),
+    EHandle(body, arms) => edp_binding_used_in(body, name) || edp_binding_used_in_arms(arms, name),
+    EForIn(nm, idx, iter, body) => edp_binding_used_in(iter, name) || (nm != name && idx != Some(name) && edp_binding_used_in(body, name)),
+    ELoop(pairs, body) => {
+      let mut used = false
+      let mut shadows = false
+      for pair in pairs {
+        let (pn, value) = pair
+        used = used || edp_binding_used_in(value, name)
+        shadows = shadows || pn == name
+      }
+      used || (!shadows && edp_binding_used_in(body, name))
+    },
+    _ => edp_binding_used_in_exprs(expr_children(expr), name)
+  }
+}
+
+fn edp_binding_used_in_exprs(exprs: Array[Expr], name: String) -> Bool {
+  let mut used = false
+  let mut i = 0
+  while !used && i < Array::length(exprs) {
+    used = edp_binding_used_in(Array::get(exprs, i), name)
+    i = i + 1
+  }
+  used
+}
+
+fn edp_binding_used_in_arms(arms: Array[(Pat, Expr)], name: String) -> Bool {
+  let mut used = false
+  let mut i = 0
+  while !used && i < Array::length(arms) {
+    let (pat, body) = Array::get(arms, i)
+    let bound: Array[String] = []
+    edp_pat_binds(pat, bound)
+    if !edp_str_array_contains(bound, name) {
+      used = edp_binding_used_in(body, name)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  used
+}
+
 fn edp_collect_ecall_arg_idents_expr(expr: Expr, gname: String, argpos: Int, out: Array[String]) -> Unit {
   match expr {
     ECall(callee, args, _) => {
@@ -6108,7 +6172,7 @@ fn edp_collect_ecall_arg_idents_expr(expr: Expr, gname: String, argpos: Int, out
     ELet(name, v, b, _) => {
       // A closure literal with no use in its continuation cannot call the
       // owner. Do not let its body refuse a live call with another argument.
-      if edp_count_ident_uses(b, name) == 0 {
+      if !edp_binding_used_in(b, name) {
         edp_collect_ecall_arg_idents_unused_value(v, gname, argpos, out)
       } else {
         edp_collect_ecall_arg_idents_expr(v, gname, argpos, out)
@@ -6116,7 +6180,7 @@ fn edp_collect_ecall_arg_idents_expr(expr: Expr, gname: String, argpos: Int, out
       edp_collect_ecall_arg_idents_expr(b, gname, argpos, out)
     },
     ELetMut(name, v, b, _) => {
-      if edp_count_ident_uses(b, name) == 0 {
+      if !edp_binding_used_in(b, name) {
         edp_collect_ecall_arg_idents_unused_value(v, gname, argpos, out)
       } else {
         edp_collect_ecall_arg_idents_expr(v, gname, argpos, out)
@@ -6124,7 +6188,7 @@ fn edp_collect_ecall_arg_idents_expr(expr: Expr, gname: String, argpos: Int, out
       edp_collect_ecall_arg_idents_expr(b, gname, argpos, out)
     },
     ELetRec(name, v, b) => {
-      if edp_count_ident_uses(b, name) == 0 {
+      if !edp_binding_used_in(b, name) {
         edp_collect_ecall_arg_idents_unused_value(v, gname, argpos, out)
       } else {
         edp_collect_ecall_arg_idents_expr(v, gname, argpos, out)
