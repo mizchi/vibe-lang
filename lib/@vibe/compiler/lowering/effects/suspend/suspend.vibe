@@ -7094,6 +7094,14 @@ fn scps_prepass_alias_class(scope: Array[(String, Int)], target: String, ctx: (A
 fn scps_prepass_bind_local(scope: Array[(String, Int)], name: String, value: Expr, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> Array[(String, Int)] {
   let kind = match value {
     EIdent(target, _) => scps_prepass_alias_class(scope, target, ctx),
+    // A plain local closure does not acquire the step call convention merely
+    // because it is later passed to `spawn_suspend`. Kind 2 is reserved for a
+    // literal the prepass has already split for Async.
+    EFn(_, _, _, _, _, _) => if scps_literal_is_own_step_for(value, "Async") {
+      2
+    } else {
+      1
+    },
     _ => 0
   }
   scps_scope_bind(scope, name, kind)
@@ -7237,6 +7245,20 @@ fn scps_prepass_expr(e: Expr, ecfgs: Array[(String, Array[String], Array[String]
                 if aj < Array::length(fparams) {
                   let (_, pty) = Array::get(fparams, aj)
                   let prow = scps_ty_row(pty)
+                  // Every resolved Async-taking parameter uses the step call
+                  // convention, including wrappers around spawn_suspend.
+                  if scps_row_contains(ctx, prow, "Async") {
+                    match Array::get(rargs, aj) {
+                      EIdent(task_name, _) => if scps_local_class(scope, task_name) == 1 {
+                        Array::push(scps_st_errs(st), String::concat("pass the task closure inline at `", String::concat(fname, String::concat("` instead of passing `", String::concat(task_name, "`: this local closure has the plain call convention")))))
+                      } else {
+                        ()
+                      },
+                      _ => ()
+                    }
+                  } else {
+                    ()
+                  }
                   // #1707: the mirror of the fixup below. A literal the prepass
                   // STEP-SPLIT returns `__ScpsStep_E`, so it may only land in a
                   // parameter whose declared row carries E. Passed to a plain
