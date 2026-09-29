@@ -70,6 +70,12 @@ for char_lane in fs single-file; do
     *'line 2:11: add a closing quote to the char literal'*) ;;
     *) echo "[compiler-gate] FAIL: $char_lane apostrophe in a comment changed the char edit: $comment_quote" >&2; exit 1 ;;
   esac
+  compact_comment_quote="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke cli_main "$stage2_wasm" check "$@" fixtures/err_unclosed_char_compact_comment.vibe 2>&1 || true)"
+  case "$compact_comment_quote" in
+    *'line 2:11: add a closing quote to the char literal'*) ;;
+    *) echo "[compiler-gate] FAIL: $char_lane apostrophe in a compact comment changed the char edit: $compact_comment_quote" >&2; exit 1 ;;
+  esac
   next_literal="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
     --invoke cli_main "$stage2_wasm" check "$@" fixtures/err_unclosed_char_next_literal.vibe 2>&1 || true)"
   case "$next_literal" in
