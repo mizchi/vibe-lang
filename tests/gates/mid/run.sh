@@ -2760,6 +2760,27 @@ if [ "$dead_local_result" != "1" ]; then
   echo "[compiler-gate] FAIL: reachable owner with unused local closure returned '$dead_local_result' (want 1, #3195)" >&2
   exit 1
 fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/fnvalue_nested_handle_dead_array.vibe "$nhvdir/dead_array.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$nhvdir/dead_array.wasm" ]; then
+  echo "[compiler-gate] FAIL: an unused array of closures rejected a reachable handler owner (#3195)" >&2
+  cat "$nhvdir/dead_array.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+dead_array_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$nhvdir/dead_array.wasm" 2>/dev/null | tr -dc '0-9')"
+if [ "$dead_array_result" != "1" ]; then
+  echo "[compiler-gate] FAIL: reachable owner with unused closure array returned '$dead_array_result' (want 1, #3195)" >&2
+  exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/err_fnvalue_nested_handle_unused_eager_array.vibe "$nhvdir/eager_array.wasm" main >/dev/null 2>&1 || true
+if [ -s "$nhvdir/eager_array.wasm" ] || ! grep -qF 'pass an explicitly row-annotated closure that calls `inner_handled`' "$nhvdir/eager_array.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: an eager call in an unused array escaped the refusal (#3195)" >&2
+  cat "$nhvdir/eager_array.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
 VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh fixtures/fnvalue_nested_handle_inline_test.vibe
 rm -rf "$nhvdir"
 echo "[compiler-gate] nested-handler function value refusal and inline closure ok (#3195)"

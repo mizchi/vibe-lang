@@ -6029,6 +6029,30 @@ fn edp_collect_ecall_arg_idents(stmts: Array[Stmt], gname: String, argpos: Int) 
   edp_collect_ecall_arg_idents_with_keep(stmts, gname, argpos, array_empty())
 }
 
+/// An unused binding still evaluates its initializer. Value constructors
+/// store closure literals without invoking them; other forms keep the normal
+/// conservative scan so an eager call cannot disappear from eligibility.
+fn edp_collect_ecall_arg_idents_unused_value(expr: Expr, gname: String, argpos: Int, out: Array[String]) -> Unit {
+  match expr {
+    EFn(_, _, _, _, _, _) => (),
+    EArray(items) => for item in items {
+      edp_collect_ecall_arg_idents_unused_value(item, gname, argpos, out)
+    },
+    ETuple(items) => for item in items {
+      edp_collect_ecall_arg_idents_unused_value(item, gname, argpos, out)
+    },
+    ERecord(_, fields, _) => for field in fields {
+      let (_, value) = field
+      edp_collect_ecall_arg_idents_unused_value(value, gname, argpos, out)
+    },
+    EMap(fields) => for field in fields {
+      let (_, value) = field
+      edp_collect_ecall_arg_idents_unused_value(value, gname, argpos, out)
+    },
+    _ => edp_collect_ecall_arg_idents_expr(expr, gname, argpos, out)
+  }
+}
+
 fn edp_collect_ecall_arg_idents_expr(expr: Expr, gname: String, argpos: Int, out: Array[String]) -> Unit {
   match expr {
     ECall(callee, args, _) => {
@@ -6084,38 +6108,26 @@ fn edp_collect_ecall_arg_idents_expr(expr: Expr, gname: String, argpos: Int, out
     ELet(name, v, b, _) => {
       // A closure literal with no use in its continuation cannot call the
       // owner. Do not let its body refuse a live call with another argument.
-      let unused_closure = match v {
-        EFn(_, _, _, _, _, _) => edp_count_ident_uses(b, name) == 0,
-        _ => false
-      }
-      if !unused_closure {
-        edp_collect_ecall_arg_idents_expr(v, gname, argpos, out)
+      if edp_count_ident_uses(b, name) == 0 {
+        edp_collect_ecall_arg_idents_unused_value(v, gname, argpos, out)
       } else {
-        ()
+        edp_collect_ecall_arg_idents_expr(v, gname, argpos, out)
       }
       edp_collect_ecall_arg_idents_expr(b, gname, argpos, out)
     },
     ELetMut(name, v, b, _) => {
-      let unused_closure = match v {
-        EFn(_, _, _, _, _, _) => edp_count_ident_uses(b, name) == 0,
-        _ => false
-      }
-      if !unused_closure {
-        edp_collect_ecall_arg_idents_expr(v, gname, argpos, out)
+      if edp_count_ident_uses(b, name) == 0 {
+        edp_collect_ecall_arg_idents_unused_value(v, gname, argpos, out)
       } else {
-        ()
+        edp_collect_ecall_arg_idents_expr(v, gname, argpos, out)
       }
       edp_collect_ecall_arg_idents_expr(b, gname, argpos, out)
     },
     ELetRec(name, v, b) => {
-      let unused_closure = match v {
-        EFn(_, _, _, _, _, _) => edp_count_ident_uses(b, name) == 0,
-        _ => false
-      }
-      if !unused_closure {
-        edp_collect_ecall_arg_idents_expr(v, gname, argpos, out)
+      if edp_count_ident_uses(b, name) == 0 {
+        edp_collect_ecall_arg_idents_unused_value(v, gname, argpos, out)
       } else {
-        ()
+        edp_collect_ecall_arg_idents_expr(v, gname, argpos, out)
       }
       edp_collect_ecall_arg_idents_expr(b, gname, argpos, out)
     },
