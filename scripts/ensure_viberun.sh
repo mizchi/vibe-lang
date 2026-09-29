@@ -4,7 +4,7 @@
 # Three callers wanted "is the runner current?" and all three asked a question
 # about TIMESTAMPS, which on a CI runner is the wrong question:
 #
-#   install/install.sh        used `[ -x "$prebuilt" ]` -- any binary counted as current
+#   install/install.sh        `[ -x "$prebuilt" ]` -- any binary counts as current
 #   test_gc_heap_accounting   `find src -newer "$RUNNER"` -- rebuild if newer
 #   cargo itself              a local package's fingerprint is mtime+size based
 #
@@ -27,7 +27,6 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CRATE="$ROOT_DIR/runtime/viberun"
 BIN="$CRATE/target/release/viberun"
 STAMP="$CRATE/target/release/.viberun_srchash"
-RUSTC_CMD="${RUSTC:-rustc}"
 
 MODE="ensure"
 for arg in "$@"; do
@@ -71,10 +70,10 @@ src_hash() {
         printf '%s ' "$m"
         if [ -f "$m" ]; then hash_stdin < "$m"; else echo "MISSING"; fi
       done
-      # The toolchain and native host are inputs too. -vV also changes the
-      # prior stamp format, so a stale binary incorrectly stamped by the old
-      # build-target handling cannot be accepted as current.
-      "$RUSTC_CMD" -vV 2>/dev/null || echo "no rustc"
+      # The toolchain is an input too: the same sources built by a different
+      # rustc are a different binary, and a cache restored across a runner
+      # image bump would otherwise read as current.
+      rustc --version 2>/dev/null || echo "no rustc"
     } | hash_stdin
   )
 }
@@ -96,17 +95,10 @@ echo "[ensure-viberun] building ($want)"
 # The stamp goes FIRST, so an interrupted build cannot leave a stamp vouching
 # for a binary that was never linked.
 rm -f "$STAMP"
-# Pin both Cargo controls: target-dir changes the root, while --target changes
-# the release binary's subdirectory. Build for this host and copy the actual
-# output to the stable path consumed by the checkout installer and gate scripts.
-host_triple="$("$RUSTC_CMD" -vV | sed -n 's/^host: //p')"
-[ -n "$host_triple" ] || { echo "[ensure-viberun] FAIL: rustc reported no host triple" >&2; exit 1; }
-cargo build --release --target "$host_triple" --target-dir "$CRATE/target" --manifest-path "$CRATE/Cargo.toml"
-built_bin="$CRATE/target/$host_triple/release/viberun"
-if [ ! -x "$built_bin" ]; then
-  echo "[ensure-viberun] FAIL: cargo reported success but produced no $built_bin" >&2
+cargo build --release --manifest-path "$CRATE/Cargo.toml"
+if [ ! -x "$BIN" ]; then
+  echo "[ensure-viberun] FAIL: cargo reported success but produced no $BIN" >&2
   exit 1
 fi
-install -m 0755 "$built_bin" "$BIN"
 printf '%s\n' "$want" > "$STAMP"
 echo "[ensure-viberun] ok"

@@ -78,37 +78,37 @@ printf '# stale runner\n' >> "$prebuilt"
 mkdir -p "$repo/runtime/viberun/src" "$WORK/fake-cargo-bin"
 printf 'fn main() {}\n' > "$repo/runtime/viberun/src/main.rs"
 printf '[package]\nname = "viberun"\nversion = "0.0.0"\n' > "$repo/runtime/viberun/Cargo.toml"
-cp "$ROOT_DIR/scripts/ensure_viberun.sh" "$repo/scripts/ensure_viberun.sh"
 cat > "$WORK/fake-cargo-bin/cargo" <<'CARGO'
 #!/usr/bin/env bash
 set -euo pipefail
-target_dir="$CARGO_TARGET_DIR"
-target="${CARGO_BUILD_TARGET:-}"
+action="$1"
+shift
+root=""
+locked=0
+target_dir=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --root) root="$2"; shift 2 ;;
     --target-dir) target_dir="$2"; shift 2 ;;
-    --target) target="$2"; shift 2 ;;
+    --locked) locked=1; shift ;;
     *) shift ;;
   esac
 done
-[ "$target" = "$VIBE_TEST_EXPECT_TARGET" ] || {
-  echo "fake cargo: expected native target $VIBE_TEST_EXPECT_TARGET, got $target" >&2
-  exit 1
-}
-if [ -n "$target" ]; then target_dir="$target_dir/$target"; fi
-mkdir -p "$target_dir/release"
-cp "$VIBE_TEST_FRESH_RUNNER" "$target_dir/release/viberun"
+case "$action" in
+  install)
+    [ "$locked" = 1 ] && [ -n "$root" ] && [ "$target_dir" = "$root/target" ] || exit 2
+    mkdir -p "$root/bin"
+    cp "$VIBE_TEST_FRESH_RUNNER" "$root/bin/viberun"
+    printf 'called\n' > "$VIBE_TEST_CARGO_INSTALL_CALLED"
+    ;;
+  *) echo "fake cargo: unexpected action $action" >&2; exit 2 ;;
+esac
 CARGO
 chmod +x "$WORK/fake-cargo-bin/cargo"
-cat > "$WORK/fake-rustc" <<'RUSTC'
-#!/usr/bin/env bash
-[ "$1" = -vV ] || exit 2
-printf 'rustc 1.0.0 (test toolchain)\nhost: configured-native-target\n'
-RUSTC
-chmod +x "$WORK/fake-rustc"
 PATH="$WORK/fake-cargo-bin:$PATH" CARGO_TARGET_DIR="$WORK/external-target" \
   CARGO_BUILD_TARGET=configured-target \
-  RUSTC="$WORK/fake-rustc" VIBE_TEST_EXPECT_TARGET=configured-native-target \
+  RUSTC="$WORK/compiler-selected-by-cargo" \
+  VIBE_TEST_CARGO_INSTALL_CALLED="$WORK/cargo-install-called" \
   VIBE_TEST_FRESH_RUNNER="$runner" VIBE_HOME="$WORK/fresh-runner-home" \
   bash "$repo/install/install.sh" --__vibe-install-root "$repo" \
     --toolchain fresh-runner --cli-wasm "$WORK/compiler.wasm" \
@@ -117,6 +117,13 @@ cmp "$runner" "$WORK/fresh-runner-home/toolchains/fresh-runner/bin/viberun" || {
   echo "checkout install shipped the stale runner with Cargo target overrides" >&2
   exit 1
 }
+[ -s "$WORK/cargo-install-called" ] || {
+  echo "checkout install did not install the runner through Cargo" >&2
+  exit 1
+}
+for staged in "$WORK/fresh-runner-home/toolchains/fresh-runner"/.runner-stage.*; do
+  [ ! -e "$staged" ] || { echo "checkout install left its runner staging directory" >&2; exit 1; }
+done
 
 assert_no_bootstrap_temp() {
   if find "$WORK/tmp" -maxdepth 1 -name 'vibe-install-*' -print -quit | grep -q .; then

@@ -468,14 +468,21 @@ TC_DIR="$VIBE_HOME/toolchains/$TOOLCHAIN"
 mkdir -p "$TC_DIR/bin" "$TC_DIR/lib" "$VIBE_HOME/bin" "$VIBE_HOME/lib"
 
 # 1. runner ----------------------------------------------------------------
+runner_stage=""
 if [ -z "$RUNNER_SRC" ]; then
   command -v cargo >/dev/null 2>&1 || die "cargo not found; pass a prebuilt runner with --runner"
-  say "ensuring checkout runner is current..."
-  bash "$ROOT_DIR/scripts/ensure_viberun.sh"
-  RUNNER_SRC="$ROOT_DIR/runtime/viberun/target/release/viberun"
+  runner_stage="$(mktemp -d "$TC_DIR/.runner-stage.XXXXXX")"
+  trap 'rm -rf -- "$runner_stage"' EXIT
+  # Cargo knows the effective compiler and target from its own configuration.
+  # Build in a fresh target directory so no cached executable or fingerprint
+  # from another checkout can stand in for this source tree.
+  cargo install --locked --path "$ROOT_DIR/runtime/viberun" --root "$runner_stage" \
+    --force --no-track --target-dir "$runner_stage/target" >/dev/null
+  RUNNER_SRC="$runner_stage/bin/viberun"
 fi
 [ -x "$RUNNER_SRC" ] || die "runner not executable: $RUNNER_SRC"
 install -m 0755 "$RUNNER_SRC" "$TC_DIR/bin/viberun"
+if [ -n "$runner_stage" ]; then rm -rf -- "$runner_stage"; trap - EXIT; fi
 say "runner -> $TC_DIR/bin/viberun"
 
 # 2. compiler wasm ---------------------------------------------------------
