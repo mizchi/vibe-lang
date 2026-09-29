@@ -3687,6 +3687,27 @@ if [ -s "$ssldir/ascribed.wasm" ] || ! grep -qF 'pass the task closure inline at
   cat "$ssldir/ascribed.wasm.diag" >&2 2>/dev/null || true
   exit 1
 fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/err_spawn_suspend_wrapper_plain.vibe "$ssldir/wrapper.wasm" main >/dev/null 2>&1 || true
+if [ -s "$ssldir/wrapper.wasm" ] || ! grep -qF 'pass the task closure inline at `my_spawn`' "$ssldir/wrapper.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: an Async-taking wrapper accepted a plain local task closure (#3194)" >&2
+  cat "$ssldir/wrapper.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/spawn_suspend_wrapper_inline.vibe "$ssldir/wrapper_inline.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$ssldir/wrapper_inline.wasm" ]; then
+  echo "[compiler-gate] FAIL: the inline edit for an Async-taking wrapper did not compile (#3194)" >&2
+  cat "$ssldir/wrapper_inline.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+wrapper_inline_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$ssldir/wrapper_inline.wasm" 2>/dev/null | tail -1)"
+if [ "$wrapper_inline_result" != "6" ]; then
+  echo "[compiler-gate] FAIL: the inline edit for an Async-taking wrapper returned '$wrapper_inline_result' (want 6, #3194)" >&2
+  exit 1
+fi
 cat > "$ssldir/inline.vibe" <<'VIBE'
 import @vibe/concurrent/experimental { TaskGroup, TaskHandle }
 fn main() -> Int allows Async + Exception {
