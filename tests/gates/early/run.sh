@@ -70,6 +70,14 @@ for char_lane in fs single-file; do
     *'line 2:11: add a closing quote to the char literal'*) ;;
     *) echo "[compiler-gate] FAIL: $char_lane next literal changed the missing-quote edit: $next_literal" >&2; exit 1 ;;
   esac
+  for closed_delimiter in comma semicolon followed_literal; do
+    closed_diag="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+      --invoke cli_main "$stage2_wasm" check "$@" "fixtures/err_multichar_char_${closed_delimiter}.vibe" 2>&1 || true)"
+    case "$closed_diag" in
+      *'line 2:11: use a String for text or an Int code point for non-ASCII'*) ;;
+      *) echo "[compiler-gate] FAIL: $char_lane closed literal containing $closed_delimiter suggests a missing quote: $closed_diag" >&2; exit 1 ;;
+    esac
+  done
 done
 echo "[compiler-gate] char diagnostics locate invalid width and missing quotes with distinct edits (#3213)"
 

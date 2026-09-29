@@ -120,15 +120,34 @@ fn char_close_error(s: String, len: Int, start: Int, close: Int) -> String {
   }
   let mut pos = close
   let mut found_quote = false
+  let mut saw_separator = false
   let mut scanning = true
   while pos < len && scanning {
     let c = String::char_code_at(s, pos)
     if c == '\'' {
-      found_quote = true
+      // A quote after a separator can start a later char literal. In
+      // `let c = 'a; let d = 'b'`, the next two quotes enclose `b`; the
+      // missing close belongs after `a`. One later quote, as in `'a,b'`,
+      // closes the invalid multi-character literal instead.
+      let next = if pos + 1 < len {
+        String::char_code_at(s, pos + 1)
+      } else {
+        0
+      }
+      if saw_separator && next != ' ' && next != '\t' && next != ';' && next != ',' && next != '\n' && pos + 2 < len && String::char_code_at(s, pos + 2) == '\'' {
+        found_quote = false
+      } else {
+        found_quote = true
+      }
       scanning = false
-    } else if c == '\n' || c == ';' || c == ',' || c == ')' || c == ']' || c == '}' || (c == '/' && pos + 1 < len && String::char_code_at(s, pos + 1) == '/') {
+    } else if c == '\n' || (c == '/' && pos + 1 < len && String::char_code_at(s, pos + 1) == '/') {
       scanning = false
     } else {
+      if c == ';' || c == ',' || c == ')' || c == ']' || c == '}' {
+        saw_separator = true
+      } else {
+        ()
+      }
       pos = pos + 1
     }
   }
