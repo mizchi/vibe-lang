@@ -2723,6 +2723,18 @@ if ! grep -qF 'pass an explicitly row-annotated closure that calls `inner_handle
 fi
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/err_fnvalue_nested_handle_test_owner_alias.vibe "$nhvdir/test_owner_alias.wasm" main >/dev/null 2>&1 || true
+if [ -s "$nhvdir/test_owner_alias.wasm" ]; then
+  echo "[compiler-gate] FAIL: a test alias of the handler owner compiled and can trap at an indirect call (#3195)" >&2
+  exit 1
+fi
+if ! grep -qF 'using this handler owner as a value cannot safely select the closure call convention' "$nhvdir/test_owner_alias.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: a test alias of the handler owner lacks the working edit (#3195)" >&2
+  cat "$nhvdir/test_owner_alias.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   fixtures/fnvalue_nested_handle_dead.vibe "$nhvdir/dead.wasm" main >/dev/null 2>&1 || true
 if [ ! -s "$nhvdir/dead.wasm" ]; then
   echo "[compiler-gate] FAIL: unreachable nested-handler call rejected the live entry (#3195)" >&2
