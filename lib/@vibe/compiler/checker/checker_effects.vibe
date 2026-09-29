@@ -8461,22 +8461,87 @@ fn dh_lc_assign(lc: Array[(String, Option[Expr])], name: String, val: Expr) -> A
   } else {
     let out: Array[(String, Option[Expr])] = []
     if old_index < 0 {
-      Array::push(out, (name, closure))
-      Array::push(out, (name, None))
+      dh_lc_append_assignment(out, lc, name, closure, Array::length(lc))
     } else {
       ()
     }
     let mut i = 0
     for entry in lc {
       if i == old_index {
-        Array::push(out, (name, closure))
-        Array::push(out, (name, None))
+        dh_lc_append_assignment(out, lc, name, closure, old_index)
       } else {
         Array::push(out, entry)
       }
       i = i + 1
     }
     out
+  }
+}
+
+fn dh_lc_assignment_start(name: String) -> String {
+  String::concat("##dh_capture_start##", name)
+}
+
+fn dh_lc_assignment_end(name: String) -> String {
+  String::concat("##dh_capture_end##", name)
+}
+
+fn dh_lc_append_assignment(out: Array[(String, Option[Expr])], lc: Array[(String, Option[Expr])], name: String, closure: Option[Expr], capture_end: Int) -> Unit {
+  Array::push(out, (name, closure))
+  Array::push(out, (name, None))
+  match closure {
+    Some(_) => {
+      Array::push(out, (dh_lc_assignment_start(name), None))
+      let mut i = 0
+      while i < capture_end {
+        Array::push(out, Array::get(lc, i))
+        i = i + 1
+      }
+      Array::push(out, (dh_lc_assignment_end(name), None))
+    },
+    None => ()
+  }
+}
+
+/// An assigned closure can see bindings created after its original mutable
+/// cell. Keep those captures local to this closure's analysis so older
+/// closures still see only their own lexical suffix.
+fn dh_lc_capture_scope(lc: Array[(String, Option[Expr])], index: Int, name: String) -> Array[(String, Option[Expr])] {
+  let assigned = if index + 2 < Array::length(lc) {
+    let (marker, _) = Array::get(lc, index + 2)
+    marker == dh_lc_assignment_start(name)
+  } else {
+    false
+  }
+  if !assigned {
+    Array::slice(lc, index + 1, Array::length(lc))
+  } else {
+    let scope: Array[(String, Option[Expr])] = [(name, None)]
+    let mut i = index + 3
+    let mut depth = 1
+    while i < Array::length(lc) && depth > 0 {
+      let entry = Array::get(lc, i)
+      let (entry_name, _) = entry
+      if String::starts_with(entry_name, "##dh_capture_start##") {
+        depth = depth + 1
+        Array::push(scope, entry)
+      } else if String::starts_with(entry_name, "##dh_capture_end##") {
+        depth = depth - 1
+        if depth > 0 {
+          Array::push(scope, entry)
+        } else {
+          ()
+        }
+      } else {
+        Array::push(scope, entry)
+      }
+      i = i + 1
+    }
+    while i < Array::length(lc) {
+      Array::push(scope, Array::get(lc, i))
+      i = i + 1
+    }
+    scope
   }
 }
 
@@ -8628,7 +8693,7 @@ fn dh_rowless_closure_call(expr: Expr, ename: String, lc: Array[(String, Option[
           if idx >= 0 && dh_callee_is_opaque(nm, fn_names, fn_index) {
             let (_, closure) = Array::get(lc, idx)
             match closure {
-              Some(lit) => if dh_closure_performs(lit, ename, Array::slice(lc, idx + 1, Array::length(lc)), fn_names, fn_effs, fn_index, depth) {
+              Some(lit) => if dh_closure_performs(lit, ename, dh_lc_capture_scope(lc, idx, nm), fn_names, fn_effs, fn_index, depth) {
                 Some((nm, off))
               } else {
                 None
