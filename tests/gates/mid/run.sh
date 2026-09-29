@@ -2749,6 +2749,19 @@ if [ "$dead_caller_result" != "1" ]; then
 fi
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/fnvalue_nested_handle_dead_owner_value.vibe "$nhvdir/dead_owner_value.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$nhvdir/dead_owner_value.wasm" ]; then
+  echo "[compiler-gate] FAIL: a dead value reference rejected a reachable direct handler-owner call (#3195)" >&2
+  cat "$nhvdir/dead_owner_value.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+dead_owner_value_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$nhvdir/dead_owner_value.wasm" 2>/dev/null | tr -dc '0-9')"
+if [ "$dead_owner_value_result" != "1" ]; then
+  echo "[compiler-gate] FAIL: reachable owner with dead value reference returned '$dead_owner_value_result' (want 1, #3195)" >&2
+  exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   fixtures/fnvalue_nested_handle_dead_local.vibe "$nhvdir/dead_local.wasm" main >/dev/null 2>&1 || true
 if [ ! -s "$nhvdir/dead_local.wasm" ]; then
   echo "[compiler-gate] FAIL: an unused local closure rejected a reachable handler owner (#3195)" >&2
