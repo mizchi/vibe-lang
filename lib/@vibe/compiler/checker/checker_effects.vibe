@@ -8274,6 +8274,27 @@ fn dh_lc_shadow_params(lc: Array[(String, Option[Expr])], params: Array[(String,
   out
 }
 
+/// Once an earlier expression may have assigned a tracked closure, its old
+/// initializer cannot explain a later call. Branches are conservative: an
+/// assignment on either path hides it. A nested function body has not run.
+fn dh_lc_after_assigns(expr: Expr, lc: Array[(String, Option[Expr])]) -> Array[(String, Option[Expr])] {
+  match expr {
+    EFn(_, _, _, _, _, _) => lc,
+    EAssign(name, value, body) => dh_lc_after_assigns(body, dh_lc_after_assigns(value, dh_lc_with(lc, name, None))),
+    EAssignOp(name, _, value, body) => dh_lc_after_assigns(body, dh_lc_after_assigns(value, dh_lc_with(lc, name, None))),
+    _ => {
+      let mut out = lc
+      let children = expr_children(expr)
+      let mut i = 0
+      while i < Array::length(children) {
+        out = dh_lc_after_assigns(Array::get(children, i), out)
+        i = i + 1
+      }
+      out
+    }
+  }
+}
+
 fn dh_for_names(name: String, index_name: Option[String]) -> Array[String] {
   let names: Array[String] = [name]
   match index_name {
@@ -8467,9 +8488,19 @@ fn dh_rowless_closure_call(expr: Expr, ename: String, lc: Array[(String, Option[
     },
     ELetMut(name, val, body, _) => match dh_rowless_closure_call(val, ename, lc, fn_names, fn_effs, fn_index, depth) {
       Some(hit) => Some(hit),
-      // A mutable binding can be reassigned before the call. Its initializer
-      // cannot identify the closure that the handled body actually reaches.
+      None => dh_rowless_closure_call(body, ename, dh_lc_bind(lc, name, val), fn_names, fn_effs, fn_index, depth)
+    },
+    EAssign(name, val, body) => match dh_rowless_closure_call(val, ename, lc, fn_names, fn_effs, fn_index, depth) {
+      Some(hit) => Some(hit),
       None => dh_rowless_closure_call(body, ename, dh_lc_with(lc, name, None), fn_names, fn_effs, fn_index, depth)
+    },
+    EAssignOp(name, _, val, body) => match dh_rowless_closure_call(val, ename, lc, fn_names, fn_effs, fn_index, depth) {
+      Some(hit) => Some(hit),
+      None => dh_rowless_closure_call(body, ename, dh_lc_with(lc, name, None), fn_names, fn_effs, fn_index, depth)
+    },
+    ESeq(first, rest) => match dh_rowless_closure_call(first, ename, lc, fn_names, fn_effs, fn_index, depth) {
+      Some(hit) => Some(hit),
+      None => dh_rowless_closure_call(rest, ename, dh_lc_after_assigns(first, lc), fn_names, fn_effs, fn_index, depth)
     },
     ELetRec(name, val, body) => {
       let rlc = dh_lc_bind(lc, name, val)
@@ -8566,7 +8597,19 @@ fn dh_check_expr(expr: Expr, declared: Array[String], performed: Array[String], 
     ELetMut(name, val, body, _) => {
       dh_check_expr(val, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, lc, errors)
       let (bn, be) = overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs, fn_index)
-      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, bn, be, dh_lc_with(lc, name, None), errors)
+      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, bn, be, dh_lc_bind(lc, name, val), errors)
+    },
+    EAssign(name, val, body) => {
+      dh_check_expr(val, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, lc, errors)
+      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, dh_lc_with(lc, name, None), errors)
+    },
+    EAssignOp(name, _, val, body) => {
+      dh_check_expr(val, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, lc, errors)
+      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, dh_lc_with(lc, name, None), errors)
+    },
+    ESeq(first, rest) => {
+      dh_check_expr(first, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, lc, errors)
+      dh_check_expr(rest, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, dh_lc_after_assigns(first, lc), errors)
     },
     ELetRec(name, val, body) => {
       let (rn, re) = overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs, fn_index)

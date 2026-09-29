@@ -533,6 +533,31 @@ test "#3218: a mutable closure binding cannot attribute the initializer after re
   assert(is_dead_handle_err(Array::get(errors, 0)))
 }
 
+test "#3218: an unchanged mutable closure still names its performing initializer" {
+  let body = ELetMut("side", rowless_yielding_closure(), EHandle(call_at("side", 40), yield_arms()), -1)
+  let errors = dead_handle_errors(body)
+  assert(Array::length(errors) > 0)
+  assert(is_rowless_closure_err(Array::get(errors, 0)))
+}
+
+test "#3218: an assignment after the handle does not hide the initializer" {
+  let handled = EHandle(call_at("side", 40), yield_arms())
+  let later = EAssign("side", fn_with(None, EInt(1)), EUnit)
+  let body = ELetMut("side", rowless_yielding_closure(), ESeq(handled, later), -1)
+  let errors = dead_handle_errors(body)
+  assert(Array::length(errors) > 0)
+  assert(is_rowless_closure_err(Array::get(errors, 0)))
+}
+
+test "#3218: an earlier assignment in a sequence hides the initializer" {
+  let earlier = EAssign("side", fn_with(None, EInt(1)), EUnit)
+  let handled = EHandle(call_at("side", 40), yield_arms())
+  let body = ELetMut("side", rowless_yielding_closure(), ESeq(earlier, handled), -1)
+  let errors = dead_handle_errors(body)
+  assert(Array::length(errors) > 0)
+  assert(is_dead_handle_err(Array::get(errors, 0)))
+}
+
 test "#3180: a closure that reaches the perform through another rowless closure is named" {
   let inner = rowless_yielding_closure()
   let outer = fn_with(None, call_at("inner", -1))
