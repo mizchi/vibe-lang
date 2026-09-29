@@ -206,9 +206,11 @@ no cache
 
 ## 拒否すると実際に何が起きるか
 
-`--allow-*` がビルド時に grant セットを決め、拒否されたケーパビリティは
-**const-fold と DCE で成果物から消えます** — それを必要としたコードは、
-到達不能になるのではなく wasm に入りません。`Http` を一度も得ないプログラム
+`vibe run --allow-*` と `--deny-*` は、そのコマンドがコンパイルと実行を始める前に
+grant を決めます。拒否された optional ケーパビリティは **const-fold と DCE で
+成果物から消えます** — それを必要としたコードは wasm に入りません。
+`vibe build` はどちらのフラグも受け付けず、optional ケーパビリティを
+`NotGranted` としてコンパイルします。`Http` を一度も得ないプログラム
 はネットワークのコードを配布せず、ネットワーク可能なランタイムも要求しません
 ([feature levels](../../docs/user/reference/feature-levels.md))。
 

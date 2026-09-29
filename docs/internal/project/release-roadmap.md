@@ -143,6 +143,10 @@ someone else's first hour, not about compiler internals:
    exists, so a cold checkout does not rebuild the seed from source
    (`scripts/ensure_seed.sh`'s rebuild fallback is for the window inside a
    bump, not for a release).
+9. **The browser playground runs the shipped language.** Build its compiler
+   component from the candidate stage2 and run every preset in Chromium. The
+   browser gate must load the built assets and execute the programs, not only
+   type-check their source.
 
 ### Release work and durable decisions
 

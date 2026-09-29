@@ -4,11 +4,9 @@
 # registry with pinned dependencies, a program that actually runs against the
 # installed package, and the four ways tampering must be refused (#2834).
 #
-# This is acceptance EVIDENCE, not a gate, and it is deliberately not wired
-# into one: it needs a built `viberun` and a stage2 for the candidate, which a
-# gate cannot assume. `tests/gates/early/run.sh` already carries the durable
-# subset (publish / install / --store / version->hash immutability) and runs on
-# every PR. What is here and not there is the newcomer's path end to end.
+# The compiler-playground CI job has a stage2 and a built `viberun`, so it
+# runs this end-to-end contract on every PR. The compiler gate also carries
+# a smaller package subset in tests/gates/early/run.sh.
 #
 # Everything is local: VIBE_HOME is a scratch directory and the "remote" is a
 # file:// git repository, so no network and no shared state. The candidate
@@ -85,6 +83,43 @@ sed 's/^/      /' "$W/add.log"
 pin="$(grep -o '#pkg:b3:[0-9a-f]\{64\}' "$W/app/index.vpkg" | head -1)"
 [ -n "$pin" ] && ok "pin recorded: $pin" || bad "no pin written into index.vpkg"
 check "store copy" "$([ -f "$W/app/.vibe/store/@rt/mathx/impl.vibe" ] && echo yes || echo no)" "yes"
+
+# Exercise the public github: spelling without depending on GitHub availability.
+# Git rewrites only this exact URL to the same local tagged repository.
+note "=== 3b. github: tag resolves to the same commit and package hash ==="
+( cd "$W" && bash "$VIBE" new --name @rt/github-app github-app ) > "$W/github-new.log" 2>&1
+check "github app scaffold" "$?" "0"
+( cd "$W/github-app" && \
+  GIT_CONFIG_COUNT=1 \
+  GIT_CONFIG_KEY_0="url.file://$W/dep.insteadOf" \
+  GIT_CONFIG_VALUE_0="https://github.com/rt/mathx.git" \
+  bash "$VIBE" add github:rt/mathx@v1.0.0 ) > "$W/github-add.log" 2>&1
+check "github add" "$?" "0"
+check "github hash" "$(grep -o '#pkg:b3:[0-9a-f]\{64\}' "$W/github-app/index.vpkg" | head -1)" "$pin"
+git_commit="$(git -C "$W/dep" rev-parse v1.0.0^{commit})"
+grep -q "from github:rt/mathx@$git_commit" "$W/github-app/index.vpkg" \
+  && ok "github ref replaced by commit" || bad "github ref was not pinned to commit"
+
+note "=== 3c. github: commit and explicit content hash install the same package ==="
+( cd "$W" && bash "$VIBE" new --name @rt/commit-app commit-app ) > "$W/commit-new.log" 2>&1
+check "commit app scaffold" "$?" "0"
+wrong_pin="#pkg:b3:$(printf '%064d' 0 | tr '0' 'a')"
+( cd "$W/commit-app" && \
+  GIT_CONFIG_COUNT=1 \
+  GIT_CONFIG_KEY_0="url.file://$W/dep.insteadOf" \
+  GIT_CONFIG_VALUE_0="https://github.com/rt/mathx.git" \
+  bash "$VIBE" add "github:rt/mathx@$git_commit" "$wrong_pin" ) > "$W/commit-wrong-add.log" 2>&1
+check "wrong explicit hash refused" "$([ "$?" -ne 0 ] && echo yes || echo no)" "yes"
+check "wrong hash installed nothing" "$([ -d "$W/commit-app/.vibe/store/@rt/mathx" ] && echo no || echo yes)" "yes"
+( cd "$W/commit-app" && \
+  GIT_CONFIG_COUNT=1 \
+  GIT_CONFIG_KEY_0="url.file://$W/dep.insteadOf" \
+  GIT_CONFIG_VALUE_0="https://github.com/rt/mathx.git" \
+  bash "$VIBE" add "github:rt/mathx@$git_commit" "$pin" ) > "$W/commit-add.log" 2>&1
+check "github commit and hash add" "$?" "0"
+check "commit hash" "$(grep -o '#pkg:b3:[0-9a-f]\{64\}' "$W/commit-app/index.vpkg" | head -1)" "$pin"
+grep -q "from github:rt/mathx@$git_commit" "$W/commit-app/index.vpkg" \
+  && ok "commit source pinned" || bad "commit source was not pinned"
 
 note "=== 4. the project builds and runs against the INSTALLED package ==="
 cat > "$W/app/main.vibex" <<'V'

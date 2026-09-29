@@ -299,9 +299,14 @@ ones the fetched package's own `index.vpkg` declares:
 
 ```bash
 vibe add github:acme/json@v1.4.0     # a package at a repository root
+vibe add github:acme/json@<commit> '#pkg:b3:<64hex>'
 vibe add git:https://example.com/u/mono.git@^1.0#packages/@acme/json
                                      # a subdirectory; ^1.0 resolves to the highest matching tag
 ```
+
+The optional content hash checks the downloaded package before installation.
+The source can name a tag or a full commit hash; the resulting pin always
+records the resolved commit and package content hash.
 
 `vibe add` fetches with git, hashes the package, installs it into
 `.vibe/store/<name>/`, and writes two things into the root `index.vpkg`: a

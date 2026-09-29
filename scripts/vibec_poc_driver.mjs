@@ -28,6 +28,16 @@ if (typeof compile !== "function") {
   process.exit(1);
 }
 
+const invalid = `bad.vibe\u0000export let _start = () -> Int { missing_name }\n`;
+const invalidHex = [...new TextEncoder().encode(invalid)]
+  .map((byte) => byte.toString(16).padStart(2, "0"))
+  .join("");
+const diagnostic = compile(invalidHex, "error-mode:mvp:_start");
+if (!diagnostic.includes("missing_name")) {
+  console.error(`PoC FAIL: missing compile diagnostic: ${JSON.stringify(diagnostic)}`);
+  process.exit(1);
+}
+
 // Payload: hex("main_path \0 main_source") — single-file program.
 const source = "let answer = () -> Int { 40 + 2 }\n";
 const payload = `poc.vibe\u0000${source}`;

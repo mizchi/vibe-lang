@@ -395,6 +395,7 @@ vt_fail_detail() {
     # trap. The lines below still BUILD the report; they no longer vote on
     # whether the trap belongs to the assert.
     { __blk = 0 }
+    $0 == "inspect mismatch:" { in_inspect = 1; inspect_part = 0 }
     $0 == "assert_eq failed" {
       __blk = 1
       ndiag++
@@ -413,13 +414,23 @@ vt_fail_detail() {
     }
     $0 ~ /^  expected:/ {
       __blk = 1
+      if (in_inspect) inspect_part = 2
       ndiag++
       diags[ndiag] = "       " $0
     }
     $0 ~ /^  actual:/ {
       __blk = 1
+      if (in_inspect) inspect_part = 1
       ndiag++
       diags[ndiag] = "       " $0
+    }
+    # Snapshot values can contain newlines. Keep continuation lines under
+    # their actual/expected heading; the updater still reads untouched stdout.
+    in_inspect && inspect_part > 0 && __blk == 0 &&
+      $0 !~ /RuntimeError:|wasm trap:/ && $0 != "assert failed: aborting" {
+      __blk = 1
+      ndiag++
+      diags[ndiag] = "         | " $0
     }
     # #2199: an OOB abort prints its operation plus the index and length
     # before trapping; keep that line in the condensed report -- it is the
@@ -452,6 +463,7 @@ vt_fail_detail() {
     # strip anyhow chain numbering / runner prefixes).
     !seen_reason && /RuntimeError:|wasm trap:/ {
       __blk = 1
+      in_inspect = 0
       seen_reason = 1
       # #2219: `ablk == 3` (the marker-less block) was the other disjunct.
       # The two condensers were NOT the same expression -- the one in
