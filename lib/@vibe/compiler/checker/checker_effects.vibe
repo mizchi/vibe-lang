@@ -135,6 +135,9 @@ export enum EffectError {
   // the same way, but "reaches no perform" is false. Fields: the effect, the
   // closure's name, the call's source offset (-1 when unlocated).
   EEHandleRowlessClosure(String, String, Int);
+  // A mutable local may change targets, so handler evidence cannot follow
+  // its annotated row even when its current initializer performs the effect.
+  EEHandleMutableAlias(String, String, Int);
   // ADR-0102 / #1678: defense in depth for AST producers that bypass the
   // source parser. EHandle does not retain its source effect name, so this
   // diagnostic deliberately names the structural problem instead.
@@ -533,6 +536,15 @@ export fn effect_error_to_string(err: EffectError) -> String {
         String::concat(body, String::concat(" [@off=", String::concat(__to_string(off), "]")))
       } else {
         body
+      }
+    },
+    EEHandleMutableAlias(eff, cname, off) => {
+      let body = String::concat("handle of effect '", String::concat(eff, String::concat("' cannot compile a call through mutable local `", String::concat(cname, "`: bind the function with immutable `let` and `with "))))
+      let message = String::concat(body, String::concat(eff, "`, or call the effectful function directly inside the handle"))
+      if off >= 0 {
+        String::concat(message, String::concat(" [@off=", String::concat(__to_string(off), "]")))
+      } else {
+        message
       }
     },
     EEEmptyHandle => "handler must contain at least one arm; an empty handler cannot discharge an effect",
@@ -8124,6 +8136,124 @@ fn dh_params_may_be(params: Array[(String, Option[TypeExpr])], ename: String) ->
   found
 }
 
+fn dh_call_to_binding(expr: Expr, name: String) -> Option[Int] {
+  match expr {
+    ECall(EIdent(nm, off), _, _) => if nm == name {
+      Some(off)
+    } else {
+      dh_call_to_binding_in(expr_children(expr), name)
+    },
+    ELet(nm, value, body, _) => match dh_call_to_binding(value, name) {
+      Some(off) => Some(off),
+      None => if nm == name {
+        None
+      } else {
+        dh_call_to_binding(body, name)
+      }
+    },
+    ELetMut(nm, value, body, _) => match dh_call_to_binding(value, name) {
+      Some(off) => Some(off),
+      None => if nm == name {
+        None
+      } else {
+        dh_call_to_binding(body, name)
+      }
+    },
+    ELetRec(nm, value, body) => if nm == name {
+      None
+    } else {
+      match dh_call_to_binding(value, name) {
+        Some(off) => Some(off),
+        None => dh_call_to_binding(body, name)
+      }
+    },
+    EFn(_, _, params, _, _, body) => {
+      let mut shadows = false
+      for param in params {
+        let (pn, _) = param
+        if pn == name {
+          shadows = true
+        } else {
+          ()
+        }
+      }
+      if shadows {
+        None
+      } else {
+        dh_call_to_binding(body, name)
+      }
+    },
+    _ => dh_call_to_binding_in(expr_children(expr), name)
+  }
+}
+
+fn dh_call_to_binding_in(exprs: Array[Expr], name: String) -> Option[Int] {
+  let mut hit: Option[Int] = None
+  let mut i = 0
+  while i < Array::length(exprs) {
+    match hit {
+      Some(_) => (),
+      None => {
+        hit = dh_call_to_binding(Array::get(exprs, i), name)
+      }
+    }
+    i = i + 1
+  }
+  hit
+}
+
+/// Report a handled call through an effect-typed mutable alias before the
+/// conservative dead-handler walk can mistake its annotation for evidence.
+fn dh_mutable_alias_call(expr: Expr, ename: String, fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], ov_names: Array[String], ov_effs: Array[Array[String]]) -> Option[(String, Int)] {
+  match expr {
+    ELetMut(name, value, body, _) => {
+      let (an, ae) = overlay_bind_local(ov_names, ov_effs, name, value, fn_names, fn_effs, fn_index)
+      let carries = match lookup_fn_effs(an, ae, name) {
+        Some(effs) => dh_labels_may_be(effs, ename),
+        None => false
+      }
+      let hit = if carries {
+        dh_call_to_binding(body, name)
+      } else {
+        None
+      }
+      match hit {
+        Some(off) => Some((name, off)),
+        None => {
+          let (bn, be) = overlay_bind_empty(ov_names, ov_effs, name, fn_names, fn_index)
+          match dh_mutable_alias_call(value, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs) {
+            Some(found) => Some(found),
+            None => dh_mutable_alias_call(body, ename, fn_names, fn_effs, fn_index, bn, be)
+          }
+        }
+      }
+    },
+    ELet(name, value, body, _) => {
+      let (bn, be) = overlay_bind_local(ov_names, ov_effs, name, value, fn_names, fn_effs, fn_index)
+      match dh_mutable_alias_call(value, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs) {
+        Some(found) => Some(found),
+        None => dh_mutable_alias_call(body, ename, fn_names, fn_effs, fn_index, bn, be)
+      }
+    },
+    _ => dh_mutable_alias_call_in(expr_children(expr), ename, fn_names, fn_effs, fn_index, ov_names, ov_effs)
+  }
+}
+
+fn dh_mutable_alias_call_in(exprs: Array[Expr], ename: String, fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], ov_names: Array[String], ov_effs: Array[Array[String]]) -> Option[(String, Int)] {
+  let mut hit: Option[(String, Int)] = None
+  let mut i = 0
+  while i < Array::length(exprs) {
+    match hit {
+      Some(_) => (),
+      None => {
+        hit = dh_mutable_alias_call(Array::get(exprs, i), ename, fn_names, fn_effs, fn_index, ov_names, ov_effs)
+      }
+    }
+    i = i + 1
+  }
+  hit
+}
+
 /// Can this expression statically reach a `perform` of `ename`? Conservative
 /// in the "yes" direction: anything unresolved answers true, so a false here
 /// really does mean the handler is dead.
@@ -8171,7 +8301,9 @@ fn dh_may_reach(expr: Expr, ename: String, fn_names: Array[String], fn_effs: Arr
       ELet(lname, lval, lbody, _) => match overlay_bind_local(ov_names, ov_effs, lname, lval, fn_names, fn_effs, fn_index) {
         (bn, be) => dh_may_reach(lval, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs) || dh_may_reach(lbody, ename, fn_names, fn_effs, fn_index, bn, be)
       },
-      ELetMut(lname, lval, lbody, _) => match overlay_bind_local(ov_names, ov_effs, lname, lval, fn_names, fn_effs, fn_index) {
+      // Assignment can change this callee after initialization. Only the
+      // immutable form can supply handler evidence through its row.
+      ELetMut(lname, lval, lbody, _) => match overlay_bind_empty(ov_names, ov_effs, lname, fn_names, fn_index) {
         (bn, be) => dh_may_reach(lval, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs) || dh_may_reach(lbody, ename, fn_names, fn_effs, fn_index, bn, be)
       },
       // `let rec` may reference itself, so both sides see the rebound overlay
@@ -8582,7 +8714,12 @@ fn dh_check_expr(expr: Expr, declared: Array[String], performed: Array[String], 
       let mut i = 0
       while i < Array::length(handled) {
         let eff = Array::get(handled, i)
-        if effect_row_has_label(Some(declared), eff) && effect_row_has_label(Some(performed), eff) && !dh_may_reach(body, eff, fn_names, fn_effs, fn_index, ov_names, ov_effs) && dh_has_opaque_call(body, fn_names, fn_index) {
+        let mutable_call = dh_mutable_alias_call(body, eff, fn_names, fn_effs, fn_index, ov_names, ov_effs)
+        match mutable_call {
+          Some((cname, coff)) => Array::push(errors, EEHandleMutableAlias(eff, cname, coff)),
+          None => ()
+        }
+        if mutable_call == None && effect_row_has_label(Some(declared), eff) && effect_row_has_label(Some(performed), eff) && !dh_may_reach(body, eff, fn_names, fn_effs, fn_index, ov_names, ov_effs) && dh_has_opaque_call(body, fn_names, fn_index) {
           // #3180: the handle is refused either way, but when the opaque call
           // is a local closure with no effect row that DOES perform `eff`,
           // "reaches no perform" is false -- it reaches one this handle
