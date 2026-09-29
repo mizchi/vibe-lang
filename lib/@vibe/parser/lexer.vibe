@@ -116,6 +116,21 @@ fn char_recovery_boundary(c: Int) -> Bool {
   (c >= '{' && c <= '~')
 }
 
+fn char_payload_quote_before_space(s: String, len: Int, start: Int) -> Bool {
+  let mut pos = start
+  while pos < len {
+    let c = String::char_code_at(s, pos)
+    if c == '\'' {
+      return true
+    }
+    if c == ' ' || c == '\t' || c == '\n' {
+      return false
+    }
+    pos = pos + 1
+  }
+  false
+}
+
 /// A multibyte first character needs a different literal. For ASCII, a later
 /// quote before a comment or newline means extra bytes; otherwise add the
 /// missing close after the valid character.
@@ -173,7 +188,16 @@ fn char_close_error(s: String, len: Int, start: Int, close: Int) -> String {
           pos = pos + 1
         }
       }
-    } else if c == '\n' || (c == '/' && pos + 1 < len && String::char_code_at(s, pos + 1) == '/') {
+    } else if c == '/' && pos + 1 < len && String::char_code_at(s, pos + 1) == '/' {
+      // A compact `//` before this token's close is still literal payload.
+      // Whitespace after `//` starts the recovery comment instead.
+      if char_payload_quote_before_space(s, len, pos + 2) {
+        found_quote = true
+      } else {
+        ()
+      }
+      scanning = false
+    } else if c == '\n' {
       scanning = false
     } else {
       // Operators and delimiters can separate a later literal from the
