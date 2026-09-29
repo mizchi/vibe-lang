@@ -52,6 +52,7 @@ import @vibe/compiler/runtime {
   incremental_invalidation_trace_json,
   incremental_typecheck_telemetry_json,
   locate_type_error,
+  locate_type_error_lines,
   module_plan_manifest_fs,
   rc_classify_source,
   rc_plan_source,
@@ -1003,23 +1004,24 @@ fn apply_cfg_env(source: String, cfg_csv: String) -> String {
 /// module text) must degrade to the unlocated message -- never print the raw
 /// marker (#1445's leaked `[@off=135]` is the failure mode this guards against).
 fn strip_side_marker(msg: String, marker: String) -> String {
-  let mi = String::index_of(msg, marker)
-  if mi < 0 {
-    msg
-  } else {
+  let mut out = msg
+  let mut mi = String::index_of(out, marker)
+  while mi >= 0 {
     let inner_start = mi + String::length(marker)
-    let rest = String::substring(msg, inner_start, String::length(msg))
+    let rest = String::substring(out, inner_start, String::length(out))
     let rel = String::index_of(rest, "]")
     if rel < 0 {
-      String::substring(msg, 0, mi)
+      out = String::substring(out, 0, mi)
     } else {
-      String::concat(String::substring(msg, 0, mi), String::substring(msg, inner_start + rel + 1, String::length(msg)))
+      out = String::concat(String::substring(out, 0, mi), String::substring(out, inner_start + rel + 1, String::length(out)))
     }
+    mi = String::index_of(out, marker)
   }
+  out
 }
 
 fn strip_off_marker(msg: String) -> String {
-  strip_side_marker(strip_side_marker(msg, " [@off="), " [@fn=")
+  strip_side_marker(strip_side_marker(strip_side_marker(msg, " [@off="), " [@fn="), " [@assign-target")
 }
 
 /// On a parse/type/codegen error the checker throws a formatted diagnostic
@@ -1049,8 +1051,8 @@ fn emit_compile_diag(output_path: String, msg: String) -> Int with Fs {
 /// compile-path message. Only a diagnostic that states where it came from gets a
 /// position from this.
 fn emit_compile_diag_located(output_path: String, msg: String, source: String) -> Int with Fs {
-  if String::contains(msg, " [@off=") || String::contains(msg, " [@fn=") {
-    emit_compile_diag(output_path, locate_type_error(source, msg))
+  if String::contains(msg, " [@off=") || String::contains(msg, " [@fn=") || String::contains(msg, " [@assign-target]") {
+    emit_compile_diag(output_path, String::join(locate_type_error_lines(source, msg), "\n"))
   } else {
     emit_compile_diag(output_path, msg)
   }

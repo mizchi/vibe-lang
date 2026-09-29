@@ -7355,7 +7355,7 @@ fn locate_each_line(path: String, source: String, msg: String) -> Array[String] 
 
 /// #2831: one located diagnostic per line of a `\n`-joined message, for the
 /// single-file lane (which carries no path prefix of its own).
-fn locate_type_error_lines(source: String, msg: String) -> Array[String] {
+export fn locate_type_error_lines(source: String, msg: String) -> Array[String] {
   let parts = split_diagnostics(msg)
   let out: Array[String] = []
   let mut i = 0
@@ -7413,7 +7413,83 @@ fn diag_line_is_continuation(line: String) -> Bool {
   }
 }
 
+/// An assignment node stores the target spelling but no offset. Recover its
+/// exact token from the source only when there is one matching assignment;
+/// ambiguity stays unlocated instead of pointing at an unrelated occurrence.
+fn locate_assignment_target(source: String, msg: String, marker_at: Int) -> String {
+  let marker = " [@assign-target]"
+  let stripped = String::concat(String::substring(msg, 0, marker_at), String::substring(msg, marker_at + String::length(marker), String::length(msg)))
+  let name_marker = "unknown name: "
+  let start = String::index_of(stripped, name_marker)
+  if start < 0 {
+    return stripped
+  }
+  let name_start = start + String::length(name_marker)
+  let name_end = typecheck_ident_run(stripped, name_start)
+  if name_end <= name_start {
+    return stripped
+  }
+  let name = String::substring(stripped, name_start, name_end)
+  let (tokens, starts, ends, _, _) = lex_with_offsets_recovering(source)
+  let mut found = -1
+  let mut found_end = -1
+  let mut matches = 0
+  let mut i = 0
+  while i + 1 < Array::length(tokens) {
+    let is_target = match Array::get(tokens, i) {
+      TIdent(n) => n == name,
+      _ => false
+    }
+    let is_assignment = match Array::get(tokens, i + 1) {
+      TEq => true,
+      TPlusEq => true,
+      TMinusEq => true,
+      TStarEq => true,
+      TSlashEq => true,
+      TPercentEq => true,
+      _ => false
+    }
+    let is_declaration = if i == 0 {
+      false
+    } else {
+      match Array::get(tokens, i - 1) {
+        TLet => true,
+        TMut => true,
+        TRec => true,
+        TDot => true,
+        _ => false
+      }
+    }
+    // A labeled call argument also spells `name = value`, but cannot be an
+    // assignment expression. Its preceding token is `(` or `,`.
+    let is_call_label = if i == 0 {
+      false
+    } else {
+      match Array::get(tokens, i - 1) {
+        TLParen => true,
+        TComma => true,
+        _ => false
+      }
+    }
+    if is_target && is_assignment && !is_declaration && !is_call_label {
+      found = Array::get(starts, i)
+      found_end = Array::get(ends, i)
+      matches = matches + 1
+    }
+    i = i + 1
+  }
+  if matches == 1 {
+    String::concat(offset_line_col_range_prefix(source, found, found_end), stripped)
+  } else {
+    stripped
+  }
+}
+
 export fn locate_type_error(source: String, msg: String) -> String {
+  let assign_at = String::index_of(msg, " [@assign-target]")
+  if assign_at >= 0 {
+    return locate_assignment_target(source, msg, assign_at)
+  }
   let marker = " [@off="
   let mi = String::index_of(msg, marker)
   let fn_mi = String::index_of(msg, " [@fn=")
